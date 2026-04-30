@@ -1,6 +1,6 @@
 ---
 name: workstreams
-description: Manage AI-assisted coding workstreams in Taskwarrior. Use when the user asks to capture, hand off, check, split, resume, list, validate, or update coding workstream state across repos, jj bookmarks, PRs, or AI sessions.
+description: Manage AI-assisted coding workstreams in Taskwarrior. Use when the user asks to capture, hand off, check, split, resume, list, validate, or update coding workstream state across repos, jj workspaces, jj bookmarks, PRs, or AI sessions.
 metadata:
   short-description: Manage Taskwarrior coding workstreams
 ---
@@ -17,6 +17,7 @@ Before changing tasks, read the shared policy at `~/.config/ai-workstreams/SPEC.
 - One task is one workstream.
 - `description` is the current next action and must be concrete.
 - Tags must include exactly one state tag: `doing`, `ready`, `review`, `blocked`, or `parked`.
+- `workspace` is the local jj workspace root; `bookmark` is the code line. Keep both when known.
 - Preserve useful history in annotations.
 - Be conservative about state changes; explain the evidence when moving a task.
 
@@ -25,7 +26,7 @@ Before changing tasks, read the shared policy at `~/.config/ai-workstreams/SPEC.
 Call Taskwarrior directly. Use `rc.gc=off` for read-only inspection to avoid Taskwarrior maintenance writes during simple checks.
 
 ```bash
-task rc.gc=off status:pending '( repo.not: or bookmark.not: or pr.not: or aisession.not: or +doing or +ready or +review or +blocked or +parked )' columns:id,project,repo,bookmark,pr,tags,wait,description
+task rc.gc=off status:pending '( repo.not: or workspace.not: or bookmark.not: or pr.not: or aisession.not: or +doing or +ready or +review or +blocked or +parked )' columns:id,project,repo,workspace,bookmark,pr,tags,wait,description
 task rc.gc=off +WAITING export
 task <id> information
 task <id> modify -doing -ready -review -blocked -parked +review wait:tomorrow "Check CI and merge if approved"
@@ -37,11 +38,11 @@ Remember that normal reports can hide tasks with `wait:`; use `+WAITING export` 
 ## Capture
 
 1. Infer context from the current repo:
-   - `pwd`, `jj root`, `jj status`, `jj bookmark list --all`, and PR URLs when useful.
+   - `pwd`, `jj workspace root`, `jj root`, `jj status`, `jj bookmark list --all`, and PR URLs when useful.
    - repo in `organization/name` form.
-   - bookmark, PR, and AI session when known.
+   - workspace, bookmark, PR, and AI session when known.
 2. Search existing tasks before creating:
-   - by `repo`, `bookmark`, `pr`, and distinctive description words.
+   - by `repo`, `workspace`, `bookmark`, `pr`, and distinctive description words.
 3. Create or update exactly one task for the stream.
 4. Add annotations for evidence: branch, PR URL, validation, blocker, key decision, or source chat/session.
 
@@ -50,10 +51,11 @@ Remember that normal reports can hide tasks with `wait:`; use `+WAITING export` 
 When stopping work:
 
 1. Set `description` to the next action.
-2. Choose exactly one state.
-3. Use `wait:` for review, blocked, or parked streams when a reminder helps.
-4. Annotate enough evidence to resume without rereading the full chat.
-5. Re-list or inspect the updated task and verify the invariants manually.
+2. Verify `workspace` still points to the local jj workspace where the work should resume.
+3. Choose exactly one state.
+4. Use `wait:` for review, blocked, or parked streams when a reminder helps.
+5. Annotate enough evidence to resume without rereading the full chat.
+6. Re-list or inspect the updated task and verify the invariants manually.
 
 ## Check
 

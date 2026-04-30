@@ -1,5 +1,5 @@
 ---
-description: Capture, hand off, check, split, or validate a Taskwarrior coding workstream
+description: Capture, hand off, check, split, or validate a Taskwarrior coding workstream across repos and jj workspaces
 argument-hint: <capture|handoff|check|split|validate|next action>
 ---
 

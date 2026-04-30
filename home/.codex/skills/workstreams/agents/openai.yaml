@@ -1,4 +1,4 @@
 interface:
   display_name: "Workstreams"
-  short_description: "Manage coding workstreams directly in Taskwarrior"
+  short_description: "Manage repo and jj workspace workstreams"
   default_prompt: "Use $workstreams to update this workstream."

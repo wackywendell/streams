@@ -11,6 +11,7 @@ Use the task fields this way:
 - `description`: the current next action, written as a concrete imperative.
 - `project`: the project or product area, such as `widget-lib`.
 - `repo`: repository in `organization/name` form, such as `example-org/monorepo`.
+- `workspace`: local jj workspace root path, when known, such as `/Users/<username>/go/src/github.com/example-org/monorepo/workspaces/widget-java`.
 - `bookmark`: jj bookmark or branch name, when known.
 - `pr`: GitHub PR number, when known.
 - `aisession`: optional AI chat/session id, such as `codex:<id>` or `claude:<slug>`.
@@ -33,6 +34,8 @@ Workflow-state tags are exactly:
 - `description` is imperative and concrete: `Check CI on PR #12345 and merge if approved`, not `PR followup`.
 - Non-actionable tasks use `review`, `blocked`, or `parked`; add `wait:` when a timed re-check would prevent drift.
 - Useful history is preserved in annotations before or while changing the current state.
+- `workspace` identifies where to resume locally; `bookmark` identifies the code line. Keep both when known.
+- If a workstream moves to a different jj workspace, update `workspace` and annotate the move.
 - If one workstream splits into two real streams, create two tasks rather than overloading one task.
 - Be conservative about automatic state changes. State transitions should follow explicit evidence or user intent.
 - Use non-state tags for topics only; do not invent extra state tags like `waiting`, `todo`, `active`, or `paused`.
@@ -45,12 +48,13 @@ Goal: create or update the workstream task for the current repo/chat/PR.
 
 1. Gather context from the repo and chat:
    - repo name, preferably `organization/name`;
+   - jj workspace root path from `jj workspace root` or `jj root`, when available;
    - current jj bookmark, when available;
    - PR number or URL, when available;
    - AI session id or short slug, when useful;
    - current next action;
    - whether the action is actionable now.
-2. Search for an existing task by `repo`, `bookmark`, `pr`, or distinctive description text.
+2. Search for an existing task by `repo`, `workspace`, `bookmark`, `pr`, or distinctive description text.
 3. If an existing task represents the same real stream, update it.
 4. If no task exists, create one with required fields and exactly one state tag.
 5. Add annotations for evidence: branch, PR URL, validation results, blocker, decisions, or chat/session context.
@@ -60,14 +64,15 @@ Goal: create or update the workstream task for the current repo/chat/PR.
 Goal: make the task enough to resume without reading the whole chat.
 
 1. Replace `description` with the next concrete action.
-2. Set exactly one state tag:
+2. Verify `workspace` still points to the local jj workspace where the work should resume.
+3. Set exactly one state tag:
    - `ready` if the user can act now.
    - `doing` only for a stream actively being worked right now.
    - `review` for CI/review/near-term check-back.
    - `blocked` for external dependencies.
    - `parked` for intentional pause.
-3. Set `wait:` for review, blocked, or parked tasks when a reminder is useful.
-4. Annotate the evidence and why the state changed.
+4. Set `wait:` for review, blocked, or parked tasks when a reminder is useful.
+5. Annotate the evidence and why the state changed.
 
 ### Check
 
@@ -84,7 +89,7 @@ Goal: turn one overloaded task into two real workstreams.
 
 1. Identify the independent next actions and ownership boundaries.
 2. Keep the original task for one stream and narrow its `description`.
-3. Create a new task for the other stream with its own state, repo/bookmark/pr fields, and next action.
+3. Create a new task for the other stream with its own state, repo/workspace/bookmark/pr fields, and next action.
 4. Annotate both tasks with the split reason and cross-reference when practical.
 
 ## Raw Taskwarrior Examples
@@ -92,7 +97,7 @@ Goal: turn one overloaded task into two real workstreams.
 Create:
 
 ```bash
-task add project:widget-lib repo:example-org/monorepo bookmark:<username>/bump-widget-lib-0.3.2 pr:12345 +review wait:tomorrow "Check CI on PR #12345 and merge if approved"
+task add project:widget-lib repo:example-org/monorepo workspace:/Users/<username>/go/src/github.com/example-org/monorepo/workspaces/widget-java bookmark:<username>/bump-widget-lib-0.3.2 pr:12345 +review wait:tomorrow "Check CI on PR #12345 and merge if approved"
 task <id> annotate "PR: https://github.com/example-org/monorepo/pull/12345"
 task <id> annotate "Validation passed: make test"
 ```
@@ -108,15 +113,15 @@ Find likely workstreams:
 
 ```bash
 task rc.gc=off status:pending '( repo.not: or +doing or +ready or +review or +blocked or +parked )' \
-  columns:id,project,repo,bookmark,pr,tags,wait,description
+  columns:id,project,repo,workspace,bookmark,pr,tags,wait,description
 task rc.gc=off +WAITING export
 ```
 
 Validate state tags manually:
 
 ```bash
-task rc.gc=off status:pending '( repo.not: or bookmark.not: or pr.not: or aisession.not: or +doing or +ready or +review or +blocked or +parked )' \
-  columns:id,project,repo,bookmark,pr,tags,wait,description
+task rc.gc=off status:pending '( repo.not: or workspace.not: or bookmark.not: or pr.not: or aisession.not: or +doing or +ready or +review or +blocked or +parked )' \
+  columns:id,project,repo,workspace,bookmark,pr,tags,wait,description
 task rc.gc=off +WAITING export
 ```
 

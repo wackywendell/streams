@@ -1,6 +1,6 @@
 ---
 name: workstreams
-description: Manage AI-assisted coding workstreams in Taskwarrior across repos, bookmarks, PRs, and AI sessions.
+description: Manage AI-assisted coding workstreams in Taskwarrior across repos, jj workspaces, bookmarks, PRs, and AI sessions.
 ---
 
 # Workstreams
@@ -17,6 +17,7 @@ Follow the same core workflow as Codex:
 - one Taskwarrior task per real workstream;
 - `description` is the current next action;
 - annotations are evidence and history;
+- `workspace` is the local jj workspace root, while `bookmark` is the code line;
 - tags include exactly one workflow-state tag: `doing`, `ready`, `review`, `blocked`, or `parked`;
 - state changes should be evidence-based and conservative.
 
