@@ -101,6 +101,14 @@ State tag guidance:
 - Use `blocked` only for real external blockers or decisions outside the normal review/CI loop.
 - Use `parked` for intentional pauses that are not expected to move soon.
 
+For PR-stack lifecycle, state follows who can act next:
+
+- Keep or move the task to `ready` for concrete local/user actions such as signing unsigned commits, fixing a failed pre-push check, pushing the bookmark, marking a draft ready, asking Slack for review, addressing review feedback, or merging when approved and green.
+- Move the task to `review` for CI, merge queue, merge check, rerun, review, author-update, or Slack-response waits. Use `wait:` when a re-check time is useful.
+- Do not treat a vague GitHub "blocked" label as `blocked` by itself. Read merge check or check-run output directly; if it says something actionable like "1 of 3 commits unsigned," the task is `ready` with a fix/sign/push transition.
+- After the PR is merged, keep the task `ready` with a `Cleanup` status/CMUX visual state until local bookmark, workspace, CMUX, and task cleanup have been verified.
+- Mark the task done only after the PR is merged and local cleanup is complete.
+
 ## Status Updates
 
 Overall status updates, especially from the `tasks` CMUX workspace/conductor session, should group workstreams by actionability:
@@ -190,7 +198,7 @@ Goal: pull real-world changes into Taskwarrior.
 
 1. Inspect pending workstreams, including hidden `+WAITING` tasks.
 2. Reassess tasks in `review` or `blocked`, and `ready` tasks that have external hooks such as PRs, CI, Slack review asks, author-update waits, or mergeability.
-3. Use current external evidence where needed: GitHub PR/review/check state, Slack replies, CI/merge check details, or local repo state if the task specifically depends on it.
+3. Use current external evidence where needed: GitHub PR/review/check state, Slack replies, CI/merge check details, or local repo state if the task specifically depends on it. When GitHub's top-line status is vague, read the merge check or check-run text directly before changing state.
 4. Make obvious transitions directly. For example: a task waiting for review got approval and green CI, so move it to `ready` with a merge/cleanup transition.
 5. For ambiguous evidence, annotate what changed and ask the user before changing state. Examples: a vague review comment, unclear CI ownership, or a PR update that may invalidate prior assumptions.
 6. After each task state change, update its linked CMUX workspace description, color, and order if one exists.

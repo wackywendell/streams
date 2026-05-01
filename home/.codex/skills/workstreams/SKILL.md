@@ -73,12 +73,12 @@ Investigation examples:
 State tags describe who can move the stream next:
 
 - `doing`: actively in the current human/AI loop.
-- `ready`: the user has the next move, including self-reviewing a draft PR, marking it ready for review by others, reviewing someone else's PR, asking Slack for review, or fixing known feedback/CI.
-- `review`: waiting on review, author updates, Slack response, CI, mergeability, or a timed check; use `wait:` when useful.
+- `ready`: the user has the next move, including self-reviewing a draft PR, marking it ready for review by others, reviewing someone else's PR, asking Slack for review, signing/fixing/pushing a PR stack, merging, or fixing known feedback/CI.
+- `review`: waiting on review, author updates, Slack response, CI, merge check, merge queue, rerun, or a timed check; use `wait:` when useful.
 - `blocked`: waiting on a true external dependency outside the normal review/CI loop.
 - `parked`: intentionally paused.
 
-Do not invent a `waiting` tag; use `review` for normal review/CI waits. Use `Cleanup` as a status-update label and CMUX visual state, not a Taskwarrior state tag; the task remains `ready` with a cleanup description. Parked tasks do not need an open CMUX workspace.
+Do not invent a `waiting` tag; use `review` for normal review/CI waits. A vague GitHub "blocked" state is not enough for `blocked`: read merge check/check-run text directly when refreshing, and move to `ready` if the output names an actionable fix such as unsigned commits. Use `Cleanup` as a status-update label and CMUX visual state, not a Taskwarrior state tag; the task remains `ready` with a cleanup description until PR merge and local bookmark/workspace/CMUX cleanup are verified. Parked tasks do not need an open CMUX workspace.
 
 ## Status Updates
 
@@ -136,7 +136,8 @@ When stopping work:
 3. Choose exactly one state.
 4. Use `wait:` for review, blocked, or parked streams when a reminder helps.
 5. Annotate enough evidence to resume without rereading the full chat.
-6. Re-list or inspect the updated task and verify the invariants manually.
+6. For PR work, record the next transition according to who can act next: fix/sign/push is `ready`, CI/merge check/rerun is `review`, and merged-but-not-cleaned-up is `ready` with `Cleanup`.
+7. Re-list or inspect the updated task and verify the invariants manually.
 
 ## Check
 
