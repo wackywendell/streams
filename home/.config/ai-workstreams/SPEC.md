@@ -124,13 +124,15 @@ Individual task status updates should start with one bold status word or short p
 
 Distinguish self-review from external review clearly. A draft PR that the user still needs to inspect is `**Ready**` or `**Self-review**`, not `**Review**`. Use `**Review**` when the task is waiting on someone else, Slack response, CI, mergeability, or a timed check.
 
+Finally, give a short 1-2 sentence description of what the user should work on next.
+
 ## Command Vocabulary
 
 Use these names for the thin command/prompt layer. Keep the substantive behavior in this shared spec plus the `workstreams` and `cmux` skills.
 
 - `status`: all-workstream status from Taskwarrior only. Include pending and `+WAITING` tasks. Do not inspect CMUX, GitHub, Slack, CI, local git/jj, or code state unless the Taskwarrior record is too ambiguous to answer.
 - `task-status`: single-task status from Taskwarrior only. Use a task id, uuid, PR number, workspace slug, or distinctive words to resolve the task. Do not refresh external state unless explicitly asked.
-- `refresh`: reassess real-world state and update Taskwarrior. Inspect external state for `review`, `blocked`, and `ready` tasks when they have external hooks such as PRs, CI, Slack review asks, or author-update waits. If the transition is obvious, update the task. If the evidence is ambiguous, annotate the evidence and ask the user before changing state.
+- `refresh`: reassess real-world state and update Taskwarrior. Inspect external state for `review`, `blocked`, and `ready` tasks when they have external hooks such as PRs, CI, Slack review asks, or author-update waits. If the transition is obvious, update the task. If the evidence is ambiguous, annotate the evidence and ask the user before changing state. Print a status update.
 - `sync-cmux`: align CMUX from Taskwarrior only. Create/select/update/close/reorder task workspaces, set descriptions and CMUX colors, and avoid opening parked workspaces. Do not refresh external state.
 - `sync`: run `refresh`, then `sync-cmux`, so real world -> Taskwarrior -> CMUX are aligned.
 - `capture`: create or update one Taskwarrior workstream from arguments or current context. Infer whether the source is free text, current repo, a PR URL, GitHub issue, Jira issue, or other linked work.
