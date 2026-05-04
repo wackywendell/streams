@@ -1,0 +1,247 @@
+#!/usr/bin/env python3
+"""Resume the AI session for one stowed CMUX workstream workspace."""
+
+from __future__ import annotations
+
+import argparse
+import json
+import re
+import subprocess
+import sys
+from dataclasses import dataclass
+from pathlib import Path
+
+
+UUID_RE = re.compile(r"[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}")
+TASK_RE = re.compile(r"\btask:(" + UUID_RE.pattern + r")\b")
+PR_RE = re.compile(r"github\.com/([^/\s]+/[^/\s]+)/pull/(\d+)")
+
+
+@dataclass
+class Resolved:
+    workspace: dict
+    task: dict
+    command: str
+
+
+class WorkstreamResumeError(Exception):
+    pass
+
+
+def run(args: list[str], *, check: bool = True) -> subprocess.CompletedProcess[str]:
+    try:
+        return subprocess.run(args, text=True, capture_output=True, check=check)
+    except FileNotFoundError as exc:
+        raise WorkstreamResumeError(f"missing executable: {args[0]}") from exc
+    except subprocess.CalledProcessError as exc:
+        detail = (exc.stderr or exc.stdout or "").strip()
+        raise WorkstreamResumeError(f"{' '.join(args)} failed: {detail}") from exc
+
+
+def json_from_command(args: list[str]) -> object:
+    text = run(args).stdout.strip()
+    start = min((idx for idx in (text.find("{"), text.find("[")) if idx != -1), default=-1)
+    if start == -1:
+        raise WorkstreamResumeError(f"{' '.join(args)} did not return JSON")
+    return json.loads(text[start:])
+
+
+def current_workspace_ref() -> str:
+    return run(["cmux", "current-workspace"]).stdout.strip()
+
+
+def cmux_workspaces() -> list[dict]:
+    data = json_from_command(["cmux", "rpc", "workspace.list", "{}"])
+    if not isinstance(data, dict) or not isinstance(data.get("workspaces"), list):
+        raise WorkstreamResumeError("cmux rpc workspace.list returned an unexpected shape")
+    return data["workspaces"]
+
+
+def resolve_workspace(selector: str | None) -> dict:
+    selector = selector or current_workspace_ref()
+    matches = [
+        workspace
+        for workspace in cmux_workspaces()
+        if selector in {workspace.get("ref"), workspace.get("id"), workspace.get("title")}
+    ]
+    if not matches:
+        raise WorkstreamResumeError(f"could not find CMUX workspace {selector!r}")
+    if len(matches) > 1:
+        choices = ", ".join(f"{item.get('ref')} {item.get('title')}" for item in matches)
+        raise WorkstreamResumeError(f"CMUX workspace {selector!r} is ambiguous: {choices}")
+    return matches[0]
+
+
+def task_export(selector: str) -> list[dict]:
+    data = json_from_command(["task", "rc.gc=off", selector, "export"])
+    if not isinstance(data, list):
+        raise WorkstreamResumeError("task export returned an unexpected shape")
+    return data
+
+
+def all_pending_tasks() -> list[dict]:
+    data = json_from_command(["task", "rc.gc=off", "status:pending", "export"])
+    if not isinstance(data, list):
+        raise WorkstreamResumeError("task pending export returned an unexpected shape")
+    return data
+
+
+def task_uuid_from_description(workspace: dict) -> str | None:
+    description = workspace.get("description") or ""
+    match = TASK_RE.search(description)
+    return match.group(1) if match else None
+
+
+def candidate_titles(task: dict) -> set[str]:
+    titles: set[str] = set()
+    if workspace := task.get("workspace"):
+        titles.add(Path(workspace).name)
+    if bookmark := task.get("bookmark"):
+        titles.add(bookmark.split("/")[-1])
+    for annotation in task.get("annotations") or []:
+        description = annotation.get("description") or ""
+        titles.update(title.strip() for title in re.findall(r"CMUX .*?\(([^)]+)\)", description))
+    return {title for title in titles if title}
+
+
+def task_matches_workspace(task: dict, workspace: dict) -> bool:
+    title = workspace.get("title") or ""
+    description = workspace.get("description") or ""
+    cwd = workspace.get("current_directory") or ""
+
+    if title and title in candidate_titles(task):
+        return True
+    if cwd and task.get("workspace") == cwd:
+        return True
+    for repo, pr in PR_RE.findall(description):
+        if task.get("repo") == repo and str(task.get("pr")) == pr:
+            return True
+    return False
+
+
+def resolve_task(workspace: dict) -> dict:
+    if uuid := task_uuid_from_description(workspace):
+        matches = task_export(uuid)
+        if not matches:
+            raise WorkstreamResumeError(f"workspace has task:{uuid}, but Taskwarrior could not find it")
+        if len(matches) > 1:
+            raise WorkstreamResumeError(f"workspace task:{uuid} resolved to multiple Taskwarrior tasks")
+        task = matches[0]
+        if task.get("status") != "pending":
+            raise WorkstreamResumeError(f"workspace task:{uuid} is {task.get('status')}, not pending")
+        return task
+
+    matches = [task for task in all_pending_tasks() if task_matches_workspace(task, workspace)]
+    if not matches:
+        title = workspace.get("title")
+        ref = workspace.get("ref")
+        raise WorkstreamResumeError(
+            f"could not find a pending Taskwarrior task for {ref} {title!r}; "
+            "add task:<uuid> to the CMUX description or add a CMUX annotation to the task"
+        )
+    if len(matches) > 1:
+        choices = ", ".join(f"{task.get('id')}:{task.get('uuid')} {task.get('description')}" for task in matches)
+        raise WorkstreamResumeError(f"workspace matches multiple Taskwarrior tasks: {choices}")
+    return matches[0]
+
+
+def command_for_session(task: dict) -> str:
+    session = task.get("aisession")
+    if not session:
+        raise WorkstreamResumeError(f"task {task.get('uuid')} has no aisession field")
+
+    if session.startswith("codex:"):
+        session_id = session.removeprefix("codex:")
+        if not session_id:
+            raise WorkstreamResumeError("codex aisession is empty")
+        return f"codex resume {session_id}"
+    if session.startswith("claude:"):
+        session_id = session.removeprefix("claude:")
+        if not session_id:
+            raise WorkstreamResumeError("claude aisession is empty")
+        return f"claude --resume {session_id}"
+    if session.startswith("pi:"):
+        session_id = session.removeprefix("pi:")
+        if not session_id:
+            raise WorkstreamResumeError("pi aisession is empty")
+        return f"pi --session {session_id}"
+    if UUID_RE.fullmatch(session):
+        return f"codex resume {session}"
+    if "claude" in set(task.get("tags") or []):
+        return f"claude --resume {session}"
+
+    raise WorkstreamResumeError(
+        f"task {task.get('uuid')} has aisession {session!r}, but I do not know whether it is codex, claude, or pi"
+    )
+
+
+def resolve(selector: str | None) -> Resolved:
+    workspace = resolve_workspace(selector)
+    task = resolve_task(workspace)
+    command = command_for_session(task)
+    return Resolved(workspace=workspace, task=task, command=command)
+
+
+def shell_ready(workspace_ref: str, surface: str | None) -> tuple[bool, str]:
+    args = ["cmux", "read-screen", "--workspace", workspace_ref, "--scrollback", "--lines", "8"]
+    if surface:
+        args.extend(["--surface", surface])
+    result = subprocess.run(args, text=True, capture_output=True)
+    if result.returncode != 0:
+        return False, (result.stderr or result.stdout).strip()
+    lines = [line.strip() for line in result.stdout.rstrip().splitlines() if line.strip()]
+    if not lines:
+        return True, ""
+    return lines[-1].endswith(("\u276f", "$", "%", "#", ">")), lines[-1]
+
+
+def send_command(workspace_ref: str, command: str, *, surface: str | None, force: bool) -> None:
+    ready, last = shell_ready(workspace_ref, surface)
+    if not ready and not force:
+        raise WorkstreamResumeError(
+            f"target does not look like an idle shell"
+            + (f" (last line: {last!r})" if last else "")
+            + "; use --force to send anyway"
+        )
+
+    if surface:
+        run(["cmux", "send-panel", "--workspace", workspace_ref, "--panel", surface, command])
+        run(["cmux", "send-key-panel", "--workspace", workspace_ref, "--panel", surface, "Enter"])
+    else:
+        run(["cmux", "send", "--workspace", workspace_ref, command])
+        run(["cmux", "send-key", "--workspace", workspace_ref, "Enter"])
+
+
+def main(argv: list[str]) -> int:
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument("-n", "--dry-run", action="store_true", help="print the resolved task and command without sending it")
+    parser.add_argument("-w", "--workspace", help="CMUX workspace ref, UUID, or title; defaults to current workspace")
+    parser.add_argument("-p", "--pane", "--surface", dest="surface", help="CMUX surface/panel ref to send to; defaults to selected surface")
+    parser.add_argument("--force", action="store_true", help="send even if the target does not look like an idle shell")
+    args = parser.parse_args(argv)
+
+    try:
+        resolved = resolve(args.workspace)
+        workspace_ref = resolved.workspace["ref"]
+        task = resolved.task
+
+        print(f"workspace: {workspace_ref} {resolved.workspace.get('title')}")
+        print(f"task:      {task.get('id')} {task.get('uuid')}")
+        print(f"state:     {', '.join(task.get('tags') or []) or '-'}")
+        print(f"session:   {task.get('aisession')}")
+        print(f"command:   {resolved.command}")
+
+        if args.dry_run:
+            print("dry-run:   not sent")
+            return 0
+
+        send_command(workspace_ref, resolved.command, surface=args.surface, force=args.force)
+        print("sent:      yes")
+        return 0
+    except WorkstreamResumeError as exc:
+        print(f"workstream-resume: {exc}", file=sys.stderr)
+        return 2
+
+
+if __name__ == "__main__":
+    raise SystemExit(main(sys.argv[1:]))
