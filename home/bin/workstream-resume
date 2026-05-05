@@ -13,7 +13,7 @@ from pathlib import Path
 
 
 UUID_RE = re.compile(r"[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}")
-TASK_RE = re.compile(r"\btask:(" + UUID_RE.pattern + r")\b")
+TASK_TOKEN_RE = re.compile(r"\btask:(" + UUID_RE.pattern + r"|[0-9a-fA-F]{8})\b")
 PR_RE = re.compile(r"github\.com/([^/\s]+/[^/\s]+)/pull/(\d+)")
 
 
@@ -86,10 +86,32 @@ def all_pending_tasks() -> list[dict]:
     return data
 
 
-def task_uuid_from_description(workspace: dict) -> str | None:
+def task_token_from_description(workspace: dict) -> str | None:
     description = workspace.get("description") or ""
-    match = TASK_RE.search(description)
+    match = TASK_TOKEN_RE.search(description)
     return match.group(1) if match else None
+
+
+def resolve_task_token(token: str) -> dict:
+    if UUID_RE.fullmatch(token):
+        matches = task_export(token)
+    else:
+        matches = [
+            task
+            for task in all_pending_tasks()
+            if str(task.get("uuid", "")).lower().startswith(token.lower())
+        ]
+
+    if not matches:
+        raise WorkstreamResumeError(f"workspace has task:{token}, but Taskwarrior could not find it")
+    if len(matches) > 1:
+        choices = ", ".join(f"{task.get('id')}:{task.get('uuid')} {task.get('description')}" for task in matches)
+        raise WorkstreamResumeError(f"workspace task:{token} is ambiguous: {choices}")
+
+    task = matches[0]
+    if task.get("status") != "pending":
+        raise WorkstreamResumeError(f"workspace task:{token} is {task.get('status')}, not pending")
+    return task
 
 
 def candidate_titles(task: dict) -> set[str]:
@@ -120,16 +142,8 @@ def task_matches_workspace(task: dict, workspace: dict) -> bool:
 
 
 def resolve_task(workspace: dict) -> dict:
-    if uuid := task_uuid_from_description(workspace):
-        matches = task_export(uuid)
-        if not matches:
-            raise WorkstreamResumeError(f"workspace has task:{uuid}, but Taskwarrior could not find it")
-        if len(matches) > 1:
-            raise WorkstreamResumeError(f"workspace task:{uuid} resolved to multiple Taskwarrior tasks")
-        task = matches[0]
-        if task.get("status") != "pending":
-            raise WorkstreamResumeError(f"workspace task:{uuid} is {task.get('status')}, not pending")
-        return task
+    if token := task_token_from_description(workspace):
+        return resolve_task_token(token)
 
     matches = [task for task in all_pending_tasks() if task_matches_workspace(task, workspace)]
     if not matches:
@@ -137,7 +151,7 @@ def resolve_task(workspace: dict) -> dict:
         ref = workspace.get("ref")
         raise WorkstreamResumeError(
             f"could not find a pending Taskwarrior task for {ref} {title!r}; "
-            "add task:<uuid> to the CMUX description or add a CMUX annotation to the task"
+            "add task:<uuid-prefix> to the CMUX description or add a CMUX annotation to the task"
         )
     if len(matches) > 1:
         choices = ", ".join(f"{task.get('id')}:{task.get('uuid')} {task.get('description')}" for task in matches)

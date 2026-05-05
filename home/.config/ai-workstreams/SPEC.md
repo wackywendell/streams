@@ -19,16 +19,38 @@ Use the task fields this way:
 - `pr`: GitHub PR number, when known.
 - `aisession`: optional AI chat/session id, such as `codex:<id>` or `claude:<slug>`. When a CMUX workspace is opened for active work, use this to resume the matching AI session.
 - `wait`: when to re-check a non-actionable workstream, when useful.
+- `priority`: Taskwarrior priority (`H`, `M`, or `L`) when the task's importance should feed urgency. Use `H` for reviews, follow-ups, and anything blocking others; `M` for the user's own work PRs; `L` for personal/tooling/backlog work unless explicitly promoted.
+- `due`: a real deadline, not a reminder. Use `wait` for reminders or re-checks.
+- computed `urgency`: Taskwarrior's attention-needed score. Do not set it directly; fix task fields when the score feels wrong.
 - annotations: evidence, history, links, prior decisions, validation, and handoff notes.
 - tags: exactly one workflow-state tag, plus any non-state topic tags that help filtering.
 
 Taskwarrior numeric ids are report-local conveniences and can change. Use numeric ids for immediate `task <id> ...` commands only after listing current tasks. Use the task `uuid`, and `pr:<number>` when present, for durable references across sessions and tools.
 
-CMUX workspace titles should stay short and stable, usually branch/bookmark slug or workspace basename. CMUX workspace descriptions should start with a status label, then a very short state phrase, then the full PR URL when present, with `task:<uuid>` after the human-facing part.
+CMUX workspace titles and descriptions use a small display grammar:
+
+```text
+title       = <stable slug>
+description = [detail "\n"] meta ["\n" pr-link] "\n" task-link
+detail      = "_" <short phrase that adds information beyond the title> "_"
+meta        = "**" (<priority> ": " <urgency> | "urg: " <urgency>) "**" [ " due " <short-date> ] [ " → " <short-date/time> ]
+pr-link     = "[" <repo-basename> "#" <pr-number> "](" <full-pr-url> ")"
+task-link   = "task:" <8-char-uuid-prefix>
+```
+
+Use the branch/bookmark slug or workspace basename for `title`. Omit `detail` when the title is enough; when present, it should build on the title with the next useful detail. CMUX color carries actionability. Keep the full Taskwarrior uuid in Taskwarrior annotations. A short `task:` prefix is for sidebar readability; scripts must resolve it through Taskwarrior and fail if ambiguous.
+
+CMUX renders workspace descriptions with inline-only Markdown while preserving whitespace. Use inline formatting only: emphasis for `detail`, strong emphasis for the priority/urgency part of `meta`, and normal Markdown links for `pr-link`. Do not rely on block Markdown in the workspace description; if a richer block is needed, use CMUX sidebar metadata blocks instead.
 
 When updating a task that has an associated CMUX workspace, update that workspace's description, color, and order at the same time as the Taskwarrior state.
 
 CMUX colors encode actionability: `Green` for `doing`, `ready`, and `Cleanup`; `Amber` for `review` and timed waits; `Orange` for `blocked`; `Red` for a temporarily open `parked` workspace. Parked workstreams generally should not have an open CMUX workspace.
+
+Order CMUX task workspaces by Taskwarrior urgency by default, after the pinned `tasks` conductor workspace. Keep the color based on actionability; urgency changes order and description metadata, not the state color.
+
+For `meta`, use `<priority>: <urgency>` when priority is set, such as `H: 8.8`, `M: 6.7`, or `L: 4.8`. If priority is absent, use `urg: <score>`. Append `due <short-date>` only for real deadlines. Append `→ <short-date/time>` for `wait` re-checks.
+
+For overdue tasks, keep the color based on actionability and add an overdue signal in metadata instead. Prefer `cmux set-status tw-overdue "overdue" --icon alert-triangle --color "#C0392B"` for an open overdue workspace, and clear it when the due date is cleared or no longer overdue. If a status pill is too noisy or unavailable, include `overdue <short-date>` in the description metadata.
 
 When updating several CMUX properties or several workspaces, batch the CMUX actions into one readable shell command block to avoid slow AI/tool round trips. Prefer `&&` when later actions should stop after a failure; use `;` only when every action is safe to run independently.
 
@@ -41,6 +63,18 @@ Workflow-state tags are exactly:
 - `parked`: intentionally paused; not expected to move soon.
 
 `Cleanup` is a presentation/status-update label and CMUX visual state, not a workflow-state tag. Use the `ready` tag plus a concrete cleanup `description` when the work is functionally done but still needs merge, branch/workspace cleanup, CMUX cleanup, task completion, or final handoff.
+
+## Priority, Due Dates, and Urgency
+
+Use Taskwarrior urgency as the default conductor ordering signal. Urgency means "needs attention," not always "start coding now." The workflow state tag explains what kind of attention is needed: implement, review, wait, unblock, clean up metadata, or park.
+
+Use `priority` to feed importance into urgency:
+
+- `priority:H`: reviews, author follow-ups, tasks blocking other people, and anything where delayed attention blocks external progress.
+- `priority:M`: the user's own active work PRs and normal implementation streams.
+- `priority:L`: personal projects, tooling improvements, experiments, and backlog work unless explicitly promoted.
+
+Use `due` only for real deadlines. Do not use `due` for normal review/CI check-ins. Use `wait` for reminders, snoozes, CI/review re-checks, and blocked follow-ups; default normal review waits to the next business day unless the task evidence calls for a same-day re-check or a longer snooze. If a blocked or parked task has high urgency because of an overdue `due`, treat that as a useful attention signal: either clear or correct the deadline, unpark the task, update `wait`, or otherwise fix the task record.
 
 ## Invariants
 
@@ -111,7 +145,9 @@ For PR-stack lifecycle, state follows who can act next:
 
 ## Status Updates
 
-Overall status updates, especially from the `tasks` CMUX workspace/conductor session, should group workstreams by actionability:
+Overall status updates, especially from the `tasks` CMUX workspace/conductor session, should order workstreams by Taskwarrior urgency by default. Keep each item's state label visible so urgency answers "what needs attention" while state answers "what kind of attention."
+
+When grouping is useful, use these sections, but do not let grouping hide high-urgency tasks that need metadata cleanup or escalation:
 
 - `Active / Ready`: tasks in `doing` or `ready`, including `Cleanup` items where the next move is final cleanup.
 - `Review / Waiting`: tasks in `review`, including review response, Slack response, CI, mergeability, or rerun waits.
@@ -120,7 +156,7 @@ Overall status updates, especially from the `tasks` CMUX workspace/conductor ses
 
 For general status updates or "what should I work on" scans, rely on Taskwarrior state and annotations only. Do not check GitHub, PR checks, CI, local git/jj status, or code state unless the user asks for fresh verification, asks about one specific task, or the Taskwarrior record is too ambiguous to answer. The fast path is the pending workstream report plus `+WAITING export`; stale-but-recorded external state should be described as recorded task state, not silently refreshed.
 
-Use these sections explicitly even if one is empty when the user asks for an overall status or asks what to work on. Keep each item concise: task/topic, PR link when present, next transition, and any important wait/blocker.
+Keep each item concise: task/topic, urgency, priority/due/wait when relevant, state, PR link when present, next transition, and any important blocker. If urgency ordering looks wrong, fix the Taskwarrior fields (`priority`, `due`, `wait`, state tags) instead of inventing a parallel ranking scheme.
 
 Individual task status updates should start with one bold status word or short phrase, such as `**Ready**`, `**Blocked**`, `**Review**`, `**Parked**`, or `**Cleanup**`. If a PR is open, include the full PR URL. Then summarize:
 
@@ -237,7 +273,7 @@ Find likely workstreams:
 
 ```bash
 task rc.gc=off status:pending '( repo.not: or +doing or +ready or +review or +blocked or +parked )' \
-  columns:id,uuid,project,repo,workspace,bookmark,pr,tags,wait,description
+  columns:id,uuid,project,repo,workspace,bookmark,pr,priority,urgency,due,wait,tags,description
 task rc.gc=off +WAITING export
 ```
 
@@ -245,7 +281,7 @@ Validate state tags manually:
 
 ```bash
 task rc.gc=off status:pending '( repo.not: or workspace.not: or bookmark.not: or pr.not: or aisession.not: or +doing or +ready or +review or +blocked or +parked )' \
-  columns:id,uuid,project,repo,workspace,bookmark,pr,tags,wait,description
+  columns:id,uuid,project,repo,workspace,bookmark,pr,priority,urgency,due,wait,tags,description
 task rc.gc=off +WAITING export
 ```
 

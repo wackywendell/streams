@@ -20,6 +20,9 @@ Before changing tasks, read the shared policy at `~/.config/ai-workstreams/SPEC.
 - `description` is the next transition that would advance the stream and must be concrete.
 - Tags must include exactly one state tag: `doing`, `ready`, `review`, `blocked`, or `parked`.
 - `workspace` is the local jj workspace root; `bookmark` is the code line. Keep both when known.
+- Use Taskwarrior `priority` to feed urgency: `H` for reviews, follow-ups, and anything blocking others; `M` for the user's own work PRs; `L` for personal/tooling/backlog work unless explicitly promoted.
+- Use `due` only for real deadlines. Use `wait` for reminders, snoozes, CI/review re-checks, and blocked follow-ups; default normal review waits to the next business day unless the task evidence calls for a same-day re-check or longer snooze.
+- Treat Taskwarrior `urgency` as "needs attention"; state tags explain what kind of attention is needed.
 - Preserve useful history in annotations.
 - Be conservative about state changes; explain the evidence when moving a task.
 - When a dedicated AI session updates or captures a task, fill `aisession` with the current AI session id if it is empty. If it is already set to a different session, alert the user instead of overwriting it silently.
@@ -29,7 +32,7 @@ Before changing tasks, read the shared policy at `~/.config/ai-workstreams/SPEC.
 Call Taskwarrior directly. Use `rc.gc=off` for read-only inspection to avoid Taskwarrior maintenance writes during simple checks.
 
 ```bash
-task rc.gc=off status:pending '( repo.not: or workspace.not: or bookmark.not: or pr.not: or aisession.not: or +doing or +ready or +review or +blocked or +parked )' columns:id,uuid,project,repo,workspace,bookmark,pr,tags,wait,description
+task rc.gc=off status:pending '( repo.not: or workspace.not: or bookmark.not: or pr.not: or aisession.not: or +doing or +ready or +review or +blocked or +parked )' columns:id,uuid,project,repo,workspace,bookmark,pr,priority,urgency,due,wait,tags,description
 task rc.gc=off +WAITING export
 task <id> information
 task rc.gc=off <id> uuids
@@ -82,14 +85,16 @@ Do not invent a `waiting` tag; use `review` for normal review/CI waits. A vague 
 
 ## Status Updates
 
-For overall status updates, especially in the `tasks` CMUX workspace, use explicit sections:
+For overall status updates, especially in the `tasks` CMUX workspace, order workstreams by Taskwarrior urgency by default. When grouping makes the status easier to scan, use these sections:
 
 - `Active / Ready`
 - `Review / Waiting`
 - `Blocked`
 - `Parked`
 
-Include `Cleanup` items under `Active / Ready` unless the user asks for a separate cleanup section. Each item should name the task/topic, full PR URL when present, current state, and next transition.
+Urgency means "needs attention," not always "start coding now"; the state label explains whether the response is implementation, review, waiting, unblocking, cleanup, or metadata correction. Include `Cleanup` items under `Active / Ready` unless the user asks for a separate cleanup section. Each item should name the task/topic, urgency, priority/due/wait when relevant, full PR URL when present, current state, and next transition.
+
+If a blocked or parked task is high urgency because of an overdue `due`, treat that as an attention signal: clear or correct the deadline, unpark it, update `wait`, or otherwise fix the task record. Do not invent a parallel ranking system when Taskwarrior fields can be corrected.
 
 For general status updates or "what should I work on" scans, rely on Taskwarrior state and annotations only. Do not check GitHub, PR checks, CI, local git/jj status, or code state unless the user asks for fresh verification, asks about one specific task, or the Taskwarrior record is too ambiguous to answer. Use the pending workstream report plus `+WAITING export`; describe external state as recorded task state instead of silently refreshing it.
 
@@ -97,9 +102,9 @@ For individual task updates, start with one bold status word or short phrase: `*
 
 Do not blur self-review and external review. A draft PR that the user needs to inspect should be `**Ready**` or `**Self-review**`. Use `**Review**` only when waiting on someone else, Slack response, CI, mergeability, or a timed check.
 
-When a task has an associated CMUX workspace, update the CMUX title, description, color, and order alongside Taskwarrior state. Keep the title as the stable short slug. Format the CMUX description as `<Status>: <under-8-word state> <full-pr-url-if-present> task:<uuid>`.
+When a task has an associated CMUX workspace, update the CMUX title, description, color, status pills, and order alongside Taskwarrior state. Use the shared CMUX display grammar: `title = <stable slug>` and `description = [detail] + meta + optional PR markdown link + task link`, where `meta` looks like `H: 8.8` or `M: 3.7 → Wed 09:00`. Keep `task:<8-char-uuid-prefix>` visible and the full uuid in Taskwarrior annotations.
 
-Use CMUX colors to show actionability: `Green` for `doing`, `ready`, and `Cleanup`; `Amber` for `review` and timed waits; `Orange` for `blocked`; `Red` for a temporarily open `parked` workspace. Parked tasks generally should not have an open CMUX workspace. When multiple CMUX actions are needed, batch them into one readable shell command block, using `&&` when later updates should stop after an earlier failure.
+Use CMUX colors to show actionability: `Green` for `doing`, `ready`, and `Cleanup`; `Amber` for `review` and timed waits; `Orange` for `blocked`; `Red` for a temporarily open `parked` workspace. Do not add separate overdue colors; add a `tw-overdue` status pill or `Overdue: <date>` description metadata instead. Order CMUX task workspaces by Taskwarrior urgency after the pinned `tasks` conductor workspace. Parked tasks generally should not have an open CMUX workspace. When multiple CMUX actions are needed, batch them into one readable shell command block, using `&&` when later updates should stop after an earlier failure.
 
 ## Command Vocabulary
 
