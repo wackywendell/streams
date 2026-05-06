@@ -20,12 +20,14 @@ Before changing tasks, read the shared policy at `~/.config/ai-workstreams/SPEC.
 - `description` is the next transition that would advance the stream and must be concrete.
 - Tags must include exactly one state tag: `doing`, `ready`, `review`, `blocked`, or `parked`.
 - `workspace` is the local jj workspace root; `bookmark` is the code line. Keep both when known.
+- Active workstreams should have a stable slug for CMUX title/session name; prefer bookmark or workspace basename, while Taskwarrior `uuid` remains durable identity.
+- `aisession` uses `codex:<id>`, `claude:<id-or-slug>`, or `pi:<id>` when known.
 - Use Taskwarrior `priority` to feed urgency: `H` for reviews, follow-ups, and anything blocking others; `M` for the user's own work PRs; `L` for personal/tooling/backlog work unless explicitly promoted.
 - Use `due` only for real deadlines. Use `wait` for reminders, snoozes, CI/review re-checks, and blocked follow-ups; default normal review waits to the next business day unless the task evidence calls for a same-day re-check or longer snooze.
 - Treat Taskwarrior `urgency` as "needs attention"; state tags explain what kind of attention is needed.
-- Preserve useful history in annotations.
+- Annotations are focused evidence, not transcripts. Prefer typed prefixes such as `Current handoff:`, `Decision:`, `Validation:`, `Blocker:`, `Dependency:`, `Refresh:`, `CMUX:`, `Session:`, and `Error:`.
 - Be conservative about state changes; explain the evidence when moving a task.
-- When a dedicated AI session updates or captures a task, fill `aisession` with the current AI session id if it is empty. If it is already set to a different session, alert the user instead of overwriting it silently.
+- When a dedicated AI session updates or captures a task, fill `aisession` with the current prefixed AI session id if it is empty. If it is already set to a different session, alert the user instead of overwriting it silently.
 
 ## Direct Taskwarrior Use
 
@@ -96,7 +98,7 @@ Urgency means "needs attention," not always "start coding now"; the state label 
 
 If a blocked or parked task is high urgency because of an overdue `due`, treat that as an attention signal: clear or correct the deadline, unpark it, update `wait`, or otherwise fix the task record. Do not invent a parallel ranking system when Taskwarrior fields can be corrected.
 
-For general status updates or "what should I work on" scans, rely on Taskwarrior state and annotations only. Do not check GitHub, PR checks, CI, local git/jj status, or code state unless the user asks for fresh verification, asks about one specific task, or the Taskwarrior record is too ambiguous to answer. Use the pending workstream report plus `+WAITING export`; describe external state as recorded task state instead of silently refreshing it.
+For general status updates or "what should I work on" scans, rely on Taskwarrior state and annotations only. Do not check GitHub, PR checks, CI, local git/jj status, or code state unless the user asks for fresh verification, asks about one specific task, or the Taskwarrior record is too ambiguous to answer. Use `task export` data plus `+WAITING export` rather than raw annotation-heavy reports; describe external state as recorded task state instead of silently refreshing it.
 
 For individual task updates, start with one bold status word or short phrase: `**Ready**`, `**Blocked**`, `**Review**`, `**Parked**`, `**Cleanup**`, or another precise label when those do not fit. Then give a concise summary of what the task is, why it exists, what has been achieved, what remains, what is being waited for, and the current next transition. If a PR is open, include the full PR URL.
 
@@ -129,8 +131,8 @@ Use these thin command names consistently:
 2. Search existing tasks before creating:
    - by `uuid`, `pr`, `repo`, `workspace`, `bookmark`, and distinctive description words.
 3. Create or update exactly one task for the stream.
-4. If this dedicated AI session owns the work and `aisession` is empty, set it to the current AI session id when known. If `aisession` is already another session, alert the user and annotate only if useful.
-5. Add annotations for evidence: Taskwarrior uuid, branch, PR URL, Slack review ask, validation, blocker, key decision, or source chat/session.
+4. If this dedicated AI session owns the work and `aisession` is empty, set it to the current prefixed AI session id when known. If `aisession` is already another session, alert the user and annotate only if useful.
+5. Add focused evidence annotations with prefixes such as `Session:`, `PR:`, `Decision:`, `Validation:`, `Blocker:`, `Dependency:`, `Error:`, or `Current handoff:`.
 
 ## Handoff
 
@@ -140,7 +142,7 @@ When stopping work:
 2. Verify `workspace` still points to the local jj workspace where the work should resume.
 3. Choose exactly one state.
 4. Use `wait:` for review, blocked, or parked streams when a reminder helps.
-5. Annotate enough evidence to resume without rereading the full chat.
+5. Add a compact `Current handoff:` annotation with current local/external state, validation or exact error status, important decisions/constraints, and the exact next transition.
 6. For PR work, record the next transition according to who can act next: fix/sign/push is `ready`, CI/merge check/rerun is `review`, and merged-but-not-cleaned-up is `ready` with `Cleanup`.
 7. Re-list or inspect the updated task and verify the invariants manually.
 
@@ -149,7 +151,7 @@ When stopping work:
 When checking review/blocked/parked tasks:
 
 1. Inspect the task and current external evidence, such as PR status or repo state.
-2. If still waiting, keep the state and optionally update `wait:`.
+2. If still waiting, keep the state and record new evidence when it changes the wait, blocker, head/status, or next decision.
 3. If actionable, update the next transition and move to `ready`.
 4. Do not promote stale work to `ready` from memory alone.
 
@@ -161,9 +163,12 @@ When reassessing real-world state:
 2. Reassess `review` and `blocked` tasks, plus `ready` tasks with external hooks such as PRs, CI, Slack review asks, author-update waits, or mergeability.
 3. Use current external evidence only for this command family: GitHub PR/review/check state, Slack replies, CI/merge check details, or local repo state if directly relevant.
 4. If the transition is obvious, update Taskwarrior and the linked CMUX workspace.
-5. If evidence is ambiguous, annotate the evidence and ask the user before changing state.
+5. Record a `Refresh:` annotation when the check changes task state, next transition, wait, head/status, or preserves ambiguity that affects future decisions.
+6. If evidence is ambiguous, record the evidence and ask the user before changing state.
 
 ## Split
+
+Split when the current task no longer has one coherent next transition: multiple independent actions, different repos/workspaces/PRs/owners, implementation mixed with backlog/design, a fresh AI session needing different context, or history that cannot be summarized by one `Current handoff:`.
 
 When a task contains two real streams:
 

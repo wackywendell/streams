@@ -17,15 +17,17 @@ Use the task fields this way:
 - `workspace`: local jj workspace root path, when known, such as `/Users/<username>/go/src/github.com/example-org/monorepo/workspaces/widget-java`.
 - `bookmark`: jj bookmark or branch name, when known.
 - `pr`: GitHub PR number, when known.
-- `aisession`: optional AI chat/session id, such as `codex:<id>` or `claude:<slug>`. When a CMUX workspace is opened for active work, use this to resume the matching AI session.
+- `aisession`: optional AI chat/session id in `codex:<id>`, `claude:<id-or-slug>`, or `pi:<id>` form. When a CMUX workspace is opened for active work, use this to resume the matching AI session.
 - `wait`: when to re-check a non-actionable workstream, when useful.
 - `priority`: Taskwarrior priority (`H`, `M`, or `L`) when the task's importance should feed urgency. Use `H` for reviews, follow-ups, and anything blocking others; `M` for the user's own work PRs; `L` for personal/tooling/backlog work unless explicitly promoted.
 - `due`: a real deadline, not a reminder. Use `wait` for reminders or re-checks.
 - computed `urgency`: Taskwarrior's attention-needed score. Do not set it directly; fix task fields when the score feels wrong.
-- annotations: evidence, history, links, prior decisions, validation, and handoff notes.
+- annotations: focused evidence for resume and state transitions, such as links, decisions, validation, blockers, dependencies, exact errors, session identity, CMUX links, and current handoff notes.
 - tags: exactly one workflow-state tag, plus any non-state topic tags that help filtering.
 
 Taskwarrior numeric ids are report-local conveniences and can change. Use numeric ids for immediate `task <id> ...` commands only after listing current tasks. Use the task `uuid`, and `pr:<number>` when present, for durable references across sessions and tools.
+
+Each active workstream should have a stable short slug used for CMUX title, session name, and human reference. Prefer the jj bookmark basename or workspace directory basename, with owner prefixes such as `user/` removed. The task UUID remains the durable identity; the slug is a readable handle that must resolve to at most one pending workstream in automation.
 
 CMUX workspace titles and descriptions use a small display grammar:
 
@@ -38,7 +40,7 @@ pr-link     = "[" <repo-basename> "#" <pr-number> "](" <full-pr-url> ")"
 task-link   = "task:" <8-char-uuid-prefix>
 ```
 
-Use the branch/bookmark slug or workspace basename for `title`. Omit `detail` when the title is enough; when present, it should build on the title with the next useful detail. CMUX color carries actionability. Keep the full Taskwarrior uuid in Taskwarrior annotations. A short `task:` prefix is for sidebar readability; scripts must resolve it through Taskwarrior and fail if ambiguous.
+Use the branch/bookmark slug or workspace basename for `title`. Omit `detail` when the title is enough; when present, it should build on the title with the next useful detail. CMUX color carries actionability. Keep the full Taskwarrior uuid in Taskwarrior annotations. A short `task:` prefix is for sidebar readability; scripts must resolve it through Taskwarrior and fail if ambiguous. CMUX workspace refs such as `workspace:9` are live UI handles, not durable identity.
 
 CMUX renders workspace descriptions with inline-only Markdown while preserving whitespace. Use inline formatting only: emphasis for `detail`, strong emphasis for the priority/urgency part of `meta`, and normal Markdown links for `pr-link`. Do not rely on block Markdown in the workspace description; if a richer block is needed, use CMUX sidebar metadata blocks instead.
 
@@ -82,21 +84,54 @@ Use `due` only for real deadlines. Do not use `due` for normal review/CI check-i
 - The next transition lives in `description`, not only in annotations.
 - `description` is imperative and concrete: `Check CI on PR #12345 and merge if approved`, not `PR followup`.
 - Non-actionable tasks use `review`, `blocked`, or `parked`; add `wait:` when a timed re-check would prevent drift.
-- Useful history is preserved in annotations before or while changing the current state.
+- Useful evidence is preserved in annotations before or while changing the current state.
 - `workspace` identifies where to resume locally; `bookmark` identifies the code line. Keep both when known.
-- If `aisession` is present, it identifies the preferred AI session to resume in CMUX. Do not overwrite it with a nearby or guessed session; annotate uncertainty instead.
-- If a dedicated AI session updates or captures a task, it should record its own id in `aisession` when the field is empty. If `aisession` is already set to a different session, do not overwrite it silently; alert the user and annotate the mismatch if it matters for handoff.
+- If `aisession` is present, it identifies the preferred AI session to resume in CMUX and uses `codex:`, `claude:`, or `pi:` prefix form. Preserve an existing different session id; alert the user and annotate the mismatch if it matters for handoff.
+- If a dedicated AI session updates or captures a task, it records its own prefixed session id in `aisession` when the field is empty. If the session id is unknown, add a `Session:` annotation with what is known.
 - Parked tasks may keep `workspace`/`bookmark` fields as resume metadata, but they do not need an open CMUX workspace.
 - If a workstream moves to a different jj workspace, update `workspace` and annotate the move.
 - If one workstream splits into two real streams, create two tasks rather than overloading one task.
+- Active and ready tasks with long histories have a current resume point: a `Current handoff:` annotation that summarizes the current state, important decision, validation, constraints, and exact next transition.
 - Be conservative about automatic state changes. State transitions should follow explicit evidence or user intent.
 - Use non-state tags for topics only; do not invent extra state tags like `waiting`, `todo`, `active`, or `paused`.
 
+## Resume Identity
+
+Use three identities deliberately:
+
+- Taskwarrior `uuid`: durable source-of-truth identity. Use it in task annotations and exact automation.
+- Stable slug: human-readable handle for CMUX titles, session names, and quick selection. Prefer bookmark or workspace basename.
+- `aisession`: preferred AI session to resume, in `codex:<id>`, `claude:<id-or-slug>`, or `pi:<id>` form.
+
+A slug is convenient, not authoritative. It should resolve to at most one pending workstream before automation acts on it. A CMUX `task:<8-char-uuid-prefix>` link is a compact display link; scripts resolve it through Taskwarrior and fail on ambiguity.
+
+## Annotation Hygiene
+
+Annotations are evidence for resuming work or justifying state transitions, not a transcript. Prefer compact annotations that preserve decisions, validation, blockers, dependencies, current errors, review submissions, session identity, and CMUX/task links.
+
+Use lightweight prefixes when practical:
+
+- `Current handoff:` for the latest resume summary.
+- `Decision:` for user or technical choices that affect future work.
+- `Validation:` for commands/results that establish confidence.
+- `Blocker:` for the reason a task is blocked.
+- `Dependency:` for PRs/issues/releases/work outside the task that affect it.
+- `Refresh:` for external checks that changed state, wait time, head SHA, CI/review status, or blocker evidence.
+- `CMUX:` for live workspace identity updates.
+- `Session:` for AI session identity or uncertainty.
+- `Error:` for exact command failures that the next worker may need.
+
+When pausing active work, add or refresh one `Current handoff:` annotation. It should fit in one short paragraph and include the current local/external state, important decision, validation status, exact next transition, and any constraint such as “do not push until the user says to.”
+
+For unchanged refreshes, report the check in command output and update `wait` when useful. Record a `Refresh:` annotation when the check changes task state, changes the next transition, changes a wait, observes a new head/status, or preserves ambiguity that affects future decisions.
+
+If a task accumulates enough annotations that resuming requires archaeology, add a `Current handoff:` summary before adding more detail. If the summary cannot cover the active work cleanly, split the task.
+
 ## Workstream Shapes
 
-Not every workstream is an implementation PR. Reviewing someone else's PR, investigating a failure, writing a design note, or doing cleanup can also be a task. Keep one task for the stream unless it splits into genuinely independent work.
+Not every workstream is an implementation PR. Reviewing someone else's PR, investigating a failure, writing a design note, or doing cleanup can also be a task. Keep one task for the stream while it has one concrete next transition and one coherent resume context.
 
-The task `description` should name the next transition, not the whole stage. Annotations preserve the evidence, links, decisions, review asks, validation results, and prior transitions.
+The task `description` should name the next transition, not the whole stage. Annotations preserve evidence needed to resume or explain state: links, decisions, review asks, validation results, blockers, dependencies, exact errors, and current handoff summaries.
 
 Common implementation transitions:
 
@@ -143,6 +178,19 @@ For PR-stack lifecycle, state follows who can act next:
 - After the PR is merged, keep the task `ready` with a `Cleanup` status/CMUX visual state until local bookmark, workspace, CMUX, and task cleanup have been verified.
 - Mark the task done only after the PR is merged and local cleanup is complete.
 
+## Split Signals
+
+Split a workstream when the current task no longer has one coherent next transition. Common signals:
+
+- The description needs multiple independent actions joined by “and,” “then,” or roadmap labels.
+- The work spans different repos, jj workspaces, bookmarks, PRs, or owners.
+- Implementation work and separate design/backlog work are accumulating in the same task.
+- A new worker would need a fresh AI session with different context.
+- The active history needs more than a compact `Current handoff:` summary to be resumed safely.
+- A parked idea becomes active and contains multiple possible first implementations.
+
+When splitting, keep the original task for one stream and create a new task for the other. Give each stream its own concrete description, state tag, workspace/bookmark/PR fields when known, annotations, CMUX workspace if active, and future AI session.
+
 ## Status Updates
 
 Overall status updates, especially from the `tasks` CMUX workspace/conductor session, should order workstreams by Taskwarrior urgency by default. Keep each item's state label visible so urgency answers "what needs attention" while state answers "what kind of attention."
@@ -154,9 +202,9 @@ When grouping is useful, use these sections, but do not let grouping hide high-u
 - `Blocked`: tasks in `blocked`.
 - `Parked`: tasks in `parked`.
 
-For general status updates or "what should I work on" scans, rely on Taskwarrior state and annotations only. Do not check GitHub, PR checks, CI, local git/jj status, or code state unless the user asks for fresh verification, asks about one specific task, or the Taskwarrior record is too ambiguous to answer. The fast path is the pending workstream report plus `+WAITING export`; stale-but-recorded external state should be described as recorded task state, not silently refreshed.
+For general status updates or "what should I work on" scans, rely on Taskwarrior state and annotations only. Do not check GitHub, PR checks, CI, local git/jj status, or code state unless the user asks for fresh verification, asks about one specific task, or the Taskwarrior record is too ambiguous to answer. Use `task export` data rather than raw annotation-heavy reports when producing summaries. Include pending tasks plus `+WAITING` tasks; describe stale-but-recorded external state as recorded task state.
 
-Keep each item concise: task/topic, urgency, priority/due/wait when relevant, state, PR link when present, next transition, and any important blocker. If urgency ordering looks wrong, fix the Taskwarrior fields (`priority`, `due`, `wait`, state tags) instead of inventing a parallel ranking scheme.
+Keep each item concise: stable slug or task topic, urgency, priority/due/wait when relevant, state, PR link when present, next transition, and the latest `Current handoff:`, `Blocker:`, `Dependency:`, or important refresh evidence when present. If urgency ordering looks wrong, fix the Taskwarrior fields (`priority`, `due`, `wait`, state tags) instead of inventing a parallel ranking scheme.
 
 Individual task status updates should start with one bold status word or short phrase, such as `**Ready**`, `**Blocked**`, `**Review**`, `**Parked**`, or `**Cleanup**`. If a PR is open, include the full PR URL. Then summarize:
 
@@ -201,8 +249,8 @@ Goal: create or update the workstream task for the current repo/chat/PR.
 2. Search for an existing task by `uuid`, `pr`, `repo`, `workspace`, `bookmark`, or distinctive description text.
 3. If an existing task represents the same real stream, update it.
 4. If no task exists, create one with required fields and exactly one state tag.
-5. If this is being done inside a dedicated AI session, set `aisession` to the current AI session id when it is known and the task has none. If another session is already recorded, alert the user instead of overwriting it silently.
-6. Add annotations for evidence: branch, PR URL, validation results, blocker, decisions, or chat/session context.
+5. If this is being done inside a dedicated AI session, set `aisession` to the current prefixed AI session id when it is known and the task has none. If another session is already recorded, alert the user instead of overwriting it silently.
+6. Add focused annotations for evidence: `Session:`, `PR:`, `Decision:`, `Validation:`, `Blocker:`, `Dependency:`, `Error:`, or `Current handoff:` when useful.
 
 ### Handoff
 
@@ -217,14 +265,14 @@ Goal: make the task enough to resume without reading the whole chat.
    - `blocked` for external dependencies.
    - `parked` for intentional pause.
 4. Set `wait:` for review, blocked, or parked tasks when a reminder is useful.
-5. Annotate the evidence and why the state changed.
+5. Add a compact `Current handoff:` annotation with the current state, evidence for the state change, validation or error status, important constraints, and the exact next transition.
 
 ### Check
 
 Goal: decide whether a non-active workstream needs attention.
 
 1. Inspect the task, annotations, `wait`, PR, and current repo state.
-2. If still waiting, preserve the state and refresh the annotation only when new evidence matters.
+2. If still waiting, preserve the state and record new evidence when it changes the wait, blocker, head/status, or next decision.
 3. If actionable now, change the `description` to the next transition and move to `ready`.
 4. Avoid changing state based only on stale chat memory.
 
@@ -236,18 +284,18 @@ Goal: pull real-world changes into Taskwarrior.
 2. Reassess tasks in `review` or `blocked`, and `ready` tasks that have external hooks such as PRs, CI, Slack review asks, author-update waits, or mergeability.
 3. Use current external evidence where needed: GitHub PR/review/check state, Slack replies, CI/merge check details, or local repo state if the task specifically depends on it. When GitHub's top-line status is vague, read the merge check or check-run text directly before changing state.
 4. Make obvious transitions directly. For example: a task waiting for review got approval and green CI, so move it to `ready` with a merge/cleanup transition.
-5. For ambiguous evidence, annotate what changed and ask the user before changing state. Examples: a vague review comment, unclear CI ownership, or a PR update that may invalidate prior assumptions.
+5. For ambiguous evidence, record what changed and ask the user before changing state. Examples: a vague review comment, unclear CI ownership, or a PR update that may invalidate prior assumptions.
 6. After each task state change, update its linked CMUX workspace description, color, and order if one exists.
 
 ### Split
 
 Goal: turn one overloaded task into two real workstreams.
 
-1. Identify the independent next transitions and ownership boundaries.
+1. Identify the independent next transitions, ownership boundaries, repos/workspaces, and session contexts.
 2. Keep the original task for one stream and narrow its `description`.
 3. Create a new task for the other stream with its own state, repo/workspace/bookmark/pr fields, and next transition.
-4. Put enough context in the new task description and annotations for a fresh AI session to start from scratch: source task uuid, why it split, relevant files, repo/workspace, PR/issue links, decisions already made, validation state, and the desired next transition.
-5. Do not copy the old task's `aisession` to the new task. Leave `aisession` unset until the new AI session starts and records its own id.
+4. Put enough context in the new task description and annotations for a fresh AI session to start from scratch: source task uuid, split reason, relevant files, repo/workspace, PR/issue links, decisions already made, validation state, constraints, and desired next transition.
+5. Do not copy the old task's `aisession` to the new task. Leave `aisession` unset until the new AI session starts and records its own prefixed id.
 6. Create a new CMUX workspace for the new task in the appropriate repo or jj workspace directory, and start a new AI session there.
 7. Annotate both tasks with the split reason and cross-reference when practical.
 
@@ -258,7 +306,8 @@ Create:
 ```bash
 task add project:widget-lib repo:example-org/monorepo workspace:/Users/<username>/go/src/github.com/example-org/monorepo/workspaces/widget-java bookmark:<username>/bump-widget-lib-0.3.2 pr:12345 +review wait:tomorrow "Check CI on PR #12345 and merge if approved"
 task <id> annotate "PR: https://github.com/example-org/monorepo/pull/12345"
-task <id> annotate "Validation passed: make test"
+task <id> annotate "Validation: make test passed"
+task <id> annotate "Current handoff: PR #12345 is waiting on CI; validation passed locally; next check CI and merge if approved."
 task rc.gc=off <id> uuids
 ```
 
@@ -266,7 +315,7 @@ Handoff:
 
 ```bash
 task <id> modify -doing -ready -review -blocked -parked +blocked wait:2026-05-02 "Re-check upstream PR and unblock the release bump"
-task <id> annotate "Blocked on upstream release PR; no local action until it lands"
+task <id> annotate "Blocker: upstream release PR has not landed; no local action until it lands"
 ```
 
 Find likely workstreams:
