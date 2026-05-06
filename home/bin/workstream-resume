@@ -239,17 +239,24 @@ def main(argv: list[str]) -> int:
         workspace_ref = resolved.workspace["ref"]
         task = resolved.task
 
+        if args.dry_run:
+            print(f"workspace: {workspace_ref} {resolved.workspace.get('title')}")
+            print(f"task:      {task.get('id')} {task.get('uuid')}")
+            print(f"state:     {', '.join(task.get('tags') or []) or '-'}")
+            print(f"session:   {task.get('aisession')}")
+            print(f"command:   {resolved.command}")
+            print("dry-run:   not sent")
+            return 0
+
+        # Check shell readiness before printing anything. When this command is
+        # run from the target CMUX terminal, our own status output appears in
+        # read-screen and can otherwise make an idle shell look busy.
+        send_command(workspace_ref, resolved.command, surface=args.surface, force=args.force)
         print(f"workspace: {workspace_ref} {resolved.workspace.get('title')}")
         print(f"task:      {task.get('id')} {task.get('uuid')}")
         print(f"state:     {', '.join(task.get('tags') or []) or '-'}")
         print(f"session:   {task.get('aisession')}")
         print(f"command:   {resolved.command}")
-
-        if args.dry_run:
-            print("dry-run:   not sent")
-            return 0
-
-        send_command(workspace_ref, resolved.command, surface=args.surface, force=args.force)
         print("sent:      yes")
         return 0
     except WorkstreamResumeError as exc:
