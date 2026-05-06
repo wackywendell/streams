@@ -5,7 +5,9 @@ from __future__ import annotations
 
 import argparse
 import json
+import os
 import re
+import shlex
 import subprocess
 import sys
 from dataclasses import dataclass
@@ -209,6 +211,20 @@ def shell_ready(workspace_ref: str, surface: str | None) -> tuple[bool, str]:
     return lines[-1].endswith(("\u276f", "$", "%", "#", ">")), lines[-1]
 
 
+def is_current_cmux_workspace(workspace: dict) -> bool:
+    current_id = os.environ.get("CMUX_WORKSPACE_ID")
+    if not current_id:
+        return False
+    return current_id.lower() == str(workspace.get("id", "")).lower()
+
+
+def exec_local(command: str) -> None:
+    argv = shlex.split(command)
+    if not argv:
+        raise WorkstreamResumeError("resolved resume command is empty")
+    os.execvp(argv[0], argv)
+
+
 def send_command(workspace_ref: str, command: str, *, surface: str | None, force: bool) -> None:
     ready, last = shell_ready(workspace_ref, surface)
     if not ready and not force:
@@ -248,9 +264,12 @@ def main(argv: list[str]) -> int:
             print("dry-run:   not sent")
             return 0
 
-        # Check shell readiness before printing anything. When this command is
-        # run from the target CMUX terminal, our own status output appears in
-        # read-screen and can otherwise make an idle shell look busy.
+        if args.workspace is None and args.surface is None and is_current_cmux_workspace(resolved.workspace):
+            exec_local(resolved.command)
+
+        # Check shell readiness before printing anything. When sending to a CMUX
+        # terminal from another terminal, status output in this process should
+        # not pollute the target's idle-shell check.
         send_command(workspace_ref, resolved.command, surface=args.surface, force=args.force)
         print(f"workspace: {workspace_ref} {resolved.workspace.get('title')}")
         print(f"task:      {task.get('id')} {task.get('uuid')}")
