@@ -302,7 +302,7 @@ Use these names for the thin command/prompt layer. Keep the substantive behavior
 - `sync-cmux`: align CMUX from Taskwarrior only. Create/select/update/close/reorder task workspaces, set descriptions and CMUX colors, and avoid opening parked workspaces. Do not refresh external state.
 - `sync`: run `refresh`, then `sync-cmux`, so real world -> Taskwarrior -> CMUX are aligned.
 - `capture`: create or update one Taskwarrior workstream from arguments or current context. Infer whether the source is free text, current repo, a PR URL, GitHub issue, Jira issue, or other linked work.
-- `task-open`: for one task, create or select its CMUX workspace and resume/start the appropriate AI session.
+- `task-open`: for one task, create or select its CMUX workspace, ensure/read the scratch pad for active AI work, and resume/start the appropriate AI session.
 - `task-update`: update one task's next transition, state, wait, annotations, and `aisession` if appropriate; update the linked CMUX workspace at the same time.
 - `task-split`: split one overloaded task into two workstreams. The new task gets its own context, its own CMUX workspace when active, and a fresh AI session rather than copying the old `aisession`.
 
@@ -324,8 +324,9 @@ Goal: create or update the workstream task for the current repo/chat/PR.
 2. Search for an existing task by `uuid`, `slug`, `title`, `pr`, `repo`, `workspace`, `bookmark`, or distinctive description text.
 3. If an existing task represents the same real stream, update it.
 4. If no task exists, create one with required fields and exactly one state tag.
-5. If this is being done inside a dedicated AI session, set `aisession` to the current prefixed AI session id when it is known and the task has none. If another session is already recorded, alert the user instead of overwriting it silently.
-6. Add focused annotations for evidence: `Session:`, `PR:`, `Decision:`, `Validation:`, `Blocker:`, `Dependency:`, `Error:`, or `Current handoff:` when useful.
+5. For active AI-assisted work, create or link the deterministic scratch pad before substantial implementation if it is missing.
+6. If this is being done inside a dedicated AI session, set `aisession` to the current prefixed AI session id when it is known and the task has none. If another session is already recorded, alert the user instead of overwriting it silently.
+7. Add focused annotations for evidence: `Session:`, `PR:`, `Decision:`, `Validation:`, `Blocker:`, `Dependency:`, `Error:`, or `Current handoff:` when useful.
 
 ### Handoff
 
@@ -340,7 +341,8 @@ Goal: make the task enough to resume without reading the whole chat.
    - `blocked` for external dependencies.
    - `parked` for intentional pause.
 4. Set `wait:` for review, blocked, or parked tasks when a reminder is useful.
-5. Add a compact `Current handoff:` annotation with the current state, evidence for the state change, validation or error status, important constraints, and the exact next transition.
+5. Update the scratch pad with material design/debug/test evidence before the final response when applicable.
+6. Add a compact `Current handoff:` annotation with the current state, evidence for the state change, validation or error status, important constraints, and the exact next transition.
 
 ### Check
 
@@ -368,9 +370,9 @@ Goal: turn one overloaded task into two real workstreams.
 
 1. Identify the independent next transitions, ownership boundaries, repos/workspaces, and session contexts.
 2. Keep the original task for one stream and narrow its `description`.
-3. Create a new task for the other stream with its own state, repo/workspace/bookmark/pr fields, and next transition.
+3. Create a new task for the other stream with its own state, repo/workspace/bookmark/pr fields, scratch pad, and next transition.
 4. Put enough context in the new task description, scratch pad, and annotations for a fresh AI session to start from a clean context: source task uuid, split reason, relevant files, repo/workspace, PR/issue links, decisions already made, validation state, constraints, and desired next transition.
-5. Do not copy the old task's `aisession` to the new task. Leave `aisession` unset until the new AI session starts and records its own prefixed id.
+5. Do not copy the old task's `aisession` to the new task. Leave it unset until the new AI session starts and records its own prefixed id.
 6. Create a new CMUX workspace for the new task in the appropriate repo or jj workspace directory, and start a new AI session there.
 7. Annotate both tasks with the split reason and cross-reference when practical.
 

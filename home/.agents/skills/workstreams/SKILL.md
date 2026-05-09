@@ -56,7 +56,7 @@ Mandatory behavior when a scratch pad exists:
 Call Taskwarrior directly. Use `rc.gc=off` for read-only inspection to avoid Taskwarrior maintenance writes during simple checks.
 
 ```bash
-task rc.gc=off status:pending '( repo.not: or workspace.not: or bookmark.not: or pr.not: or aisession.not: or +doing or +ready or +review or +blocked or +parked )' columns:id,uuid,project,repo,workspace,bookmark,pr,priority,urgency,due,wait,tags,description
+task rc.gc=off status:pending '( repo.not: or title.not: or slug.not: or scratch.not: or workspace.not: or bookmark.not: or pr.not: or aisession.not: or +doing or +ready or +review or +blocked or +parked )' columns:id,uuid,title,slug,scratch,project,repo,workspace,bookmark,pr,priority,urgency,due,wait,tags,description
 task rc.gc=off +WAITING export
 task <id> information
 task rc.gc=off <id> uuids
@@ -140,7 +140,7 @@ Use these thin command names consistently:
 - `sync-cmux`: align CMUX from Taskwarrior only.
 - `sync`: run `refresh`, then `sync-cmux`.
 - `capture`: create or update one workstream from current context or arguments such as free text, PR URL, GitHub issue, or Jira issue.
-- `task-open`: create/select the CMUX workspace for one task and resume/start the appropriate AI session.
+- `task-open`: create/select the CMUX workspace for one task, ensure/read the scratch pad for active AI work, and resume/start the appropriate AI session.
 - `task-update`: update one task plus its linked CMUX workspace.
 - `task-split`: split one workstream into two, with a fresh task/CMUX/AI session for the new work.
 
@@ -199,7 +199,8 @@ When a task contains two real streams:
 1. Name the independent streams.
 2. Keep the original task for one stream and narrow its description.
 3. Create a second task for the other stream with its own repo/workspace/bookmark/pr fields and next transition.
-4. Include enough context for a fresh AI session: source task uuid, split reason, relevant files, PR/issue links, prior decisions, validation state, and desired next transition.
+4. Include enough context for a fresh AI session: source task uuid, split reason, relevant files, PR/issue links, prior decisions, validation state, scratch pad path, and desired next transition.
 5. Do not copy the old `aisession`; leave it unset for the new AI session to record.
-6. Create a new CMUX workspace in the appropriate directory and start a new AI session there.
+6. Create or link the new stream's scratch pad when it will be AI-assisted.
+7. Create a new CMUX workspace in the appropriate directory and start a new AI session there.
 7. Annotate both with the split reason when practical.
