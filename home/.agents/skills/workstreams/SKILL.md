@@ -1,6 +1,6 @@
 ---
 name: workstreams
-description: Manage AI-assisted coding workstreams in Taskwarrior. Use when the user asks to capture, hand off, check, split, resume, list, validate, or update coding workstream state across repos, jj workspaces, jj bookmarks, PRs, scratch pads, CMUX workspaces, or AI sessions.
+description: Manage AI-assisted coding workstreams in Taskwarrior. Use when the user asks for status, check/refresh, reconcile, update/checkpoint/handoff, cleanup, split-off, open/switch, or task state changes across repos, jj workspaces, jj bookmarks, PRs, scratch pads, CMUX workspaces, or AI sessions.
 metadata:
   short-description: Manage Taskwarrior coding workstreams
 ---
@@ -59,25 +59,23 @@ Follow the full protocol in [references/SPEC.md](references/SPEC.md#scratch-pads
 - Update `**Goal:**`, `## Design`, `## Debugging`, `## Test plan`, and `## Learnings` as appropriate before responding.
 - Do not put canonical task status or todo tracking in scratch; Taskwarrior owns that.
 
-## Command Vocabulary
+## Scope and Vocabulary
 
-Use these terms consistently:
+Use the scope rules in [references/SPEC.md](references/SPEC.md#scope-and-vocabulary). Short version:
 
-- `status`: summarize Taskwarrior state only. Include pending and `+WAITING`. Do not refresh external systems.
-- `task-status`: summarize one task from Taskwarrior only unless asked to refresh.
-- `refresh`: check external state for review/blocked/external-ready tasks and update Taskwarrior on clear evidence.
-- `sync-cmux`: align CMUX from Taskwarrior only.
-- `sync`: run refresh, then sync CMUX.
-- `capture`: create/update one workstream from current context or supplied text/PR/issue.
-- `task-open`: create/select CMUX workspace, ensure/read scratch for active AI work, and resume/start the AI session.
-- `task-update`: update one task and its linked CMUX workspace.
-- `task-split`: split one overloaded workstream into two tasks, with separate scratch/CMUX/session for the new stream when active.
+- `status`: recap recorded state only. In conductor scope, recap the portfolio from Taskwarrior. In single-workstream scope, recap the current/selected task.
+- `check` / `refresh`: equal synonyms. In conductor scope, inspect Taskwarrior and CMUX, align CMUX, and recap. In single-workstream scope, check relevant external reality, update scratch/Taskwarrior/CMUX, and recap.
+- `reconcile`: rare conductor override that checks external reality across tasks and aligns records/UI.
+- `update` / `checkpoint` / `handoff`: equal synonyms for making the current workstream durable and resumable.
+- `cleanup`: ready-phase completion, including scratch archive/retro, local/CMUX cleanup, and marking the task done.
+- `split off`: create a separate related task without switching the current session.
+- `open` / `switch` / `resume`: explicitly change the current workstream.
 
 ## Workflow Checklist
 
-When capturing/opening/updating/splitting:
+When changing a workstream:
 
-1. Resolve the task by uuid, slug, title, PR, repo/workspace/bookmark, or distinctive words.
+1. Resolve the current or selected task by uuid, slug, title, PR, repo/workspace/bookmark, or distinctive words.
 2. Gather relevant repo context only when needed: `pwd`, `jj workspace root`, `jj root`, `jj status`, `jj bookmark list --all`, PR URL.
 3. Ensure active AI tasks have `title`, `slug`, `scratch`, and appropriate `workspace`/`bookmark`/`pr`/`aisession` metadata.
 4. Apply the scratch protocol before implementation and before final replies.

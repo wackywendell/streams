@@ -92,7 +92,7 @@ Use `due` only for real deadlines. Do not use `due` for normal review/CI check-i
 - Useful evidence is preserved in annotations before or while changing the current state.
 - `workspace` identifies where to resume locally; `bookmark` identifies the code line. Keep both when known.
 - If `aisession` is present, it identifies the preferred AI session to resume in CMUX and uses `codex:`, `claude:`, or `pi:` prefix form. Preserve an existing different session id; alert the user and annotate the mismatch if it matters for handoff.
-- If a dedicated AI session updates or captures a task, it records its own prefixed session id in `aisession` when the field is empty. If the session id is unknown, add a `Session:` annotation with what is known.
+- If a dedicated AI session updates or creates a task, it records its own prefixed session id in `aisession` when the field is empty. If the session id is unknown, add a `Session:` annotation with what is known.
 - Parked tasks may keep `workspace`/`bookmark` fields as resume metadata, but they do not need an open CMUX workspace.
 - If a workstream moves to a different jj workspace, update `workspace` and annotate the move.
 - If one workstream splits into two real streams, create two tasks rather than overloading one task.
@@ -197,7 +197,7 @@ Cleanup includes scratch retro work:
 6. Close/clean the CMUX workspace and local jj bookmark/workspace as appropriate.
 7. Mark the Taskwarrior task done only after cleanup/retro is complete.
 
-<!-- TODO(workstreams): Add a workstream-scratch command only if direct agent-managed scratch creation proves error-prone, humans want a manual open/ensure flow, or archive/retro/remote-sync lifecycle needs dedicated tooling. -->
+<!-- TODO(workstreams): Add a workstream-scratch command only if direct agent-managed scratch creation proves error-prone, humans want a manual open/ensure flow, or archive/retro/remote lifecycle needs dedicated tooling. -->
 
 ## Annotation Hygiene
 
@@ -272,129 +272,120 @@ For PR-stack lifecycle, state follows who can act next:
 - After the PR is merged, keep the task `ready` with a `Cleanup` status/CMUX visual state until scratch archive/retro, local bookmark, workspace, CMUX, and task cleanup have been verified.
 - Mark the task done only after the PR is merged and scratch/local cleanup is complete.
 
-## Split Signals
+## Split-Off Signals
 
-Split a workstream when the current task no longer has one coherent next transition. Common signals:
+Split off a separate workstream when related work no longer fits cleanly in the current task. Common signals:
 
-- The description needs multiple independent actions joined by “and,” “then,” or roadmap labels.
-- The work spans different repos, jj workspaces, bookmarks, PRs, or owners.
+- A follow-up idea has its own goal, owner, repo/workspace, or next transition.
+- The current description would need multiple independent actions joined by “and,” “then,” or roadmap labels.
 - Implementation work and separate design/backlog work are accumulating in the same task.
 - A new worker would need a fresh AI session with different context.
 - The active history needs more than a compact `Current handoff:` summary to be resumed safely.
 - A parked idea becomes active and contains multiple possible first implementations.
 
-When splitting, keep the original task for one stream and create a new task for the other. Give each stream its own concrete description, state tag, workspace/bookmark/PR fields when known, annotations, CMUX workspace if active, and future AI session.
+When splitting off, best-effort decide what remains in the current task and what belongs in the new task. If the boundary is uncertain, create a reasonable split-off task, keep working the current task, and tell the user what is uncertain. Creating a split-off task does not switch the current session.
 
-## Status Updates
+## Scope and Vocabulary
 
-Overall status updates, especially from the `tasks` CMUX workspace/conductor session, should order workstreams by Taskwarrior urgency by default. Keep each item's state label visible so urgency answers "what needs attention" while state answers "what kind of attention."
+Commands are interpreted by scope.
 
-When grouping is useful, use these sections, but do not let grouping hide high-urgency tasks that need metadata cleanup or escalation:
+- **Single-workstream scope**: a task CMUX workspace, a task-specific AI session, or a command with an explicit task selector. The current task/session is responsible for keeping its own Taskwarrior record, scratch pad, CMUX display, and relevant external reality up to date.
+- **Conductor scope**: the pinned `tasks` CMUX workspace, or a request that clearly concerns the whole portfolio of workstreams. The conductor normally trusts individual task records and does not inspect external PR/CI/Slack/jj state for every task.
 
-- `Active / Ready`: tasks in `doing` or `ready`, including `Cleanup` items where the next move is final cleanup.
-- `Review / Waiting`: tasks in `review`, including review response, Slack response, CI, mergeability, or rerun waits.
-- `Blocked`: tasks in `blocked`.
-- `Parked`: tasks in `parked`.
+Hard invariants:
 
-For general status updates or "what should I work on" scans, rely on Taskwarrior state and annotations only. Do not check GitHub, PR checks, CI, local git/jj status, or code state unless the user asks for fresh verification, asks about one specific task, or the Taskwarrior record is too ambiguous to answer. Use `task export` data rather than raw annotation-heavy reports when producing summaries. Include pending tasks plus `+WAITING` tasks; describe stale-but-recorded external state as recorded task state.
+- An AI session working a task has a current workstream.
+- Creating or splitting off another task does not switch the current session. Only an explicit `open`, `switch`, or `resume` request changes the current workstream.
+- Split-off tasks do not inherit the current `aisession` unless a new dedicated session is actually started for them.
+- Individual task agents are responsible for updating their own Taskwarrior state from external reality and progress. The conductor generally trusts those records.
+- The conductor may run `reconcile` as an explicit rare override when the user wants a broad audit of external reality across tasks.
 
-Keep each item concise: workstream title when present, otherwise slug or task topic, urgency, priority/due/wait when relevant, state, PR link when present, next transition, and the latest `Current handoff:`, `Blocker:`, `Dependency:`, or important refresh evidence when present. If urgency ordering looks wrong, fix the Taskwarrior fields (`priority`, `due`, `wait`, state tags) instead of inventing a parallel ranking scheme.
+### Shared Commands
 
-Individual task status updates should start with one bold status word or short phrase, such as `**Ready**`, `**Blocked**`, `**Review**`, `**Parked**`, or `**Cleanup**`. If a PR is open, include the full PR URL. Then summarize:
+`status` means “tell me the currently recorded state.” It is read-only.
 
-- what the task is and why it exists, assuming the user may have forgotten;
-- what has been achieved;
-- what remains to be achieved;
-- what is being waited for, if anything;
-- the next transition in `description`.
+- In single-workstream scope: recap the current/selected task from Taskwarrior, scratch, and already-known session context. Do not check external systems unless asked.
+- In conductor scope: recap all relevant workstreams from Taskwarrior only, including pending and `+WAITING`. Do not inspect CMUX or external systems.
 
-Distinguish self-review from external review clearly. A draft PR that the user still needs to inspect is `**Ready**` or `**Self-review**`, not `**Review**`. Use `**Review**` when the task is waiting on someone else, Slack response, CI, mergeability, or a timed check.
+Use these grouping labels when they help readability, ordered by Taskwarrior urgency within groups:
 
-Finally, give a short 1-2 sentence description of what the user should work on next.
+- `Active / Ready`: `doing` or `ready`, including `Cleanup` items.
+- `Review / Waiting`: `review`, including review, Slack, CI, mergeability, or timed waits.
+- `Blocked`: `blocked`.
+- `Parked`: `parked`.
 
-## Command Vocabulary
+`check` and `refresh` are equal-status synonyms.
 
-Use these names for the thin command/prompt layer. Keep the substantive behavior in this shared spec plus the `workstreams` and `cmux` skills.
+- In single-workstream scope: inspect external state relevant to the current/selected task, such as PR, CI, review, Slack, mergeability, or local jj state when relevant; update scratch, Taskwarrior, and CMUX; recap.
+- In conductor scope: inspect Taskwarrior and CMUX, make CMUX match Taskwarrior by creating/updating/closing/reordering workspaces as appropriate, and recap. Do not check external PR/CI/Slack/jj state by default.
 
-- `status`: all-workstream status from Taskwarrior only. Include pending and `+WAITING` tasks. Do not inspect CMUX, GitHub, Slack, CI, local git/jj, or code state unless the Taskwarrior record is too ambiguous to answer.
-- `task-status`: single-task status from Taskwarrior only. Use a task id, uuid, PR number, title, slug, or distinctive words to resolve the task. Do not refresh external state unless explicitly asked.
-- `refresh`: reassess real-world state and update Taskwarrior. Inspect external state for `review`, `blocked`, and `ready` tasks when they have external hooks such as PRs, CI, Slack review asks, or author-update waits. If the transition is obvious, update the task. If the evidence is ambiguous, annotate the evidence and ask the user before changing state. Print a status update.
-- `sync-cmux`: align CMUX from Taskwarrior only. Create/select/update/close/reorder task workspaces, set descriptions and CMUX colors, and avoid opening parked workspaces. Do not refresh external state.
-- `sync`: run `refresh`, then `sync-cmux`, so real world -> Taskwarrior -> CMUX are aligned.
-- `capture`: create or update one Taskwarrior workstream from arguments or current context. Infer whether the source is free text, current repo, a PR URL, GitHub issue, Jira issue, or other linked work.
-- `task-open`: for one task, create or select its CMUX workspace, ensure/read the scratch pad for active AI work, and resume/start the appropriate AI session.
-- `task-update`: update one task's next transition, state, wait, annotations, and `aisession` if appropriate; update the linked CMUX workspace at the same time.
-- `task-split`: split one overloaded task into two workstreams. The new task gets its own context, its own CMUX workspace when active, and a fresh AI session rather than copying the old `aisession`.
+`reconcile` is conductor-scope only unless the user explicitly scopes it to one task. It is the rare broad audit: inspect Taskwarrior, scratch pads when needed, CMUX, local repo state when relevant, and external state across tasks; update records/UI; recap what changed and what remains uncertain.
+
+### Single-Workstream Commands
+
+`update`, `checkpoint`, and `handoff` are synonyms for making the current workstream record durable and resumable. Agents should also perform the relevant parts automatically before replies whenever material state changed.
+
+A checkpoint/update/handoff should:
+
+1. Update scratch `**Goal:**`, `## Design`, `## Debugging`, `## Test plan`, or `## Learnings` when material evidence or clarified intent changed.
+2. Set Taskwarrior `description` to the next concrete transition.
+3. Set exactly one workflow-state tag.
+4. Set `wait:` when a timed re-check is useful.
+5. Update task metadata such as `pr`, `workspace`, `bookmark`, `scratch`, or `aisession` when it changed.
+6. Add or refresh a compact `Current handoff:` annotation when a future human/agent may need to resume without reading chat history.
+7. Update linked CMUX title/description/color/order when open.
+8. Recap current state and uncertainties.
+
+`cleanup` is a ready-phase single-workstream command, not a state tag. It performs final scratch archive/retro, local jj/bookmark/workspace cleanup, CMUX cleanup, and Taskwarrior completion. See [Cleanup and Retro](#cleanup-and-retro).
+
+`split off` creates a separate related workstream from current context without switching the current session. The agent should best-effort decide what belongs in the new task and what remains in the current task; if the boundary is uncertain, make a reasonable split-off task, stay on the current task, and tell the user what is uncertain.
+
+When splitting off:
+
+1. Create a new Taskwarrior task with its own `uuid`, `title`, `slug`, `description`, state tag, and metadata.
+2. Create/link its scratch pad when it will be AI-assisted.
+3. Put the full goal and relevant context in the new scratch pad, and compact provenance in annotations.
+4. Do not copy the current task's `aisession`.
+5. Annotate the current task with the split-off task title/uuid when useful.
+6. Continue the current task unless the user explicitly says to open/switch/resume the split-off task.
+
+`open`, `switch`, and `resume` explicitly change the current workstream. They create/select the CMUX workspace, ensure/read scratch for active AI work, and start/resume the appropriate AI session.
+
+### Recap Style
+
+Conductor recaps should name the workstream title, urgency, priority/due/wait when relevant, state, PR link when present, next transition, and the latest compact handoff/blocker/dependency/refresh evidence.
+
+Single-workstream recaps should start with a short status label such as `Ready`, `Review`, `Blocked`, `Parked`, `Cleanup`, or `Checkpoint`, then summarize: goal, what changed, current evidence, next transition, and uncertainties.
+
+If urgency ordering looks wrong, fix Taskwarrior fields (`priority`, `due`, `wait`, state tags) instead of inventing a parallel ranking system.
 
 ## Workflows
 
-### Capture
+### Single-Workstream Work Loop
 
-Goal: create or update the workstream task for the current repo/chat/PR.
+1. Read the Taskwarrior task and scratch pad.
+2. Work the current transition.
+3. Before replying, ask whether scratch or Taskwarrior/CMUX changed.
+4. If changed, run the update/checkpoint/handoff behavior above.
+5. Recap current state and next transition.
 
-1. Gather context from the repo and chat:
-   - repo name, preferably `organization/name`;
-   - jj workspace root path from `jj workspace root` or `jj root`, when available;
-   - current jj bookmark, when available;
-   - PR number or URL, when available;
-   - stable title, slug, and scratch pad path, when useful;
-   - AI session id, when useful;
-   - current next transition;
-   - whether the action is actionable now.
-2. Search for an existing task by `uuid`, `slug`, `title`, `pr`, `repo`, `workspace`, `bookmark`, or distinctive description text.
-3. If an existing task represents the same real stream, update it.
-4. If no task exists, create one with required fields and exactly one state tag.
-5. For active AI-assisted work, create or link the deterministic scratch pad before substantial implementation if it is missing.
-6. If this is being done inside a dedicated AI session, set `aisession` to the current prefixed AI session id when it is known and the task has none. If another session is already recorded, alert the user instead of overwriting it silently.
-7. Add focused annotations for evidence: `Session:`, `PR:`, `Decision:`, `Validation:`, `Blocker:`, `Dependency:`, `Error:`, or `Current handoff:` when useful.
+### Conductor Check / Refresh
 
-### Handoff
+1. Read pending and `+WAITING` Taskwarrior tasks.
+2. Inspect open CMUX workspaces.
+3. Align CMUX from Taskwarrior: create/update/close/reorder workspaces, set descriptions/colors, and avoid opening parked workspaces.
+4. Run `workstream-slug doctor --cmux` when title/slug/CMUX mapping may have changed.
+5. Recap recorded state and any CMUX changes. Do not check external systems unless this is a reconcile.
 
-Goal: make the task enough to resume without reading the whole chat.
+### Conductor Reconcile
 
-1. Replace `description` with the next concrete transition.
-2. Verify `workspace` still points to the local jj workspace where the work should resume.
-3. Set exactly one state tag:
-   - `ready` if the user can act now.
-   - `doing` only for a stream actively being worked right now.
-   - `review` for CI/review/near-term check-back.
-   - `blocked` for external dependencies.
-   - `parked` for intentional pause.
-4. Set `wait:` for review, blocked, or parked tasks when a reminder is useful.
-5. Update the scratch pad with material design/debug/test evidence before the final response when applicable.
-6. Add a compact `Current handoff:` annotation with the current state, evidence for the state change, validation or error status, important constraints, and the exact next transition.
+Use only when the user asks for a broad audit or says the records may be stale.
 
-### Check
-
-Goal: decide whether a non-active workstream needs attention.
-
-1. Inspect the task, annotations, `wait`, PR, and current repo state.
-2. If still waiting, preserve the state and record new evidence when it changes the wait, blocker, head/status, or next decision.
-3. If actionable now, change the `description` to the next transition and move to `ready`.
-4. Avoid changing state based only on stale chat memory.
-
-### Refresh
-
-Goal: pull real-world changes into Taskwarrior.
-
-1. Inspect pending workstreams, including hidden `+WAITING` tasks.
-2. Reassess tasks in `review` or `blocked`, and `ready` tasks that have external hooks such as PRs, CI, Slack review asks, author-update waits, or mergeability.
-3. Use current external evidence where needed: GitHub PR/review/check state, Slack replies, CI/merge check details, or local repo state if the task specifically depends on it. When GitHub's top-line status is vague, read the merge check or check-run text directly before changing state.
-4. Make obvious transitions directly. For example: a task waiting for review got approval and green CI, so move it to `ready` with a merge/cleanup transition.
-5. For ambiguous evidence, record what changed and ask the user before changing state. Examples: a vague review comment, unclear CI ownership, or a PR update that may invalidate prior assumptions.
-6. After each task state change, update its linked CMUX workspace description, color, and order if one exists.
-
-### Split
-
-Goal: turn one overloaded task into two real workstreams.
-
-1. Identify the independent next transitions, ownership boundaries, repos/workspaces, and session contexts.
-2. Keep the original task for one stream and narrow its `description`.
-3. Create a new task for the other stream with its own state, repo/workspace/bookmark/pr fields, scratch pad, and next transition.
-4. Put enough context in the new task description, scratch pad, and annotations for a fresh AI session to start from a clean context: source task uuid, split reason, relevant files, repo/workspace, PR/issue links, decisions already made, validation state, constraints, and desired next transition.
-5. Do not copy the old task's `aisession` to the new task. Leave it unset until the new AI session starts and records its own prefixed id.
-6. Create a new CMUX workspace for the new task in the appropriate repo or jj workspace directory, and start a new AI session there.
-7. Annotate both tasks with the split reason and cross-reference when practical.
+1. Start with conductor check/refresh.
+2. For tasks whose records depend on external state, inspect the relevant external source.
+3. Update Taskwarrior, scratch, and CMUX when reality differs from recorded state.
+4. Record `Refresh:` or `Current handoff:` evidence where the update affects future decisions.
+5. Recap changes, current portfolio state, and remaining uncertainties.
 
 ## Raw Taskwarrior Examples
 
@@ -408,7 +399,7 @@ task <id> annotate "Current handoff: PR #12345 is waiting on CI; validation pass
 task rc.gc=off <id> uuids
 ```
 
-Handoff:
+Checkpoint / update / handoff:
 
 ```bash
 task <id> modify -doing -ready -review -blocked -parked +blocked wait:2026-05-02 "Re-check upstream PR and unblock the release bump"
