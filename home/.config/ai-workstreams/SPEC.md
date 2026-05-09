@@ -147,9 +147,11 @@ Use this template:
 **Bookmark:** `<bookmark>`
 **PR:** `<pr>`
 **AI session:** `<aisession>`
-
-**Goal:** <full task goal / outcome being pursued>
 **Current transition at creation:** <description>
+
+## Goal
+
+_full task goal / outcome being pursued_
 
 ## Design
 
@@ -168,15 +170,15 @@ _How to verify: commands, scenarios, expected outcomes._
 _Novel, reusable knowledge worth remembering. Only add entries that would save time on a future unrelated task._
 ```
 
-The full task goal belongs in the scratch pad `**Goal:**` field. Taskwarrior `description` remains the next transition only. Add a compact `Goal:` annotation when the goal should be visible in Taskwarrior status without opening the scratch pad.
+The full task goal belongs in the scratch pad `## Goal` field. Taskwarrior `description` remains the next transition only. Add a compact `Goal:` annotation when the goal should be visible in Taskwarrior status without opening the scratch pad.
 
 Mandatory scratch protocol for active AI sessions:
 
 - On session start or resume, read the entire scratch pad before implementation work.
 - If creating or resuming substantial work, add a dated `## Design` entry with the understood task and planned approach.
-- While working, update `**Goal:**`, `## Design`, `## Debugging`, `## Test plan`, and `## Learnings` as material evidence appears. The goal can change when the user clarifies intent or implementation learning changes the real outcome being pursued.
+- While working, update `## Goal`, `## Design`, `## Debugging`, `## Test plan`, and `## Learnings` as material evidence appears. The goal can change when the user clarifies intent or implementation learning changes the real outcome being pursued.
 - Before replying, ask both:
-  - Scratch: did anything since the last response belong in `**Goal:**`, `## Design`, `## Debugging`, `## Test plan`, or `## Learnings`?
+  - Scratch: did anything since the last response belong in `## Goal`, `## Design`, `## Debugging`, `## Test plan`, or `## Learnings`?
   - Taskwarrior: did the next transition, state tag, wait time, PR/session/scratch metadata, or handoff evidence change?
 - If either answer is yes, update the scratch pad and/or Taskwarrior before responding.
 - Do not duplicate Taskwarrior state, todo lists, generic diff summaries, or large code blocks in the scratch pad.
@@ -327,7 +329,7 @@ Use these grouping labels when they help readability, ordered by Taskwarrior urg
 
 A checkpoint/update/handoff should:
 
-1. Update scratch `**Goal:**`, `## Design`, `## Debugging`, `## Test plan`, or `## Learnings` when material evidence or clarified intent changed.
+1. Update scratch `## Goal`, `## Design`, `## Debugging`, `## Test plan`, or `## Learnings` when material evidence or clarified intent changed.
 2. Set Taskwarrior `description` to the next concrete transition.
 3. Set exactly one workflow-state tag.
 4. Set `wait:` when a timed re-check is useful.
