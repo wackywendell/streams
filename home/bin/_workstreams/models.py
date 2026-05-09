@@ -101,6 +101,11 @@ class Task:
         return str(repo) if repo else None
 
     @property
+    def scratch(self) -> str | None:
+        scratch = self.raw.get("scratch")
+        return str(scratch) if scratch else None
+
+    @property
     def workspace(self) -> str | None:
         workspace = self.raw.get("workspace")
         return str(workspace) if workspace else None
