@@ -17,69 +17,23 @@ Before changing tasks, read the shared policy:
 - Live path: `~/.config/ai-workstreams/SPEC.md`
 - Dotfiles source: `home/.config/ai-workstreams/SPEC.md`
 
-`SPEC.md` is the source of truth for the model, invariants, state tags, scratch-pad protocol, cleanup/retro, CMUX display grammar, and workflows. Do not duplicate or override it here.
+`SPEC.md` is the source of truth for the model, invariants, state tags, scratch-pad protocol, cleanup/retro, CMUX display grammar, scope vocabulary, and workflows. Follow it rather than duplicating policy here.
 
-## Operational Rules
+## Mechanics
 
-- Taskwarrior is canonical. Chat, CMUX, PRs, jj, and scratch pads are evidence/context.
-- One Taskwarrior task is one workstream.
-- Use Taskwarrior `uuid` for durable identity. Numeric ids are only for immediate commands after a fresh listing.
-- `description` is the concrete next transition, not the whole goal. The full goal belongs in the scratch pad `**Goal:**` field and optionally a compact `Goal:` annotation.
-- Maintain exactly one workflow-state tag: `doing`, `ready`, `review`, `blocked`, or `parked`.
-- Active AI-assisted work should have `title`, `slug`, `scratch`, and `aisession` when known.
-- If this dedicated AI session owns the task and `aisession` is empty, set it to the current prefixed session id. If another session is already recorded, alert the user instead of overwriting silently.
-- Before replying after substantial work, check both:
-  - scratch: did `**Goal:**`, `## Design`, `## Debugging`, `## Test plan`, or `## Learnings` need updates?
-  - Taskwarrior: did next transition, state tag, wait time, PR/session/scratch metadata, or handoff evidence change?
-- When a task has a linked CMUX workspace, update CMUX title/description/color/order alongside Taskwarrior state changes.
+Use `task` directly. Use `rc.gc=off` for read-only inspection, and use task UUIDs for durable mutations.
 
-## Direct Taskwarrior Use
-
-Use `task` directly. Use `rc.gc=off` for read-only inspection.
+Useful commands:
 
 ```bash
-task rc.gc=off status:pending '( repo.not: or title.not: or slug.not: or scratch.not: or workspace.not: or bookmark.not: or pr.not: or aisession.not: or +doing or +ready or +review or +blocked or +parked )' columns:id,uuid,title,slug,scratch,project,repo,workspace,bookmark,pr,priority,urgency,due,wait,tags,description
+task rc.gc=off <uuid> information
+task rc.gc=off <uuid> export
 task rc.gc=off +WAITING export
-task rc.gc=off <id-or-uuid> information
-task rc.gc=off <id-or-uuid> uuids
-task <uuid> modify -doing -ready -review -blocked -parked +review wait:tomorrow "Check CI and merge if approved"
-task <uuid> annotate "Refresh: PR is waiting on CI"
+task rc.gc=off status:pending '( repo.not: or title.not: or slug.not: or scratch.not: or workspace.not: or bookmark.not: or pr.not: or aisession.not: or +doing or +ready or +review or +blocked or +parked )' columns:id,uuid,title,slug,scratch,project,repo,workspace,bookmark,pr,priority,urgency,due,wait,tags,description
+task <uuid> modify <field-or-tag-changes> "<next transition>"
+task <uuid> annotate "Current handoff: <compact resume summary>"
 ```
 
-Taskwarrior reports can hide tasks with `wait:`; include `+WAITING export` for review/blocked/parked workstreams that may be waiting.
+When the spec requires a current Pi session id, use the `get_session_id` tool and store the prefixed `pi:<uuid>` value.
 
-## Scratch Pad Protocol
-
-Follow the full protocol in [references/SPEC.md](references/SPEC.md#scratch-pads). Short version:
-
-- Scratch pads live under `~/worknotes`, usually `~/worknotes/scratch/<slug>.md`.
-- Taskwarrior stores `scratch:scratch/<slug>.md` or an archive path.
-- If an active AI task lacks a scratch pad, create it directly from the template in the spec, set the `scratch` UDA, and annotate `Scratch: ~/worknotes/scratch/<slug>.md`.
-- Read the entire pad before implementation work.
-- Update `**Goal:**`, `## Design`, `## Debugging`, `## Test plan`, and `## Learnings` as appropriate before responding.
-- Do not put canonical task status or todo tracking in scratch; Taskwarrior owns that.
-
-## Scope and Vocabulary
-
-Use the scope rules in [references/SPEC.md](references/SPEC.md#scope-and-vocabulary). Short version:
-
-- `status`: recap recorded state only. In conductor scope, recap the portfolio from Taskwarrior. In single-workstream scope, recap the current/selected task.
-- `check` / `refresh`: equal synonyms. In conductor scope, inspect Taskwarrior and CMUX, align CMUX, and recap. In single-workstream scope, check relevant external reality, update scratch/Taskwarrior/CMUX, and recap.
-- `reconcile`: rare conductor override that checks external reality across tasks and aligns records/UI.
-- `update` / `checkpoint` / `handoff`: equal synonyms for making the current workstream durable and resumable.
-- `cleanup`: ready-phase completion, including scratch archive/retro, local/CMUX cleanup, and marking the task done.
-- `split off`: create a separate related task without switching the current session.
-- `open` / `switch` / `resume`: explicitly change the current workstream.
-
-## Workflow Checklist
-
-When changing a workstream:
-
-1. Resolve the current or selected task by uuid, slug, title, PR, repo/workspace/bookmark, or distinctive words.
-2. Gather relevant repo context only when needed: `pwd`, `jj workspace root`, `jj root`, `jj status`, `jj bookmark list --all`, PR URL.
-3. Ensure active AI tasks have `title`, `slug`, `scratch`, and appropriate `workspace`/`bookmark`/`pr`/`aisession` metadata.
-4. Apply the scratch protocol before implementation and before final replies.
-5. Set `description` to the next concrete transition.
-6. Set exactly one workflow-state tag.
-7. Add compact evidence annotations using prefixes from the spec, especially `Current handoff:`, `Decision:`, `Validation:`, `Blocker:`, `Dependency:`, `Refresh:`, `CMUX:`, `Session:`, and `Error:`.
-8. Re-list/inspect the task and run `workstream-slug doctor --cmux` when title/slug/CMUX mapping changed.
+Before replying after material work, perform the update/checkpoint behavior from `SPEC.md`: refresh durable scratch evidence, Taskwarrior state/metadata/handoff evidence, and linked CMUX display when the work changed them. Run `workstream-slug doctor --cmux` when title/slug/CMUX mapping changed.

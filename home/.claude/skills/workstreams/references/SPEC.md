@@ -1,1 +1,0 @@
-../../../../.config/ai-workstreams/SPEC.md

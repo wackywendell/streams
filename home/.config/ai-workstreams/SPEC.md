@@ -15,10 +15,10 @@ Use the task fields this way:
 - `description`: the next transition that would advance the workstream, written as a concrete imperative.
 - `project`: the project or product area, such as `widget-lib`.
 - `repo`: repository in `organization/name` form, such as `example-org/monorepo`.
-- `workspace`: local jj workspace root path, when known, such as `/Users/<username>/go/src/github.com/example-org/monorepo/workspaces/widget-java`.
+- `workspace`: local jj workspace root path, when known, such as `~/go/src/github.com/example-org/monorepo/workspaces/widget-java`.
 - `bookmark`: jj bookmark or branch name, when known.
 - `pr`: GitHub PR number, when known.
-- `aisession`: optional AI chat/session id in `codex:<id>`, `claude:<id-or-slug>`, or `pi:<id>` form. When a CMUX workspace is opened for active work, use this to resume the matching AI session.
+- `aisession`: optional AI chat/session id in `codex:<id>`, `claude:<id-or-slug>`, or `pi:<id>` form. If present, use it to resume the matching AI session. If absent when opening active work, start a fresh AI session for the task and let that new session record itself.
 - `wait`: when to re-check a non-actionable workstream, when useful.
 - `priority`: Taskwarrior priority (`H`, `M`, or `L`) when the task's importance should feed urgency. Use `H` for reviews, follow-ups, and anything blocking others; `M` for the user's own work PRs; `L` for personal/tooling/backlog work unless explicitly promoted.
 - `due`: a real deadline, not a reminder. Use `wait` for reminders or re-checks.
@@ -27,6 +27,8 @@ Use the task fields this way:
 - tags: exactly one workflow-state tag, plus any non-state topic tags that help filtering.
 
 Taskwarrior numeric ids are report-local conveniences and can change. Use numeric ids for immediate `task <id> ...` commands only after listing current tasks. Use the task `uuid`, and `pr:<number>` when present, for durable references across sessions and tools.
+
+For portability, write paths under the user's home directory with `~` in Taskwarrior fields, annotations, scratch pads, CMUX descriptions, prompts, docs, and handoffs. Expand `~` only at command-execution boundaries when a tool requires an absolute path. Existing absolute home paths may remain until touched; when updating one, convert it to `~` form.
 
 Each active workstream should have a stable `title` and `slug`. The title is the human display label. The slug is a readable machine handle that must resolve to at most one pending workstream in automation. Prefer explicit `title`/`slug` fields; when bootstrapping old tasks, derive a suggested title/slug from the jj bookmark basename or workspace directory basename, with owner prefixes such as `user/` removed. The task UUID remains the durable identity.
 
@@ -90,9 +92,10 @@ Use `due` only for real deadlines. Do not use `due` for normal review/CI check-i
 - `description` is imperative and concrete: `Check CI on PR #12345 and merge if approved`, not `PR followup`.
 - Non-actionable tasks use `review`, `blocked`, or `parked`; add `wait:` when a timed re-check would prevent drift.
 - Useful evidence is preserved in annotations before or while changing the current state.
-- `workspace` identifies where to resume locally; `bookmark` identifies the code line. Keep both when known.
+- `workspace` identifies where to resume locally; `bookmark` identifies the code line. Keep both when known, and prefer `~` form for paths under the user's home directory.
 - If `aisession` is present, it identifies the preferred AI session to resume in CMUX and uses `codex:`, `claude:`, or `pi:` prefix form. Preserve an existing different session id; alert the user and annotate the mismatch if it matters for handoff.
-- If a dedicated AI session updates or creates a task, it records its own prefixed session id in `aisession` when the field is empty. If the session id is unknown, add a `Session:` annotation with what is known.
+- `aisession` belongs to the AI session actually working that task. A conductor or parent-task session that creates a new task, opens a CMUX workspace for it, or starts a new agent command for it must not stamp its own `aisession` on the new task. Leave `aisession` blank so the newly started task agent can record its own session id after it begins.
+- If a dedicated AI session updates the task it is actively working, it records its own prefixed session id in `aisession` when the field is empty. If the session id is unknown, add a `Session:` annotation with what is known.
 - Parked tasks may keep `workspace`/`bookmark` fields as resume metadata, but they do not need an open CMUX workspace.
 - If a workstream moves to a different jj workspace, update `workspace` and annotate the move.
 - If one workstream splits into two real streams, create two tasks rather than overloading one task.
@@ -319,7 +322,7 @@ Hard invariants:
 
 - An AI session working a task has a current workstream.
 - Creating or splitting off another task does not switch the current session. Only an explicit `open`, `switch`, or `resume` request changes the current workstream.
-- Split-off tasks do not inherit the current `aisession` unless a new dedicated session is actually started for them.
+- New, split-off, and forked tasks do not inherit the current `aisession`. Leave `aisession` blank until the new task's own AI session starts and records itself.
 - Individual task agents are responsible for updating their own Taskwarrior state from external reality and progress. The conductor generally trusts those records.
 - The conductor may run `reconcile` as an explicit rare override when the user wants a broad audit of external reality across tasks.
 
@@ -328,7 +331,8 @@ Hard invariants:
 `status` means “tell me the currently recorded state.” It is read-only.
 
 - In single-workstream scope: recap the current/selected task from Taskwarrior, scratch, and already-known session context. Do not check external systems unless asked.
-- In conductor scope: recap all relevant workstreams from Taskwarrior only, including pending and `+WAITING`. Do not inspect CMUX or external systems.
+- In conductor scope: recap all relevant workstreams from Taskwarrior, including pending and `+WAITING`, and inspect CMUX only for workspace presence/open-or-missing display. Do not open, close, or modify CMUX workspaces during `status`. Do not inspect GitHub, Slack, CI, local git/jj status, or code state.
+- Conductor status must include every `doing`, `ready`, and `blocked` workstream even when it is not open in CMUX; mark those entries as `not open in CMUX` so missing working rooms are visible.
 
 Use these grouping labels when they help readability, ordered by Taskwarrior urgency within groups:
 
@@ -340,7 +344,7 @@ Use these grouping labels when they help readability, ordered by Taskwarrior urg
 `check` and `refresh` are equal-status synonyms.
 
 - In single-workstream scope: inspect external state relevant to the current/selected task, such as PR, CI, review, Slack, mergeability, or local jj state when relevant; update scratch, Taskwarrior, and CMUX; recap.
-- In conductor scope: inspect Taskwarrior and CMUX, make CMUX match Taskwarrior by creating/updating/closing/reordering workspaces as appropriate, and recap. Do not check external PR/CI/Slack/jj state by default.
+- In conductor scope: inspect Taskwarrior and CMUX, make CMUX match Taskwarrior by creating missing workspaces for `doing` and `ready` tasks, updating/reordering existing workspaces, closing parked workspaces as appropriate, and recapping. Do not auto-open `blocked`, `review`, or `parked` tasks unless the user asks or a workspace is already open and should be updated. Do not check external PR/CI/Slack/jj state by default.
 
 `reconcile` is conductor-scope only unless the user explicitly scopes it to one task. It is the rare broad audit: inspect Taskwarrior, scratch pads when needed, CMUX, local repo state when relevant, and external state across tasks; update records/UI; recap what changed and what remains uncertain.
 
@@ -368,17 +372,35 @@ When splitting off:
 1. Create a new Taskwarrior task with its own `uuid`, `title`, `slug`, `description`, state tag, and metadata.
 2. Create/link its scratch pad when it will be AI-assisted.
 3. Put the full goal and relevant context in the new scratch pad, and compact provenance in annotations.
-4. Do not copy the current task's `aisession`.
+4. Leave the new task's `aisession` blank; do not copy the current task's session id. If the user wants the new task opened immediately, start a fresh AI session for it rather than reusing the conductor/current-task session.
 5. Annotate the current task with the split-off task title/uuid when useful.
 6. Continue the current task unless the user explicitly says to open/switch/resume the split-off task.
 
-`open`, `switch`, and `resume` explicitly change the current workstream. They create/select the CMUX workspace, ensure/read scratch for active AI work, and start/resume the appropriate AI session.
+`open`, `switch`, and `resume` explicitly change the current workstream. They create/select the CMUX workspace, ensure/read scratch for active AI work, and resume the recorded `aisession` when one exists. When opening a task with no `aisession`, start a fresh AI session with a task-bootstrap prompt rather than copying the conductor/current-task session id. A suitable prompt is:
+
+```text
+You are the dedicated AI session for workstream task <uuid>.
+
+Use the workstreams skill and follow ~/.config/ai-workstreams/SPEC.md. Treat Taskwarrior as the source of truth.
+
+Orient yourself by reading the Taskwarrior task and its scratch pad, creating/repairing the scratch link only if the spec requires it. If the task's aisession is blank, record this new session's prefixed id; if it already has a different aisession, alert the user before changing it.
+
+Summarize the task's goal, current evidence, and next transition. Ask the user only for clarifications that block getting started. If nothing is blocking, state the next concrete action you plan to take and update Taskwarrior/scratch only where the spec says material state or evidence changed.
+```
+
+The newly started session should set the task's `aisession` to its own prefixed session id once known.
 
 ### Recap Style
 
-Conductor recaps should name the workstream title, urgency, priority/due/wait when relevant, state, PR link when present, next transition, and the latest compact handoff/blocker/dependency/refresh evidence.
+Conductor recaps should name the workstream title, urgency, priority/due/wait when relevant, state, PR link when present, next transition, the latest compact handoff/blocker/dependency/refresh evidence, and CMUX presence when known. For `doing`, `ready`, and `blocked` entries that are not open in CMUX, explicitly say `not open in CMUX`.
 
-Single-workstream recaps should start with a short status label such as `Ready`, `Review`, `Blocked`, `Parked`, `Cleanup`, or `Checkpoint`, then summarize: goal, what changed, current evidence, next transition, and uncertainties.
+Single-workstream status recaps should use three short sections:
+
+1. `Overall`: broad overview of what has been done across the workstream.
+2. `Just completed`: what was just completed, with a little more detail than the overview.
+3. `Still to do`: remaining concrete work, blockers, or verification.
+
+End with one or two sentences stating the current/next step. For non-status checkpoint/handoff replies, start with a short status label such as `Ready`, `Review`, `Blocked`, `Parked`, `Cleanup`, or `Checkpoint`, then summarize the goal, changed evidence, next transition, and uncertainties.
 
 If urgency ordering looks wrong, fix Taskwarrior fields (`priority`, `due`, `wait`, state tags) instead of inventing a parallel ranking system.
 
@@ -396,7 +418,7 @@ If urgency ordering looks wrong, fix Taskwarrior fields (`priority`, `due`, `wai
 
 1. Read pending and `+WAITING` Taskwarrior tasks.
 2. Inspect open CMUX workspaces.
-3. Align CMUX from Taskwarrior: create/update/close/reorder workspaces, set descriptions/colors, and avoid opening parked workspaces.
+3. Align CMUX from Taskwarrior: create missing workspaces for `doing` and `ready` tasks, update/close/reorder existing workspaces, set descriptions/colors, and avoid opening `review`, `blocked`, or `parked` workspaces unless the user explicitly asks.
 4. Run `workstream-slug doctor --cmux` when title/slug/CMUX mapping may have changed.
 5. Recap recorded state and any CMUX changes. Do not check external systems unless this is a reconcile.
 
@@ -415,7 +437,7 @@ Use only when the user asks for a broad audit or says the records may be stale.
 Create:
 
 ```bash
-task add project:widget-lib title:"Widget Lib Bump" slug:widget-lib-bump scratch:scratch/widget-lib-bump.md repo:example-org/monorepo workspace:/Users/<username>/go/src/github.com/example-org/monorepo/workspaces/widget-java bookmark:<username>/bump-widget-lib-0.3.2 pr:12345 +review wait:tomorrow "Check CI on PR #12345 and merge if approved"
+task add project:widget-lib title:"Widget Lib Bump" slug:widget-lib-bump scratch:scratch/widget-lib-bump.md repo:example-org/monorepo workspace:~/go/src/github.com/example-org/monorepo/workspaces/widget-java bookmark:<username>/bump-widget-lib-0.3.2 pr:12345 +review wait:tomorrow "Check CI on PR #12345 and merge if approved"
 task <id> annotate "PR: https://github.com/example-org/monorepo/pull/12345"
 task <id> annotate "Validation: make test passed"
 task <id> annotate "Current handoff: PR #12345 is waiting on CI; validation passed locally; next check CI and merge if approved."

@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import os
 import re
 from dataclasses import dataclass
 from pathlib import Path
@@ -124,8 +125,16 @@ def task_matches_pr_link(task: Task, workspace: CmuxWorkspace) -> bool:
     return False
 
 
+def comparable_path(path: str) -> str:
+    return os.path.normpath(os.path.expanduser(path))
+
+
 def task_matches_workspace_cwd(task: Task, workspace: CmuxWorkspace) -> bool:
-    return bool(workspace.current_directory and task.workspace == workspace.current_directory)
+    return bool(
+        workspace.current_directory
+        and task.workspace
+        and comparable_path(task.workspace) == comparable_path(workspace.current_directory)
+    )
 
 
 def resolve_cmux_workspace(
