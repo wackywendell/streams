@@ -7,6 +7,46 @@ from typing import Any
 
 
 @dataclass(frozen=True)
+class CmuxWorkspace:
+    """A parsed CMUX workspace with raw RPC data preserved."""
+
+    raw: dict[str, Any]
+
+    @classmethod
+    def from_raw(cls, raw: dict[str, Any]) -> "CmuxWorkspace":
+        return cls(raw=dict(raw))
+
+    def get(self, key: str, default: Any = None) -> Any:
+        """Compatibility escape hatch for fields not modeled yet."""
+        return self.raw.get(key, default)
+
+    @property
+    def id(self) -> str:
+        return str(self.raw.get("id") or "")
+
+    @property
+    def ref(self) -> str:
+        return str(self.raw.get("ref") or "")
+
+    @property
+    def title(self) -> str:
+        return str(self.raw.get("title") or "")
+
+    @property
+    def description(self) -> str:
+        return str(self.raw.get("description") or "")
+
+    @property
+    def current_directory(self) -> str | None:
+        cwd = self.raw.get("current_directory")
+        return str(cwd) if cwd else None
+
+    @property
+    def display_ref(self) -> str:
+        return self.ref or self.id or "<unknown>"
+
+
+@dataclass(frozen=True)
 class Task:
     """A parsed Taskwarrior task with raw export data preserved.
 

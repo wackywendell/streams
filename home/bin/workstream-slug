@@ -133,34 +133,32 @@ def cmux_doctor_findings(tasks: list[Task]) -> list[DoctorFinding]:
             title_to_tasks[task.title].append(task)
 
     for workspace in cmux_workspaces():
-        title = str(workspace.get("title") or "")
-        if title == "tasks":
+        if workspace.title == "tasks":
             continue
-        ref = workspace.get("ref") or workspace.get("id") or "<unknown>"
-        title_slug = slugify(title)
+        title_slug = slugify(workspace.title)
         token = task_token_from_description(workspace)
-        likely_task_workspace = bool(token) or bool(slug_to_tasks.get(title_slug)) or bool(title_to_tasks.get(title))
+        likely_task_workspace = bool(token) or bool(slug_to_tasks.get(title_slug)) or bool(title_to_tasks.get(workspace.title))
         if not likely_task_workspace:
             continue
 
         try:
             resolution = resolve_cmux_workspace(workspace, tasks=tasks)
         except WorkstreamError as exc:
-            findings.append(DoctorFinding("error", f"{ref} {title!r}: {exc}"))
+            findings.append(DoctorFinding("error", f"{workspace.display_ref} {workspace.title!r}: {exc}"))
             continue
 
         task = resolution.task
         if resolution.reason == "legacy-task-token":
-            findings.append(DoctorFinding("info", f"{ref} {title!r} still has legacy visible task:{token}"))
+            findings.append(DoctorFinding("info", f"{workspace.display_ref} {workspace.title!r} still has legacy visible task:{token}"))
         elif resolution.legacy:
-            findings.append(DoctorFinding("warn", f"{ref} {title!r} resolved by legacy {resolution.reason}: {task_label(task)}"))
+            findings.append(DoctorFinding("warn", f"{workspace.display_ref} {workspace.title!r} resolved by legacy {resolution.reason}: {task_label(task)}"))
 
-        if task.title and title != task.title:
-            findings.append(DoctorFinding("warn", f"{ref} title {title!r} != task title {task.title!r}: {task_label(task)}"))
+        if task.title and workspace.title != task.title:
+            findings.append(DoctorFinding("warn", f"{workspace.display_ref} title {workspace.title!r} != task title {task.title!r}: {task_label(task)}"))
         if task.slug and title_slug != task.slug:
-            findings.append(DoctorFinding("warn", f"{ref} slugify(title) {title_slug!r} != task slug {task.slug!r}: {task_label(task)}"))
+            findings.append(DoctorFinding("warn", f"{workspace.display_ref} slugify(title) {title_slug!r} != task slug {task.slug!r}: {task_label(task)}"))
         if not task.slug:
-            findings.append(DoctorFinding("warn", f"{ref} linked task has no slug: {task_label(task)}"))
+            findings.append(DoctorFinding("warn", f"{workspace.display_ref} linked task has no slug: {task_label(task)}"))
 
     return findings
 

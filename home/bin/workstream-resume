@@ -4,21 +4,21 @@
 from __future__ import annotations
 
 import argparse
-import json
 import os
 import shlex
 import subprocess
 import sys
 from dataclasses import dataclass
 
+from _workstreams.cmux import workspaces as cmux_workspaces
 from _workstreams.errors import WorkstreamError
-from _workstreams.models import Task
+from _workstreams.models import CmuxWorkspace, Task
 from _workstreams.resolve import UUID_RE, resolve_cmux_workspace
 
 
 @dataclass
 class Resolved:
-    workspace: dict
+    workspace: CmuxWorkspace
     task: Task
     command: str
 
@@ -37,41 +37,26 @@ def run(args: list[str], *, check: bool = True) -> subprocess.CompletedProcess[s
         raise WorkstreamResumeError(f"{' '.join(args)} failed: {detail}") from exc
 
 
-def json_from_command(args: list[str]) -> object:
-    text = run(args).stdout.strip()
-    start = min((idx for idx in (text.find("{"), text.find("[")) if idx != -1), default=-1)
-    if start == -1:
-        raise WorkstreamResumeError(f"{' '.join(args)} did not return JSON")
-    return json.loads(text[start:])
-
-
 def current_workspace_ref() -> str:
     return run(["cmux", "current-workspace"]).stdout.strip()
 
 
-def cmux_workspaces() -> list[dict]:
-    data = json_from_command(["cmux", "rpc", "workspace.list", "{}"])
-    if not isinstance(data, dict) or not isinstance(data.get("workspaces"), list):
-        raise WorkstreamResumeError("cmux rpc workspace.list returned an unexpected shape")
-    return data["workspaces"]
-
-
-def resolve_workspace(selector: str | None) -> dict:
+def resolve_workspace(selector: str | None) -> CmuxWorkspace:
     selector = selector or current_workspace_ref()
     matches = [
         workspace
         for workspace in cmux_workspaces()
-        if selector in {workspace.get("ref"), workspace.get("id"), workspace.get("title")}
+        if selector in {workspace.ref, workspace.id, workspace.title}
     ]
     if not matches:
         raise WorkstreamResumeError(f"could not find CMUX workspace {selector!r}")
     if len(matches) > 1:
-        choices = ", ".join(f"{item.get('ref')} {item.get('title')}" for item in matches)
+        choices = ", ".join(f"{item.display_ref} {item.title}" for item in matches)
         raise WorkstreamResumeError(f"CMUX workspace {selector!r} is ambiguous: {choices}")
     return matches[0]
 
 
-def resolve_task(workspace: dict) -> Task:
+def resolve_task(workspace: CmuxWorkspace) -> Task:
     try:
         return resolve_cmux_workspace(workspace).task
     except WorkstreamError as exc:
@@ -128,11 +113,11 @@ def shell_ready(workspace_ref: str, surface: str | None) -> tuple[bool, str]:
     return lines[-1].endswith(("\u276f", "$", "%", "#", ">")), lines[-1]
 
 
-def is_current_cmux_workspace(workspace: dict) -> bool:
+def is_current_cmux_workspace(workspace: CmuxWorkspace) -> bool:
     current_id = os.environ.get("CMUX_WORKSPACE_ID")
     if not current_id:
         return False
-    return current_id.lower() == str(workspace.get("id", "")).lower()
+    return current_id.lower() == workspace.id.lower()
 
 
 def exec_local(command: str) -> None:
@@ -169,11 +154,11 @@ def main(argv: list[str]) -> int:
 
     try:
         resolved = resolve(args.workspace)
-        workspace_ref = resolved.workspace["ref"]
+        workspace_ref = resolved.workspace.ref
         task = resolved.task
 
         if args.dry_run:
-            print(f"workspace: {workspace_ref} {resolved.workspace.get('title')}")
+            print(f"workspace: {workspace_ref} {resolved.workspace.title}")
             print(f"task:      {task.id} {task.uuid}")
             print(f"state:     {', '.join(sorted(task.tags)) or '-'}")
             print(f"session:   {task.aisession}")
@@ -188,7 +173,7 @@ def main(argv: list[str]) -> int:
         # terminal from another terminal, status output in this process should
         # not pollute the target's idle-shell check.
         send_command(workspace_ref, resolved.command, surface=args.surface, force=args.force)
-        print(f"workspace: {workspace_ref} {resolved.workspace.get('title')}")
+        print(f"workspace: {workspace_ref} {resolved.workspace.title}")
         print(f"task:      {task.id} {task.uuid}")
         print(f"state:     {', '.join(sorted(task.tags)) or '-'}")
         print(f"session:   {task.aisession}")

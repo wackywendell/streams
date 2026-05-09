@@ -5,10 +5,9 @@ from __future__ import annotations
 import re
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any
 
 from .errors import WorkstreamError
-from .models import Task
+from .models import CmuxWorkspace, Task
 from .slug import candidate_slugs, slugify
 from .taskwarrior import export, pending_tasks
 
@@ -48,9 +47,8 @@ def task_matches_uuid_token(task: Task, token: str) -> bool:
     return task.uuid.lower().startswith(token.lower())
 
 
-def task_token_from_description(workspace: dict[str, Any]) -> str | None:
-    description = workspace.get("description") or ""
-    match = TASK_TOKEN_RE.search(description)
+def task_token_from_description(workspace: CmuxWorkspace) -> str | None:
+    match = TASK_TOKEN_RE.search(workspace.description)
     return match.group(1) if match else None
 
 
@@ -119,21 +117,19 @@ def candidate_titles(task: Task) -> set[str]:
     return {title for title in titles if title}
 
 
-def task_matches_pr_link(task: Task, workspace: dict[str, Any]) -> bool:
-    description = workspace.get("description") or ""
-    for repo, pr in PR_RE.findall(description):
+def task_matches_pr_link(task: Task, workspace: CmuxWorkspace) -> bool:
+    for repo, pr in PR_RE.findall(workspace.description):
         if task.repo == repo and task.pr == pr:
             return True
     return False
 
 
-def task_matches_workspace_cwd(task: Task, workspace: dict[str, Any]) -> bool:
-    cwd = workspace.get("current_directory") or ""
-    return bool(cwd and task.workspace == cwd)
+def task_matches_workspace_cwd(task: Task, workspace: CmuxWorkspace) -> bool:
+    return bool(workspace.current_directory and task.workspace == workspace.current_directory)
 
 
 def resolve_cmux_workspace(
-    workspace: dict[str, Any],
+    workspace: CmuxWorkspace,
     *,
     tasks: list[Task] | None = None,
     allow_legacy_token: bool = True,
@@ -147,39 +143,37 @@ def resolve_cmux_workspace(
     about those non-steady-state paths.
     """
     tasks = tasks if tasks is not None else pending_tasks(include_waiting=True)
-    title = str(workspace.get("title") or "")
 
     if allow_legacy_token and (token := task_token_from_description(workspace)):
         matches = [task for task in tasks if task_matches_uuid_token(task, token)]
         return TaskResolution(one_task(matches, f"task:{token}"), "legacy-task-token")
 
-    title_slug = slugify(title)
+    title_slug = slugify(workspace.title)
     if title_slug:
         matches = [task for task in tasks if task.slug == title_slug]
         if matches:
             return TaskResolution(one_task(matches, f"CMUX title slug {title_slug!r}"), "slug")
 
     if allow_fallbacks:
-        exact_title_matches = [task for task in tasks if title and task.title == title]
+        exact_title_matches = [task for task in tasks if workspace.title and task.title == workspace.title]
         if exact_title_matches:
-            return TaskResolution(one_task(exact_title_matches, f"CMUX title {title!r}"), "title")
+            return TaskResolution(one_task(exact_title_matches, f"CMUX title {workspace.title!r}"), "title")
 
-        candidate_title_matches = [task for task in tasks if title and title in candidate_titles(task)]
+        candidate_title_matches = [task for task in tasks if workspace.title and workspace.title in candidate_titles(task)]
         if candidate_title_matches:
-            return TaskResolution(one_task(candidate_title_matches, f"CMUX title candidate {title!r}"), "candidate-title")
+            return TaskResolution(one_task(candidate_title_matches, f"CMUX title candidate {workspace.title!r}"), "candidate-title")
 
         pr_matches = [task for task in tasks if task_matches_pr_link(task, workspace)]
         if pr_matches:
-            return TaskResolution(one_task(pr_matches, f"CMUX PR link {title!r}"), "pr-link")
+            return TaskResolution(one_task(pr_matches, f"CMUX PR link {workspace.title!r}"), "pr-link")
 
-        if not title:
+        if not workspace.title:
             cwd_matches = [task for task in tasks if task_matches_workspace_cwd(task, workspace)]
             if cwd_matches:
-                return TaskResolution(one_task(cwd_matches, f"CMUX cwd {workspace.get('current_directory')!r}"), "cwd")
+                return TaskResolution(one_task(cwd_matches, f"CMUX cwd {workspace.current_directory!r}"), "cwd")
 
-    ref = workspace.get("ref") or workspace.get("id") or "<unknown>"
     raise WorkstreamError(
-        f"could not find a pending Taskwarrior task for {ref} {title!r}; "
+        f"could not find a pending Taskwarrior task for {workspace.display_ref} {workspace.title!r}; "
         "set a unique Taskwarrior slug matching the CMUX title, add legacy task:<uuid-prefix> "
         "to the CMUX description, or add a CMUX annotation to the task"
     )

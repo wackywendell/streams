@@ -7,6 +7,7 @@ import subprocess
 from typing import Any
 
 from .errors import WorkstreamError
+from .models import CmuxWorkspace
 
 
 def run(args: list[str]) -> subprocess.CompletedProcess[str]:
@@ -27,8 +28,8 @@ def json_from_command(args: list[str]) -> Any:
     return json.loads(text[start:])
 
 
-def workspaces() -> list[dict[str, Any]]:
+def workspaces() -> list[CmuxWorkspace]:
     data = json_from_command(["cmux", "rpc", "workspace.list", "{}"])
     if not isinstance(data, dict) or not isinstance(data.get("workspaces"), list):
         raise WorkstreamError("cmux rpc workspace.list returned an unexpected shape")
-    return data["workspaces"]
+    return [CmuxWorkspace.from_raw(workspace) for workspace in data["workspaces"] if isinstance(workspace, dict)]
