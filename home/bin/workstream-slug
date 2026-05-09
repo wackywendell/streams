@@ -67,12 +67,42 @@ def command_suggest(args: argparse.Namespace) -> int:
     return 0
 
 
+def duplicate_slug_tasks(task: dict, slug: str) -> list[dict]:
+    return [
+        other
+        for other in pending_tasks(include_waiting=True)
+        if other.get("uuid") != task.get("uuid") and explicit_slug(other) == slug
+    ]
+
+
+def duplicate_title_tasks(task: dict, title: str) -> list[dict]:
+    return [
+        other
+        for other in pending_tasks(include_waiting=True)
+        if other.get("uuid") != task.get("uuid") and explicit_title(other) == title
+    ]
+
+
+def ensure_unique_identity(task: dict, *, title: str | None = None, slug: str | None = None) -> None:
+    if slug:
+        duplicates = duplicate_slug_tasks(task, slug)
+        if duplicates:
+            joined = "; ".join(task_label(other) for other in duplicates)
+            raise WorkstreamError(f"slug {slug!r} is already used by pending/waiting task(s): {joined}")
+    if title:
+        duplicates = duplicate_title_tasks(task, title)
+        if duplicates:
+            joined = "; ".join(task_label(other) for other in duplicates)
+            raise WorkstreamError(f"title {title!r} is already used by pending/waiting task(s): {joined}")
+
+
 def command_set(args: argparse.Namespace) -> int:
     task = resolve_task(args.selector)
     title = args.title.strip()
     if not title:
         raise WorkstreamError("title cannot be empty")
     slug = normalized_slug(args.slug) if args.slug else normalized_slug(title)
+    ensure_unique_identity(task, title=title, slug=slug)
     modify(str(task["uuid"]), f"title:{title}", f"slug:{slug}")
     print(f"updated: {task.get('id')} {task.get('uuid')} title={title!r} slug={slug!r}")
     return 0
@@ -81,6 +111,7 @@ def command_set(args: argparse.Namespace) -> int:
 def command_set_slug(args: argparse.Namespace) -> int:
     task = resolve_task(args.selector)
     slug = normalized_slug(args.slug)
+    ensure_unique_identity(task, slug=slug)
     modify(str(task["uuid"]), f"slug:{slug}")
     print(f"updated: {task.get('id')} {task.get('uuid')} slug={slug!r}")
     return 0
@@ -122,7 +153,7 @@ def cmux_doctor_findings(tasks: list[dict]) -> list[DoctorFinding]:
         try:
             resolution = resolve_cmux_workspace(workspace, tasks=tasks)
         except WorkstreamError as exc:
-            findings.append(DoctorFinding("error" if token else "warn", f"{ref} {title!r}: {exc}"))
+            findings.append(DoctorFinding("error", f"{ref} {title!r}: {exc}"))
             continue
 
         task = resolution.task
