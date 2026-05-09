@@ -1,6 +1,6 @@
 ---
 name: workstreams
-description: Manage AI-assisted coding workstreams in Taskwarrior. Use when the user asks to capture, hand off, check, split, resume, list, validate, or update coding workstream state across repos, jj workspaces, jj bookmarks, PRs, or AI sessions.
+description: Manage AI-assisted coding workstreams in Taskwarrior. Use when the user asks to capture, hand off, check, split, resume, list, validate, or update coding workstream state across repos, jj workspaces, jj bookmarks, PRs, scratch pads, CMUX workspaces, or AI sessions.
 metadata:
   short-description: Manage Taskwarrior coding workstreams
 ---
@@ -9,199 +9,79 @@ metadata:
 
 Use this skill to keep AI coding workstream state in Taskwarrior.
 
-Before changing tasks, read the shared policy at `~/.config/ai-workstreams/SPEC.md` or the dotfiles source path `home/.config/ai-workstreams/SPEC.md`.
+## Required Reading
 
-## Core Rules
+Before changing tasks, read the shared policy:
 
-- Taskwarrior is the source of truth. Chat state is evidence only.
-- One task is one workstream.
-- Taskwarrior numeric ids can change. Use `uuid` for durable task identity; use numeric ids only for immediate commands after listing current tasks.
-- `description` is the next transition that would advance the stream and must be concrete.
-- Tags must include exactly one state tag: `doing`, `ready`, `review`, `blocked`, or `parked`.
-- `workspace` is the local jj workspace root; `bookmark` is the code line. Keep both when known.
-- Active workstreams should have `title` and `slug`: `title` is the human display label for CMUX/status, while `slug` is the stable lowercase/kebab-case machine handle derived from title by default. Taskwarrior `uuid` remains durable identity.
-- Active AI-assisted workstreams should have `scratch`, a worknotes-relative path under `~/worknotes`, usually `scratch/<slug>.md`. Scratch pads hold the full goal and engineering log, not task state.
-- CMUX title should be the workstream `title`; in the steady state, visible CMUX descriptions do not need `task:<uuid-prefix>` because automation resolves slugify(CMUX title) to exactly one pending task `slug`. Accept legacy `task:<uuid-prefix>` while migrating.
-- `aisession` uses `codex:<id>`, `claude:<id-or-slug>`, or `pi:<id>` when known.
-- Use Taskwarrior `priority` to feed urgency: `H` for reviews, follow-ups, and anything blocking others; `M` for the user's own work PRs; `L` for personal/tooling/backlog work unless explicitly promoted.
-- Use `due` only for real deadlines. Use `wait` for reminders, snoozes, CI/review re-checks, and blocked follow-ups; default normal review waits to the next business day unless the task evidence calls for a same-day re-check or longer snooze.
-- Treat Taskwarrior `urgency` as "needs attention"; state tags explain what kind of attention is needed.
-- Annotations are focused evidence, not transcripts. Prefer typed prefixes such as `Current handoff:`, `Decision:`, `Validation:`, `Blocker:`, `Dependency:`, `Refresh:`, `CMUX:`, `Session:`, and `Error:`.
-- Be conservative about state changes; explain the evidence when moving a task.
-- When a dedicated AI session updates or captures a task, fill `aisession` with the current prefixed AI session id if it is empty. If it is already set to a different session, alert the user instead of overwriting it silently.
+- Skill-local link: [references/SPEC.md](references/SPEC.md)
+- Live path: `~/.config/ai-workstreams/SPEC.md`
+- Dotfiles source: `home/.config/ai-workstreams/SPEC.md`
 
-## Scratch Pad Protocol
+`SPEC.md` is the source of truth for the model, invariants, state tags, scratch-pad protocol, cleanup/retro, CMUX display grammar, and workflows. Do not duplicate or override it here.
 
-For substantial AI-assisted work, use the scratch pad before relying on chat context alone.
+## Operational Rules
 
-Default location:
-
-```text
-~/worknotes/<task.scratch or scratch/<task.slug>.md>
-```
-
-If the task has no `scratch` and you are starting or resuming substantial work, create the default pad directly: make `~/worknotes/scratch/`, write `scratch/<slug>.md` with the template from the shared spec, include the full task goal in the pad `**Goal:**` field, set `task <uuid> modify scratch:scratch/<slug>.md`, and annotate `Scratch: ~/worknotes/scratch/<slug>.md`. Add a compact `Goal:` annotation when the goal should be visible in Taskwarrior without opening the pad. Do not create a separate helper command for v1; direct agent-managed creation is the intended path.
-
-Mandatory behavior when a scratch pad exists:
-
-- Read the entire pad before implementation work.
-- Add or update a dated `## Design` entry with the current understanding and approach.
-- Update `**Goal:**` when the user clarifies intent or implementation learning changes the real outcome being pursued.
-- Record material decisions in `## Design`, investigations in `## Debugging`, verification commands/results in `## Test plan`, and reusable future-saving knowledge in `## Learnings`.
-- Before replying, ask whether anything since the last response belongs in `**Goal:**` or the pad sections, and whether Taskwarrior's next transition/state/wait/metadata changed; update scratch and/or Taskwarrior first when yes.
-- Do not duplicate Taskwarrior status, todo lists, generic diff summaries, or large code blocks.
+- Taskwarrior is canonical. Chat, CMUX, PRs, jj, and scratch pads are evidence/context.
+- One Taskwarrior task is one workstream.
+- Use Taskwarrior `uuid` for durable identity. Numeric ids are only for immediate commands after a fresh listing.
+- `description` is the concrete next transition, not the whole goal. The full goal belongs in the scratch pad `**Goal:**` field and optionally a compact `Goal:` annotation.
+- Maintain exactly one workflow-state tag: `doing`, `ready`, `review`, `blocked`, or `parked`.
+- Active AI-assisted work should have `title`, `slug`, `scratch`, and `aisession` when known.
+- If this dedicated AI session owns the task and `aisession` is empty, set it to the current prefixed session id. If another session is already recorded, alert the user instead of overwriting silently.
+- Before replying after substantial work, check both:
+  - scratch: did `**Goal:**`, `## Design`, `## Debugging`, `## Test plan`, or `## Learnings` need updates?
+  - Taskwarrior: did next transition, state tag, wait time, PR/session/scratch metadata, or handoff evidence change?
+- When a task has a linked CMUX workspace, update CMUX title/description/color/order alongside Taskwarrior state changes.
 
 ## Direct Taskwarrior Use
 
-Call Taskwarrior directly. Use `rc.gc=off` for read-only inspection to avoid Taskwarrior maintenance writes during simple checks.
+Use `task` directly. Use `rc.gc=off` for read-only inspection.
 
 ```bash
 task rc.gc=off status:pending '( repo.not: or title.not: or slug.not: or scratch.not: or workspace.not: or bookmark.not: or pr.not: or aisession.not: or +doing or +ready or +review or +blocked or +parked )' columns:id,uuid,title,slug,scratch,project,repo,workspace,bookmark,pr,priority,urgency,due,wait,tags,description
 task rc.gc=off +WAITING export
-task <id> information
-task rc.gc=off <id> uuids
-task <id> modify -doing -ready -review -blocked -parked +review wait:tomorrow "Check CI and merge if approved"
-task <id> annotate "PR is waiting on CI"
+task rc.gc=off <id-or-uuid> information
+task rc.gc=off <id-or-uuid> uuids
+task <uuid> modify -doing -ready -review -blocked -parked +review wait:tomorrow "Check CI and merge if approved"
+task <uuid> annotate "Refresh: PR is waiting on CI"
 ```
 
-Remember that normal reports can hide tasks with `wait:`; use `+WAITING export` when checking non-actionable workstreams.
+Taskwarrior reports can hide tasks with `wait:`; include `+WAITING export` for review/blocked/parked workstreams that may be waiting.
 
-## Workstream Shape and State
+## Scratch Pad Protocol
 
-Use the stream shape to choose precise descriptions. Implementation PRs are common, but reviewing someone else's PR, investigating a failure, writing a design note, or doing cleanup are also valid workstreams.
+Follow the full protocol in [references/SPEC.md](references/SPEC.md#scratch-pads). Short version:
 
-Implementation examples:
-
-- discovery/planning: `Write down acceptance criteria for <topic>`;
-- AI implementation: `Implement <specific change> in <workspace>`;
-- draft PR: `Open draft PR for <bookmark>`;
-- self-review: `Self-review draft PR #<n> and address obvious issues` (the user's move);
-- mark ready: `Mark PR #<n> ready for review by others`;
-- ask for review: `Ask for Slack review on PR #<n>` (handoff to external review);
-- waiting: `Check review response on PR #<n>` or `Check CI rerun on PR #<n>`;
-- feedback/CI action: `Address <review/CI issue> on PR #<n>`;
-- merge/cleanup: `Merge PR #<n> and clean up workspace/bookmark`.
-
-Review examples:
-
-- start review: `Inspect PR #<n> and linked context`;
-- write findings: `Review PR #<n> locally and write findings`;
-- post review: `Post review comments on PR #<n>`;
-- wait for author: `Check author updates on PR #<n>`;
-- re-review: `Re-review PR #<n> after updates`;
-- approve: `Approve PR #<n> if concerns are resolved`.
-
-Investigation examples:
-
-- reproduce: `Reproduce <failure> and record evidence`;
-- analyze: `Compare <behavior> with expected contract`;
-- hand off: `Summarize findings and decide whether to fix, file, or park`.
-
-State tags describe who can move the stream next:
-
-- `doing`: actively in the current human/AI loop.
-- `ready`: the user has the next move, including self-reviewing a draft PR, marking it ready for review by others, reviewing someone else's PR, asking Slack for review, signing/fixing/pushing a PR stack, merging, or fixing known feedback/CI.
-- `review`: waiting on review, author updates, Slack response, CI, merge check, merge queue, rerun, or a timed check; use `wait:` when useful.
-- `blocked`: waiting on a true external dependency outside the normal review/CI loop.
-- `parked`: intentionally paused.
-
-Do not invent a `waiting` tag; use `review` for normal review/CI waits. A vague GitHub "blocked" state is not enough for `blocked`: read merge check/check-run text directly when refreshing, and move to `ready` if the output names an actionable fix such as unsigned commits. Use `Cleanup` as a status-update label and CMUX visual state, not a Taskwarrior state tag; the task remains `ready` with a cleanup description until PR merge, scratch archive/retro, local bookmark/workspace cleanup, CMUX cleanup, and task completion are verified. Parked tasks do not need an open CMUX workspace.
-
-## Status Updates
-
-For overall status updates, especially in the `tasks` CMUX workspace, order workstreams by Taskwarrior urgency by default. When grouping makes the status easier to scan, use these sections:
-
-- `Active / Ready`
-- `Review / Waiting`
-- `Blocked`
-- `Parked`
-
-Urgency means "needs attention," not always "start coding now"; the state label explains whether the response is implementation, review, waiting, unblocking, cleanup, or metadata correction. Include `Cleanup` items under `Active / Ready` unless the user asks for a separate cleanup section. Each item should name the task/topic, urgency, priority/due/wait when relevant, full PR URL when present, current state, and next transition.
-
-If a blocked or parked task is high urgency because of an overdue `due`, treat that as an attention signal: clear or correct the deadline, unpark it, update `wait`, or otherwise fix the task record. Do not invent a parallel ranking system when Taskwarrior fields can be corrected.
-
-For general status updates or "what should I work on" scans, rely on Taskwarrior state and annotations only. Do not check GitHub, PR checks, CI, local git/jj status, or code state unless the user asks for fresh verification, asks about one specific task, or the Taskwarrior record is too ambiguous to answer. Use `task export` data plus `+WAITING export` rather than raw annotation-heavy reports; describe external state as recorded task state instead of silently refreshing it.
-
-For individual task updates, start with one bold status word or short phrase: `**Ready**`, `**Blocked**`, `**Review**`, `**Parked**`, `**Cleanup**`, or another precise label when those do not fit. Then give a concise summary of what the task is, why it exists, what has been achieved, what remains, what is being waited for, and the current next transition. If a PR is open, include the full PR URL.
-
-Do not blur self-review and external review. A draft PR that the user needs to inspect should be `**Ready**` or `**Self-review**`. Use `**Review**` only when waiting on someone else, Slack response, CI, mergeability, or a timed check.
-
-When a task has an associated CMUX workspace, update the CMUX title, description, color, status pills, and order alongside Taskwarrior state. Use the shared CMUX display grammar: `title = <task title>` and `description = [detail] + meta + optional PR markdown link`, where `meta` looks like `H: 8.8` or `M: 3.7 → Wed 09:00`. Keep the full Taskwarrior uuid in Taskwarrior annotations; visible `task:<8-char-uuid-prefix>` links are legacy fallback only.
-
-Use CMUX colors to show actionability: `Green` for `doing`, `ready`, and `Cleanup`; `Amber` for `review` and timed waits; `Orange` for `blocked`; `Red` for a temporarily open `parked` workspace. Do not add separate overdue colors; add a `tw-overdue` status pill or `Overdue: <date>` description metadata instead. Order CMUX task workspaces by Taskwarrior urgency after the pinned `tasks` conductor workspace. Parked tasks generally should not have an open CMUX workspace. When multiple CMUX actions are needed, batch them into one readable shell command block, using `&&` when later updates should stop after an earlier failure.
+- Scratch pads live under `~/worknotes`, usually `~/worknotes/scratch/<slug>.md`.
+- Taskwarrior stores `scratch:scratch/<slug>.md` or an archive path.
+- If an active AI task lacks a scratch pad, create it directly from the template in the spec, set the `scratch` UDA, and annotate `Scratch: ~/worknotes/scratch/<slug>.md`.
+- Read the entire pad before implementation work.
+- Update `**Goal:**`, `## Design`, `## Debugging`, `## Test plan`, and `## Learnings` as appropriate before responding.
+- Do not put canonical task status or todo tracking in scratch; Taskwarrior owns that.
 
 ## Command Vocabulary
 
-Use these thin command names consistently:
+Use these terms consistently:
 
-- `status`: all-workstream status from Taskwarrior only; include pending and `+WAITING`; do not inspect CMUX or external systems.
-- `task-status`: one-task status from Taskwarrior only.
-- `refresh`: reassess external state for `review`, `blocked`, and externally-linked `ready` tasks; make obvious state changes and ask on ambiguous evidence.
+- `status`: summarize Taskwarrior state only. Include pending and `+WAITING`. Do not refresh external systems.
+- `task-status`: summarize one task from Taskwarrior only unless asked to refresh.
+- `refresh`: check external state for review/blocked/external-ready tasks and update Taskwarrior on clear evidence.
 - `sync-cmux`: align CMUX from Taskwarrior only.
-- `sync`: run `refresh`, then `sync-cmux`.
-- `capture`: create or update one workstream from current context or arguments such as free text, PR URL, GitHub issue, or Jira issue.
-- `task-open`: create/select the CMUX workspace for one task, ensure/read the scratch pad for active AI work, and resume/start the appropriate AI session.
-- `task-update`: update one task plus its linked CMUX workspace.
-- `task-split`: split one workstream into two, with a fresh task/CMUX/AI session for the new work.
+- `sync`: run refresh, then sync CMUX.
+- `capture`: create/update one workstream from current context or supplied text/PR/issue.
+- `task-open`: create/select CMUX workspace, ensure/read scratch for active AI work, and resume/start the AI session.
+- `task-update`: update one task and its linked CMUX workspace.
+- `task-split`: split one overloaded workstream into two tasks, with separate scratch/CMUX/session for the new stream when active.
 
-## Capture
+## Workflow Checklist
 
-1. Infer context from the current repo:
-   - `pwd`, `jj workspace root`, `jj root`, `jj status`, `jj bookmark list --all`, and PR URLs when useful.
-   - repo in `organization/name` form.
-   - workspace, bookmark, scratch pad, PR, and AI session when known.
-2. Search existing tasks before creating:
-   - by `uuid`, `slug`, `title`, `pr`, `repo`, `workspace`, `bookmark`, and distinctive description words.
-3. Create or update exactly one task for the stream.
-4. For active AI-assisted work, create or link the deterministic scratch pad before substantial implementation if it is missing.
-5. If this dedicated AI session owns the work and `aisession` is empty, set it to the current prefixed AI session id when known. If `aisession` is already another session, alert the user and annotate only if useful.
-6. Add focused evidence annotations with prefixes such as `Session:`, `PR:`, `Decision:`, `Validation:`, `Blocker:`, `Dependency:`, `Error:`, or `Current handoff:`.
+When capturing/opening/updating/splitting:
 
-## Handoff
-
-When stopping work:
-
-1. Set `description` to the next transition.
-2. Verify `workspace` still points to the local jj workspace where the work should resume.
-3. Choose exactly one state.
-4. Use `wait:` for review, blocked, or parked streams when a reminder helps.
-5. Update the scratch pad with material design/debug/test evidence before the final response when applicable.
-6. If work is complete, keep the task `ready` with a cleanup description until the scratch pad has `**Completed:** <YYYY-MM-DD>`, `## Learnings` has been extracted to `~/worknotes/reference/` when useful, and the pad is archived to `scratch/archive/YYYY-MM/<slug>.md`.
-7. Add a compact `Current handoff:` annotation with current local/external state, validation or exact error status, important decisions/constraints, and the exact next transition.
-8. For PR work, record the next transition according to who can act next: fix/sign/push is `ready`, CI/merge check/rerun is `review`, and merged-but-not-cleaned-up is `ready` with `Cleanup`.
-9. Re-list or inspect the updated task and verify the invariants manually.
-
-## Check
-
-When checking review/blocked/parked tasks:
-
-1. Inspect the task and current external evidence, such as PR status or repo state.
-2. If still waiting, keep the state and record new evidence when it changes the wait, blocker, head/status, or next decision.
-3. If actionable, update the next transition and move to `ready`.
-4. Do not promote stale work to `ready` from memory alone.
-
-## Refresh
-
-When reassessing real-world state:
-
-1. Inspect pending workstreams, including `+WAITING`.
-2. Reassess `review` and `blocked` tasks, plus `ready` tasks with external hooks such as PRs, CI, Slack review asks, author-update waits, or mergeability.
-3. Use current external evidence only for this command family: GitHub PR/review/check state, Slack replies, CI/merge check details, or local repo state if directly relevant.
-4. If the transition is obvious, update Taskwarrior and the linked CMUX workspace.
-5. Record a `Refresh:` annotation when the check changes task state, next transition, wait, head/status, or preserves ambiguity that affects future decisions.
-6. If evidence is ambiguous, record the evidence and ask the user before changing state.
-
-## Split
-
-Split when the current task no longer has one coherent next transition: multiple independent actions, different repos/workspaces/PRs/owners, implementation mixed with backlog/design, a fresh AI session needing different context, or history that cannot be summarized by one `Current handoff:`.
-
-When a task contains two real streams:
-
-1. Name the independent streams.
-2. Keep the original task for one stream and narrow its description.
-3. Create a second task for the other stream with its own repo/workspace/bookmark/pr fields and next transition.
-4. Include enough context for a fresh AI session: source task uuid, split reason, relevant files, PR/issue links, prior decisions, validation state, scratch pad path, and desired next transition.
-5. Do not copy the old `aisession`; leave it unset for the new AI session to record.
-6. Create or link the new stream's scratch pad when it will be AI-assisted.
-7. Create a new CMUX workspace in the appropriate directory and start a new AI session there.
-8. Annotate both with the split reason when practical.
+1. Resolve the task by uuid, slug, title, PR, repo/workspace/bookmark, or distinctive words.
+2. Gather relevant repo context only when needed: `pwd`, `jj workspace root`, `jj root`, `jj status`, `jj bookmark list --all`, PR URL.
+3. Ensure active AI tasks have `title`, `slug`, `scratch`, and appropriate `workspace`/`bookmark`/`pr`/`aisession` metadata.
+4. Apply the scratch protocol before implementation and before final replies.
+5. Set `description` to the next concrete transition.
+6. Set exactly one workflow-state tag.
+7. Add compact evidence annotations using prefixes from the spec, especially `Current handoff:`, `Decision:`, `Validation:`, `Blocker:`, `Dependency:`, `Refresh:`, `CMUX:`, `Session:`, and `Error:`.
+8. Re-list/inspect the task and run `workstream-slug doctor --cmux` when title/slug/CMUX mapping changed.
