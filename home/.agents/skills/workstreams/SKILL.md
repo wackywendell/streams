@@ -14,14 +14,13 @@ Before changing tasks, read the shared policy at `~/.config/ai-workstreams/SPEC.
 ## Core Rules
 
 - Taskwarrior is the source of truth. Chat state is evidence only.
-- Do not use Beads or `bd` for workstream state; older instructions that mention them are stale.
 - One task is one workstream.
 - Taskwarrior numeric ids can change. Use `uuid` for durable task identity; use numeric ids only for immediate commands after listing current tasks.
 - `description` is the next transition that would advance the stream and must be concrete.
 - Tags must include exactly one state tag: `doing`, `ready`, `review`, `blocked`, or `parked`.
 - `workspace` is the local jj workspace root; `bookmark` is the code line. Keep both when known.
 - Active workstreams should have `title` and `slug`: `title` is the human display label for CMUX/status, while `slug` is the stable lowercase/kebab-case machine handle derived from title by default. Taskwarrior `uuid` remains durable identity.
-- Active AI-assisted workstreams should have `scratch`, a vault-relative path under `~/Documents/obsidian/worknotes`, usually `scratch/<slug>.md`. Scratch pads are engineering logs, not task state.
+- Active AI-assisted workstreams should have `scratch`, a worknotes-relative path under `~/worknotes`, usually `scratch/<slug>.md`. Scratch pads hold the full goal and engineering log, not task state.
 - CMUX title should be the workstream `title`; in the steady state, visible CMUX descriptions do not need `task:<uuid-prefix>` because automation resolves slugify(CMUX title) to exactly one pending task `slug`. Accept legacy `task:<uuid-prefix>` while migrating.
 - `aisession` uses `codex:<id>`, `claude:<id-or-slug>`, or `pi:<id>` when known.
 - Use Taskwarrior `priority` to feed urgency: `H` for reviews, follow-ups, and anything blocking others; `M` for the user's own work PRs; `L` for personal/tooling/backlog work unless explicitly promoted.
@@ -38,17 +37,18 @@ For substantial AI-assisted work, use the scratch pad before relying on chat con
 Default location:
 
 ```text
-~/Documents/obsidian/worknotes/<task.scratch or scratch/<task.slug>.md>
+~/worknotes/<task.scratch or scratch/<task.slug>.md>
 ```
 
-If the task has no `scratch` and you are starting or resuming substantial work, create the default pad directly: make `~/Documents/obsidian/worknotes/scratch/`, write `scratch/<slug>.md` with the template from the shared spec, set `task <uuid> modify scratch:scratch/<slug>.md`, and annotate `Scratch: <absolute path>`. Do not create a separate helper command for v1; direct agent-managed creation is the intended path.
+If the task has no `scratch` and you are starting or resuming substantial work, create the default pad directly: make `~/worknotes/scratch/`, write `scratch/<slug>.md` with the template from the shared spec, include the full task goal in the pad `**Goal:**` field, set `task <uuid> modify scratch:scratch/<slug>.md`, and annotate `Scratch: ~/worknotes/scratch/<slug>.md`. Add a compact `Goal:` annotation when the goal should be visible in Taskwarrior without opening the pad. Do not create a separate helper command for v1; direct agent-managed creation is the intended path.
 
 Mandatory behavior when a scratch pad exists:
 
 - Read the entire pad before implementation work.
 - Add or update a dated `## Design` entry with the current understanding and approach.
+- Update `**Goal:**` when the user clarifies intent or implementation learning changes the real outcome being pursued.
 - Record material decisions in `## Design`, investigations in `## Debugging`, verification commands/results in `## Test plan`, and reusable future-saving knowledge in `## Learnings`.
-- Before replying, ask whether anything since the last response belongs in the pad; update it first when yes.
+- Before replying, ask whether anything since the last response belongs in `**Goal:**` or the pad sections, and whether Taskwarrior's next transition/state/wait/metadata changed; update scratch and/or Taskwarrior first when yes.
 - Do not duplicate Taskwarrior status, todo lists, generic diff summaries, or large code blocks.
 
 ## Direct Taskwarrior Use
@@ -105,7 +105,7 @@ State tags describe who can move the stream next:
 - `blocked`: waiting on a true external dependency outside the normal review/CI loop.
 - `parked`: intentionally paused.
 
-Do not invent a `waiting` tag; use `review` for normal review/CI waits. A vague GitHub "blocked" state is not enough for `blocked`: read merge check/check-run text directly when refreshing, and move to `ready` if the output names an actionable fix such as unsigned commits. Use `Cleanup` as a status-update label and CMUX visual state, not a Taskwarrior state tag; the task remains `ready` with a cleanup description until PR merge and local bookmark/workspace/CMUX cleanup are verified. Parked tasks do not need an open CMUX workspace.
+Do not invent a `waiting` tag; use `review` for normal review/CI waits. A vague GitHub "blocked" state is not enough for `blocked`: read merge check/check-run text directly when refreshing, and move to `ready` if the output names an actionable fix such as unsigned commits. Use `Cleanup` as a status-update label and CMUX visual state, not a Taskwarrior state tag; the task remains `ready` with a cleanup description until PR merge, scratch archive/retro, local bookmark/workspace cleanup, CMUX cleanup, and task completion are verified. Parked tasks do not need an open CMUX workspace.
 
 ## Status Updates
 
@@ -166,9 +166,10 @@ When stopping work:
 3. Choose exactly one state.
 4. Use `wait:` for review, blocked, or parked streams when a reminder helps.
 5. Update the scratch pad with material design/debug/test evidence before the final response when applicable.
-6. Add a compact `Current handoff:` annotation with current local/external state, validation or exact error status, important decisions/constraints, and the exact next transition.
-7. For PR work, record the next transition according to who can act next: fix/sign/push is `ready`, CI/merge check/rerun is `review`, and merged-but-not-cleaned-up is `ready` with `Cleanup`.
-8. Re-list or inspect the updated task and verify the invariants manually.
+6. If work is complete, keep the task `ready` with a cleanup description until the scratch pad has `**Completed:** <YYYY-MM-DD>`, `## Learnings` has been extracted to `~/worknotes/reference/` when useful, and the pad is archived to `scratch/archive/YYYY-MM/<slug>.md`.
+7. Add a compact `Current handoff:` annotation with current local/external state, validation or exact error status, important decisions/constraints, and the exact next transition.
+8. For PR work, record the next transition according to who can act next: fix/sign/push is `ready`, CI/merge check/rerun is `review`, and merged-but-not-cleaned-up is `ready` with `Cleanup`.
+9. Re-list or inspect the updated task and verify the invariants manually.
 
 ## Check
 
@@ -203,4 +204,4 @@ When a task contains two real streams:
 5. Do not copy the old `aisession`; leave it unset for the new AI session to record.
 6. Create or link the new stream's scratch pad when it will be AI-assisted.
 7. Create a new CMUX workspace in the appropriate directory and start a new AI session there.
-7. Annotate both with the split reason when practical.
+8. Annotate both with the split reason when practical.

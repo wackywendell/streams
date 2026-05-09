@@ -9,7 +9,7 @@ Task: $ARGUMENTS
 
 Use the `workstreams` skill. Keep Taskwarrior as the source of truth and follow `~/.config/ai-workstreams/SPEC.md`.
 
-For active AI-assisted work, follow the shared scratch pad protocol: resolve or create the task scratch pad under `~/Documents/obsidian/worknotes/scratch/<slug>.md`, set the Taskwarrior `scratch` UDA if missing, read the pad before implementation, and update Design/Debugging/Test plan/Learnings before replying when material evidence changed.
+For active AI-assisted work, follow the shared scratch pad protocol: resolve or create the task scratch pad under `~/worknotes/scratch/<slug>.md`, set the Taskwarrior `scratch` UDA if missing, read the pad before implementation, and before replying update both scratch Goal/Design/Debugging/Test plan/Learnings and Taskwarrior next transition/state/wait/metadata when material evidence or clarified intent changed.
 
 This is the general entrypoint for Taskwarrior-backed coding workstreams. Route the request by intent:
 
