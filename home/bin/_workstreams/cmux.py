@@ -3,14 +3,10 @@
 from __future__ import annotations
 
 import json
-import re
 import subprocess
 from typing import Any
 
 from .errors import WorkstreamError
-from .resolve import UUID_RE
-
-TASK_TOKEN_RE = re.compile(r"\btask:(" + UUID_RE.pattern + r"|[0-9a-fA-F]{8})\b")
 
 
 def run(args: list[str]) -> subprocess.CompletedProcess[str]:
@@ -36,9 +32,3 @@ def workspaces() -> list[dict[str, Any]]:
     if not isinstance(data, dict) or not isinstance(data.get("workspaces"), list):
         raise WorkstreamError("cmux rpc workspace.list returned an unexpected shape")
     return data["workspaces"]
-
-
-def task_token_from_description(workspace: dict[str, Any]) -> str | None:
-    description = workspace.get("description") or ""
-    match = TASK_TOKEN_RE.search(description)
-    return match.group(1) if match else None

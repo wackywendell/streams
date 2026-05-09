@@ -6,10 +6,11 @@ from __future__ import annotations
 import argparse
 import sys
 from collections import defaultdict
+from dataclasses import dataclass
 
-from _workstreams.cmux import task_token_from_description, workspaces as cmux_workspaces
+from _workstreams.cmux import workspaces as cmux_workspaces
 from _workstreams.errors import WorkstreamError
-from _workstreams.resolve import UUID_RE, resolve_task
+from _workstreams.resolve import resolve_cmux_workspace, resolve_task, task_token_from_description
 from _workstreams.slug import (
     explicit_slug,
     explicit_title,
@@ -22,10 +23,10 @@ from _workstreams.slug import (
 from _workstreams.taskwarrior import STATE_TAGS, is_workstream, modify, pending_tasks
 
 
+@dataclass(frozen=True)
 class DoctorFinding:
-    def __init__(self, level: str, message: str) -> None:
-        self.level = level
-        self.message = message
+    level: str
+    message: str
 
     def __str__(self) -> str:
         return f"{self.level}: {self.message}"
@@ -97,19 +98,15 @@ def command_list(args: argparse.Namespace) -> int:
     return 0
 
 
-def task_matches_uuid_token(task: dict, token: str) -> bool:
-    uuid = str(task.get("uuid") or "")
-    if UUID_RE.fullmatch(token):
-        return uuid.lower() == token.lower()
-    return uuid.lower().startswith(token.lower())
-
-
 def cmux_doctor_findings(tasks: list[dict]) -> list[DoctorFinding]:
     findings: list[DoctorFinding] = []
     slug_to_tasks: dict[str, list[dict]] = defaultdict(list)
+    title_to_tasks: dict[str, list[dict]] = defaultdict(list)
     for task in tasks:
         if slug := explicit_slug(task):
             slug_to_tasks[slug].append(task)
+        if title := explicit_title(task):
+            title_to_tasks[title].append(task)
 
     for workspace in cmux_workspaces():
         title = str(workspace.get("title") or "")
@@ -118,37 +115,28 @@ def cmux_doctor_findings(tasks: list[dict]) -> list[DoctorFinding]:
         ref = workspace.get("ref") or workspace.get("id") or "<unknown>"
         title_slug = slugify(title)
         token = task_token_from_description(workspace)
+        likely_task_workspace = bool(token) or bool(slug_to_tasks.get(title_slug)) or bool(title_to_tasks.get(title))
+        if not likely_task_workspace:
+            continue
 
-        if token:
-            matches = [task for task in tasks if task_matches_uuid_token(task, token)]
-            if not matches:
-                findings.append(DoctorFinding("warn", f"{ref} {title!r} has legacy task:{token}, but no pending/waiting task matches"))
-                continue
-            if len(matches) > 1:
-                joined = "; ".join(task_label(task) for task in matches)
-                findings.append(DoctorFinding("error", f"{ref} {title!r} legacy task:{token} is ambiguous: {joined}"))
-                continue
+        try:
+            resolution = resolve_cmux_workspace(workspace, tasks=tasks)
+        except WorkstreamError as exc:
+            findings.append(DoctorFinding("error" if token else "warn", f"{ref} {title!r}: {exc}"))
+            continue
 
-            task = matches[0]
+        task = resolution.task
+        if resolution.reason == "legacy-task-token":
             findings.append(DoctorFinding("info", f"{ref} {title!r} still has legacy visible task:{token}"))
-            if explicit_title(task) and title != explicit_title(task):
-                findings.append(DoctorFinding("warn", f"{ref} title {title!r} != task title {explicit_title(task)!r}: {task_label(task)}"))
-            if explicit_slug(task) and title_slug != explicit_slug(task):
-                findings.append(DoctorFinding("warn", f"{ref} slugify(title) {title_slug!r} != task slug {explicit_slug(task)!r}: {task_label(task)}"))
-            if not explicit_slug(task):
-                findings.append(DoctorFinding("warn", f"{ref} legacy-linked task has no slug: {task_label(task)}"))
-            continue
+        elif resolution.legacy:
+            findings.append(DoctorFinding("warn", f"{ref} {title!r} resolved by legacy {resolution.reason}: {task_label(task)}"))
 
-        if not title_slug:
-            continue
-        matches = slug_to_tasks.get(title_slug, [])
-        if len(matches) > 1:
-            joined = "; ".join(task_label(task) for task in matches)
-            findings.append(DoctorFinding("error", f"{ref} title {title!r} resolves to duplicate slug {title_slug!r}: {joined}"))
-        elif len(matches) == 1:
-            task = matches[0]
-            if explicit_title(task) and title != explicit_title(task):
-                findings.append(DoctorFinding("warn", f"{ref} title {title!r} resolves by slug but differs from task title {explicit_title(task)!r}: {task_label(task)}"))
+        if explicit_title(task) and title != explicit_title(task):
+            findings.append(DoctorFinding("warn", f"{ref} title {title!r} != task title {explicit_title(task)!r}: {task_label(task)}"))
+        if explicit_slug(task) and title_slug != explicit_slug(task):
+            findings.append(DoctorFinding("warn", f"{ref} slugify(title) {title_slug!r} != task slug {explicit_slug(task)!r}: {task_label(task)}"))
+        if not explicit_slug(task):
+            findings.append(DoctorFinding("warn", f"{ref} linked task has no slug: {task_label(task)}"))
 
     return findings
 
@@ -158,6 +146,7 @@ def command_doctor(args: argparse.Namespace) -> int:
     findings: list[DoctorFinding] = []
 
     slug_to_tasks: dict[str, list[dict]] = defaultdict(list)
+    title_to_tasks: dict[str, list[dict]] = defaultdict(list)
     title_slug_to_tasks: dict[str, list[dict]] = defaultdict(list)
 
     for task in tasks:
@@ -180,6 +169,7 @@ def command_doctor(args: argparse.Namespace) -> int:
             slug_to_tasks[slug].append(task)
 
         if title:
+            title_to_tasks[title].append(task)
             title_slug = slugify(title)
             if not title_slug:
                 findings.append(DoctorFinding("error", f"title slugifies to empty: {task_label(task)}"))
@@ -198,9 +188,13 @@ def command_doctor(args: argparse.Namespace) -> int:
             joined = "; ".join(task_label(task) for task in matches)
             findings.append(DoctorFinding("error", f"duplicate slug {slug!r}: {joined}"))
 
+    for title, matches in sorted(title_to_tasks.items()):
+        if len(matches) > 1:
+            joined = "; ".join(task_label(task) for task in matches)
+            findings.append(DoctorFinding("warn", f"duplicate title {title!r}: {joined}"))
+
     for title_slug, matches in sorted(title_slug_to_tasks.items()):
-        explicit_slug_matches = [task for task in tasks if explicit_slug(task) == title_slug]
-        if len(matches) > 1 and not explicit_slug_matches:
+        if len(matches) > 1:
             joined = "; ".join(task_label(task) for task in matches)
             findings.append(DoctorFinding("warn", f"duplicate normalized title {title_slug!r}: {joined}"))
 

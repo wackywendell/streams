@@ -8,20 +8,38 @@ from pathlib import Path
 from typing import Any
 
 SLUG_RE = re.compile(r"^[a-z0-9](?:[a-z0-9-]{0,62}[a-z0-9])?$")
+OWNER_PREFIX_RE = re.compile(r"^[a-z0-9_.-]+/")
 
 
 class SlugError(ValueError):
     pass
 
 
-def slugify(text: str) -> str:
-    """Normalize a human title or external branch/workspace name to a workstream slug."""
+def _slugify_core(text: str) -> str:
     value = unicodedata.normalize("NFKD", text).encode("ascii", "ignore").decode("ascii")
     value = value.strip().lower()
-    value = re.sub(r"^[a-z0-9_.-]+/", "", value)  # drop owner prefixes like user/foo
     value = re.sub(r"[^a-z0-9]+", "-", value)
     value = re.sub(r"-+", "-", value).strip("-")
     return value
+
+
+def slugify(text: str) -> str:
+    """Normalize a human workstream title to a slug.
+
+    Human titles do not strip slash-separated prefixes: "API / HTTP" should
+    become "api-http", not "http". Use ``slugify_ref`` for branch/bookmark
+    names where an owner prefix such as ``user/foo`` should be ignored.
+    """
+    return _slugify_core(text)
+
+
+def slugify_ref(text: str) -> str:
+    """Normalize a branch/bookmark/workspace ref to a slug.
+
+    This strips a leading owner prefix such as ``user/`` before applying the
+    normal title slug rules.
+    """
+    return _slugify_core(OWNER_PREFIX_RE.sub("", text.strip().lower()))
 
 
 def validate_slug(slug: str) -> None:
@@ -68,9 +86,9 @@ def suggested_slug(task: dict[str, Any]) -> str | None:
     if title := explicit_title(task):
         return slugify(title)
     if bookmark := task.get("bookmark"):
-        return slugify(str(bookmark).split("/")[-1])
+        return slugify_ref(str(bookmark))
     if workspace := task.get("workspace"):
-        return slugify(Path(str(workspace)).name)
+        return slugify_ref(Path(str(workspace)).name)
     if pr := task.get("pr"):
         repo = str(task.get("repo") or "").split("/")[-1]
         return slugify(f"{repo}-{pr}" if repo else f"pr-{pr}")
@@ -87,7 +105,7 @@ def candidate_slugs(task: dict[str, Any]) -> set[str]:
         if value:
             candidates.add(value)
     if bookmark := task.get("bookmark"):
-        candidates.add(slugify(str(bookmark).split("/")[-1]))
+        candidates.add(slugify_ref(str(bookmark)))
     if workspace := task.get("workspace"):
-        candidates.add(slugify(Path(str(workspace)).name))
+        candidates.add(slugify_ref(Path(str(workspace)).name))
     return {candidate for candidate in candidates if candidate}

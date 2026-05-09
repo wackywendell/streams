@@ -6,19 +6,13 @@ from __future__ import annotations
 import argparse
 import json
 import os
-import re
 import shlex
 import subprocess
 import sys
 from dataclasses import dataclass
-from pathlib import Path
 
-from _workstreams.slug import candidate_slugs, explicit_slug, explicit_title, slugify
-
-
-UUID_RE = re.compile(r"[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}")
-TASK_TOKEN_RE = re.compile(r"\btask:(" + UUID_RE.pattern + r"|[0-9a-fA-F]{8})\b")
-PR_RE = re.compile(r"github\.com/([^/\s]+/[^/\s]+)/pull/(\d+)")
+from _workstreams.errors import WorkstreamError
+from _workstreams.resolve import UUID_RE, resolve_cmux_workspace
 
 
 @dataclass
@@ -76,131 +70,11 @@ def resolve_workspace(selector: str | None) -> dict:
     return matches[0]
 
 
-def task_export(selector: str) -> list[dict]:
-    data = json_from_command(["task", "rc.gc=off", selector, "export"])
-    if not isinstance(data, list):
-        raise WorkstreamResumeError("task export returned an unexpected shape")
-    return data
-
-
-def all_pending_tasks() -> list[dict]:
-    """Return pending workstream tasks, including tasks hidden by wait:.
-
-    Taskwarrior reports and filters can hide waiting tasks, but CMUX workspaces
-    still point at them with task:<uuid-prefix>.  Export both normal pending
-    tasks and +WAITING tasks, then de-duplicate by uuid.
-    """
-    tasks: list[dict] = []
-    seen: set[str] = set()
-    for selector in ("status:pending", "+WAITING"):
-        data = json_from_command(["task", "rc.gc=off", selector, "export"])
-        if not isinstance(data, list):
-            raise WorkstreamResumeError(f"task {selector} export returned an unexpected shape")
-        for task in data:
-            uuid = str(task.get("uuid") or "")
-            if uuid and uuid in seen:
-                continue
-            if uuid:
-                seen.add(uuid)
-            tasks.append(task)
-    return tasks
-
-
-def task_token_from_description(workspace: dict) -> str | None:
-    description = workspace.get("description") or ""
-    match = TASK_TOKEN_RE.search(description)
-    return match.group(1) if match else None
-
-
-def resolve_task_token(token: str) -> dict:
-    if UUID_RE.fullmatch(token):
-        matches = task_export(token)
-    else:
-        matches = [
-            task
-            for task in all_pending_tasks()
-            if str(task.get("uuid", "")).lower().startswith(token.lower())
-        ]
-
-    if not matches:
-        raise WorkstreamResumeError(f"workspace has task:{token}, but Taskwarrior could not find it")
-    if len(matches) > 1:
-        choices = ", ".join(f"{task.get('id')}:{task.get('uuid')} {task.get('description')}" for task in matches)
-        raise WorkstreamResumeError(f"workspace task:{token} is ambiguous: {choices}")
-
-    task = matches[0]
-    if task.get("status") != "pending":
-        raise WorkstreamResumeError(f"workspace task:{token} is {task.get('status')}, not pending")
-    return task
-
-
-def candidate_titles(task: dict) -> set[str]:
-    titles: set[str] = set()
-    if title := explicit_title(task):
-        titles.add(title)
-    if slug := explicit_slug(task):
-        titles.add(slug)
-    titles.update(candidate_slugs(task))
-    if workspace := task.get("workspace"):
-        titles.add(Path(workspace).name)
-    if bookmark := task.get("bookmark"):
-        titles.add(bookmark.split("/")[-1])
-    for annotation in task.get("annotations") or []:
-        description = annotation.get("description") or ""
-        titles.update(title.strip() for title in re.findall(r"CMUX .*?\(([^)]+)\)", description))
-    return {title for title in titles if title}
-
-
-def task_matches_workspace(task: dict, workspace: dict) -> bool:
-    title = workspace.get("title") or ""
-    description = workspace.get("description") or ""
-    cwd = workspace.get("current_directory") or ""
-
-    if title:
-        if title in candidate_titles(task):
-            return True
-        title_slug = slugify(title)
-        if title_slug and title_slug == explicit_slug(task):
-            return True
-    if cwd and task.get("workspace") == cwd:
-        return True
-    for repo, pr in PR_RE.findall(description):
-        if task.get("repo") == repo and str(task.get("pr")) == pr:
-            return True
-    return False
-
-
 def resolve_task(workspace: dict) -> dict:
-    if token := task_token_from_description(workspace):
-        return resolve_task_token(token)
-
-    tasks = all_pending_tasks()
-    title = workspace.get("title") or ""
-    if title:
-        title_slug = slugify(title)
-        title_matches = [
-            task
-            for task in tasks
-            if explicit_title(task) == title or (title_slug and explicit_slug(task) == title_slug)
-        ]
-        if title_matches:
-            if len(title_matches) > 1:
-                choices = ", ".join(f"{task.get('id')}:{task.get('uuid')} {task.get('description')}" for task in title_matches)
-                raise WorkstreamResumeError(f"workspace title {title!r} resolves to multiple Taskwarrior tasks: {choices}")
-            return title_matches[0]
-
-    matches = [task for task in tasks if task_matches_workspace(task, workspace)]
-    if not matches:
-        title = workspace.get("title")
-        ref = workspace.get("ref")
-        raise WorkstreamResumeError(
-            f"could not find a pending Taskwarrior task for {ref} {title!r}; "
-            "set a unique Taskwarrior slug matching the CMUX title, add legacy task:<uuid-prefix> to the CMUX description, or add a CMUX annotation to the task"
-        )
-    if len(matches) > 1:
-        choices = ", ".join(f"{task.get('id')}:{task.get('uuid')} {task.get('description')}" for task in matches)
-        raise WorkstreamResumeError(f"workspace matches multiple Taskwarrior tasks: {choices}")
-    return matches[0]
+    try:
+        return resolve_cmux_workspace(workspace).task
+    except WorkstreamError as exc:
+        raise WorkstreamResumeError(str(exc)) from exc
 
 
 def command_for_session(task: dict) -> str:
