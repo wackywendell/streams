@@ -21,6 +21,7 @@ Before changing tasks, read the shared policy at `~/.config/ai-workstreams/SPEC.
 - Tags must include exactly one state tag: `doing`, `ready`, `review`, `blocked`, or `parked`.
 - `workspace` is the local jj workspace root; `bookmark` is the code line. Keep both when known.
 - Active workstreams should have `title` and `slug`: `title` is the human display label for CMUX/status, while `slug` is the stable lowercase/kebab-case machine handle derived from title by default. Taskwarrior `uuid` remains durable identity.
+- Active AI-assisted workstreams should have `scratch`, a vault-relative path under `~/Documents/obsidian/worknotes`, usually `scratch/<slug>.md`. Scratch pads are engineering logs, not task state.
 - CMUX title should be the workstream `title`; in the steady state, visible CMUX descriptions do not need `task:<uuid-prefix>` because automation resolves slugify(CMUX title) to exactly one pending task `slug`. Accept legacy `task:<uuid-prefix>` while migrating.
 - `aisession` uses `codex:<id>`, `claude:<id-or-slug>`, or `pi:<id>` when known.
 - Use Taskwarrior `priority` to feed urgency: `H` for reviews, follow-ups, and anything blocking others; `M` for the user's own work PRs; `L` for personal/tooling/backlog work unless explicitly promoted.
@@ -29,6 +30,26 @@ Before changing tasks, read the shared policy at `~/.config/ai-workstreams/SPEC.
 - Annotations are focused evidence, not transcripts. Prefer typed prefixes such as `Current handoff:`, `Decision:`, `Validation:`, `Blocker:`, `Dependency:`, `Refresh:`, `CMUX:`, `Session:`, and `Error:`.
 - Be conservative about state changes; explain the evidence when moving a task.
 - When a dedicated AI session updates or captures a task, fill `aisession` with the current prefixed AI session id if it is empty. If it is already set to a different session, alert the user instead of overwriting it silently.
+
+## Scratch Pad Protocol
+
+For substantial AI-assisted work, use the scratch pad before relying on chat context alone.
+
+Default location:
+
+```text
+~/Documents/obsidian/worknotes/<task.scratch or scratch/<task.slug>.md>
+```
+
+If the task has no `scratch` and you are starting or resuming substantial work, create the default pad directly: make `~/Documents/obsidian/worknotes/scratch/`, write `scratch/<slug>.md` with the template from the shared spec, set `task <uuid> modify scratch:scratch/<slug>.md`, and annotate `Scratch: <absolute path>`. Do not create a separate helper command for v1; direct agent-managed creation is the intended path.
+
+Mandatory behavior when a scratch pad exists:
+
+- Read the entire pad before implementation work.
+- Add or update a dated `## Design` entry with the current understanding and approach.
+- Record material decisions in `## Design`, investigations in `## Debugging`, verification commands/results in `## Test plan`, and reusable future-saving knowledge in `## Learnings`.
+- Before replying, ask whether anything since the last response belongs in the pad; update it first when yes.
+- Do not duplicate Taskwarrior status, todo lists, generic diff summaries, or large code blocks.
 
 ## Direct Taskwarrior Use
 
@@ -128,12 +149,13 @@ Use these thin command names consistently:
 1. Infer context from the current repo:
    - `pwd`, `jj workspace root`, `jj root`, `jj status`, `jj bookmark list --all`, and PR URLs when useful.
    - repo in `organization/name` form.
-   - workspace, bookmark, PR, and AI session when known.
+   - workspace, bookmark, scratch pad, PR, and AI session when known.
 2. Search existing tasks before creating:
    - by `uuid`, `slug`, `title`, `pr`, `repo`, `workspace`, `bookmark`, and distinctive description words.
 3. Create or update exactly one task for the stream.
-4. If this dedicated AI session owns the work and `aisession` is empty, set it to the current prefixed AI session id when known. If `aisession` is already another session, alert the user and annotate only if useful.
-5. Add focused evidence annotations with prefixes such as `Session:`, `PR:`, `Decision:`, `Validation:`, `Blocker:`, `Dependency:`, `Error:`, or `Current handoff:`.
+4. For active AI-assisted work, create or link the deterministic scratch pad before substantial implementation if it is missing.
+5. If this dedicated AI session owns the work and `aisession` is empty, set it to the current prefixed AI session id when known. If `aisession` is already another session, alert the user and annotate only if useful.
+6. Add focused evidence annotations with prefixes such as `Session:`, `PR:`, `Decision:`, `Validation:`, `Blocker:`, `Dependency:`, `Error:`, or `Current handoff:`.
 
 ## Handoff
 
@@ -143,9 +165,10 @@ When stopping work:
 2. Verify `workspace` still points to the local jj workspace where the work should resume.
 3. Choose exactly one state.
 4. Use `wait:` for review, blocked, or parked streams when a reminder helps.
-5. Add a compact `Current handoff:` annotation with current local/external state, validation or exact error status, important decisions/constraints, and the exact next transition.
-6. For PR work, record the next transition according to who can act next: fix/sign/push is `ready`, CI/merge check/rerun is `review`, and merged-but-not-cleaned-up is `ready` with `Cleanup`.
-7. Re-list or inspect the updated task and verify the invariants manually.
+5. Update the scratch pad with material design/debug/test evidence before the final response when applicable.
+6. Add a compact `Current handoff:` annotation with current local/external state, validation or exact error status, important decisions/constraints, and the exact next transition.
+7. For PR work, record the next transition according to who can act next: fix/sign/push is `ready`, CI/merge check/rerun is `review`, and merged-but-not-cleaned-up is `ready` with `Cleanup`.
+8. Re-list or inspect the updated task and verify the invariants manually.
 
 ## Check
 

@@ -13,6 +13,7 @@ Use the task fields this way:
 - built-in `uuid`: the durable Taskwarrior task identity. Use this for annotations, exact automation, and handoffs.
 - `title`: the stable human-readable workstream name, such as `Grove Workstreams`. Use this as the CMUX workspace title and status-display label.
 - `slug`: the stable lowercase/kebab-case machine handle, derived from `title` by default, such as `grove-workstreams`. Use this for deterministic task lookup, AI session names, scratch pad filenames, and remote tmux/workspace handles.
+- `scratch`: optional vault-relative scratch pad path, usually `scratch/<slug>.md` under `~/Documents/obsidian/worknotes`. Scratch pads are engineering logs and reusable-memory sources, not task state.
 - `description`: the next transition that would advance the workstream, written as a concrete imperative.
 - `project`: the project or product area, such as `widget-lib`.
 - `repo`: repository in `organization/name` form, such as `example-org/monorepo`.
@@ -83,6 +84,7 @@ Use `due` only for real deadlines. Do not use `due` for normal review/CI check-i
 
 - Every workstream task has exactly one workflow-state tag.
 - Active and ready workstreams should have `title` and `slug` set. Parked backlog work may omit them until it becomes active.
+- Active AI-assisted workstreams should have `scratch` set, or agents should create and link the default `scratch/<slug>.md` before substantial work.
 - `slug` is lowercase/kebab-case and should equal `slugify(title)` unless an intentional rename/preservation is annotated.
 - `slug` resolves to at most one pending or waiting workstream; automation must fail on duplicate or ambiguous slug matches.
 - `workstream-slug doctor --cmux` should report no errors before relying on CMUX title-to-slug resolution broadly; warnings are expected during migration for older tasks that still lack title/slug or have legacy visible `task:<uuid-prefix>` links.
@@ -110,6 +112,72 @@ Use four identities deliberately:
 - `aisession`: preferred AI session to resume, in `codex:<id>`, `claude:<id-or-slug>`, or `pi:<id>` form.
 
 A slug is convenient, not authoritative. It should resolve to at most one pending workstream before automation acts on it. A CMUX workspace resolves to a task by slugifying its title and finding exactly one pending task whose `slug` matches. During migration, a visible `task:<8-char-uuid-prefix>` link may remain as a fallback, but the target display model omits it from CMUX descriptions.
+
+## Scratch Pads
+
+Scratch pads live in the Obsidian worknotes vault and are durable engineering logs. Taskwarrior remains canonical for status and next transitions; scratch pads record reasoning, investigations, verification, and reusable learnings.
+
+Use this deterministic convention:
+
+```text
+vault root  = ~/Documents/obsidian/worknotes
+scratch UDA = task.scratch if set, else scratch/<task.slug>.md
+path        = <vault root>/<scratch UDA>
+```
+
+Agents should create scratch pads directly rather than calling a separate helper command. When creating one:
+
+1. Require a task `uuid`, `title`, and `slug`.
+2. Create `~/Documents/obsidian/worknotes/scratch/` if needed.
+3. Write `scratch/<slug>.md` if it does not already exist.
+4. Set `task <uuid> modify scratch:scratch/<slug>.md`.
+5. Add one annotation: `Scratch: ~/Documents/obsidian/worknotes/scratch/<slug>.md`.
+6. Read the entire scratch pad before doing substantial work.
+
+Use this template:
+
+```markdown
+# <Task title>
+
+**Taskwarrior:** `<uuid>`
+**Slug:** `<slug>`
+**Created:** <YYYY-MM-DD>
+**Repo:** `<repo>`
+**Workspace:** `<workspace>`
+**Bookmark:** `<bookmark>`
+**PR:** `<pr>`
+**AI session:** `<aisession>`
+
+**Current transition at creation:** <description>
+
+## Design
+
+_Engineering design, architecture decisions, tradeoffs considered._
+
+## Debugging
+
+_Investigation steps, failed hypotheses, what turned out to matter._
+
+## Test plan
+
+_How to verify: commands, scenarios, expected outcomes._
+
+## Learnings
+
+_Novel, reusable knowledge worth remembering. Only add entries that would save time on a future unrelated task._
+```
+
+Mandatory scratch protocol for active AI sessions:
+
+- On session start or resume, read the entire scratch pad before implementation work.
+- If creating or resuming substantial work, add a dated `## Design` entry with the understood task and planned approach.
+- While working, update `## Design`, `## Debugging`, `## Test plan`, and `## Learnings` as material evidence appears.
+- Before replying, ask whether anything since the last response belongs in the scratch pad; update it before responding when yes.
+- Do not duplicate Taskwarrior state, todo lists, generic diff summaries, or large code blocks in the scratch pad.
+
+`## Learnings` entries must pass this filter: not derivable from code/history, not a one-off task detail, and likely to save time on a future unrelated task.
+
+<!-- TODO(workstreams): Add a workstream-scratch command only if direct agent-managed scratch creation proves error-prone, humans want a manual open/ensure flow, or archive/retro/remote-sync lifecycle needs dedicated tooling. -->
 
 ## Annotation Hygiene
 
@@ -249,7 +317,7 @@ Goal: create or update the workstream task for the current repo/chat/PR.
    - jj workspace root path from `jj workspace root` or `jj root`, when available;
    - current jj bookmark, when available;
    - PR number or URL, when available;
-   - stable title and slug, when useful;
+   - stable title, slug, and scratch pad path, when useful;
    - AI session id, when useful;
    - current next transition;
    - whether the action is actionable now.
@@ -301,7 +369,7 @@ Goal: turn one overloaded task into two real workstreams.
 1. Identify the independent next transitions, ownership boundaries, repos/workspaces, and session contexts.
 2. Keep the original task for one stream and narrow its `description`.
 3. Create a new task for the other stream with its own state, repo/workspace/bookmark/pr fields, and next transition.
-4. Put enough context in the new task description and annotations for a fresh AI session to start from scratch: source task uuid, split reason, relevant files, repo/workspace, PR/issue links, decisions already made, validation state, constraints, and desired next transition.
+4. Put enough context in the new task description, scratch pad, and annotations for a fresh AI session to start from a clean context: source task uuid, split reason, relevant files, repo/workspace, PR/issue links, decisions already made, validation state, constraints, and desired next transition.
 5. Do not copy the old task's `aisession` to the new task. Leave `aisession` unset until the new AI session starts and records its own prefixed id.
 6. Create a new CMUX workspace for the new task in the appropriate repo or jj workspace directory, and start a new AI session there.
 7. Annotate both tasks with the split reason and cross-reference when practical.
@@ -311,7 +379,7 @@ Goal: turn one overloaded task into two real workstreams.
 Create:
 
 ```bash
-task add project:widget-lib title:"Widget Lib Bump" slug:widget-lib-bump repo:example-org/monorepo workspace:/Users/<username>/go/src/github.com/example-org/monorepo/workspaces/widget-java bookmark:<username>/bump-widget-lib-0.3.2 pr:12345 +review wait:tomorrow "Check CI on PR #12345 and merge if approved"
+task add project:widget-lib title:"Widget Lib Bump" slug:widget-lib-bump scratch:scratch/widget-lib-bump.md repo:example-org/monorepo workspace:/Users/<username>/go/src/github.com/example-org/monorepo/workspaces/widget-java bookmark:<username>/bump-widget-lib-0.3.2 pr:12345 +review wait:tomorrow "Check CI on PR #12345 and merge if approved"
 task <id> annotate "PR: https://github.com/example-org/monorepo/pull/12345"
 task <id> annotate "Validation: make test passed"
 task <id> annotate "Current handoff: PR #12345 is waiting on CI; validation passed locally; next check CI and merge if approved."
@@ -328,20 +396,20 @@ task <id> annotate "Blocker: upstream release PR has not landed; no local action
 Find likely workstreams:
 
 ```bash
-task rc.gc=off status:pending '( repo.not: or title.not: or slug.not: or +doing or +ready or +review or +blocked or +parked )' \
-  columns:id,uuid,title,slug,project,repo,workspace,bookmark,pr,priority,urgency,due,wait,tags,description
+task rc.gc=off status:pending '( repo.not: or title.not: or slug.not: or scratch.not: or +doing or +ready or +review or +blocked or +parked )' \
+  columns:id,uuid,title,slug,scratch,project,repo,workspace,bookmark,pr,priority,urgency,due,wait,tags,description
 task rc.gc=off +WAITING export
 ```
 
 Validate state tags and title/slug mapping manually:
 
 ```bash
-task rc.gc=off status:pending '( repo.not: or title.not: or slug.not: or workspace.not: or bookmark.not: or pr.not: or aisession.not: or +doing or +ready or +review or +blocked or +parked )' \
-  columns:id,uuid,title,slug,project,repo,workspace,bookmark,pr,priority,urgency,due,wait,tags,description
+task rc.gc=off status:pending '( repo.not: or title.not: or slug.not: or scratch.not: or workspace.not: or bookmark.not: or pr.not: or aisession.not: or +doing or +ready or +review or +blocked or +parked )' \
+  columns:id,uuid,title,slug,scratch,project,repo,workspace,bookmark,pr,priority,urgency,due,wait,tags,description
 task rc.gc=off +WAITING export
 workstream-slug doctor --cmux
 ```
 
 Taskwarrior reports can hide tasks with `wait:`. Always include `+WAITING export` when checking review, blocked, or parked workstreams that may be waiting.
 
-Inspect any workstream task with missing `project`, missing `repo`, missing active-workstream `title`/`slug`, or not exactly one of the five workflow-state tags.
+Inspect any workstream task with missing `project`, missing `repo`, missing active-workstream `title`/`slug`/`scratch`, or not exactly one of the five workflow-state tags.

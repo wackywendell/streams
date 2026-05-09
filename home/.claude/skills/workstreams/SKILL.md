@@ -21,6 +21,7 @@ Follow the same core workflow as Codex:
 - annotations are focused evidence, not transcripts; prefer prefixes such as `Current handoff:`, `Decision:`, `Validation:`, `Blocker:`, `Dependency:`, `Refresh:`, `CMUX:`, `Session:`, and `Error:`;
 - `workspace` is the local jj workspace root, while `bookmark` is the code line;
 - active workstreams should have `title` and `slug`: `title` is the human display label for CMUX/status, while `slug` is the stable lowercase/kebab-case machine handle derived from title by default; Taskwarrior `uuid` remains durable identity;
+- active AI-assisted workstreams should have `scratch`, a vault-relative path under `~/Documents/obsidian/worknotes`, usually `scratch/<slug>.md`; scratch pads are engineering logs, not task state;
 - CMUX title should be the workstream `title`; visible `task:<uuid-prefix>` links are legacy fallback only because automation should resolve slugify(CMUX title) to exactly one pending task `slug`;
 - `aisession` uses `codex:<id>`, `claude:<id-or-slug>`, or `pi:<id>` when known;
 - tags include exactly one workflow-state tag: `doing`, `ready`, `review`, `blocked`, or `parked`;
@@ -36,6 +37,8 @@ Overall status updates should order workstreams by Taskwarrior urgency by defaul
 If a blocked or parked task is high urgency because of an overdue `due`, treat that as an attention signal: clear or correct the deadline, unpark it, update `wait`, or otherwise fix the task record. Do not invent a parallel ranking system when Taskwarrior fields can be corrected.
 
 Distinguish self-review from external review: draft PR self-review is the user's move (`ready` / `**Self-review**`), while `review` / `**Review**` means waiting on another person, Slack response, CI, mergeability, or a timed check.
+
+When doing substantial AI-assisted work, read the task scratch pad before implementation. If it is missing, create `~/Documents/obsidian/worknotes/scratch/<slug>.md` directly using the shared spec template, set `scratch:scratch/<slug>.md`, and annotate `Scratch: <absolute path>`. Before replying, update `## Design`, `## Debugging`, `## Test plan`, or `## Learnings` with material evidence; do not duplicate Taskwarrior status or todos there.
 
 When pausing active work, add a compact `Current handoff:` annotation with current local/external state, validation or exact error status, important decisions/constraints, and the exact next transition.
 
