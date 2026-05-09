@@ -20,7 +20,8 @@ Before changing tasks, read the shared policy at `~/.config/ai-workstreams/SPEC.
 - `description` is the next transition that would advance the stream and must be concrete.
 - Tags must include exactly one state tag: `doing`, `ready`, `review`, `blocked`, or `parked`.
 - `workspace` is the local jj workspace root; `bookmark` is the code line. Keep both when known.
-- Active workstreams should have a stable slug for CMUX title/session name; prefer bookmark or workspace basename, while Taskwarrior `uuid` remains durable identity.
+- Active workstreams should have `title` and `slug`: `title` is the human display label for CMUX/status, while `slug` is the stable lowercase/kebab-case machine handle derived from title by default. Taskwarrior `uuid` remains durable identity.
+- CMUX title should be the workstream `title`; in the steady state, visible CMUX descriptions do not need `task:<uuid-prefix>` because automation resolves slugify(CMUX title) to exactly one pending task `slug`. Accept legacy `task:<uuid-prefix>` while migrating.
 - `aisession` uses `codex:<id>`, `claude:<id-or-slug>`, or `pi:<id>` when known.
 - Use Taskwarrior `priority` to feed urgency: `H` for reviews, follow-ups, and anything blocking others; `M` for the user's own work PRs; `L` for personal/tooling/backlog work unless explicitly promoted.
 - Use `due` only for real deadlines. Use `wait` for reminders, snoozes, CI/review re-checks, and blocked follow-ups; default normal review waits to the next business day unless the task evidence calls for a same-day re-check or longer snooze.
@@ -104,7 +105,7 @@ For individual task updates, start with one bold status word or short phrase: `*
 
 Do not blur self-review and external review. A draft PR that the user needs to inspect should be `**Ready**` or `**Self-review**`. Use `**Review**` only when waiting on someone else, Slack response, CI, mergeability, or a timed check.
 
-When a task has an associated CMUX workspace, update the CMUX title, description, color, status pills, and order alongside Taskwarrior state. Use the shared CMUX display grammar: `title = <stable slug>` and `description = [detail] + meta + optional PR markdown link + task link`, where `meta` looks like `H: 8.8` or `M: 3.7 → Wed 09:00`. Keep `task:<8-char-uuid-prefix>` visible and the full uuid in Taskwarrior annotations.
+When a task has an associated CMUX workspace, update the CMUX title, description, color, status pills, and order alongside Taskwarrior state. Use the shared CMUX display grammar: `title = <task title>` and `description = [detail] + meta + optional PR markdown link`, where `meta` looks like `H: 8.8` or `M: 3.7 → Wed 09:00`. Keep the full Taskwarrior uuid in Taskwarrior annotations; visible `task:<8-char-uuid-prefix>` links are legacy fallback only.
 
 Use CMUX colors to show actionability: `Green` for `doing`, `ready`, and `Cleanup`; `Amber` for `review` and timed waits; `Orange` for `blocked`; `Red` for a temporarily open `parked` workspace. Do not add separate overdue colors; add a `tw-overdue` status pill or `Overdue: <date>` description metadata instead. Order CMUX task workspaces by Taskwarrior urgency after the pinned `tasks` conductor workspace. Parked tasks generally should not have an open CMUX workspace. When multiple CMUX actions are needed, batch them into one readable shell command block, using `&&` when later updates should stop after an earlier failure.
 
@@ -129,7 +130,7 @@ Use these thin command names consistently:
    - repo in `organization/name` form.
    - workspace, bookmark, PR, and AI session when known.
 2. Search existing tasks before creating:
-   - by `uuid`, `pr`, `repo`, `workspace`, `bookmark`, and distinctive description words.
+   - by `uuid`, `slug`, `title`, `pr`, `repo`, `workspace`, `bookmark`, and distinctive description words.
 3. Create or update exactly one task for the stream.
 4. If this dedicated AI session owns the work and `aisession` is empty, set it to the current prefixed AI session id when known. If `aisession` is already another session, alert the user and annotate only if useful.
 5. Add focused evidence annotations with prefixes such as `Session:`, `PR:`, `Decision:`, `Validation:`, `Blocker:`, `Dependency:`, `Error:`, or `Current handoff:`.

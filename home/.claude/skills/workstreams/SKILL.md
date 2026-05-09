@@ -20,7 +20,8 @@ Follow the same core workflow as Codex:
 - `description` is the next transition that would advance the stream;
 - annotations are focused evidence, not transcripts; prefer prefixes such as `Current handoff:`, `Decision:`, `Validation:`, `Blocker:`, `Dependency:`, `Refresh:`, `CMUX:`, `Session:`, and `Error:`;
 - `workspace` is the local jj workspace root, while `bookmark` is the code line;
-- active workstreams should have a stable slug for CMUX title/session name; prefer bookmark or workspace basename, while Taskwarrior `uuid` remains durable identity;
+- active workstreams should have `title` and `slug`: `title` is the human display label for CMUX/status, while `slug` is the stable lowercase/kebab-case machine handle derived from title by default; Taskwarrior `uuid` remains durable identity;
+- CMUX title should be the workstream `title`; visible `task:<uuid-prefix>` links are legacy fallback only because automation should resolve slugify(CMUX title) to exactly one pending task `slug`;
 - `aisession` uses `codex:<id>`, `claude:<id-or-slug>`, or `pi:<id>` when known;
 - tags include exactly one workflow-state tag: `doing`, `ready`, `review`, `blocked`, or `parked`;
 - use Taskwarrior `priority` to feed urgency: `H` for reviews, follow-ups, and anything blocking others; `M` for the user's own work PRs; `L` for personal/tooling/backlog work unless explicitly promoted;
@@ -40,7 +41,7 @@ When pausing active work, add a compact `Current handoff:` annotation with curre
 
 When splitting off a new task, create a new Taskwarrior task, new CMUX workspace, and new AI session in the appropriate directory. Split when the current task no longer has one coherent next transition: multiple independent actions, different repos/workspaces/PRs/owners, implementation mixed with backlog/design, a fresh AI session needing different context, or history that cannot be summarized by one `Current handoff:`. Do not copy the old `aisession`; leave it unset until the new session records its own prefixed id. Put enough context in the new task for a fresh AI session to start from scratch.
 
-When a task has an associated CMUX workspace, update the CMUX title, description, color, status pills, and order alongside Taskwarrior state. Use the shared CMUX display grammar: `title = <stable slug>` and `description = [detail] + meta + optional PR markdown link + task link`, where `meta` looks like `H: 8.8` or `M: 3.7 → Wed 09:00`. Keep `task:<8-char-uuid-prefix>` visible and the full uuid in Taskwarrior annotations.
+When a task has an associated CMUX workspace, update the CMUX title, description, color, status pills, and order alongside Taskwarrior state. Use the shared CMUX display grammar: `title = <task title>` and `description = [detail] + meta + optional PR markdown link`, where `meta` looks like `H: 8.8` or `M: 3.7 → Wed 09:00`. Keep the full uuid in Taskwarrior annotations; visible `task:<8-char-uuid-prefix>` links are legacy fallback only.
 
 Use CMUX colors to show actionability: `Green` for `doing`, `ready`, and `Cleanup`; `Amber` for `review` and timed waits; `Orange` for `blocked`; `Red` for a temporarily open `parked` workspace. Do not add separate overdue colors; add a `tw-overdue` status pill or `Overdue: <date>` description metadata instead. Order CMUX task workspaces by Taskwarrior urgency after the pinned `tasks` conductor workspace. Parked tasks generally should not have an open CMUX workspace. When multiple CMUX actions are needed, batch them into one readable shell command block, using `&&` when later updates should stop after an earlier failure.
 

@@ -1,0 +1,264 @@
+#!/usr/bin/env python3
+"""Manage Taskwarrior workstream titles and slugs."""
+
+from __future__ import annotations
+
+import argparse
+import sys
+from collections import defaultdict
+
+from _workstreams.cmux import task_token_from_description, workspaces as cmux_workspaces
+from _workstreams.errors import WorkstreamError
+from _workstreams.resolve import UUID_RE, resolve_task
+from _workstreams.slug import (
+    explicit_slug,
+    explicit_title,
+    normalized_slug,
+    slugify,
+    suggested_slug,
+    suggested_title,
+    validate_slug,
+)
+from _workstreams.taskwarrior import STATE_TAGS, is_workstream, modify, pending_tasks
+
+
+class DoctorFinding:
+    def __init__(self, level: str, message: str) -> None:
+        self.level = level
+        self.message = message
+
+    def __str__(self) -> str:
+        return f"{self.level}: {self.message}"
+
+
+def task_label(task: dict) -> str:
+    title = explicit_title(task) or "-"
+    slug = explicit_slug(task) or "-"
+    return f"{task.get('id')} {task.get('uuid')} title={title!r} slug={slug!r}"
+
+
+def command_get(args: argparse.Namespace) -> int:
+    task = resolve_task(args.selector)
+    title = explicit_title(task)
+    slug = explicit_slug(task)
+    print(f"id:          {task.get('id')}")
+    print(f"uuid:        {task.get('uuid')}")
+    print(f"title:       {title or '-'}")
+    print(f"slug:        {slug or '-'}")
+    print(f"suggested:   {suggested_slug(task) or '-'}")
+    print(f"description: {task.get('description')}")
+    return 0
+
+
+def command_suggest(args: argparse.Namespace) -> int:
+    if args.selector:
+        task = resolve_task(args.selector)
+        title = suggested_title(task)
+        slug = suggested_slug(task)
+        print(f"{task.get('id')} {task.get('uuid')} title={title or '-'} slug={slug or '-'}")
+        return 0
+
+    for task in pending_tasks(include_waiting=True):
+        if is_workstream(task):
+            title = suggested_title(task)
+            slug = suggested_slug(task)
+            print(f"{task.get('id')} {task.get('uuid')} title={title or '-'} slug={slug or '-'} :: {task.get('description')}")
+    return 0
+
+
+def command_set(args: argparse.Namespace) -> int:
+    task = resolve_task(args.selector)
+    title = args.title.strip()
+    if not title:
+        raise WorkstreamError("title cannot be empty")
+    slug = normalized_slug(args.slug) if args.slug else normalized_slug(title)
+    modify(str(task["uuid"]), f"title:{title}", f"slug:{slug}")
+    print(f"updated: {task.get('id')} {task.get('uuid')} title={title!r} slug={slug!r}")
+    return 0
+
+
+def command_set_slug(args: argparse.Namespace) -> int:
+    task = resolve_task(args.selector)
+    slug = normalized_slug(args.slug)
+    modify(str(task["uuid"]), f"slug:{slug}")
+    print(f"updated: {task.get('id')} {task.get('uuid')} slug={slug!r}")
+    return 0
+
+
+def command_list(args: argparse.Namespace) -> int:
+    for task in pending_tasks(include_waiting=True):
+        if not is_workstream(task):
+            continue
+        title = explicit_title(task) or "-"
+        slug = explicit_slug(task) or "-"
+        state_tags = sorted(set(task.get("tags") or []) & STATE_TAGS)
+        state = state_tags[0] if state_tags else "-"
+        print(f"{slug:32} {title:32} {state:8} {task.get('uuid')}  {task.get('description')}")
+    return 0
+
+
+def task_matches_uuid_token(task: dict, token: str) -> bool:
+    uuid = str(task.get("uuid") or "")
+    if UUID_RE.fullmatch(token):
+        return uuid.lower() == token.lower()
+    return uuid.lower().startswith(token.lower())
+
+
+def cmux_doctor_findings(tasks: list[dict]) -> list[DoctorFinding]:
+    findings: list[DoctorFinding] = []
+    slug_to_tasks: dict[str, list[dict]] = defaultdict(list)
+    for task in tasks:
+        if slug := explicit_slug(task):
+            slug_to_tasks[slug].append(task)
+
+    for workspace in cmux_workspaces():
+        title = str(workspace.get("title") or "")
+        if title == "tasks":
+            continue
+        ref = workspace.get("ref") or workspace.get("id") or "<unknown>"
+        title_slug = slugify(title)
+        token = task_token_from_description(workspace)
+
+        if token:
+            matches = [task for task in tasks if task_matches_uuid_token(task, token)]
+            if not matches:
+                findings.append(DoctorFinding("warn", f"{ref} {title!r} has legacy task:{token}, but no pending/waiting task matches"))
+                continue
+            if len(matches) > 1:
+                joined = "; ".join(task_label(task) for task in matches)
+                findings.append(DoctorFinding("error", f"{ref} {title!r} legacy task:{token} is ambiguous: {joined}"))
+                continue
+
+            task = matches[0]
+            findings.append(DoctorFinding("info", f"{ref} {title!r} still has legacy visible task:{token}"))
+            if explicit_title(task) and title != explicit_title(task):
+                findings.append(DoctorFinding("warn", f"{ref} title {title!r} != task title {explicit_title(task)!r}: {task_label(task)}"))
+            if explicit_slug(task) and title_slug != explicit_slug(task):
+                findings.append(DoctorFinding("warn", f"{ref} slugify(title) {title_slug!r} != task slug {explicit_slug(task)!r}: {task_label(task)}"))
+            if not explicit_slug(task):
+                findings.append(DoctorFinding("warn", f"{ref} legacy-linked task has no slug: {task_label(task)}"))
+            continue
+
+        if not title_slug:
+            continue
+        matches = slug_to_tasks.get(title_slug, [])
+        if len(matches) > 1:
+            joined = "; ".join(task_label(task) for task in matches)
+            findings.append(DoctorFinding("error", f"{ref} title {title!r} resolves to duplicate slug {title_slug!r}: {joined}"))
+        elif len(matches) == 1:
+            task = matches[0]
+            if explicit_title(task) and title != explicit_title(task):
+                findings.append(DoctorFinding("warn", f"{ref} title {title!r} resolves by slug but differs from task title {explicit_title(task)!r}: {task_label(task)}"))
+
+    return findings
+
+
+def command_doctor(args: argparse.Namespace) -> int:
+    tasks = [task for task in pending_tasks(include_waiting=True) if is_workstream(task)]
+    findings: list[DoctorFinding] = []
+
+    slug_to_tasks: dict[str, list[dict]] = defaultdict(list)
+    title_slug_to_tasks: dict[str, list[dict]] = defaultdict(list)
+
+    for task in tasks:
+        title = explicit_title(task)
+        slug = explicit_slug(task)
+        tags = set(task.get("tags") or [])
+        state_tags = tags & STATE_TAGS
+        require_identity = bool(state_tags - {"parked"})
+
+        if not title and require_identity:
+            findings.append(DoctorFinding("warn", f"missing title: {task_label(task)}"))
+        if not slug and require_identity:
+            findings.append(DoctorFinding("warn", f"missing slug: {task_label(task)}"))
+
+        if slug:
+            try:
+                validate_slug(slug)
+            except ValueError as exc:
+                findings.append(DoctorFinding("error", f"{exc}: {task_label(task)}"))
+            slug_to_tasks[slug].append(task)
+
+        if title:
+            title_slug = slugify(title)
+            if not title_slug:
+                findings.append(DoctorFinding("error", f"title slugifies to empty: {task_label(task)}"))
+            else:
+                title_slug_to_tasks[title_slug].append(task)
+                if slug and slug != title_slug:
+                    findings.append(
+                        DoctorFinding(
+                            "warn",
+                            f"slug != slugify(title) ({slug!r} != {title_slug!r}): {task_label(task)}",
+                        )
+                    )
+
+    for slug, matches in sorted(slug_to_tasks.items()):
+        if len(matches) > 1:
+            joined = "; ".join(task_label(task) for task in matches)
+            findings.append(DoctorFinding("error", f"duplicate slug {slug!r}: {joined}"))
+
+    for title_slug, matches in sorted(title_slug_to_tasks.items()):
+        explicit_slug_matches = [task for task in tasks if explicit_slug(task) == title_slug]
+        if len(matches) > 1 and not explicit_slug_matches:
+            joined = "; ".join(task_label(task) for task in matches)
+            findings.append(DoctorFinding("warn", f"duplicate normalized title {title_slug!r}: {joined}"))
+
+    if args.cmux:
+        findings.extend(cmux_doctor_findings(tasks))
+
+    if not findings:
+        scope = "Taskwarrior + CMUX" if args.cmux else "Taskwarrior"
+        print(f"ok: {len(tasks)} pending/waiting workstream task(s) have valid title/slug identity in {scope}")
+        return 0
+
+    for finding in findings:
+        print(finding)
+    return 1 if any(finding.level == "error" for finding in findings) else 0
+
+
+def build_parser() -> argparse.ArgumentParser:
+    parser = argparse.ArgumentParser(description=__doc__)
+    sub = parser.add_subparsers(dest="command", required=True)
+
+    get = sub.add_parser("get", help="show title/slug for one task")
+    get.add_argument("selector", help="task uuid/id/slug/title")
+    get.set_defaults(func=command_get)
+
+    set_cmd = sub.add_parser("set", help="set title and derived slug for one task")
+    set_cmd.add_argument("selector", help="task uuid/id/slug/title")
+    set_cmd.add_argument("title", help="human title, e.g. 'Grove Workstreams'")
+    set_cmd.add_argument("--slug", help="override derived slug")
+    set_cmd.set_defaults(func=command_set)
+
+    set_slug = sub.add_parser("set-slug", help="set only the slug for one task")
+    set_slug.add_argument("selector", help="task uuid/id/slug/title")
+    set_slug.add_argument("slug", help="lowercase kebab-case slug")
+    set_slug.set_defaults(func=command_set_slug)
+
+    suggest = sub.add_parser("suggest", help="suggest title/slug values")
+    suggest.add_argument("selector", nargs="?", help="optional task uuid/id/slug/title")
+    suggest.set_defaults(func=command_suggest)
+
+    list_cmd = sub.add_parser("list", help="list pending/waiting workstream titles and slugs")
+    list_cmd.set_defaults(func=command_list)
+
+    doctor = sub.add_parser("doctor", help="validate title/slug invariants")
+    doctor.add_argument("--cmux", action="store_true", help="also validate open CMUX workspace title/slug mappings")
+    doctor.set_defaults(func=command_doctor)
+
+    return parser
+
+
+def main(argv: list[str]) -> int:
+    parser = build_parser()
+    args = parser.parse_args(argv)
+    try:
+        return args.func(args)
+    except WorkstreamError as exc:
+        print(f"workstream-slug: {exc}", file=sys.stderr)
+        return 2
+
+
+if __name__ == "__main__":
+    raise SystemExit(main(sys.argv[1:]))

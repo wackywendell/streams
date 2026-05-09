@@ -10,7 +10,9 @@ One Taskwarrior task represents one real workstream.
 
 Use the task fields this way:
 
-- built-in `uuid`: the durable Taskwarrior task identity. Use this for annotations, CMUX descriptions, and handoffs.
+- built-in `uuid`: the durable Taskwarrior task identity. Use this for annotations, exact automation, and handoffs.
+- `title`: the stable human-readable workstream name, such as `Grove Workstreams`. Use this as the CMUX workspace title and status-display label.
+- `slug`: the stable lowercase/kebab-case machine handle, derived from `title` by default, such as `grove-workstreams`. Use this for deterministic task lookup, AI session names, scratch pad filenames, and remote tmux/workspace handles.
 - `description`: the next transition that would advance the workstream, written as a concrete imperative.
 - `project`: the project or product area, such as `widget-lib`.
 - `repo`: repository in `organization/name` form, such as `example-org/monorepo`.
@@ -27,20 +29,19 @@ Use the task fields this way:
 
 Taskwarrior numeric ids are report-local conveniences and can change. Use numeric ids for immediate `task <id> ...` commands only after listing current tasks. Use the task `uuid`, and `pr:<number>` when present, for durable references across sessions and tools.
 
-Each active workstream should have a stable short slug used for CMUX title, session name, and human reference. Prefer the jj bookmark basename or workspace directory basename, with owner prefixes such as `user/` removed. The task UUID remains the durable identity; the slug is a readable handle that must resolve to at most one pending workstream in automation.
+Each active workstream should have a stable `title` and `slug`. The title is the human display label. The slug is a readable machine handle that must resolve to at most one pending workstream in automation. Prefer explicit `title`/`slug` fields; when bootstrapping old tasks, derive a suggested title/slug from the jj bookmark basename or workspace directory basename, with owner prefixes such as `user/` removed. The task UUID remains the durable identity.
 
 CMUX workspace titles and descriptions use a small display grammar:
 
 ```text
-title       = <stable slug>
-description = [detail "\n"] meta ["\n" pr-link] "\n" task-link
+title       = <task title>
+description = [detail "\n"] meta ["\n" pr-link]
 detail      = "_" <short phrase that adds information beyond the title> "_"
 meta        = "**" (<priority> ": " <urgency> | "urg: " <urgency>) "**" [ " due " <short-date> ] [ " → " <short-date/time> ]
 pr-link     = "[" <repo-basename> "#" <pr-number> "](" <full-pr-url> ")"
-task-link   = "task:" <8-char-uuid-prefix>
 ```
 
-Use the branch/bookmark slug or workspace basename for `title`. Omit `detail` when the title is enough; when present, it should build on the title with the next useful detail. CMUX color carries actionability. Keep the full Taskwarrior uuid in Taskwarrior annotations. A short `task:` prefix is for sidebar readability; scripts must resolve it through Taskwarrior and fail if ambiguous. CMUX workspace refs such as `workspace:9` are live UI handles, not durable identity.
+Use Taskwarrior `title` for the CMUX title. Omit `detail` when the title is enough; when present, it should build on the title with the next useful detail. CMUX color carries actionability. Keep the full Taskwarrior uuid and CMUX workspace ref in Taskwarrior annotations. In the steady state, do not put `task:<uuid-prefix>` in visible CMUX descriptions; scripts resolve CMUX workspace title by slugifying it and requiring exactly one pending task with that `slug`. During migration, scripts may still accept a legacy visible `task:<uuid-prefix>` as the authoritative link. CMUX workspace refs such as `workspace:9` are live UI handles, not durable identity.
 
 CMUX renders workspace descriptions with inline-only Markdown while preserving whitespace. Use inline formatting only: emphasis for `detail`, strong emphasis for the priority/urgency part of `meta`, and normal Markdown links for `pr-link`. Do not rely on block Markdown in the workspace description; if a richer block is needed, use CMUX sidebar metadata blocks instead.
 
@@ -81,6 +82,10 @@ Use `due` only for real deadlines. Do not use `due` for normal review/CI check-i
 ## Invariants
 
 - Every workstream task has exactly one workflow-state tag.
+- Active and ready workstreams should have `title` and `slug` set. Parked backlog work may omit them until it becomes active.
+- `slug` is lowercase/kebab-case and should equal `slugify(title)` unless an intentional rename/preservation is annotated.
+- `slug` resolves to at most one pending or waiting workstream; automation must fail on duplicate or ambiguous slug matches.
+- `workstream-slug doctor --cmux` should report no errors before relying on CMUX title-to-slug resolution broadly; warnings are expected during migration for older tasks that still lack title/slug or have legacy visible `task:<uuid-prefix>` links.
 - The next transition lives in `description`, not only in annotations.
 - `description` is imperative and concrete: `Check CI on PR #12345 and merge if approved`, not `PR followup`.
 - Non-actionable tasks use `review`, `blocked`, or `parked`; add `wait:` when a timed re-check would prevent drift.
@@ -97,13 +102,14 @@ Use `due` only for real deadlines. Do not use `due` for normal review/CI check-i
 
 ## Resume Identity
 
-Use three identities deliberately:
+Use four identities deliberately:
 
 - Taskwarrior `uuid`: durable source-of-truth identity. Use it in task annotations and exact automation.
-- Stable slug: human-readable handle for CMUX titles, session names, and quick selection. Prefer bookmark or workspace basename.
+- `title`: human-readable display name. Use it as the CMUX workspace title.
+- `slug`: stable machine handle, usually `slugify(title)`, for quick selection, deterministic lookup, AI session names, scratch pad filenames, and remote tmux/workspace names.
 - `aisession`: preferred AI session to resume, in `codex:<id>`, `claude:<id-or-slug>`, or `pi:<id>` form.
 
-A slug is convenient, not authoritative. It should resolve to at most one pending workstream before automation acts on it. A CMUX `task:<8-char-uuid-prefix>` link is a compact display link; scripts resolve it through Taskwarrior and fail on ambiguity.
+A slug is convenient, not authoritative. It should resolve to at most one pending workstream before automation acts on it. A CMUX workspace resolves to a task by slugifying its title and finding exactly one pending task whose `slug` matches. During migration, a visible `task:<8-char-uuid-prefix>` link may remain as a fallback, but the target display model omits it from CMUX descriptions.
 
 ## Annotation Hygiene
 
@@ -204,7 +210,7 @@ When grouping is useful, use these sections, but do not let grouping hide high-u
 
 For general status updates or "what should I work on" scans, rely on Taskwarrior state and annotations only. Do not check GitHub, PR checks, CI, local git/jj status, or code state unless the user asks for fresh verification, asks about one specific task, or the Taskwarrior record is too ambiguous to answer. Use `task export` data rather than raw annotation-heavy reports when producing summaries. Include pending tasks plus `+WAITING` tasks; describe stale-but-recorded external state as recorded task state.
 
-Keep each item concise: stable slug or task topic, urgency, priority/due/wait when relevant, state, PR link when present, next transition, and the latest `Current handoff:`, `Blocker:`, `Dependency:`, or important refresh evidence when present. If urgency ordering looks wrong, fix the Taskwarrior fields (`priority`, `due`, `wait`, state tags) instead of inventing a parallel ranking scheme.
+Keep each item concise: workstream title when present, otherwise slug or task topic, urgency, priority/due/wait when relevant, state, PR link when present, next transition, and the latest `Current handoff:`, `Blocker:`, `Dependency:`, or important refresh evidence when present. If urgency ordering looks wrong, fix the Taskwarrior fields (`priority`, `due`, `wait`, state tags) instead of inventing a parallel ranking scheme.
 
 Individual task status updates should start with one bold status word or short phrase, such as `**Ready**`, `**Blocked**`, `**Review**`, `**Parked**`, or `**Cleanup**`. If a PR is open, include the full PR URL. Then summarize:
 
@@ -223,7 +229,7 @@ Finally, give a short 1-2 sentence description of what the user should work on n
 Use these names for the thin command/prompt layer. Keep the substantive behavior in this shared spec plus the `workstreams` and `cmux` skills.
 
 - `status`: all-workstream status from Taskwarrior only. Include pending and `+WAITING` tasks. Do not inspect CMUX, GitHub, Slack, CI, local git/jj, or code state unless the Taskwarrior record is too ambiguous to answer.
-- `task-status`: single-task status from Taskwarrior only. Use a task id, uuid, PR number, workspace slug, or distinctive words to resolve the task. Do not refresh external state unless explicitly asked.
+- `task-status`: single-task status from Taskwarrior only. Use a task id, uuid, PR number, title, slug, or distinctive words to resolve the task. Do not refresh external state unless explicitly asked.
 - `refresh`: reassess real-world state and update Taskwarrior. Inspect external state for `review`, `blocked`, and `ready` tasks when they have external hooks such as PRs, CI, Slack review asks, or author-update waits. If the transition is obvious, update the task. If the evidence is ambiguous, annotate the evidence and ask the user before changing state. Print a status update.
 - `sync-cmux`: align CMUX from Taskwarrior only. Create/select/update/close/reorder task workspaces, set descriptions and CMUX colors, and avoid opening parked workspaces. Do not refresh external state.
 - `sync`: run `refresh`, then `sync-cmux`, so real world -> Taskwarrior -> CMUX are aligned.
@@ -243,10 +249,11 @@ Goal: create or update the workstream task for the current repo/chat/PR.
    - jj workspace root path from `jj workspace root` or `jj root`, when available;
    - current jj bookmark, when available;
    - PR number or URL, when available;
-   - AI session id or short slug, when useful;
+   - stable title and slug, when useful;
+   - AI session id, when useful;
    - current next transition;
    - whether the action is actionable now.
-2. Search for an existing task by `uuid`, `pr`, `repo`, `workspace`, `bookmark`, or distinctive description text.
+2. Search for an existing task by `uuid`, `slug`, `title`, `pr`, `repo`, `workspace`, `bookmark`, or distinctive description text.
 3. If an existing task represents the same real stream, update it.
 4. If no task exists, create one with required fields and exactly one state tag.
 5. If this is being done inside a dedicated AI session, set `aisession` to the current prefixed AI session id when it is known and the task has none. If another session is already recorded, alert the user instead of overwriting it silently.
@@ -304,7 +311,7 @@ Goal: turn one overloaded task into two real workstreams.
 Create:
 
 ```bash
-task add project:widget-lib repo:example-org/monorepo workspace:/Users/<username>/go/src/github.com/example-org/monorepo/workspaces/widget-java bookmark:<username>/bump-widget-lib-0.3.2 pr:12345 +review wait:tomorrow "Check CI on PR #12345 and merge if approved"
+task add project:widget-lib title:"Widget Lib Bump" slug:widget-lib-bump repo:example-org/monorepo workspace:/Users/<username>/go/src/github.com/example-org/monorepo/workspaces/widget-java bookmark:<username>/bump-widget-lib-0.3.2 pr:12345 +review wait:tomorrow "Check CI on PR #12345 and merge if approved"
 task <id> annotate "PR: https://github.com/example-org/monorepo/pull/12345"
 task <id> annotate "Validation: make test passed"
 task <id> annotate "Current handoff: PR #12345 is waiting on CI; validation passed locally; next check CI and merge if approved."
@@ -321,19 +328,20 @@ task <id> annotate "Blocker: upstream release PR has not landed; no local action
 Find likely workstreams:
 
 ```bash
-task rc.gc=off status:pending '( repo.not: or +doing or +ready or +review or +blocked or +parked )' \
-  columns:id,uuid,project,repo,workspace,bookmark,pr,priority,urgency,due,wait,tags,description
+task rc.gc=off status:pending '( repo.not: or title.not: or slug.not: or +doing or +ready or +review or +blocked or +parked )' \
+  columns:id,uuid,title,slug,project,repo,workspace,bookmark,pr,priority,urgency,due,wait,tags,description
 task rc.gc=off +WAITING export
 ```
 
-Validate state tags manually:
+Validate state tags and title/slug mapping manually:
 
 ```bash
-task rc.gc=off status:pending '( repo.not: or workspace.not: or bookmark.not: or pr.not: or aisession.not: or +doing or +ready or +review or +blocked or +parked )' \
-  columns:id,uuid,project,repo,workspace,bookmark,pr,priority,urgency,due,wait,tags,description
+task rc.gc=off status:pending '( repo.not: or title.not: or slug.not: or workspace.not: or bookmark.not: or pr.not: or aisession.not: or +doing or +ready or +review or +blocked or +parked )' \
+  columns:id,uuid,title,slug,project,repo,workspace,bookmark,pr,priority,urgency,due,wait,tags,description
 task rc.gc=off +WAITING export
+workstream-slug doctor --cmux
 ```
 
 Taskwarrior reports can hide tasks with `wait:`. Always include `+WAITING export` when checking review, blocked, or parked workstreams that may be waiting.
 
-Inspect any workstream task with missing `project`, missing `repo`, or not exactly one of the five workflow-state tags.
+Inspect any workstream task with missing `project`, missing `repo`, missing active-workstream `title`/`slug`, or not exactly one of the five workflow-state tags.
