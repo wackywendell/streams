@@ -7,9 +7,9 @@ import subprocess
 from typing import Any
 
 from .errors import WorkstreamError
+from .models import Task
 
 STATE_TAGS = {"doing", "ready", "review", "blocked", "parked"}
-WORKSTREAM_FIELDS = {"repo", "workspace", "bookmark", "pr", "aisession", "title", "slug"}
 
 
 def run(args: list[str], *, check: bool = True) -> subprocess.CompletedProcess[str]:
@@ -30,34 +30,32 @@ def _json_from_stdout(command: list[str], stdout: str) -> Any:
     return json.loads(text[start:])
 
 
-def export(*selectors: str) -> list[dict[str, Any]]:
+def export(*selectors: str) -> list[Task]:
     command = ["task", "rc.gc=off", *selectors, "export"]
     data = _json_from_stdout(command, run(command).stdout)
     if not isinstance(data, list):
         raise WorkstreamError("task export returned an unexpected shape")
-    return data
+    return [Task.from_raw(task) for task in data if isinstance(task, dict)]
 
 
-def pending_tasks(*, include_waiting: bool = True) -> list[dict[str, Any]]:
-    tasks: list[dict[str, Any]] = []
+def pending_tasks(*, include_waiting: bool = True) -> list[Task]:
+    tasks: list[Task] = []
     seen: set[str] = set()
     selectors = ["status:pending"] + (["+WAITING"] if include_waiting else [])
     for selector in selectors:
         for task in export(selector):
-            uuid = str(task.get("uuid") or "")
-            if uuid and uuid in seen:
+            if task.uuid and task.uuid in seen:
                 continue
-            if uuid:
-                seen.add(uuid)
+            if task.uuid:
+                seen.add(task.uuid)
             tasks.append(task)
     return tasks
 
 
-def is_workstream(task: dict[str, Any]) -> bool:
-    tags = set(task.get("tags") or [])
-    if tags & STATE_TAGS:
+def is_workstream(task: Task) -> bool:
+    if task.tags & STATE_TAGS:
         return True
-    return any(task.get(field) for field in WORKSTREAM_FIELDS)
+    return bool(task.repo or task.workspace or task.bookmark or task.pr or task.aisession or task.title or task.slug)
 
 
 def modify(selector: str, *args: str) -> None:

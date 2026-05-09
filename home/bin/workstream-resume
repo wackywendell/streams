@@ -12,13 +12,14 @@ import sys
 from dataclasses import dataclass
 
 from _workstreams.errors import WorkstreamError
+from _workstreams.models import Task
 from _workstreams.resolve import UUID_RE, resolve_cmux_workspace
 
 
 @dataclass
 class Resolved:
     workspace: dict
-    task: dict
+    task: Task
     command: str
 
 
@@ -70,17 +71,17 @@ def resolve_workspace(selector: str | None) -> dict:
     return matches[0]
 
 
-def resolve_task(workspace: dict) -> dict:
+def resolve_task(workspace: dict) -> Task:
     try:
         return resolve_cmux_workspace(workspace).task
     except WorkstreamError as exc:
         raise WorkstreamResumeError(str(exc)) from exc
 
 
-def command_for_session(task: dict) -> str:
-    session = task.get("aisession")
+def command_for_session(task: Task) -> str:
+    session = task.aisession
     if not session:
-        raise WorkstreamResumeError(f"task {task.get('uuid')} has no aisession field")
+        raise WorkstreamResumeError(f"task {task.uuid} has no aisession field")
 
     if session.startswith("codex:"):
         session_id = session.removeprefix("codex:")
@@ -99,11 +100,11 @@ def command_for_session(task: dict) -> str:
         return f"pi --session {session_id}"
     if UUID_RE.fullmatch(session):
         return f"codex resume {session}"
-    if "claude" in set(task.get("tags") or []):
+    if "claude" in task.tags:
         return f"claude --resume {session}"
 
     raise WorkstreamResumeError(
-        f"task {task.get('uuid')} has aisession {session!r}, but I do not know whether it is codex, claude, or pi"
+        f"task {task.uuid} has aisession {session!r}, but I do not know whether it is codex, claude, or pi"
     )
 
 
@@ -173,9 +174,9 @@ def main(argv: list[str]) -> int:
 
         if args.dry_run:
             print(f"workspace: {workspace_ref} {resolved.workspace.get('title')}")
-            print(f"task:      {task.get('id')} {task.get('uuid')}")
-            print(f"state:     {', '.join(task.get('tags') or []) or '-'}")
-            print(f"session:   {task.get('aisession')}")
+            print(f"task:      {task.id} {task.uuid}")
+            print(f"state:     {', '.join(sorted(task.tags)) or '-'}")
+            print(f"session:   {task.aisession}")
             print(f"command:   {resolved.command}")
             print("dry-run:   not sent")
             return 0
@@ -188,9 +189,9 @@ def main(argv: list[str]) -> int:
         # not pollute the target's idle-shell check.
         send_command(workspace_ref, resolved.command, surface=args.surface, force=args.force)
         print(f"workspace: {workspace_ref} {resolved.workspace.get('title')}")
-        print(f"task:      {task.get('id')} {task.get('uuid')}")
-        print(f"state:     {', '.join(task.get('tags') or []) or '-'}")
-        print(f"session:   {task.get('aisession')}")
+        print(f"task:      {task.id} {task.uuid}")
+        print(f"state:     {', '.join(sorted(task.tags)) or '-'}")
+        print(f"session:   {task.aisession}")
         print(f"command:   {resolved.command}")
         print("sent:      yes")
         return 0

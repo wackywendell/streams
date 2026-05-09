@@ -5,7 +5,8 @@ from __future__ import annotations
 import re
 import unicodedata
 from pathlib import Path
-from typing import Any
+
+from .models import Task
 
 SLUG_RE = re.compile(r"^[a-z0-9](?:[a-z0-9-]{0,62}[a-z0-9])?$")
 OWNER_PREFIX_RE = re.compile(r"^[a-z0-9_.-]+/")
@@ -55,57 +56,47 @@ def normalized_slug(text: str) -> str:
     return slug
 
 
-def explicit_slug(task: dict[str, Any]) -> str | None:
-    slug = task.get("slug")
-    return str(slug) if slug else None
-
-
-def explicit_title(task: dict[str, Any]) -> str | None:
-    title = task.get("title")
-    return str(title) if title else None
-
-
-def suggested_title(task: dict[str, Any]) -> str | None:
+def suggested_title(task: Task) -> str | None:
     """Suggest a stable display title without mutating the task."""
-    if title := explicit_title(task):
-        return title
-    if bookmark := task.get("bookmark"):
-        return str(bookmark).split("/")[-1].replace("-", " ").title()
-    if workspace := task.get("workspace"):
-        return Path(str(workspace)).name.replace("-", " ").title()
-    if pr := task.get("pr"):
-        repo = str(task.get("repo") or "").split("/")[-1]
-        return f"{repo} PR {pr}" if repo else f"PR {pr}"
+    if task.title:
+        return task.title
+    if task.bookmark:
+        return task.bookmark.split("/")[-1].replace("-", " ").title()
+    if task.workspace:
+        return Path(task.workspace).name.replace("-", " ").title()
+    if task.pr:
+        repo = (task.repo or "").split("/")[-1]
+        return f"{repo} PR {task.pr}" if repo else f"PR {task.pr}"
     return None
 
 
-def suggested_slug(task: dict[str, Any]) -> str | None:
+def suggested_slug(task: Task) -> str | None:
     """Suggest a slug from explicit title or legacy workspace/bookmark metadata."""
-    if slug := explicit_slug(task):
-        return slug
-    if title := explicit_title(task):
-        return slugify(title)
-    if bookmark := task.get("bookmark"):
-        return slugify_ref(str(bookmark))
-    if workspace := task.get("workspace"):
-        return slugify_ref(Path(str(workspace)).name)
-    if pr := task.get("pr"):
-        repo = str(task.get("repo") or "").split("/")[-1]
-        return slugify(f"{repo}-{pr}" if repo else f"pr-{pr}")
+    if task.slug:
+        return task.slug
+    if task.title:
+        return slugify(task.title)
+    if task.bookmark:
+        return slugify_ref(task.bookmark)
+    if task.workspace:
+        return slugify_ref(Path(task.workspace).name)
+    if task.pr:
+        repo = (task.repo or "").split("/")[-1]
+        return slugify(f"{repo}-{task.pr}" if repo else f"pr-{task.pr}")
     return None
 
 
-def candidate_slugs(task: dict[str, Any]) -> set[str]:
+def candidate_slugs(task: Task) -> set[str]:
     candidates: set[str] = set()
     for value in (
-        explicit_slug(task),
-        slugify(explicit_title(task) or ""),
+        task.slug,
+        slugify(task.title or ""),
         suggested_slug(task),
     ):
         if value:
             candidates.add(value)
-    if bookmark := task.get("bookmark"):
-        candidates.add(slugify_ref(str(bookmark)))
-    if workspace := task.get("workspace"):
-        candidates.add(slugify_ref(Path(str(workspace)).name))
+    if task.bookmark:
+        candidates.add(slugify_ref(task.bookmark))
+    if task.workspace:
+        candidates.add(slugify_ref(Path(task.workspace).name))
     return {candidate for candidate in candidates if candidate}

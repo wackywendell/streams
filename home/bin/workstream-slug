@@ -10,10 +10,9 @@ from dataclasses import dataclass
 
 from _workstreams.cmux import workspaces as cmux_workspaces
 from _workstreams.errors import WorkstreamError
+from _workstreams.models import Task
 from _workstreams.resolve import resolve_cmux_workspace, resolve_task, task_token_from_description
 from _workstreams.slug import (
-    explicit_slug,
-    explicit_title,
     normalized_slug,
     slugify,
     suggested_slug,
@@ -32,22 +31,18 @@ class DoctorFinding:
         return f"{self.level}: {self.message}"
 
 
-def task_label(task: dict) -> str:
-    title = explicit_title(task) or "-"
-    slug = explicit_slug(task) or "-"
-    return f"{task.get('id')} {task.get('uuid')} title={title!r} slug={slug!r}"
+def task_label(task: Task) -> str:
+    return f"{task.id} {task.uuid} title={task.title or '-'!r} slug={task.slug or '-'!r}"
 
 
 def command_get(args: argparse.Namespace) -> int:
     task = resolve_task(args.selector)
-    title = explicit_title(task)
-    slug = explicit_slug(task)
-    print(f"id:          {task.get('id')}")
-    print(f"uuid:        {task.get('uuid')}")
-    print(f"title:       {title or '-'}")
-    print(f"slug:        {slug or '-'}")
+    print(f"id:          {task.id}")
+    print(f"uuid:        {task.uuid}")
+    print(f"title:       {task.title or '-'}")
+    print(f"slug:        {task.slug or '-'}")
     print(f"suggested:   {suggested_slug(task) or '-'}")
-    print(f"description: {task.get('description')}")
+    print(f"description: {task.description}")
     return 0
 
 
@@ -56,34 +51,34 @@ def command_suggest(args: argparse.Namespace) -> int:
         task = resolve_task(args.selector)
         title = suggested_title(task)
         slug = suggested_slug(task)
-        print(f"{task.get('id')} {task.get('uuid')} title={title or '-'} slug={slug or '-'}")
+        print(f"{task.id} {task.uuid} title={title or '-'} slug={slug or '-'}")
         return 0
 
     for task in pending_tasks(include_waiting=True):
         if is_workstream(task):
             title = suggested_title(task)
             slug = suggested_slug(task)
-            print(f"{task.get('id')} {task.get('uuid')} title={title or '-'} slug={slug or '-'} :: {task.get('description')}")
+            print(f"{task.id} {task.uuid} title={title or '-'} slug={slug or '-'} :: {task.description}")
     return 0
 
 
-def duplicate_slug_tasks(task: dict, slug: str) -> list[dict]:
+def duplicate_slug_tasks(task: Task, slug: str) -> list[Task]:
     return [
         other
         for other in pending_tasks(include_waiting=True)
-        if other.get("uuid") != task.get("uuid") and explicit_slug(other) == slug
+        if other.uuid != task.uuid and other.slug == slug
     ]
 
 
-def duplicate_title_tasks(task: dict, title: str) -> list[dict]:
+def duplicate_title_tasks(task: Task, title: str) -> list[Task]:
     return [
         other
         for other in pending_tasks(include_waiting=True)
-        if other.get("uuid") != task.get("uuid") and explicit_title(other) == title
+        if other.uuid != task.uuid and other.title == title
     ]
 
 
-def ensure_unique_identity(task: dict, *, title: str | None = None, slug: str | None = None) -> None:
+def ensure_unique_identity(task: Task, *, title: str | None = None, slug: str | None = None) -> None:
     if slug:
         duplicates = duplicate_slug_tasks(task, slug)
         if duplicates:
@@ -103,8 +98,8 @@ def command_set(args: argparse.Namespace) -> int:
         raise WorkstreamError("title cannot be empty")
     slug = normalized_slug(args.slug) if args.slug else normalized_slug(title)
     ensure_unique_identity(task, title=title, slug=slug)
-    modify(str(task["uuid"]), f"title:{title}", f"slug:{slug}")
-    print(f"updated: {task.get('id')} {task.get('uuid')} title={title!r} slug={slug!r}")
+    modify(task.uuid, f"title:{title}", f"slug:{slug}")
+    print(f"updated: {task.id} {task.uuid} title={title!r} slug={slug!r}")
     return 0
 
 
@@ -112,8 +107,8 @@ def command_set_slug(args: argparse.Namespace) -> int:
     task = resolve_task(args.selector)
     slug = normalized_slug(args.slug)
     ensure_unique_identity(task, slug=slug)
-    modify(str(task["uuid"]), f"slug:{slug}")
-    print(f"updated: {task.get('id')} {task.get('uuid')} slug={slug!r}")
+    modify(task.uuid, f"slug:{slug}")
+    print(f"updated: {task.id} {task.uuid} slug={slug!r}")
     return 0
 
 
@@ -121,23 +116,21 @@ def command_list(args: argparse.Namespace) -> int:
     for task in pending_tasks(include_waiting=True):
         if not is_workstream(task):
             continue
-        title = explicit_title(task) or "-"
-        slug = explicit_slug(task) or "-"
-        state_tags = sorted(set(task.get("tags") or []) & STATE_TAGS)
+        state_tags = sorted(task.tags & STATE_TAGS)
         state = state_tags[0] if state_tags else "-"
-        print(f"{slug:32} {title:32} {state:8} {task.get('uuid')}  {task.get('description')}")
+        print(f"{task.slug or '-':32} {task.title or '-':32} {state:8} {task.uuid}  {task.description}")
     return 0
 
 
-def cmux_doctor_findings(tasks: list[dict]) -> list[DoctorFinding]:
+def cmux_doctor_findings(tasks: list[Task]) -> list[DoctorFinding]:
     findings: list[DoctorFinding] = []
-    slug_to_tasks: dict[str, list[dict]] = defaultdict(list)
-    title_to_tasks: dict[str, list[dict]] = defaultdict(list)
+    slug_to_tasks: dict[str, list[Task]] = defaultdict(list)
+    title_to_tasks: dict[str, list[Task]] = defaultdict(list)
     for task in tasks:
-        if slug := explicit_slug(task):
-            slug_to_tasks[slug].append(task)
-        if title := explicit_title(task):
-            title_to_tasks[title].append(task)
+        if task.slug:
+            slug_to_tasks[task.slug].append(task)
+        if task.title:
+            title_to_tasks[task.title].append(task)
 
     for workspace in cmux_workspaces():
         title = str(workspace.get("title") or "")
@@ -162,11 +155,11 @@ def cmux_doctor_findings(tasks: list[dict]) -> list[DoctorFinding]:
         elif resolution.legacy:
             findings.append(DoctorFinding("warn", f"{ref} {title!r} resolved by legacy {resolution.reason}: {task_label(task)}"))
 
-        if explicit_title(task) and title != explicit_title(task):
-            findings.append(DoctorFinding("warn", f"{ref} title {title!r} != task title {explicit_title(task)!r}: {task_label(task)}"))
-        if explicit_slug(task) and title_slug != explicit_slug(task):
-            findings.append(DoctorFinding("warn", f"{ref} slugify(title) {title_slug!r} != task slug {explicit_slug(task)!r}: {task_label(task)}"))
-        if not explicit_slug(task):
+        if task.title and title != task.title:
+            findings.append(DoctorFinding("warn", f"{ref} title {title!r} != task title {task.title!r}: {task_label(task)}"))
+        if task.slug and title_slug != task.slug:
+            findings.append(DoctorFinding("warn", f"{ref} slugify(title) {title_slug!r} != task slug {task.slug!r}: {task_label(task)}"))
+        if not task.slug:
             findings.append(DoctorFinding("warn", f"{ref} linked task has no slug: {task_label(task)}"))
 
     return findings
@@ -176,41 +169,38 @@ def command_doctor(args: argparse.Namespace) -> int:
     tasks = [task for task in pending_tasks(include_waiting=True) if is_workstream(task)]
     findings: list[DoctorFinding] = []
 
-    slug_to_tasks: dict[str, list[dict]] = defaultdict(list)
-    title_to_tasks: dict[str, list[dict]] = defaultdict(list)
-    title_slug_to_tasks: dict[str, list[dict]] = defaultdict(list)
+    slug_to_tasks: dict[str, list[Task]] = defaultdict(list)
+    title_to_tasks: dict[str, list[Task]] = defaultdict(list)
+    title_slug_to_tasks: dict[str, list[Task]] = defaultdict(list)
 
     for task in tasks:
-        title = explicit_title(task)
-        slug = explicit_slug(task)
-        tags = set(task.get("tags") or [])
-        state_tags = tags & STATE_TAGS
+        state_tags = task.tags & STATE_TAGS
         require_identity = bool(state_tags - {"parked"})
 
-        if not title and require_identity:
+        if not task.title and require_identity:
             findings.append(DoctorFinding("warn", f"missing title: {task_label(task)}"))
-        if not slug and require_identity:
+        if not task.slug and require_identity:
             findings.append(DoctorFinding("warn", f"missing slug: {task_label(task)}"))
 
-        if slug:
+        if task.slug:
             try:
-                validate_slug(slug)
+                validate_slug(task.slug)
             except ValueError as exc:
                 findings.append(DoctorFinding("error", f"{exc}: {task_label(task)}"))
-            slug_to_tasks[slug].append(task)
+            slug_to_tasks[task.slug].append(task)
 
-        if title:
-            title_to_tasks[title].append(task)
-            title_slug = slugify(title)
+        if task.title:
+            title_to_tasks[task.title].append(task)
+            title_slug = slugify(task.title)
             if not title_slug:
                 findings.append(DoctorFinding("error", f"title slugifies to empty: {task_label(task)}"))
             else:
                 title_slug_to_tasks[title_slug].append(task)
-                if slug and slug != title_slug:
+                if task.slug and task.slug != title_slug:
                     findings.append(
                         DoctorFinding(
                             "warn",
-                            f"slug != slugify(title) ({slug!r} != {title_slug!r}): {task_label(task)}",
+                            f"slug != slugify(title) ({task.slug!r} != {title_slug!r}): {task_label(task)}",
                         )
                     )
 
