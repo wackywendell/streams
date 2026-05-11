@@ -190,7 +190,7 @@ Mandatory scratch protocol for active AI sessions:
 
 ## Cleanup and Retro
 
-Do not add a `cleanup` workflow-state tag. Cleanup is an actionable phase, so use `+ready` with a concrete cleanup transition such as `Cleanup: archive scratch, extract learnings, close CMUX, and mark done`.
+Do not add a `cleanup` workflow-state tag. Cleanup is an actionable phase, so use `+ready` with a concrete cleanup transition such as `Cleanup: archive scratch, extract learnings, prepare CMUX handoff, and mark done`.
 
 Cleanup includes scratch retro work:
 
@@ -199,8 +199,9 @@ Cleanup includes scratch retro work:
 3. Extract reusable knowledge into the worknotes `reference/` tree.
 4. Archive the pad to `~/worknotes/scratch/archive/YYYY-MM/<slug>.md`.
 5. Update Taskwarrior `scratch:scratch/archive/YYYY-MM/<slug>.md` and annotate `Archived scratch: ~/worknotes/scratch/archive/YYYY-MM/<slug>.md`.
-6. Close/clean the CMUX workspace and local jj bookmark/workspace as appropriate.
-7. Mark the Taskwarrior task done only after cleanup/retro is complete.
+6. Clean local jj bookmark/workspace state as appropriate.
+7. Prepare the CMUX workspace for closure, but do not close it automatically from the active AI session. Closing CMUX can end the conversation/session, so it is the final step and should be done by the user or only after explicit confirmation.
+8. Mark the Taskwarrior task done only after cleanup/retro is complete and any required CMUX-closure handoff has been recorded.
 
 Use Grove's reference taxonomy under `~/worknotes/reference/`:
 
@@ -295,7 +296,7 @@ For PR-stack lifecycle, state follows who can act next:
 - Keep or move the task to `ready` for concrete local/user actions such as signing unsigned commits, fixing a failed pre-push check, pushing the bookmark, marking a draft ready, asking Slack for review, addressing review feedback, or merging when approved and green.
 - Move the task to `review` for CI, merge queue, merge check, rerun, review, author-update, or Slack-response waits. Use `wait:` when a re-check time is useful.
 - Do not treat a vague GitHub "blocked" label as `blocked` by itself. Read merge check or check-run output directly; if it says something actionable like "1 of 3 commits unsigned," the task is `ready` with a fix/sign/push transition.
-- After the PR is merged, keep the task `ready` with a `Cleanup` status/CMUX visual state until scratch archive/retro, local bookmark, workspace, CMUX, and task cleanup have been verified.
+- After the PR is merged, keep the task `ready` with a `Cleanup` status/CMUX visual state until scratch archive/retro, local bookmark, workspace, CMUX-closure handoff, and task cleanup have been verified.
 - Mark the task done only after the PR is merged and scratch/local cleanup is complete.
 
 ## Split-Off Signals
@@ -363,7 +364,7 @@ A checkpoint/update/handoff should:
 7. Update linked CMUX title/description/color/order when open.
 8. Recap current state and uncertainties.
 
-`cleanup` is a ready-phase single-workstream command, not a state tag. It performs final scratch archive/retro, local jj/bookmark/workspace cleanup, CMUX cleanup, and Taskwarrior completion. See [Cleanup and Retro](#cleanup-and-retro).
+`cleanup` is a ready-phase single-workstream command, not a state tag. It performs final scratch archive/retro, local jj/bookmark/workspace cleanup, prepares the CMUX closure handoff without closing the active conversation unless explicitly confirmed, and completes Taskwarrior when appropriate. See [Cleanup and Retro](#cleanup-and-retro).
 
 `split off` creates a separate related workstream from current context without switching the current session. The agent should best-effort decide what belongs in the new task and what remains in the current task; if the boundary is uncertain, make a reasonable split-off task, stay on the current task, and tell the user what is uncertain.
 
