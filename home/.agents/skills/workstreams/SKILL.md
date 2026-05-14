@@ -36,4 +36,4 @@ task <uuid> annotate "Current handoff: <compact resume summary>"
 
 When the spec requires a current Pi session id, use the `get_session_id` tool and store the prefixed `pi:<uuid>` value.
 
-Before replying after material work, perform the update/checkpoint behavior from `SPEC.md`: refresh durable scratch evidence, Taskwarrior state/metadata/handoff evidence, and linked CMUX display when the work changed them. Run `workstream-slug doctor --cmux` when title/slug/CMUX mapping changed.
+Before replying after material work, consider the update/checkpoint behavior from `SPEC.md`: refresh durable scratch evidence, Taskwarrior state/metadata/handoff evidence, and linked CMUX display only when the work usefully changed them. Run `workstream-slug doctor --cmux` when title/slug/CMUX mapping changed.

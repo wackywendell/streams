@@ -179,10 +179,11 @@ Mandatory scratch protocol for active AI sessions:
 
 - On session start or resume, read the entire scratch pad before implementation work.
 - If creating or resuming substantial work, add a dated `## Design` entry with the understood task and planned approach.
-- While working, update `## Goal`, `## Design`, `## Debugging`, `## Test plan`, and `## Learnings` as material evidence appears. The goal can change when the user clarifies intent or implementation learning changes the real outcome being pursued.
+- While working, consider whether `## Goal`, `## Design`, `## Debugging`, `## Test plan`, or `## Learnings` would be materially more useful if updated. The goal can change when the user clarifies intent or implementation learning changes the real outcome being pursued.
 - Before replying, ask both:
-  - Scratch: did anything since the last response belong in `## Goal`, `## Design`, `## Debugging`, `## Test plan`, or `## Learnings`?
+  - Scratch: did anything since the last response usefully belong in `## Goal`, `## Design`, `## Debugging`, `## Test plan`, or `## Learnings`?
   - Taskwarrior: did the next transition, state tag, wait time, PR/session/scratch metadata, or handoff evidence change?
+- This is a consideration gate, not a requirement to edit the scratch pad on every turn. If there is no durable, reusable, or resume-relevant evidence to record, leave the scratch pad unchanged.
 - If either answer is yes, update the scratch pad and/or Taskwarrior before responding.
 - Do not duplicate Taskwarrior state, todo lists, generic diff summaries, or large code blocks in the scratch pad.
 
@@ -351,7 +352,7 @@ Use these grouping labels when they help readability, ordered by Taskwarrior urg
 
 ### Single-Workstream Commands
 
-`update`, `checkpoint`, and `handoff` are synonyms for making the current workstream record durable and resumable. Agents should also perform the relevant parts automatically before replies whenever material state changed.
+`update`, `checkpoint`, and `handoff` are synonyms for making the current workstream record durable and resumable. Agents should also consider the relevant parts automatically before replies, but only perform updates when material state or useful durable evidence changed.
 
 A checkpoint/update/handoff should:
 
@@ -411,8 +412,8 @@ If urgency ordering looks wrong, fix Taskwarrior fields (`priority`, `due`, `wai
 
 1. Read the Taskwarrior task and scratch pad.
 2. Work the current transition.
-3. Before replying, ask whether scratch or Taskwarrior/CMUX changed.
-4. If changed, run the update/checkpoint/handoff behavior above.
+3. Before replying, consider whether scratch gained useful durable evidence or Taskwarrior/CMUX changed state.
+4. If changed, run the update/checkpoint/handoff behavior above; otherwise leave records untouched.
 5. Recap current state and next transition.
 
 ### Conductor Check / Refresh
