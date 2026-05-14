@@ -48,6 +48,8 @@ CMUX renders workspace descriptions with inline-only Markdown while preserving w
 
 When updating a task that has an associated CMUX workspace, update that workspace's description, color, and order at the same time as the Taskwarrior state.
 
+Selecting a CMUX workspace is user-visible focus movement: it changes what the user is looking at and pulls their attention. Use `cmux select-workspace` sparingly, if at all. Prefer commands that target an explicit `--workspace` ref for inspection, updates, ordering, and notifications. Select a workspace only for explicit `open`/`switch`/`resume`, when the user asks to look at it, or when a CMUX command truly requires selection.
+
 CMUX colors encode actionability: `Green` for `doing`, `ready`, and `Cleanup`; `Amber` for `review` and timed waits; `Orange` for `blocked`; `Red` for a temporarily open `parked` workspace. Parked workstreams generally should not have an open CMUX workspace.
 
 Order CMUX task workspaces by Taskwarrior urgency by default, after the pinned `tasks` conductor workspace. Keep the color based on actionability; urgency changes order and description metadata, not the state color.
