@@ -5,6 +5,7 @@ from __future__ import annotations
 
 import argparse
 import os
+import re
 import shlex
 import subprocess
 import sys
@@ -13,7 +14,12 @@ from dataclasses import dataclass
 from _workstreams.cmux import workspaces as cmux_workspaces
 from _workstreams.errors import WorkstreamError
 from _workstreams.models import CmuxWorkspace, Task
-from _workstreams.resolve import UUID_RE, resolve_cmux_workspace
+from _workstreams.resolve import resolve_cmux_workspace
+
+
+LEGACY_CODEX_SESSION_RE = re.compile(
+    r"[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}"
+)
 
 
 @dataclass
@@ -83,7 +89,9 @@ def command_for_session(task: Task) -> str:
         if not session_id:
             raise WorkstreamResumeError("pi aisession is empty")
         return f"pi --session {session_id}"
-    if UUID_RE.fullmatch(session):
+    # Older workstream tasks stored Codex session ids without the codex:
+    # prefix. Keep this as a migration fallback, but prefer explicit prefixes.
+    if LEGACY_CODEX_SESSION_RE.fullmatch(session):
         return f"codex resume {session}"
     if "claude" in task.tags:
         return f"claude --resume {session}"
