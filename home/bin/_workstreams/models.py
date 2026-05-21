@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from typing import Any
 
 
@@ -51,81 +51,53 @@ class Task:
     """A parsed Taskwarrior task with raw export data preserved.
 
     Taskwarrior's JSON shape is intentionally flexible. Keep ``raw`` available
-    for fields not modeled yet, but route common workstream identity/state access
-    through typed properties so resolution code does not repeatedly parse dicts.
+    for fields not modeled yet, but normalize common workstream identity/state
+    fields at the boundary so call sites are not repeatedly parsing dicts.
     """
 
-    raw: dict[str, Any]
+    id: int | str | None = None
+    uuid: str = ""
+    status: str = ""
+    description: str = ""
+    tags: frozenset[str] = field(default_factory=frozenset)
+    title: str | None = None
+    slug: str | None = None
+    repo: str | None = None
+    scratch: str | None = None
+    workspace: str | None = None
+    bookmark: str | None = None
+    pr: str | None = None
+    aisession: str | None = None
+    annotations: tuple[dict[str, Any], ...] = ()
+    raw: dict[str, Any] = field(default_factory=dict, repr=False, compare=False)
 
     @classmethod
     def from_raw(cls, raw: dict[str, Any]) -> "Task":
-        return cls(raw=dict(raw))
+        data = dict(raw)
+        tags = data.get("tags") or []
+        annotations = data.get("annotations") or []
+        return cls(
+            id=data.get("id"),
+            uuid=str(data.get("uuid") or ""),
+            status=str(data.get("status") or ""),
+            description=str(data.get("description") or ""),
+            tags=frozenset(str(tag) for tag in tags),
+            title=_optional_str(data.get("title")),
+            slug=_optional_str(data.get("slug")),
+            repo=_optional_str(data.get("repo")),
+            scratch=_optional_str(data.get("scratch")),
+            workspace=_optional_str(data.get("workspace")),
+            bookmark=_optional_str(data.get("bookmark")),
+            pr=_optional_str(data.get("pr")),
+            aisession=_optional_str(data.get("aisession")),
+            annotations=tuple(annotation for annotation in annotations if isinstance(annotation, dict)),
+            raw=data,
+        )
 
     def get(self, key: str, default: Any = None) -> Any:
         """Compatibility escape hatch for fields not modeled yet."""
         return self.raw.get(key, default)
 
-    @property
-    def id(self) -> int | str | None:
-        return self.raw.get("id")
 
-    @property
-    def uuid(self) -> str:
-        return str(self.raw.get("uuid") or "")
-
-    @property
-    def status(self) -> str:
-        return str(self.raw.get("status") or "")
-
-    @property
-    def description(self) -> str:
-        return str(self.raw.get("description") or "")
-
-    @property
-    def tags(self) -> frozenset[str]:
-        return frozenset(str(tag) for tag in (self.raw.get("tags") or []))
-
-    @property
-    def title(self) -> str | None:
-        title = self.raw.get("title")
-        return str(title) if title else None
-
-    @property
-    def slug(self) -> str | None:
-        slug = self.raw.get("slug")
-        return str(slug) if slug else None
-
-    @property
-    def repo(self) -> str | None:
-        repo = self.raw.get("repo")
-        return str(repo) if repo else None
-
-    @property
-    def scratch(self) -> str | None:
-        scratch = self.raw.get("scratch")
-        return str(scratch) if scratch else None
-
-    @property
-    def workspace(self) -> str | None:
-        workspace = self.raw.get("workspace")
-        return str(workspace) if workspace else None
-
-    @property
-    def bookmark(self) -> str | None:
-        bookmark = self.raw.get("bookmark")
-        return str(bookmark) if bookmark else None
-
-    @property
-    def pr(self) -> str | None:
-        pr = self.raw.get("pr")
-        return str(pr) if pr else None
-
-    @property
-    def aisession(self) -> str | None:
-        session = self.raw.get("aisession")
-        return str(session) if session else None
-
-    @property
-    def annotations(self) -> tuple[dict[str, Any], ...]:
-        annotations = self.raw.get("annotations") or []
-        return tuple(annotation for annotation in annotations if isinstance(annotation, dict))
+def _optional_str(value: Any) -> str | None:
+    return str(value) if value else None
