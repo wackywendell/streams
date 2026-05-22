@@ -38,7 +38,8 @@ Commands are interpreted by scope:
 - `status`: read-only recorded-state recap.
 - `check` / `refresh`: synonyms for inspecting relevant state, updating records/UI when reality changed, and recapping.
 - `reconcile`: conductor-only broad audit across Taskwarrior, CMUX, scratch when needed, local repo state when relevant, and external state.
-- `update` / `checkpoint` / `handoff`: single-workstream synonyms for making the current task durable and resumable.
+- `checkpoint` / `handoff`: single-workstream synonyms for making the current task durable and resumable.
+- `update`: For conductor, a synonym for `check` / `refresh`; for tasks, synonym for `checkpoint` / `handoff`
 - `cleanup`: single-workstream ready-phase cleanup/retro/archive flow; not a workflow-state tag.
 - `split off`: create a related separate workstream without switching the current session.
 - `open` / `switch` / `resume`: explicitly change the current workstream and create/select/resume its CMUX/AI session as needed.

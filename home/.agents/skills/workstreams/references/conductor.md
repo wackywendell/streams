@@ -25,7 +25,7 @@ Use these grouping labels when they help readability, ordered by Taskwarrior urg
 - `Blocked`: `blocked`.
 - `Parked`: `parked`.
 
-`check` and `refresh` are equal-status synonyms.
+`check`, `refresh`, and `update` are equal-status synonyms.
 
 In conductor scope: inspect Taskwarrior and CMUX, make CMUX match Taskwarrior by creating missing workspaces for `doing` and `ready` tasks, updating/reordering existing workspaces, closing parked workspaces as appropriate, and recapping. Do not auto-open `blocked`, `review`, or `parked` tasks unless the user asks or a workspace is already open and should be updated. Do not check external PR/CI/Slack/jj state by default.
 
