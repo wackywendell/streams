@@ -23,7 +23,7 @@ Use Taskwarrior fields this way:
 - `priority`: Taskwarrior priority (`H`, `M`, or `L`) when the task's importance should feed urgency. Use `H` for reviews, follow-ups, and anything blocking others; `M` for the user's own work PRs; `L` for personal/tooling/backlog work unless explicitly promoted.
 - `due`: a real deadline, not a reminder. Use `wait` for reminders or re-checks.
 - computed `urgency`: Taskwarrior's attention-needed score. Do not set it directly; fix task fields when the score feels wrong.
-- annotations: focused evidence for resume and state transitions, such as links, decisions, validation, blockers, dependencies, exact errors, session identity, CMUX links, and current handoff notes.
+- annotations: focused evidence for resume and state transitions, such as links, decisions, validation, blockers, dependencies, exact errors, session identity, and current handoff notes.
 - tags: exactly one workflow-state tag, plus any non-state topic tags that help filtering.
 
 Taskwarrior numeric ids are report-local conveniences and can change. Use numeric ids for immediate `task <id> ...` commands only after listing current tasks. Use the task `uuid`, and `pr:<number>` when present, for durable references across sessions and tools.
@@ -73,7 +73,7 @@ If urgency ordering looks wrong, fix Taskwarrior fields (`priority`, `due`, `wai
 - Non-actionable tasks use `review`, `blocked`, or `parked`; add `wait:` when a timed re-check would prevent drift.
 - Useful evidence is preserved in annotations before or while changing the current state.
 - `workspace` identifies where to resume locally; `bookmark` identifies the code line. Keep both when known, and prefer `~` form for paths under the user's home directory.
-- If `aisession` is present, it identifies the preferred AI session to resume in CMUX and uses `codex:`, `claude:`, or `pi:` prefix form. Preserve an existing different session id; alert the user and annotate the mismatch if it matters for handoff.
+- If `aisession` is present, it identifies the preferred AI session to resume and uses `codex:`, `claude:`, or `pi:` prefix form. Preserve an existing different session id; alert the user and annotate the mismatch if it matters for handoff.
 - `aisession` belongs to the AI session actually working that task. A conductor or parent-task session that creates a new task, opens a CMUX workspace for it, or starts a new agent command for it must not stamp its own `aisession` on the new task. Leave `aisession` blank so the newly started task agent can record its own session id after it begins.
 - If a dedicated AI session updates the task it is actively working, it records its own prefixed session id in `aisession` when the field is empty. If the session id is unknown, add a `Session:` annotation with what is known.
 - Parked tasks may keep `workspace`/`bookmark` fields as resume metadata, but they do not need an open CMUX workspace.
