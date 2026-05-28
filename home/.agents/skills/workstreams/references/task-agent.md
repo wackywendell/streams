@@ -98,7 +98,7 @@ When splitting off:
 ```text
 You are the dedicated AI session for workstream task <uuid>.
 
-Use the workstreams skill. Treat Taskwarrior as the source of truth.
+Use the workstreams skill. Treat Taskwarrior as the local source of truth.
 
 Read the role-specific references from the workstreams skill: core.md, task-agent.md, scratch.md, and cmux-integration.md if CMUX is involved. Orient yourself by reading the Taskwarrior task and its scratch pad, creating/repairing the scratch link only if the policy requires it. If the task's aisession is blank, record this new session's prefixed id; if it already has a different aisession, alert the user before changing it.
 

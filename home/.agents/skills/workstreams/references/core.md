@@ -1,6 +1,6 @@
 # Workstreams Core Policy
 
-Taskwarrior is the source of truth for AI-assisted coding workstreams. One Taskwarrior task represents one real workstream.
+Taskwarrior is the local source of truth for AI-assisted coding workstreams. One Taskwarrior task represents one real workstream.
 
 Chats, PRs, bookmarks, jj workspaces, CMUX workspaces, and scratch pads are evidence attached to a workstream; they are not canonical state.
 
