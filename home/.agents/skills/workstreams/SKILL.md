@@ -9,7 +9,7 @@ metadata:
 
 Use this skill to keep AI coding workstream state in Taskwarrior.
 
-Taskwarrior is the source of truth for workstreams. Chats, PRs, bookmarks, CMUX workspaces, and scratch pads are evidence attached to a workstream; they are not canonical state.
+Taskwarrior is the local source of truth for workstreams. Chats, PRs, bookmarks, CMUX workspaces, and scratch pads are evidence attached to a workstream; they are not canonical state.
 
 ## Required Reading
 
