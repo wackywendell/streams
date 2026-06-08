@@ -1,76 +1,78 @@
-# Workstream Scratch Pads
+# Workstream Scratch Files
 
-Scratch pads live in the Obsidian worknotes vault and are durable engineering logs. Taskwarrior remains canonical for status and next transitions; scratch pads record the overall goal, reasoning, investigations, verification, and reusable learnings.
+Scratch files live in the Obsidian worknotes vault under `~/worknotes/scratch`. Use the local symlink `~/worknotes -> ~/Documents/obsidian/worknotes`; Obsidian owns the documents underneath it.
 
-Use a local-only symlink `~/worknotes -> ~/Documents/obsidian/worknotes`. This link is not stowed or tracked by dotfiles; Obsidian owns the documents underneath it.
+## Source Of Truth
 
-Use this deterministic convention:
+Scratch frontmatter is canonical current state. The markdown body is a current pickup document, not an append-only log.
 
-```text
-worknotes root = ~/worknotes
-scratch UDA    = task.scratch if set, else scratch/<task.slug>.md
-path           = <worknotes root>/<scratch UDA>
+Use:
+
+```bash
+streams list
+streams list --json
+streams show <slug>
+streams show <slug> --json
+streams start "Title"
 ```
 
-Agents should create scratch pads directly rather than calling a separate helper command. When creating one:
+## Frontmatter
 
-1. Require a task `uuid`, `title`, and `slug`.
-2. Create `~/worknotes/scratch/` if needed.
-3. Write `scratch/<slug>.md` if it does not already exist.
-4. Set `task <uuid> modify scratch:scratch/<slug>.md`.
-5. Add one annotation: `Scratch: ~/worknotes/scratch/<slug>.md`.
-6. Read the entire scratch pad before doing substantial work.
+Use flat frontmatter so Obsidian can read it easily:
 
-Use this template:
+```yaml
+title: Example Stream
+status: active
+created: 2026-06-08
+updated: 2026-06-08
+description: Overall task description
+state: Current state of task
+repo: /path/or/repo-name
+cwd: /path/to/workspace
+vcs: jj
+issues: []
+prs: []
+sessions:
+  - codex:123-abc
+```
+
+Do not add `cmux`, `taskwarrior`, or other tool-specific namespaces. Tooling consumes the generic fields.
+
+## Markdown Body
+
+Use this body shape:
 
 ```markdown
-# <Task title>
-
-**Taskwarrior:** `<uuid>`
-**Slug:** `<slug>`
-**Created:** <YYYY-MM-DD>
-**Repo:** `<repo>`
-**Workspace:** `<workspace>`
-**Bookmark:** `<bookmark>`
-**PR:** `<pr>`
-**AI session:** `<aisession>`
-**Current transition at creation:** <description>
+# <Title>
 
 ## Goal
 
-_full task goal / outcome being pursued_
+_The outcome this stream is pursuing._
 
-## Design
+## Status
 
-_Engineering design, architecture decisions, tradeoffs considered._
+_Current pickup context: where the task is, what work is in progress, and what needs doing next._
 
-## Debugging
+## Decisions
 
-_Investigation steps, failed hypotheses, what turned out to matter._
+_Important decisions, reasoning, tradeoffs, and deferred choices._
 
-## Test plan
+## Open Questions
 
-_How to verify: commands, scenarios, expected outcomes._
-
-## Learnings
-
-_Novel, reusable knowledge worth remembering. Only add entries that would save time on a future unrelated task._
+_Unresolved questions that affect how to continue._
 ```
 
-The full task goal belongs in the scratch pad `## Goal` field. Taskwarrior `description` remains the next transition only. Add a compact `Goal:` annotation when the goal should be visible in Taskwarrior status without opening the scratch pad.
+The body should be edited in place so it remains coherent. Keep history only when it explains current choices or useful deferred options.
 
-## Mandatory Scratch Protocol for Active AI Sessions
+## Update Protocol
 
-- On session start or resume, read the entire scratch pad before implementation work.
-- If creating or resuming substantial work, add a dated `## Design` entry with the understood task and planned approach.
-- While working, consider whether `## Goal`, `## Design`, `## Debugging`, `## Test plan`, or `## Learnings` would be materially more useful if updated. The goal can change when the user clarifies intent or implementation learning changes the real outcome being pursued.
-- Before replying, ask both:
-  - Scratch: did anything since the last response usefully belong in `## Goal`, `## Design`, `## Debugging`, `## Test plan`, or `## Learnings`?
-  - Taskwarrior: did the next transition, state tag, wait time, PR/session/scratch metadata, or handoff evidence change?
-- This is a consideration gate, not a requirement to edit the scratch pad on every turn. If there is no durable, reusable, or resume-relevant evidence to record, leave the scratch pad unchanged.
-- If either answer is yes, update the scratch pad and/or Taskwarrior before responding.
-- Do not duplicate Taskwarrior state, todo lists, generic diff summaries, or large code blocks in the scratch pad.
+On session start or resume, read the entire scratch file before implementation work.
 
-`## Learnings` entries must pass this filter: not derivable from code/history, not a one-off task detail, and likely to save time on a future unrelated task.
+Before replying after material work, ask:
 
-<!-- TODO(workstreams): Add a workstream-scratch command only if direct agent-managed scratch creation proves error-prone, humans want a manual open/ensure flow, or archive/retro/remote lifecycle needs dedicated tooling. -->
+- Did frontmatter state change?
+- Does `## Status` still let a new human or AI session pick up the work?
+- Did a decision, tradeoff, deferred choice, or open question change?
+- Does linked CMUX display need to be updated from the generic fields?
+
+If yes, update the scratch file and CMUX projection before responding. If no durable state or pickup context changed, leave the file alone.

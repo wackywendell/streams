@@ -1,35 +1,21 @@
-# Workstream Cleanup and Retro
+# Workstream Cleanup
 
-Do not add a `cleanup` workflow-state tag. Cleanup is an actionable phase, so use `+ready` with a concrete cleanup transition such as `Cleanup: archive scratch, extract learnings, prepare CMUX handoff, and mark done`.
+Cleanup is the flow for completing or archiving a scratch-first stream.
 
-Cleanup includes scratch retro work:
+## Done
 
-1. Update the scratch pad with final `## Test plan` evidence and any final `## Learnings`.
-2. Add or update `**Completed:** <YYYY-MM-DD>` near the scratch pad header.
-3. Extract reusable knowledge into the worknotes `reference/` tree.
-4. Archive the pad to `~/worknotes/scratch/archive/YYYY-MM/<slug>.md`.
-5. Update Taskwarrior `scratch:scratch/archive/YYYY-MM/<slug>.md` and annotate `Archived scratch: ~/worknotes/scratch/archive/YYYY-MM/<slug>.md`.
-6. Clean local jj bookmark/workspace state as appropriate.
-7. Prepare the CMUX workspace for closure, but do not close it automatically from the active AI session. Closing CMUX can end the conversation/session, so it is the final step and should be done by the user or only after explicit confirmation.
-8. Mark the Taskwarrior task done only after cleanup/retro is complete and any required CMUX-closure handoff has been recorded.
+Use `status: done` when the stream's work is complete. A done stream may remain in `~/worknotes/scratch` until it is explicitly archived.
 
-Use Grove's reference taxonomy under `~/worknotes/reference/`:
+Before marking done:
 
-```text
-reference/
-  architecture/   # how systems work: data flow, components, integrations
-  runbooks/       # how to do things: commands, auth, deployment, operations
-  patterns/       # reusable lessons: gotchas, debugging tricks, process insights
-  tools/          # tool/system reference: CLIs, APIs, config, quirks
-  ideas/          # proposals, research, future directions
-  test-plans/     # verification steps and e2e/manual test plans
-```
+1. Verify the work outcome is complete.
+2. Update `## Status` with final pickup/closure context.
+3. Preserve reusable decisions or learnings in the markdown body.
+4. Update `updated`.
+5. Update or close CMUX projection as appropriate.
 
-Retro extraction rules:
+## Archive
 
-- Be comprehensive for `## Learnings`: the author already filtered these, so preserve every item somewhere under `reference/`.
-- Be comprehensive for implementation changes: if the scratch pad describes a shipped command, flag, workflow, default, or behavior change, update or create the matching reference doc so it reflects current behavior.
-- Be selective elsewhere: extract design/debugging/test-plan details only when they would save future unrelated work.
-- Prefer updating an existing reference file over creating a duplicate. If none fits, create a lowercase-kebab-case file in the appropriate subdirectory.
-- Skip one-off task status, PR numbers, internal variable names, and details derivable from current code/history/docs.
-- After retro, note which reference files were created or updated in the scratch pad or Taskwarrior annotation.
+`archived` is not a status. A stream is archived by moving its file under `~/worknotes/scratch/archive`.
+
+Do not auto-archive a stream merely because it is `done`. Archive only when explicitly requested or during a cleanup flow that clearly includes archive.
