@@ -1,2 +1,1 @@
-"""Scratch-first workstream helpers."""
-
+"""Scratch-first stream helpers."""

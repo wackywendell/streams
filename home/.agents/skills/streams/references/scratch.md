@@ -1,4 +1,4 @@
-# Workstream Scratch Files
+# Stream Scratch Files
 
 Scratch files live in the Obsidian worknotes vault under `~/worknotes/scratch`. Use the local symlink `~/worknotes -> ~/Documents/obsidian/worknotes`; Obsidian owns the documents underneath it.
 

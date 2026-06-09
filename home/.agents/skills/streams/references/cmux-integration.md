@@ -1,6 +1,6 @@
-# Workstream CMUX Integration
+# Stream CMUX Integration
 
-This reference defines how AI workstreams use CMUX. For pure CMUX command mechanics, use the sibling [cmux skill](../../cmux/SKILL.md).
+This reference defines how AI coding streams use CMUX. For pure CMUX command mechanics, use the sibling [cmux skill](../../cmux/SKILL.md).
 
 CMUX is a projection of generic scratch state. It is not canonical state.
 
@@ -55,7 +55,7 @@ Implement this under the `streams` executable, with CMUX behavior separated into
 Agent command examples:
 
 ```bash
-codex resume <id>
+codex --no-sandbox resume <id>
 claude --resume <id-or-slug>
 pi --session <id>
 ```

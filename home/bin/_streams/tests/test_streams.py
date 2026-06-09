@@ -13,8 +13,9 @@ sys.path.insert(0, str(BIN_DIR))
 
 from _streams.cli import command_list, command_show, command_start
 from _streams.cmux import CmuxClient, CmuxWorkspace, color_for_status, load_stream_for_update, open_workspace, resume_command, update_workspace
+from _streams.check import check_path, check_streams, findings_json
 from _streams.frontmatter import render_frontmatter, split_frontmatter
-from _streams.store import list_streams, show_stream, start_stream
+from _streams.store import check_paths, list_streams, show_stream, start_stream
 
 
 def write_stream(root: Path, slug: str, *, title: str = "Example", status: str = "active", state: str = "Doing work") -> Path:
@@ -123,6 +124,73 @@ class CliTest(unittest.TestCase):
             command_start(args)
             self.assertEqual(json.loads(print_mock.call_args.args[0])["slug"], "active-stream")
 
+    def test_check_json_reports_findings(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp, patch("_streams.cli.SCRATCH_ROOT", Path(tmp)), patch("builtins.print") as print_mock:
+            root = Path(tmp)
+            path = write_stream(root, "active-stream")
+            text = path.read_text().replace("status: active", "status: nope")
+            path.write_text(text)
+            args = type("Args", (), {"slug": "active-stream", "json": True})()
+            from _streams.cli import command_check
+
+            self.assertEqual(command_check(args), 1)
+            payload = json.loads(print_mock.call_args.args[0])
+            self.assertEqual(payload[0]["level"], "error")
+
+
+class CheckTest(unittest.TestCase):
+    def test_valid_stream_has_no_findings(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            path = write_stream(root, "active-stream", title="Active Stream")
+            self.assertEqual(check_path(path), [])
+
+    def test_check_paths_include_legacy_files_without_frontmatter(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            write_stream(root, "active-stream")
+            (root / "legacy.md").write_text("# Legacy scratch\n")
+            self.assertEqual([path.name for path in check_paths(root)], ["active-stream.md", "legacy.md"])
+
+    def test_invalid_status_is_error(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            path = write_stream(root, "active-stream")
+            path.write_text(path.read_text().replace("status: active", "status: nope"))
+            findings = check_path(path)
+            self.assertTrue(any("invalid status" in finding.message for finding in findings))
+
+    def test_forbidden_slug_field_is_error(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            path = write_stream(root, "active-stream")
+            path.write_text(path.read_text().replace("title: Example", "slug: active-stream\ntitle: Example"))
+            findings = check_path(path)
+            self.assertTrue(any("slug" in finding.message for finding in findings))
+
+    def test_invalid_session_shape_is_error(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            path = write_stream(root, "active-stream")
+            path.write_text(path.read_text().replace("- codex:abc", "- abc"))
+            findings = check_path(path)
+            self.assertTrue(any("sessions[0]" in finding.message for finding in findings))
+
+    def test_slug_title_mismatch_is_warning(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            path = write_stream(root, "not-title", title="Different Title")
+            findings = check_path(path)
+            self.assertTrue(any(finding.level == "warn" for finding in findings))
+
+    def test_findings_json(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            path = write_stream(root, "active-stream")
+            path.write_text(path.read_text().replace("status: active", "status: nope"))
+            payload = json.loads(findings_json(check_streams([path])))
+            self.assertEqual(payload[0]["slug"], "active-stream")
+
 
 class FakeCmux(CmuxClient):
     def __init__(self, workspaces: list[CmuxWorkspace] | None = None) -> None:
@@ -171,7 +239,7 @@ class CmuxTest(unittest.TestCase):
                     "--cwd",
                     "/repo",
                     "--command",
-                    "codex resume abc",
+                    "codex --no-sandbox resume abc",
                 ],
             )
 

@@ -1,4 +1,4 @@
-# Workstreams Conductor Policy
+# Streams Conductor Policy
 
 Conductor scope means a broad status or reconciliation pass across multiple streams.
 

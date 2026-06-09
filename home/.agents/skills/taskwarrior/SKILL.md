@@ -1,13 +1,13 @@
 ---
 name: taskwarrior
-description: "Use for Taskwarrior CLI/task database operations: inspecting tasks, UUID-safe mutations, reports, filters, annotations, wait/due/priority/urgency behavior, UDAs, exports, and Taskwarrior command mechanics. For AI coding workstream lifecycle policy, use workstreams."
+description: "Use for Taskwarrior CLI/task database operations: inspecting tasks, UUID-safe mutations, reports, filters, annotations, wait/due/priority/urgency behavior, UDAs, exports, and Taskwarrior command mechanics."
 metadata:
   short-description: Taskwarrior CLI mechanics
 ---
 
 # Taskwarrior
 
-Use this skill for pure Taskwarrior mechanics. For AI-assisted coding workstream policy, use the sibling [workstreams skill](../workstreams/SKILL.md).
+Use this skill for pure Taskwarrior mechanics. AI-assisted coding stream state is tracked separately in scratch files through the sibling [streams skill](../streams/SKILL.md).
 
 ## Identity and Safety
 
@@ -78,6 +78,6 @@ Use `task help <command>` or `task <command> rc.verbose=nothing` as needed for e
 
 `task ... export` emits JSON suitable for scripts. Prefer export when parsing task state instead of scraping column reports. Fields absent from a task may be missing or null depending on Taskwarrior version and UDA configuration.
 
-## Relationship to Workstreams
+## Relationship to Streams
 
-The workstreams skill defines the domain-specific meaning of Taskwarrior fields such as `title`, `slug`, `scratch`, `repo`, `workspace`, `bookmark`, `pr`, and `aisession`, as well as required workflow-state tags. Do not infer that policy from generic Taskwarrior behavior; load the workstreams skill when operating on AI coding workstreams.
+Taskwarrior is not the source of truth for AI coding stream lifecycle state. Use this skill only for ordinary Taskwarrior mechanics, and load the streams skill when operating on scratch-first coding streams.

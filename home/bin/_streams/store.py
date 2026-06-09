@@ -14,6 +14,11 @@ from .slug import normalized_slug
 
 
 def stream_paths(root: Path = SCRATCH_ROOT) -> list[Path]:
+    """Return current scratch-first stream files.
+
+    Legacy scratch notes without YAML frontmatter are ignored so `streams list`
+    can coexist with older worknotes during migration.
+    """
     root = root.expanduser()
     if not root.exists():
         return []
@@ -25,6 +30,18 @@ def stream_paths(root: Path = SCRATCH_ROOT) -> list[Path]:
         if _has_frontmatter(path):
             paths.append(path)
     return sorted(paths, key=lambda item: item.stem)
+
+
+def check_paths(root: Path = SCRATCH_ROOT) -> list[Path]:
+    """Return all current scratch markdown files for schema checks.
+
+    Unlike `stream_paths()`, this includes legacy files without frontmatter so
+    `streams check` reports them as invalid stream records.
+    """
+    root = root.expanduser()
+    if not root.exists():
+        return []
+    return sorted(root.glob("*.md"), key=lambda item: item.stem)
 
 
 def _has_frontmatter(path: Path) -> bool:

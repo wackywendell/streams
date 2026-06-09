@@ -1,15 +1,15 @@
 ---
-name: workstreams
-description: "Manage AI-assisted coding workstreams from scratch frontmatter. Use when the user asks for stream status, check/refresh, update/checkpoint/handoff, cleanup, split-off, open/switch/resume, CMUX alignment, or durable scratch state."
+name: streams
+description: "Manage AI-assisted coding streams from scratch frontmatter. Use when the user asks for stream status, check/refresh, update/checkpoint/handoff, cleanup, split-off, open/switch/resume, CMUX alignment, or durable scratch state."
 metadata:
-  short-description: Manage scratch-first coding workstreams
+  short-description: Manage scratch-first coding streams
 ---
 
-# Workstreams
+# Streams
 
-Use this skill to keep AI coding workstream state in scratch files under `~/worknotes/scratch`.
+Use this skill to keep AI coding stream state in scratch files under `~/worknotes/scratch`.
 
-Scratch frontmatter is the local source of truth for workstream state. The markdown body is the pickup document: current status, goals, decisions, tradeoffs, deferred choices, and open questions. CMUX, status lists, and future tools are projections of that scratch state.
+Scratch frontmatter is the local source of truth for stream state. The markdown body is the pickup document: current status, goals, decisions, tradeoffs, deferred choices, and open questions. CMUX, status lists, and future tools are projections of that scratch state.
 
 Taskwarrior is not part of this workflow.
 
@@ -25,9 +25,8 @@ Then read by scope:
 - **Portfolio / conductor scope**: [references/conductor.md](references/conductor.md), plus [references/cmux-integration.md](references/cmux-integration.md) when inspecting or aligning CMUX.
 - **Single-stream scope**: [references/task-agent.md](references/task-agent.md), plus [references/cmux-integration.md](references/cmux-integration.md) when a CMUX workspace is open or should be created/updated.
 - **Cleanup / retro**: [references/cleanup.md](references/cleanup.md).
-- **Legacy Taskwarrior migration only**: [references/taskwarrior-integration.md](references/taskwarrior-integration.md).
 
-Use the sibling [cmux skill](../cmux/SKILL.md) for pure CMUX command mechanics. The workstreams references define how CMUX is projected from scratch state.
+Use the sibling [cmux skill](../cmux/SKILL.md) for pure CMUX command mechanics. The streams references define how CMUX is projected from scratch state.
 
 ## Command Vocabulary
 
@@ -51,7 +50,10 @@ streams list
 streams list --json
 streams show <slug>
 streams show <slug> --json
+streams check [slug]
 streams start "Title"
 ```
+
+`streams check [slug]` validates scratch frontmatter schema. This is distinct from the workflow command word `check` / `refresh`, which means inspect reality and update stream state.
 
 Before replying after material work, consider whether the scratch frontmatter, `## Status`, decisions, open questions, or linked CMUX display changed usefully. Update them only when the work usefully changed durable state or pickup context.

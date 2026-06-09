@@ -1,0 +1,4 @@
+interface:
+  display_name: "Streams"
+  short_description: "Manage scratch-first coding streams"
+  default_prompt: "Use $streams to manage this coding stream or streams portfolio."

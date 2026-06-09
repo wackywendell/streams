@@ -7,8 +7,8 @@ from datetime import date, datetime
 from pathlib import Path
 from typing import Any
 
-from .config import VALID_STATUSES
 from .errors import StreamError
+from .schema import error_messages, validate_frontmatter
 
 
 @dataclass(frozen=True)
@@ -34,16 +34,9 @@ class Stream:
         return str(self.frontmatter.get("state") or "")
 
     def validate(self) -> None:
-        missing = [
-            key
-            for key in ("title", "status", "description", "state", "repo", "cwd", "vcs", "issues", "prs", "sessions")
-            if key not in self.frontmatter
-        ]
-        if missing:
-            raise StreamError(f"{self.path}: missing required frontmatter fields: {', '.join(missing)}")
-        if self.status not in VALID_STATUSES:
-            allowed = ", ".join(sorted(VALID_STATUSES))
-            raise StreamError(f"{self.path}: invalid status {self.status!r}; expected one of {allowed}")
+        errors = error_messages(validate_frontmatter(self.path, self.frontmatter))
+        if errors:
+            raise StreamError(f"{self.path}: {'; '.join(errors)}")
 
     def as_json(self) -> dict[str, Any]:
         payload = _json_value(dict(self.frontmatter))

@@ -1,15 +1,15 @@
-# Workstreams Core Policy
+# Streams Core Policy
 
-Scratch files under `~/worknotes/scratch` are the source of truth for AI-assisted coding workstreams.
+Scratch files under `~/worknotes/scratch` are the source of truth for AI-assisted coding streams.
 
-One scratch file represents one real workstream. The filename stem is the stream slug. The frontmatter is structured current state. The markdown body is a cohesive pickup document for a future human or AI session.
+One scratch file represents one real stream. The filename stem is the stream slug. The frontmatter is structured current state. The markdown body is a cohesive pickup document for a future human or AI session.
 
 ## Model
 
 Required frontmatter:
 
 ```yaml
-title: Workstreams Scratch State Workflow
+title: Streams Scratch State Workflow
 status: active
 created: 2026-06-08
 updated: 2026-06-08

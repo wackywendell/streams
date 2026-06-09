@@ -10,6 +10,10 @@ from .errors import StreamError
 from .models import Stream
 from .store import list_streams, show_stream, start_stream
 from .cmux import CmuxClient, load_stream_for_update, open_workspace, update_workspace
+from .config import SCRATCH_ROOT
+from .check import check_streams, findings_json
+from .store import check_paths
+from .slug import normalized_slug
 
 
 def render_list(streams: list[Stream]) -> str:
@@ -91,6 +95,23 @@ def command_cmux_update(args: argparse.Namespace) -> int:
     return 0
 
 
+def command_check(args: argparse.Namespace) -> int:
+    if args.slug:
+        paths = [SCRATCH_ROOT / f"{normalized_slug(args.slug)}.md"]
+    else:
+        paths = check_paths()
+    findings = check_streams(paths)
+    if args.json:
+        print(findings_json(findings))
+    elif findings:
+        for finding in findings:
+            print(f"{finding.level}: {finding.slug}: {finding.message}")
+    else:
+        target = args.slug or "all streams"
+        print(f"ok: {target}")
+    return 1 if any(finding.level == "error" for finding in findings) else 0
+
+
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(description="Manage scratch-first work streams.")
     subparsers = parser.add_subparsers(dest="command", required=True)
@@ -103,6 +124,11 @@ def build_parser() -> argparse.ArgumentParser:
     show_parser.add_argument("slug", help="stream filename stem")
     show_parser.add_argument("--json", action="store_true", help="print stream frontmatter as JSON")
     show_parser.set_defaults(func=command_show)
+
+    check_parser = subparsers.add_parser("check", help="check stream frontmatter")
+    check_parser.add_argument("slug", nargs="?", help="stream filename stem")
+    check_parser.add_argument("--json", action="store_true", help="print findings as JSON")
+    check_parser.set_defaults(func=command_check)
 
     start_parser = subparsers.add_parser("start", help="create a new active stream")
     start_parser.add_argument("title", help="stream title")

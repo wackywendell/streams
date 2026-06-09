@@ -1,4 +1,0 @@
-interface:
-  display_name: "Workstreams"
-  short_description: "Manage scratch-first coding workstreams"
-  default_prompt: "Use $workstreams to manage this coding workstream or the workstreams portfolio."

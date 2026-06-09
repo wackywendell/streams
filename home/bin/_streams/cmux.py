@@ -4,12 +4,12 @@ from __future__ import annotations
 
 import json
 import os
-import shlex
 import subprocess
 from dataclasses import dataclass
 from typing import Any
 
 from .errors import StreamError
+from .agent_sessions import Agent, AgentSessionCommand
 from .models import Stream
 from .slug import normalized_slug, slugify
 from .store import show_stream
@@ -93,6 +93,7 @@ def color_for_status(status: str) -> str:
 
 
 def stream_for_current_workspace(cmux: CmuxClient) -> tuple[Stream, CmuxWorkspace]:
+    """Resolve both stream and workspace from the current CMUX title."""
     workspace = cmux.resolve_workspace(None)
     slug = slugify(workspace.title)
     if not slug:
@@ -108,13 +109,10 @@ def resume_command(stream: Stream) -> str | None:
     agent, _, session_id = session.partition(":")
     if not session_id:
         raise StreamError(f"invalid session {session!r}; expected agent:id")
-    if agent == "codex":
-        return shlex.join(["codex", "resume", session_id])
-    if agent == "claude":
-        return shlex.join(["claude", "--resume", session_id])
-    if agent == "pi":
-        return shlex.join(["pi", "--session", session_id])
-    raise StreamError(f"unknown session agent {agent!r}")
+    try:
+        return AgentSessionCommand(Agent(agent), session_id).command_text
+    except ValueError as exc:
+        raise StreamError(str(exc)) from exc
 
 
 def open_workspace(stream: Stream, cmux: CmuxClient | None = None) -> None:
@@ -165,6 +163,12 @@ def update_workspace(stream: Stream, workspace: CmuxWorkspace, cmux: CmuxClient 
 
 
 def load_stream_for_update(slug: str | None, workspace_selector: str | None, current: bool, cmux: CmuxClient) -> tuple[Stream, CmuxWorkspace]:
+    """Resolve the stream/workspace pair for `streams cmux update`.
+
+    An explicit slug always selects the stream. `--current` and `--workspace`
+    select only the target CMUX workspace, so users can update a workspace whose
+    current title does not yet match the desired stream.
+    """
     if current and workspace_selector:
         raise StreamError("use either --current or --workspace, not both")
     if current:
