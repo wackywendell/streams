@@ -10,10 +10,11 @@ from pathlib import Path
 from .errors import StreamError
 from .models import Stream
 from .store import list_streams, start_stream
-from .cmux import CmuxClient, load_stream_for_update, open_workspace, update_workspace
+from .cmux import CmuxClient, load_stream_for_update, open_workspace, update_current_workspace, update_workspace
 from .check import check_streams, findings_json
 from .store import check_paths
 from .resolve import resolve_check_path_ref, resolve_stream_ref
+from .resume import exec_resume, resolve_stream_for_resume
 
 
 def render_list(streams: list[Stream]) -> str:
@@ -73,10 +74,18 @@ def command_show(args: argparse.Namespace) -> int:
 
 def command_start(args: argparse.Namespace) -> int:
     stream = start_stream(args.title)
+    workspace = None
+    if args.current:
+        workspace = update_current_workspace(stream)
     if args.json:
-        print(json.dumps(stream.as_json(), indent=2, sort_keys=True))
+        payload = stream.as_json()
+        if workspace is not None:
+            payload["updated_workspace"] = workspace.display_ref
+        print(json.dumps(payload, indent=2, sort_keys=True))
     else:
         print(f"created: {stream.slug} {stream.path}")
+        if workspace is not None:
+            print(f"updated: {workspace.display_ref} {stream.slug}")
     return 0
 
 
@@ -117,6 +126,12 @@ def command_format(args: argparse.Namespace) -> int:
     return 0
 
 
+def command_resume(args: argparse.Namespace) -> int:
+    stream = resolve_stream_for_resume(args.slug)
+    exec_resume(stream)
+    return 0
+
+
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(description="Manage scratch-first work streams.")
     subparsers = parser.add_subparsers(dest="command", required=True)
@@ -135,25 +150,30 @@ def build_parser() -> argparse.ArgumentParser:
     check_parser.add_argument("--json", action="store_true", help="print findings as JSON")
     check_parser.set_defaults(func=command_check)
 
-    start_parser = subparsers.add_parser("start", help="create a new active stream")
+    start_parser = subparsers.add_parser("start", aliases=["s"], help="create a new active stream")
     start_parser.add_argument("title", help="stream title")
     start_parser.add_argument("--json", action="store_true", help="print stream frontmatter as JSON")
+    start_parser.add_argument("-c", "--current", action="store_true", help="update the current CMUX workspace from the new stream")
     start_parser.set_defaults(func=command_start)
 
     format_parser = subparsers.add_parser("format", help="print scratch stream format documentation")
     format_parser.set_defaults(func=command_format)
 
-    cmux_parser = subparsers.add_parser("cmux", help="project streams into CMUX")
+    resume_parser = subparsers.add_parser("resume", help="resume a stream's latest recorded AI session")
+    resume_parser.add_argument("slug", nargs="?", help="stream filename stem; defaults from current CMUX workspace")
+    resume_parser.set_defaults(func=command_resume)
+
+    cmux_parser = subparsers.add_parser("cmux", aliases=["c"], help="project streams into CMUX")
     cmux_subparsers = cmux_parser.add_subparsers(dest="cmux_command", required=True)
 
-    cmux_open = cmux_subparsers.add_parser("open", help="open a CMUX workspace for a stream")
+    cmux_open = cmux_subparsers.add_parser("open", aliases=["o"], help="open a CMUX workspace for a stream")
     cmux_open.add_argument("slug", help="stream filename stem")
     cmux_open.set_defaults(func=command_cmux_open)
 
-    cmux_update = cmux_subparsers.add_parser("update", help="update a CMUX workspace from a stream")
+    cmux_update = cmux_subparsers.add_parser("update", aliases=["u"], help="update a CMUX workspace from a stream")
     cmux_update.add_argument("slug", nargs="?", help="stream filename stem; defaults from current workspace title with --current")
-    cmux_update.add_argument("--current", action="store_true", help="target the current CMUX workspace")
-    cmux_update.add_argument("--workspace", help="target a CMUX workspace ref, UUID, or title")
+    cmux_update.add_argument("-c", "--current", action="store_true", help="target the current CMUX workspace")
+    cmux_update.add_argument("-w", "--workspace", help="target a CMUX workspace ref, UUID, or title")
     cmux_update.set_defaults(func=command_cmux_update)
 
     return parser

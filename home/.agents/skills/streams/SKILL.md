@@ -7,54 +7,72 @@ metadata:
 
 # Streams
 
-Use this skill to keep AI coding stream state in scratch files under `~/worknotes/scratch`.
+Use this skill to manage AI-assisted coding streams from scratch files under `~/worknotes/scratch`.
 
-Scratch frontmatter is the local source of truth for stream state. The markdown body is the pickup document: current status, goals, decisions, tradeoffs, deferred choices, and open questions. CMUX, status lists, and future tools are projections of that scratch state.
+Scratch frontmatter is the source of truth for current state. The markdown body is the pickup document: goal, current status, important decisions, tradeoffs, deferred choices, and open questions. CMUX, status lists, and future tools are projections of that scratch state.
 
 Taskwarrior is not part of this workflow.
 
-## Required Reading
+## CLI First
 
-Always read:
+Use the `streams` CLI for mechanics instead of reimplementing parsing or matching in conversation:
 
-- [references/core.md](references/core.md) — stream model, statuses, invariants, and split-off signals.
-- [references/scratch.md](references/scratch.md) — frontmatter schema and markdown body protocol.
+| Need | Command |
+| --- | --- |
+| List current streams | `streams list` or `streams list --json` |
+| Inspect one stream | `streams show <slug>` or `streams show <slug> --json` |
+| Validate stream files | `streams check [slug]` |
+| Create a stream | `streams start "Title"` or `streams s "Title"` |
+| Resume the latest recorded AI session | `streams resume [slug]` |
+| Read the stream file format | `streams format` |
+| Open/update CMUX projection | `streams cmux ...` or `streams c ...` |
 
-Then read by scope:
+Use `streams format` as the schema source of truth. Use `streams check [slug]` for frontmatter validation.
 
-- **Portfolio / conductor scope**: [references/conductor.md](references/conductor.md), plus [references/cmux-integration.md](references/cmux-integration.md) when inspecting or aligning CMUX.
-- **Single-stream scope**: [references/task-agent.md](references/task-agent.md), plus [references/cmux-integration.md](references/cmux-integration.md) when a CMUX workspace is open or should be created/updated.
-- **Cleanup / retro**: [references/cleanup.md](references/cleanup.md).
+## Stream State
 
-Use the sibling [cmux skill](../cmux/SKILL.md) for pure CMUX command mechanics. The streams references define how CMUX is projected from scratch state.
+One top-level markdown file under `~/worknotes/scratch` is one current stream. Archived streams live under `~/worknotes/scratch/archive`; `archived` is not a status.
 
-## Command Vocabulary
+Keep scratch frontmatter flat and tool-neutral. Do not add `cmux`, `taskwarrior`, `current`, or `slug` fields. The slug is the filename stem.
 
-Commands are interpreted by scope:
+Use exactly these statuses: `active`, `waiting`, `blocked`, `parked`, `review`, and `done`. Keep `state` short enough for compact displays. Keep `sessions` ordered oldest to newest; `streams resume` uses the last entry.
 
-- `status`: read-only recorded-state recap from scratch.
-- `check` / `refresh`: inspect relevant local/external state, update scratch and CMUX when reality changed, and recap.
-- `reconcile`: conductor-only audit across scratch files and CMUX.
-- `checkpoint` / `handoff`: single-stream synonyms for making the current scratch file durable and resumable.
-- `update`: for conductor, synonym for `check` / `refresh`; for a stream, synonym for `checkpoint` / `handoff`.
-- `cleanup`: single-stream completion/archive/retro flow; not a status.
-- `split off`: create a related separate scratch stream without switching the current session.
-- `open` / `switch` / `resume`: explicitly change the current stream and create/select/resume its CMUX/AI session as needed.
+The markdown body should be edited in place so it remains coherent. `## Status` is current pickup context, not a log.
 
-## Mechanics
+## Workflow Verbs
 
-Use `streams` for recorded stream state:
+- `status`: read scratch state and recap what is recorded. Do not inspect external systems unless asked.
+- `check` / `refresh`: inspect relevant local or external state, then update scratch and CMUX if recorded state is stale.
+- `checkpoint` / `handoff` / stream-local `update`: make the current stream durable and resumable.
+- `cleanup`: mark `status: done` or archive only with explicit evidence or a clear request.
+- `split off`: create a separate stream with `streams start "Title"` when related work has its own goal, repo/cwd, state, owner, or session context.
+- `open` / `switch` / `resume`: change the active stream context; use `streams resume [slug]` for terminal resume and `streams cmux ...` for workspace projection.
 
-```bash
-streams list
-streams list --json
-streams show <slug>
-streams show <slug> --json
-streams check [slug]
-streams start "Title"
-streams format
-```
+## Update Protocol
 
-`streams check [slug]` validates scratch frontmatter schema. This is distinct from the workflow command word `check` / `refresh`, which means inspect reality and update stream state.
+On stream start or resume, read the scratch file before implementation work.
 
-Before replying after material work, consider whether the scratch frontmatter, `## Status`, decisions, open questions, or linked CMUX display changed usefully. Update them only when the work usefully changed durable state or pickup context.
+Before replying after material work, ask:
+
+- Did frontmatter state change?
+- Does `## Status` still let a new human or AI session continue?
+- Did an important decision, tradeoff, deferred choice, or open question change?
+- Does the linked CMUX display need to be updated from scratch?
+
+If yes, update scratch and CMUX before responding. If no durable pickup context changed, leave scratch alone.
+
+## CMUX
+
+CMUX is only a projection of scratch state. Use `streams cmux open <slug>` and `streams cmux update ...` instead of hand-editing workspace title, description, color, or cwd. Use `streams start "Title" --current` or `streams s "Title" -c` to create a stream and immediately project it onto the current CMUX workspace.
+
+Selecting a CMUX workspace is user-visible focus movement. Select a workspace only for explicit `open`, `switch`, `resume`, inspection, or when CMUX requires selection. For pure CMUX mechanics, use the sibling `cmux` skill.
+
+## Recaps
+
+For a single stream, recap briefly:
+
+- `Overall`: current purpose and state.
+- `Just completed`: what changed now.
+- `Still to do`: concrete next work, blockers, or verification.
+
+For portfolio status, group streams by `active`, `waiting` / `review`, `blocked`, `parked`, and `done`. Use `streams list --json` rather than scraping human output.

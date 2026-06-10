@@ -11,7 +11,7 @@ from pathlib import Path
 from typing import Any
 
 from .errors import StreamError
-from .agent_sessions import Agent, AgentSessionCommand
+from .agent_sessions import latest_session_command
 from .models import Stream
 from .resolve import resolve_stream_ref
 from .store import list_streams
@@ -126,17 +126,8 @@ def stream_for_workspace_hint(workspace: CmuxWorkspace, *, root: Path | None = N
 
 
 def resume_command(stream: Stream) -> str | None:
-    sessions = stream.frontmatter.get("sessions") or []
-    if not sessions:
-        return None
-    session = str(sessions[0])
-    agent, _, session_id = session.partition(":")
-    if not session_id:
-        raise StreamError(f"invalid session {session!r}; expected agent:id")
-    try:
-        return AgentSessionCommand(Agent(agent), session_id).command_text
-    except ValueError as exc:
-        raise StreamError(str(exc)) from exc
+    command = latest_session_command(stream)
+    return command.command_text if command else None
 
 
 GITHUB_ITEM_RE = re.compile(r"^https://github\.com/([^/]+)/([^/]+)/(issues|pull)/([0-9]+)(?:[/?#].*)?$")
@@ -205,6 +196,13 @@ def update_workspace(stream: Stream, workspace: CmuxWorkspace, cmux: CmuxClient 
             color_for_status(stream.status),
         ]
     )
+
+
+def update_current_workspace(stream: Stream, cmux: CmuxClient | None = None) -> CmuxWorkspace:
+    cmux = cmux or CmuxClient()
+    workspace = cmux.resolve_workspace(None)
+    update_workspace(stream, workspace, cmux)
+    return workspace
 
 
 def load_stream_for_update(

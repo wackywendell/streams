@@ -43,6 +43,8 @@ Issue URLs must look like `https://github.com/<owner>/<repo>/issues/<number>`. P
 
 Do not include `slug`, `cmux`, `taskwarrior`, or `current` in frontmatter. The slug is the filename stem.
 
+`streams resume [slug]` starts the last session listed in `sessions`. Without a slug, it infers the stream from the current CMUX workspace title or a unique workspace `cwd` match. If `sessions` is empty, start a new AI session intentionally and record it in scratch.
+
 ## Markdown Body
 
 Use this body shape:
@@ -68,6 +70,12 @@ _Unresolved questions that affect how to continue._
 ```
 
 The body is a current pickup document, not an append-only log. Edit it in place so a new human or AI session can resume from the frontmatter and `## Status`.
+
+## CLI Notes
+
+`streams start "Title"` creates a scratch file only. `streams start "Title" --current` or `streams s "Title" -c` creates the scratch file and projects it onto the current CMUX workspace.
+
+`streams cmux` can be abbreviated as `streams c`. `open` and `update` can be abbreviated as `o` and `u`. Use `-c` for `--current` and `-w` for `--workspace`.
 
 ## CMUX Projection
 
