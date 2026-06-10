@@ -11,21 +11,20 @@ Use this skill to manage AI-assisted coding streams from scratch files under `~/
 
 Scratch frontmatter is the source of truth for current state. The markdown body is the pickup document: goal, current status, important decisions, tradeoffs, deferred choices, and open questions. CMUX, status lists, and future tools are projections of that scratch state.
 
-Taskwarrior is not part of this workflow.
-
 ## CLI First
 
 Use the `streams` CLI for mechanics instead of reimplementing parsing or matching in conversation:
 
-| Need | Command |
-| --- | --- |
-| List current streams | `streams list` or `streams list --json` |
-| Inspect one stream | `streams show <slug>` or `streams show <slug> --json` |
-| Validate stream files | `streams check [slug]` |
-| Create a stream | `streams start "Title"` or `streams s "Title"` |
-| Resume the latest recorded AI session | `streams resume [slug]` |
-| Read the stream file format | `streams format` |
-| Open/update CMUX projection | `streams cmux ...` or `streams c ...` |
+| Need                                  | Command                                               |
+| ------------------------------------- | ----------------------------------------------------- |
+| List current streams                  | `streams list` or `streams list --json`               |
+| Inspect one stream                    | `streams show <slug>` or `streams show <slug> --json` |
+| Validate stream files                 | `streams check [slug]`                                |
+| Create a stream                       | `streams start "Title"` or `streams s "Title"`        |
+| Archive a done stream                 | `streams archive <slug>` or `streams a <slug>`        |
+| Resume the latest recorded AI session | `streams resume [slug]`                               |
+| Read the stream file format           | `streams format`                                      |
+| Open/update CMUX projection           | `streams cmux ...` or `streams c ...`                 |
 
 Use `streams format` as the schema source of truth. Use `streams check [slug]` for frontmatter validation.
 
@@ -33,18 +32,18 @@ Use `streams format` as the schema source of truth. Use `streams check [slug]` f
 
 One top-level markdown file under `~/worknotes/scratch` is one current stream. Archived streams live under `~/worknotes/scratch/archive`; `archived` is not a status.
 
-Keep scratch frontmatter flat and tool-neutral. Do not add `cmux`, `taskwarrior`, `current`, or `slug` fields. The slug is the filename stem.
+Keep scratch frontmatter flat and tool-neutral. Do not add `cmux`, `current`, or `slug` fields. The slug is the filename stem, and is a normalized version of the title.
 
 Use exactly these statuses: `active`, `waiting`, `blocked`, `parked`, `review`, and `done`. Keep `state` short enough for compact displays. Keep `sessions` ordered oldest to newest; `streams resume` uses the last entry.
 
-The markdown body should be edited in place so it remains coherent. `## Status` is current pickup context, not a log.
+The markdown body should be edited in place so it remains coherent. `## Status` is current pickup context.
 
 ## Workflow Verbs
 
 - `status`: read scratch state and recap what is recorded. Do not inspect external systems unless asked.
 - `check` / `refresh`: inspect relevant local or external state, then update scratch and CMUX if recorded state is stale.
 - `checkpoint` / `handoff` / stream-local `update`: make the current stream durable and resumable.
-- `cleanup`: mark `status: done` or archive only with explicit evidence or a clear request.
+- `cleanup`: mark `status: done` or archive only with explicit evidence or a clear request. Use `streams archive <slug>` for done streams and `--force` only when intentionally archiving non-done work.
 - `split off`: create a separate stream with `streams start "Title"` when related work has its own goal, repo/cwd, state, owner, or session context.
 - `open` / `switch` / `resume`: change the active stream context; use `streams resume [slug]` for terminal resume and `streams cmux ...` for workspace projection.
 
@@ -55,6 +54,8 @@ On stream start or resume, read the scratch file before implementation work.
 Before replying after material work, ask:
 
 - Did frontmatter state change?
+- Are any frontmatter fields missing or out of date?
+  - Is your own AI session in the `sessions` field?
 - Does `## Status` still let a new human or AI session continue?
 - Did an important decision, tradeoff, deferred choice, or open question change?
 - Does the linked CMUX display need to be updated from scratch?

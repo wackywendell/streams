@@ -77,6 +77,8 @@ The body is a current pickup document, not an append-only log. Edit it in place 
 
 `streams cmux` can be abbreviated as `streams c`. `open` and `update` can be abbreviated as `o` and `u`. Use `-c` for `--current` and `-w` for `--workspace`.
 
+`streams archive <slug>` moves a `done` stream to `~/worknotes/scratch/archive/YYYY-MM/`. Use `streams a <slug>` for the short form, `--dry-run` to preview, `--month YYYY-MM` to choose a month, and `--force` only when intentionally archiving a non-`done` stream.
+
 ## CMUX Projection
 
 CMUX is a projection of generic stream state:

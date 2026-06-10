@@ -9,7 +9,7 @@ from pathlib import Path
 
 from .errors import StreamError
 from .models import Stream
-from .store import list_streams, start_stream
+from .store import archive_stream, list_streams, start_stream
 from .cmux import CmuxClient, load_stream_for_update, open_workspace, update_current_workspace, update_workspace
 from .check import check_streams, findings_json
 from .store import check_paths
@@ -132,6 +132,14 @@ def command_resume(args: argparse.Namespace) -> int:
     return 0
 
 
+def command_archive(args: argparse.Namespace) -> int:
+    stream = resolve_stream_ref(args.slug)
+    destination = archive_stream(stream, month=args.month, force=args.force, dry_run=args.dry_run)
+    verb = "would archive" if args.dry_run else "archived"
+    print(f"{verb}: {stream.slug} {destination}")
+    return 0
+
+
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(description="Manage scratch-first work streams.")
     subparsers = parser.add_subparsers(dest="command", required=True)
@@ -162,6 +170,13 @@ def build_parser() -> argparse.ArgumentParser:
     resume_parser = subparsers.add_parser("resume", help="resume a stream's latest recorded AI session")
     resume_parser.add_argument("slug", nargs="?", help="stream filename stem; defaults from current CMUX workspace")
     resume_parser.set_defaults(func=command_resume)
+
+    archive_parser = subparsers.add_parser("archive", aliases=["a"], help="move a done stream to scratch/archive")
+    archive_parser.add_argument("slug", help="stream filename stem")
+    archive_parser.add_argument("--month", help="archive month in YYYY-MM form; defaults to the current month")
+    archive_parser.add_argument("--dry-run", action="store_true", help="show destination without moving the file")
+    archive_parser.add_argument("--force", action="store_true", help="archive a stream whose status is not done")
+    archive_parser.set_defaults(func=command_archive)
 
     cmux_parser = subparsers.add_parser("cmux", aliases=["c"], help="project streams into CMUX")
     cmux_subparsers = cmux_parser.add_subparsers(dest="cmux_command", required=True)

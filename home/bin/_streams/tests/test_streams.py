@@ -11,7 +11,7 @@ from unittest.mock import patch
 BIN_DIR = Path(__file__).resolve().parents[2]
 sys.path.insert(0, str(BIN_DIR))
 
-from _streams.cli import build_parser, command_format, command_list, command_resume, command_show, command_start
+from _streams.cli import build_parser, command_archive, command_format, command_list, command_resume, command_show, command_start
 from _streams.cmux import (
     CmuxClient,
     CmuxWorkspace,
@@ -27,7 +27,7 @@ from _streams.check import check_path, check_streams, findings_json
 from _streams.frontmatter import render_frontmatter, split_frontmatter
 from _streams.resolve import resolve_check_path_ref, resolve_slug_ref, resolve_stream_ref
 from _streams.resume import resolve_stream_for_resume, resume_command_for_stream
-from _streams.store import check_paths, list_streams, show_stream, start_stream
+from _streams.store import archive_stream, check_paths, list_streams, show_stream, start_stream
 
 
 def write_stream(
@@ -115,6 +115,56 @@ class StoreTest(unittest.TestCase):
             start_stream("New Stream", root=root, cwd=root)
             with self.assertRaisesRegex(Exception, "already exists"):
                 start_stream("New Stream", root=root, cwd=root)
+
+    def test_archive_stream_moves_done_stream_to_month(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            stream = show_stream(write_stream(root, "done-stream", status="done").stem, root)
+            destination = archive_stream(stream, month="2026-06")
+            self.assertEqual(destination, root / "archive" / "2026-06" / "done-stream.md")
+            self.assertFalse(root.joinpath("done-stream.md").exists())
+            self.assertTrue(destination.exists())
+
+    def test_archive_stream_requires_done_without_force(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            stream = show_stream(write_stream(root, "active-stream", status="active").stem, root)
+            with self.assertRaisesRegex(Exception, "use --force"):
+                archive_stream(stream, month="2026-06")
+            self.assertTrue(root.joinpath("active-stream.md").exists())
+
+    def test_archive_stream_force_allows_non_done(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            stream = show_stream(write_stream(root, "active-stream", status="active").stem, root)
+            destination = archive_stream(stream, month="2026-06", force=True)
+            self.assertTrue(destination.exists())
+
+    def test_archive_stream_dry_run_does_not_move(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            stream = show_stream(write_stream(root, "done-stream", status="done").stem, root)
+            destination = archive_stream(stream, month="2026-06", dry_run=True)
+            self.assertEqual(destination, root / "archive" / "2026-06" / "done-stream.md")
+            self.assertTrue(root.joinpath("done-stream.md").exists())
+            self.assertFalse(destination.exists())
+
+    def test_archive_stream_refuses_overwrite(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            stream = show_stream(write_stream(root, "done-stream", status="done").stem, root)
+            destination = root / "archive" / "2026-06" / "done-stream.md"
+            destination.parent.mkdir(parents=True)
+            destination.write_text("existing")
+            with self.assertRaisesRegex(Exception, "already exists"):
+                archive_stream(stream, month="2026-06")
+
+    def test_archive_stream_validates_month(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            stream = show_stream(write_stream(root, "done-stream", status="done").stem, root)
+            with self.assertRaisesRegex(Exception, "YYYY-MM"):
+                archive_stream(stream, month="2026-13")
 
 
 class ResolveTest(unittest.TestCase):
@@ -214,6 +264,20 @@ class CliTest(unittest.TestCase):
 
         workspace_args = parser.parse_args(["cmux", "update", "active", "-w", "workspace:2"])
         self.assertEqual(workspace_args.workspace, "workspace:2")
+
+        archive_args = parser.parse_args(["a", "done-stream", "--dry-run"])
+        self.assertEqual(archive_args.command, "a")
+        self.assertEqual(archive_args.slug, "done-stream")
+        self.assertTrue(archive_args.dry_run)
+
+    def test_archive_prints_destination(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp, patch("_streams.cli.resolve_stream_ref") as resolve_mock, patch("builtins.print") as print_mock:
+            root = Path(tmp)
+            stream = show_stream(write_stream(root, "done-stream", status="done").stem, root)
+            resolve_mock.return_value = stream
+            args = type("Args", (), {"slug": "done", "month": "2026-06", "force": False, "dry_run": True})()
+            self.assertEqual(command_archive(args), 0)
+            self.assertEqual(print_mock.call_args.args[0], f"would archive: done-stream {root / 'archive' / '2026-06' / 'done-stream.md'}")
 
     def test_check_json_reports_findings(self) -> None:
         with tempfile.TemporaryDirectory() as tmp, patch("_streams.cli.resolve_check_path_ref") as resolve_mock, patch("builtins.print") as print_mock:

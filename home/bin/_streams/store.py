@@ -134,3 +134,43 @@ _List unresolved questions that affect how to continue._
     except OSError as exc:
         raise StreamError(f"could not create {path}: {exc}") from exc
     return load_stream(path)
+
+
+def archive_stream(
+    stream: Stream,
+    *,
+    month: str | None = None,
+    force: bool = False,
+    dry_run: bool = False,
+) -> Path:
+    if stream.status != "done" and not force:
+        raise StreamError(f"stream {stream.slug!r} has status {stream.status!r}; use --force to archive it")
+
+    month = month or date.today().strftime("%Y-%m")
+    if not _valid_archive_month(month):
+        raise StreamError(f"archive month {month!r} must look like YYYY-MM")
+
+    archive_dir = stream.path.parent / ARCHIVE_DIRNAME / month
+    destination = archive_dir / stream.path.name
+    if destination.exists():
+        raise StreamError(f"archive destination already exists: {destination}")
+
+    if not dry_run:
+        try:
+            archive_dir.mkdir(parents=True, exist_ok=True)
+            stream.path.rename(destination)
+        except OSError as exc:
+            raise StreamError(f"could not archive {stream.path}: {exc}") from exc
+    return destination
+
+
+def _valid_archive_month(month: str) -> bool:
+    parts = month.split("-")
+    if len(parts) != 2:
+        return False
+    year, month_number = parts
+    if len(year) != 4 or len(month_number) != 2:
+        return False
+    if not year.isdigit() or not month_number.isdigit():
+        return False
+    return 1 <= int(month_number) <= 12
