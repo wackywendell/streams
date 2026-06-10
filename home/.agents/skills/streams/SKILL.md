@@ -52,6 +52,7 @@ streams show <slug>
 streams show <slug> --json
 streams check [slug]
 streams start "Title"
+streams format
 ```
 
 `streams check [slug]` validates scratch frontmatter schema. This is distinct from the workflow command word `check` / `refresh`, which means inspect reality and update stream state.

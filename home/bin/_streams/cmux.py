@@ -4,15 +4,17 @@ from __future__ import annotations
 
 import json
 import os
+import re
 import subprocess
 from dataclasses import dataclass
+from pathlib import Path
 from typing import Any
 
 from .errors import StreamError
 from .agent_sessions import Agent, AgentSessionCommand
 from .models import Stream
-from .slug import normalized_slug, slugify
-from .store import show_stream
+from .resolve import resolve_stream_ref
+from .store import list_streams
 
 STATUS_COLORS = {
     "active": "Green",
@@ -39,6 +41,10 @@ class CmuxWorkspace:
     @property
     def title(self) -> str:
         return str(self.raw.get("title") or "")
+
+    @property
+    def current_directory(self) -> str:
+        return str(self.raw.get("current_directory") or "")
 
     @property
     def display_ref(self) -> str:
@@ -92,13 +98,31 @@ def color_for_status(status: str) -> str:
     return STATUS_COLORS.get(status, "Amber")
 
 
-def stream_for_current_workspace(cmux: CmuxClient) -> tuple[Stream, CmuxWorkspace]:
-    """Resolve both stream and workspace from the current CMUX title."""
-    workspace = cmux.resolve_workspace(None)
-    slug = slugify(workspace.title)
-    if not slug:
-        raise StreamError(f"current CMUX workspace title {workspace.title!r} does not produce a stream slug")
-    return show_stream(slug), workspace
+def stream_for_workspace_hint(workspace: CmuxWorkspace, *, root: Path | None = None) -> Stream:
+    """Infer a stream from weak CMUX workspace hints."""
+    root_args = {"root": root} if root is not None else {}
+    if workspace.title:
+        try:
+            return resolve_stream_ref(workspace.title, **root_args)
+        except StreamError:
+            pass
+
+    cwd_matches = [
+        stream
+        for stream in list_streams(**root_args)
+        if str(stream.frontmatter.get("cwd") or "") == workspace.current_directory
+    ]
+    if len(cwd_matches) == 1:
+        return cwd_matches[0]
+    if len(cwd_matches) > 1:
+        choices = ", ".join(sorted(stream.slug for stream in cwd_matches))
+        raise StreamError(
+            f"current CMUX workspace matches multiple streams by cwd; pass a slug: {choices}"
+        )
+    raise StreamError(
+        f"current CMUX workspace {workspace.display_ref} title {workspace.title!r} "
+        "does not identify one stream; pass a slug"
+    )
 
 
 def resume_command(stream: Stream) -> str | None:
@@ -115,6 +139,27 @@ def resume_command(stream: Stream) -> str | None:
         raise StreamError(str(exc)) from exc
 
 
+GITHUB_ITEM_RE = re.compile(r"^https://github\.com/([^/]+)/([^/]+)/(issues|pull)/([0-9]+)(?:[/?#].*)?$")
+
+
+def markdown_link_for_item(item: Any) -> str:
+    text = str(item)
+    match = GITHUB_ITEM_RE.fullmatch(text)
+    if not match:
+        return text
+    repo = match.group(2)
+    number = match.group(4)
+    return f"[{repo}#{number}]({text})"
+
+
+def description_for_stream(stream: Stream) -> str:
+    lines = [f"_{stream.state}_"]
+    for field in ("issues", "prs"):
+        for item in stream.frontmatter.get(field) or []:
+            lines.append(markdown_link_for_item(item))
+    return "\n".join(lines)
+
+
 def open_workspace(stream: Stream, cmux: CmuxClient | None = None) -> None:
     cmux = cmux or CmuxClient()
     command = [
@@ -123,7 +168,7 @@ def open_workspace(stream: Stream, cmux: CmuxClient | None = None) -> None:
         "--name",
         stream.title,
         "--description",
-        stream.state,
+        description_for_stream(stream),
         "--cwd",
         str(stream.frontmatter.get("cwd") or "."),
     ]
@@ -145,7 +190,7 @@ def update_workspace(stream: Stream, workspace: CmuxWorkspace, cmux: CmuxClient 
             "--action",
             "set-description",
             "--description",
-            stream.state,
+            description_for_stream(stream),
         ]
     )
     cmux.run(
@@ -162,7 +207,14 @@ def update_workspace(stream: Stream, workspace: CmuxWorkspace, cmux: CmuxClient 
     )
 
 
-def load_stream_for_update(slug: str | None, workspace_selector: str | None, current: bool, cmux: CmuxClient) -> tuple[Stream, CmuxWorkspace]:
+def load_stream_for_update(
+    slug: str | None,
+    workspace_selector: str | None,
+    current: bool,
+    cmux: CmuxClient,
+    *,
+    root: Path | None = None,
+) -> tuple[Stream, CmuxWorkspace]:
     """Resolve the stream/workspace pair for `streams cmux update`.
 
     An explicit slug always selects the stream. `--current` and `--workspace`
@@ -174,13 +226,14 @@ def load_stream_for_update(slug: str | None, workspace_selector: str | None, cur
     if current:
         workspace = cmux.resolve_workspace(None)
         if slug is not None:
-            return show_stream(normalized_slug(slug)), workspace
-        stream, workspace = stream_for_current_workspace(cmux)
-        return stream, workspace
+            return resolve_stream_ref(slug, **({"root": root} if root is not None else {})), workspace
+        return stream_for_workspace_hint(workspace, root=root), workspace
     if slug is None and workspace_selector is None:
-        stream, workspace = stream_for_current_workspace(cmux)
-        return stream, workspace
+        workspace = cmux.resolve_workspace(None)
+        return stream_for_workspace_hint(workspace, root=root), workspace
     if workspace_selector is None:
         raise StreamError("update requires --current or --workspace")
     workspace = cmux.resolve_workspace(workspace_selector)
-    return show_stream(normalized_slug(slug or workspace.title)), workspace
+    if slug is not None:
+        return resolve_stream_ref(slug, **({"root": root} if root is not None else {})), workspace
+    return stream_for_workspace_hint(workspace, root=root), workspace

@@ -11,14 +11,34 @@ from unittest.mock import patch
 BIN_DIR = Path(__file__).resolve().parents[2]
 sys.path.insert(0, str(BIN_DIR))
 
-from _streams.cli import command_list, command_show, command_start
-from _streams.cmux import CmuxClient, CmuxWorkspace, color_for_status, load_stream_for_update, open_workspace, resume_command, update_workspace
+from _streams.cli import command_format, command_list, command_show, command_start
+from _streams.cmux import (
+    CmuxClient,
+    CmuxWorkspace,
+    color_for_status,
+    description_for_stream,
+    load_stream_for_update,
+    open_workspace,
+    resume_command,
+    update_workspace,
+)
 from _streams.check import check_path, check_streams, findings_json
 from _streams.frontmatter import render_frontmatter, split_frontmatter
+from _streams.resolve import resolve_check_path_ref, resolve_slug_ref, resolve_stream_ref
 from _streams.store import check_paths, list_streams, show_stream, start_stream
 
 
-def write_stream(root: Path, slug: str, *, title: str = "Example", status: str = "active", state: str = "Doing work") -> Path:
+def write_stream(
+    root: Path,
+    slug: str,
+    *,
+    title: str = "Example",
+    status: str = "active",
+    state: str = "Doing work",
+    cwd: str = "/repo",
+    issues: list[str] | None = None,
+    prs: list[str] | None = None,
+) -> Path:
     path = root / f"{slug}.md"
     frontmatter = {
         "title": title,
@@ -26,10 +46,10 @@ def write_stream(root: Path, slug: str, *, title: str = "Example", status: str =
         "description": "Overall task description",
         "state": state,
         "repo": "/repo",
-        "cwd": "/repo",
+        "cwd": cwd,
         "vcs": "jj",
-        "issues": [],
-        "prs": [],
+        "issues": issues or [],
+        "prs": prs or [],
         "sessions": ["codex:abc"],
     }
     path.write_text(render_frontmatter(frontmatter, "# Body\n"))
@@ -94,6 +114,45 @@ class StoreTest(unittest.TestCase):
                 start_stream("New Stream", root=root, cwd=root)
 
 
+class ResolveTest(unittest.TestCase):
+    def test_exact_match_wins_over_substring(self) -> None:
+        self.assertEqual(resolve_slug_ref("zero", ["zero", "zero-arg-functions"]), "zero")
+
+    def test_multi_word_ref_normalizes_to_slug(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            write_stream(root, "zero-arg-functions", title="Zero Arg Functions")
+            self.assertEqual(resolve_stream_ref("Zero arg", root=root).slug, "zero-arg-functions")
+
+    def test_unique_substring_match_succeeds(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            write_stream(root, "zero-arg-functions")
+            write_stream(root, "other-stream")
+            self.assertEqual(resolve_stream_ref("arg", root=root).slug, "zero-arg-functions")
+
+    def test_zero_matches_fails_clearly(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            write_stream(root, "zero-arg-functions")
+            with self.assertRaisesRegex(Exception, "no stream matches"):
+                resolve_stream_ref("missing", root=root)
+
+    def test_multiple_matches_fail_clearly(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            write_stream(root, "zero-arg-functions")
+            write_stream(root, "zero-arg-review")
+            with self.assertRaisesRegex(Exception, "ambiguous"):
+                resolve_stream_ref("zero arg", root=root)
+
+    def test_check_path_ref_resolves_legacy_file_by_substring(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            (root / "legacy-note.md").write_text("# Legacy scratch\n")
+            self.assertEqual(resolve_check_path_ref("legacy", root=root).name, "legacy-note.md")
+
+
 class CliTest(unittest.TestCase):
     def test_list_json_shape(self) -> None:
         with tempfile.TemporaryDirectory() as tmp, patch("_streams.cli.list_streams") as list_mock, patch("builtins.print") as print_mock:
@@ -107,7 +166,7 @@ class CliTest(unittest.TestCase):
             self.assertEqual(payload[0]["path"], str(stream.path))
 
     def test_show_human_includes_slug(self) -> None:
-        with tempfile.TemporaryDirectory() as tmp, patch("_streams.cli.show_stream") as show_mock, patch("builtins.print") as print_mock:
+        with tempfile.TemporaryDirectory() as tmp, patch("_streams.cli.resolve_stream_ref") as show_mock, patch("builtins.print") as print_mock:
             root = Path(tmp)
             stream = show_stream(write_stream(root, "active-stream").stem, root)
             show_mock.return_value = stream
@@ -125,17 +184,26 @@ class CliTest(unittest.TestCase):
             self.assertEqual(json.loads(print_mock.call_args.args[0])["slug"], "active-stream")
 
     def test_check_json_reports_findings(self) -> None:
-        with tempfile.TemporaryDirectory() as tmp, patch("_streams.cli.SCRATCH_ROOT", Path(tmp)), patch("builtins.print") as print_mock:
+        with tempfile.TemporaryDirectory() as tmp, patch("_streams.cli.resolve_check_path_ref") as resolve_mock, patch("builtins.print") as print_mock:
             root = Path(tmp)
             path = write_stream(root, "active-stream")
             text = path.read_text().replace("status: active", "status: nope")
             path.write_text(text)
+            resolve_mock.return_value = path
             args = type("Args", (), {"slug": "active-stream", "json": True})()
             from _streams.cli import command_check
 
             self.assertEqual(command_check(args), 1)
             payload = json.loads(print_mock.call_args.args[0])
             self.assertEqual(payload[0]["level"], "error")
+
+    def test_format_prints_markdown_spec(self) -> None:
+        with patch("builtins.print") as print_mock:
+            args = type("Args", (), {})()
+            self.assertEqual(command_format(args), 0)
+            output = print_mock.call_args.args[0]
+            self.assertIn("# Streams Scratch Format", output)
+            self.assertIn("https://github.com/<owner>/<repo>/pull/<number>", output)
 
 
 class CheckTest(unittest.TestCase):
@@ -175,6 +243,32 @@ class CheckTest(unittest.TestCase):
             path.write_text(path.read_text().replace("- codex:abc", "- abc"))
             findings = check_path(path)
             self.assertTrue(any("sessions[0]" in finding.message for finding in findings))
+
+    def test_issue_must_be_github_issue_url(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            path = write_stream(root, "active-stream", issues=["https://github.com/example-org/widget-lib/pull/150"])
+            findings = check_path(path)
+            self.assertTrue(any("issues[0] must be a GitHub issue URL" in finding.message for finding in findings))
+
+    def test_pr_must_be_github_pull_url(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            path = write_stream(root, "active-stream", prs=["widget-lib#150"])
+            findings = check_path(path)
+            self.assertTrue(any("prs[0] must be a GitHub pull request URL" in finding.message for finding in findings))
+
+    def test_github_issue_and_pr_urls_are_valid(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            path = write_stream(
+                root,
+                "active-stream",
+                title="Active Stream",
+                issues=["https://github.com/example-org/widget-lib/issues/124"],
+                prs=["https://github.com/example-org/widget-lib/pull/150"],
+            )
+            self.assertEqual(check_path(path), [])
 
     def test_slug_title_mismatch_is_warning(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
@@ -235,7 +329,7 @@ class CmuxTest(unittest.TestCase):
                     "--name",
                     "Active Stream",
                     "--description",
-                    "Ready to work",
+                    "_Ready to work_",
                     "--cwd",
                     "/repo",
                     "--command",
@@ -251,8 +345,40 @@ class CmuxTest(unittest.TestCase):
             cmux = FakeCmux()
             update_workspace(stream, workspace, cmux)
             self.assertEqual(cmux.commands[0], ["cmux", "workspace-action", "--workspace", "workspace:2", "--action", "rename", "--title", "Active Stream"])
-            self.assertEqual(cmux.commands[1], ["cmux", "workspace-action", "--workspace", "workspace:2", "--action", "set-description", "--description", "Ready to work"])
+            self.assertEqual(cmux.commands[1], ["cmux", "workspace-action", "--workspace", "workspace:2", "--action", "set-description", "--description", "_Ready to work_"])
             self.assertEqual(cmux.commands[2], ["cmux", "workspace-action", "--workspace", "workspace:2", "--action", "set-color", "--color", "Green"])
+
+    def test_description_includes_italic_state_and_all_links(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            stream = show_stream(
+                write_stream(
+                    root,
+                    "active-stream",
+                    state="Issue #124 literal conversion helpers",
+                    issues=[
+                        "https://github.com/example-org/widget-lib/issues/124",
+                        "https://github.com/openai/codex/issues/7",
+                    ],
+                    prs=[
+                        "https://github.com/example-org/widget-lib/pull/150",
+                        "https://github.com/openai/codex/pull/42",
+                    ],
+                ).stem,
+                root,
+            )
+            self.assertEqual(
+                description_for_stream(stream),
+                "\n".join(
+                    [
+                        "_Issue #124 literal conversion helpers_",
+                        "[widget-lib#124](https://github.com/example-org/widget-lib/issues/124)",
+                        "[codex#7](https://github.com/openai/codex/issues/7)",
+                        "[widget-lib#150](https://github.com/example-org/widget-lib/pull/150)",
+                        "[codex#42](https://github.com/openai/codex/pull/42)",
+                    ]
+                ),
+            )
 
     def test_update_current_resolves_stream_from_workspace_title(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
@@ -260,8 +386,7 @@ class CmuxTest(unittest.TestCase):
             write_stream(root, "active-stream", title="Active Stream")
             workspace = CmuxWorkspace({"ref": "workspace:2", "title": "Active Stream"})
             cmux = FakeCmux([workspace])
-            with patch("_streams.cmux.show_stream", side_effect=lambda slug: show_stream(slug, root)):
-                stream, resolved = load_stream_for_update(None, None, True, cmux)
+            stream, resolved = load_stream_for_update(None, None, True, cmux, root=root)
             self.assertEqual(stream.slug, "active-stream")
             self.assertEqual(resolved.display_ref, "workspace:2")
 
@@ -271,10 +396,29 @@ class CmuxTest(unittest.TestCase):
             write_stream(root, "active-stream", title="Active Stream")
             workspace = CmuxWorkspace({"ref": "workspace:2", "title": "Dotfiles"})
             cmux = FakeCmux([workspace])
-            with patch("_streams.cmux.show_stream", side_effect=lambda slug: show_stream(slug, root)):
-                stream, resolved = load_stream_for_update("active-stream", None, True, cmux)
+            stream, resolved = load_stream_for_update("active", None, True, cmux, root=root)
             self.assertEqual(stream.slug, "active-stream")
             self.assertEqual(resolved.title, "Dotfiles")
+
+    def test_update_current_falls_back_to_unique_cwd(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            write_stream(root, "active-stream", title="Active Stream", cwd="/repo/active")
+            write_stream(root, "other-stream", title="Other Stream", cwd="/repo/other")
+            workspace = CmuxWorkspace({"ref": "workspace:2", "title": "streams cmux update --current", "current_directory": "/repo/active"})
+            cmux = FakeCmux([workspace])
+            stream, resolved = load_stream_for_update(None, None, True, cmux, root=root)
+            self.assertEqual(stream.slug, "active-stream")
+            self.assertEqual(resolved.display_ref, "workspace:2")
+
+    def test_update_current_without_identifying_hint_fails_clearly(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            write_stream(root, "active-stream", title="Active Stream", cwd="/repo/active")
+            workspace = CmuxWorkspace({"ref": "workspace:2", "title": "streams cmux update --current", "current_directory": "/repo/missing"})
+            cmux = FakeCmux([workspace])
+            with self.assertRaisesRegex(Exception, "pass a slug"):
+                load_stream_for_update(None, None, True, cmux, root=root)
 
 
 if __name__ == "__main__":

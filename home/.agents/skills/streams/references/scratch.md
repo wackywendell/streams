@@ -38,6 +38,8 @@ sessions:
 
 Do not add `cmux`, `taskwarrior`, or other tool-specific namespaces. Tooling consumes the generic fields.
 
+Use full GitHub URLs in `issues` and `prs`: `issues` entries must look like `https://github.com/<owner>/<repo>/issues/<number>`, and `prs` entries must look like `https://github.com/<owner>/<repo>/pull/<number>`.
+
 ## Markdown Body
 
 Use this body shape:

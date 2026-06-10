@@ -33,8 +33,8 @@ Field meanings:
 - `repo`: repo path or repo identity.
 - `cwd`: local directory where work should resume.
 - `vcs`: local VCS, usually `jj` or `git`.
-- `issues`: issue links or identifiers.
-- `prs`: PR links or identifiers.
+- `issues`: GitHub issue URLs.
+- `prs`: GitHub pull request URLs.
 - `sessions`: AI session ids in `codex:<id>`, `claude:<id-or-slug>`, or `pi:<id>` form.
 
 Do not put `slug` in frontmatter. The slug is the scratch filename stem, and CMUX title lookup can derive candidate slugs from titles.

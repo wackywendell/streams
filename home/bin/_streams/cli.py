@@ -5,15 +5,15 @@ from __future__ import annotations
 import argparse
 import json
 import sys
+from pathlib import Path
 
 from .errors import StreamError
 from .models import Stream
-from .store import list_streams, show_stream, start_stream
+from .store import list_streams, start_stream
 from .cmux import CmuxClient, load_stream_for_update, open_workspace, update_workspace
-from .config import SCRATCH_ROOT
 from .check import check_streams, findings_json
 from .store import check_paths
-from .slug import normalized_slug
+from .resolve import resolve_check_path_ref, resolve_stream_ref
 
 
 def render_list(streams: list[Stream]) -> str:
@@ -63,7 +63,7 @@ def command_list(args: argparse.Namespace) -> int:
 
 
 def command_show(args: argparse.Namespace) -> int:
-    stream = show_stream(args.slug)
+    stream = resolve_stream_ref(args.slug)
     if args.json:
         print(json.dumps(stream.as_json(), indent=2, sort_keys=True))
     else:
@@ -81,7 +81,7 @@ def command_start(args: argparse.Namespace) -> int:
 
 
 def command_cmux_open(args: argparse.Namespace) -> int:
-    stream = show_stream(args.slug)
+    stream = resolve_stream_ref(args.slug)
     open_workspace(stream)
     print(f"opened: {stream.slug}")
     return 0
@@ -97,7 +97,7 @@ def command_cmux_update(args: argparse.Namespace) -> int:
 
 def command_check(args: argparse.Namespace) -> int:
     if args.slug:
-        paths = [SCRATCH_ROOT / f"{normalized_slug(args.slug)}.md"]
+        paths = [resolve_check_path_ref(args.slug)]
     else:
         paths = check_paths()
     findings = check_streams(paths)
@@ -110,6 +110,11 @@ def command_check(args: argparse.Namespace) -> int:
         target = args.slug or "all streams"
         print(f"ok: {target}")
     return 1 if any(finding.level == "error" for finding in findings) else 0
+
+
+def command_format(args: argparse.Namespace) -> int:
+    print((Path(__file__).with_name("FORMAT.md")).read_text().rstrip())
+    return 0
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -134,6 +139,9 @@ def build_parser() -> argparse.ArgumentParser:
     start_parser.add_argument("title", help="stream title")
     start_parser.add_argument("--json", action="store_true", help="print stream frontmatter as JSON")
     start_parser.set_defaults(func=command_start)
+
+    format_parser = subparsers.add_parser("format", help="print scratch stream format documentation")
+    format_parser.set_defaults(func=command_format)
 
     cmux_parser = subparsers.add_parser("cmux", help="project streams into CMUX")
     cmux_subparsers = cmux_parser.add_subparsers(dest="cmux_command", required=True)

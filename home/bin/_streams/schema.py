@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from pathlib import Path
+import re
 from typing import Any, Literal
 
 from .config import VALID_STATUSES
@@ -14,6 +15,8 @@ STRING_FIELDS = ("title", "status", "description", "state", "repo", "cwd", "vcs"
 LIST_FIELDS = ("issues", "prs", "sessions")
 FORBIDDEN_FIELDS = ("slug", "cmux", "taskwarrior", "current")
 SESSION_PREFIXES = ("codex:", "claude:", "pi:")
+GITHUB_ISSUE_RE = re.compile(r"^https://github\.com/[^/]+/[^/]+/issues/[0-9]+(?:[/?#].*)?$")
+GITHUB_PR_RE = re.compile(r"^https://github\.com/[^/]+/[^/]+/pull/[0-9]+(?:[/?#].*)?$")
 FindingLevel = Literal["error", "warn"]
 
 
@@ -62,6 +65,7 @@ def validate_frontmatter(path: Path, frontmatter: dict[str, Any]) -> list[Schema
     for field in ("issues", "prs"):
         if isinstance(frontmatter.get(field), list):
             _check_list_items_are_strings(path, field, frontmatter[field], findings)
+            _check_link_items(path, field, frontmatter[field], findings)
 
     if isinstance(frontmatter.get("sessions"), list):
         for index, session in enumerate(frontmatter["sessions"]):
@@ -85,6 +89,14 @@ def _check_list_items_are_strings(path: Path, field: str, values: list[Any], fin
     for index, value in enumerate(values):
         if not isinstance(value, str):
             findings.append(_finding("error", path, f"{field}[{index}] must be a string"))
+
+
+def _check_link_items(path: Path, field: str, values: list[Any], findings: list[SchemaFinding]) -> None:
+    pattern = GITHUB_ISSUE_RE if field == "issues" else GITHUB_PR_RE
+    expected = "GitHub issue URL" if field == "issues" else "GitHub pull request URL"
+    for index, value in enumerate(values):
+        if isinstance(value, str) and not pattern.fullmatch(value):
+            findings.append(_finding("error", path, f"{field}[{index}] must be a {expected}"))
 
 
 def _finding(level: FindingLevel, path: Path, message: str) -> SchemaFinding:
