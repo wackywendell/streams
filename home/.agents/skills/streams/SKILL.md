@@ -38,6 +38,26 @@ Use exactly these statuses: `active`, `waiting`, `blocked`, `parked`, `review`, 
 
 The markdown body should be edited in place so it remains coherent. `## Status` is current pickup context.
 
+## Scratch Body
+
+The scratch body is a current-state pickup document. It records what has been learned from investigation and from the user so a new session or human can understand the goal, current status, important decisions, tradeoffs, and remaining work. Edit it in place: remove or replace superseded status, outdated decisions, and stale assumptions. It should read like an ADR-style document organized by concept, not a chronological log.
+
+### Goal
+
+Describe the task's overall goal: why we want this and what outcome we are trying to achieve. Include concrete requirements and softer expectations such as PR flow, compatibility, review posture, or migration constraints when they have been made clear by the user or in discussion with the user.
+
+### Status
+
+Describe the current state of the work: what goal has been achieved, what is in progress, what remains, and what is blocked or waiting. Keep this as pickup context, not a dated activity log.
+
+### Design Decisions
+
+Document important design and workflow decisions, including reasoning and tradeoffs. Use concept-specific subsections when useful, such as `#### Syntax` for a DSL, `#### API Design` for public interfaces, `#### Migration` for rollout choices, or `#### Testing` for verification strategy. Include deferred decisions when they affect how to continue.
+
+### Open Questions
+
+List unresolved questions that affect implementation, review, cleanup, or handoff.
+
 ## Workflow Verbs
 
 - `status`: read scratch state and recap what is recorded. Do not inspect external systems unless asked.
