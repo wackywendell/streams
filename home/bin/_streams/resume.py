@@ -6,7 +6,7 @@ import os
 from pathlib import Path
 
 from .agent_sessions import AgentSessionCommand, latest_session_command
-from .cmux import CmuxClient, stream_for_workspace_hint
+from .cmux import CmuxClient, stream_cwd, stream_for_workspace_hint
 from .errors import StreamError
 from .models import Stream
 from .resolve import resolve_stream_ref
@@ -38,5 +38,7 @@ def resume_command_for_stream(stream: Stream) -> AgentSessionCommand:
 
 
 def exec_resume(stream: Stream) -> None:
+    cwd = stream_cwd(stream)
     command = resume_command_for_stream(stream)
+    os.chdir(cwd)
     os.execvp(command.argv[0], list(command.argv))

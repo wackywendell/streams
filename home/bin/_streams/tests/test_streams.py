@@ -20,13 +20,14 @@ from _streams.cmux import (
     load_stream_for_update,
     open_workspace,
     resume_command,
+    stream_cwd,
     update_current_workspace,
     update_workspace,
 )
 from _streams.check import check_path, check_streams, findings_json
 from _streams.frontmatter import render_frontmatter, split_frontmatter
 from _streams.resolve import resolve_check_path_ref, resolve_slug_ref, resolve_stream_ref
-from _streams.resume import resolve_stream_for_resume, resume_command_for_stream
+from _streams.resume import exec_resume, resolve_stream_for_resume, resume_command_for_stream
 from _streams.store import archive_stream, check_paths, list_streams, show_stream, start_stream
 
 
@@ -433,7 +434,9 @@ class CmuxTest(unittest.TestCase):
     def test_open_workspace_uses_stream_fields(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
-            stream = show_stream(write_stream(root, "active-stream", title="Active Stream", state="Ready to work").stem, root)
+            cwd = root / "repo"
+            cwd.mkdir()
+            stream = show_stream(write_stream(root, "active-stream", title="Active Stream", state="Ready to work", cwd=str(cwd)).stem, root)
             cmux = FakeCmux()
             open_workspace(stream, cmux)
             self.assertEqual(
@@ -446,11 +449,27 @@ class CmuxTest(unittest.TestCase):
                     "--description",
                     "_Ready to work_",
                     "--cwd",
-                    "/repo",
+                    str(cwd),
                     "--command",
                     "codex --no-sandbox resume abc",
                 ],
             )
+
+    def test_open_workspace_requires_existing_cwd(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            stream = show_stream(write_stream(root, "active-stream", cwd=str(root / "missing")).stem, root)
+            with self.assertRaisesRegex(Exception, "cwd does not exist"):
+                open_workspace(stream, FakeCmux())
+
+    def test_stream_cwd_requires_directory(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            file_path = root / "file"
+            file_path.write_text("not a directory")
+            stream = show_stream(write_stream(root, "active-stream", cwd=str(file_path)).stem, root)
+            with self.assertRaisesRegex(Exception, "cwd is not a directory"):
+                stream_cwd(stream)
 
     def test_update_workspace_sets_title_description_and_color(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
@@ -555,6 +574,24 @@ class ResumeTest(unittest.TestCase):
                 root,
             )
             self.assertEqual(resume_command_for_stream(stream).argv, ("pi", "--session", "last"))
+
+    def test_exec_resume_changes_to_stream_cwd_before_exec(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp, patch("_streams.resume.os.chdir") as chdir_mock, patch("_streams.resume.os.execvp") as exec_mock:
+            root = Path(tmp)
+            cwd = root / "repo"
+            cwd.mkdir()
+            stream = show_stream(write_stream(root, "active-stream", cwd=str(cwd), sessions=["codex:abc"]).stem, root)
+            exec_resume(stream)
+            chdir_mock.assert_called_once_with(cwd)
+            exec_mock.assert_called_once_with("codex", ["codex", "--no-sandbox", "resume", "abc"])
+
+    def test_exec_resume_requires_existing_cwd(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp, patch("_streams.resume.os.execvp") as exec_mock:
+            root = Path(tmp)
+            stream = show_stream(write_stream(root, "active-stream", cwd=str(root / "missing")).stem, root)
+            with self.assertRaisesRegex(Exception, "cwd does not exist"):
+                exec_resume(stream)
+            exec_mock.assert_not_called()
 
     def test_resume_command_for_stream_requires_session(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:

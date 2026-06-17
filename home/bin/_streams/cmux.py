@@ -151,8 +151,18 @@ def description_for_stream(stream: Stream) -> str:
     return "\n".join(lines)
 
 
+def stream_cwd(stream: Stream) -> Path:
+    path = Path(str(stream.frontmatter.get("cwd") or "")).expanduser()
+    if not path.exists():
+        raise StreamError(f"stream {stream.slug!r} cwd does not exist: {path}")
+    if not path.is_dir():
+        raise StreamError(f"stream {stream.slug!r} cwd is not a directory: {path}")
+    return path
+
+
 def open_workspace(stream: Stream, cmux: CmuxClient | None = None) -> None:
     cmux = cmux or CmuxClient()
+    cwd = stream_cwd(stream)
     command = [
         "cmux",
         "new-workspace",
@@ -161,7 +171,7 @@ def open_workspace(stream: Stream, cmux: CmuxClient | None = None) -> None:
         "--description",
         description_for_stream(stream),
         "--cwd",
-        str(stream.frontmatter.get("cwd") or "."),
+        str(cwd),
     ]
     if session_command := resume_command(stream):
         command.extend(["--command", session_command])
