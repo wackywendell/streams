@@ -1,4 +1,0 @@
-interface:
-  display_name: "Taskwarrior"
-  short_description: "Inspect and update Taskwarrior tasks safely"
-  default_prompt: "Use $taskwarrior to inspect or update Taskwarrior tasks with UUID-safe commands."
