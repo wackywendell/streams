@@ -26,37 +26,59 @@ Use the `streams` CLI for mechanics instead of reimplementing parsing or matchin
 | Read the stream file format           | `streams format`                                      |
 | Open/update CMUX projection           | `streams cmux ...` or `streams c ...`                 |
 
-Use `streams format` as the schema source of truth. Use `streams check [slug]` for frontmatter validation.
+Use `streams format` as the schema and CLI contract source of truth. If this skill and `streams format` disagree, follow `streams format` and update this skill. Use `streams check [slug]` after editing scratch frontmatter.
 
 ## Stream State
 
 One top-level markdown file under `~/worknotes/scratch` is one current stream. Archived streams live under `~/worknotes/scratch/archive`; `archived` is not a status.
 
-Keep scratch frontmatter flat and tool-neutral. Do not add `cmux`, `current`, or `slug` fields. The slug is the filename stem, and is a normalized version of the title.
+Keep scratch frontmatter flat and tool-neutral. Do not store projection state such as CMUX metadata in scratch.
 
-Use exactly these statuses: `active`, `waiting`, `blocked`, `parked`, `review`, and `done`. Keep `state` short enough for compact displays. Keep `sessions` ordered oldest to newest; `streams resume` uses the last entry.
+Use only the statuses defined by `streams format`. Keep `state` short enough for compact displays. Keep `sessions` ordered oldest to newest; `streams resume` uses the last entry.
 
-The markdown body should be edited in place so it remains coherent. `## Status` is current pickup context.
+Set `cwd` to the directory where work should actually resume; `streams cmux open` and `streams resume` depend on it.
+
+## AI Session
+
+The `sessions` field should be a list of active AI sessions. Add yours to the end if not there. Sessions should be in the form `<agent>:<session_id>`, e.g.:
+
+```yaml
+sessions:
+  - codex:1234abc-345-98712
+  - pi:1234def-3afb-56789
+  - claude:abc1234-567-8910
+```
+
+- In Pi, call `get_session_id` and record `pi:<session_id>`.
+- In Codex, use `printenv CODEX_THREAD_ID` and record `codex:<id>`.
+- In Claude, record the Claude resume/session id as `claude:<id-or-slug>`.
+
+If a stream has multiple sessions, keep a short `## Sessions` section in the scratch body explaining what each session is for. If there is only one other session besides yours and you did not start the stream, the other session is likely the original/initiator/planner session; label it that way when the scratch context supports it.
 
 ## Scratch Body
 
-The scratch body is a current-state pickup document. It records what has been learned from investigation and from the user so a new session or human can understand the goal, current status, important decisions, tradeoffs, and remaining work. Edit it in place: remove or replace superseded status, outdated decisions, and stale assumptions. It should read like an ADR-style document organized by concept, not a chronological log.
+The scratch body is a current-state pickup document. It records what has been learned from investigation and from the user so a new session or human can understand the goal, current status, important decisions, tradeoffs, and remaining work.
 
-### Goal
+Edit it in place: remove or replace superseded status, outdated decisions, and stale assumptions. It should read like an ADR-style document organized by concept, not a chronological log. Keep `## Status` current; follow `streams format` for the canonical body shape.
 
-Describe the task's overall goal: why we want this and what outcome we are trying to achieve. Include concrete requirements and softer expectations such as PR flow, compatibility, review posture, or migration constraints when they have been made clear by the user or in discussion with the user.
+Keep long stream-local drafts and outputs under `~/worknotes/scratch/artifacts/<slug>/` and link them from `## Artifacts`; follow `streams format` for retention and lifecycle rules.
 
-### Status
+## Reference Notes
 
-Describe the current state of the work: what goal has been achieved, what is in progress, what remains, and what is blocked or waiting. Keep this as pickup context, not a dated activity log.
+If a stream produces durable knowledge beyond the immediate task, consider whether `~/worknotes/reference` should be updated. Reference notes are reusable knowledge, not current stream state and not chronological logs.
 
-### Design Decisions
+Before creating or updating reference notes during `check` / `refresh`, `checkpoint` / `handoff`, or `cleanup`, explain what reference changes you recommend and ask the human for their thoughts. Check existing notes first and prefer updating them with the new current understanding over creating duplicates.
 
-Document important design and workflow decisions, including reasoning and tradeoffs. Use concept-specific subsections when useful, such as `#### Syntax` for a DSL, `#### API Design` for public interfaces, `#### Migration` for rollout choices, or `#### Testing` for verification strategy. Include deferred decisions when they affect how to continue.
+Use existing reference categories when they fit:
 
-### Open Questions
+- `architecture/` for system models, design contracts, and architecture investigations.
+- `patterns/` for reusable implementation, review, release, or debugging patterns.
+- `tools/` for tool and workflow behavior.
+- `runbooks/` for repeatable operational procedures.
+- `test-plans/` for reusable verification plans.
+- `ideas/` for durable product, research, or strategy observations.
 
-List unresolved questions that affect implementation, review, cleanup, or handoff.
+Link created or updated reference notes from the scratch body so future sessions can find them.
 
 ## Workflow Verbs
 
@@ -67,7 +89,7 @@ List unresolved questions that affect implementation, review, cleanup, or handof
 - `split off`: create a separate stream with `streams start "Title"` when related work has its own goal, repo/cwd, state, owner, or session context.
 - `open` / `switch` / `resume`: change the active stream context; use `streams resume [slug]` for terminal resume and `streams cmux ...` for workspace projection.
 
-## Update Protocol
+## Update / Handoff Protocol
 
 On stream start or resume, read the scratch file before implementation work.
 
@@ -78,9 +100,19 @@ Before replying after material work, ask:
   - Is your own AI session in the `sessions` field?
 - Does `## Status` still let a new human or AI session continue?
 - Did an important decision, tradeoff, deferred choice, or open question change?
+- Did the work produce durable reusable knowledge that may belong in `~/worknotes/reference`?
 - Does the linked CMUX display need to be updated from scratch?
 
-If yes, update scratch and CMUX before responding. If no durable pickup context changed, leave scratch alone.
+If no durable pickup context changed, leave scratch alone.
+
+If context has changed:
+
+- Update relevant frontmatter fields, including `updated`, `status`, `description`, and `state` when they changed.
+- Check that `sessions`, `repo`, `cwd`, `prs`, `issues`, and other schema fields cover the current state.
+- Edit the markdown body so `## Status` is coherent pickup context.
+- If multiple sessions are recorded or their roles are ambiguous, add or refresh `## Sessions`.
+- Run `streams check [slug]`.
+- Update the linked CMUX projection if needed.
 
 ## CMUX
 
