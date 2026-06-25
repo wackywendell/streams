@@ -30,7 +30,7 @@ class AgentSessionCommand:
     @property
     def argv(self) -> tuple[str, ...]:
         if self.agent == Agent.CODEX:
-            return ("codex", "--no-sandbox", "resume", self.session_id)
+            return ("codex", "resume", self.session_id) # "--no-sandbox"
         if self.agent == Agent.CLAUDE:
             return ("claude", "--resume", self.session_id)
         if self.agent == Agent.PI:

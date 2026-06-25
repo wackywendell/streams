@@ -451,7 +451,7 @@ class CmuxTest(unittest.TestCase):
                     "--cwd",
                     str(cwd),
                     "--command",
-                    "codex --no-sandbox resume abc",
+                    "codex resume abc",
                 ],
             )
 
@@ -583,7 +583,7 @@ class ResumeTest(unittest.TestCase):
             stream = show_stream(write_stream(root, "active-stream", cwd=str(cwd), sessions=["codex:abc"]).stem, root)
             exec_resume(stream)
             chdir_mock.assert_called_once_with(cwd)
-            exec_mock.assert_called_once_with("codex", ["codex", "--no-sandbox", "resume", "abc"])
+            exec_mock.assert_called_once_with("codex", ["codex", "resume", "abc"])
 
     def test_exec_resume_requires_existing_cwd(self) -> None:
         with tempfile.TemporaryDirectory() as tmp, patch("_streams.resume.os.execvp") as exec_mock:
