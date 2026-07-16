@@ -29,11 +29,11 @@ sessions:
 Required fields:
 
 - `title`: stable human-readable stream name. The filename stem is the slug; title should generally slugify to the filename.
-- `status`: one of `active`, `waiting`, `blocked`, `parked`, `review`, or `done`.
+- `status`: one of `active`, `waiting`, `blocked`, `parked`, or `done`. Status describes whether the stream is actionable, waiting, unable to proceed, intentionally inactive, or complete; it does not describe the type or phase of work.
 - `created`: creation date, `YYYY-MM-DD`.
 - `updated`: last meaningful stream-state update date, `YYYY-MM-DD`. Update this for handoffs, checkpoints, status changes, and durable pickup-context changes; do not churn it for typo-only edits.
 - `description`: one-sentence overall task description. Longer than `state`, stable across handoffs, and focused on the stream goal.
-- `state`: short current display state, roughly 5-12 words. This is used in compact displays and CMUX descriptions.
+- `state`: short current display state, roughly 5-12 words. This is used in compact displays and CMUX descriptions. Put transient workflow phases here, such as `PR in review; waiting for reviewer feedback.`
 - `repo`: repo path or repo identity. Prefer a stable human path, using `~` for home and avoiding symlink expansion when the user normally uses the symlink path.
 - `cwd`: local directory where work should resume. Use the workspace/worktree path if one exists; otherwise use the repo path. Prefer the same path style as `repo`.
 - `vcs`: local VCS, usually `jj` or `git`.
@@ -47,8 +47,13 @@ Status meanings:
 - `waiting`: waiting on external feedback, time, or an event; no immediate local action is expected.
 - `blocked`: cannot proceed until a dependency or blocker is resolved.
 - `parked`: intentionally inactive; revisit only if the user or new evidence reactivates it.
-- `review`: in PR/comment/review loop state.
 - `done`: complete and ready to archive.
+
+For review work, follow the next action rather than using a review-specific status:
+
+- Use `active` while you need to review or re-review someone else's change.
+- Use `waiting` while your own change is with reviewers, or after you have submitted feedback and are waiting for the author.
+- Record the review phase in `state`; keep `description` focused on the stable stream goal.
 
 Issue URLs must look like `https://github.com/<owner>/<repo>/issues/<number>`. PR URLs must look like `https://github.com/<owner>/<repo>/pull/<number>`. Do not use shorthand such as `repo#123` in frontmatter.
 

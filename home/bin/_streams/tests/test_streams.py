@@ -25,6 +25,7 @@ from _streams.cmux import (
     update_workspace,
 )
 from _streams.check import check_path, check_streams, findings_json
+from _streams.config import VALID_STATUSES
 from _streams.frontmatter import render_frontmatter, split_frontmatter
 from _streams.resolve import resolve_check_path_ref, resolve_slug_ref, resolve_stream_ref
 from _streams.resume import exec_resume, resolve_stream_for_resume, resume_command_for_stream
@@ -335,6 +336,16 @@ class CheckTest(unittest.TestCase):
             findings = check_path(path)
             self.assertTrue(any("invalid status" in finding.message for finding in findings))
 
+    def test_review_is_not_a_status(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            path = write_stream(root, "review-stream", status="review")
+            findings = check_path(path)
+            self.assertTrue(any("invalid status" in finding.message for finding in findings))
+
+    def test_statuses_describe_actionability(self) -> None:
+        self.assertEqual(VALID_STATUSES, {"active", "waiting", "blocked", "parked", "done"})
+
     def test_forbidden_slug_field_is_error(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
@@ -412,6 +423,7 @@ class FakeCmux(CmuxClient):
 class CmuxTest(unittest.TestCase):
     def test_color_for_status(self) -> None:
         self.assertEqual(color_for_status("active"), "Green")
+        self.assertEqual(color_for_status("waiting"), "Amber")
         self.assertEqual(color_for_status("blocked"), "Orange")
         self.assertEqual(color_for_status("unknown"), "Amber")
 

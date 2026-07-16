@@ -19,7 +19,6 @@ from .store import list_streams
 STATUS_COLORS = {
     "active": "Green",
     "waiting": "Amber",
-    "review": "Amber",
     "blocked": "Orange",
     "parked": "Red",
     "done": "Green",

@@ -36,6 +36,8 @@ Keep scratch frontmatter flat and tool-neutral. Do not store projection state su
 
 Use only the statuses defined by `streams format`. Keep `state` short enough for compact displays. Keep `sessions` ordered oldest to newest; `streams resume` uses the last entry.
 
+Status describes actionability, not the kind or phase of work. Review streams are `active` while the user needs to review or re-review, and `waiting` while a change is with someone else. Put phases such as `PR in review` or `Changes requested; waiting for author updates` in `state`, while `description` remains the stable stream goal.
+
 Set `cwd` to the directory where work should actually resume; `streams cmux open` and `streams resume` depend on it.
 
 ## AI Session
@@ -83,8 +85,8 @@ Link created or updated reference notes from the scratch body so future sessions
 ## Workflow Verbs
 
 - `status`: read scratch state and recap what is recorded. Do not inspect external systems unless asked.
-- `check` / `refresh`: inspect relevant local or external state, then update scratch and CMUX if recorded state is stale.
-- `checkpoint` / `handoff` / stream-local `update`: make the current stream durable and resumable.
+- `check` / `refresh`: inspect relevant local or external state, then update scratch and CMUX if recorded state is stale. Tell the user what has changed, then give them clear assessment
+- `checkpoint` / `handoff` / stream-local `update`: update scratch and CMUX as below.
 - `cleanup`: mark `status: done` or archive only with explicit evidence or a clear request. Use `streams archive <slug>` for done streams and `--force` only when intentionally archiving non-done work.
 - `split off`: create a separate stream with `streams start "Title"` when related work has its own goal, repo/cwd, state, owner, or session context.
 - `open` / `switch` / `resume`: change the active stream context; use `streams resume [slug]` for terminal resume and `streams cmux ...` for workspace projection.
@@ -128,4 +130,4 @@ For a single stream, recap briefly:
 - `Just completed`: what changed now.
 - `Still to do`: concrete next work, blockers, or verification.
 
-For portfolio status, group streams by `active`, `waiting` / `review`, `blocked`, `parked`, and `done`. Use `streams list --json` rather than scraping human output.
+For portfolio status, group streams by `active`, `waiting`, `blocked`, `parked`, and `done`. Use `streams list --json` rather than scraping human output.
