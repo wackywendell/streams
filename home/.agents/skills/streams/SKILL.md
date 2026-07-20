@@ -77,7 +77,6 @@ Use existing reference categories when they fit:
 - `patterns/` for reusable implementation, review, release, or debugging patterns.
 - `tools/` for tool and workflow behavior.
 - `runbooks/` for repeatable operational procedures.
-- `test-plans/` for reusable verification plans.
 - `ideas/` for durable product, research, or strategy observations.
 
 Link created or updated reference notes from the scratch body so future sessions can find them.
