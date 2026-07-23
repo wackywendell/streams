@@ -26,6 +26,12 @@ sessions:
   - codex:123-abc
 ```
 
+Quote any frontmatter string containing `#`, such as a PR or issue reference. In unquoted YAML, a whitespace-prefixed `#` starts a comment:
+
+```yaml
+state: "PR #186 design review complete; feedback ready."
+```
+
 Required fields:
 
 - `title`: stable human-readable stream name. The filename stem is the slug; title should generally slugify to the filename.

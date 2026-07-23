@@ -32,7 +32,7 @@ Use `streams format` as the schema and CLI contract source of truth. If this ski
 
 One top-level markdown file under `~/worknotes/scratch` is one current stream. Archived streams live under `~/worknotes/scratch/archive`; `archived` is not a status.
 
-Keep scratch frontmatter flat and tool-neutral. Do not store projection state such as CMUX metadata in scratch.
+Keep scratch frontmatter flat and tool-neutral. Do not store projection state such as CMUX metadata in scratch. Quote any string containing `#`, such as a PR or issue reference: in unquoted YAML, a whitespace-prefixed `#` starts a comment.
 
 Use only the statuses defined by `streams format`. Keep `state` short enough for compact displays. Keep `sessions` ordered oldest to newest; `streams resume` uses the last entry.
 
