@@ -98,7 +98,9 @@ def command_cmux_open(args: argparse.Namespace) -> int:
 
 def command_cmux_update(args: argparse.Namespace) -> int:
     cmux = CmuxClient()
-    if args.slug == "all" and not args.current and not args.workspace:
+    if args.all:
+        if args.slug or args.current or args.workspace:
+            raise StreamError("update --all does not accept a slug, --current, or --workspace")
         updated, warnings = update_all_workspaces(cmux)
         for workspace, stream in updated:
             print(f"updated: {workspace.display_ref} {stream.slug}")
@@ -193,7 +195,8 @@ def build_parser() -> argparse.ArgumentParser:
     cmux_open.set_defaults(func=command_cmux_open)
 
     cmux_update = cmux_subparsers.add_parser("update", aliases=["u"], help="update a CMUX workspace from a stream")
-    cmux_update.add_argument("slug", nargs="?", help="stream filename stem, or all; defaults from current workspace title with --current")
+    cmux_update.add_argument("slug", nargs="?", help="stream filename stem; defaults from current workspace title with --current")
+    cmux_update.add_argument("-a", "--all", action="store_true", help="update all matching CMUX workspaces")
     cmux_update.add_argument("-c", "--current", action="store_true", help="target the current CMUX workspace")
     cmux_update.add_argument("-w", "--workspace", help="target a CMUX workspace ref, UUID, or title")
     cmux_update.set_defaults(func=command_cmux_update)

@@ -138,7 +138,7 @@ CMUX is a projection of generic stream state:
 
 `streams cmux open <slug>` creates a new CMUX workspace using the stream `cwd` and the latest recorded session command when present.
 
-`streams cmux update ...` updates title, description, and color from scratch. `streams cmux update all` updates every CMUX workspace with a matching stream and prints a `Warning:` for each unmatched workspace. It skips workspace index `0` only when its title is `Tasks`. Neither command reliably repairs an already-open terminal's working directory. If a workspace was opened with the wrong cwd, close and reopen it after fixing scratch `cwd`.
+`streams cmux update ...` updates title, description, and color from scratch. `streams cmux update --all` updates every CMUX workspace with a matching stream and prints a `Warning:` for each unmatched workspace. It skips workspace index `0` only when its title is `Tasks`. Neither command reliably repairs an already-open terminal's working directory. If a workspace was opened with the wrong cwd, close and reopen it after fixing scratch `cwd`.
 
 Example description:
 

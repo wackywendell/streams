@@ -271,7 +271,7 @@ class CliTest(unittest.TestCase):
             stream = Stream(Path("/scratch/active-stream.md"), {"title": "Active Stream"}, "")
             cmux = cmux_class.return_value
             update_mock.return_value = ([(matching, stream)], ["Warning: workspace:3 'Other' has no matching scratch stream"])
-            args = type("Args", (), {"slug": "all", "current": False, "workspace": None})()
+            args = type("Args", (), {"slug": None, "all": True, "current": False, "workspace": None})()
             self.assertEqual(command_cmux_update(args), 0)
             update_mock.assert_called_once_with(cmux)
             self.assertEqual(
@@ -285,7 +285,7 @@ class CliTest(unittest.TestCase):
             stream = Stream(Path("/scratch/all.md"), {"title": "all"}, "")
             workspace = CmuxWorkspace({"ref": "workspace:2", "title": "Other"})
             load_mock.return_value = (stream, workspace)
-            args = type("Args", (), {"slug": "all", "current": True, "workspace": None})()
+            args = type("Args", (), {"slug": "all", "all": False, "current": True, "workspace": None})()
             self.assertEqual(command_cmux_update(args), 0)
             load_mock.assert_called_once_with("all", None, True, cmux)
             update_mock.assert_called_once_with(stream, workspace, cmux)
@@ -303,6 +303,9 @@ class CliTest(unittest.TestCase):
         self.assertEqual(cmux_args.cmux_command, "u")
         self.assertEqual(cmux_args.slug, "active")
         self.assertTrue(cmux_args.current)
+
+        all_args = parser.parse_args(["cmux", "update", "--all"])
+        self.assertTrue(all_args.all)
 
         workspace_args = parser.parse_args(["cmux", "update", "active", "-w", "workspace:2"])
         self.assertEqual(workspace_args.workspace, "workspace:2")

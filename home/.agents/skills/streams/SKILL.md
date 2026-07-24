@@ -117,7 +117,7 @@ If context has changed:
 
 ## CMUX
 
-CMUX is only a projection of scratch state. Its description starts with an Obsidian link to the scratch note, then italicized `state`, followed by linked `I#<number>` and `PR#<number>` labels with their scratch descriptions. Use `streams cmux open <slug>` and `streams cmux update ...` instead of hand-editing workspace title, description, color, or cwd. `streams cmux update all` updates every matched workspace, warns for unmatched workspaces, and skips only index `0` when it is titled `Tasks`. Use `streams start "Title" --current` or `streams s "Title" -c` to create a stream and immediately project it onto the current CMUX workspace.
+CMUX is only a projection of scratch state. Its description starts with an Obsidian link to the scratch note, then italicized `state`, followed by linked `I#<number>` and `PR#<number>` labels with their scratch descriptions. Use `streams cmux open <slug>` and `streams cmux update ...` instead of hand-editing workspace title, description, color, or cwd. `streams cmux update --all` updates every matched workspace, warns for unmatched workspaces, and skips only index `0` when it is titled `Tasks`. Use `streams start "Title" --current` or `streams s "Title" -c` to create a stream and immediately project it onto the current CMUX workspace.
 
 Selecting a CMUX workspace is user-visible focus movement. Select a workspace only for explicit `open`, `switch`, `resume`, inspection, or when CMUX requires selection. For pure CMUX mechanics, use the sibling `cmux` skill.
 
