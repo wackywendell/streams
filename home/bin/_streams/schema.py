@@ -64,7 +64,6 @@ def validate_frontmatter(path: Path, frontmatter: dict[str, Any]) -> list[Schema
 
     for field in ("issues", "prs"):
         if isinstance(frontmatter.get(field), list):
-            _check_list_items_are_strings(path, field, frontmatter[field], findings)
             _check_link_items(path, field, frontmatter[field], findings)
 
     if isinstance(frontmatter.get("sessions"), list):
@@ -85,18 +84,21 @@ def error_messages(findings: list[SchemaFinding]) -> list[str]:
     return [finding.message for finding in findings if finding.level == "error"]
 
 
-def _check_list_items_are_strings(path: Path, field: str, values: list[Any], findings: list[SchemaFinding]) -> None:
-    for index, value in enumerate(values):
-        if not isinstance(value, str):
-            findings.append(_finding("error", path, f"{field}[{index}] must be a string"))
-
-
 def _check_link_items(path: Path, field: str, values: list[Any], findings: list[SchemaFinding]) -> None:
     pattern = GITHUB_ISSUE_RE if field == "issues" else GITHUB_PR_RE
     expected = "GitHub issue URL" if field == "issues" else "GitHub pull request URL"
     for index, value in enumerate(values):
-        if isinstance(value, str) and not pattern.fullmatch(value):
-            findings.append(_finding("error", path, f"{field}[{index}] must be a {expected}"))
+        if not isinstance(value, dict):
+            findings.append(_finding("error", path, f"{field}[{index}] must be a mapping with url and description"))
+            continue
+        url = value.get("url")
+        if not isinstance(url, str) or not pattern.fullmatch(url):
+            findings.append(_finding("error", path, f"{field}[{index}].url must be a {expected}"))
+        description = value.get("description")
+        if not isinstance(description, str):
+            findings.append(_finding("error", path, f"{field}[{index}].description must be a string"))
+        elif not 2 <= len(description.split()) <= 5:
+            findings.append(_finding("error", path, f"{field}[{index}].description must contain 2 to 5 words"))
 
 
 def _finding(level: FindingLevel, path: Path, message: str) -> SchemaFinding:

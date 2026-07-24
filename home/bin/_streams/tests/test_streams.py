@@ -41,8 +41,8 @@ def write_stream(
     status: str = "active",
     state: str = "Doing work",
     cwd: str = "/repo",
-    issues: list[str] | None = None,
-    prs: list[str] | None = None,
+    issues: list[dict[str, str]] | None = None,
+    prs: list[dict[str, str]] | None = None,
     sessions: list[str] | None = None,
 ) -> Path:
     path = root / f"{slug}.md"
@@ -221,14 +221,25 @@ class CliTest(unittest.TestCase):
             self.assertEqual(payload[0]["slug"], "active-stream")
             self.assertEqual(payload[0]["path"], str(stream.path))
 
-    def test_show_human_includes_slug(self) -> None:
+    def test_show_human_includes_slug_and_link_descriptions(self) -> None:
         with tempfile.TemporaryDirectory() as tmp, patch("_streams.cli.resolve_stream_ref") as show_mock, patch("builtins.print") as print_mock:
             root = Path(tmp)
-            stream = show_stream(write_stream(root, "active-stream").stem, root)
+            stream = show_stream(
+                write_stream(
+                    root,
+                    "active-stream",
+                    issues=[{"url": "https://github.com/example-org/widget-lib/issues/124", "description": "Literal conversion helpers"}],
+                    prs=[{"url": "https://github.com/example-org/widget-lib/pull/150", "description": "Literal helper changes"}],
+                ).stem,
+                root,
+            )
             show_mock.return_value = stream
             args = type("Args", (), {"slug": "active-stream", "json": False})()
             command_show(args)
-            self.assertIn("slug:        active-stream", print_mock.call_args.args[0])
+            output = print_mock.call_args.args[0]
+            self.assertIn("slug:        active-stream", output)
+            self.assertIn("issues:      [I#124](https://github.com/example-org/widget-lib/issues/124): Literal conversion helpers", output)
+            self.assertIn("prs:         [PR#150](https://github.com/example-org/widget-lib/pull/150): Literal helper changes", output)
 
     def test_start_json_shape(self) -> None:
         with tempfile.TemporaryDirectory() as tmp, patch("_streams.cli.start_stream") as start_mock, patch("builtins.print") as print_mock:
@@ -366,16 +377,16 @@ class CheckTest(unittest.TestCase):
     def test_issue_must_be_github_issue_url(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
-            path = write_stream(root, "active-stream", issues=["https://github.com/example-org/widget-lib/pull/150"])
+            path = write_stream(root, "active-stream", issues=[{"url": "https://github.com/example-org/widget-lib/pull/150", "description": "Invalid issue URL"}])
             findings = check_path(path)
-            self.assertTrue(any("issues[0] must be a GitHub issue URL" in finding.message for finding in findings))
+            self.assertTrue(any("issues[0].url must be a GitHub issue URL" in finding.message for finding in findings))
 
     def test_pr_must_be_github_pull_url(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
-            path = write_stream(root, "active-stream", prs=["widget-lib#150"])
+            path = write_stream(root, "active-stream", prs=[{"url": "widget-lib#150", "description": "Invalid pull request"}])
             findings = check_path(path)
-            self.assertTrue(any("prs[0] must be a GitHub pull request URL" in finding.message for finding in findings))
+            self.assertTrue(any("prs[0].url must be a GitHub pull request URL" in finding.message for finding in findings))
 
     def test_github_issue_and_pr_urls_are_valid(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
@@ -384,10 +395,17 @@ class CheckTest(unittest.TestCase):
                 root,
                 "active-stream",
                 title="Active Stream",
-                issues=["https://github.com/example-org/widget-lib/issues/124"],
-                prs=["https://github.com/example-org/widget-lib/pull/150"],
+                issues=[{"url": "https://github.com/example-org/widget-lib/issues/124", "description": "Literal conversion helpers"}],
+                prs=[{"url": "https://github.com/example-org/widget-lib/pull/150", "description": "Literal helper changes"}],
             )
             self.assertEqual(check_path(path), [])
+
+    def test_link_description_must_have_two_to_five_words(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            path = write_stream(root, "active-stream", issues=[{"url": "https://github.com/example-org/widget-lib/issues/124", "description": "Literals"}])
+            findings = check_path(path)
+            self.assertTrue(any("issues[0].description must contain 2 to 5 words" in finding.message for finding in findings))
 
     def test_slug_title_mismatch_is_warning(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
@@ -533,12 +551,12 @@ class CmuxTest(unittest.TestCase):
                     "active-stream",
                     state="Issue #124 literal conversion helpers",
                     issues=[
-                        "https://github.com/example-org/widget-lib/issues/124",
-                        "https://github.com/openai/codex/issues/7",
+                        {"url": "https://github.com/example-org/widget-lib/issues/124", "description": "Literal conversion helpers"},
+                        {"url": "https://github.com/openai/codex/issues/7", "description": "Codex issue"},
                     ],
                     prs=[
-                        "https://github.com/example-org/widget-lib/pull/150",
-                        "https://github.com/openai/codex/pull/42",
+                        {"url": "https://github.com/example-org/widget-lib/pull/150", "description": "Literal helper changes"},
+                        {"url": "https://github.com/openai/codex/pull/42", "description": "Codex pull request"},
                     ],
                 ).stem,
                 root,
@@ -550,10 +568,10 @@ class CmuxTest(unittest.TestCase):
                 "\n".join(
                     [
                         "[🔗](obsidian://open?vault=worknotes&file=scratch%2Factive-stream.md) _Issue #124 literal conversion helpers_",
-                        "[widget-lib#124](https://github.com/example-org/widget-lib/issues/124)",
-                        "[codex#7](https://github.com/openai/codex/issues/7)",
-                        "[widget-lib#150](https://github.com/example-org/widget-lib/pull/150)",
-                        "[codex#42](https://github.com/openai/codex/pull/42)",
+                        "[I#124](https://github.com/example-org/widget-lib/issues/124): Literal conversion helpers",
+                        "[I#7](https://github.com/openai/codex/issues/7): Codex issue",
+                        "[PR#150](https://github.com/example-org/widget-lib/pull/150): Literal helper changes",
+                        "[PR#42](https://github.com/openai/codex/pull/42): Codex pull request",
                     ]
                 ),
             )

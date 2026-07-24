@@ -10,7 +10,7 @@ from pathlib import Path
 from .errors import StreamError
 from .models import Stream
 from .store import archive_stream, list_streams, start_stream
-from .cmux import CmuxClient, load_stream_for_update, open_workspace, update_current_workspace, update_workspace
+from .cmux import CmuxClient, load_stream_for_update, markdown_link_for_item, open_workspace, update_current_workspace, update_workspace
 from .check import check_streams, findings_json
 from .store import check_paths
 from .resolve import resolve_check_path_ref, resolve_stream_ref
@@ -33,8 +33,8 @@ def render_list(streams: list[Stream]) -> str:
 
 
 def render_show(stream: Stream) -> str:
-    issues = ", ".join(str(item) for item in stream.frontmatter.get("issues") or []) or "-"
-    prs = ", ".join(str(item) for item in stream.frontmatter.get("prs") or []) or "-"
+    issues = ", ".join(markdown_link_for_item(item, "I") for item in stream.frontmatter.get("issues") or []) or "-"
+    prs = ", ".join(markdown_link_for_item(item, "PR") for item in stream.frontmatter.get("prs") or []) or "-"
     sessions = ", ".join(str(item) for item in stream.frontmatter.get("sessions") or []) or "-"
     return "\n".join(
         [

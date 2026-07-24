@@ -32,7 +32,7 @@ Use `streams format` as the schema and CLI contract source of truth. If this ski
 
 One top-level markdown file under `~/worknotes/scratch` is one current stream. Archived streams live under `~/worknotes/scratch/archive`; `archived` is not a status.
 
-Keep scratch frontmatter flat and tool-neutral. Do not store projection state such as CMUX metadata in scratch. Quote any string containing `#`, such as a PR or issue reference: in unquoted YAML, a whitespace-prefixed `#` starts a comment.
+Keep scratch frontmatter tool-neutral. Do not store projection state such as CMUX metadata in scratch. Quote any string containing `#`, such as a PR or issue reference: in unquoted YAML, a whitespace-prefixed `#` starts a comment. Record every issue and PR as a `url` plus a manually maintained 2-to-5-word `description`.
 
 Use only the statuses defined by `streams format`. Keep `state` short enough for compact displays. Keep `sessions` ordered oldest to newest; `streams resume` uses the last entry.
 
@@ -109,7 +109,7 @@ If no durable pickup context changed, leave scratch alone.
 If context has changed:
 
 - Update relevant frontmatter fields, including `updated`, `status`, `description`, and `state` when they changed.
-- Check that `sessions`, `repo`, `cwd`, `prs`, `issues`, and other schema fields cover the current state.
+- Check that `sessions`, `repo`, `cwd`, `prs`, `issues`, and other schema fields cover the current state. Add or update the 2-to-5-word description for every tracked issue and PR.
 - Edit the markdown body so `## Status` is coherent pickup context.
 - If multiple sessions are recorded or their roles are ambiguous, add or refresh `## Sessions`.
 - Run `streams check [slug]`.
@@ -117,7 +117,7 @@ If context has changed:
 
 ## CMUX
 
-CMUX is only a projection of scratch state. Its description starts with an Obsidian link to the scratch note, then italicized `state` and tracked links. Use `streams cmux open <slug>` and `streams cmux update ...` instead of hand-editing workspace title, description, color, or cwd. Use `streams start "Title" --current` or `streams s "Title" -c` to create a stream and immediately project it onto the current CMUX workspace.
+CMUX is only a projection of scratch state. Its description starts with an Obsidian link to the scratch note, then italicized `state`, followed by linked `I#<number>` and `PR#<number>` labels with their scratch descriptions. Use `streams cmux open <slug>` and `streams cmux update ...` instead of hand-editing workspace title, description, color, or cwd. Use `streams start "Title" --current` or `streams s "Title" -c` to create a stream and immediately project it onto the current CMUX workspace.
 
 Selecting a CMUX workspace is user-visible focus movement. Select a workspace only for explicit `open`, `switch`, `resume`, inspection, or when CMUX requires selection. For pure CMUX mechanics, use the sibling `cmux` skill.
 

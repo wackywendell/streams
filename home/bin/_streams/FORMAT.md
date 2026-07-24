@@ -6,7 +6,7 @@ Scratch files live in `~/worknotes/scratch`. One top-level markdown file is one 
 
 ## Frontmatter
 
-Use flat YAML frontmatter:
+Use a top-level, tool-neutral YAML frontmatter mapping:
 
 ```yaml
 title: Example Stream
@@ -19,9 +19,11 @@ repo: ~/work/widget-lib
 cwd: ~/work/widget-lib/workspaces/example-stream
 vcs: jj
 issues:
-  - https://github.com/example-org/widget-lib/issues/124
+  - url: https://github.com/example-org/widget-lib/issues/124
+    description: Literal conversion helpers
 prs:
-  - https://github.com/example-org/widget-lib/pull/150
+  - url: https://github.com/example-org/widget-lib/pull/150
+    description: Add literal helpers
 sessions:
   - codex:123-abc
 ```
@@ -43,8 +45,8 @@ Required fields:
 - `repo`: repo path or repo identity. Prefer a stable human path, using `~` for home and avoiding symlink expansion when the user normally uses the symlink path.
 - `cwd`: local directory where work should resume. Use the workspace/worktree path if one exists; otherwise use the repo path. Prefer the same path style as `repo`.
 - `vcs`: local VCS, usually `jj` or `git`.
-- `issues`: list of GitHub issue URLs.
-- `prs`: list of GitHub pull request URLs.
+- `issues`: list of GitHub issue mappings. Each has a `url` and a manually maintained `description` of 2 to 5 words. Replace older URL-only entries with these mappings.
+- `prs`: list of GitHub pull request mappings. Each has a `url` and a manually maintained `description` of 2 to 5 words. Replace older URL-only entries with these mappings.
 - `sessions`: AI session ids in `codex:<id>`, `claude:<id-or-slug>`, or `pi:<id>` form, ordered oldest to newest. `streams resume` uses the last entry.
 
 Status meanings:
@@ -61,7 +63,7 @@ For review work, follow the next action rather than using a review-specific stat
 - Use `waiting` while your own change is with reviewers, or after you have submitted feedback and are waiting for the author.
 - Record the review phase in `state`; keep `description` focused on the stable stream goal.
 
-Issue URLs must look like `https://github.com/<owner>/<repo>/issues/<number>`. PR URLs must look like `https://github.com/<owner>/<repo>/pull/<number>`. Do not use shorthand such as `repo#123` in frontmatter.
+Issue `url` values must look like `https://github.com/<owner>/<repo>/issues/<number>`. PR `url` values must look like `https://github.com/<owner>/<repo>/pull/<number>`. Do not use shorthand such as `repo#123` in frontmatter.
 
 Do not include derived or projection-specific fields in frontmatter:
 
@@ -142,6 +144,6 @@ Example description:
 
 ```markdown
 [🔗](obsidian://open?vault=worknotes&file=scratch%2Fexample-stream.md) _Issue #124 literal conversion helpers_
-[widget-lib#124](https://github.com/example-org/widget-lib/issues/124)
-[widget-lib#150](https://github.com/example-org/widget-lib/pull/150)
+[I#124](https://github.com/example-org/widget-lib/issues/124): Literal conversion helpers
+[PR#150](https://github.com/example-org/widget-lib/pull/150): Add literal helpers
 ```

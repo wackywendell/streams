@@ -134,14 +134,13 @@ def resume_command(stream: Stream) -> str | None:
 GITHUB_ITEM_RE = re.compile(r"^https://github\.com/([^/]+)/([^/]+)/(issues|pull)/([0-9]+)(?:[/?#].*)?$")
 
 
-def markdown_link_for_item(item: Any) -> str:
-    text = str(item)
-    match = GITHUB_ITEM_RE.fullmatch(text)
+def markdown_link_for_item(item: dict[str, str], label: str) -> str:
+    url = item["url"]
+    match = GITHUB_ITEM_RE.fullmatch(url)
     if not match:
-        return text
-    repo = match.group(2)
+        return url
     number = match.group(4)
-    return f"[{repo}#{number}]({text})"
+    return f"[{label}#{number}]({url}): {item['description']}"
 
 
 def obsidian_link_for_stream(stream: Stream) -> str:
@@ -155,9 +154,9 @@ def obsidian_link_for_stream(stream: Stream) -> str:
 
 def description_for_stream(stream: Stream) -> str:
     lines = [f"{obsidian_link_for_stream(stream)} _{stream.state}_"]
-    for field in ("issues", "prs"):
+    for field, label in (("issues", "I"), ("prs", "PR")):
         for item in stream.frontmatter.get(field) or []:
-            lines.append(markdown_link_for_item(item))
+            lines.append(markdown_link_for_item(item, label))
     return "\n".join(lines)
 
 
