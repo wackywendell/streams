@@ -132,7 +132,7 @@ CMUX is a projection of generic stream state:
 - title: `title`
 - cwd: `cwd`
 - color: derived from `status`
-- description: italicized `state`, then one issue or PR link per line
+- description: an Obsidian link to the scratch note, italicized `state`, then one issue or PR link per line
 
 `streams cmux open <slug>` creates a new CMUX workspace using the stream `cwd` and the latest recorded session command when present.
 
@@ -141,7 +141,7 @@ CMUX is a projection of generic stream state:
 Example description:
 
 ```markdown
-_Issue #124 literal conversion helpers_
+[🔗](obsidian://open?vault=worknotes&file=scratch%2Fexample-stream.md) _Issue #124 literal conversion helpers_
 [widget-lib#124](https://github.com/example-org/widget-lib/issues/124)
 [widget-lib#150](https://github.com/example-org/widget-lib/pull/150)
 ```

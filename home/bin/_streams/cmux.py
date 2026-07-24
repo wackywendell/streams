@@ -7,9 +7,11 @@ import os
 import re
 import subprocess
 from dataclasses import dataclass
+from urllib.parse import urlencode
 from pathlib import Path
 from typing import Any
 
+from .config import OBSIDIAN_VAULT_NAME, WORKNOTES_ROOT
 from .errors import StreamError
 from .agent_sessions import latest_session_command
 from .models import Stream
@@ -142,8 +144,17 @@ def markdown_link_for_item(item: Any) -> str:
     return f"[{repo}#{number}]({text})"
 
 
+def obsidian_link_for_stream(stream: Stream) -> str:
+    try:
+        file = stream.path.relative_to(WORKNOTES_ROOT).as_posix()
+    except ValueError as exc:
+        raise StreamError(f"stream {stream.slug!r} is outside worknotes root {WORKNOTES_ROOT}") from exc
+    query = urlencode({"vault": OBSIDIAN_VAULT_NAME, "file": file})
+    return f"[🔗](obsidian://open?{query})"
+
+
 def description_for_stream(stream: Stream) -> str:
-    lines = [f"_{stream.state}_"]
+    lines = [f"{obsidian_link_for_stream(stream)} _{stream.state}_"]
     for field in ("issues", "prs"):
         for item in stream.frontmatter.get(field) or []:
             lines.append(markdown_link_for_item(item))

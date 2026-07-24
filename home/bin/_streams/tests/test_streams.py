@@ -26,6 +26,7 @@ from _streams.cmux import (
 )
 from _streams.check import check_path, check_streams, findings_json
 from _streams.config import VALID_STATUSES
+from _streams.errors import StreamError
 from _streams.frontmatter import render_frontmatter, split_frontmatter
 from _streams.resolve import resolve_check_path_ref, resolve_slug_ref, resolve_stream_ref
 from _streams.resume import exec_resume, resolve_stream_for_resume, resume_command_for_stream
@@ -445,12 +446,15 @@ class CmuxTest(unittest.TestCase):
 
     def test_open_workspace_uses_stream_fields(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
-            root = Path(tmp)
+            vault = Path(tmp)
+            root = vault / "scratch"
+            root.mkdir()
             cwd = root / "repo"
             cwd.mkdir()
             stream = show_stream(write_stream(root, "active-stream", title="Active Stream", state="Ready to work", cwd=str(cwd)).stem, root)
             cmux = FakeCmux()
-            open_workspace(stream, cmux)
+            with patch("_streams.cmux.WORKNOTES_ROOT", vault):
+                open_workspace(stream, cmux)
             self.assertEqual(
                 cmux.commands[0],
                 [
@@ -459,7 +463,7 @@ class CmuxTest(unittest.TestCase):
                     "--name",
                     "Active Stream",
                     "--description",
-                    "_Ready to work_",
+                    "[🔗](obsidian://open?vault=worknotes&file=scratch%2Factive-stream.md) _Ready to work_",
                     "--cwd",
                     str(cwd),
                     "--command",
@@ -485,28 +489,44 @@ class CmuxTest(unittest.TestCase):
 
     def test_update_workspace_sets_title_description_and_color(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
-            root = Path(tmp)
+            vault = Path(tmp)
+            root = vault / "scratch"
+            root.mkdir()
             stream = show_stream(write_stream(root, "active-stream", title="Active Stream", state="Ready to work").stem, root)
             workspace = CmuxWorkspace({"ref": "workspace:2", "title": "Old"})
             cmux = FakeCmux()
-            update_workspace(stream, workspace, cmux)
+            with patch("_streams.cmux.WORKNOTES_ROOT", vault):
+                update_workspace(stream, workspace, cmux)
             self.assertEqual(cmux.commands[0], ["cmux", "workspace-action", "--workspace", "workspace:2", "--action", "rename", "--title", "Active Stream"])
-            self.assertEqual(cmux.commands[1], ["cmux", "workspace-action", "--workspace", "workspace:2", "--action", "set-description", "--description", "_Ready to work_"])
+            self.assertEqual(cmux.commands[1], ["cmux", "workspace-action", "--workspace", "workspace:2", "--action", "set-description", "--description", "[🔗](obsidian://open?vault=worknotes&file=scratch%2Factive-stream.md) _Ready to work_"])
             self.assertEqual(cmux.commands[2], ["cmux", "workspace-action", "--workspace", "workspace:2", "--action", "set-color", "--color", "Green"])
 
     def test_update_current_workspace_resolves_and_updates_current(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
-            root = Path(tmp)
+            vault = Path(tmp)
+            root = vault / "scratch"
+            root.mkdir()
             stream = show_stream(write_stream(root, "active-stream", title="Active Stream", state="Ready to work").stem, root)
             workspace = CmuxWorkspace({"ref": "workspace:2", "title": "Old"})
             cmux = FakeCmux([workspace])
-            resolved = update_current_workspace(stream, cmux)
+            with patch("_streams.cmux.WORKNOTES_ROOT", vault):
+                resolved = update_current_workspace(stream, cmux)
             self.assertEqual(resolved.display_ref, "workspace:2")
             self.assertEqual(cmux.commands[0], ["cmux", "workspace-action", "--workspace", "workspace:2", "--action", "rename", "--title", "Active Stream"])
 
-    def test_description_includes_italic_state_and_all_links(self) -> None:
+    def test_description_rejects_stream_outside_worknotes_root(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
+            stream = show_stream(write_stream(root, "active-stream").stem, root)
+            with patch("_streams.cmux.WORKNOTES_ROOT", root / "worknotes"):
+                with self.assertRaisesRegex(StreamError, "outside worknotes root"):
+                    description_for_stream(stream)
+
+    def test_description_includes_italic_state_and_all_links(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            vault = Path(tmp)
+            root = vault / "scratch"
+            root.mkdir()
             stream = show_stream(
                 write_stream(
                     root,
@@ -523,11 +543,13 @@ class CmuxTest(unittest.TestCase):
                 ).stem,
                 root,
             )
+            with patch("_streams.cmux.WORKNOTES_ROOT", vault):
+                description = description_for_stream(stream)
             self.assertEqual(
-                description_for_stream(stream),
+                description,
                 "\n".join(
                     [
-                        "_Issue #124 literal conversion helpers_",
+                        "[🔗](obsidian://open?vault=worknotes&file=scratch%2Factive-stream.md) _Issue #124 literal conversion helpers_",
                         "[widget-lib#124](https://github.com/example-org/widget-lib/issues/124)",
                         "[codex#7](https://github.com/openai/codex/issues/7)",
                         "[widget-lib#150](https://github.com/example-org/widget-lib/pull/150)",
