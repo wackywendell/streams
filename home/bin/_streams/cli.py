@@ -10,7 +10,7 @@ from pathlib import Path
 from .errors import StreamError
 from .models import Stream
 from .store import archive_stream, list_streams, start_stream
-from .cmux import CmuxClient, load_stream_for_update, markdown_link_for_item, open_workspace, update_current_workspace, update_workspace
+from .cmux import CmuxClient, load_stream_for_update, markdown_link_for_item, open_workspace, update_all_workspaces, update_current_workspace, update_workspace
 from .check import check_streams, findings_json
 from .store import check_paths
 from .resolve import resolve_check_path_ref, resolve_stream_ref
@@ -98,6 +98,15 @@ def command_cmux_open(args: argparse.Namespace) -> int:
 
 def command_cmux_update(args: argparse.Namespace) -> int:
     cmux = CmuxClient()
+    if args.slug == "all":
+        if args.current or args.workspace:
+            raise StreamError("update all does not accept --current or --workspace")
+        updated, warnings = update_all_workspaces(cmux)
+        for workspace, stream in updated:
+            print(f"updated: {workspace.display_ref} {stream.slug}")
+        for warning in warnings:
+            print(warning)
+        return 0
     stream, workspace = load_stream_for_update(args.slug, args.workspace, args.current, cmux)
     update_workspace(stream, workspace, cmux)
     print(f"updated: {workspace.display_ref} {stream.slug}")
@@ -186,7 +195,7 @@ def build_parser() -> argparse.ArgumentParser:
     cmux_open.set_defaults(func=command_cmux_open)
 
     cmux_update = cmux_subparsers.add_parser("update", aliases=["u"], help="update a CMUX workspace from a stream")
-    cmux_update.add_argument("slug", nargs="?", help="stream filename stem; defaults from current workspace title with --current")
+    cmux_update.add_argument("slug", nargs="?", help="stream filename stem, or all; defaults from current workspace title with --current")
     cmux_update.add_argument("-c", "--current", action="store_true", help="target the current CMUX workspace")
     cmux_update.add_argument("-w", "--workspace", help="target a CMUX workspace ref, UUID, or title")
     cmux_update.set_defaults(func=command_cmux_update)

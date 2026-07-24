@@ -44,6 +44,11 @@ class CmuxWorkspace:
         return str(self.raw.get("title") or "")
 
     @property
+    def index(self) -> int | None:
+        value = self.raw.get("index")
+        return value if isinstance(value, int) else None
+
+    @property
     def current_directory(self) -> str:
         return str(self.raw.get("current_directory") or "")
 
@@ -222,6 +227,26 @@ def update_current_workspace(stream: Stream, cmux: CmuxClient | None = None) -> 
     workspace = cmux.resolve_workspace(None)
     update_workspace(stream, workspace, cmux)
     return workspace
+
+
+def update_all_workspaces(
+    cmux: CmuxClient,
+    *,
+    root: Path | None = None,
+) -> tuple[list[tuple[CmuxWorkspace, Stream]], list[str]]:
+    updated: list[tuple[CmuxWorkspace, Stream]] = []
+    warnings: list[str] = []
+    for workspace in cmux.workspaces():
+        if workspace.index == 0 and workspace.title == "Tasks":
+            continue
+        try:
+            stream = stream_for_workspace_hint(workspace, root=root)
+        except StreamError:
+            warnings.append(f"Warning: {workspace.display_ref} {workspace.title!r} has no matching scratch stream")
+            continue
+        update_workspace(stream, workspace, cmux)
+        updated.append((workspace, stream))
+    return updated, warnings
 
 
 def load_stream_for_update(

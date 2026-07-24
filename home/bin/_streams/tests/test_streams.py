@@ -11,7 +11,7 @@ from unittest.mock import patch
 BIN_DIR = Path(__file__).resolve().parents[2]
 sys.path.insert(0, str(BIN_DIR))
 
-from _streams.cli import build_parser, command_archive, command_format, command_list, command_resume, command_show, command_start
+from _streams.cli import build_parser, command_archive, command_cmux_update, command_format, command_list, command_resume, command_show, command_start
 from _streams.cmux import (
     CmuxClient,
     CmuxWorkspace,
@@ -21,6 +21,7 @@ from _streams.cmux import (
     open_workspace,
     resume_command,
     stream_cwd,
+    update_all_workspaces,
     update_current_workspace,
     update_workspace,
 )
@@ -28,6 +29,7 @@ from _streams.check import check_path, check_streams, findings_json
 from _streams.config import VALID_STATUSES
 from _streams.errors import StreamError
 from _streams.frontmatter import render_frontmatter, split_frontmatter
+from _streams.models import Stream
 from _streams.resolve import resolve_check_path_ref, resolve_slug_ref, resolve_stream_ref
 from _streams.resume import exec_resume, resolve_stream_for_resume, resume_command_for_stream
 from _streams.store import archive_stream, check_paths, list_streams, show_stream, start_stream
@@ -262,6 +264,20 @@ class CliTest(unittest.TestCase):
             update_mock.assert_called_once_with(stream)
             self.assertEqual(print_mock.call_args_list[0].args[0], f"created: active-stream {stream.path}")
             self.assertEqual(print_mock.call_args_list[1].args[0], "updated: workspace:2 active-stream")
+
+    def test_update_all_prints_updates_and_warnings(self) -> None:
+        with patch("_streams.cli.CmuxClient") as cmux_class, patch("_streams.cli.update_all_workspaces") as update_mock, patch("builtins.print") as print_mock:
+            matching = CmuxWorkspace({"ref": "workspace:2", "title": "Active Stream"})
+            stream = Stream(Path("/scratch/active-stream.md"), {"title": "Active Stream"}, "")
+            cmux = cmux_class.return_value
+            update_mock.return_value = ([(matching, stream)], ["Warning: workspace:3 'Other' has no matching scratch stream"])
+            args = type("Args", (), {"slug": "all", "current": False, "workspace": None})()
+            self.assertEqual(command_cmux_update(args), 0)
+            update_mock.assert_called_once_with(cmux)
+            self.assertEqual(
+                [call.args[0] for call in print_mock.call_args_list],
+                ["updated: workspace:2 active-stream", "Warning: workspace:3 'Other' has no matching scratch stream"],
+            )
 
     def test_parser_accepts_shortcuts(self) -> None:
         parser = build_parser()
@@ -518,6 +534,22 @@ class CmuxTest(unittest.TestCase):
             self.assertEqual(cmux.commands[0], ["cmux", "workspace-action", "--workspace", "workspace:2", "--action", "rename", "--title", "Active Stream"])
             self.assertEqual(cmux.commands[1], ["cmux", "workspace-action", "--workspace", "workspace:2", "--action", "set-description", "--description", "[🔗](obsidian://open?vault=worknotes&file=scratch%2Factive-stream.md) _Ready to work_"])
             self.assertEqual(cmux.commands[2], ["cmux", "workspace-action", "--workspace", "workspace:2", "--action", "set-color", "--color", "Green"])
+
+    def test_update_all_workspaces_skips_tasks_and_warns_for_unmatched_workspaces(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            vault = Path(tmp)
+            root = vault / "scratch"
+            root.mkdir()
+            stream = show_stream(write_stream(root, "active-stream", title="Active Stream", state="Ready to work").stem, root)
+            tasks = CmuxWorkspace({"ref": "workspace:1", "index": 0, "title": "Tasks"})
+            matching = CmuxWorkspace({"ref": "workspace:2", "index": 1, "title": "Active Stream"})
+            unmatched = CmuxWorkspace({"ref": "workspace:3", "index": 2, "title": "Other"})
+            cmux = FakeCmux([tasks, matching, unmatched])
+            with patch("_streams.cmux.WORKNOTES_ROOT", vault):
+                updated, warnings = update_all_workspaces(cmux, root=root)
+            self.assertEqual(updated, [(matching, stream)])
+            self.assertEqual(warnings, ["Warning: workspace:3 'Other' has no matching scratch stream"])
+            self.assertEqual(cmux.commands[0], ["cmux", "workspace-action", "--workspace", "workspace:2", "--action", "rename", "--title", "Active Stream"])
 
     def test_update_current_workspace_resolves_and_updates_current(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
