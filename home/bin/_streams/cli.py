@@ -98,9 +98,7 @@ def command_cmux_open(args: argparse.Namespace) -> int:
 
 def command_cmux_update(args: argparse.Namespace) -> int:
     cmux = CmuxClient()
-    if args.slug == "all":
-        if args.current or args.workspace:
-            raise StreamError("update all does not accept --current or --workspace")
+    if args.slug == "all" and not args.current and not args.workspace:
         updated, warnings = update_all_workspaces(cmux)
         for workspace, stream in updated:
             print(f"updated: {workspace.display_ref} {stream.slug}")

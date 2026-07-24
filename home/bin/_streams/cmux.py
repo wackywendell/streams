@@ -131,6 +131,24 @@ def stream_for_workspace_hint(workspace: CmuxWorkspace, *, root: Path | None = N
     )
 
 
+def stream_for_workspace_exact(workspace: CmuxWorkspace, *, root: Path | None = None) -> Stream:
+    """Find a stream only when a workspace title or cwd matches exactly."""
+    root_args = {"root": root} if root is not None else {}
+    streams = list_streams(**root_args)
+    title_matches = [stream for stream in streams if stream.title == workspace.title]
+    if len(title_matches) == 1:
+        return title_matches[0]
+
+    cwd_matches = [
+        stream
+        for stream in streams
+        if str(stream.frontmatter.get("cwd") or "") == workspace.current_directory
+    ]
+    if len(cwd_matches) == 1:
+        return cwd_matches[0]
+    raise StreamError(f"CMUX workspace {workspace.display_ref} has no exact stream match")
+
+
 def resume_command(stream: Stream) -> str | None:
     command = latest_session_command(stream)
     return command.command_text if command else None
@@ -240,7 +258,7 @@ def update_all_workspaces(
         if workspace.index == 0 and workspace.title == "Tasks":
             continue
         try:
-            stream = stream_for_workspace_hint(workspace, root=root)
+            stream = stream_for_workspace_exact(workspace, root=root)
         except StreamError:
             warnings.append(f"Warning: {workspace.display_ref} {workspace.title!r} has no matching scratch stream")
             continue
