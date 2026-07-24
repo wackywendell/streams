@@ -143,7 +143,7 @@ CMUX is a projection of generic stream state:
 Example description:
 
 ```markdown
-[🔗](obsidian://open?vault=worknotes&file=scratch%2Fexample-stream.md) _Issue #124 literal conversion helpers_
-[I#124](https://github.com/example-org/widget-lib/issues/124): Literal conversion helpers
-[PR#150](https://github.com/example-org/widget-lib/pull/150): Add literal helpers
+[🗒︎](obsidian://open?vault=worknotes&file=scratch%2Fexample-stream.md) _Issue #124 literal conversion helpers_
+[ℹ︎#124](https://github.com/example-org/widget-lib/issues/124): Literal conversion helpers
+[⑂︎#150](https://github.com/example-org/widget-lib/pull/150): Add literal helpers
 ```

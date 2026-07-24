@@ -512,7 +512,7 @@ class CmuxTest(unittest.TestCase):
                     "--name",
                     "Active Stream",
                     "--description",
-                    "[🔗](obsidian://open?vault=worknotes&file=scratch%2Factive-stream.md) _Ready to work_",
+                    "[🗒︎](obsidian://open?vault=worknotes&file=scratch%2Factive-stream.md) _Ready to work_",
                     "--cwd",
                     str(cwd),
                     "--command",
@@ -547,7 +547,7 @@ class CmuxTest(unittest.TestCase):
             with patch("_streams.cmux.WORKNOTES_ROOT", vault):
                 update_workspace(stream, workspace, cmux)
             self.assertEqual(cmux.commands[0], ["cmux", "workspace-action", "--workspace", "workspace:2", "--action", "rename", "--title", "Active Stream"])
-            self.assertEqual(cmux.commands[1], ["cmux", "workspace-action", "--workspace", "workspace:2", "--action", "set-description", "--description", "[🔗](obsidian://open?vault=worknotes&file=scratch%2Factive-stream.md) _Ready to work_"])
+            self.assertEqual(cmux.commands[1], ["cmux", "workspace-action", "--workspace", "workspace:2", "--action", "set-description", "--description", "[🗒︎](obsidian://open?vault=worknotes&file=scratch%2Factive-stream.md) _Ready to work_"])
             self.assertEqual(cmux.commands[2], ["cmux", "workspace-action", "--workspace", "workspace:2", "--action", "set-color", "--color", "Green"])
 
     def test_update_all_workspaces_skips_tasks_and_warns_for_unmatched_workspaces(self) -> None:
@@ -622,11 +622,11 @@ class CmuxTest(unittest.TestCase):
                 description,
                 "\n".join(
                     [
-                        "[🔗](obsidian://open?vault=worknotes&file=scratch%2Factive-stream.md) _Issue #124 literal conversion helpers_",
-                        "[I#124](https://github.com/example-org/widget-lib/issues/124): Literal conversion helpers",
-                        "[I#7](https://github.com/openai/codex/issues/7): Codex issue",
-                        "[PR#150](https://github.com/example-org/widget-lib/pull/150): Literal helper changes",
-                        "[PR#42](https://github.com/openai/codex/pull/42): Codex pull request",
+                        "[🗒︎](obsidian://open?vault=worknotes&file=scratch%2Factive-stream.md) _Issue #124 literal conversion helpers_",
+                        "[ℹ︎#124](https://github.com/example-org/widget-lib/issues/124): Literal conversion helpers",
+                        "[ℹ︎#7](https://github.com/openai/codex/issues/7): Codex issue",
+                        "[⑂︎#150](https://github.com/example-org/widget-lib/pull/150): Literal helper changes",
+                        "[⑂︎#42](https://github.com/openai/codex/pull/42): Codex pull request",
                     ]
                 ),
             )

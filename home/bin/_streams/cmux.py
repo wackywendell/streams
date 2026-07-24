@@ -172,12 +172,12 @@ def obsidian_link_for_stream(stream: Stream) -> str:
     except ValueError as exc:
         raise StreamError(f"stream {stream.slug!r} is outside worknotes root {WORKNOTES_ROOT}") from exc
     query = urlencode({"vault": OBSIDIAN_VAULT_NAME, "file": file})
-    return f"[🔗](obsidian://open?{query})"
+    return f"[🗒︎](obsidian://open?{query})"
 
 
 def description_for_stream(stream: Stream) -> str:
     lines = [f"{obsidian_link_for_stream(stream)} _{stream.state}_"]
-    for field, label in (("issues", "I"), ("prs", "PR")):
+    for field, label in (("issues", "ℹ︎"), ("prs", "⑂︎")):
         for item in stream.frontmatter.get(field) or []:
             lines.append(markdown_link_for_item(item, label))
     return "\n".join(lines)
