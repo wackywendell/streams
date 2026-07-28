@@ -9,7 +9,7 @@ metadata:
 
 Use this skill to manage AI-assisted coding streams from scratch files under `~/worknotes/scratch`.
 
-Scratch frontmatter is the source of truth for current state. The markdown body is the pickup document: goal, current status, important decisions, tradeoffs, deferred choices, and open questions. CMUX, status lists, and future tools are projections of that scratch state.
+Scratch frontmatter is the source of truth for current state. The markdown body is the pickup document: goal, current status, important decisions, tradeoffs, deferred choices, and open questions. CMUX and status lists are projections of that scratch state.
 
 ## CLI First
 
@@ -59,7 +59,7 @@ If a stream has multiple sessions, keep a short `## Sessions` section in the scr
 
 ## Scratch Body
 
-The scratch body is a current-state pickup document. It records what has been learned from investigation and from the user so a new session or human can understand the goal, current status, important decisions, tradeoffs, and remaining work.
+The scratch body is a current-state pickup document. It records what has been learned from investigation and from the user so a new session or human can understand the goal, current status, important decisions, tradeoffs, and remaining work. It is meant to be a decision record of the important, non-obvious decisions made, not a log of every change.
 
 Edit it in place: remove or replace superseded status, outdated decisions, and stale assumptions. It should read like an ADR-style document organized by concept, not a chronological log. Keep `## Status` current; follow `streams format` for the canonical body shape.
 
@@ -74,7 +74,6 @@ Before creating or updating reference notes during `check` / `refresh`, `checkpo
 Use existing reference categories when they fit:
 
 - `architecture/` for system models, design contracts, and architecture investigations.
-- `patterns/` for reusable implementation, review, release, or debugging patterns.
 - `tools/` for tool and workflow behavior.
 - `runbooks/` for repeatable operational procedures.
 - `ideas/` for durable product, research, or strategy observations.
@@ -96,7 +95,7 @@ On stream start or resume, read the scratch file before implementation work.
 
 Before replying after material work, ask:
 
-- Did frontmatter state change?
+- Did frontmatter state change since the last stream update?
 - Are any frontmatter fields missing or out of date?
   - Is your own AI session in the `sessions` field?
 - Does `## Status` still let a new human or AI session continue?
@@ -104,7 +103,7 @@ Before replying after material work, ask:
 - Did the work produce durable reusable knowledge that may belong in `~/worknotes/reference`?
 - Does the linked CMUX display need to be updated from scratch?
 
-If no durable pickup context changed, leave scratch alone.
+If no durable pickup context significantly changed, leave scratch alone.
 
 If context has changed:
 
@@ -117,7 +116,7 @@ If context has changed:
 
 ## CMUX
 
-CMUX is only a projection of scratch state. Its description starts with a linked text-style spiral notepad (`🗒︎`) for the scratch note, then italicized `state`, followed by linked text-style information (`ℹ︎#<number>`) and branch (`⑂︎#<number>`) labels with their scratch descriptions. Use `streams cmux open <slug>` and `streams cmux update ...` instead of hand-editing workspace title, description, color, or cwd. `streams cmux update --all` updates every matched workspace, warns for unmatched workspaces, and skips only index `0` when it is titled `Tasks`. Use `streams start "Title" --current` or `streams s "Title" -c` to create a stream and immediately project it onto the current CMUX workspace.
+CMUX is only a projection of scratch state. Its description starts with a linked text-style spiral notepad (`🗒︎`) for the scratch note, then italicized `state`, followed by linked text-style information (`ℹ︎#<number>`) and branch (`⑂︎#<number>`) labels with their scratch descriptions. Use `streams cmux open <slug>` and `streams cmux update ...` instead of hand-editing workspace title, description, color, or cwd. `streams cmux update --all` updates every matched workspace, warns for unmatched workspaces, and skips only index `0` when it is titled `Tasks`. Use `streams start "Title" --current` to create a stream and immediately project it onto the current CMUX workspace.
 
 Selecting a CMUX workspace is user-visible focus movement. Select a workspace only for explicit `open`, `switch`, `resume`, inspection, or when CMUX requires selection. For pure CMUX mechanics, use the sibling `cmux` skill.
 

@@ -74,6 +74,26 @@ Do not include derived or projection-specific fields in frontmatter:
 
 ## Markdown Body
 
+The main body is a concise resume brief and decision record, not a history of
+the stream. Keep only:
+
+- the current state and next action
+- blockers or dependencies that still apply
+- decisions that still govern the work done or to be done, with their reasons
+- unresolved questions that affect how work continues
+
+Remove external state that is no longer needed to resume - anything that can be
+read from version control or the code itself should be removed.
+
+When state changes, replace or remove stale context rather than adding a new
+status entry. Generated artifacts such as drafts, proposals, and PR descriptions
+can be placed under `~/worknotes/scratch/artifacts/<slug>/` and linked from an
+optional `## Artifacts` section in the stream file.
+
+Use this retention test: would removing this information prevent someone from
+resuming the work or understanding why the current design was chosen? If not,
+remove it.
+
 Use this body shape:
 
 ```markdown
@@ -85,11 +105,11 @@ _The outcome this stream is pursuing._
 
 ## Status
 
-_Current pickup context: where the task is, what work is in progress, and what needs doing next._
+_Current local state, active blockers or dependencies, and the next concrete action. Do not include a chronology of how the stream reached this state._
 
 ## Decisions
 
-_Important decisions, reasoning, tradeoffs, and deferred choices._
+_Choices that constrain the work, why they were chosen, and any important consequence. Remove superseded alternatives unless they explain why the chosen approach matters._
 
 ## Sessions
 
@@ -97,7 +117,13 @@ _Optional: one line per recorded AI session when multiple sessions need disambig
 
 ## Open Questions
 
-_Unresolved questions that affect how to continue._
+_Unresolved choices that affect the next work. Do not use this section as a general backlog or list of speculative ideas._
+
+## Artifacts
+
+_Optional links to retained stream-local outputs. Omit this section when there are none._
+
+- Reply to issue explaining semantics: [[scratch/artifacts/example-stream/issue-124-reply.md]]
 ```
 
 The body is a current pickup document, not an append-only log. Edit it in place so a new human or AI session can resume from the frontmatter and `## Status`.
@@ -138,12 +164,4 @@ CMUX is a projection of generic stream state:
 
 `streams cmux open <slug>` creates a new CMUX workspace using the stream `cwd` and the latest recorded session command when present.
 
-`streams cmux update ...` updates title, description, and color from scratch. `streams cmux update --all` updates every CMUX workspace with a matching stream and prints a `Warning:` for each unmatched workspace. It skips workspace index `0` only when its title is `Tasks`. Neither command reliably repairs an already-open terminal's working directory. If a workspace was opened with the wrong cwd, close and reopen it after fixing scratch `cwd`.
-
-Example description:
-
-```markdown
-[🗒︎](obsidian://open?vault=worknotes&file=scratch%2Fexample-stream.md) _Issue #124 literal conversion helpers_
-[ℹ︎#124](https://github.com/example-org/widget-lib/issues/124): Literal conversion helpers
-[⑂︎#150](https://github.com/example-org/widget-lib/pull/150): Add literal helpers
-```
+`streams cmux update -c <slug>` updates the current title, description, and color from scratch.
