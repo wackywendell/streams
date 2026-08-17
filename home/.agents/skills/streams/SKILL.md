@@ -21,6 +21,7 @@ Use the `streams` CLI for mechanics instead of reimplementing parsing or matchin
 | Inspect one stream                    | `streams show <slug>` or `streams show <slug> --json` |
 | Validate stream files                 | `streams check [slug]`                                |
 | Create a stream                       | `streams start "Title"` or `streams s "Title"`        |
+| Rename a stream                       | `streams rename <stream-ref> "New Title"`              |
 | Archive a done stream                 | `streams archive <slug>` or `streams a <slug>`        |
 | Resume the latest recorded AI session | `streams resume [slug]`                               |
 | Read the stream file format           | `streams format`                                      |
@@ -117,6 +118,8 @@ If context has changed:
 ## CMUX
 
 CMUX is only a projection of scratch state. Its description starts with a linked text-style spiral notepad (`🗒︎`) for the scratch note, then italicized `state`, followed by linked text-style information (`ℹ︎#<number>`) and branch (`⑂︎#<number>`) labels with their scratch descriptions. Use `streams cmux open <slug>` and `streams cmux update ...` instead of hand-editing workspace title, description, color, or cwd. `streams cmux update --all` updates every matched workspace, warns for unmatched workspaces, and skips only index `0` when it is titled `Tasks`. Use `streams start "Title" --current` to create a stream and immediately project it onto the current CMUX workspace.
+
+Use `streams rename <stream-ref> "New Title" -c` to rename a stream and update the current CMUX projection together. Rename preserves compatibility symlinks at the old scratch and artifact paths.
 
 Selecting a CMUX workspace is user-visible focus movement. Select a workspace only for explicit `open`, `switch`, `resume`, inspection, or when CMUX requires selection. For pure CMUX mechanics, use the sibling `cmux` skill.
 

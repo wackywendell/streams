@@ -9,7 +9,7 @@ from pathlib import Path
 
 from .errors import StreamError
 from .models import Stream
-from .store import archive_stream, list_streams, start_stream
+from .store import archive_stream, list_streams, rename_stream, start_stream
 from .cmux import CmuxClient, load_stream_for_update, markdown_link_for_item, open_workspace, update_all_workspaces, update_current_workspace, update_workspace
 from .check import check_streams, findings_json
 from .store import check_paths
@@ -86,6 +86,17 @@ def command_start(args: argparse.Namespace) -> int:
         print(f"created: {stream.slug} {stream.path}")
         if workspace is not None:
             print(f"updated: {workspace.display_ref} {stream.slug}")
+    return 0
+
+
+def command_rename(args: argparse.Namespace) -> int:
+    stream = resolve_stream_ref(args.stream_ref)
+    old_slug = stream.slug
+    renamed = rename_stream(stream, args.title)
+    workspace = update_current_workspace(renamed) if args.current else None
+    print(f"renamed: {old_slug} -> {renamed.slug} {renamed.path}")
+    if workspace is not None:
+        print(f"updated: {workspace.display_ref} {renamed.slug}")
     return 0
 
 
@@ -172,6 +183,12 @@ def build_parser() -> argparse.ArgumentParser:
     start_parser.add_argument("--json", action="store_true", help="print stream frontmatter as JSON")
     start_parser.add_argument("-c", "--current", action="store_true", help="update the current CMUX workspace from the new stream")
     start_parser.set_defaults(func=command_start)
+
+    rename_parser = subparsers.add_parser("rename", help="rename a stream")
+    rename_parser.add_argument("stream_ref", help="current stream title or slug")
+    rename_parser.add_argument("title", help="new stream title")
+    rename_parser.add_argument("-c", "--current", action="store_true", help="update the current CMUX workspace from the renamed stream")
+    rename_parser.set_defaults(func=command_rename)
 
     format_parser = subparsers.add_parser("format", help="print scratch stream format documentation")
     format_parser.set_defaults(func=command_format)

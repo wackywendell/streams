@@ -11,7 +11,7 @@ from unittest.mock import patch
 BIN_DIR = Path(__file__).resolve().parents[2]
 sys.path.insert(0, str(BIN_DIR))
 
-from _streams.cli import build_parser, command_archive, command_cmux_update, command_format, command_list, command_resume, command_show, command_start
+from _streams.cli import build_parser, command_archive, command_cmux_update, command_format, command_list, command_rename, command_resume, command_show, command_start
 from _streams.cmux import (
     CmuxClient,
     CmuxWorkspace,
@@ -32,7 +32,7 @@ from _streams.frontmatter import render_frontmatter, split_frontmatter
 from _streams.models import Stream
 from _streams.resolve import resolve_check_path_ref, resolve_slug_ref, resolve_stream_ref
 from _streams.resume import exec_resume, resolve_stream_for_resume, resume_command_for_stream
-from _streams.store import archive_stream, check_paths, list_streams, show_stream, start_stream
+from _streams.store import archive_stream, check_paths, list_streams, rename_stream, show_stream, start_stream
 
 
 def write_stream(
@@ -121,6 +121,99 @@ class StoreTest(unittest.TestCase):
             with self.assertRaisesRegex(Exception, "already exists"):
                 start_stream("New Stream", root=root, cwd=root)
 
+    def test_rename_stream_updates_identity_and_leaves_relative_symlinks(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            stream = start_stream("Old Stream", root=root, cwd=root)
+            stream.path.write_text(
+                stream.path.read_text().replace(
+                    "## Goal",
+                    "[[scratch/artifacts/old-stream/notes.md]]\n\n## Goal",
+                )
+            )
+            stream = show_stream("old-stream", root)
+            old_path = stream.path
+            old_artifacts = root / "artifacts" / "old-stream"
+            old_artifacts.mkdir(parents=True)
+            old_artifacts.joinpath("notes.md").write_text("notes")
+
+            renamed = rename_stream(stream, "Focused Review")
+
+            new_path = root / "focused-review.md"
+            new_artifacts = root / "artifacts" / "focused-review"
+            self.assertEqual(renamed.path, new_path)
+            self.assertEqual(renamed.title, "Focused Review")
+            self.assertEqual(renamed.frontmatter["updated"], date.today().isoformat())
+            self.assertTrue(old_path.is_symlink())
+            self.assertEqual(old_path.readlink(), Path("focused-review.md"))
+            self.assertEqual(old_path.resolve(), new_path.resolve())
+            self.assertTrue(old_artifacts.is_symlink())
+            self.assertEqual(old_artifacts.readlink(), Path("focused-review"))
+            self.assertEqual(old_artifacts.resolve(), new_artifacts.resolve())
+            self.assertEqual(new_artifacts.joinpath("notes.md").read_text(), "notes")
+            self.assertTrue(renamed.body.startswith("# Focused Review\n"))
+            self.assertIn("scratch/artifacts/focused-review/notes.md", renamed.body)
+            self.assertEqual([item.slug for item in list_streams(root)], ["focused-review"])
+            self.assertEqual([path.name for path in check_paths(root)], ["focused-review.md"])
+
+    def test_rename_stream_refuses_stream_destination_collision(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            stream = start_stream("Old Stream", root=root, cwd=root)
+            start_stream("Focused Review", root=root, cwd=root)
+
+            with self.assertRaisesRegex(Exception, "already exists"):
+                rename_stream(stream, "Focused Review")
+
+            self.assertFalse(stream.path.is_symlink())
+            self.assertEqual(show_stream("old-stream", root).title, "Old Stream")
+
+    def test_rename_stream_refuses_artifact_destination_collision(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            stream = start_stream("Old Stream", root=root, cwd=root)
+            old_artifacts = root / "artifacts" / "old-stream"
+            new_artifacts = root / "artifacts" / "focused-review"
+            old_artifacts.mkdir(parents=True)
+            new_artifacts.mkdir(parents=True)
+
+            with self.assertRaisesRegex(Exception, "artifact destination already exists"):
+                rename_stream(stream, "Focused Review")
+
+            self.assertFalse(stream.path.is_symlink())
+            self.assertTrue(old_artifacts.is_dir())
+            self.assertFalse(old_artifacts.is_symlink())
+
+    def test_rename_stream_rolls_back_when_artifact_symlink_fails(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            stream = start_stream("Old Stream", root=root, cwd=root)
+            old_path = stream.path
+            new_path = root / "focused-review.md"
+            old_artifacts = root / "artifacts" / "old-stream"
+            new_artifacts = root / "artifacts" / "focused-review"
+            old_artifacts.mkdir(parents=True)
+            old_artifacts.joinpath("notes.md").write_text("notes")
+            symlink_to = Path.symlink_to
+
+            def fail_artifact_symlink(path: Path, target: str, target_is_directory: bool = False) -> None:
+                if path == old_artifacts:
+                    raise OSError("simulated artifact symlink failure")
+                symlink_to(path, target, target_is_directory)
+
+            with patch.object(Path, "symlink_to", new=fail_artifact_symlink):
+                with self.assertRaisesRegex(StreamError, "simulated artifact symlink failure"):
+                    rename_stream(stream, "Focused Review")
+
+            self.assertTrue(old_path.is_file())
+            self.assertFalse(old_path.is_symlink())
+            self.assertEqual(show_stream("old-stream", root).title, "Old Stream")
+            self.assertFalse(new_path.exists())
+            self.assertTrue(old_artifacts.is_dir())
+            self.assertFalse(old_artifacts.is_symlink())
+            self.assertEqual(old_artifacts.joinpath("notes.md").read_text(), "notes")
+            self.assertFalse(new_artifacts.exists())
+
     def test_archive_stream_moves_done_stream_to_month(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
@@ -188,6 +281,12 @@ class ResolveTest(unittest.TestCase):
             write_stream(root, "zero-arg-functions")
             write_stream(root, "other-stream")
             self.assertEqual(resolve_stream_ref("arg", root=root).slug, "zero-arg-functions")
+
+    def test_exact_title_resolves_when_title_and_slug_differ(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            write_stream(root, "legacy-name", title="Displayed Review")
+            self.assertEqual(resolve_stream_ref("Displayed Review", root=root).slug, "legacy-name")
 
     def test_zero_matches_fails_clearly(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
@@ -265,6 +364,24 @@ class CliTest(unittest.TestCase):
             self.assertEqual(print_mock.call_args_list[0].args[0], f"created: active-stream {stream.path}")
             self.assertEqual(print_mock.call_args_list[1].args[0], "updated: workspace:2 active-stream")
 
+    def test_rename_current_resolves_ref_and_updates_current_workspace(self) -> None:
+        with patch("_streams.cli.resolve_stream_ref") as resolve_mock, patch("_streams.cli.rename_stream") as rename_mock, patch("_streams.cli.update_current_workspace") as update_mock, patch("builtins.print") as print_mock:
+            original = Stream(Path("/scratch/old-stream.md"), {"title": "Old Stream"}, "")
+            renamed = Stream(Path("/scratch/focused-review.md"), {"title": "Focused Review"}, "")
+            workspace = CmuxWorkspace({"ref": "workspace:2", "title": "Old Stream"})
+            resolve_mock.return_value = original
+            rename_mock.return_value = renamed
+            update_mock.return_value = workspace
+            args = type("Args", (), {"stream_ref": "Old Stream", "title": "Focused Review", "current": True})()
+
+            self.assertEqual(command_rename(args), 0)
+
+            resolve_mock.assert_called_once_with("Old Stream")
+            rename_mock.assert_called_once_with(original, "Focused Review")
+            update_mock.assert_called_once_with(renamed)
+            self.assertEqual(print_mock.call_args_list[0].args[0], "renamed: old-stream -> focused-review /scratch/focused-review.md")
+            self.assertEqual(print_mock.call_args_list[1].args[0], "updated: workspace:2 focused-review")
+
     def test_update_all_prints_updates_and_warnings(self) -> None:
         with patch("_streams.cli.CmuxClient") as cmux_class, patch("_streams.cli.update_all_workspaces") as update_mock, patch("builtins.print") as print_mock:
             matching = CmuxWorkspace({"ref": "workspace:2", "title": "Active Stream"})
@@ -315,6 +432,11 @@ class CliTest(unittest.TestCase):
         self.assertEqual(archive_args.slug, "done-stream")
         self.assertTrue(archive_args.dry_run)
 
+        rename_args = parser.parse_args(["rename", "Old Stream", "Focused Review", "-c"])
+        self.assertEqual(rename_args.stream_ref, "Old Stream")
+        self.assertEqual(rename_args.title, "Focused Review")
+        self.assertTrue(rename_args.current)
+
     def test_archive_prints_destination(self) -> None:
         with tempfile.TemporaryDirectory() as tmp, patch("_streams.cli.resolve_stream_ref") as resolve_mock, patch("builtins.print") as print_mock:
             root = Path(tmp)
@@ -345,6 +467,7 @@ class CliTest(unittest.TestCase):
             output = print_mock.call_args.args[0]
             self.assertIn("# Streams Scratch Format", output)
             self.assertIn("https://github.com/<owner>/<repo>/pull/<number>", output)
+            self.assertIn('streams rename <stream-ref> "New Title"', output)
 
     def test_resume_execs_resolved_stream(self) -> None:
         with tempfile.TemporaryDirectory() as tmp, patch("_streams.cli.resolve_stream_for_resume") as resolve_mock, patch("_streams.cli.exec_resume") as exec_mock:

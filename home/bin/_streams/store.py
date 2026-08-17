@@ -25,7 +25,7 @@ def stream_paths(root: Path = SCRATCH_ROOT) -> list[Path]:
     archive = root / ARCHIVE_DIRNAME
     paths: list[Path] = []
     for path in root.glob("*.md"):
-        if archive in path.parents:
+        if archive in path.parents or path.is_symlink():
             continue
         if _has_frontmatter(path):
             paths.append(path)
@@ -41,7 +41,10 @@ def check_paths(root: Path = SCRATCH_ROOT) -> list[Path]:
     root = root.expanduser()
     if not root.exists():
         return []
-    return sorted(root.glob("*.md"), key=lambda item: item.stem)
+    return sorted(
+        (path for path in root.glob("*.md") if not path.is_symlink()),
+        key=lambda item: item.stem,
+    )
 
 
 def _has_frontmatter(path: Path) -> bool:
@@ -134,6 +137,91 @@ _List unresolved questions that affect how to continue._
     except OSError as exc:
         raise StreamError(f"could not create {path}: {exc}") from exc
     return load_stream(path)
+
+
+def rename_stream(stream: Stream, title: str) -> Stream:
+    title = title.strip()
+    if not title:
+        raise StreamError("title cannot be empty")
+
+    old_path = stream.path
+    old_slug = stream.slug
+    new_slug = normalized_slug(title)
+    new_path = old_path.with_name(f"{new_slug}.md")
+    if new_path != old_path and (new_path.exists() or new_path.is_symlink()):
+        raise StreamError(f"stream {new_slug!r} already exists at {new_path}")
+
+    artifacts_root = old_path.parent / "artifacts"
+    old_artifacts = artifacts_root / old_slug
+    new_artifacts = artifacts_root / new_slug
+    has_artifacts = old_artifacts.exists() or old_artifacts.is_symlink()
+    if has_artifacts and new_artifacts != old_artifacts and (new_artifacts.exists() or new_artifacts.is_symlink()):
+        raise StreamError(f"artifact destination already exists: {new_artifacts}")
+
+    if old_path.is_symlink():
+        raise StreamError(f"stream source is a symlink: {old_path}")
+    if old_artifacts.is_symlink():
+        raise StreamError(f"artifact source is a symlink: {old_artifacts}")
+
+    frontmatter = dict(stream.frontmatter)
+    frontmatter["title"] = title
+    frontmatter["updated"] = date.today().isoformat()
+    body = stream.body
+    old_heading = f"# {stream.title}\n"
+    if body.startswith(old_heading):
+        body = f"# {title}\n{body[len(old_heading):]}"
+    body = body.replace(
+        f"scratch/artifacts/{old_slug}/",
+        f"scratch/artifacts/{new_slug}/",
+    )
+    renamed_text = render_frontmatter(frontmatter, body)
+
+    if new_path == old_path:
+        try:
+            old_path.write_text(renamed_text)
+        except OSError as exc:
+            raise StreamError(f"could not rename stream {old_slug!r}: {exc}") from exc
+        return load_stream(old_path)
+
+    try:
+        original_text = old_path.read_text()
+    except OSError as exc:
+        raise StreamError(f"could not read stream {old_slug!r}: {exc}") from exc
+
+    file_moved = False
+    artifacts_moved = False
+    try:
+        old_path.write_text(renamed_text)
+        old_path.rename(new_path)
+        file_moved = True
+        old_path.symlink_to(new_path.name)
+        if has_artifacts:
+            old_artifacts.rename(new_artifacts)
+            artifacts_moved = True
+            old_artifacts.symlink_to(new_artifacts.name, target_is_directory=True)
+    except OSError as exc:
+        rollback_errors: list[str] = []
+
+        def rollback(label: str, operation) -> None:
+            try:
+                operation()
+            except OSError as rollback_exc:
+                rollback_errors.append(f"{label}: {rollback_exc}")
+
+        if old_artifacts.is_symlink():
+            rollback("remove artifact symlink", old_artifacts.unlink)
+        if artifacts_moved:
+            rollback("restore artifact directory", lambda: new_artifacts.rename(old_artifacts))
+        if old_path.is_symlink():
+            rollback("remove stream symlink", old_path.unlink)
+        if file_moved:
+            rollback("restore stream file", lambda: new_path.rename(old_path))
+        if old_path.exists() and not old_path.is_symlink():
+            rollback("restore stream contents", lambda: old_path.write_text(original_text))
+
+        detail = f"; rollback failed: {'; '.join(rollback_errors)}" if rollback_errors else ""
+        raise StreamError(f"could not rename stream {old_slug!r} to {new_slug!r}: {exc}{detail}") from exc
+    return load_stream(new_path)
 
 
 def archive_stream(
