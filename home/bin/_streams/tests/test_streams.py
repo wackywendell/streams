@@ -29,6 +29,7 @@ from _streams.check import check_path, check_streams, findings_json
 from _streams.config import VALID_STATUSES
 from _streams.errors import StreamError
 from _streams.frontmatter import render_frontmatter, split_frontmatter
+from _streams.location import StreamLocation, discover_stream_location, format_local_path
 from _streams.models import Stream
 from _streams.resolve import resolve_check_path_ref, resolve_slug_ref, resolve_stream_ref
 from _streams.resume import exec_resume, resolve_stream_for_resume, resume_command_for_stream
@@ -42,7 +43,9 @@ def write_stream(
     title: str = "Example",
     status: str = "active",
     state: str = "Doing work",
+    repo: str = "/repo",
     cwd: str = "/repo",
+    vcs: str = "jj",
     issues: list[dict[str, str]] | None = None,
     prs: list[dict[str, str]] | None = None,
     sessions: list[str] | None = None,
@@ -53,9 +56,9 @@ def write_stream(
         "status": status,
         "description": "Overall task description",
         "state": state,
-        "repo": "/repo",
+        "repo": repo,
         "cwd": cwd,
-        "vcs": "jj",
+        "vcs": vcs,
         "issues": issues or [],
         "prs": prs or [],
         "sessions": sessions if sessions is not None else ["codex:abc"],
@@ -73,7 +76,97 @@ class FrontmatterTest(unittest.TestCase):
         self.assertEqual(body, "# Body\n")
 
 
+class StreamLocationTest(unittest.TestCase):
+    def test_format_local_path_uses_tilde_for_paths_under_home(self) -> None:
+        self.assertEqual(
+            format_local_path(Path("/home/example/repo"), home=Path("/home/example")),
+            "~/repo",
+        )
+        self.assertEqual(
+            format_local_path(Path("/home/example"), home=Path("/home/example")),
+            "~",
+        )
+
+    def test_format_local_path_preserves_paths_outside_home(self) -> None:
+        self.assertEqual(
+            format_local_path(Path("/work/repo"), home=Path("/home/example")),
+            "/work/repo",
+        )
+
+    def test_location_is_dedicated_when_working_root_differs_from_repo_root(self) -> None:
+        location = StreamLocation(vcs="jj", repo_root=Path("/repo"), working_root=Path("/repo/workspaces/topic"))
+        self.assertTrue(location.is_dedicated)
+
+    def test_location_is_main_when_roots_are_the_same(self) -> None:
+        location = StreamLocation(vcs="git", repo_root=Path("/repo"), working_root=Path("/repo"))
+        self.assertFalse(location.is_dedicated)
+
+    def test_discover_jj_location_uses_default_and_current_workspace_roots(self) -> None:
+        def run(args: list[str], cwd: Path) -> str:
+            if args[:3] == ["jj", "workspace", "root"]:
+                return "/repo/workspaces/topic\n"
+            if args[:3] == ["jj", "workspace", "list"]:
+                return "/repo\n"
+            raise AssertionError(args)
+
+        location = discover_stream_location(Path("/repo/workspaces/topic/subdir"), runner=run)
+        self.assertEqual(
+            location,
+            StreamLocation(vcs="jj", repo_root=Path("/repo"), working_root=Path("/repo/workspaces/topic")),
+        )
+
+    def test_discover_jj_location_supports_legacy_workspace_root_metadata(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            repo = root / "repo"
+            working = root / "workspaces" / "topic"
+            repo.joinpath(".jj", "repo").mkdir(parents=True)
+            working.joinpath(".jj").mkdir(parents=True)
+            pointer = Path("../../../repo/.jj/repo")
+            working.joinpath(".jj", "repo").write_text(str(pointer))
+
+            def run(args: list[str], cwd: Path) -> str:
+                if args[:3] == ["jj", "workspace", "root"]:
+                    return f"{working}\n"
+                if args[:3] == ["jj", "workspace", "list"]:
+                    return "<Error: No FsPath available>\n"
+                raise AssertionError(args)
+
+            location = discover_stream_location(working, runner=run)
+            self.assertEqual(location.repo_root, repo.resolve())
+            self.assertEqual(location.working_root, working.resolve())
+            self.assertTrue(location.is_dedicated)
+
+    def test_discover_location_requires_a_vcs_working_copy(self) -> None:
+        def run(args: list[str], cwd: Path) -> str:
+            raise StreamError("not a repository")
+
+        with self.assertRaisesRegex(StreamError, "not inside a jj workspace or Git worktree"):
+            discover_stream_location(Path("/tmp/not-a-repo"), runner=run)
+
+    def test_discover_git_location_uses_first_worktree_as_repo_root(self) -> None:
+        def run(args: list[str], cwd: Path) -> str:
+            if args[0] == "jj":
+                raise StreamError("not a jj repository")
+            if args == ["git", "rev-parse", "--path-format=absolute", "--show-toplevel"]:
+                return "/repo/worktrees/topic\n"
+            if args == ["git", "worktree", "list", "--porcelain"]:
+                return "worktree /repo\nHEAD abc\n\nworktree /repo/worktrees/topic\nHEAD def\n"
+            raise AssertionError(args)
+
+        location = discover_stream_location(Path("/repo/worktrees/topic/subdir"), runner=run)
+        self.assertEqual(
+            location,
+            StreamLocation(vcs="git", repo_root=Path("/repo"), working_root=Path("/repo/worktrees/topic")),
+        )
+
+
 class StoreTest(unittest.TestCase):
+    def start_main_stream(self, title: str, root: Path) -> Stream:
+        location = StreamLocation(vcs="jj", repo_root=root, working_root=root)
+        with patch("_streams.store.discover_stream_location", return_value=location):
+            return start_stream(title, root=root, cwd=root)
+
     def test_list_excludes_archive(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
@@ -103,28 +196,36 @@ class StoreTest(unittest.TestCase):
             stream.frontmatter["created"] = date(2026, 6, 8)
             self.assertEqual(stream.as_json()["created"], "2026-06-08")
 
-    def test_start_stream_creates_active_stream(self) -> None:
-        with tempfile.TemporaryDirectory() as tmp:
+    def test_start_stream_creates_active_stream_with_discovered_location(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp, patch("_streams.store.discover_stream_location") as discover_mock:
             root = Path(tmp)
-            cwd = root / "repo"
-            cwd.mkdir()
-            stream = start_stream("New Stream", root=root, cwd=cwd)
+            cwd = root / "repo" / "workspaces" / "topic"
+            cwd.mkdir(parents=True)
+            discover_mock.return_value = StreamLocation(
+                vcs="jj",
+                repo_root=Path.home() / "repo",
+                working_root=Path.home() / "repo" / "workspaces" / "topic",
+            )
+            stream = start_stream("New Stream", root=root, cwd=cwd / "subdir")
             self.assertEqual(stream.slug, "new-stream")
             self.assertEqual(stream.status, "active")
+            self.assertEqual(stream.frontmatter["repo"], "~/repo")
+            self.assertEqual(stream.frontmatter["cwd"], "~/repo/workspaces/topic")
+            self.assertEqual(stream.frontmatter["vcs"], "jj")
             self.assertEqual(stream.frontmatter["sessions"], [])
             self.assertTrue((root / "new-stream.md").exists())
 
     def test_start_stream_refuses_overwrite(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
-            start_stream("New Stream", root=root, cwd=root)
+            self.start_main_stream("New Stream", root)
             with self.assertRaisesRegex(Exception, "already exists"):
-                start_stream("New Stream", root=root, cwd=root)
+                self.start_main_stream("New Stream", root)
 
     def test_rename_stream_updates_identity_and_leaves_relative_symlinks(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
-            stream = start_stream("Old Stream", root=root, cwd=root)
+            stream = self.start_main_stream("Old Stream", root)
             stream.path.write_text(
                 stream.path.read_text().replace(
                     "## Goal",
@@ -159,8 +260,8 @@ class StoreTest(unittest.TestCase):
     def test_rename_stream_refuses_stream_destination_collision(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
-            stream = start_stream("Old Stream", root=root, cwd=root)
-            start_stream("Focused Review", root=root, cwd=root)
+            stream = self.start_main_stream("Old Stream", root)
+            self.start_main_stream("Focused Review", root)
 
             with self.assertRaisesRegex(Exception, "already exists"):
                 rename_stream(stream, "Focused Review")
@@ -171,7 +272,7 @@ class StoreTest(unittest.TestCase):
     def test_rename_stream_refuses_artifact_destination_collision(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
-            stream = start_stream("Old Stream", root=root, cwd=root)
+            stream = self.start_main_stream("Old Stream", root)
             old_artifacts = root / "artifacts" / "old-stream"
             new_artifacts = root / "artifacts" / "focused-review"
             old_artifacts.mkdir(parents=True)
@@ -187,7 +288,7 @@ class StoreTest(unittest.TestCase):
     def test_rename_stream_rolls_back_when_artifact_symlink_fails(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
-            stream = start_stream("Old Stream", root=root, cwd=root)
+            stream = self.start_main_stream("Old Stream", root)
             old_path = stream.path
             new_path = root / "focused-review.md"
             old_artifacts = root / "artifacts" / "old-stream"
@@ -494,6 +595,27 @@ class CheckTest(unittest.TestCase):
             (root / "legacy.md").write_text("# Legacy scratch\n")
             self.assertEqual([path.name for path in check_paths(root)], ["active-stream.md", "legacy.md"])
 
+    def test_repo_must_be_a_local_root_directory_path(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            path = write_stream(root, "active-stream", repo="example-org/monorepo")
+            findings = check_path(path)
+            self.assertTrue(any("repo must be an absolute or home-relative local path" in finding.message for finding in findings))
+
+    def test_cwd_must_be_a_local_root_directory_path(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            path = write_stream(root, "active-stream", cwd="multi-repo: worknotes, monorepo")
+            findings = check_path(path)
+            self.assertTrue(any("cwd must be an absolute or home-relative local path" in finding.message for finding in findings))
+
+    def test_vcs_must_identify_jj_or_git(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            path = write_stream(root, "active-stream", vcs="svn")
+            findings = check_path(path)
+            self.assertTrue(any("invalid vcs" in finding.message for finding in findings))
+
     def test_invalid_status_is_error(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
@@ -774,16 +896,34 @@ class CmuxTest(unittest.TestCase):
             self.assertEqual(stream.slug, "active-stream")
             self.assertEqual(resolved.title, "Dotfiles")
 
-    def test_update_current_falls_back_to_unique_cwd(self) -> None:
+    def test_update_current_falls_back_to_unique_dedicated_cwd(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
-            write_stream(root, "active-stream", title="Active Stream", cwd="/repo/active")
-            write_stream(root, "other-stream", title="Other Stream", cwd="/repo/other")
-            workspace = CmuxWorkspace({"ref": "workspace:2", "title": "streams cmux update --current", "current_directory": "/repo/active"})
+            write_stream(root, "active-stream", title="Active Stream", repo="/repo", cwd="/repo/workspaces/active")
+            write_stream(root, "other-stream", title="Other Stream", repo="/repo", cwd="/repo/workspaces/other")
+            workspace = CmuxWorkspace({"ref": "workspace:2", "title": "streams cmux update --current", "current_directory": "/repo/workspaces/active"})
             cmux = FakeCmux([workspace])
             stream, resolved = load_stream_for_update(None, None, True, cmux, root=root)
             self.assertEqual(stream.slug, "active-stream")
             self.assertEqual(resolved.display_ref, "workspace:2")
+
+    def test_update_current_does_not_infer_unique_stream_in_main_repo(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            write_stream(root, "old-stream", title="Old Stream", repo="/repo", cwd="/repo")
+            workspace = CmuxWorkspace({"ref": "workspace:2", "title": "π - repo", "current_directory": "/repo"})
+            cmux = FakeCmux([workspace])
+            with self.assertRaisesRegex(Exception, "main checkout"):
+                load_stream_for_update(None, None, True, cmux, root=root)
+
+    def test_update_current_does_not_fuzzy_match_workspace_title(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            write_stream(root, "code-review", title="Code Review", repo="/repo", cwd="/repo")
+            workspace = CmuxWorkspace({"ref": "workspace:2", "title": "review", "current_directory": "/missing"})
+            cmux = FakeCmux([workspace])
+            with self.assertRaisesRegex(Exception, "pass a slug"):
+                load_stream_for_update(None, None, True, cmux, root=root)
 
     def test_update_current_without_identifying_hint_fails_clearly(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:

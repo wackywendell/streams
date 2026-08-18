@@ -11,4 +11,4 @@ ARCHIVE_DIRNAME = "archive"
 VALID_STATUSES = frozenset({"active", "waiting", "blocked", "parked", "done"})
 DEFAULT_STATUS = "active"
 DEFAULT_STATE = "New stream ready for scoping."
-DEFAULT_VCS = "jj"
+VALID_VCS = frozenset({"jj", "git"})

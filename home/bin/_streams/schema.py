@@ -7,7 +7,7 @@ from pathlib import Path
 import re
 from typing import Any, Literal
 
-from .config import VALID_STATUSES
+from .config import VALID_STATUSES, VALID_VCS
 from .slug import slugify
 
 REQUIRED_FIELDS = ("title", "status", "description", "state", "repo", "cwd", "vcs", "issues", "prs", "sessions")
@@ -50,13 +50,22 @@ def validate_frontmatter(path: Path, frontmatter: dict[str, Any]) -> list[Schema
         if field in frontmatter and not isinstance(frontmatter[field], str):
             findings.append(_finding("error", path, f"field {field!r} must be a string"))
 
-    for field in ("title", "status", "state", "cwd", "vcs"):
+    for field in ("title", "status", "state", "repo", "cwd", "vcs"):
         if isinstance(frontmatter.get(field), str) and not frontmatter[field].strip():
             findings.append(_finding("error", path, f"field {field!r} cannot be empty"))
+
+    for field in ("repo", "cwd"):
+        value = frontmatter.get(field)
+        if isinstance(value, str) and value.strip() and not Path(value).expanduser().is_absolute():
+            findings.append(_finding("error", path, f"{field} must be an absolute or home-relative local path"))
 
     if isinstance(frontmatter.get("status"), str) and frontmatter["status"] not in VALID_STATUSES:
         allowed = ", ".join(sorted(VALID_STATUSES))
         findings.append(_finding("error", path, f"invalid status {frontmatter['status']!r}; expected one of {allowed}"))
+
+    if isinstance(frontmatter.get("vcs"), str) and frontmatter["vcs"] not in VALID_VCS:
+        allowed = ", ".join(sorted(VALID_VCS))
+        findings.append(_finding("error", path, f"invalid vcs {frontmatter['vcs']!r}; expected one of {allowed}"))
 
     for field in LIST_FIELDS:
         if field in frontmatter and not isinstance(frontmatter[field], list):

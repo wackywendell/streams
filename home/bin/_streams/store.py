@@ -2,13 +2,13 @@
 
 from __future__ import annotations
 
-import os
 from datetime import date
 from pathlib import Path
 
-from .config import ARCHIVE_DIRNAME, DEFAULT_STATE, DEFAULT_STATUS, DEFAULT_VCS, SCRATCH_ROOT
+from .config import ARCHIVE_DIRNAME, DEFAULT_STATE, DEFAULT_STATUS, SCRATCH_ROOT
 from .errors import StreamError
 from .frontmatter import render_frontmatter, split_frontmatter
+from .location import discover_stream_location, format_local_path
 from .models import Stream
 from .slug import normalized_slug
 
@@ -77,16 +77,6 @@ def show_stream(slug: str, root: Path = SCRATCH_ROOT) -> Stream:
     return load_stream(path)
 
 
-def detect_vcs(cwd: Path) -> str:
-    current = cwd
-    for parent in (current, *current.parents):
-        if (parent / ".jj").exists():
-            return "jj"
-        if (parent / ".git").exists():
-            return "git"
-    return DEFAULT_VCS
-
-
 def start_stream(title: str, *, root: Path = SCRATCH_ROOT, cwd: Path | None = None) -> Stream:
     title = title.strip()
     if not title:
@@ -97,7 +87,7 @@ def start_stream(title: str, *, root: Path = SCRATCH_ROOT, cwd: Path | None = No
     if path.exists():
         raise StreamError(f"stream {slug!r} already exists at {path}")
 
-    cwd = (cwd or Path.cwd()).expanduser().resolve()
+    location = discover_stream_location(cwd or Path.cwd())
     today = date.today().isoformat()
     frontmatter = {
         "title": title,
@@ -106,9 +96,9 @@ def start_stream(title: str, *, root: Path = SCRATCH_ROOT, cwd: Path | None = No
         "updated": today,
         "description": "",
         "state": DEFAULT_STATE,
-        "repo": str(cwd),
-        "cwd": str(cwd),
-        "vcs": detect_vcs(cwd),
+        "repo": format_local_path(location.repo_root),
+        "cwd": format_local_path(location.working_root),
+        "vcs": location.vcs,
         "issues": [],
         "prs": [],
         "sessions": [],

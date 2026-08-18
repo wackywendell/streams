@@ -105,25 +105,35 @@ def color_for_status(status: str) -> str:
 
 
 def stream_for_workspace_hint(workspace: CmuxWorkspace, *, root: Path | None = None) -> Stream:
-    """Infer a stream from weak CMUX workspace hints."""
+    """Infer a stream from an exact title or unique dedicated working root."""
     root_args = {"root": root} if root is not None else {}
-    if workspace.title:
-        try:
-            return resolve_stream_ref(workspace.title, **root_args)
-        except StreamError:
-            pass
+    streams = list_streams(**root_args)
+
+    title_matches = [stream for stream in streams if stream.title == workspace.title]
+    if len(title_matches) == 1:
+        return title_matches[0]
+    if len(title_matches) > 1:
+        choices = ", ".join(sorted(stream.slug for stream in title_matches))
+        raise StreamError(f"current CMUX workspace title matches multiple streams: {choices}")
 
     cwd_matches = [
         stream
-        for stream in list_streams(**root_args)
-        if str(stream.frontmatter.get("cwd") or "") == workspace.current_directory
+        for stream in streams
+        if workspace.current_directory
+        and stream.location.matches_working_root(workspace.current_directory)
     ]
-    if len(cwd_matches) == 1:
-        return cwd_matches[0]
-    if len(cwd_matches) > 1:
-        choices = ", ".join(sorted(stream.slug for stream in cwd_matches))
+    dedicated_matches = [stream for stream in cwd_matches if stream.location.is_dedicated]
+    if len(dedicated_matches) == 1:
+        return dedicated_matches[0]
+    if len(dedicated_matches) > 1:
+        choices = ", ".join(sorted(stream.slug for stream in dedicated_matches))
         raise StreamError(
-            f"current CMUX workspace matches multiple streams by cwd; pass a slug: {choices}"
+            f"current CMUX workspace matches multiple streams by dedicated cwd; pass a slug: {choices}"
+        )
+    if cwd_matches:
+        raise StreamError(
+            "current CMUX workspace is in a main checkout, which does not identify one stream; "
+            "pass a slug"
         )
     raise StreamError(
         f"current CMUX workspace {workspace.display_ref} title {workspace.title!r} "
@@ -132,21 +142,8 @@ def stream_for_workspace_hint(workspace: CmuxWorkspace, *, root: Path | None = N
 
 
 def stream_for_workspace_exact(workspace: CmuxWorkspace, *, root: Path | None = None) -> Stream:
-    """Find a stream only when a workspace title or cwd matches exactly."""
-    root_args = {"root": root} if root is not None else {}
-    streams = list_streams(**root_args)
-    title_matches = [stream for stream in streams if stream.title == workspace.title]
-    if len(title_matches) == 1:
-        return title_matches[0]
-
-    cwd_matches = [
-        stream
-        for stream in streams
-        if str(stream.frontmatter.get("cwd") or "") == workspace.current_directory
-    ]
-    if len(cwd_matches) == 1:
-        return cwd_matches[0]
-    raise StreamError(f"CMUX workspace {workspace.display_ref} has no exact stream match")
+    """Find a stream from an exact title or unique dedicated working root."""
+    return stream_for_workspace_hint(workspace, root=root)
 
 
 def resume_command(stream: Stream) -> str | None:

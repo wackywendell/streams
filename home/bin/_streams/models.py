@@ -8,6 +8,7 @@ from pathlib import Path
 from typing import Any
 
 from .errors import StreamError
+from .location import StreamLocation
 from .schema import error_messages, validate_frontmatter
 
 
@@ -32,6 +33,14 @@ class Stream:
     @property
     def state(self) -> str:
         return str(self.frontmatter.get("state") or "")
+
+    @property
+    def location(self) -> StreamLocation:
+        return StreamLocation.from_strings(
+            vcs=str(self.frontmatter.get("vcs") or ""),
+            repo=str(self.frontmatter.get("repo") or ""),
+            cwd=str(self.frontmatter.get("cwd") or ""),
+        )
 
     def validate(self) -> None:
         errors = error_messages(validate_frontmatter(self.path, self.frontmatter))
