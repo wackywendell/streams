@@ -84,6 +84,10 @@ the stream. Keep only:
 - decisions that still govern the work done or to be done, with their reasons
 - unresolved questions that affect how work continues
 
+Most importantly: describe WHY decisions were made; the stream is intended to
+capture the INTENT not necessarily evident in the product (code, PRs, artifacts,
+etc.)
+
 Remove external state that is no longer needed to resume - anything that can be
 read from version control or the code itself should be removed.
 
