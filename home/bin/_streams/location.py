@@ -12,15 +12,62 @@ from .errors import StreamError
 CommandRunner = Callable[[list[str], Path], str]
 
 
-def format_local_path(path: Path, *, home: Path | None = None) -> str:
-    """Render a local path with `~` when it is under the user's home."""
-    path = path.expanduser()
+@dataclass(frozen=True)
+class PathAlias:
+    """A human-facing path root and its canonical filesystem target."""
+
+    display_root: str
+    canonical_root: Path
+
+
+def discover_home_path_aliases(home: Path | None = None) -> tuple[PathAlias, ...]:
+    """Discover direct home-directory symlinks to directories."""
     home = (home or Path.home()).expanduser()
+    aliases: list[PathAlias] = []
+    for entry in home.iterdir():
+        if not entry.is_symlink():
+            continue
+        try:
+            target = entry.resolve(strict=True)
+        except (OSError, RuntimeError):
+            continue
+        if target.is_dir():
+            aliases.append(PathAlias(display_root=f"~/{entry.name}", canonical_root=target))
+    return tuple(sorted(aliases, key=lambda alias: alias.display_root))
+
+
+def format_local_path(
+    path: Path,
+    *,
+    home: Path | None = None,
+    aliases: tuple[PathAlias, ...] = (),
+) -> str:
+    """Render a canonical path using a preferred home symlink or `~`."""
+    path = path.expanduser().resolve()
+    home = (home or Path.home()).expanduser().resolve()
+    if path == home:
+        return "~"
+
+    matches: list[tuple[int, str]] = []
+    for alias in aliases:
+        canonical_root = alias.canonical_root.expanduser().resolve()
+        try:
+            relative = path.relative_to(canonical_root)
+        except ValueError:
+            continue
+        rendered = alias.display_root
+        if relative.parts:
+            rendered = f"{rendered}/{relative.as_posix()}"
+        matches.append((len(canonical_root.parts), rendered))
+    if matches:
+        matches.sort(key=lambda match: (-match[0], len(match[1]), match[1]))
+        return matches[0][1]
+
     try:
         relative = path.relative_to(home)
     except ValueError:
         return str(path)
-    return "~" if not relative.parts else f"~/{relative.as_posix()}"
+    return f"~/{relative.as_posix()}"
 
 
 @dataclass(frozen=True)

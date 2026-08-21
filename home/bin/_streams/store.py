@@ -8,7 +8,7 @@ from pathlib import Path
 from .config import ARCHIVE_DIRNAME, DEFAULT_STATE, DEFAULT_STATUS, SCRATCH_ROOT
 from .errors import StreamError
 from .frontmatter import render_frontmatter, split_frontmatter
-from .location import discover_stream_location, format_local_path
+from .location import discover_home_path_aliases, discover_stream_location, format_local_path
 from .models import Stream
 from .slug import normalized_slug
 
@@ -88,6 +88,7 @@ def start_stream(title: str, *, root: Path = SCRATCH_ROOT, cwd: Path | None = No
         raise StreamError(f"stream {slug!r} already exists at {path}")
 
     location = discover_stream_location(cwd or Path.cwd())
+    path_aliases = discover_home_path_aliases()
     today = date.today().isoformat()
     frontmatter = {
         "title": title,
@@ -96,8 +97,8 @@ def start_stream(title: str, *, root: Path = SCRATCH_ROOT, cwd: Path | None = No
         "updated": today,
         "description": "",
         "state": DEFAULT_STATE,
-        "repo": format_local_path(location.repo_root),
-        "cwd": format_local_path(location.working_root),
+        "repo": format_local_path(location.repo_root, aliases=path_aliases),
+        "cwd": format_local_path(location.working_root, aliases=path_aliases),
         "vcs": location.vcs,
         "issues": [],
         "prs": [],

@@ -39,7 +39,7 @@ Use only the statuses defined by `streams format`. Keep `state` short enough for
 
 Status describes actionability, not the kind or phase of work. Review streams are `active` while the user needs to review or re-review, and `waiting` while a change is with someone else. Put phases such as `PR in review` or `Changes requested; waiting for author updates` in `state`, while `description` remains the stable stream goal.
 
-Set `repo` to the local root of the main/default checkout. Set `cwd` to the local root of the jj workspace or Git worktree where work should resume; use the same path as `repo` when working in the main checkout. Write paths under the user's home with `~`, not the expanded home directory. `streams cmux open` and `streams resume` depend on `cwd`. Do not use repository identities, multi-repo descriptions, or arbitrary subdirectories in these fields.
+Set `repo` to the local root of the main/default checkout. Set `cwd` to the local root of the jj workspace or Git worktree where work should resume; use the same path as `repo` when working in the main checkout. Prefer a matching direct home-directory symlink such as `~/work`; otherwise write paths under the user's home with `~`, not the expanded home directory. `streams cmux open` and `streams resume` depend on `cwd`. Do not use repository identities, multi-repo descriptions, or arbitrary subdirectories in these fields.
 
 ## AI Session
 

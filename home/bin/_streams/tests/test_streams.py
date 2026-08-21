@@ -29,7 +29,13 @@ from _streams.check import check_path, check_streams, findings_json
 from _streams.config import VALID_STATUSES
 from _streams.errors import StreamError
 from _streams.frontmatter import render_frontmatter, split_frontmatter
-from _streams.location import StreamLocation, discover_stream_location, format_local_path
+from _streams.location import (
+    PathAlias,
+    StreamLocation,
+    discover_home_path_aliases,
+    discover_stream_location,
+    format_local_path,
+)
 from _streams.models import Stream
 from _streams.resolve import resolve_check_path_ref, resolve_slug_ref, resolve_stream_ref
 from _streams.resume import exec_resume, resolve_stream_for_resume, resume_command_for_stream
@@ -92,6 +98,57 @@ class StreamLocationTest(unittest.TestCase):
             format_local_path(Path("/work/repo"), home=Path("/home/example")),
             "/work/repo",
         )
+
+    def test_format_local_path_prefers_matching_home_symlink(self) -> None:
+        alias = PathAlias(
+            display_root="~/work",
+            canonical_root=Path("/home/example/go/src/github.com/example-org"),
+        )
+        self.assertEqual(
+            format_local_path(
+                Path("/home/example/go/src/github.com/example-org/monorepo"),
+                home=Path("/home/example"),
+                aliases=(alias,),
+            ),
+            "~/work/monorepo",
+        )
+
+    def test_format_local_path_prefers_most_specific_matching_alias(self) -> None:
+        aliases = (
+            PathAlias(
+                display_root="~/github",
+                canonical_root=Path("/home/example/go/src/github.com"),
+            ),
+            PathAlias(
+                display_root="~/work",
+                canonical_root=Path("/home/example/go/src/github.com/example-org"),
+            ),
+        )
+        self.assertEqual(
+            format_local_path(
+                Path("/home/example/go/src/github.com/example-org/monorepo"),
+                home=Path("/home/example"),
+                aliases=aliases,
+            ),
+            "~/work/monorepo",
+        )
+
+    def test_discover_home_path_aliases_finds_direct_directory_symlinks(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            home = Path(tmp) / "home"
+            target = home / "go" / "src" / "github.com" / "example-org"
+            target.mkdir(parents=True)
+            (home / "work").symlink_to(target, target_is_directory=True)
+
+            self.assertEqual(
+                discover_home_path_aliases(home),
+                (
+                    PathAlias(
+                        display_root="~/work",
+                        canonical_root=target.resolve(),
+                    ),
+                ),
+            )
 
     def test_location_is_dedicated_when_working_root_differs_from_repo_root(self) -> None:
         location = StreamLocation(vcs="jj", repo_root=Path("/repo"), working_root=Path("/repo/workspaces/topic"))
@@ -214,6 +271,28 @@ class StoreTest(unittest.TestCase):
             self.assertEqual(stream.frontmatter["vcs"], "jj")
             self.assertEqual(stream.frontmatter["sessions"], [])
             self.assertTrue((root / "new-stream.md").exists())
+
+    def test_start_stream_writes_discovered_home_symlink_aliases(self) -> None:
+        with (
+            tempfile.TemporaryDirectory() as tmp,
+            patch("_streams.store.discover_stream_location") as discover_location,
+            patch("_streams.store.discover_home_path_aliases") as discover_aliases,
+        ):
+            root = Path(tmp)
+            canonical_root = Path.home() / "go" / "src" / "github.com" / "example-org"
+            discover_location.return_value = StreamLocation(
+                vcs="jj",
+                repo_root=canonical_root / "monorepo",
+                working_root=canonical_root / "workspaces" / "topic",
+            )
+            discover_aliases.return_value = (
+                PathAlias(display_root="~/work", canonical_root=canonical_root),
+            )
+
+            stream = start_stream("New Stream", root=root, cwd=root)
+
+            self.assertEqual(stream.frontmatter["repo"], "~/work/monorepo")
+            self.assertEqual(stream.frontmatter["cwd"], "~/work/workspaces/topic")
 
     def test_start_stream_refuses_overwrite(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:

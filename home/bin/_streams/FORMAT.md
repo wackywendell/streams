@@ -42,10 +42,10 @@ Required fields:
 - `updated`: last meaningful stream-state update date, `YYYY-MM-DD`. Update this for handoffs, checkpoints, status changes, and durable pickup-context changes; do not churn it for typo-only edits.
 - `description`: one-sentence overall task description. Longer than `state`, stable across handoffs, and focused on the stream goal.
 - `state`: short current display state, roughly 5-12 words. This is used in compact displays and CMUX descriptions. Put transient workflow phases here, such as `PR in review; waiting for reviewer feedback.`
-- `repo`: local root directory of the main/default checkout. This is always a path, not an `owner/repo` identity or multi-repo description. Prefer a stable human path, using `~` for home and avoiding symlink expansion when the user normally uses the symlink path.
-- `cwd`: local root directory of the jj workspace or Git worktree where work should resume. Use the main checkout root when there is no dedicated working copy. AI sessions and CMUX workspaces start from this directory. Prefer the same path style as `repo`.
+- `repo`: local root directory of the main/default checkout. This is always a path, not an `owner/repo` identity or multi-repo description.
+- `cwd`: local root directory of the jj workspace or Git worktree where work should resume. Use the main checkout root when there is no dedicated working copy. AI sessions and CMUX workspaces start from this directory.
 
-`repo` and `cwd` form one location invariant: their canonical paths are equal for the main checkout and differ for a dedicated jj workspace or Git worktree. `streams start` discovers both roots from the current VCS working copy and fails outside jj or Git. Do not use `repo` or `cwd` for an arbitrary subdirectory.
+`repo` and `cwd` form one location invariant: their canonical paths are equal for the main checkout and differ for a dedicated jj workspace or Git worktree. `streams start` discovers both roots from the current VCS working copy and fails outside jj or Git. When writing either path, it automatically prefers a matching direct home-directory symlink such as `~/work`; otherwise it uses `~` for paths under home. Do not use `repo` or `cwd` for an arbitrary subdirectory.
 - `vcs`: local VCS, usually `jj` or `git`.
 - `issues`: list of GitHub issue mappings. Each has a `url` and a manually maintained `description` of 2 to 5 words. Replace older URL-only entries with these mappings.
 - `prs`: list of GitHub pull request mappings. Each has a `url` and a manually maintained `description` of 2 to 5 words. Replace older URL-only entries with these mappings.
