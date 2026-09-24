@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import hashlib
+import io
 import json
 import sys
 import tempfile
@@ -11,7 +13,7 @@ from unittest.mock import patch
 BIN_DIR = Path(__file__).resolve().parents[2]
 sys.path.insert(0, str(BIN_DIR))
 
-from _streams.cli import build_parser, command_archive, command_cmux_update, command_format, command_list, command_rename, command_resume, command_show, command_start
+from _streams.cli import build_parser, command_archive, command_check, command_cmux_update, command_format, command_list, command_rename, command_resume, command_show, command_start
 from _streams.cmux import (
     CmuxClient,
     CmuxWorkspace,
@@ -640,6 +642,37 @@ class CliTest(unittest.TestCase):
             payload = json.loads(print_mock.call_args.args[0])
             self.assertEqual(payload[0]["level"], "error")
 
+    def test_update_reads_stdin_and_reports_dry_run_without_writing(self) -> None:
+        from _streams.cli import command_update
+
+        with tempfile.TemporaryDirectory() as tmp, patch("_streams.cli.resolve_stream_ref") as resolve_mock, patch("sys.stdin", new_callable=io.StringIO) as input_mock, patch("builtins.print") as print_mock:
+            root = Path(tmp)
+            path = write_stream(root, "active-stream", title="Active Stream")
+            original = path.read_text()
+            input_mock.write(original.replace("Doing work", "Ready for review"))
+            input_mock.seek(0)
+            resolve_mock.return_value = show_stream(path.stem, root)
+            args = build_parser().parse_args(["update", "Active Stream", "-n", "--json"])
+            self.assertEqual(command_update(args), 0)
+            self.assertEqual(path.read_text(), original)
+            self.assertEqual(json.loads(print_mock.call_args.args[0])["updated"], False)
+
+    def test_update_writes_validated_stdin_with_base_precondition(self) -> None:
+        from _streams.cli import command_update
+
+        with tempfile.TemporaryDirectory() as tmp, patch("_streams.cli.resolve_stream_ref") as resolve_mock, patch("sys.stdin", new_callable=io.StringIO) as input_mock:
+            root = Path(tmp)
+            path = write_stream(root, "active-stream", title="Active Stream")
+            original = path.read_text()
+            candidate = original.replace("Doing work", "Ready for review")
+            digest = hashlib.sha256(original.encode()).hexdigest()
+            input_mock.write(candidate)
+            input_mock.seek(0)
+            resolve_mock.return_value = show_stream(path.stem, root)
+            args = build_parser().parse_args(["update", "active-stream", "--if-match", digest])
+            self.assertEqual(command_update(args), 0)
+            self.assertEqual(path.read_text(), candidate)
+
     def test_format_prints_markdown_spec(self) -> None:
         with patch("builtins.print") as print_mock:
             args = type("Args", (), {})()
@@ -660,12 +693,73 @@ class CliTest(unittest.TestCase):
             exec_mock.assert_called_once_with(stream)
 
 
+class UpdateTest(unittest.TestCase):
+    def test_invalid_candidate_never_writes_even_without_dry_run(self) -> None:
+        from _streams.store import update_stream
+
+        with tempfile.TemporaryDirectory() as tmp:
+            path = write_stream(Path(tmp), "active-stream", title="Active Stream")
+            stream = show_stream(path.stem, Path(tmp))
+            original = path.read_text()
+            with self.assertRaisesRegex(StreamError, "invalid status"):
+                update_stream(stream, original.replace("status: active", "status: nope"))
+            self.assertEqual(path.read_text(), original)
+
+    def test_dry_run_validates_without_writing(self) -> None:
+        from _streams.store import update_stream
+
+        with tempfile.TemporaryDirectory() as tmp:
+            path = write_stream(Path(tmp), "active-stream", title="Active Stream")
+            stream = show_stream(path.stem, Path(tmp))
+            original = path.read_text()
+            candidate = original.replace("Doing work", "Ready for review")
+            findings = update_stream(stream, candidate, dry_run=True)
+            self.assertEqual(findings, [])
+            self.assertEqual(path.read_text(), original)
+
+    def test_stale_digest_rejects_valid_candidate(self) -> None:
+        from _streams.store import update_stream
+
+        with tempfile.TemporaryDirectory() as tmp:
+            path = write_stream(Path(tmp), "active-stream", title="Active Stream")
+            stream = show_stream(path.stem, Path(tmp))
+            original = path.read_text()
+            candidate = original.replace("Doing work", "Ready for review")
+            path.write_text(original.replace("Doing work", "Changed elsewhere"))
+            with self.assertRaisesRegex(StreamError, "changed since"):
+                update_stream(stream, candidate, if_match=hashlib.sha256(original.encode()).hexdigest())
+            self.assertIn("Changed elsewhere", path.read_text())
+
+    def test_update_preserves_exact_candidate_and_file_permissions(self) -> None:
+        from _streams.store import update_stream
+
+        with tempfile.TemporaryDirectory() as tmp:
+            path = write_stream(Path(tmp), "active-stream", title="Active Stream")
+            path.chmod(0o600)
+            stream = show_stream(path.stem, Path(tmp))
+            candidate = path.read_text().replace("Doing work", "Ready for review")
+            self.assertEqual(update_stream(stream, candidate), [])
+            self.assertEqual(path.read_text(), candidate)
+            self.assertEqual(path.stat().st_mode & 0o777, 0o600)
+
+
 class CheckTest(unittest.TestCase):
     def test_valid_stream_has_no_findings(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
             path = write_stream(root, "active-stream", title="Active Stream")
             self.assertEqual(check_path(path), [])
+
+    def test_candidate_uses_same_findings_as_saved_content(self) -> None:
+        from _streams.check import check_content
+
+        with tempfile.TemporaryDirectory() as tmp:
+            path = write_stream(Path(tmp), "active-stream", title="Active Stream")
+            content = path.read_text().replace("status: active", "status: nope")
+            self.assertEqual(check_path(path), [])
+            path.write_text(content)
+            self.assertEqual(check_content(path, content), check_path(path))
+            self.assertTrue(any(finding.level == "error" for finding in check_content(path, content)))
 
     def test_check_paths_include_legacy_files_without_frontmatter(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:

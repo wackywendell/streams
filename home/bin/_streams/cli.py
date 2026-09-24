@@ -9,7 +9,7 @@ from pathlib import Path
 
 from .errors import StreamError
 from .models import Stream
-from .store import archive_stream, list_streams, rename_stream, start_stream
+from .store import archive_stream, list_streams, rename_stream, start_stream, update_stream
 from .cmux import CmuxClient, load_stream_for_update, markdown_link_for_item, open_workspace, update_all_workspaces, update_current_workspace, update_workspace
 from .check import check_streams, findings_json
 from .store import check_paths
@@ -141,6 +141,20 @@ def command_check(args: argparse.Namespace) -> int:
     return 1 if any(finding.level == "error" for finding in findings) else 0
 
 
+def command_update(args: argparse.Namespace) -> int:
+    stream = resolve_stream_ref(args.slug)
+    candidate = sys.stdin.read()
+    findings = update_stream(stream, candidate, dry_run=args.dry_run, if_match=args.if_match)
+    payload = {"slug": stream.slug, "path": str(stream.path), "updated": not args.dry_run, "findings": [finding.as_json() for finding in findings]}
+    if args.json:
+        print(json.dumps(payload, indent=2, sort_keys=True))
+    else:
+        print(f"{'validated' if args.dry_run else 'updated'}: {stream.slug} {stream.path}")
+        for finding in findings:
+            print(f"{finding.level}: {finding.slug}: {finding.message}")
+    return 0
+
+
 def command_format(args: argparse.Namespace) -> int:
     print((Path(__file__).with_name("FORMAT.md")).read_text().rstrip())
     return 0
@@ -177,6 +191,13 @@ def build_parser() -> argparse.ArgumentParser:
     check_parser.add_argument("slug", nargs="?", help="stream filename stem")
     check_parser.add_argument("--json", action="store_true", help="print findings as JSON")
     check_parser.set_defaults(func=command_check)
+
+    update_parser = subparsers.add_parser("update", help="validate and replace a stream from markdown on stdin")
+    update_parser.add_argument("slug", help="existing stream title or slug")
+    update_parser.add_argument("-n", "--dry-run", action="store_true", help="validate without writing")
+    update_parser.add_argument("--if-match", help="require the current file's SHA-256 to match this digest")
+    update_parser.add_argument("--json", action="store_true", help="print update result as JSON")
+    update_parser.set_defaults(func=command_update)
 
     start_parser = subparsers.add_parser("start", aliases=["s"], help="create a new active stream")
     start_parser.add_argument("title", help="stream title")

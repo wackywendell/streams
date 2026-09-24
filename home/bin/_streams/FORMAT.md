@@ -151,6 +151,8 @@ If there is only one other session besides the current one, and the current sess
 
 `streams start "Title"` creates a scratch file only. `streams start "Title" --current` or `streams s "Title" -c` creates the scratch file and projects it onto the current CMUX workspace.
 
+`streams update [-n|--dry-run] <stream-ref>` reads a complete Markdown document from stdin and validates it against the existing stream's filename and frontmatter schema. Dry-run leaves scratch unchanged; otherwise it replaces the existing file with the exact input. For a reviewed draft, use `--if-match <sha256>` with the SHA-256 of the original file's UTF-8 bytes to reject stale updates. It does not create a stream; use `streams start` for that. `--json` reports the target, whether a write was requested, and schema warnings.
+
 `streams rename <stream-ref> "New Title"` renames the scratch file, title, leading heading, and artifact directory. It leaves relative symlinks at the old scratch and artifact paths for compatibility. Rename symlinks are not separate streams and are omitted from list and check operations. Use `--current` or `-c` to update the current CMUX workspace after renaming.
 
 `streams resume [slug]` starts the last session listed in `sessions`. Without a slug, it infers the stream from an exact current CMUX workspace title or from a unique dedicated `cwd` match. It does not infer a stream from the main checkout because multiple streams can share it. If `sessions` is empty, start a new AI session intentionally and record it in scratch.

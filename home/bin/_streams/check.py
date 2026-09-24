@@ -17,11 +17,19 @@ def check_path(path: Path) -> list[SchemaFinding]:
     Check must report malformed frontmatter, so it intentionally avoids
     `store.load_stream()`, which fails fast on the first validation error.
     """
-    slug = path.stem
     try:
-        frontmatter, _body = split_frontmatter(path.read_text())
-    except (OSError, StreamError, yaml.YAMLError) as exc:
-        return [SchemaFinding(level="error", slug=slug, path=str(path), message=f"could not parse frontmatter: {exc}")]
+        content = path.read_text()
+    except OSError as exc:
+        return [SchemaFinding(level="error", slug=path.stem, path=str(path), message=f"could not parse frontmatter: {exc}")]
+    return check_content(path, content)
+
+
+def check_content(path: Path, content: str) -> list[SchemaFinding]:
+    """Validate candidate markdown against its intended scratch path without writing it."""
+    try:
+        frontmatter, _body = split_frontmatter(content)
+    except (StreamError, yaml.YAMLError) as exc:
+        return [SchemaFinding(level="error", slug=path.stem, path=str(path), message=f"could not parse frontmatter: {exc}")]
     return validate_frontmatter(path, frontmatter)
 
 

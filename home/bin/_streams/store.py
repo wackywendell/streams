@@ -3,13 +3,19 @@
 from __future__ import annotations
 
 from datetime import date
+import hashlib
+import os
 from pathlib import Path
+import re
+import tempfile
 
+from .check import check_content
 from .config import ARCHIVE_DIRNAME, DEFAULT_STATE, DEFAULT_STATUS, SCRATCH_ROOT
 from .errors import StreamError
 from .frontmatter import render_frontmatter, split_frontmatter
 from .location import discover_home_path_aliases, discover_stream_location, format_local_path
 from .models import Stream
+from .schema import SchemaFinding, error_messages
 from .slug import normalized_slug
 
 
@@ -128,6 +134,50 @@ _List unresolved questions that affect how to continue._
     except OSError as exc:
         raise StreamError(f"could not create {path}: {exc}") from exc
     return load_stream(path)
+
+
+def update_stream(
+    stream: Stream, content: str, *, dry_run: bool = False, if_match: str | None = None
+) -> list[SchemaFinding]:
+    """Validate complete Markdown and replace an existing stream, optionally guarding its base."""
+    path = stream.path
+    if if_match is not None and not re.fullmatch(r"[0-9a-f]{64}", if_match):
+        raise StreamError("--if-match must be a lowercase SHA-256 digest")
+    if path.is_symlink():
+        raise StreamError(f"stream source is a symlink: {path}")
+    try:
+        original = path.read_bytes()
+        mode = path.stat().st_mode & 0o777
+    except OSError as exc:
+        raise StreamError(f"could not read {path}: {exc}") from exc
+    if if_match is not None and hashlib.sha256(original).hexdigest() != if_match:
+        raise StreamError(f"stream {stream.slug!r} changed since the reviewed draft")
+
+    findings = check_content(path, content)
+    errors = error_messages(findings)
+    if errors:
+        raise StreamError(f"invalid stream {stream.slug!r}: {'; '.join(errors)}")
+    if dry_run or original == content.encode("utf-8"):
+        return findings
+
+    temporary: Path | None = None
+    try:
+        fd, filename = tempfile.mkstemp(prefix=f".{stream.slug}.", suffix=".tmp", dir=path.parent)
+        temporary = Path(filename)
+        with os.fdopen(fd, "wb") as handle:
+            handle.write(content.encode("utf-8"))
+            handle.flush()
+            os.fchmod(handle.fileno(), mode)
+            os.fsync(handle.fileno())
+        if path.is_symlink() or path.read_bytes() != original:
+            raise StreamError(f"stream {stream.slug!r} changed since the reviewed draft")
+        temporary.replace(path)
+    except OSError as exc:
+        raise StreamError(f"could not update {path}: {exc}") from exc
+    finally:
+        if temporary is not None:
+            temporary.unlink(missing_ok=True)
+    return findings
 
 
 def rename_stream(stream: Stream, title: str) -> Stream:
