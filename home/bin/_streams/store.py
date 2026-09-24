@@ -83,7 +83,7 @@ def show_stream(slug: str, root: Path = SCRATCH_ROOT) -> Stream:
     return load_stream(path)
 
 
-def start_stream(title: str, *, root: Path = SCRATCH_ROOT, cwd: Path | None = None) -> Stream:
+def preview_start(title: str, *, root: Path = SCRATCH_ROOT, cwd: Path | None = None) -> Stream:
     title = title.strip()
     if not title:
         raise StreamError("title cannot be empty")
@@ -128,12 +128,18 @@ _Record important decisions, reasoning, tradeoffs, and deferred choices._
 
 _List unresolved questions that affect how to continue._
 """
+    return Stream(path=path, frontmatter=frontmatter, body=body)
+
+
+def start_stream(title: str, *, root: Path = SCRATCH_ROOT, cwd: Path | None = None) -> Stream:
+    planned = preview_start(title, root=root, cwd=cwd)
     try:
-        root.mkdir(parents=True, exist_ok=True)
-        path.write_text(render_frontmatter(frontmatter, body))
+        planned.path.parent.mkdir(parents=True, exist_ok=True)
+        with planned.path.open("x", encoding="utf-8") as handle:
+            handle.write(render_frontmatter(planned.frontmatter, planned.body))
     except OSError as exc:
-        raise StreamError(f"could not create {path}: {exc}") from exc
-    return load_stream(path)
+        raise StreamError(f"could not create {planned.path}: {exc}") from exc
+    return load_stream(planned.path)
 
 
 def update_stream(

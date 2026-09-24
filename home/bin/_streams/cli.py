@@ -9,7 +9,7 @@ from pathlib import Path
 
 from .errors import StreamError
 from .models import Stream
-from .store import archive_stream, list_streams, rename_stream, start_stream, update_stream
+from .store import archive_stream, list_streams, preview_start, rename_stream, start_stream, update_stream
 from .cmux import CmuxClient, load_stream_for_update, markdown_link_for_item, open_workspace, update_all_workspaces, update_current_workspace, update_workspace
 from .check import check_streams, findings_json
 from .store import check_paths
@@ -73,7 +73,9 @@ def command_show(args: argparse.Namespace) -> int:
 
 
 def command_start(args: argparse.Namespace) -> int:
-    stream = start_stream(args.title)
+    if getattr(args, "dry_run", False) and args.current:
+        raise StreamError("start --dry-run cannot update the current CMUX workspace")
+    stream = preview_start(args.title) if getattr(args, "dry_run", False) else start_stream(args.title)
     workspace = None
     if args.current:
         workspace = update_current_workspace(stream)
@@ -83,7 +85,7 @@ def command_start(args: argparse.Namespace) -> int:
             payload["updated_workspace"] = workspace.display_ref
         print(json.dumps(payload, indent=2, sort_keys=True))
     else:
-        print(f"created: {stream.slug} {stream.path}")
+        print(f"{'would create' if getattr(args, 'dry_run', False) else 'created'}: {stream.slug} {stream.path}")
         if workspace is not None:
             print(f"updated: {workspace.display_ref} {stream.slug}")
     return 0
@@ -202,6 +204,7 @@ def build_parser() -> argparse.ArgumentParser:
     start_parser = subparsers.add_parser("start", aliases=["s"], help="create a new active stream")
     start_parser.add_argument("title", help="stream title")
     start_parser.add_argument("--json", action="store_true", help="print stream frontmatter as JSON")
+    start_parser.add_argument("-n", "--dry-run", action="store_true", help="preview the starter note without creating it")
     start_parser.add_argument("-c", "--current", action="store_true", help="update the current CMUX workspace from the new stream")
     start_parser.set_defaults(func=command_start)
 

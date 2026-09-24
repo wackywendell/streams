@@ -274,6 +274,19 @@ class StoreTest(unittest.TestCase):
             self.assertEqual(stream.frontmatter["sessions"], [])
             self.assertTrue((root / "new-stream.md").exists())
 
+    def test_preview_start_has_same_identity_as_start_without_writing(self) -> None:
+        from _streams.store import preview_start
+
+        with tempfile.TemporaryDirectory() as tmp, patch("_streams.store.discover_stream_location") as discover_mock:
+            root = Path(tmp)
+            discover_mock.return_value = StreamLocation(vcs="jj", repo_root=Path.home() / "repo", working_root=Path.home() / "repo")
+            preview = preview_start("New Stream", root=root, cwd=root)
+            self.assertEqual(preview.slug, "new-stream")
+            self.assertEqual(preview.frontmatter["cwd"], "~/repo")
+            self.assertFalse(preview.path.exists())
+            created = start_stream("New Stream", root=root, cwd=root)
+            self.assertEqual(preview.as_json(), created.as_json())
+
     def test_start_stream_writes_discovered_home_symlink_aliases(self) -> None:
         with (
             tempfile.TemporaryDirectory() as tmp,
@@ -523,6 +536,19 @@ class CliTest(unittest.TestCase):
             self.assertIn("slug:        active-stream", output)
             self.assertIn("issues:      [I#124](https://github.com/example-org/widget-lib/issues/124): Literal conversion helpers", output)
             self.assertIn("prs:         [PR#150](https://github.com/example-org/widget-lib/pull/150): Literal helper changes", output)
+
+    def test_start_dry_run_previews_slug_and_location_without_creating_scratch(self) -> None:
+        from _streams.cli import command_start
+
+        with tempfile.TemporaryDirectory() as tmp, patch("_streams.cli.preview_start") as preview_mock, patch("builtins.print") as print_mock:
+            root = Path(tmp)
+            preview = Stream(root / "new-stream.md", {"title": "New Stream", "status": "active", "state": "Started", "repo": "/repo", "cwd": "/repo", "vcs": "jj"}, "# New Stream\n")
+            preview_mock.return_value = preview
+            args = build_parser().parse_args(["start", "New Stream", "--dry-run", "--json"])
+            self.assertEqual(command_start(args), 0)
+            preview_mock.assert_called_once_with("New Stream")
+            self.assertFalse(preview.path.exists())
+            self.assertEqual(json.loads(print_mock.call_args.args[0])["slug"], "new-stream")
 
     def test_start_json_shape(self) -> None:
         with tempfile.TemporaryDirectory() as tmp, patch("_streams.cli.start_stream") as start_mock, patch("builtins.print") as print_mock:
