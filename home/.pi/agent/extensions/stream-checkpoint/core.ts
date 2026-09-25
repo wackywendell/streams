@@ -1,6 +1,8 @@
 import { existsSync, mkdirSync, readFileSync, renameSync, unlinkSync, writeFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { createHash, randomUUID } from "node:crypto";
+import type { StreamCli } from "./streams.ts";
+import { isSeq, parseDocument } from "yaml";
 
 export const BINDING_TYPE = "stream-checkpoint-binding";
 
@@ -16,6 +18,7 @@ export interface Draft {
 	revision: number;
 	baseContent: string;
 	proposedContent: string;
+	summary?: string;
 }
 
 export function loadConfig(agentDir: string): { cmux: boolean } {
@@ -37,12 +40,53 @@ export function latestBinding(entries: readonly { type: string; customType?: str
 	return undefined;
 }
 
+export async function selectStream(ref: string, binding: Binding | undefined, cli: Pick<StreamCli, "list" | "show">): Promise<Awaited<ReturnType<StreamCli["list"]>>[number] | undefined> {
+	const streams = await cli.list();
+	if (ref.trim()) return cli.show(ref.trim());
+	return binding ? streams.find((stream) => stream.slug === binding.slug && stream.path === binding.path) : undefined;
+}
+
+export interface Recommendations {
+	existing: Array<{ slug: string; reason: string }>;
+	newStream?: { title: string; reason: string };
+}
+
+export function parseRecommendations(text: string, streams: Array<{ slug: string }>): Recommendations {
+	let value: any;
+	try { value = JSON.parse(text); } catch { return { existing: [] }; }
+	const known = new Set(streams.map((stream) => stream.slug));
+	const seen = new Set<string>();
+	const existing = (Array.isArray(value?.existing) ? value.existing : []).filter((item: any) => {
+		if (typeof item?.slug !== "string" || !known.has(item.slug) || seen.has(item.slug) || typeof item.reason !== "string") return false;
+		seen.add(item.slug);
+		return true;
+	}).map((item: { slug: string; reason: string }) => ({ slug: item.slug, reason: item.reason.slice(0, 160) }));
+	const proposal = value?.newStream;
+	const newStream = typeof proposal?.title === "string" && proposal.title.trim() && typeof proposal.reason === "string"
+		? { title: proposal.title.trim().slice(0, 120), reason: proposal.reason.slice(0, 160) } : undefined;
+	return newStream ? { existing, newStream } : { existing };
+}
+
+export function includeMainSession(content: string, ownerId: string): string {
+	const frontmatter = /^---\r?\n([\s\S]*?)\r?\n---(?=\r?\n|$)/.exec(content);
+	if (!frontmatter) throw new Error("Proposal must contain YAML frontmatter");
+	const document = parseDocument(frontmatter[1]);
+	if (document.errors.length) throw new Error(`Invalid proposal frontmatter: ${document.errors[0].message}`);
+	const sessions = document.get("sessions", true);
+	if (!isSeq(sessions)) throw new Error("Proposal frontmatter must contain a sessions list");
+	const session = `pi:${ownerId}`;
+	if ((sessions.toJSON() as unknown[]).includes(session)) return content;
+	sessions.add(session);
+	return `---\n${document.toString().trimEnd()}\n---${content.slice(frontmatter[0].length)}`;
+}
+
 export interface Pending {
 	version: 1;
 	ownerId: string;
 	slug: string;
 	messages: unknown[];
 	draft?: Draft;
+	source?: { ownerId: string; leafId: string | null };
 	input: string;
 }
 
@@ -76,6 +120,21 @@ export function savePending(agentDir: string, pending: Pending): void {
 export function clearPending(agentDir: string, ownerId: string, slug: string): void {
 	const path = pendingPath(agentDir, ownerId, slug);
 	if (existsSync(path)) unlinkSync(path);
+}
+
+export function stageDraft(pending: Pending, binding: Binding, content: string, summary: string): Draft {
+	if (pending.ownerId !== binding.ownerId || pending.slug !== binding.slug) throw new Error("Checkpoint does not belong to this session and stream");
+	const baseContent = readFileSync(binding.path, "utf8");
+	const draft: Draft = {
+		path: binding.path,
+		slug: binding.slug,
+		revision: (pending.draft?.revision ?? 0) + 1,
+		baseContent,
+		proposedContent: content,
+		summary,
+	};
+	pending.draft = draft;
+	return draft;
 }
 
 export interface ApplyDependencies {

@@ -6,7 +6,7 @@ type Runner = (args: string[], input?: string) => Promise<string>;
 
 function isStream(value: unknown): value is Stream {
 	const stream = value as Partial<Stream> | null;
-	return !!stream && typeof stream.slug === "string" && typeof stream.title === "string" && typeof stream.status === "string" && typeof stream.path === "string";
+	return !!stream && typeof stream.slug === "string" && typeof stream.title === "string" && typeof stream.status === "string" && typeof stream.state === "string" && typeof stream.path === "string";
 }
 
 function defaultRunner(cwd: string): Runner {
@@ -38,6 +38,12 @@ export class StreamCli {
 	async show(ref: string): Promise<Stream> {
 		const value = JSON.parse(await this.run(["show", ref, "--json"]));
 		if (!isStream(value)) throw new Error("Invalid streams show response");
+		return value;
+	}
+
+	async previewStart(title: string): Promise<Stream> {
+		const value = JSON.parse(await this.run(["start", title, "--dry-run", "--json"]));
+		if (!isStream(value)) throw new Error("Invalid streams start preview response");
 		return value;
 	}
 
