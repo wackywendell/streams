@@ -16,7 +16,8 @@ const shimTarget = readFileSync(piExecutable, "utf8").match(/target=([^\s]+)/)?.
 assert.ok(shimTarget, "Expected pi package shim");
 const piDist = dirname(dirname(resolve(dirname(piExecutable), shimTarget)));
 const jiti = createJiti(join(agentDir, "npm", "checkpoint-test.mjs"), { alias: { "@earendil-works/pi-coding-agent": join(piDist, "index.js"), "@earendil-works/pi-tui": join(piDist, "../../../@earendil-works/pi-tui/dist/index.js") } });
-const { createAgentSession, DefaultResourceLoader, ModelRuntime, SessionManager, SettingsManager } = await import(pathToFileURL(join(piDist, "index.js")).href);
+const { BorderedLoader, createAgentSession, DefaultResourceLoader, initTheme, ModelRuntime, SessionManager, SettingsManager } = await import(pathToFileURL(join(piDist, "index.js")).href);
+initTheme("dark");
 const { createAssistantMessageEventStream } = await import(pathToFileURL(join(piDist, "../../../@earendil-works/pi-ai/dist/index.js")).href);
 const { loadConfig, latestBinding, applyDraft, readPending, savePending, clearPending, stageDraft, selectStream, parseRecommendations, includeMainSession } = await jiti.import(new URL("../home/.pi/agent/extensions/stream-checkpoint/core.ts", import.meta.url).pathname);
 const { checkpointContext, completedMessages, assertContextFits, createCheckpointSession } = await jiti.import(new URL("../home/.pi/agent/extensions/stream-checkpoint/agent.ts", import.meta.url).pathname);
@@ -28,10 +29,23 @@ const { default: registerCheckpoint, recommendStreams } = await jiti.import(new 
 // importing main-session extensions, bash, edit, or write.
 test("registers the manual checkpoint command without starting work", () => {
 	const commands = [];
-	registerCheckpoint({ registerCommand: (name, options) => { commands.push({ name, options }); } });
+	registerCheckpoint({ registerCommand: (name, options) => { commands.push({ name, options }); }, registerShortcut() {} });
 	assert.equal(commands.length, 1);
 	assert.equal(commands[0].name, "checkpoint");
 	assert.equal(typeof commands[0].options.handler, "function");
+});
+
+test("registers a configurable shortcut for returning to an open checkpoint", () => {
+	const dir = mkdtempSync(join(tmpdir(), "checkpoint-shortcut-"));
+	try {
+		const shortcuts = [];
+		registerCheckpoint({ registerCommand() {}, registerShortcut: (key, options) => shortcuts.push({ key, options }) }, { agentDir: dir });
+		assert.equal(shortcuts[0].key, "alt+p");
+		writeFileSync(join(dir, "checkpoint.json"), '{"focusShortcut":"ctrl+alt+c"}');
+		shortcuts.length = 0;
+		registerCheckpoint({ registerCommand() {}, registerShortcut: (key, options) => shortcuts.push({ key, options }) }, { agentDir: dir });
+		assert.equal(shortcuts[0].key, "ctrl+alt+c");
+	} finally { rmSync(dir, { recursive: true, force: true }); }
 });
 
 test("LLM recommendations are advisory and grounded in the full current branch and list", async () => {
@@ -39,16 +53,23 @@ test("LLM recommendations are advisory and grounded in the full current branch a
 	manager.appendMessage({ role: "user", content: [{ type: "text", text: "Working on parser" }], timestamp: Date.now() });
 	const records = [{ slug: "parser", title: "Parser", status: "active", state: "In progress", path: "/scratch/parser.md" }];
 	let seen;
+	let chosenModel;
+	const selector = { id: "selector" };
 	const suggestions = await recommendStreams({
 		model: { id: "fake" }, sessionManager: manager,
-		modelRegistry: { complete: async (_model, context) => {
+		modelRegistry: { complete: async (model, context) => {
+			chosenModel = model;
 			seen = context;
 			return { content: [{ type: "text", text: '{"existing":[{"slug":"parser","reason":"Matches parser work"}]}' }] };
 		} },
-	}, records);
+	}, records, selector);
+	assert.equal(chosenModel, selector);
 	assert.deepEqual(suggestions.existing, [{ slug: "parser", reason: "Matches parser work" }]);
 	assert.match(JSON.stringify(seen.messages), /Working on parser/);
 	assert.match(JSON.stringify(seen.messages), /parser/);
+	assert.match(seen.systemPrompt, /aim for 6 words and around 40 characters/);
+	assert.match(seen.systemPrompt, /guidance, not a hard limit/);
+	assert.match(seen.systemPrompt, /description and state/);
 });
 
 test("/checkpoint binds, preserves closed work, and applies only its reviewed draft", async () => {
@@ -66,23 +87,46 @@ test("/checkpoint binds, preserves closed work, and applies only its reviewed dr
 		let writes = 0;
 		let projections = 0;
 		const events = [];
+		const initialStatuses = [];
+		const panelWidths = [];
+		const statuses = [];
+		let toggleFocus;
 		let activePanel;
 		let panelReady;
 		const newStream = { ...stream, slug: "new", title: "New", path: join(dir, "new.md") };
+		const selectorModel = { ...model, id: "selector" };
 		const ctx = {
 			mode: "tui", hasUI: true, cwd: dir, model, thinkingLevel: "off", sessionManager: manager,
-			modelRegistry: { getRegisteredProviderConfig: () => undefined, getRegisteredNativeProvider: () => undefined, complete: async () => ({ content: [{ type: "text", text: '{"existing":[]}' }] }) },
+			modelRegistry: { getRegisteredProviderConfig: () => undefined, getRegisteredNativeProvider: () => undefined,
+				find: (_provider, id) => id === "selector" ? selectorModel : undefined,
+				complete: async (selected) => {
+				events.push(`recommendation-model:${selected.id}`);
+				events.push("recommendation-start");
+				await new Promise((resolve) => setImmediate(resolve));
+				events.push("recommendation-finished");
+				return { content: [{ type: "text", text: '{"existing":[]}' }] };
+			} },
 			getSystemPrompt: () => "Main instructions",
 			ui: {
 				notify: (message) => notifications.push(message),
+				setStatus: (_key, value) => statuses.push(value),
+				theme: { fg: (_color, text) => text },
 				confirm: async () => { events.push("confirm"); return true; },
 				custom: async (factory, options) => new Promise((done) => {
-					const panel = factory({ terminal: { rows: 30 }, requestRender() {} }, { fg: (_color, text) => text }, {}, done);
-					if (panel instanceof StreamChooser) {
+					let panel;
+					const finish = (value) => { panel?.dispose?.(); done(value); };
+					panel = factory({ terminal: { rows: 30 }, requestRender() {} }, { fg: (_color, text) => text }, {}, finish);
+					if (panel instanceof BorderedLoader) {
+						events.push("recommendation-loading");
+					} else if (panel instanceof StreamChooser) {
+						assert.equal(options.overlayOptions.anchor, "center");
+						assert.equal(options.overlayOptions.width, "78%");
 						events.push("chooser");
 						setImmediate(() => { for (const key of "New") panel.handleInput(key); panel.handleInput("\x0e"); setImmediate(() => panel.handleInput("y")); });
 					} else {
 						activePanel = panel;
+						initialStatuses.push(panel.state.status);
+						panelWidths.push(options.overlayOptions.width);
 						options?.onHandle?.({ focus: () => events.push("focus"), unfocus: () => events.push("unfocus") });
 						if (action === "focus") panelReady();
 						else setImmediate(() => panel.handleInput(action === "apply" ? "\x07" : "\x1b"));
@@ -91,7 +135,7 @@ test("/checkpoint binds, preserves closed work, and applies only its reviewed dr
 			},
 		};
 		let command;
-		registerCheckpoint({ registerCommand: (_name, options) => { command = options.handler; }, appendEntry: (type, data) => { events.push("bind"); manager.appendCustomEntry(type, data); }, sendMessage: (message) => receipts.push(message) }, {
+		registerCheckpoint({ registerCommand: (_name, options) => { command = options.handler; }, registerShortcut: (_key, options) => { toggleFocus = options.handler; }, appendEntry: (type, data) => { events.push("bind"); manager.appendCustomEntry(type, data); }, sendMessage: (message) => receipts.push(message) }, {
 			agentDir: dir, runtime, skill: "Read-only stream instructions", cli: {
 				list: async () => [stream], show: async (ref) => { if (ref === "new") throw new Error("Stream not found"); return stream; }, format: async () => "Stream format",
 				previewStart: async () => newStream,
@@ -104,6 +148,8 @@ test("/checkpoint binds, preserves closed work, and applies only its reviewed dr
 			},
 		});
 		await command("Stream", ctx);
+		assert.match(initialStatuses[0], /Starting checkpoint/);
+		assert.equal(panelWidths[0], "64%");
 		assert.equal(latestBinding(manager.getEntries(), manager.getSessionId()).slug, "stream");
 		assert.equal(readPending(dir, manager.getSessionId(), "stream").ownerId, manager.getSessionId());
 		assert.equal(readFileSync(path, "utf8"), "scratch unchanged");
@@ -114,8 +160,13 @@ test("/checkpoint binds, preserves closed work, and applies only its reviewed dr
 		activePanel.handleInput("\x0f");
 		await command("Stream", ctx);
 		assert.deepEqual(events.slice(-2), ["unfocus", "focus"]);
+		activePanel.handleInput("\x1bp");
+		await toggleFocus(ctx);
+		assert.deepEqual(events.slice(-2), ["unfocus", "focus"]);
+		assert.ok(statuses.some((value) => /Checkpoint open/.test(value)));
 		activePanel.handleInput("\x1b");
 		await openRun;
+		assert.equal(statuses.at(-1), undefined);
 		const pending = readPending(dir, manager.getSessionId(), "stream");
 		stageDraft(pending, { ownerId: manager.getSessionId(), slug: stream.slug, path }, "scratch updated", "new checkpoint");
 		savePending(dir, pending);
@@ -135,10 +186,13 @@ test("/checkpoint binds, preserves closed work, and applies only its reviewed dr
 		assert.deepEqual(notifications, []);
 		const unfinished = { version: 1, ownerId: manager.getSessionId(), slug: stream.slug, messages: [], input: "" };
 		savePending(dir, unfinished);
-		writeFileSync(join(dir, "checkpoint.json"), JSON.stringify({ cmux: true }));
+		writeFileSync(join(dir, "checkpoint.json"), JSON.stringify({ cmux: true, selectorModel: { provider: model.provider, id: "selector" } }));
 		action = "create";
 		await command("new", ctx);
 		assert.ok(events.indexOf("confirm") < events.indexOf("chooser"));
+		assert.ok(events.includes("recommendation-model:selector"));
+		assert.ok(events.includes("recommendation-loading"));
+		assert.ok(events.indexOf("recommendation-loading") < events.indexOf("recommendation-finished"));
 		assert.ok(events.indexOf("create") < events.lastIndexOf("bind"));
 		assert.equal(projections, 1);
 		assert.equal(latestBinding(manager.getEntries(), manager.getSessionId()).slug, "new");
@@ -150,25 +204,138 @@ test("/checkpoint binds, preserves closed work, and applies only its reviewed dr
 	}
 });
 
+test("a fresh checkpoint starts a handoff draft conversation with the streams skill, but resume does not restart it", async () => {
+	const dir = mkdtempSync(join(tmpdir(), "checkpoint-opening-"));
+	try {
+		const path = join(dir, "stream.md");
+		writeFileSync(path, "scratch unchanged");
+		const stream = { slug: "stream", title: "Stream", status: "active", state: "Work", path };
+		const manager = SessionManager.inMemory(dir);
+		manager.appendCustomEntry("stream-checkpoint-binding", { ownerId: manager.getSessionId(), slug: stream.slug, path });
+		const runtime = await ModelRuntime.create({ authPath: join(dir, "auth.json"), modelsPath: null, refreshOnCreate: false });
+		const model = runtime.getModels("openai")[0];
+		const drafter = runtime.getModels("openai").find((candidate) => candidate.id !== model.id);
+		assert.ok(drafter);
+		writeFileSync(join(dir, "checkpoint.json"), JSON.stringify({ drafterModel: { provider: drafter.provider, id: drafter.id } }));
+		await runtime.setRuntimeApiKey("openai", "test-only");
+		const contexts = [];
+		const selectedIds = [];
+		runtime.streamSimple = (selected, context) => {
+			selectedIds.push(selected.id);
+			contexts.push(context);
+			const events = createAssistantMessageEventStream();
+			queueMicrotask(() => {
+				events.push({ type: "done", reason: "stop", message: { role: "assistant", content: [{ type: "text", text: "Handoff draft ready for review" }], api: selected.api, provider: selected.provider, model: selected.id, usage: { input: 1, output: 1, cacheRead: 0, cacheWrite: 0, totalTokens: 2, cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 } }, stopReason: "stop", timestamp: Date.now() } });
+				events.end();
+			});
+			return events;
+		};
+		let opens = 0;
+		const ctx = { mode: "tui", hasUI: true, cwd: dir, model, thinkingLevel: "off", sessionManager: manager,
+			modelRegistry: { getRegisteredProviderConfig: () => undefined, getRegisteredNativeProvider: () => undefined,
+				find: (provider, id) => runtime.getModels(provider).find((candidate) => candidate.id === id) }, 
+			getSystemPrompt: () => "Main instructions",
+			ui: { notify: (message) => { throw new Error(message); }, setStatus() {}, theme: { fg: (_color, text) => text }, custom: (factory) => new Promise((done, reject) => {
+				const panel = factory({ terminal: { rows: 30 }, requestRender() {} }, { fg: (_color, text) => text }, {}, done);
+				if (!(panel instanceof CheckpointPanel)) return reject(new Error("Expected checkpoint panel"));
+				if (opens++ > 0) { setImmediate(() => panel.handleInput("\x1b")); return; }
+				void (async () => {
+					for (let attempt = 0; attempt < 100 && !panel.state.messages.some((line) => line.includes("Handoff draft ready")); attempt++) await new Promise((resolve) => setImmediate(resolve));
+					if (!panel.state.messages.some((line) => line.includes("Handoff draft ready"))) throw new Error(`Opening response missing: ${panel.state.status}`);
+					panel.handleInput("\x1b");
+				})().catch(reject);
+			}) },
+		};
+		let command;
+		registerCheckpoint({ registerCommand: (_name, options) => { command = options.handler; }, registerShortcut() {}, appendEntry() {} }, {
+			agentDir: dir, runtime, skill: "STREAMS_SKILL_SENTINEL", cli: { list: async () => [stream], format: async () => "FORMAT_SENTINEL" },
+		});
+		await command("", ctx);
+		assert.equal(contexts.length, 1);
+		assert.deepEqual(selectedIds, [drafter.id]);
+		assert.match(JSON.stringify(contexts[0]), /STREAMS_SKILL_SENTINEL/);
+		assert.match(JSON.stringify(contexts[0]), /FORMAT_SENTINEL/);
+		assert.match(contexts[0].messages.at(-1).content[0].text, /draft a handoff/i);
+		assert.match(contexts[0].messages.at(-1).content[0].text, /streams skill/i);
+		assert.equal(readFileSync(path, "utf8"), "scratch unchanged");
+		await command("", ctx);
+		assert.equal(contexts.length, 1);
+		writeFileSync(join(dir, "checkpoint.json"), '{"drafterModel":{"provider":"openai","id":"missing-model"}}');
+		await assert.rejects(command("", ctx), /drafter model openai\/missing-model is unavailable/);
+		assert.equal(contexts.length, 1);
+	} finally { rmSync(dir, { recursive: true, force: true }); }
+});
+
 test("draft diff and annotation quote the reviewed revision", () => {
 	const lines = draftDiff("before\nshared\n", "after\nshared\n");
 	assert.deepEqual(lines, ["- before", "+ after", "  shared"]);
 	assert.equal(annotationText(3, lines[1]), 'Regarding draft 3, "+ after": ');
 });
 
-test("panel keeps chat, diff, and shared input visible while quoting an old revision", () => {
+test("chat-first panel wraps the complete streamed response and shows the draft summary", () => {
+	const answer = Array.from({ length: 24 }, () => "evidence").join(" ");
+	const state = { slug: "stream", title: "Stream", messages: [`Checkpoint: ${answer}`], draft: { revision: 2, summary: "Update progress", path: "/scratch/stream.md", slug: "stream", baseContent: "old", proposedContent: "new" }, status: "Reading source…" };
+	const panel = new CheckpointPanel({ terminal: { rows: 40 }, requestRender() {} }, { fg: (_color, text) => text }, state, { send: async () => {}, apply: async () => {}, refresh: async () => {}, close: async () => {} }, () => {});
+	const view = panel.render(56).join("\n");
+	assert.equal((view.match(/evidence/g) ?? []).length, 24);
+	assert.match(view, /Update progress/);
+	assert.doesNotMatch(view, /\+ new/);
+	assert.match(view, /Reading source/);
+	assert.match(view, /Ctrl\+G Apply/);
+	assert.match(view, /Alt\+C Clear/);
+	assert.ok(panel.render(56).length <= 36);
+	panel.handleInput("\x16");
+	assert.doesNotMatch(panel.render(56).join("\n"), /\+ new/);
+	panel.handleInput("\x1br");
+	assert.match(panel.render(56).join("\n"), /\+ new/);
+	panel.handleInput("\x1br");
+	assert.match(panel.render(56).join("\n"), /evidence/);
+});
+
+test("review keeps the composer and quotes the selected draft revision", () => {
 	const tui = { terminal: { rows: 32 }, requestRender() {} };
 	const theme = { fg: (_color, text) => text };
 	const state = { slug: "stream", title: "Stream", messages: ["Earlier question", "Answer"], draft: { revision: 2, path: "/scratch/stream.md", slug: "stream", baseContent: "old\n", proposedContent: "new\n" }, status: "Ready" };
 	const panel = new CheckpointPanel(tui, theme, state, { send: async () => {}, apply: async () => {}, refresh: async () => {}, close: async () => {} }, () => {});
 	const rendered = panel.render(56).join("\n");
 	assert.match(rendered, /Earlier question/);
-	assert.match(rendered, /\+ new/);
-	assert.match(rendered, /message here/);
-	panel.handleInput("\t");
+	panel.handleInput("\x1br");
+	assert.match(panel.render(56).join("\n"), /\+ new/);
 	panel.handleInput("\x1b[B");
-	panel.handleInput("\x0b");
+	panel.handleInput("\x1bk");
 	assert.match(panel.getInput(), /Regarding draft 2/);
+});
+
+test("review keeps a selected long diff line visible and annotates its logical line", () => {
+	const base = "old ".repeat(220);
+	const proposed = "new ".repeat(220) + "TAIL_MARKER";
+	const panel = new CheckpointPanel({ terminal: { rows: 24 }, requestRender() {} }, { fg: (_color, text) => text }, {
+		slug: "stream", title: "Stream", messages: [], status: "Ready",
+		draft: { revision: 4, path: "/scratch/stream.md", slug: "stream", baseContent: base, proposedContent: proposed },
+	}, { send: async () => {}, apply: async () => {}, refresh: async () => {}, close: async () => {} }, () => {});
+	panel.handleInput("\x1br");
+	panel.handleInput("\x1b[B");
+	assert.match(panel.render(48).join("\n"), /▶ .*\+ new/);
+	assert.doesNotMatch(panel.render(48).join("\n"), /TAIL_MARKER/);
+	panel.handleInput("\x1b[6~");
+	panel.handleInput("\x1b[6~");
+	assert.match(panel.render(48).join("\n"), /TAIL_MARKER/);
+	panel.handleInput("\x1bk");
+	assert.match(panel.getInput(), /Regarding draft 4, "\+ new /);
+});
+
+test("review styling refreshes when Pi changes theme", () => {
+	const panel = new CheckpointPanel({ terminal: { rows: 24 }, requestRender() {} }, { fg: (_color, text) => text }, {
+		slug: "stream", title: "Stream", messages: [], status: "Ready",
+		draft: { revision: 1, path: "/scratch/stream.md", slug: "stream", baseContent: "old", proposedContent: "new" },
+	}, { send: async () => {}, apply: async () => {}, refresh: async () => {}, close: async () => {} }, () => {});
+	panel.handleInput("\x1br");
+	const dark = panel.render(60).join("\n");
+	try {
+		initTheme("light");
+		panel.invalidate();
+		assert.notEqual(panel.render(60).join("\n"), dark);
+	} finally { initTheme("dark"); }
 });
 
 test("without a draft the chat uses the available conversation space", () => {
@@ -176,7 +343,13 @@ test("without a draft the chat uses the available conversation space", () => {
 	const panel = new CheckpointPanel({ terminal: { rows: 32 }, requestRender() {} }, { fg: (_color, text) => text }, { slug: "stream", title: "Stream", messages, status: "Ready" }, {
 		send: async () => {}, apply: async () => {}, refresh: async () => {}, close: async () => {},
 	}, () => {});
-	assert.match(panel.render(60).join("\n"), /Message 0/);
+	assert.match(panel.render(60).join("\n"), /Message 19/);
+	panel.handleInput("\t");
+	panel.handleInput("\x1b[5~");
+	const before = panel.render(60).join("\n");
+	assert.match(before, /Message 1[0-6]/);
+	messages.push("Message 20");
+	assert.equal(panel.render(60).join("\n"), before);
 });
 
 test("panel keeps its input visible on a short terminal", () => {
@@ -184,9 +357,14 @@ test("panel keeps its input visible on a short terminal", () => {
 		slug: "stream", title: "Stream", messages: ["You: hello"], status: "Ready",
 		draft: { revision: 1, path: "/scratch/stream.md", slug: "stream", baseContent: "old", proposedContent: "new" },
 	}, { send: async () => {}, apply: async () => {}, refresh: async () => {}, close: async () => {} }, () => {});
+	panel.setInput("Type a message here");
 	const lines = panel.render(60);
 	assert.ok(lines.length <= 12);
-	assert.match(lines.join("\n"), /ype a message here/);
+	assert.match(lines.join("\n"), /Type a message here/);
+	panel.setInput("earlier\n".repeat(20) + "latest input");
+	const crowded = panel.render(60);
+	assert.ok(crowded.length <= 12);
+	assert.match(crowded.join("\n"), /latest input/);
 });
 
 test("panel can release focus to the main editor without closing", () => {
@@ -209,15 +387,86 @@ test("panel reports unsent input changes for durable storage", () => {
 	}, () => {});
 	panel.handleInput("h");
 	panel.handleInput("i");
-	assert.deepEqual(changes, ["h", "hi"]);
+	panel.handleInput("\r");
+	assert.deepEqual(changes.slice(0, 2), ["h", "hi"]);
+	assert.ok(changes.slice(2).length > 0 && changes.slice(2).every((value) => value === ""));
 });
 
-test("Close can abort an in-flight side prompt without applying a draft", async () => {
+test("composer remains editable during a response; Escape aborts before closing", async () => {
+	let stopCount = 0;
+	let closeCount = 0;
+	const panel = new CheckpointPanel({ terminal: { rows: 24 }, requestRender() {} }, { fg: (_color, text) => text }, { slug: "stream", title: "Stream", messages: [], status: "Reading…" }, {
+		send: async () => new Promise(() => {}), apply: async () => {}, refresh: async () => {}, close: async () => { closeCount++; }, stop: async () => { stopCount++; },
+	}, () => {});
+	panel.handleInput("question");
+	panel.handleInput("\r");
+	panel.handleInput("next");
+	panel.handleInput("\r");
+	assert.equal(panel.getInput(), "next");
+	assert.match(panel.render(58).join("\n"), /Reading/);
+	panel.handleInput("\x1b");
+	await new Promise((resolve) => setImmediate(resolve));
+	assert.equal(stopCount, 1);
+	assert.equal(closeCount, 0);
+});
+
+test("the panel animates its status while starting or running and stops when idle", async () => {
+	let renders = 0;
+	let finish;
+	const state = { slug: "stream", title: "Stream", messages: [], status: "Starting checkpoint…" };
+	const panel = new CheckpointPanel({ terminal: { rows: 24 }, requestRender() { renders++; } }, { fg: (_color, text) => text }, state, {
+		send: async () => {}, apply: () => new Promise((resolve) => { finish = resolve; }), refresh: async () => {}, close: async () => {},
+	}, () => {});
+	try {
+		const first = panel.render(60).join("\n");
+		assert.match(first, /⠋.*Starting checkpoint/);
+		await new Promise((resolve) => setTimeout(resolve, 100));
+		assert.ok(renders > 0);
+		assert.notEqual(panel.render(60).join("\n"), first);
+		state.status = "Ready";
+		assert.doesNotMatch(panel.render(60).join("\n"), /[⠋⠙⠹⠸⠼⠴⠦⠧⠇⠏].*Ready/);
+		panel.handleInput("\x07");
+		assert.match(panel.render(60).join("\n"), /[⠋⠙⠹⠸⠼⠴⠦⠧⠇⠏].*Applying/);
+		finish();
+		await new Promise((resolve) => setImmediate(resolve));
+		assert.doesNotMatch(panel.render(60).join("\n"), /[⠋⠙⠹⠸⠼⠴⠦⠧⠇⠏].*Applying/);
+	} finally { panel.dispose(); }
+});
+
+test("Alt+C asks before clearing pending checkpoint work", () => {
+	const panel = new CheckpointPanel({ terminal: { rows: 24 }, requestRender() {} }, { fg: (_color, text) => text }, { slug: "stream", title: "Stream", messages: [], status: "Ready" }, {
+		send: async () => {}, apply: async () => {}, refresh: async () => {}, close: async () => {},
+	}, () => {});
+	panel.handleInput("\x1bc");
+	assert.match(panel.render(60).join("\n"), /Discard pending chat and draft/);
+});
+
+test("Apply has its own activity state and Escape cannot close during a write", async () => {
+	let complete;
+	let closed = false;
+	let stopped = false;
+	const panel = new CheckpointPanel({ terminal: { rows: 24 }, requestRender() {} }, { fg: (_color, text) => text }, {
+		slug: "stream", title: "Stream", messages: [], status: "Ready",
+	}, { send: async () => {}, apply: () => new Promise((resolve) => { complete = resolve; }), refresh: async () => {}, close: async () => { closed = true; }, stop: async () => { stopped = true; } }, () => {});
+	panel.handleInput("\x07");
+	assert.match(panel.render(70).join("\n"), /Applying/);
+	panel.handleInput("\x1bc");
+	assert.doesNotMatch(panel.render(70).join("\n"), /Discard pending/);
+	panel.handleInput("\x1b");
+	assert.equal(closed, false);
+	assert.equal(stopped, false);
+	complete();
+	await new Promise((resolve) => setImmediate(resolve));
+});
+
+test("Escape stops a response, then a second Escape closes without applying", async () => {
 	const tui = { terminal: { rows: 24 }, requestRender() {} };
 	const theme = { fg: (_color, text) => text };
 	const events = [];
+	let finish;
 	const panel = new CheckpointPanel(tui, theme, { slug: "stream", title: "Stream", messages: [], status: "Ready" }, {
-		send: async () => new Promise(() => {}),
+		send: () => new Promise((resolve) => { finish = resolve; }),
+		stop: async () => { events.push("stop"); finish(); },
 		apply: async () => { throw new Error("should not apply"); },
 		refresh: async () => {},
 		close: async (clear) => { events.push(clear); },
@@ -226,7 +475,10 @@ test("Close can abort an in-flight side prompt without applying a draft", async 
 	panel.handleInput("\r");
 	panel.handleInput("\x1b");
 	await new Promise((resolve) => setImmediate(resolve));
-	assert.deepEqual(events, [false, "done"]);
+	assert.deepEqual(events, ["stop"]);
+	panel.handleInput("\x1b");
+	await new Promise((resolve) => setImmediate(resolve));
+	assert.deepEqual(events, ["stop", false, "done"]);
 });
 
 test("chooser never creates a stream before explicit confirmation", async () => {
@@ -277,11 +529,138 @@ test("chooser labels recommendations but never treats them as selection", async 
 	];
 	let selected;
 	const chooser = new StreamChooser(tui, theme, records, { previewStart: async () => records[1], start: async () => records[1], list: async () => records, show: async () => records[1] }, (choice) => { selected = choice; }, { existing: [{ slug: "suggested", reason: "Related work" }], newStream: { title: "New Stream", reason: "Different scope" } });
-	const view = chooser.render(60).join("\n");
+	const lines = chooser.render(80);
+	const view = lines.join("\n");
 	assert.ok(view.indexOf("Suggested") < view.indexOf("Other"));
-	assert.match(view, /Related work/);
-	assert.match(view, /New Stream/);
+	const suggested = lines.findIndex((line) => /★ Suggested ·/.test(line));
+	assert.match(lines[suggested + 1], /Related work/);
+	assert.doesNotMatch(lines[suggested], /Related work/);
+	const proposed = lines.findIndex((line) => /▶ ★ Suggested new: New Stream/.test(line));
+	assert.match(lines[proposed + 1], /Different scope/);
+	chooser.handleInput("\x1b[B");
+	assert.match(chooser.render(80).join("\n"), /▶ ★ Suggested ·/);
 	assert.equal(selected, undefined);
+});
+
+test("Enter selects an existing stream and Alt+M reveals streams beyond the initial 20", () => {
+	const records = Array.from({ length: 21 }, (_, index) => ({ slug: `stream-${index}`, title: `Stream ${String(index).padStart(2, "0")}`, status: "active", state: "Work", path: `/scratch/${index}.md` }));
+	let chosen;
+	const chooser = new StreamChooser({ terminal: { rows: 30 }, requestRender() {} }, { fg: (_color, text) => text }, records, { list: async () => records, show: async () => records[0], start: async () => records[0], previewStart: async () => records[0] }, (choice) => { chosen = choice; });
+	chooser.handleInput("\r");
+	assert.equal(chosen?.stream.slug, "stream-0");
+	chosen = undefined;
+	chooser.handleInput("\x1bm");
+	for (let index = 0; index < 20; index++) chooser.handleInput("\x1b[B");
+	chooser.handleInput("\t");
+	assert.equal(chosen?.stream.slug, "stream-20");
+});
+
+test("highlighting the suggested new stream previews it before asking to create", async () => {
+	const proposed = { slug: "new-stream", title: "New Stream", status: "active", state: "Started", path: "/scratch/new.md", cwd: "/repo" };
+	const existing = { slug: "old-stream", title: "Old Stream", status: "active", state: "Work", path: "/scratch/old.md" };
+	const calls = [];
+	let chosen;
+	const chooser = new StreamChooser({ terminal: { rows: 30 }, requestRender() {} }, { fg: (_color, text) => text }, [existing], {
+		previewStart: async (title) => { calls.push(`preview:${title}`); return proposed; },
+		start: async (title) => { calls.push(`start:${title}`); return proposed; },
+		list: async () => [existing], show: async () => existing,
+	}, (choice) => { chosen = choice; }, { existing: [], newStream: { title: "New Stream", reason: "Different scope" } });
+	const view = chooser.render(80).join("\n");
+	assert.match(view, /▶ ★ Suggested new: New Stream/);
+	assert.match(view, /Different scope/);
+	chooser.handleInput("\r");
+	await new Promise((resolve) => setImmediate(resolve));
+	assert.deepEqual(calls, ["preview:New Stream"]);
+	assert.equal(chosen, undefined);
+	assert.match(chooser.render(80).join("\n"), /Create New Stream/);
+	chooser.handleInput("n");
+	assert.equal(chosen, undefined);
+	chooser.handleInput("\r");
+	await new Promise((resolve) => setImmediate(resolve));
+	chooser.handleInput("y");
+	await new Promise((resolve) => setImmediate(resolve));
+	assert.deepEqual(calls, ["preview:New Stream", "preview:New Stream", "start:New Stream"]);
+	assert.deepEqual(chosen, { stream: proposed, created: true });
+});
+
+test("a long suggested title remains visible and selectable in full", async () => {
+	const title = "Investigate persistent session checkpoint behavior across multiple independent Pi side conversations";
+	const proposed = { slug: "persistent-session", title, status: "active", state: "Started", path: "/scratch/session.md", cwd: "/repo" };
+	const calls = [];
+	let chosen;
+	const chooser = new StreamChooser({ terminal: { rows: 36 }, requestRender() {} }, { fg: (_color, text) => text }, [], {
+		previewStart: async (value) => { calls.push(`preview:${value}`); return proposed; },
+		start: async (value) => { calls.push(`start:${value}`); return proposed; },
+		list: async () => [], show: async () => proposed,
+	}, (choice) => { chosen = choice; }, { existing: [], newStream: { title, reason: "No existing stream fits" } });
+	const view = chooser.render(60);
+	const titleRows = view.slice(2, view.findIndex((line) => line.includes("↳")));
+	const displayedTitle = titleRows.map((line) => line.slice(1, -1).trim()).join(" ");
+	assert.match(displayedTitle, /▶ ★ Suggested new:/);
+	assert.ok(displayedTitle.includes(title));
+	assert.match(view.join("\n"), /No existing stream fits/);
+	chooser.handleInput("\r");
+	await new Promise((resolve) => setImmediate(resolve));
+	assert.deepEqual(calls, [`preview:${title}`]);
+	const preview = chooser.render(60);
+	const promptStart = preview.findIndex((line) => line.includes("Create "));
+	const promptEnd = preview.findIndex((line, index) => index >= promptStart && line.includes("? y/n"));
+	assert.ok(preview.slice(promptStart, promptEnd + 1).map((line) => line.slice(1, -1).trim()).join(" ").includes(title));
+	chooser.handleInput("y");
+	await new Promise((resolve) => setImmediate(resolve));
+	assert.deepEqual(calls, [`preview:${title}`, `start:${title}`]);
+	assert.deepEqual(chosen, { stream: proposed, created: true });
+});
+
+test("typed stream references resolve deterministically even when matching a new recommendation", async () => {
+	const existing = { slug: "new-stream", title: "New Stream", status: "active", state: "Work", path: "/scratch/new.md" };
+	let chosen;
+	const calls = [];
+	const chooser = new StreamChooser({ terminal: { rows: 30 }, requestRender() {} }, { fg: (_color, text) => text }, [existing], {
+		show: async (ref) => { calls.push(`show:${ref}`); return existing; },
+		previewStart: async (title) => { calls.push(`preview:${title}`); return existing; },
+		list: async () => [existing], start: async () => existing,
+	}, (choice) => { chosen = choice; }, { existing: [], newStream: { title: "New Stream", reason: "Suggested" } });
+	chooser.input.setValue("New Stream");
+	chooser.handleInput("\r");
+	await new Promise((resolve) => setImmediate(resolve));
+	assert.deepEqual(calls, ["show:New Stream"]);
+	assert.deepEqual(chosen, { stream: existing, created: false });
+});
+
+test("chooser distinguishes suggested titles, stream status, and details with styling and spacing", () => {
+	const existing = { slug: "old-stream", title: "Old Stream", status: "active", state: "Work pending", path: "/scratch/old.md" };
+	const ansi = { border: 37, accent: 35, success: 32, warning: 33, muted: 90 };
+	const theme = { fg: (color, text) => `\x1b[${ansi[color]}m${text}\x1b[0m`, italic: (text) => `\x1b[3m${text}\x1b[23m` };
+	const chooser = new StreamChooser({ terminal: { rows: 30 }, requestRender() {} }, theme, [existing], {
+		show: async () => existing, previewStart: async () => existing, start: async () => existing, list: async () => [existing],
+	}, () => {}, { existing: [], newStream: { title: "Suggested Stream", reason: "Separate work" } });
+	const lines = chooser.render(80);
+	const output = lines.join("\n");
+	assert.match(output, /\x1b\[35m★ Suggested new: Suggested Stream/);
+	assert.match(output, /\x1b\[32mactive/);
+	assert.match(output, /\x1b\[3mWork pending/);
+	const suggestedReason = lines.findIndex((line) => line.includes("Separate work"));
+	const existingLine = lines.findIndex((line) => line.includes("Old Stream"));
+	assert.match(lines[existingLine - 1].replace(/\x1b\[[0-9;]*m/g, ""), /^│ *│$/);
+	assert.ok(suggestedReason < existingLine - 1);
+});
+
+test("chooser wraps a long recommendation reason instead of cutting it off", () => {
+	const item = { slug: "stream", title: "Stream", status: "active", state: "Work", path: "/scratch/stream.md" };
+	const reason = Array.from({ length: 20 }, () => "evidence").join(" ");
+	const chooser = new StreamChooser({ terminal: { rows: 40 }, requestRender() {} }, { fg: (_color, text) => text }, [item], { show: async () => item, previewStart: async () => item, start: async () => item, list: async () => [item] }, () => {}, { existing: [{ slug: "stream", reason }] });
+	assert.equal((chooser.render(80).join("\n").match(/evidence/g) ?? []).length, 20);
+});
+
+test("chooser keeps the selected recommendation visible in a short viewport", () => {
+	const streams = Array.from({ length: 12 }, (_, index) => ({ slug: `stream-${index}`, title: `Stream ${index}`, status: "active", state: "Work", path: `/scratch/${index}.md` }));
+	const reasons = streams.slice(0, 3).map((stream) => ({ slug: stream.slug, reason: `Reason for ${stream.title}` }));
+	const chooser = new StreamChooser({ terminal: { rows: 16 }, requestRender() {} }, { fg: (_color, text) => text }, streams, { show: async () => streams[0], previewStart: async () => streams[0], start: async () => streams[0], list: async () => streams }, () => {}, { existing: reasons });
+	for (let index = 0; index < 2; index++) chooser.handleInput("\x1b[B");
+	const view = chooser.render(80).join("\n");
+	assert.match(view, /▶ ★ Stream 2/);
+	assert.ok(chooser.render(80).length <= Math.floor(16 * 0.8));
 });
 
 test("CLI integration uses show and update without shell interpolation", async () => {
@@ -409,8 +788,10 @@ test("side session streams through the supplied runtime without steering the mai
 	}
 });
 
-test("oversized context fails visibly instead of silently dropping history", () => {
-	assert.throws(() => assertContextFits({ contextWindow: 100 }, "instructions".repeat(80), []), /without dropping context/);
+test("context guard uses Pi's content estimate instead of serialized message metadata", () => {
+	const message = { role: "user", content: [{ type: "text", text: "x".repeat(1000) }], timestamp: Date.now() };
+	assert.doesNotThrow(() => assertContextFits({ contextWindow: 400 }, "", [message]));
+	assert.throws(() => assertContextFits({ contextWindow: 100 }, "instructions".repeat(80), []), /No history was dropped/);
 	assert.doesNotThrow(() => assertContextFits({ contextWindow: 100_000 }, "instructions", []));
 });
 
@@ -461,6 +842,12 @@ test("failed list does not imply absence and cannot trigger creation", async () 
 	await assert.rejects(selectStream("new", undefined, { list: async () => { throw new Error("network failure"); }, show: async () => { throw new Error("not called"); } }), /network failure/);
 });
 
+test("suggested titles are never shortened by recommendation parsing", () => {
+	const title = "Investigate persistent session checkpoint behavior across multiple independent Pi side conversations in deeply nested projects";
+	const parsed = parseRecommendations(JSON.stringify({ existing: [], newStream: { title, reason: "Different work" } }), []);
+	assert.deepEqual(parsed.newStream, { title, reason: "Different work" });
+});
+
 test("recommendations cannot invent existing streams or create anything", () => {
 	const streams = [{ slug: "known", title: "Known", status: "active", state: "Work", path: "/scratch/known.md" }];
 	assert.deepEqual(parseRecommendations('{"existing":[{"slug":"unknown","reason":"guess"},{"slug":"known","reason":"same work"}],"newStream":{"title":"New idea","reason":"different scope"}}', streams), {
@@ -472,11 +859,15 @@ test("recommendations cannot invent existing streams or create anything", () => 
 test("configuration enables CMUX only with an explicit boolean true", () => {
 	const dir = mkdtempSync(join(tmpdir(), "checkpoint-config-"));
 	try {
-		assert.deepEqual(loadConfig(dir), { cmux: false });
-		writeFileSync(join(dir, "checkpoint.json"), '{"cmux":true}');
-		assert.deepEqual(loadConfig(dir), { cmux: true });
+		assert.deepEqual(loadConfig(dir), { cmux: false, focusShortcut: "alt+p" });
+		writeFileSync(join(dir, "checkpoint.json"), '{"cmux":true,"focusShortcut":"ctrl+alt+c","selectorModel":{"provider":"openai","id":"selector"},"drafterModel":{"provider":"anthropic","id":"drafter"}}');
+		assert.deepEqual(loadConfig(dir), { cmux: true, focusShortcut: "ctrl+alt+c", selectorModel: { provider: "openai", id: "selector" }, drafterModel: { provider: "anthropic", id: "drafter" } });
 		writeFileSync(join(dir, "checkpoint.json"), '{"cmux":"true"}');
 		assert.throws(() => loadConfig(dir), /cmux must be a boolean/);
+		writeFileSync(join(dir, "checkpoint.json"), '{"selectorModel":{"provider":"openai"}}');
+		assert.throws(() => loadConfig(dir), /selectorModel.*provider.*id/);
+		writeFileSync(join(dir, "checkpoint.json"), '{"focusShortcut":""}');
+		assert.throws(() => loadConfig(dir), /focusShortcut/);
 	} finally {
 		rmSync(dir, { recursive: true, force: true });
 	}

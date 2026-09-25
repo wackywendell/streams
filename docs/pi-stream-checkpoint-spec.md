@@ -22,7 +22,7 @@ Agreed behavior:
 - the LLM may recommend an existing stream or creating a named new stream
 - confirmed creation runs `streams start` immediately and binds the returned stream, independently of checkpoint approval
 - the side agent can discuss and investigate, rather than following a fixed verification checklist
-- chat and the proposed diff are visible together, with one message input
+- chat fills the panel by default; a draft summary links to an expanded review view with the same message input
 - annotations become chat feedback, not persistent inline review threads
 - Close preserves unfinished chat and drafts across restarts; Close + clear discards them without undoing stream creation or binding
 - reopening resumes unfinished work with fresh main-session context and the current scratch note
@@ -87,14 +87,16 @@ If the stream was renamed, follow a verifiable CLI compatibility alias to its ca
 
 ### Unbound session without a reference
 
-Open a chooser inside the side panel. Its existing-stream choices come from `streams list --json`, never from model-generated names.
+Show a loading indicator while gathering recommendations, then open a centered chooser before the right-anchored conversation panel. Its existing-stream choices come from `streams list --json`, never from model-generated names.
 
 The LLM can use the current Pi conversation and stream metadata to recommend:
 
 - an existing stream, with a short reason
 - a new stream, with a proposed title and a short reason why existing streams do not fit
 
-Recommendations appear first and are labelled as recommendations, followed by other `active` streams, then the remaining non-archived streams. Show title, slug, status, and short state without duplicate entries.
+For suggested new titles, follow `streams format`'s stable human-readable naming guidance: aim for about six words and 40 characters, putting longer context in the reason rather than the title. This is guidance, not a limit: preserve the model's full title in the selectable option and creation preview even if it runs longer. Manually entered stream titles are unaffected.
+
+Recommendations appear first and are labelled as recommendations, with each reason directly beneath its option. They are followed by other `active` streams, then the remaining non-archived streams. Show title, slug, status, and short state without duplicate entries.
 
 Show up to 20 existing streams initially. Keep the rest accessible through search or Show more. This limits the display, not the list used for matching or recommendations. Creation and manual-entry choices remain visible outside that limit.
 
@@ -104,7 +106,7 @@ Always offer these additional choices:
 2. Create a new stream with an AI-suggested title.
 3. Create a new stream with a user-specified title.
 
-The user must choose; an LLM recommendation alone never binds or creates a stream. Existing choices remain usable if recommendation generation fails. Entering a reference uses the same deterministic resolution flow as the command argument.
+The suggested new stream is a selectable row; selecting it opens the same creation preview and confirmation as a manually entered title. The user must confirm before creation; an LLM recommendation alone never binds or creates a stream. Existing choices remain usable if recommendation generation fails. Entering a reference uses the same deterministic resolution flow as the command argument.
 
 ### Creation
 
@@ -143,7 +145,7 @@ For a new checkpoint conversation, load:
 
 Full current context means what the main agent currently sees, not every historical branch or previously discarded context. If the main agent is streaming, seed from a completed, provider-valid boundary, not a partial response or unmatched tool call. Make omissions explicit rather than presenting a partial snapshot as complete.
 
-The side agent runs independently. The main agent can keep working, and panel prompts do not steer or interrupt it. The side agent decides what to investigate and what to ask; the extension does not require a PR lookup, CI refresh, test run, or fixed interview sequence.
+The side agent runs independently. The main agent can keep working, and panel prompts do not steer or interrupt it. On a fresh checkpoint chat, automatically ask the side agent to use the included streams skill and current scratch to draft a handoff for review; this opens a conversation, not permission to write scratch. Do not send another opening request when resuming saved chat or an unsent input. The side agent decides what to investigate and what to ask; the extension does not require a PR lookup, CI refresh, test run, or fixed interview sequence.
 
 The side agent may propose a draft proactively or in response to the user. A draft is optional. Chat feedback can change the proposed state or reveal that no scratch change is needed.
 
@@ -165,20 +167,19 @@ The panel uses a right-anchored Pi TUI overlay. This covers part of the main tra
 
 ```text
 ┌─ Stream: Parser ownership cleanup ─────────┐
-│ Side conversation                         │
+│ Draft 2: clarify current owner · Review   │
 │                                           │
-├─ Proposed scratch changes · draft 2 ───────┤
-│ Scrollable diff                           │
+│ Wrapped, streaming side conversation      │
 │                                           │
 ├───────────────────────────────────────────┤
-│ Type a message here…                      │
-│ Apply · Refresh · Close · Close + clear   │
+│ Multiline message composer                │
+│ Status · Apply · Refresh · Close           │
 └───────────────────────────────────────────┘
 ```
 
-Chat and diff scroll independently. The input stays visible while the user reads the draft. Before a draft exists, chat uses the space instead of showing an empty diff. Support keyboard focus movement between chat, diff, input, and the main editor. Mouse support is optional where Pi supports it.
+Chat fills the panel by default. Review expands the diff in place, while retaining the same composer so the user can send feedback without leaving it. Before a draft exists, do not reserve space for a diff. Switching between chat and review does not discard either one's scroll position. Support keyboard focus movement between content, composer, and the main editor. Mouse support is optional where Pi supports it.
 
-On a small terminal, allow one content region to expand temporarily. Do not require both chat and diff to fit in unusably small viewports. Exact shortcuts, dimensions, and resize controls are implementation design work.
+Stream responses wrap instead of truncating. Show initialization and tool activity promptly; keep the composer editable while the side agent responds, but do not automatically queue text typed during the response. Escape stops an active response before it closes the panel. On a small terminal, prioritize the composer and current content; do not hide the input behind overlay height clipping.
 
 ### Annotations
 
@@ -319,7 +320,7 @@ Tests must use temporary scratch files and mocked CLI, model, and CMUX boundarie
 | Main agent is busy | Side discussion works without steering or aborting the main run |
 | No draft needed | User can finish the discussion without a scratch write |
 | Annotation on draft 1 followed by draft 2 | Chat retains draft 1's quoted selection without misattributing it to draft 2 |
-| Chatting while reviewing | Draft remains visible while the user types; focus and scrolling do not mix inputs |
+| Chatting while reviewing | Review shows the complete draft with the composer available; switching back preserves chat and does not lose typed input |
 | Apply | Write exactly the approved revision, validate, update binding if needed, post slug/path/change-summary receipt without triggering the main agent, and close |
 | Invocation after Apply | Start a fresh checkpoint chat with current main context and updated scratch |
 | Apply fails | Keep the panel and draft available; distinguish rejected validation, a stale base, a failed write, and uncertain post-write confirmation |

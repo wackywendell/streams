@@ -1,6 +1,7 @@
 import { existsSync, mkdirSync, readFileSync, renameSync, unlinkSync, writeFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { createHash, randomUUID } from "node:crypto";
+import type { KeyId } from "@earendil-works/pi-tui";
 import type { StreamCli } from "./streams.ts";
 import { isSeq, parseDocument } from "yaml";
 
@@ -21,13 +22,29 @@ export interface Draft {
 	summary?: string;
 }
 
-export function loadConfig(agentDir: string): { cmux: boolean } {
+export interface CheckpointConfig {
+	cmux: boolean;
+	focusShortcut: KeyId;
+	selectorModel?: { provider: string; id: string };
+	drafterModel?: { provider: string; id: string };
+}
+
+export function loadConfig(agentDir: string): CheckpointConfig {
 	const path = join(agentDir, "checkpoint.json");
-	if (!existsSync(path)) return { cmux: false };
+	if (!existsSync(path)) return { cmux: false, focusShortcut: "alt+p" };
 	const config = JSON.parse(readFileSync(path, "utf8"));
 	if (config === null || typeof config !== "object" || Array.isArray(config)) throw new Error("checkpoint.json must be an object");
 	if (config.cmux !== undefined && typeof config.cmux !== "boolean") throw new Error("checkpoint.json: cmux must be a boolean");
-	return { cmux: config.cmux === true };
+	if (config.focusShortcut !== undefined && (typeof config.focusShortcut !== "string" || !config.focusShortcut.trim())) throw new Error("checkpoint.json: focusShortcut must be a nonempty Pi keybinding");
+	for (const key of ["selectorModel", "drafterModel"] as const) {
+		const model = config[key];
+		if (model !== undefined && (model === null || typeof model !== "object" || Array.isArray(model) || typeof model.provider !== "string" || !model.provider.trim() || typeof model.id !== "string" || !model.id.trim())) {
+			throw new Error(`checkpoint.json: ${key} must contain nonempty provider and id strings`);
+		}
+	}
+	return { cmux: config.cmux === true, focusShortcut: (config.focusShortcut ?? "alt+p") as KeyId,
+		...(config.selectorModel ? { selectorModel: config.selectorModel } : {}),
+		...(config.drafterModel ? { drafterModel: config.drafterModel } : {}) };
 }
 
 export function latestBinding(entries: readonly { type: string; customType?: string; data?: unknown }[], ownerId: string): Binding | undefined {
@@ -62,8 +79,9 @@ export function parseRecommendations(text: string, streams: Array<{ slug: string
 		return true;
 	}).map((item: { slug: string; reason: string }) => ({ slug: item.slug, reason: item.reason.slice(0, 160) }));
 	const proposal = value?.newStream;
-	const newStream = typeof proposal?.title === "string" && proposal.title.trim() && typeof proposal.reason === "string"
-		? { title: proposal.title.trim().slice(0, 120), reason: proposal.reason.slice(0, 160) } : undefined;
+	const title = typeof proposal?.title === "string" ? proposal.title.trim() : "";
+	const newStream = title && typeof proposal.reason === "string"
+		? { title, reason: proposal.reason.slice(0, 160) } : undefined;
 	return newStream ? { existing, newStream } : { existing };
 }
 

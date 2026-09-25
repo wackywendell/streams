@@ -1,5 +1,5 @@
 import type { AgentMessage } from "@earendil-works/pi-agent-core";
-import { createAgentSession, DefaultResourceLoader, SessionManager, SettingsManager } from "@earendil-works/pi-coding-agent";
+import { createAgentSession, DefaultResourceLoader, estimateTokens, SessionManager, SettingsManager } from "@earendil-works/pi-coding-agent";
 import type { AgentSession, ModelRuntime, ReadonlySessionManager } from "@earendil-works/pi-coding-agent";
 import type { Model } from "@earendil-works/pi-ai/compat";
 import { Type } from "typebox";
@@ -28,9 +28,9 @@ export function checkpointContext(manager: ReadonlySessionManager): { messages: 
 }
 
 export function assertContextFits(model: Pick<Model<any>, "contextWindow">, systemPrompt: string, messages: AgentMessage[]): void {
-	const estimatedTokens = Math.ceil((systemPrompt.length + JSON.stringify(messages).length) / 3);
-	if (model.contextWindow && estimatedTokens > model.contextWindow * 0.8) {
-		throw new Error(`Checkpoint context may exceed ${model.contextWindow} tokens; choose a larger model or compact the main session without dropping context.`);
+	const estimatedTokens = Math.ceil(systemPrompt.length / 4) + messages.reduce((total, message) => total + estimateTokens(message), 0);
+	if (model.contextWindow && estimatedTokens > model.contextWindow * 0.9) {
+		throw new Error(`Checkpoint input is estimated at ${estimatedTokens} tokens for a ${model.contextWindow}-token model. Compact the main session or use a larger model. No history was dropped.`);
 	}
 }
 
