@@ -87,15 +87,19 @@ export class CheckpointConversation {
 		return this.operation;
 	}
 
-	start(): Promise<void> {
+	start(message = ""): Promise<void> {
 		return this.run("starting", async () => {
 			const { pending } = this.options;
 			const fresh = !pending.messages.length && !pending.draft && !pending.input.trim() && !this.state.annotations.length && !this.state.annotationEditor;
+			const accepted = message ? this.acceptCommandMessage(message) : false;
+			const rejection = message && !accepted ? this.state.notice : undefined;
 			await this.startSide();
-			if (fresh && this.isOwner()) {
+			if (rejection) this.state.notice = rejection;
+			if ((accepted || (!message && fresh)) && this.isOwner()) {
 				this.state.activity = "drafting";
 				this.options.changed();
-				await this.prompt(this.kickoff);
+				if (accepted) await this.sendFeedback();
+				else await this.prompt(this.kickoff);
 			}
 		});
 	}
@@ -155,18 +159,38 @@ export class CheckpointConversation {
 		if (last?.role === "assistant" && last.stopReason === "error") throw new Error(last.errorMessage ?? "Checkpoint response failed");
 	}
 
-	send(): Promise<void> {
+	private acceptCommandMessage(message: string): boolean {
+		if (this.state.input.trim() || this.state.annotations.length || this.state.annotationEditor) {
+			this.state.notice = { level: "warning", text: "Checkpoint has unsent feedback; instructions were not sent. Send or remove that feedback first." };
+			return false;
+		}
+		this.state.input = message;
+		this.persist();
+		return true;
+	}
+
+	send(message?: string): Promise<void> {
+		if (message !== undefined && this.state.activity) {
+			this.state.notice = { level: "warning", text: "Checkpoint is busy; instructions were not sent. Retry after the current operation." };
+			this.options.changed();
+			return Promise.resolve();
+		}
 		return this.run("drafting", async () => {
-			if (this.state.annotationEditor) throw new Error("Save or cancel the unfinished annotation in Review first");
-			if (!this.state.input.trim() && !this.state.annotations.length) return;
-			if (this.state.annotations.some((annotation) => annotation.revision !== this.state.draft?.revision || annotation.path !== this.state.draft?.path)) {
-				throw new Error("Annotations belong to an older draft; remove them before sending");
-			}
-			const annotations = this.state.annotations.map((annotation) => ({ ...annotation }));
-			const text = this.state.input;
-			this.accepting = { text, annotations, prompt: feedbackPrompt(text, annotations) };
-			await this.prompt(this.accepting.prompt);
+			if (message !== undefined && !this.acceptCommandMessage(message)) return;
+			await this.sendFeedback();
 		});
+	}
+
+	private async sendFeedback(): Promise<void> {
+		if (this.state.annotationEditor) throw new Error("Save or cancel the unfinished annotation in Review first");
+		if (!this.state.input.trim() && !this.state.annotations.length) return;
+		if (this.state.annotations.some((annotation) => annotation.revision !== this.state.draft?.revision || annotation.path !== this.state.draft?.path)) {
+			throw new Error("Annotations belong to an older draft; remove them before sending");
+		}
+		const annotations = this.state.annotations.map((annotation) => ({ ...annotation }));
+		const text = this.state.input;
+		this.accepting = { text, annotations, prompt: feedbackPrompt(text, annotations) };
+		await this.prompt(this.accepting.prompt);
 	}
 
 	refreshContext(): Promise<void> {

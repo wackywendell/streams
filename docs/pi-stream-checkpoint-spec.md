@@ -14,8 +14,8 @@ Scratch remains the source of truth. The extension follows the streams skill and
 
 Agreed behavior:
 
-- manual trigger only: `/checkpoint [stream-ref]`
-- a stream reference can be a title or slug
+- manual trigger only: `/checkpoint [--stream <ref>] [instructions]`
+- bare text is instructions; an explicit `--stream` reference can be a slug or quoted title
 - a successful explicit selection changes the binding for the current Pi session
 - an unbound session opens a chooser with recommendations, existing streams, and creation options
 - all non-archived streams remain available, with 20 shown initially
@@ -34,7 +34,7 @@ Agreed behavior:
 
 Current defaults:
 
-- one checkpoint panel per Pi session; invoking the command again focuses it
+- one checkpoint panel per Pi session; invoking the command without arguments focuses it
 - without a model override, the side agent starts with the main session's current model and thinking level
 
 The first version does not implement automatic compaction triggers, native concurrent tree branches, a general side-conversation manager, or automatic reference-note edits. It can coexist with `pi-smart-btw`; it does not depend on that extension's private state.
@@ -69,13 +69,18 @@ The current workspace is the intended target. Do not search for another workspac
 
 ```text
 /checkpoint
-/checkpoint parser-ownership-cleanup
-/checkpoint Parser ownership cleanup
+/checkpoint let's park this
+/checkpoint --stream parser-ownership-cleanup
+/checkpoint --stream "Parser ownership cleanup" let's park this
 ```
 
-The text after the command is one stream reference, including spaces in a title.
+Bare text is a message to the checkpoint agent, never a stream lookup, even if it matches an existing title or slug. Only a leading `--stream <ref>` selects a stream. Quote a title containing spaces with single or double quotes; the remaining instructions retain their own quotes, punctuation and line breaks. A missing or malformed reference reports usage without opening or switching a checkpoint.
 
-Each invocation obtains current stream metadata using `streams list --json`. Treat a missing executable, nonzero exit, invalid JSON, or malformed result as an error, not an empty list. Do not offer to create a supposedly missing stream based on a failed lookup.
+Send supplied instructions once, after stream selection and side-session initialization. On a fresh chat, they replace the automatic kickoff; on resume, they start a new turn alongside the saved discussion. Keep accepted instructions in pending input until the SDK accepts the message, then show them in Chat during generation. Initialization failure leaves that input available to retry.
+
+If the panel is already open, a message without `--stream` focuses it and sends to the idle conversation. If it is busy, a chooser is open, or there is unsent chat or annotation feedback, report that the instructions were not sent. Do not silently queue a message, merge it with a feedback batch, or overwrite saved input. A bare `/checkpoint` only focuses an open panel.
+
+Opening or switching a checkpoint obtains current stream metadata using `streams list --json`. Treat a missing executable, nonzero exit, invalid JSON, or malformed result as an error, not an empty list. Do not offer to create a supposedly missing stream based on a failed lookup.
 
 ### Explicit reference
 
@@ -115,7 +120,7 @@ Always offer these additional choices:
 2. Create a new stream with an AI-suggested title.
 3. Create a new stream with a user-specified title.
 
-The suggested new stream is a selectable row; selecting it opens the same creation preview and confirmation as a manually entered title. The user must confirm before creation; an LLM recommendation alone never binds or creates a stream. Existing choices remain usable if recommendation generation fails. Entering a reference uses the same deterministic resolution flow as the command argument.
+The suggested new stream is a selectable row; selecting it opens the same creation preview and confirmation as a manually entered title. The user must confirm before creation; an LLM recommendation alone never binds or creates a stream. Existing choices remain usable if recommendation generation fails. Entering a reference uses the same deterministic resolution flow as `--stream`.
 
 ### Creation
 
@@ -154,7 +159,7 @@ For a new checkpoint conversation, load:
 
 Full current context means what the main agent currently sees, not every historical branch or previously discarded context. Use Pi's model-message conversion to preserve branch and compaction summaries and respect excluded shell output. If the main agent is streaming, seed from a completed, provider-valid boundary, not a partial response or unmatched tool call. Make omissions explicit rather than presenting a partial snapshot as complete.
 
-The side agent runs independently. The main agent can keep working, and panel prompts do not steer or interrupt it. On a fresh checkpoint chat, automatically ask the side agent to use the included streams skill and current scratch to draft a handoff for review; this opens a conversation, not permission to write scratch. Do not send another opening request when resuming saved chat or an unsent input. The side agent decides what to investigate and what to ask; the extension does not require a PR lookup, CI refresh, test run, or fixed interview sequence.
+The side agent runs independently. The main agent can keep working, and panel prompts do not steer or interrupt it. On a fresh checkpoint chat without supplied instructions, automatically ask the side agent to use the included streams skill and current scratch to draft a handoff for review; this opens a conversation, not permission to write scratch. Do not send another opening request when resuming saved chat or an unsent input. The side agent decides what to investigate and what to ask; the extension does not require a PR lookup, CI refresh, test run, or fixed interview sequence.
 
 The side agent may propose a draft proactively or in response to the user. A draft is optional. After staging, its chat reply briefly summarizes substantive changes since the previous scratch note, not the mechanics of staging, routine verification, or the fact that scratch was not changed; mention material failures or blockers. Chat feedback can change the proposed state or reveal that no scratch change is needed.
 
@@ -341,7 +346,11 @@ Tests must use temporary scratch files and mocked CLI, model, and CMUX boundarie
 | Unbound invocation | Show confirmed CLI candidates, advisory recommendations, and all 3 manual or creation choices |
 | More than 20 streams | Show 20 initially; search or Show more reaches the full non-archived list, and manual or creation choices stay visible |
 | LLM recommends a new stream | Show proposed title and reason; create only after confirmation |
-| Title or slug supplied | Resolve deterministically; distinguish one match, ambiguity, invalid input, and absence |
+| `--stream` title or slug supplied | Resolve deterministically; distinguish one match, ambiguity, invalid input, and absence |
+| Bare instructions | Use the bound stream or retain the message through the chooser; send once instead of the fresh kickoff |
+| Instructions on resume | Preserve saved history and send a new visible turn without another kickoff |
+| Busy panel or unsent feedback | Report instructions as not sent; do not queue, overwrite or send an existing feedback batch |
+| Invalid `--stream` syntax | Report usage without opening a panel or changing the binding |
 | Listing fails | Explain failure; do not treat it as proof a stream is missing |
 | Create is cancelled or fails | Preserve the old binding and do not continue as though creation succeeded |
 | Create succeeds | Persist the binding to the actual returned stream immediately, before checkpoint discussion or Apply |

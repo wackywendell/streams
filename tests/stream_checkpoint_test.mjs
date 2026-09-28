@@ -24,7 +24,7 @@ const { checkpointContext, completedMessages, assertContextFits, createCheckpoin
 const { StreamCli } = await jiti.import(new URL("../home/.pi/agent/extensions/stream-checkpoint/streams.ts", import.meta.url).pathname);
 const { CheckpointPanel } = await jiti.import(new URL("../home/.pi/agent/extensions/stream-checkpoint/panel.ts", import.meta.url).pathname);
 const { StreamChooser } = await jiti.import(new URL("../home/.pi/agent/extensions/stream-checkpoint/chooser.ts", import.meta.url).pathname);
-const { default: registerCheckpoint, recommendStreams } = await jiti.import(new URL("../home/.pi/agent/extensions/stream-checkpoint/index.ts", import.meta.url).pathname);
+const { default: registerCheckpoint, recommendStreams, parseCheckpointArgs } = await jiti.import(new URL("../home/.pi/agent/extensions/stream-checkpoint/index.ts", import.meta.url).pathname);
 
 const turn = () => new Promise((resolve) => setImmediate(resolve));
 async function until(check) {
@@ -179,6 +179,163 @@ test("conversation sends full annotation evidence but displays feedback immediat
 	} finally { await f.dispose(); }
 });
 
+test("checkpoint arguments default to instructions and only a leading --stream selects a reference", () => {
+	for (const [input, ref, message] of [
+		["", "", ""],
+		["service", "", "service"],
+		[" let's park this ", "", "let's park this"],
+		["--stream service", "service", ""],
+		["--stream service let's park this", "service", "let's park this"],
+		['--stream "Service ownership" keep "these quotes"\nand --stream as prose', "Service ownership", 'keep "these quotes"\nand --stream as prose'],
+		["--stream 'Service ownership' let's park this", "Service ownership", "let's park this"],
+		["Discuss --stream service", "", "Discuss --stream service"],
+	]) assert.deepEqual(parseCheckpointArgs(input), { ref, message });
+	for (const input of ["--stream", "--stream  ", '--stream ""', '--stream "  "', '--stream "unfinished', '--stream "service"oops', "--stream --stream service"]) {
+		assert.throws(() => parseCheckpointArgs(input), /Usage: \/checkpoint/);
+	}
+});
+
+test("command instructions replace the fresh kickoff, remain visible and survive resume", async () => {
+	const f = await conversationFixture();
+	try {
+		f.pending.input = "";
+		f.conversation.state.input = "";
+		const opening = f.conversation.start("let's park this");
+		await until(() => f.contexts.length === 1);
+		assert.equal(f.contexts[0].messages.at(-1).content[0].text, "let's park this");
+		assert.equal(f.conversation.state.messages.at(-1).text, "let's park this");
+		assert.equal(f.conversation.state.input, "");
+		assert.match(JSON.stringify(readPending(f.dir, f.pending.ownerId, "service").messages), /let's park this/);
+		f.finish();
+		await opening;
+		await f.conversation.refreshContext();
+		assert.equal(f.contexts.length, 1, "Refreshing must not resend the command");
+		const sending = f.conversation.send("Record the remaining blocker");
+		await until(() => f.contexts.length === 2);
+		assert.equal(f.conversation.state.messages.at(-1).text, "Record the remaining blocker");
+		await f.conversation.send("Do not queue this");
+		assert.match(f.conversation.state.notice.text, /busy.*not sent/i);
+		assert.equal(f.contexts.length, 2);
+		f.finish();
+		await sending;
+		assert.doesNotMatch(JSON.stringify(f.contexts), /Draft a handoff|Do not queue this/);
+		assert.equal(readFileSync(f.path, "utf8"), "scratch unchanged");
+	} finally { await f.dispose(); }
+});
+
+test("command instructions never overwrite saved input or pending annotations", async () => {
+	const f = await conversationFixture();
+	try {
+		await f.conversation.start("let's park this");
+		assert.equal(f.contexts.length, 0);
+		assert.equal(f.conversation.state.input, "unsent");
+		assert.match(f.conversation.state.notice.text, /unsent feedback.*not sent/i);
+		await f.conversation.send("Do not replace the composer");
+		assert.equal(f.conversation.state.input, "unsent");
+		const annotation = { path: f.path, revision: 1, side: "proposed", line: 1, section: "", excerpt: "1: old", comment: "Keep this" };
+		f.conversation.state.input = "";
+		f.conversation.state.annotations = [annotation];
+		await f.conversation.send("Do not send this batch");
+		assert.deepEqual(f.conversation.state.annotations, [annotation]);
+		f.conversation.state.annotations = [];
+		f.conversation.state.annotationEditor = { anchor: annotation, text: "Still editing" };
+		await f.conversation.send("Do not discard this edit");
+		assert.equal(f.conversation.state.annotationEditor.text, "Still editing");
+		assert.equal(f.contexts.length, 0);
+		assert.match(f.conversation.state.notice.text, /unsent feedback.*not sent/i);
+	} finally { await f.dispose(); }
+});
+
+test("initialization failure preserves command instructions as unsent input", async () => {
+	const f = await conversationFixture();
+	try {
+		f.pending.input = f.conversation.state.input = "";
+		f.conversation.options.binding.path = join(f.dir, "missing.md");
+		await f.conversation.start("let's park this");
+		assert.equal(f.contexts.length, 0);
+		assert.equal(f.conversation.state.notice.level, "error");
+		assert.equal(readPending(f.dir, f.pending.ownerId, "service").input, "let's park this");
+	} finally { await f.dispose(); }
+});
+
+for (const selection of ["bound", "chooser", "explicit"]) {
+	test(`checkpoint instructions reach the ${selection} stream once without holding main input`, async () => {
+		const f = await conversationFixture();
+		let shutdown;
+		try {
+			const stream = { slug: "service", title: "Service ownership", path: f.path, status: "active", state: "In progress" };
+			if (selection === "bound") f.manager.appendCustomEntry("stream-checkpoint-binding", { ownerId: f.pending.ownerId, slug: stream.slug, path: stream.path });
+			let command, panel, chooser, handle, lists = 0;
+			const shown = [], notifications = [];
+			const ctx = { mode: "tui", hasUI: true, cwd: f.dir, model: f.conversation.options.model, thinkingLevel: "off", sessionManager: f.manager,
+				modelRegistry: { getRegisteredProviderConfig() {}, getRegisteredNativeProvider() {}, complete: async () => ({ content: [{ type: "text", text: '{"existing":[]}' }] }) },
+				getSystemPrompt: () => "Test instructions",
+				ui: { notify: (text) => notifications.push(text), theme: { fg: (_color, text) => text }, setStatus() {}, confirm: async () => true,
+					custom: (factory, options) => new Promise((resolve) => {
+						let component;
+						component = factory({ terminal: { rows: 30 }, requestRender() {} }, { fg: (_color, text) => text }, {}, (value) => { component?.dispose?.(); resolve(value); });
+						if (component instanceof StreamChooser) chooser = component;
+						if (component instanceof CheckpointPanel) {
+							panel = component;
+							handle = { hidden: false, focus() {}, setHidden(value) { this.hidden = value; }, isHidden() { return this.hidden; } };
+							options.onHandle(handle);
+						}
+					}),
+				},
+			};
+			registerCheckpoint({ registerCommand: (_name, options) => { command = options.handler; }, registerShortcut() {}, on: (_event, handler) => { shutdown = handler; }, appendEntry: (type, data) => f.manager.appendCustomEntry(type, data) }, {
+				agentDir: f.dir, runtime: f.conversation.options.runtime, skill: "Test skill",
+				cli: { list: async () => { lists++; return [stream]; }, show: async (ref) => { shown.push(ref); return stream; }, format: async () => "format" },
+			});
+			await command("--stream", ctx);
+			assert.match(notifications.pop(), /Usage: \/checkpoint/);
+			assert.equal(lists, 0);
+			const message = selection === "bound" ? "service" : "let's park this";
+			await command(selection === "explicit" ? `--stream "Service ownership" ${message}` : message, ctx);
+			if (selection === "chooser") {
+				await until(() => !!chooser);
+				assert.equal(chooser.input.getValue(), "", "Instructions must not become a stream search");
+				await command("Do not queue while choosing", ctx);
+				assert.match(notifications.pop(), /busy.*not sent/i);
+				assert.equal(f.contexts.length, 0);
+				chooser.handleInput("\r");
+			}
+			await until(() => f.contexts.length === 1);
+			assert.equal(panel.state.messages.at(-1).text, message);
+			assert.equal(f.contexts[0].messages.at(-1).content[0].text, message);
+			assert.deepEqual(shown, selection === "explicit" ? [stream.title] : []);
+			assert.equal(latestBinding(f.manager.getEntries(), f.pending.ownerId).slug, stream.slug);
+			await command("Do not queue while drafting", ctx);
+			assert.match(panel.state.notice.text, /busy.*not sent/i);
+			f.finish();
+			await until(() => panel.state.activity === null);
+			const originalPanel = panel;
+			panel.handleInput("\x1b");
+			assert.equal(handle.hidden, true);
+			await command("", ctx);
+			assert.equal(handle.hidden, false);
+			assert.equal(panel, originalPanel);
+			assert.equal(f.contexts.length, 1);
+			await command("Also record the next action", ctx);
+			await until(() => f.contexts.length === 2);
+			assert.equal(panel, originalPanel);
+			assert.equal(panel.state.messages.at(-1).text, "Also record the next action");
+			f.finish();
+			await until(() => panel.state.activity === null);
+			await shutdown();
+			await command("Resume with this instruction", ctx);
+			await until(() => f.contexts.length === 3);
+			assert.notEqual(panel, originalPanel);
+			assert.equal(panel.state.messages.at(-1).text, "Resume with this instruction");
+			assert.equal(f.contexts[2].messages.filter((item) => item.role === "user" && item.content[0]?.text === message).length, 1);
+			assert.doesNotMatch(JSON.stringify(f.contexts), /Draft a handoff|Do not queue/);
+			f.finish();
+			await until(() => panel.state.activity === null);
+			assert.equal(readFileSync(f.path, "utf8"), "scratch unchanged");
+		} finally { await shutdown?.(); await f.dispose(); }
+	});
+}
+
 test("checkpoint command releases main input, preserves work on stream switches and cleans up on shutdown", async () => {
 	const f = await conversationFixture();
 	let shutdown;
@@ -211,7 +368,7 @@ test("checkpoint command releases main input, preserves work on stream switches 
 			agentDir: f.dir, runtime: f.conversation.options.runtime, skill: "Test skill", cli: { list: async () => streams, show: async (ref) => streams.find((stream) => stream.slug === ref), format: async () => "format" },
 		});
 		let returned = false;
-		Promise.resolve(command("service", ctx)).then(() => { returned = true; });
+		Promise.resolve(command("--stream service", ctx)).then(() => { returned = true; });
 		await until(() => !!panel);
 		assert.equal(returned, true, "The command must not occupy Pi's prompt queue for the overlay lifetime");
 		assert.equal(dismissed, 0);
@@ -223,11 +380,11 @@ test("checkpoint command releases main input, preserves work on stream switches 
 		assert.equal(statuses.at(-1), undefined);
 		const firstPanel = panel;
 		panel.state.activity = "applying";
-		await command("other", ctx);
+		await command("--stream other", ctx);
 		assert.equal(panel, firstPanel);
 		assert.equal(confirmations, 0, "A stream switch cannot interrupt Apply");
 		panel.state.activity = null;
-		await command("other", ctx);
+		await command("--stream other", ctx);
 		await until(() => panel !== firstPanel && panel.state.activity === null);
 		assert.equal(confirmations, 1);
 		assert.ok(confirmationSignals[0] instanceof AbortSignal, "Shutdown must be able to cancel a pending switch confirmation");
@@ -236,7 +393,7 @@ test("checkpoint command releases main input, preserves work on stream switches 
 		assert.equal(readPending(f.dir, f.pending.ownerId, "service").input, "unsent");
 		assert.equal(latestBinding(f.manager.getEntries(), f.pending.ownerId).slug, "other");
 		allowSwitch = false;
-		await command("service", ctx);
+		await command("--stream service", ctx);
 		await until(() => confirmations === 2);
 		await shutdown();
 		assert.equal(dismissed, 2);
@@ -247,7 +404,7 @@ test("checkpoint command releases main input, preserves work on stream switches 
 		await command("", ctx);
 		await until(() => panel !== secondPanel && panel.state.activity === null);
 		holdSwitch = true;
-		await command("service", ctx);
+		await command("--stream service", ctx);
 		await until(() => confirmations === 3);
 		await shutdown();
 		assert.equal(confirmationSignals.at(-1).aborted, true);

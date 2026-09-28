@@ -15,6 +15,15 @@ import { CheckpointConversation } from "./conversation.ts";
 import { checkpointStatus } from "./view.ts";
 import { StreamCli } from "./streams.ts";
 
+export function parseCheckpointArgs(args: string): { ref: string; message: string } {
+	const input = args.trim();
+	if (!/^--stream(?:\s|$)/.test(input)) return { ref: "", message: input };
+	const match = /^--stream\s+(?:"([^"]*)"|'([^']*)'|([^\s"']+))(?:\s+([\s\S]*))?$/.exec(input);
+	const ref = (match?.[1] ?? match?.[2] ?? match?.[3] ?? "").trim();
+	if (!match || !ref || ref.startsWith("--")) throw new Error('Usage: /checkpoint [--stream <slug-or-"quoted title">] [instructions]');
+	return { ref, message: (match[4] ?? "").trim() };
+}
+
 export async function recommendStreams(
 	ctx: Pick<ExtensionCommandContext, "model" | "sessionManager" | "modelRegistry">,
 	streams: Awaited<ReturnType<StreamCli["list"]>>,
@@ -69,7 +78,7 @@ export default function registerCheckpoint(pi: ExtensionAPI, testDeps: { agentDi
 		await run.task;
 	});
 
-	async function open(run: OpenCheckpoint, ref: string, ctx: ExtensionCommandContext): Promise<void> {
+	async function open(run: OpenCheckpoint, ref: string, message: string, ctx: ExtensionCommandContext): Promise<void> {
 		const alive = () => !run.cancellation.signal.aborted && ctx.sessionManager.getSessionId() === run.ownerId;
 		try {
 			if (!alive()) return;
@@ -153,7 +162,7 @@ export default function registerCheckpoint(pi: ExtensionAPI, testDeps: { agentDi
 					focusMain: () => { run.panel?.dispose(); run.handle?.setHidden(true); run.updateStatus?.(); },
 					changed: () => conversation.persist(),
 				}, focusShortcut);
-				void conversation.start();
+				void conversation.start(message);
 				return run.panel;
 			}, { overlay: true, overlayOptions: { anchor: "right-center", width: "64%", minWidth: 60, margin: { right: 1 }, maxHeight: 36 },
 				onHandle: (handle) => { run.handle = handle; run.updateStatus?.(); } });
@@ -168,13 +177,20 @@ export default function registerCheckpoint(pi: ExtensionAPI, testDeps: { agentDi
 	}
 
 	pi.registerCommand("checkpoint", {
-		description: "Discuss and review an explicit stream checkpoint in a side panel",
-		handler: async (ref, ctx) => {
+		description: "Review a checkpoint: /checkpoint [--stream <ref>] [instructions]",
+		handler: async (args, ctx) => {
 			if (ctx.mode !== "tui" || !ctx.hasUI) { ctx.ui.notify("/checkpoint requires an interactive Pi terminal", "error"); return; }
+			let input: ReturnType<typeof parseCheckpointArgs>;
+			try { input = parseCheckpointArgs(args); }
+			catch (error) { ctx.ui.notify(String(error), "error"); return; }
+			const { ref, message } = input;
 			const previous = active;
-			if (previous && (!ref.trim() || !previous.handle || previous.conversation?.state.activity === "applying")) {
+			if (previous && (!ref || !previous.handle || previous.conversation?.state.activity === "applying")) {
 				if (previous.handle) show(previous);
-				else ctx.ui.notify("A checkpoint chooser is already open", "info");
+				if (message) {
+					if (!ref && previous.conversation) void previous.conversation.send(message);
+					else ctx.ui.notify("Checkpoint is busy; instructions were not sent. Retry after the current operation.", "warning");
+				} else if (!previous.handle) ctx.ui.notify("A checkpoint chooser is already open", "info");
 				return;
 			}
 			const run: OpenCheckpoint = { ownerId: ctx.sessionManager.getSessionId(), cancellation: new AbortController() };
@@ -186,7 +202,7 @@ export default function registerCheckpoint(pi: ExtensionAPI, testDeps: { agentDi
 					previous.dismiss?.();
 					await previous.task;
 				}
-				await open(run, ref, ctx);
+				await open(run, ref, message, ctx);
 			})();
 		},
 	});
