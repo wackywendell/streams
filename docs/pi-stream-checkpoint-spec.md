@@ -1,6 +1,6 @@
 # Pi stream checkpoint extension
 
-Status: draft updated with agreed selection, lifecycle, and context behavior. Technical design and implementation planning remain open.
+Status: implemented against Pi 0.87.1. This document records the accepted behavior, including batched annotations and independent main-session input.
 
 ## Objective
 
@@ -22,32 +22,41 @@ Agreed behavior:
 - the LLM may recommend an existing stream or creating a named new stream
 - confirmed creation runs `streams start` immediately and binds the returned stream, independently of checkpoint approval
 - the side agent can discuss and investigate, rather than following a fixed verification checklist
-- chat fills the panel by default; a draft summary links to an expanded review view with the same message input
-- annotations become chat feedback, not persistent inline review threads
-- Close preserves unfinished chat and drafts across restarts; Close + clear discards them without undoing stream creation or binding
+- Chat and Review are separate tabs; Tab switches between them without losing feedback or scroll position
+- annotations remain local until sent as one batch, optionally with overall chat feedback
+- drafting and user editing are mutually exclusive; reading and minimizing remain available during drafting
+- Escape and Alt+P minimize without stopping the side agent; main-session submissions still run
+- restart and reload preserve unfinished chat, draft, comments and input; confirmed Clear discards them without undoing stream creation or binding
 - reopening resumes unfinished work with fresh main-session context and the current scratch note
 - `cmux: true` runs `streams cmux update -c <slug>` after creation, including starter notes, and after validated scratch updates
 - successful Apply validates the update, refreshes CMUX when enabled, posts a main-chat receipt, and closes the panel
 - invoking `/checkpoint` after successful Apply starts a new checkpoint conversation
 
-Proposed defaults, not yet agreed:
+Current defaults:
 
 - one checkpoint panel per Pi session; invoking the command again focuses it
-- the side agent starts with the main session's current model and thinking level
+- without a model override, the side agent starts with the main session's current model and thinking level
 
 The first version does not implement automatic compaction triggers, native concurrent tree branches, a general side-conversation manager, or automatic reference-note edits. It can coexist with `pi-smart-btw`; it does not depend on that extension's private state.
 
 ## Configuration
 
-The extension configuration includes a boolean `cmux` setting:
+Put extension settings in `~/.pi/agent/checkpoint.json` (or the active Pi agent directory), separate from scratch frontmatter:
 
 ```json
 {
-  "cmux": true
+  "cmux": true,
+  "focusShortcut": "alt+p",
+  "selectorModel": { "provider": "<provider>", "id": "<model-id>" },
+  "drafterModel": { "provider": "<provider>", "id": "<model-id>" }
 }
 ```
 
-Only an explicit `true` enables automatic CMUX updates. With `false` or no setting, the extension makes no CMUX calls. Put this configuration in `~/.pi/agent/checkpoint.json` (or the active Pi agent directory); it is separate from scratch frontmatter.
+All fields are optional. Only an explicit `cmux: true` enables automatic CMUX updates. `focusShortcut` defaults to `alt+p`; change it in this file and run `/reload` to register the shortcut. It toggles between the open checkpoint and main editor, but does not open a closed checkpoint. Escape also minimizes. Neither action stops the side agent.
+
+While minimized, the footer shows only checkpoint state and the restore shortcut, such as `Checkpoint · Draft 2 · Alt+P`. While expanded, the panel header shows its selected tab and activity; omit duplicate checkpoint footer status. Capitalize modifier names in visible shortcuts.
+
+`selectorModel` controls recommendation generation; `drafterModel` controls the side conversation and draft. Omit either to use the current main-session model for that role. Resolve configured provider/ID pairs through Pi's model registry; report an unavailable configured model instead of silently falling back. Neither setting changes the main session's model.
 
 When enabled, run `streams cmux update -c <slug>` using the actual canonical slug:
 
@@ -77,11 +86,11 @@ Resolve the supplied reference deterministically against the returned records, f
 - no match: propose creation and show the title, resulting slug, and working directory for confirmation
 - invalid reference: explain the problem and allow correction; do not silently invent a replacement
 
-An explicit reference can select a stream in any current status. A failed or cancelled selection leaves the previous binding unchanged. If the open panel has pending work for another stream, resolve that work before switching its target.
+An explicit reference can select a stream in any current status. If a panel is open, save and dismiss it before resolving the new reference. Confirm a change away from unfinished work; preserve that work under the old stream. Declining leaves the binding unchanged, and `/checkpoint` resumes it. Do not interrupt an in-progress Apply to switch streams.
 
 ### Bound session without a reference
 
-Resolve the stored binding against the current list and reuse it without asking again. Show the selected stream in the panel header. Resume an unfinished checkpoint for that stream if one exists; otherwise start a new conversation.
+Resolve the stored binding against the current list and reuse it without asking again. The selected stream remains available in the conversation context and session binding; the panel header stays `Streams Checkpoint`. Resume an unfinished checkpoint for that stream if one exists; otherwise start a new conversation.
 
 If the stream was renamed, follow a verifiable CLI compatibility alias to its canonical current record. If it was removed or archived, explain that and return to the chooser. Do not recreate it automatically or fuzzy-match the binding to another stream.
 
@@ -96,7 +105,7 @@ The LLM can use the current Pi conversation and stream metadata to recommend:
 
 For suggested new titles, follow `streams format`'s stable human-readable naming guidance: aim for about six words and 40 characters, putting longer context in the reason rather than the title. This is guidance, not a limit: preserve the model's full title in the selectable option and creation preview even if it runs longer. Manually entered stream titles are unaffected.
 
-Recommendations appear first and are labelled as recommendations, with each reason directly beneath its option. They are followed by other `active` streams, then the remaining non-archived streams. Show title, slug, status, and short state without duplicate entries.
+Recommendations appear first and are labelled as recommendations, with each reason directly beneath its option. Visually separate the new recommendation from existing streams; distinguish titles, statuses, and supporting state with theme colors and italics. They are followed by other `active` streams, then the remaining non-archived streams. Show title, slug, status, and short state without duplicate entries.
 
 Show up to 20 existing streams initially. Keep the rest accessible through search or Show more. This limits the display, not the list used for matching or recommendations. Creation and manual-entry choices remain visible outside that limit.
 
@@ -118,7 +127,7 @@ After successful creation and binding, run `streams cmux update -c <slug>` if `c
 
 If creation fails, keep the chooser open and the old binding intact. Outside a valid jj or Git checkout, explain the CLI failure and ask for a valid creation location instead of fabricating `repo` or `cwd`.
 
-Creation confirmation commits the choice of title and slug by writing the CLI's starter note and binding the stream. It does not authorize the subsequent checkpoint draft. Close and Close + clear both leave the new note and binding in place. An unfilled starter note correctly records what the user has approved; it is not abandoned work to delete.
+Creation confirmation commits the choice of title and slug by writing the CLI's starter note and binding the stream. It does not authorize the subsequent checkpoint draft. Minimizing, restarting and Clear all leave the new note and binding in place. An unfilled starter note correctly records what the user has approved; it is not abandoned work to delete.
 
 ## Session binding
 
@@ -143,11 +152,11 @@ For a new checkpoint conversation, load:
 - relevant project instructions
 - the selected stream, main session ID, source tree position, and working directory
 
-Full current context means what the main agent currently sees, not every historical branch or previously discarded context. If the main agent is streaming, seed from a completed, provider-valid boundary, not a partial response or unmatched tool call. Make omissions explicit rather than presenting a partial snapshot as complete.
+Full current context means what the main agent currently sees, not every historical branch or previously discarded context. Use Pi's model-message conversion to preserve branch and compaction summaries and respect excluded shell output. If the main agent is streaming, seed from a completed, provider-valid boundary, not a partial response or unmatched tool call. Make omissions explicit rather than presenting a partial snapshot as complete.
 
 The side agent runs independently. The main agent can keep working, and panel prompts do not steer or interrupt it. On a fresh checkpoint chat, automatically ask the side agent to use the included streams skill and current scratch to draft a handoff for review; this opens a conversation, not permission to write scratch. Do not send another opening request when resuming saved chat or an unsent input. The side agent decides what to investigate and what to ask; the extension does not require a PR lookup, CI refresh, test run, or fixed interview sequence.
 
-The side agent may propose a draft proactively or in response to the user. A draft is optional. Chat feedback can change the proposed state or reveal that no scratch change is needed.
+The side agent may propose a draft proactively or in response to the user. A draft is optional. After staging, its chat reply briefly summarizes substantive changes since the previous scratch note, not the mechanics of staging, routine verification, or the fact that scratch was not changed; mention material failures or blockers. Chat feedback can change the proposed state or reveal that no scratch change is needed.
 
 ### Resuming unfinished work
 
@@ -157,7 +166,7 @@ Preserve the saved chat, including annotations and their quoted selections. Asse
 
 If scratch changed since the draft was generated, preserve the discussion but regenerate the diff against the current file before allowing Apply. Require approval of that revised draft.
 
-While the panel stays open, its snapshot does not silently track new main messages. Show the source position and provide an explicit refresh action using the same context-assembly rules. Refreshing marks an existing draft as needing review; it does not rewrite earlier chat as though the agent had the new context all along.
+While the panel stays open, its snapshot does not silently track new main messages. Record the source position and provide an explicit refresh action using the same context-assembly rules. Refresh preserves the existing draft, saved comments and unfinished annotation. Report success as information, not an attention-needed state. A changed scratch file remains a warning and blocks stale Apply.
 
 Research is read-only. The model can stage a proposal but cannot apply it through ordinary file tools, shell commands, or mutating MCP tools. The extension owns approved creation and apply actions. Tool availability and enforcement must support that boundary; a prompt instruction alone is insufficient.
 
@@ -166,28 +175,39 @@ Research is read-only. The model can stage a proposal but cannot apply it throug
 The panel uses a right-anchored Pi TUI overlay. This covers part of the main transcript; it is not a reflowed second Pi column. Only one region has keyboard focus, but both agents can run.
 
 ```text
-┌─ Stream: Parser ownership cleanup ─────────┐
-│ Draft 2: clarify current owner · Review   │
-│                                           │
-│ Wrapped, streaming side conversation      │
-│                                           │
-├───────────────────────────────────────────┤
-│ Multiline message composer                │
-│ Status · Apply · Refresh · Close           │
-└───────────────────────────────────────────┘
+┌────────────────────────────────────────────────────────────┐
+│ Streams Checkpoint  [Chat]  Review · 2  ⠋ Drafting          │
+├────────────────────────────────────────────────────────────┤
+│ You                                                        │
+│ [3 annotations · Draft 1]                                  │
+│ Please address these comments.                              │
+│                                                            │
+│ Checkpoint                                                 │
+│ Wrapped response…                                          │
+│ ────────────────────────────────────────────────────────── │
+│ Multiline composer                                         │
+│ ────────────────────────────────────────────────────────── │
+│ Tab · Ctrl+C Stop · Alt+P Hide                             │
+└────────────────────────────────────────────────────────────┘
 ```
 
-Chat fills the panel by default. Review expands the diff in place, while retaining the same composer so the user can send feedback without leaving it. Before a draft exists, do not reserve space for a diff. Switching between chat and review does not discard either one's scroll position. Support keyboard focus movement between content, composer, and the main editor. Mouse support is optional where Pi supports it.
+Use one heading-styled header with Chat and Review tabs, a draft revision only when one exists, and activity only while running. Keep a separator below this header visible in both tabs, including before the first message. When no content or notices separate the header from the composer, use the editor's existing top border instead of adding a second divider. Preserve its input-scroll indicator. Do not repeat the stream title, draft summary, focus labels or idle “Ready” text.
 
-Stream responses wrap instead of truncating. Show initialization and tool activity promptly; keep the composer editable while the side agent responds, but do not automatically queue text typed during the response. Escape stops an active response before it closes the panel. On a small terminal, prioritize the composer and current content; do not hide the input behind overlay height clipping.
+Start compact and grow with content to the terminal height limit. Chat is the default tab. Tab switches to Review, where arrows select logical diff lines and Alt+K edits a comment. Chat input and the annotation editor hold separate text. Switching tabs preserves both. Page Up/Down scrolls the selected tab; in Review it also moves the selected line so subsequent arrows stay on the visible page.
+
+Responses wrap instead of truncating. Submitted feedback appears in chat as soon as the SDK accepts it, even before the first response token. Hide the automatic kickoff instruction from visible chat. Show one animated activity label for setup, drafting, tools, Apply or Refresh.
+
+While an operation runs, disable chat edits, annotation edits and submissions. Keep tab switching, reading and minimizing available. Ctrl+C stops drafting; it does not cancel Apply or Refresh. Escape and Alt+P always minimize rather than stopping the agent. On small terminals, keep input visible within the overlay height limit. Show only relevant shortcuts, without repeating Enter/Shift+Enter hints.
 
 ### Annotations
 
-The user selects a changed line, range, or hunk and chooses Comment. The shared input receives an attached reference, not an automatically submitted message. The user types feedback and sends it normally.
+While idle, select a logical diff line in Review and press Alt+K. Enter saves the comment locally; Ctrl+C cancels its unfinished edit. Editing an existing comment to empty removes it. Show saved comments beneath their selected lines. Saving a comment never starts a model turn.
 
-An annotation records the draft revision, selected text, and its location. Preserve the quoted text in chat so the comment remains understandable after line numbers change. Comments on an older draft must not be silently attached to a newer one.
+Each annotation contains the scratch path, immutable draft revision, original or proposed document side, exact line number, nearest heading and a numbered surrounding excerpt. Deleted lines refer to the original document. Wrapped and repeated lines retain their distinct document anchors.
 
-The AI responds in chat and can replace the proposed draft. There are no persistent inline threads, resolution states, or partial-hunk approvals in the first version.
+Switch to Chat to add optional overall feedback and send the batch once. Chat shows a collapsed count, such as `[3 annotations · Draft 1]`; Alt+A expands the evidence. The model receives every comment and anchor as ordinary message text. Preserve feedback until the SDK accepts it, then clear only the accepted composer text and annotation batch.
+
+The AI may replace the draft after receiving feedback. Keep sent annotations with their original chat turn, never attached to a later revision. Refuse Apply while chat feedback or an unfinished annotation remains unsent. There are no resolution states or partial-hunk approvals.
 
 ## Proposal and apply contract
 
@@ -221,17 +241,19 @@ If only CMUX refresh fails, record scratch success and the projection warning in
 | State | Behavior |
 | --- | --- |
 | Choosing | User can select, create, correct a reference, or cancel |
-| Chatting | User and agent can discuss; no draft required |
-| Draft ready | Chat and diff remain usable; user can annotate, revise, or apply |
+| Editing | The agent is idle; the user can compose chat and batch annotations, with no draft required for chat |
+| Drafting | Disable user edits and sends; keep reading, minimizing and Ctrl+C Stop available |
+| Draft ready | The user can review, annotate, send feedback or apply, but not apply with unsent feedback |
 | Applying | The approved revision is fixed; duplicate applies are disabled |
 | Conflict or error | Preserve chat and proposal; show the failed step and recovery options |
 | Applied | Update binding if needed, post the main-chat receipt, mark complete, and close; the next invocation starts fresh |
-| Closed | Stop side work and save unfinished chat, draft, and unsent input; reopening resumes with fresh context |
-| Cleared | After confirmation, discard checkpoint chat, draft, and unsent input; keep the stream and binding |
+| Minimized | Hide the overlay and focus the main editor without stopping side work; submissions run in the main session |
+| Closed by shutdown or reload | Stop side work and save unfinished state; reopening resumes with fresh context |
+| Cleared | After confirmation, discard checkpoint chat, draft, annotations and input; keep the stream and binding |
 
-Close does not apply or discard a draft. Close + clear is the explicit discard action and asks for confirmation when there is pending work. Neither action undoes confirmed stream creation or successful scratch writes.
+Minimizing neither applies nor discards a draft. Alt+C Clear is the explicit discard action and requires confirmation. It closes the panel without undoing stream creation or successful scratch writes.
 
-Persist unfinished checkpoint state across restarts, scoped to the owning main Pi session and selected stream. Save the side discussion, source-context identity, pending draft and its base, and unsent input. A different session ID must not inherit this pending work. Applied and cleared checkpoints must not reappear as unfinished conversations.
+Persist unfinished checkpoint state across restarts, scoped to the owning main Pi session and selected stream. Save the side discussion, source-context identity, pending draft and its base, annotation batches, unfinished comment and chat input. A different session ID must not inherit this pending work. Applied and cleared checkpoints must not reappear as unfinished conversations.
 
 Reload or Pi session replacement preserves saved unfinished work but disposes the side agent and invalidates late results. It must not write into a different session's stream. Closing during generation must leave a resumable conversation, not an unmatched tool call treated as a completed exchange.
 
@@ -241,16 +263,25 @@ Reload or Pi session replacement preserves saved unfinished work but disposes th
 
 Use the Pi SDK and TUI extension APIs, targeting the researched Pi 0.87.1 baseline. An embedded, separate `AgentSession` is the starting option, following the useful parts of `pi-btw`: independent execution, main-context seeding through `SessionManager`, and event-driven UI. Do not mutate `agent.state.messages` to seed history.
 
+The command starts the overlay task and returns immediately, releasing Pi's serialized prompt queue. Session shutdown cancels pending confirmations, dismisses the overlay and waits for controller cleanup. Do not await the overlay lifetime inside the command handler.
+
 Only the main Pi extension runtime appends binding metadata to the main session. The side agent never writes the main session's JSONL file. Reuse TUI layout, scrolling, editor, and width-handling components; do not create a second terminal renderer.
 
-Proposed repository locations:
+Repository locations:
 
 ```text
 docs/pi-stream-checkpoint-spec.md                 this specification
-home/.pi/agent/extensions/stream-checkpoint/       extension source, after approval
-  index.ts                                       commands and lifecycle
-  ...                                            selection, proposal, and panel code as needed
-tests/stream_checkpoint_test.mjs                  proposed Node tests
+home/.pi/agent/extensions/stream-checkpoint/       extension source
+  index.ts                                       command and overlay lifecycle
+  conversation.ts                                model operations and durable feedback
+  panel.ts                                       Chat/Review rendering and idle input
+  review.ts                                      diffs, immutable anchors and prompt formatting
+  view.ts                                        transcript projection and status labels
+  chooser.ts                                     stream selection UI
+  agent.ts                                       restricted SDK session and context
+  core.ts                                        persistence, binding and guarded Apply
+  streams.ts                                     argument-array CLI boundary
+tests/stream_checkpoint_test.mjs                  Node regression tests
 home/bin/_streams/                               existing CLI and canonical schema
 ```
 
@@ -289,7 +320,7 @@ Existing CLI test target:
 mise run streams:test
 ```
 
-Proposed extension test command, once the test file exists:
+Extension test command:
 
 ```sh
 node --test tests/stream_checkpoint_test.mjs
@@ -320,16 +351,21 @@ Tests must use temporary scratch files and mocked CLI, model, and CMUX boundarie
 | Main agent is busy | Side discussion works without steering or aborting the main run |
 | No draft needed | User can finish the discussion without a scratch write |
 | Annotation on draft 1 followed by draft 2 | Chat retains draft 1's quoted selection without misattributing it to draft 2 |
-| Chatting while reviewing | Review shows the complete draft with the composer available; switching back preserves chat and does not lose typed input |
+| Batched feedback | Save several anchored comments without a model turn; send them with optional chat feedback as one turn |
+| Drafting/editing exclusion | Drafting blocks chat and annotation edits; reading, minimizing and Stop remain available |
+| Submitted feedback | Show the accepted user message during generation with a collapsed annotation count; the model receives full evidence |
+| Chat and Review tabs | Switching tabs preserves chat input, unfinished comments and scroll position |
+| Minimized panel | Escape and Alt+P do not stop the side agent; main-session submissions run normally |
+| Refresh succeeds | Preserve feedback and draft; show informational status rather than “Needs attention” |
 | Apply | Write exactly the approved revision, validate, update binding if needed, post slug/path/change-summary receipt without triggering the main agent, and close |
 | Invocation after Apply | Start a fresh checkpoint chat with current main context and updated scratch |
 | Apply fails | Keep the panel and draft available; distinguish rejected validation, a stale base, a failed write, and uncertain post-write confirmation |
 | Concurrent scratch edit | Reject the stale proposal and require approval of a revised diff |
 | Side agent attempts a write | Tool permissions prevent bypassing review through files, shell, or external services |
-| Close without Apply | Persist unfinished chat, draft, and input; leave scratch and binding unchanged, including a newly created starter note |
-| Reopen after Close or restart | Resume saved discussion with full current main context, streams guidance, and current scratch, without duplicating old context snapshots |
+| Shutdown without Apply | Persist unfinished chat, draft, comments and input; leave scratch and binding unchanged, including a newly created starter note |
+| Reopen after shutdown or reload | Resume saved discussion with full current main context, streams guidance and current scratch, without duplicating old context snapshots |
 | Scratch changes while closed | Preserve chat but regenerate the diff against the current file and require new approval |
-| Close + clear | Discard pending checkpoint work after confirmation; keep the stream and binding; next invocation starts fresh |
+| Clear | Discard pending checkpoint work after confirmation; keep the stream and binding; next invocation starts fresh |
 | Session replacement during side work | Preserve the old session's unfinished work; cancel or ignore late results without changing the new session or its files |
 | `cmux: true` on creation | Run `streams cmux update -c <actual-slug>` after creation and binding, even if only the starter note exists |
 | `cmux: true` on Apply | Run `streams cmux update -c <canonical-slug>` after the write passes validation |
@@ -364,11 +400,11 @@ Never:
 - write unseen draft changes or silently repair an applied note
 - start a new Pi conversation when the user chooses a new stream
 
-## Remaining technical decisions
+## Implementation boundaries
 
-The stream list, immediate creation and binding, persistent unfinished conversations, fresh context on resume, and close-after-Apply workflow are agreed.
+Pending checkpoint state is stored atomically under the active agent directory, keyed by main-session owner and stream. The isolated side session exposes local read, grep, find and ls tools plus the proposal tool; external-service research adapters are not included.
 
-The implementation plan must resolve configuration location and loading, durable checkpoint storage, and context assembly within the model's context budget. It must also verify candidate validation through the existing streams schema and enforcement of read-only research tools. These constraints do not permit silent context truncation, weaker approval, or overwriting concurrent edits.
+Context preflight uses Pi's message-token estimate and rejects input above 90% of the model window with an actionable error. It does not silently truncate context. Guarded Apply uses the streams CLI's schema and base-content hash; an atomic rename alone does not guarantee cross-process compare-and-swap.
 
 ## Evidence
 

@@ -1,6 +1,6 @@
 import type { AgentMessage } from "@earendil-works/pi-agent-core";
-import { createAgentSession, DefaultResourceLoader, estimateTokens, SessionManager, SettingsManager } from "@earendil-works/pi-coding-agent";
-import type { AgentSession, ModelRuntime, ReadonlySessionManager } from "@earendil-works/pi-coding-agent";
+import { convertToLlm, createAgentSession, DefaultResourceLoader, estimateTokens, SessionManager, SettingsManager } from "@earendil-works/pi-coding-agent";
+import type { AgentSession, ExtensionContext, ModelRuntime } from "@earendil-works/pi-coding-agent";
 import type { Model } from "@earendil-works/pi-ai/compat";
 import { Type } from "typebox";
 
@@ -21,7 +21,7 @@ export function completedMessages(messages: AgentMessage[]): AgentMessage[] {
 }
 
 /** Follow Pi's compaction and context edits, then drop incomplete trailing tool batches. */
-export function checkpointContext(manager: ReadonlySessionManager): { messages: AgentMessage[]; leafId: string | null; omitted: number } {
+export function checkpointContext(manager: ExtensionContext["sessionManager"]): { messages: AgentMessage[]; leafId: string | null; omitted: number } {
 	const projection = manager.buildSessionProjection().messages;
 	const messages = completedMessages(projection);
 	return { messages, leafId: manager.getLeafId(), omitted: projection.length - messages.length };
@@ -45,7 +45,8 @@ export async function createCheckpointSession(options: {
 	systemPrompt: string;
 	onProposal?: (content: string, summary: string) => Promise<number>;
 }): Promise<AgentSession> {
-	assertContextFits(options.model, options.systemPrompt, [...options.mainMessages, ...options.savedMessages]);
+	const messages = convertToLlm([...options.mainMessages, ...completedMessages(options.savedMessages)]);
+	assertContextFits(options.model, options.systemPrompt, messages);
 	const settings = SettingsManager.create(options.cwd, options.agentDir);
 	const loader = new DefaultResourceLoader({
 		cwd: options.cwd, agentDir: options.agentDir, settingsManager: settings,
@@ -54,7 +55,7 @@ export async function createCheckpointSession(options: {
 	});
 	await loader.reload();
 	const manager = SessionManager.inMemory(options.cwd);
-	for (const message of [...options.mainMessages, ...completedMessages(options.savedMessages)]) manager.appendMessage(message);
+	for (const message of messages) manager.appendMessage(message);
 	const proposalTool = options.onProposal ? {
 		name: "propose_checkpoint",
 		label: "Propose checkpoint",
@@ -63,7 +64,7 @@ export async function createCheckpointSession(options: {
 		executionMode: "sequential" as const,
 		async execute(_id: string, args: { content: string; summary: string }) {
 			const revision = await options.onProposal!(args.content, args.summary);
-			return { content: [{ type: "text" as const, text: `Staged draft ${revision} for review; no scratch file was written.` }] };
+			return { content: [{ type: "text" as const, text: `Draft ${revision} ready for review.` }], details: { revision } };
 		},
 	} : undefined;
 	const { session } = await createAgentSession({

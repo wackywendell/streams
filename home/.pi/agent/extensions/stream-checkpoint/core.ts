@@ -3,6 +3,7 @@ import { dirname, join } from "node:path";
 import { createHash, randomUUID } from "node:crypto";
 import type { KeyId } from "@earendil-works/pi-tui";
 import type { StreamCli } from "./streams.ts";
+import type { Annotation, AnnotationEditor, Feedback } from "./review.ts";
 import { isSeq, parseDocument } from "yaml";
 
 export const BINDING_TYPE = "stream-checkpoint-binding";
@@ -106,6 +107,9 @@ export interface Pending {
 	draft?: Draft;
 	source?: { ownerId: string; leafId: string | null };
 	input: string;
+	annotations?: Annotation[];
+	annotationEditor?: AnnotationEditor;
+	feedback?: Feedback[];
 }
 
 function pendingPath(agentDir: string, ownerId: string, slug: string): string {
