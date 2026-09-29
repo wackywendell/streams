@@ -5,14 +5,13 @@ from __future__ import annotations
 from pathlib import Path
 from typing import Sequence
 
-from .config import SCRATCH_ROOT
 from .errors import StreamError
 from .models import Stream
 from .slug import normalized_slug, slugify
 from .store import check_paths, list_streams
 
 
-def resolve_stream_ref(ref: str, *, root: Path = SCRATCH_ROOT) -> Stream:
+def resolve_stream_ref(ref: str, *, root: Path | None = None) -> Stream:
     """Resolve a user-facing stream title or slug to one current stream."""
     streams = list_streams(root)
     normalized_ref = normalized_slug(ref)
@@ -41,7 +40,7 @@ def resolve_stream_ref(ref: str, *, root: Path = SCRATCH_ROOT) -> Stream:
     raise StreamError(f"stream reference {ref!r} is ambiguous: {formatted}")
 
 
-def resolve_check_path_ref(ref: str, *, root: Path = SCRATCH_ROOT) -> Path:
+def resolve_check_path_ref(ref: str, *, root: Path | None = None) -> Path:
     """Resolve a user-facing stream reference to a scratch file path for checks."""
     paths = check_paths(root)
     slug = resolve_slug_ref(ref, [path.stem for path in paths], noun="scratch file")

@@ -3,6 +3,7 @@ from __future__ import annotations
 import hashlib
 import io
 import json
+import subprocess
 import sys
 import tempfile
 import unittest
@@ -915,6 +916,14 @@ class FakeCmux(CmuxClient):
 
 
 class CmuxTest(unittest.TestCase):
+    def test_successful_cmux_stderr_is_forwarded_without_polluting_stdout(self) -> None:
+        completed = subprocess.CompletedProcess(["cmux", "rpc"], 0, '{"ok":true}', "CMUX warning\n")
+        output = io.StringIO()
+        with patch("_streams.cmux.subprocess.run", return_value=completed), patch("sys.stderr", output):
+            result = CmuxClient().run(["cmux", "rpc"])
+        self.assertEqual(result.stdout, '{"ok":true}')
+        self.assertEqual(output.getvalue(), "CMUX warning\n")
+
     def test_color_for_status(self) -> None:
         self.assertEqual(color_for_status("active"), "Green")
         self.assertEqual(color_for_status("waiting"), "Amber")
@@ -946,7 +955,7 @@ class CmuxTest(unittest.TestCase):
             cwd.mkdir()
             stream = show_stream(write_stream(root, "active-stream", title="Active Stream", state="Ready to work", cwd=str(cwd)).stem, root)
             cmux = FakeCmux()
-            with patch("_streams.cmux.WORKNOTES_ROOT", vault):
+            with patch("_streams.cmux.notes_root", return_value=vault):
                 open_workspace(stream, cmux)
             self.assertEqual(
                 cmux.commands[0],
@@ -988,7 +997,7 @@ class CmuxTest(unittest.TestCase):
             stream = show_stream(write_stream(root, "active-stream", title="Active Stream", state="Ready to work").stem, root)
             workspace = CmuxWorkspace({"ref": "workspace:2", "title": "Old"})
             cmux = FakeCmux()
-            with patch("_streams.cmux.WORKNOTES_ROOT", vault):
+            with patch("_streams.cmux.notes_root", return_value=vault):
                 update_workspace(stream, workspace, cmux)
             self.assertEqual(cmux.commands[0], ["cmux", "workspace-action", "--workspace", "workspace:2", "--action", "rename", "--title", "Active Stream"])
             self.assertEqual(cmux.commands[1], ["cmux", "workspace-action", "--workspace", "workspace:2", "--action", "set-description", "--description", "[🗒︎](obsidian://open?vault=worknotes&file=scratch%2Factive-stream.md) _Ready to work_"])
@@ -1006,7 +1015,7 @@ class CmuxTest(unittest.TestCase):
             unmatched = CmuxWorkspace({"ref": "workspace:3", "index": 2, "title": "Other"})
             partial_title = CmuxWorkspace({"ref": "workspace:4", "index": 3, "title": "review"})
             cmux = FakeCmux([tasks, matching, unmatched, partial_title])
-            with patch("_streams.cmux.WORKNOTES_ROOT", vault):
+            with patch("_streams.cmux.notes_root", return_value=vault):
                 updated, warnings = update_all_workspaces(cmux, root=root)
             self.assertEqual(updated, [(matching, stream)])
             self.assertEqual(
@@ -1026,7 +1035,7 @@ class CmuxTest(unittest.TestCase):
             stream = show_stream(write_stream(root, "active-stream", title="Active Stream", state="Ready to work").stem, root)
             workspace = CmuxWorkspace({"ref": "workspace:2", "title": "Old"})
             cmux = FakeCmux([workspace])
-            with patch("_streams.cmux.WORKNOTES_ROOT", vault):
+            with patch("_streams.cmux.notes_root", return_value=vault):
                 resolved = update_current_workspace(stream, cmux)
             self.assertEqual(resolved.display_ref, "workspace:2")
             self.assertEqual(cmux.commands[0], ["cmux", "workspace-action", "--workspace", "workspace:2", "--action", "rename", "--title", "Active Stream"])
@@ -1035,7 +1044,7 @@ class CmuxTest(unittest.TestCase):
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
             stream = show_stream(write_stream(root, "active-stream").stem, root)
-            with patch("_streams.cmux.WORKNOTES_ROOT", root / "worknotes"):
+            with patch("_streams.cmux.notes_root", return_value=root / "worknotes"):
                 with self.assertRaisesRegex(StreamError, "outside worknotes root"):
                     description_for_stream(stream)
 
@@ -1060,7 +1069,7 @@ class CmuxTest(unittest.TestCase):
                 ).stem,
                 root,
             )
-            with patch("_streams.cmux.WORKNOTES_ROOT", vault):
+            with patch("_streams.cmux.notes_root", return_value=vault):
                 description = description_for_stream(stream)
             self.assertEqual(
                 description,

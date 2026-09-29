@@ -10,7 +10,7 @@ import re
 import tempfile
 
 from .check import check_content
-from .config import ARCHIVE_DIRNAME, DEFAULT_STATE, DEFAULT_STATUS, SCRATCH_ROOT
+from .config import ARCHIVE_DIRNAME, DEFAULT_STATE, DEFAULT_STATUS, scratch_root
 from .errors import StreamError
 from .frontmatter import render_frontmatter, split_frontmatter
 from .location import discover_home_path_aliases, discover_stream_location, format_local_path
@@ -19,13 +19,13 @@ from .schema import SchemaFinding, error_messages
 from .slug import normalized_slug
 
 
-def stream_paths(root: Path = SCRATCH_ROOT) -> list[Path]:
+def stream_paths(root: Path | None = None) -> list[Path]:
     """Return current scratch-first stream files.
 
     Legacy scratch notes without YAML frontmatter are ignored so `streams list`
     can coexist with older worknotes during migration.
     """
-    root = root.expanduser()
+    root = (root if root is not None else scratch_root()).expanduser()
     if not root.exists():
         return []
     archive = root / ARCHIVE_DIRNAME
@@ -38,13 +38,13 @@ def stream_paths(root: Path = SCRATCH_ROOT) -> list[Path]:
     return sorted(paths, key=lambda item: item.stem)
 
 
-def check_paths(root: Path = SCRATCH_ROOT) -> list[Path]:
+def check_paths(root: Path | None = None) -> list[Path]:
     """Return all current scratch markdown files for schema checks.
 
     Unlike `stream_paths()`, this includes legacy files without frontmatter so
     `streams check` reports them as invalid stream records.
     """
-    root = root.expanduser()
+    root = (root if root is not None else scratch_root()).expanduser()
     if not root.exists():
         return []
     return sorted(
@@ -71,24 +71,24 @@ def load_stream(path: Path) -> Stream:
     return stream
 
 
-def list_streams(root: Path = SCRATCH_ROOT) -> list[Stream]:
+def list_streams(root: Path | None = None) -> list[Stream]:
     return [load_stream(path) for path in stream_paths(root)]
 
 
-def show_stream(slug: str, root: Path = SCRATCH_ROOT) -> Stream:
+def show_stream(slug: str, root: Path | None = None) -> Stream:
     slug = normalized_slug(slug)
-    path = root.expanduser() / f"{slug}.md"
+    path = (root if root is not None else scratch_root()).expanduser() / f"{slug}.md"
     if not path.exists():
         raise StreamError(f"no stream found for slug {slug!r}")
     return load_stream(path)
 
 
-def preview_start(title: str, *, root: Path = SCRATCH_ROOT, cwd: Path | None = None) -> Stream:
+def preview_start(title: str, *, root: Path | None = None, cwd: Path | None = None) -> Stream:
     title = title.strip()
     if not title:
         raise StreamError("title cannot be empty")
     slug = normalized_slug(title)
-    root = root.expanduser()
+    root = (root if root is not None else scratch_root()).expanduser()
     path = root / f"{slug}.md"
     if path.exists():
         raise StreamError(f"stream {slug!r} already exists at {path}")
@@ -131,7 +131,7 @@ _List unresolved questions that affect how to continue._
     return Stream(path=path, frontmatter=frontmatter, body=body)
 
 
-def start_stream(title: str, *, root: Path = SCRATCH_ROOT, cwd: Path | None = None) -> Stream:
+def start_stream(title: str, *, root: Path | None = None, cwd: Path | None = None) -> Stream:
     planned = preview_start(title, root=root, cwd=cwd)
     try:
         planned.path.parent.mkdir(parents=True, exist_ok=True)

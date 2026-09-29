@@ -8,6 +8,7 @@ import sys
 from pathlib import Path
 
 from .errors import StreamError
+from .config import CONFIG_KEYS, config_path, load_config, read_overrides, set_config
 from .models import Stream
 from .store import archive_stream, list_streams, preview_start, rename_stream, start_stream, update_stream
 from .cmux import CmuxClient, load_stream_for_update, markdown_link_for_item, open_workspace, update_all_workspaces, update_current_workspace, update_workspace
@@ -52,6 +53,28 @@ def render_show(stream: Stream) -> str:
             f"path:        {stream.path}",
         ]
     )
+
+
+def command_config(args: argparse.Namespace) -> int:
+    if args.config_action == "set":
+        set_config(args.key, args.value)
+    config = load_config()
+    if args.config_action:
+        if args.key not in CONFIG_KEYS:
+            raise StreamError(f"unknown streams config key: {args.key}")
+        section, name = args.key.split(".")
+        value = config[section][name]
+        print(json.dumps(value) if args.json or isinstance(value, bool) else value)
+    elif args.json:
+        print(json.dumps(config, indent=2, sort_keys=True))
+    else:
+        overrides = read_overrides()
+        print(f"Config: {config_path()}")
+        for key in CONFIG_KEYS:
+            section, name = key.split(".")
+            source = "configured" if name in overrides.get(section, {}) else "default"
+            print(f"{key}: {json.dumps(config[section][name])} ({source})")
+    return 0
 
 
 def command_list(args: argparse.Namespace) -> int:
@@ -179,6 +202,17 @@ def command_archive(args: argparse.Namespace) -> int:
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(description="Manage scratch-first work streams.")
     subparsers = parser.add_subparsers(dest="command", required=True)
+
+    config_parser = subparsers.add_parser("config", help="view or change shared streams settings")
+    config_parser.add_argument("--json", action="store_true", help="print effective configuration as JSON")
+    config_parser.set_defaults(func=command_config)
+    config_actions = config_parser.add_subparsers(dest="config_action")
+    for action in ("get", "set"):
+        action_parser = config_actions.add_parser(action)
+        action_parser.add_argument("key", help=", ".join(CONFIG_KEYS))
+        if action == "set":
+            action_parser.add_argument("value")
+        action_parser.add_argument("--json", action="store_true", default=argparse.SUPPRESS)
 
     list_parser = subparsers.add_parser("list", help="list current streams")
     list_parser.add_argument("--json", action="store_true", help="print stream frontmatter as JSON")

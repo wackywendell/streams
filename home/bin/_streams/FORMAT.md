@@ -1,6 +1,6 @@
 # Streams Scratch Format
 
-Scratch files live in `~/worknotes/scratch`. One top-level markdown file is one current stream. Archived streams live under `~/worknotes/scratch/archive`; `archived` is not a status.
+Scratch files live in `<notes.root>/scratch`, defaulting to `~/worknotes/scratch`. One top-level markdown file is one current stream. Archived streams live under `<notes.root>/scratch/archive`; `archived` is not a status. Paths below use the default notes root.
 
 `streams format` is the source of truth for the stream schema and CLI behavior contract.
 
@@ -146,6 +146,27 @@ The `sessions` frontmatter field is the ordered machine-readable resume list. Us
 ```
 
 If there is only one other session besides the current one, and the current session did not start the stream, the other session is likely the original/initiator/planner session. Label it that way when the scratch context supports it.
+
+## Configuration
+
+Use `streams config` to see effective settings, the config path and which values come from defaults. Use `streams config --json` for machine-readable settings. Clients should fetch settings through the CLI, not read the file themselves.
+
+```sh
+streams config get notes.root
+streams config set notes.root ~/worknotes
+streams config set obsidian.vault worknotes
+streams config set cmux.enabled true
+```
+
+| Key | Default | Purpose |
+| --- | --- | --- |
+| `notes.root` | `~/worknotes` | Absolute notes path; scratch, archive and artifact paths derive from it |
+| `obsidian.vault` | `worknotes` | Vault name used in CMUX note links |
+| `cmux.enabled` | `false` | Enables explicit CMUX refresh by checkpoint clients |
+
+Overrides live in `$XDG_CONFIG_HOME/streams/config.json`, or `~/.config/streams/config.json` when the environment variable is unset. `set` validates values and atomically replaces the file. Boolean values must be `true` or `false`. Unknown keys and malformed files are errors, not defaults.
+
+These settings are shared workflow settings only. Pi models and hotkeys stay in the extension's separate `checkpoint.json`. `cmux.enabled` does not make every `streams update` or `start` call run CMUX; a checkpoint client follows a successful write with `streams cmux update -c <slug>` when enabled. Explicit CMUX commands and `--current` remain available regardless of this preference.
 
 ## CLI Notes
 

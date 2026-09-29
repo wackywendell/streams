@@ -6,12 +6,13 @@ import json
 import os
 import re
 import subprocess
+import sys
 from dataclasses import dataclass
 from urllib.parse import urlencode
 from pathlib import Path
 from typing import Any
 
-from .config import OBSIDIAN_VAULT_NAME, WORKNOTES_ROOT
+from .config import load_config, notes_root
 from .errors import StreamError
 from .agent_sessions import latest_session_command
 from .models import Stream
@@ -60,7 +61,10 @@ class CmuxWorkspace:
 class CmuxClient:
     def run(self, args: list[str]) -> subprocess.CompletedProcess[str]:
         try:
-            return subprocess.run(args, text=True, capture_output=True, check=True)
+            result = subprocess.run(args, text=True, capture_output=True, check=True)
+            if result.stderr:
+                print(result.stderr, end="", file=sys.stderr)
+            return result
         except FileNotFoundError as exc:
             raise StreamError(f"missing executable: {args[0]}") from exc
         except subprocess.CalledProcessError as exc:
@@ -164,11 +168,12 @@ def markdown_link_for_item(item: dict[str, str], label: str) -> str:
 
 
 def obsidian_link_for_stream(stream: Stream) -> str:
+    root = notes_root()
     try:
-        file = stream.path.relative_to(WORKNOTES_ROOT).as_posix()
+        file = stream.path.relative_to(root).as_posix()
     except ValueError as exc:
-        raise StreamError(f"stream {stream.slug!r} is outside worknotes root {WORKNOTES_ROOT}") from exc
-    query = urlencode({"vault": OBSIDIAN_VAULT_NAME, "file": file})
+        raise StreamError(f"stream {stream.slug!r} is outside worknotes root {root}") from exc
+    query = urlencode({"vault": load_config()["obsidian"]["vault"], "file": file})
     return f"[🗒︎](obsidian://open?{query})"
 
 
