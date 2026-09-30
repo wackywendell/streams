@@ -87,13 +87,16 @@ export class CheckpointConversation {
 		return this.operation;
 	}
 
-	start(message = ""): Promise<void> {
+	get isFresh(): boolean {
+		return !this.options.pending.messages.length && !this.state.draft && !this.state.input.trim() && !this.state.annotations.length && !this.state.annotationEditor;
+	}
+
+	start(message = "", snapshot = checkpointContext(this.options.manager)): Promise<void> {
 		return this.run("starting", async () => {
-			const { pending } = this.options;
-			const fresh = !pending.messages.length && !pending.draft && !pending.input.trim() && !this.state.annotations.length && !this.state.annotationEditor;
+			const fresh = this.isFresh;
 			const accepted = message ? this.acceptCommandMessage(message) : false;
 			const rejection = message && !accepted ? this.state.notice : undefined;
-			await this.startSide();
+			await this.startSide(snapshot);
 			if (rejection) this.state.notice = rejection;
 			if ((accepted || (!message && fresh)) && this.isOwner()) {
 				this.state.activity = "drafting";
@@ -104,12 +107,11 @@ export class CheckpointConversation {
 		});
 	}
 
-	private async startSide(): Promise<void> {
+	private async startSide(snapshot: ReturnType<typeof checkpointContext>): Promise<void> {
 		const o = this.options;
 		const safe = completedMessages(o.pending.messages as AgentMessage[]);
 		if (safe.length !== o.pending.messages.length) this.state.notice = { level: "info", text: "Interrupted answer omitted; earlier question preserved" };
 		o.pending.messages = safe;
-		const snapshot = checkpointContext(o.manager);
 		o.pending.source = { ownerId: o.pending.ownerId, leafId: snapshot.leafId };
 		const scratch = readFileSync(o.binding.path, "utf8");
 		if (o.pending.draft && o.pending.draft.baseContent !== scratch) this.state.notice = { level: "warning", text: "Scratch changed; request a new draft before Apply" };
@@ -157,6 +159,7 @@ export class CheckpointConversation {
 		await this.side.prompt(text, { expandPromptTemplates: false });
 		const last = this.side.messages.at(-1);
 		if (last?.role === "assistant" && last.stopReason === "error") throw new Error(last.errorMessage ?? "Checkpoint response failed");
+		if (last?.role === "assistant" && last.stopReason === "aborted") this.state.notice = { level: "info", text: "Response stopped" };
 	}
 
 	private acceptCommandMessage(message: string): boolean {
@@ -193,12 +196,12 @@ export class CheckpointConversation {
 		await this.prompt(this.accepting.prompt);
 	}
 
-	refreshContext(): Promise<void> {
+	refreshContext(snapshot = checkpointContext(this.options.manager)): Promise<void> {
 		return this.run("refreshing", async () => {
 			this.persist();
 			this.side?.dispose();
 			this.side = undefined;
-			await this.startSide();
+			await this.startSide(snapshot);
 			this.state.notice ??= { level: "info", text: this.state.draft ? `Context refreshed; draft ${this.state.draft.revision} unchanged` : "Context refreshed" };
 		});
 	}

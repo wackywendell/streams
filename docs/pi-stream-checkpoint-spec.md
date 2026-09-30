@@ -21,6 +21,9 @@ Agreed behavior:
 - all non-archived streams remain available, with 20 shown initially
 - the LLM may recommend an existing stream or creating a named new stream
 - confirmed creation runs `streams start` immediately and binds the returned stream, independently of checkpoint approval
+- fresh drafting starts in the background; stream selection and saved unfinished work open their UI immediately
+- a user-only transcript card records the invocation snapshot and updates when the draft or reply is ready
+- completion opens the panel only if the main composer is empty, whether or not the main agent is still running
 - the side agent can discuss and investigate, rather than following a fixed verification checklist
 - Chat and Review are separate tabs; Tab switches between them without losing feedback or scroll position
 - annotations remain local until sent as one batch, optionally with overall chat feedback
@@ -68,7 +71,7 @@ Keep extension-only settings in `~/.pi/agent/checkpoint.json` (or the active Pi 
 
 All extension fields are optional. The old `cmux` field is rejected with migration instructions: set `cmux.enabled` through the CLI, then remove `cmux` from `checkpoint.json`. `focusShortcut` defaults to `alt+p`; change it in this file and run `/reload` to register the shortcut. It toggles between the open checkpoint and main editor, but does not open a closed checkpoint. Escape also minimizes. Neither action stops the side agent.
 
-While minimized, the footer shows only checkpoint state and the restore shortcut, such as `Checkpoint · Draft 2 · Alt+P`. While expanded, the panel header shows its selected tab and activity; omit duplicate checkpoint footer status. Capitalize modifier names in visible shortcuts.
+While minimized, the footer shows only checkpoint state and the restore shortcut, such as `Checkpoint · Draft 2 ready · Alt+P`. While expanded, the panel header shows its selected tab and activity; omit duplicate checkpoint footer status. Capitalize modifier names in visible shortcuts.
 
 `selectorModel` controls recommendation generation; `drafterModel` controls the side conversation and draft. Omit either to use the current main-session model for that role. Resolve configured provider/ID pairs through Pi's model registry; report an unavailable configured model instead of silently falling back. Neither setting changes the main session's model.
 
@@ -115,7 +118,7 @@ If the stream was renamed, follow a verifiable CLI compatibility alias to its ca
 
 ### Unbound session without a reference
 
-Show a loading indicator while gathering recommendations, then open a centered chooser before the right-anchored conversation panel. Its existing-stream choices come from `streams list --json`, never from model-generated names.
+Show a loading indicator while gathering recommendations, then open a centered chooser. After selection, fresh drafting starts in the background; saved unfinished work opens the right-anchored conversation panel. Its existing-stream choices come from `streams list --json`, never from model-generated names.
 
 The LLM can use the current Pi conversation and stream metadata to recommend:
 
@@ -160,6 +163,20 @@ Store extension metadata containing the owning Pi session ID, canonical stream s
 - session metadata stays outside model context and scratch frontmatter
 
 When proposing a scratch update, record `pi:<main-session-id>` in `sessions` if it is missing, before showing the draft. Preserve the existing ordering. Do not add the temporary checkpoint agent's ID, which would make `streams resume` target the wrong conversation.
+
+## Invocation marker and readiness
+
+Capture the main-branch context and system prompt when opening or switching a checkpoint, before asynchronous setup or stream selection. Record a user-only card at that point in the transcript. Use that same frozen context for recommendations and the side session. Later main-session messages do not enter the snapshot.
+
+Update the card in place as setup and drafting progress. Show `Draft N ready` after a completed response with a draft, or `Reply ready` without one. Show `Needs attention` for errors and `Stopped` for interrupted output. The footer repeats readiness while the panel is hidden. Alt+P can open the active panel during drafting or after completion.
+
+Keep a fresh drafting panel hidden initially. Open stream selection and saved unfinished work without waiting for a new response. When a side response finishes successfully, check the main composer once. Open the panel if its text is exactly empty, including while the main agent is running. Otherwise, leave the composer and focus unchanged. Clearing the composer later does not trigger an opening. Stopping, failing or shutting down a response does not auto-open the panel.
+
+Ctrl+O expands the card to show the snapshot timestamp, main-session ID, source tree entry, supplied instructions and omitted incomplete-message count. Store lifecycle changes as append-only custom entries and render their latest state at the original marker. These entries stay outside model context; the separate Apply receipt still shares its minimal summary at the time of the write. Reload reconstructs saved status without starting work; interrupted runs must not remain labelled as drafting.
+
+Refresh captures a new snapshot and adds a new source marker. Simply focusing an already open checkpoint neither refreshes context nor adds a marker.
+
+Use state changes, not an animated transcript spinner. Pi's regular terminal mode redraws the transcript when an updated card is above the visible viewport; fullscreen mode updates its managed transcript.
 
 ## Side conversation
 
@@ -309,6 +326,7 @@ home/.pi/agent/extensions/stream-checkpoint/       extension source
   core.ts                                        persistence, binding and guarded Apply
   streams.ts                                     argument-array CLI boundary and diagnostics
   receipt.ts                                     shared receipt and expandable user-only details
+  journal.ts                                     source markers and append-only lifecycle status
 tests/stream_checkpoint_test.mjs                  Node regression tests
 home/bin/_streams/                               existing CLI and canonical schema
 ```
@@ -380,6 +398,12 @@ Tests must use temporary scratch files and mocked CLI, model, and CMUX boundarie
 | Later no-argument invocation | Reuse the stored binding without asking again |
 | Different explicit stream | Rebind only after successful resolution or creation and handle pending panel work |
 | Restart or tree navigation | Restore the main session's latest binding; do not inherit another session ID's binding |
+| Invocation snapshot | Record the source before setup; recommendations and drafting exclude later main-session messages |
+| Fresh drafting | Keep the panel hidden; show a user-only transcript marker and footer status |
+| Saved unfinished work | Open immediately, preserving draft, chat and unsent feedback |
+| Completion with an empty composer | Open the panel even if the main agent is still running |
+| Completion with composer text | Keep focus and text untouched; later clearing does not auto-open |
+| Status replay | Update the original card, persist status outside model context and distinguish interrupted work after reload |
 | Main agent is busy | Side discussion works without steering or aborting the main run |
 | No draft needed | User can finish the discussion without a scratch write |
 | Annotation on draft 1 followed by draft 2 | Chat retains draft 1's quoted selection without misattributing it to draft 2 |

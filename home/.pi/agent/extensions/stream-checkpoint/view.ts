@@ -43,7 +43,15 @@ export function shortcutLabel(shortcut: string): string {
 	return shortcut.split("+").map((part) => part.length === 1 ? part.toUpperCase() : part[0].toUpperCase() + part.slice(1)).join("+");
 }
 
+export function checkpointLabel(state: PanelState): string {
+	const activity = activityLabel(state);
+	if (activity) return activity;
+	if (state.notice?.level === "error" || state.notice?.level === "warning") return "Needs attention";
+	if (state.notice?.text === "Response stopped") return "Stopped";
+	if (state.draft) return `Draft ${state.draft.revision} ready`;
+	return state.messages.at(-1)?.role === "assistant" ? "Reply ready" : "Ready for input";
+}
+
 export function checkpointStatus(state: PanelState, shortcut: string): string {
-	const status = activityLabel(state) || (state.notice?.level === "error" || state.notice?.level === "warning" ? "Needs attention" : state.draft ? `Draft ${state.draft.revision}` : "Open");
-	return `Checkpoint · ${status} · ${shortcutLabel(shortcut)}`;
+	return `Checkpoint · ${checkpointLabel(state)} · ${shortcutLabel(shortcut)}`;
 }

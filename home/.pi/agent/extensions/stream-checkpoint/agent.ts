@@ -24,7 +24,7 @@ export function completedMessages(messages: AgentMessage[]): AgentMessage[] {
 export function checkpointContext(manager: ExtensionContext["sessionManager"]): { messages: AgentMessage[]; leafId: string | null; omitted: number } {
 	const projection = manager.buildSessionProjection().messages;
 	const messages = completedMessages(projection);
-	return { messages, leafId: manager.getLeafId(), omitted: projection.length - messages.length };
+	return { messages: structuredClone(messages), leafId: manager.getLeafId(), omitted: projection.length - messages.length };
 }
 
 export function assertContextFits(model: Pick<Model<any>, "contextWindow">, systemPrompt: string, messages: AgentMessage[]): void {

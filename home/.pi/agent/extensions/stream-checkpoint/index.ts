@@ -12,7 +12,8 @@ import { CheckpointPanel } from "./panel.ts";
 import { StreamChooser } from "./chooser.ts";
 import type { ChosenStream } from "./chooser.ts";
 import { CheckpointConversation } from "./conversation.ts";
-import { checkpointStatus } from "./view.ts";
+import { checkpointLabel, checkpointStatus } from "./view.ts";
+import { CheckpointJournal, MARKER_TYPE } from "./journal.ts";
 import { StreamCli } from "./streams.ts";
 import { checkpointReceipt, renderCheckpointReceipt } from "./receipt.ts";
 
@@ -29,9 +30,9 @@ export async function recommendStreams(
 	ctx: Pick<ExtensionCommandContext, "model" | "sessionManager" | "modelRegistry">,
 	streams: Awaited<ReturnType<StreamCli["list"]>>,
 	model = ctx.model,
+	snapshot = checkpointContext(ctx.sessionManager),
 ): Promise<Recommendations> {
 	if (!model) return { existing: [] };
-	const snapshot = checkpointContext(ctx.sessionManager);
 	const metadata = streams.map(({ slug, title, status, state }) => ({ slug, title, status, state }));
 	const message: AgentMessage = { role: "user", content: [{ type: "text", text: `Current non-archived streams:\n${JSON.stringify(metadata)}\nRecommend existing streams by their exact slug, or suggest a new title only if none fit.` }], timestamp: Date.now() };
 	const answer = await ctx.modelRegistry.complete(model, {
@@ -50,6 +51,10 @@ function configuredModel(ctx: Pick<ExtensionCommandContext, "model" | "modelRegi
 
 type OpenCheckpoint = {
 	ownerId: string;
+	snapshot: ReturnType<typeof checkpointContext>;
+	systemPrompt: string;
+	marker: string;
+	finalized?: boolean;
 	cancellation: AbortController;
 	handle?: OverlayHandle;
 	panel?: CheckpointPanel;
@@ -64,6 +69,9 @@ export default function registerCheckpoint(pi: ExtensionAPI, testDeps: { agentDi
 	pi.registerMessageRenderer("checkpoint-receipt", renderCheckpointReceipt);
 	const agentDir = testDeps.agentDir ?? getAgentDir();
 	const focusShortcut = loadConfig(agentDir).focusShortcut;
+	const journal = new CheckpointJournal(pi, focusShortcut);
+	pi.registerEntryRenderer(MARKER_TYPE, journal.render);
+	pi.on("session_start", (_event, ctx) => journal.restore(ctx.sessionManager.getEntries()));
 	const show = (run: OpenCheckpoint) => { run.handle?.setHidden(false); run.handle?.focus(); run.updateStatus?.(); run.panel?.refresh(); };
 	pi.registerShortcut(focusShortcut, {
 		description: "Show the open checkpoint panel",
@@ -101,13 +109,14 @@ export default function registerCheckpoint(pi: ExtensionAPI, testDeps: { agentDi
 					switchConfirmed = await ctx.ui.confirm("Switch checkpoint stream?", `Unfinished work for ${binding.slug} will remain saved.`, { signal: run.cancellation.signal });
 					if (!switchConfirmed || !alive()) return;
 				}
+				journal.update(run.marker, { label: "Choosing stream", working: true });
 				const selectorModel = configuredModel(ctx, config.selectorModel, "selector");
 				const recommendations = await ctx.ui.custom<Recommendations>((tui, theme, _keys, done) => {
 					const loader = new BorderedLoader(tui, theme, "Finding stream recommendations…", { cancellable: false });
 					let finished = false;
 					const finish = (value: Recommendations) => { if (!finished) { finished = true; done(value); } };
 					run.dismiss = () => finish({ existing: [] });
-					void recommendStreams(ctx, streams, selectorModel).then(finish, () => finish({ existing: [] }));
+					void recommendStreams(ctx, streams, selectorModel, run.snapshot).then(finish, () => finish({ existing: [] }));
 					return loader;
 				}, { overlay: true, overlayOptions: { anchor: "center", width: "52%", minWidth: 50, maxHeight: 10 } });
 				if (!alive()) return;
@@ -140,17 +149,31 @@ export default function registerCheckpoint(pi: ExtensionAPI, testDeps: { agentDi
 			const format = await cli.format();
 			if (!alive()) return;
 			const selected = stream;
-			const systemPrompt = `${ctx.getSystemPrompt()}\n\n<checkpoint_rules>\nYou are a separate checkpoint conversation. Read and discuss stream state; propose only complete scratch Markdown through propose_checkpoint. Do not claim to have written scratch. You have only local read-only tools and the proposal tool. The user alone approves Apply. Every proposal must include pi:${run.ownerId} in frontmatter sessions (preserve ordering), never the checkpoint session ID. After proposing a draft, summarize only substantive changes since the previous scratch note in one or two sentences. Do not announce staging, routine verification, or that scratch was not changed; mention material failures or blockers. Annotations identify an exact draft revision and original/proposed document line, with a quoted excerpt. Treat them as feedback on that snapshot, not as coordinates in a later revision.\n\n${skill}\n\n${format}\n</checkpoint_rules>`;
+			const systemPrompt = `${run.systemPrompt}\n\n<checkpoint_rules>\nYou are a separate checkpoint conversation. Read and discuss stream state; propose only complete scratch Markdown through propose_checkpoint. Do not claim to have written scratch. You have only local read-only tools and the proposal tool. The user alone approves Apply. Every proposal must include pi:${run.ownerId} in frontmatter sessions (preserve ordering), never the checkpoint session ID. After proposing a draft, summarize only substantive changes since the previous scratch note in one or two sentences. Do not announce staging, routine verification, or that scratch was not changed; mention material failures or blockers. Annotations identify an exact draft revision and original/proposed document line, with a quoted excerpt. Treat them as feedback on that snapshot, not as coordinates in a later revision.\n\n${skill}\n\n${format}\n</checkpoint_rules>`;
 			const pending = readPending(agentDir, run.ownerId, selected.slug) ?? { version: 1 as const, ownerId: run.ownerId, slug: selected.slug, messages: [], input: "" };
 			run.updateStatus = () => {
 				const value = run.handle?.isHidden() && run.conversation ? checkpointStatus(run.conversation.state, focusShortcut) : undefined;
 				ctx.ui.setStatus("checkpoint", value ? ctx.ui.theme.fg("accent", value) : undefined);
 			};
+			let previousActivity: CheckpointConversation["state"]["activity"] = null;
 			const conversation = new CheckpointConversation({ pending, binding: { ownerId: run.ownerId, slug: selected.slug, path: selected.path },
 				agentDir, cwd: ctx.cwd, manager: ctx.sessionManager, runtime, model, thinkingLevel: ctx.thinkingLevel, systemPrompt, cli,
-				changed: () => { run.panel?.refresh(); run.updateStatus?.(); },
+				changed: () => {
+					if (!alive() || run.finalized) return;
+					const state = conversation.state;
+					journal.update(run.marker, { label: state.activity === "drafting" ? "Drafting" : checkpointLabel(state), working: !!state.activity, slug: selected.slug, detail: state.notice?.text });
+					const completed = previousActivity === "drafting" && state.activity === null;
+					previousActivity = state.activity;
+					const last = (pending.messages as AgentMessage[]).at(-1);
+					if (completed && state.notice?.level !== "error" && last?.role === "assistant" && last.stopReason === "stop" && ctx.ui.getEditorText() === "") show(run);
+					run.panel?.refresh(); run.updateStatus?.();
+				},
 				applied: (summary, cmux, warning) => {
-					if (alive()) pi.sendMessage(checkpointReceipt({ slug: selected.slug, path: selected.path, summary, cmux, warning, commands: cli.diagnostics }), { triggerTurn: false });
+					if (alive()) {
+						run.finalized = true;
+						journal.update(run.marker, { label: "Applied", slug: selected.slug, closed: true });
+						pi.sendMessage(checkpointReceipt({ slug: selected.slug, path: selected.path, summary, cmux, warning, commands: cli.diagnostics }), { triggerTurn: false });
+					}
 					run.dismiss?.();
 				},
 			});
@@ -160,20 +183,37 @@ export default function registerCheckpoint(pi: ExtensionAPI, testDeps: { agentDi
 				run.panel = new CheckpointPanel(tui, theme, conversation.state, {
 					send: () => { void conversation.send(); },
 					apply: () => { void conversation.apply(); },
-					refresh: () => { void conversation.refreshContext(); },
+					refresh: () => {
+						run.snapshot = checkpointContext(ctx.sessionManager);
+						run.marker = journal.begin(run.ownerId, run.snapshot);
+						void conversation.refreshContext(run.snapshot);
+					},
 					stop: () => { void conversation.stop(); },
-					clear: () => { conversation.clear(); done(); },
+					clear: () => {
+						conversation.clear(); run.finalized = true;
+						journal.update(run.marker, { label: "Cleared", slug: selected.slug, closed: true });
+						done();
+					},
 					focusMain: () => { run.panel?.dispose(); run.handle?.setHidden(true); run.updateStatus?.(); },
 					changed: () => conversation.persist(),
 				}, focusShortcut);
-				void conversation.start(message);
 				return run.panel;
 			}, { overlay: true, overlayOptions: { anchor: "right-center", width: "64%", minWidth: 60, margin: { right: 1 }, maxHeight: 36 },
-				onHandle: (handle) => { run.handle = handle; run.updateStatus?.(); } });
+				onHandle: (handle) => {
+					run.handle = handle;
+					if (conversation.isFresh) handle.setHidden(true);
+					void conversation.start(message, run.snapshot);
+					run.updateStatus?.();
+				} });
 		} catch (error) {
-			if (alive()) ctx.ui.notify(`Checkpoint: ${String(error)}`, "error");
+			if (alive()) {
+				run.finalized = true;
+				journal.update(run.marker, { label: "Needs attention", detail: String(error), closed: true });
+				ctx.ui.notify(`Checkpoint: ${String(error)}`, "error");
+			}
 		} finally {
 			await run.conversation?.dispose();
+			if (!run.finalized && ctx.sessionManager.getSessionId() === run.ownerId) journal.update(run.marker, { label: run.conversation ? "Saved for resume" : "Cancelled", closed: true });
 			run.panel?.dispose();
 			ctx.ui.setStatus("checkpoint", undefined);
 			if (active === run) active = undefined;
@@ -197,7 +237,9 @@ export default function registerCheckpoint(pi: ExtensionAPI, testDeps: { agentDi
 				} else if (!previous.handle) ctx.ui.notify("A checkpoint chooser is already open", "info");
 				return;
 			}
-			const run: OpenCheckpoint = { ownerId: ctx.sessionManager.getSessionId(), cancellation: new AbortController() };
+			const ownerId = ctx.sessionManager.getSessionId();
+			const snapshot = checkpointContext(ctx.sessionManager);
+			const run: OpenCheckpoint = { ownerId, snapshot, systemPrompt: ctx.getSystemPrompt(), marker: journal.begin(ownerId, snapshot, message), cancellation: new AbortController() };
 			active = run;
 			// Returning releases Pi's serialized prompt queue, even while the overlay is hidden.
 			run.task = (async () => {

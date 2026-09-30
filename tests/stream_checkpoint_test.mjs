@@ -123,6 +123,62 @@ test("header shares the empty composer's divider and keeps its own above content
 	} finally { panel.dispose(); }
 });
 
+test("checkpoint context is frozen against later mutation of projected messages", () => {
+	const message = { role: "user", content: [{ type: "text", text: "At invocation" }], timestamp: Date.now() };
+	const snapshot = checkpointContext({ buildSessionProjection: () => ({ messages: [message] }), getLeafId: () => "source-leaf" });
+	message.content[0].text = "Later mutation";
+	assert.equal(snapshot.messages[0].content[0].text, "At invocation");
+});
+
+test("checkpoint markers update the same native transcript component and replay outside model context", async () => {
+	const { CheckpointJournal, MARKER_TYPE } = await jiti.import(new URL("../home/.pi/agent/extensions/stream-checkpoint/journal.ts", import.meta.url).pathname);
+	const { CustomEntryComponent } = await import(pathToFileURL(join(piDist, "modes/interactive/components/custom-entry.js")).href);
+	const { Text, TuiMainScreen, TuiAltScreen, visibleWidth } = await import(pathToFileURL(join(piDist, "../../../@earendil-works/pi-tui/dist/index.js")).href);
+	for (const Backend of [TuiMainScreen, TuiAltScreen]) {
+		const manager = SessionManager.inMemory(process.cwd());
+		const journal = new CheckpointJournal({ appendEntry: (type, data) => manager.appendCustomEntry(type, data) });
+		const id = journal.begin(manager.getSessionId(), { leafId: "source-leaf", omitted: 2 }, "Record the decision");
+		const entry = manager.getEntries().find((entry) => entry.customType === MARKER_TYPE);
+		const card = new CustomEntryComponent(entry, journal.render);
+		let output = "";
+		const tui = new Backend({ columns: 80, rows: 12, start() {}, stop() {}, write(text) { output += text; }, hideCursor() {}, showCursor() {} });
+		tui.addChild(card);
+		tui.start();
+		try {
+			tui.renderNow();
+			assert.match(output, /Starting/);
+			journal.update(id, { label: "Drafting", working: true, slug: "service" });
+			tui.renderNow();
+			output = "";
+			journal.update(id, { label: "Draft 2 ready", slug: "service" });
+			tui.requestRender(); tui.renderNow();
+			assert.match(output, /Draft 2 ready/);
+			assert.equal(manager.getEntries().filter((entry) => entry.customType === MARKER_TYPE).length, 1);
+			const count = manager.getEntries().length;
+			journal.update(id, { label: "Draft 2 ready", slug: "service" });
+			assert.equal(manager.getEntries().length, count, "Repeated streaming notifications must not append duplicate status records");
+			tui.addChild(new Text(Array.from({ length: 25 }, (_, i) => `Main line ${i}`).join("\n"), 0, 0));
+			tui.renderNow(); output = "";
+			journal.update(id, { label: "Applied", slug: "service" });
+			tui.requestRender(); tui.renderNow();
+			if (Backend === TuiAltScreen) { tui.scrollToTop(); tui.renderNow(); }
+			assert.match(output, /Applied/);
+			card.setExpanded(true);
+			assert.match(card.render(80).join("\n"), /source-leaf/);
+			assert.match(card.render(80).join("\n"), /2 incomplete/);
+			assert.match(card.render(80).join("\n"), /Record the decision/);
+			assert.ok(card.render(36).every((line) => visibleWidth(line) <= 36));
+			const restored = new CheckpointJournal({ appendEntry() { assert.fail("Replay cannot append entries"); } });
+			restored.restore(manager.getEntries());
+			assert.match(new CustomEntryComponent(entry, restored.render).render(80).join("\n"), /Applied/);
+			journal.update(id, { label: "Drafting", working: true });
+			restored.restore(manager.getEntries());
+			assert.match(new CustomEntryComponent(entry, restored.render).render(80).join("\n"), /Interrupted/);
+			assert.deepEqual(manager.buildSessionProjection().messages, []);
+		} finally { tui.stop(); }
+	}
+});
+
 async function conversationFixture() {
 	const dir = mkdtempSync(join(tmpdir(), "checkpoint-conversation-"));
 	const path = join(dir, "service.md");
@@ -266,11 +322,14 @@ for (const selection of ["bound", "chooser", "explicit"]) {
 			const stream = { slug: "service", title: "Service ownership", path: f.path, status: "active", state: "In progress" };
 			if (selection === "bound") f.manager.appendCustomEntry("stream-checkpoint-binding", { ownerId: f.pending.ownerId, slug: stream.slug, path: stream.path });
 			let command, panel, chooser, handle, lists = 0;
-			const shown = [], notifications = [];
+			const shown = [], notifications = [], selectorContexts = [];
+			let mainInput = "";
+			f.manager.appendMessage({ role: "user", content: "Context at invocation", timestamp: Date.now() });
+			const sourceLeaf = f.manager.getLeafId();
 			const ctx = { mode: "tui", hasUI: true, cwd: f.dir, model: f.conversation.options.model, thinkingLevel: "off", sessionManager: f.manager,
-				modelRegistry: { getRegisteredProviderConfig() {}, getRegisteredNativeProvider() {}, complete: async () => ({ content: [{ type: "text", text: '{"existing":[]}' }] }) },
+				modelRegistry: { getRegisteredProviderConfig() {}, getRegisteredNativeProvider() {}, complete: async (_model, context) => { selectorContexts.push(context); return { content: [{ type: "text", text: '{"existing":[]}' }] }; } },
 				getSystemPrompt: () => "Test instructions",
-				ui: { notify: (text) => notifications.push(text), theme: { fg: (_color, text) => text }, setStatus() {}, confirm: async () => true,
+				ui: { getEditorText: () => mainInput, notify: (text) => notifications.push(text), theme: { fg: (_color, text) => text }, setStatus() {}, confirm: async () => true,
 					custom: (factory, options) => new Promise((resolve) => {
 						let component;
 						component = factory({ terminal: { rows: 30 }, requestRender() {} }, { fg: (_color, text) => text }, {}, (value) => { component?.dispose?.(); resolve(value); });
@@ -283,7 +342,7 @@ for (const selection of ["bound", "chooser", "explicit"]) {
 					}),
 				},
 			};
-			registerCheckpoint({ registerMessageRenderer() {}, registerCommand: (_name, options) => { command = options.handler; }, registerShortcut() {}, on: (_event, handler) => { shutdown = handler; }, appendEntry: (type, data) => f.manager.appendCustomEntry(type, data) }, {
+			registerCheckpoint({ registerEntryRenderer() {}, registerMessageRenderer() {}, registerCommand: (_name, options) => { command = options.handler; }, registerShortcut() {}, on: (_event, handler) => { shutdown = handler; }, appendEntry: (type, data) => f.manager.appendCustomEntry(type, data) }, {
 				agentDir: f.dir, runtime: f.conversation.options.runtime, skill: "Test skill",
 				cli: { config: async () => ({ cmux: { enabled: false } }), list: async () => { lists++; return [stream]; }, show: async (ref) => { shown.push(ref); return stream; }, format: async () => "format" },
 			});
@@ -292,23 +351,39 @@ for (const selection of ["bound", "chooser", "explicit"]) {
 			assert.equal(lists, 0);
 			const message = selection === "bound" ? "service" : "let's park this";
 			await command(selection === "explicit" ? `--stream "Service ownership" ${message}` : message, ctx);
+			const marker = f.manager.getEntries().find((entry) => entry.customType === "checkpoint-start");
+			assert.equal(marker.data.leafId, sourceLeaf);
+			f.manager.appendMessage({ role: "user", content: "Arrived after invocation", timestamp: Date.now() });
 			if (selection === "chooser") {
 				await until(() => !!chooser);
 				assert.equal(chooser.input.getValue(), "", "Instructions must not become a stream search");
+				assert.match(JSON.stringify(selectorContexts[0]), /Context at invocation/);
+				assert.doesNotMatch(JSON.stringify(selectorContexts[0]), /Arrived after invocation/);
 				await command("Do not queue while choosing", ctx);
 				assert.match(notifications.pop(), /busy.*not sent/i);
 				assert.equal(f.contexts.length, 0);
 				chooser.handleInput("\r");
 			}
 			await until(() => f.contexts.length === 1);
+			assert.equal(handle.hidden, true, "Fresh drafting must start hidden, including after stream selection");
+			assert.match(JSON.stringify(f.contexts[0]), /Context at invocation/);
+			assert.doesNotMatch(JSON.stringify(f.contexts[0]), /Arrived after invocation/);
+			assert.equal(readPending(f.dir, f.pending.ownerId, stream.slug).source.leafId, sourceLeaf);
 			assert.equal(panel.state.messages.at(-1).text, message);
 			assert.equal(f.contexts[0].messages.at(-1).content[0].text, message);
 			assert.deepEqual(shown, selection === "explicit" ? [stream.title] : []);
 			assert.equal(latestBinding(f.manager.getEntries(), f.pending.ownerId).slug, stream.slug);
 			await command("Do not queue while drafting", ctx);
 			assert.match(panel.state.notice.text, /busy.*not sent/i);
+			panel.handleInput("\x1b");
+			mainInput = selection === "bound" ? "" : selection === "chooser" ? "typing main feedback" : " ";
+			ctx.isIdle = () => { assert.fail("Auto-open must not depend on main-agent idleness"); };
 			f.finish();
 			await until(() => panel.state.activity === null);
+			assert.equal(handle.hidden, mainInput !== "", "Only the actual composer contents at completion gate auto-open");
+			mainInput = "";
+			await turn();
+			assert.equal(handle.hidden, selection !== "bound", "Clearing the composer later must not cause a delayed auto-open");
 			const originalPanel = panel;
 			panel.handleInput("\x1b");
 			assert.equal(handle.hidden, true);
@@ -325,16 +400,52 @@ for (const selection of ["bound", "chooser", "explicit"]) {
 			await shutdown();
 			await command("Resume with this instruction", ctx);
 			await until(() => f.contexts.length === 3);
+			assert.equal(handle.hidden, false, "Existing unfinished work opens immediately");
 			assert.notEqual(panel, originalPanel);
 			assert.equal(panel.state.messages.at(-1).text, "Resume with this instruction");
 			assert.equal(f.contexts[2].messages.filter((item) => item.role === "user" && item.content[0]?.text === message).length, 1);
 			assert.doesNotMatch(JSON.stringify(f.contexts), /Draft a handoff|Do not queue/);
 			f.finish();
 			await until(() => panel.state.activity === null);
+			f.manager.appendMessage({ role: "user", content: "Refresh-only evidence", timestamp: Date.now() });
+			const refreshLeaf = f.manager.getLeafId();
+			panel.handleInput("\x12");
+			await until(() => panel.state.activity === null);
+			assert.equal(f.contexts.length, 3, "Refresh must not start drafting");
+			assert.equal(readPending(f.dir, f.pending.ownerId, stream.slug).source.leafId, refreshLeaf);
+			assert.equal(f.manager.getEntries().filter((entry) => entry.customType === "checkpoint-start").at(-1).data.leafId, refreshLeaf);
+			await command("Draft with refreshed context", ctx);
+			await until(() => f.contexts.length === 4);
+			assert.match(JSON.stringify(f.contexts[3]), /Refresh-only evidence/);
+			panel.handleInput("\x1b");
+			f.finish("Interrupted partial response", true);
+			await until(() => panel.state.activity === null);
+			assert.equal(handle.hidden, true, "Aborted output must not auto-open as a completed reply");
+			assert.equal(f.manager.getEntries().filter((entry) => entry.customType === "checkpoint-status").at(-1).data.label, "Stopped");
 			assert.equal(readFileSync(f.path, "utf8"), "scratch unchanged");
 		} finally { await shutdown?.(); await f.dispose(); }
 	});
 }
+
+test("setup failure retains a user-only source marker with inspectable error instead of opening a panel", async () => {
+	const manager = SessionManager.inMemory(process.cwd());
+	let command, shutdown;
+	const notices = [];
+	registerCheckpoint({ registerEntryRenderer() {}, registerMessageRenderer() {}, registerShortcut() {},
+		registerCommand: (_name, options) => { command = options.handler; }, on: (_event, handler) => { shutdown = handler; },
+		appendEntry: (type, data) => manager.appendCustomEntry(type, data),
+	}, { cli: { config: async () => { throw new Error("Broken shared configuration"); } } });
+	const ctx = { mode: "tui", hasUI: true, sessionManager: manager, getSystemPrompt: () => "Test",
+		ui: { notify: (text) => notices.push(text), setStatus() {}, custom() { assert.fail("No panel on setup failure"); } } };
+	await command("Record the blocker", ctx);
+	await until(() => notices.length === 1);
+	await shutdown();
+	assert.equal(manager.getEntries().filter((entry) => entry.customType === "checkpoint-start").length, 1);
+	const status = manager.getEntries().at(-1).data;
+	assert.equal(status.label, "Needs attention");
+	assert.match(status.detail, /Broken shared configuration/);
+	assert.deepEqual(manager.buildSessionProjection().messages, []);
+});
 
 test("checkpoint command releases main input, preserves work on stream switches and cleans up on shutdown", async () => {
 	const f = await conversationFixture();
@@ -364,7 +475,7 @@ test("checkpoint command releases main input, preserves work on stream switches 
 				}),
 			},
 		};
-		registerCheckpoint({ registerMessageRenderer() {}, registerCommand: (_name, options) => { command = options.handler; }, registerShortcut: (_key, options) => { shortcut = options.handler; }, on: (_event, handler) => { shutdown = handler; }, appendEntry: (type, data) => f.manager.appendCustomEntry(type, data) }, {
+		registerCheckpoint({ registerEntryRenderer() {}, registerMessageRenderer() {}, registerCommand: (_name, options) => { command = options.handler; }, registerShortcut: (_key, options) => { shortcut = options.handler; }, on: (_event, handler) => { shutdown = handler; }, appendEntry: (type, data) => f.manager.appendCustomEntry(type, data) }, {
 			agentDir: f.dir, runtime: f.conversation.options.runtime, skill: "Test skill", cli: { config: async () => ({ cmux: { enabled: false } }), list: async () => streams, show: async (ref) => streams.find((stream) => stream.slug === ref), format: async () => "format" },
 		});
 		let returned = false;
@@ -430,7 +541,7 @@ test("refresh without a draft succeeds without a review warning and preserves un
 // importing main-session extensions, bash, edit, or write.
 test("registers the manual checkpoint command without starting work", () => {
 	const commands = [];
-	registerCheckpoint({ registerMessageRenderer() {}, on() {}, registerCommand: (name, options) => { commands.push({ name, options }); }, registerShortcut() {} });
+	registerCheckpoint({ registerEntryRenderer() {}, registerMessageRenderer() {}, on() {}, registerCommand: (name, options) => { commands.push({ name, options }); }, registerShortcut() {} });
 	assert.equal(commands.length, 1);
 	assert.equal(commands[0].name, "checkpoint");
 	assert.equal(typeof commands[0].options.handler, "function");
@@ -440,11 +551,11 @@ test("registers a configurable shortcut for returning to an open checkpoint", ()
 	const dir = mkdtempSync(join(tmpdir(), "checkpoint-shortcut-"));
 	try {
 		const shortcuts = [];
-		registerCheckpoint({ registerMessageRenderer() {}, on() {}, registerCommand() {}, registerShortcut: (key, options) => shortcuts.push({ key, options }) }, { agentDir: dir });
+		registerCheckpoint({ registerEntryRenderer() {}, registerMessageRenderer() {}, on() {}, registerCommand() {}, registerShortcut: (key, options) => shortcuts.push({ key, options }) }, { agentDir: dir });
 		assert.equal(shortcuts[0].key, "alt+p");
 		writeFileSync(join(dir, "checkpoint.json"), '{"focusShortcut":"ctrl+alt+c"}');
 		shortcuts.length = 0;
-		registerCheckpoint({ registerMessageRenderer() {}, on() {}, registerCommand() {}, registerShortcut: (key, options) => shortcuts.push({ key, options }) }, { agentDir: dir });
+		registerCheckpoint({ registerEntryRenderer() {}, registerMessageRenderer() {}, on() {}, registerCommand() {}, registerShortcut: (key, options) => shortcuts.push({ key, options }) }, { agentDir: dir });
 		assert.equal(shortcuts[0].key, "ctrl+alt+c");
 	} finally { rmSync(dir, { recursive: true, force: true }); }
 });
@@ -967,7 +1078,7 @@ test("checkpoint creation and Apply use CLI config and emit a registered expanda
 				return { code: 0, stdout: JSON.stringify(value), stderr: "" };
 			});
 			registerCheckpoint({ registerCommand: (_name, options) => { command = options.handler; }, registerShortcut() {},
-				registerMessageRenderer: (name, renderer) => renderers.push([name, renderer]), on: (_event, handler) => { shutdown = handler; },
+				registerEntryRenderer() {}, registerMessageRenderer: (name, renderer) => renderers.push([name, renderer]), on: (_event, handler) => { shutdown = handler; },
 				appendEntry: (type, data) => f.manager.appendCustomEntry(type, data),
 				sendMessage: (receipt, options) => { receipts.push(receipt); assert.equal(options.triggerTurn, false); },
 			}, { agentDir: f.dir, cli, runtime: f.conversation.options.runtime, skill: "Test skill" });
