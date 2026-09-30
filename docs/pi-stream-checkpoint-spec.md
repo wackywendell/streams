@@ -28,7 +28,7 @@ Agreed behavior:
 - Escape and Alt+P minimize without stopping the side agent; main-session submissions still run
 - restart and reload preserve unfinished chat, draft, comments and input; confirmed Clear discards them without undoing stream creation or binding
 - reopening resumes unfinished work with fresh main-session context and the current scratch note
-- `cmux: true` runs `streams cmux update -c <slug>` after creation, including starter notes, and after validated scratch updates
+- shared `cmux.enabled: true` runs `streams cmux update -c <slug>` after creation, including starter notes, and after validated scratch updates
 - successful Apply validates the update, refreshes CMUX when enabled, posts a main-chat receipt, and closes the panel
 - invoking `/checkpoint` after successful Apply starts a new checkpoint conversation
 
@@ -41,18 +41,32 @@ The first version does not implement automatic compaction triggers, native concu
 
 ## Configuration
 
-Put extension settings in `~/.pi/agent/checkpoint.json` (or the active Pi agent directory), separate from scratch frontmatter:
+Shared settings belong to `streams`, not Pi or scratch frontmatter. Use the CLI rather than reading its config file from the extension:
+
+```sh
+streams config
+streams config --json
+streams config get cmux.enabled
+streams config set cmux.enabled true
+streams config set notes.root ~/worknotes
+streams config set obsidian.vault worknotes
+```
+
+The CLI stores overrides in `$XDG_CONFIG_HOME/streams/config.json`, defaulting to `~/.config/streams/config.json`. `notes.root` defaults to `~/worknotes`; scratch, archive and artifact paths derive from it. `obsidian.vault` defaults to `worknotes`. `cmux.enabled` defaults to `false`. The human-readable listing shows the config path and whether each value is configured or a default. Unknown keys, invalid types and malformed files fail without overwriting the file.
+
+The extension fetches effective settings with `streams config --json` when opening a checkpoint and again before Apply. A config failure blocks the operation rather than silently disabling CMUX. `streams update` itself does not automatically refresh CMUX; checkpoint clients explicitly perform that step when enabled.
+
+Keep extension-only settings in `~/.pi/agent/checkpoint.json` (or the active Pi agent directory):
 
 ```json
 {
-  "cmux": true,
   "focusShortcut": "alt+p",
   "selectorModel": { "provider": "<provider>", "id": "<model-id>" },
   "drafterModel": { "provider": "<provider>", "id": "<model-id>" }
 }
 ```
 
-All fields are optional. Only an explicit `cmux: true` enables automatic CMUX updates. `focusShortcut` defaults to `alt+p`; change it in this file and run `/reload` to register the shortcut. It toggles between the open checkpoint and main editor, but does not open a closed checkpoint. Escape also minimizes. Neither action stops the side agent.
+All extension fields are optional. The old `cmux` field is rejected with migration instructions: set `cmux.enabled` through the CLI, then remove `cmux` from `checkpoint.json`. `focusShortcut` defaults to `alt+p`; change it in this file and run `/reload` to register the shortcut. It toggles between the open checkpoint and main editor, but does not open a closed checkpoint. Escape also minimizes. Neither action stops the side agent.
 
 While minimized, the footer shows only checkpoint state and the restore shortcut, such as `Checkpoint · Draft 2 · Alt+P`. While expanded, the panel header shows its selected tab and activity; omit duplicate checkpoint footer status. Capitalize modifier names in visible shortcuts.
 
@@ -128,7 +142,7 @@ For any creation path, show the final proposed title and slug before asking for 
 
 Refresh the list before creation to catch an existing match. On confirmation, immediately run `streams start "<title>" --json` in the intended checkout, without `--current`. The CLI owns slug generation, location discovery, and creation. Persist the session binding to the successful command's actual returned record before beginning the checkpoint discussion. Never interpolate the title into a shell command string.
 
-After successful creation and binding, run `streams cmux update -c <slug>` if `cmux` is `true`. Report a projection failure in the panel and continue the checkpoint discussion with the created stream.
+After successful creation and binding, run `streams cmux update -c <slug>` if shared `cmux.enabled` is `true`. Report a projection failure in the panel and continue the checkpoint discussion with the created stream.
 
 If creation fails, keep the chooser open and the old binding intact. Outside a valid jj or Git checkout, explain the CLI failure and ask for a valid creation location instead of fabricating `repo` or `cwd`.
 
@@ -228,9 +242,9 @@ Do not edit reference notes or stream-local artifacts as a hidden part of a chec
 2. Reread the target scratch file and compare it with the draft's base. If it changed, do not overwrite it. Show the conflict and let the side agent propose a new draft against the latest content, requiring new approval.
 3. Preview the exact candidate with `streams update --dry-run --if-match <base-sha256> <canonical-slug> --json`, sending the complete Markdown on stdin. This validates against the canonical schema without writing; a changed base rejects the preview.
 4. Send the same approved bytes to `streams update --if-match <base-sha256> <canonical-slug> --json`. The CLI validates before replacing the file and rejects a changed base. Validation checks format, not the truth of the AI's claims.
-5. If `cmux` is `true`, run `streams cmux update -c <canonical-slug>` to project the validated scratch onto the current workspace. Otherwise make no CMUX call.
+5. If shared `cmux.enabled` is `true`, run `streams cmux update -c <canonical-slug>` to project the validated scratch onto the current workspace. Otherwise make no CMUX call.
 6. Update the session binding if its canonical stream identity changed. Do not defer a new stream's initial binding until this step.
-7. Add a main-chat receipt with the stream slug, scratch filename, and a short summary of the applied changes. Include any projection warning. Do not trigger a main-agent response; if the main agent is streaming, Pi may defer receipt delivery until the turn ends.
+7. Add a main-chat receipt with the stream slug, scratch filename, a short summary of the applied changes and CMUX outcome (`updated`, `disabled` or `failed`). Keep raw diagnostic output outside model context. Do not trigger a main-agent response; if the main agent is streaming, Pi may defer receipt delivery until the turn ends.
 8. Mark this checkpoint complete and close the panel. It is no longer resumable as unfinished work. The next `/checkpoint` starts a new side conversation using the updated scratch and current main context.
 
 A new model response, stream switch, context refresh, or edited target must not cause Apply to write an unseen revision. Applying one snapshot does not claim to cover later main-session work.
@@ -240,6 +254,14 @@ The write path must not knowingly overwrite a concurrent edit. Cross-process cha
 If the CLI fails before writing, keep the panel and draft available and show the error. If it writes successfully but confirmation fails, report the uncertain or partial result rather than retrying blindly. Offer a reviewed correction rather than a silent fix.
 
 If only CMUX refresh fails, record scratch success and the projection warning in the receipt, then close the completed checkpoint. A projection retry must not write scratch again. Failure handling must distinguish completed writes from pending work to prevent duplicate application.
+
+### Receipt and diagnostics
+
+Render the receipt as a compact box in the main transcript. Pi's normal tool-expansion action (Ctrl+O by default) reveals command arguments, exit statuses, output and projection warnings. CMUX failure remains visible in the collapsed box alongside scratch success.
+
+Use custom-message `content` for the minimal shared receipt and `details` for diagnostic data. Pi persists both, but sends only `content` to the model. Expanding the box changes presentation, not model context. Do not trigger a model turn to announce completion.
+
+Retain the latest 16 CLI calls from the current panel lifetime, with stdout and stderr limited to 2,048 characters each plus a truncation marker. Never record the Markdown passed on stdin. Capture successful stderr and structured update warnings; show them through notifications and retain them in receipt details. Errors remain visible in the panel or notifications. These diagnostics are not a complete historical log across checkpoint restarts.
 
 ## Panel lifecycle
 
@@ -285,7 +307,8 @@ home/.pi/agent/extensions/stream-checkpoint/       extension source
   chooser.ts                                     stream selection UI
   agent.ts                                       restricted SDK session and context
   core.ts                                        persistence, binding and guarded Apply
-  streams.ts                                     argument-array CLI boundary
+  streams.ts                                     argument-array CLI boundary and diagnostics
+  receipt.ts                                     shared receipt and expandable user-only details
 tests/stream_checkpoint_test.mjs                  Node regression tests
 home/bin/_streams/                               existing CLI and canonical schema
 ```
@@ -376,9 +399,11 @@ Tests must use temporary scratch files and mocked CLI, model, and CMUX boundarie
 | Scratch changes while closed | Preserve chat but regenerate the diff against the current file and require new approval |
 | Clear | Discard pending checkpoint work after confirmation; keep the stream and binding; next invocation starts fresh |
 | Session replacement during side work | Preserve the old session's unfinished work; cancel or ignore late results without changing the new session or its files |
-| `cmux: true` on creation | Run `streams cmux update -c <actual-slug>` after creation and binding, even if only the starter note exists |
-| `cmux: true` on Apply | Run `streams cmux update -c <canonical-slug>` after the write passes validation |
-| `cmux: false` or absent | Make no CMUX calls on creation or Apply |
+| `cmux.enabled: true` on creation | Run `streams cmux update -c <actual-slug>` after creation and binding, even if only the starter note exists |
+| `cmux.enabled: true` on Apply | Run `streams cmux update -c <canonical-slug>` after the write passes validation |
+| `cmux.enabled: false` or absent | Make no CMUX calls on creation or Apply |
+| Shared configuration | Fetch through `streams config --json`; never read its file from Pi or store model/shortcut settings in streams config |
+| Expand receipt | Show diagnostic details through Pi's tool-expansion control without adding them to model context |
 | CMUX update fails | Preserve the scratch write and binding, report projection failure, and never target a fallback workspace |
 | CMUX retry | Retry only projection, without recreating the stream or rewriting scratch |
 | Compaction | Do not start a checkpoint automatically |

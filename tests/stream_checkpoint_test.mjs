@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { createRequire } from "node:module";
-import { mkdtempSync, readFileSync, rmSync, realpathSync, writeFileSync } from "node:fs";
+import { chmodSync, mkdtempSync, readFileSync, rmSync, realpathSync, writeFileSync } from "node:fs";
 import { execFileSync } from "node:child_process";
 import { createHash } from "node:crypto";
 import { tmpdir, homedir } from "node:os";
@@ -16,7 +16,7 @@ const shimTarget = readFileSync(piExecutable, "utf8").match(/target=([^\s]+)/)?.
 assert.ok(shimTarget, "Expected pi package shim");
 const piDist = dirname(dirname(resolve(dirname(piExecutable), shimTarget)));
 const jiti = createJiti(join(agentDir, "npm", "checkpoint-test.mjs"), { alias: { "@earendil-works/pi-coding-agent": join(piDist, "index.js"), "@earendil-works/pi-tui": join(piDist, "../../../@earendil-works/pi-tui/dist/index.js") } });
-const { BorderedLoader, createAgentSession, DefaultResourceLoader, initTheme, ModelRuntime, SessionManager, SettingsManager } = await import(pathToFileURL(join(piDist, "index.js")).href);
+const { BorderedLoader, convertToLlm, createAgentSession, DefaultResourceLoader, initTheme, ModelRuntime, SessionManager, SettingsManager } = await import(pathToFileURL(join(piDist, "index.js")).href);
 initTheme("dark");
 const { createAssistantMessageEventStream } = await import(pathToFileURL(join(piDist, "../../../@earendil-works/pi-ai/dist/index.js")).href);
 const { loadConfig, latestBinding, applyDraft, readPending, savePending, clearPending, stageDraft, selectStream, parseRecommendations, includeMainSession } = await jiti.import(new URL("../home/.pi/agent/extensions/stream-checkpoint/core.ts", import.meta.url).pathname);
@@ -146,7 +146,7 @@ async function conversationFixture() {
 	};
 	const pending = { version: 1, ownerId: manager.getSessionId(), slug: "service", messages: [], input: "unsent" };
 	const { CheckpointConversation } = await jiti.import(new URL("../home/.pi/agent/extensions/stream-checkpoint/conversation.ts", import.meta.url).pathname);
-	const conversation = new CheckpointConversation({ pending, binding: { ownerId: pending.ownerId, slug: pending.slug, path }, agentDir: dir, cwd: dir, manager, runtime, model, thinkingLevel: "off", systemPrompt: "Test checkpoint instructions", cli: { update: async (_slug, content, options) => { if (!options.dryRun) writeFileSync(path, content); return { path, updated: !options.dryRun }; } }, cmux: false, changed() {}, applied() {} });
+	const conversation = new CheckpointConversation({ pending, binding: { ownerId: pending.ownerId, slug: pending.slug, path }, agentDir: dir, cwd: dir, manager, runtime, model, thinkingLevel: "off", systemPrompt: "Test checkpoint instructions", cli: { config: async () => ({ cmux: { enabled: false } }), update: async (_slug, content, options) => { if (!options.dryRun) writeFileSync(path, content); return { path, updated: !options.dryRun }; } }, changed() {}, applied() {} });
 	return { conversation, pending, contexts, path, dir, manager, finish: (...args) => finish(...args), async dispose() { await conversation.dispose(); rmSync(dir, { recursive: true, force: true }); } };
 }
 
@@ -283,9 +283,9 @@ for (const selection of ["bound", "chooser", "explicit"]) {
 					}),
 				},
 			};
-			registerCheckpoint({ registerCommand: (_name, options) => { command = options.handler; }, registerShortcut() {}, on: (_event, handler) => { shutdown = handler; }, appendEntry: (type, data) => f.manager.appendCustomEntry(type, data) }, {
+			registerCheckpoint({ registerMessageRenderer() {}, registerCommand: (_name, options) => { command = options.handler; }, registerShortcut() {}, on: (_event, handler) => { shutdown = handler; }, appendEntry: (type, data) => f.manager.appendCustomEntry(type, data) }, {
 				agentDir: f.dir, runtime: f.conversation.options.runtime, skill: "Test skill",
-				cli: { list: async () => { lists++; return [stream]; }, show: async (ref) => { shown.push(ref); return stream; }, format: async () => "format" },
+				cli: { config: async () => ({ cmux: { enabled: false } }), list: async () => { lists++; return [stream]; }, show: async (ref) => { shown.push(ref); return stream; }, format: async () => "format" },
 			});
 			await command("--stream", ctx);
 			assert.match(notifications.pop(), /Usage: \/checkpoint/);
@@ -364,8 +364,8 @@ test("checkpoint command releases main input, preserves work on stream switches 
 				}),
 			},
 		};
-		registerCheckpoint({ registerCommand: (_name, options) => { command = options.handler; }, registerShortcut: (_key, options) => { shortcut = options.handler; }, on: (_event, handler) => { shutdown = handler; }, appendEntry: (type, data) => f.manager.appendCustomEntry(type, data) }, {
-			agentDir: f.dir, runtime: f.conversation.options.runtime, skill: "Test skill", cli: { list: async () => streams, show: async (ref) => streams.find((stream) => stream.slug === ref), format: async () => "format" },
+		registerCheckpoint({ registerMessageRenderer() {}, registerCommand: (_name, options) => { command = options.handler; }, registerShortcut: (_key, options) => { shortcut = options.handler; }, on: (_event, handler) => { shutdown = handler; }, appendEntry: (type, data) => f.manager.appendCustomEntry(type, data) }, {
+			agentDir: f.dir, runtime: f.conversation.options.runtime, skill: "Test skill", cli: { config: async () => ({ cmux: { enabled: false } }), list: async () => streams, show: async (ref) => streams.find((stream) => stream.slug === ref), format: async () => "format" },
 		});
 		let returned = false;
 		Promise.resolve(command("--stream service", ctx)).then(() => { returned = true; });
@@ -430,7 +430,7 @@ test("refresh without a draft succeeds without a review warning and preserves un
 // importing main-session extensions, bash, edit, or write.
 test("registers the manual checkpoint command without starting work", () => {
 	const commands = [];
-	registerCheckpoint({ on() {}, registerCommand: (name, options) => { commands.push({ name, options }); }, registerShortcut() {} });
+	registerCheckpoint({ registerMessageRenderer() {}, on() {}, registerCommand: (name, options) => { commands.push({ name, options }); }, registerShortcut() {} });
 	assert.equal(commands.length, 1);
 	assert.equal(commands[0].name, "checkpoint");
 	assert.equal(typeof commands[0].options.handler, "function");
@@ -440,11 +440,11 @@ test("registers a configurable shortcut for returning to an open checkpoint", ()
 	const dir = mkdtempSync(join(tmpdir(), "checkpoint-shortcut-"));
 	try {
 		const shortcuts = [];
-		registerCheckpoint({ on() {}, registerCommand() {}, registerShortcut: (key, options) => shortcuts.push({ key, options }) }, { agentDir: dir });
+		registerCheckpoint({ registerMessageRenderer() {}, on() {}, registerCommand() {}, registerShortcut: (key, options) => shortcuts.push({ key, options }) }, { agentDir: dir });
 		assert.equal(shortcuts[0].key, "alt+p");
 		writeFileSync(join(dir, "checkpoint.json"), '{"focusShortcut":"ctrl+alt+c"}');
 		shortcuts.length = 0;
-		registerCheckpoint({ on() {}, registerCommand() {}, registerShortcut: (key, options) => shortcuts.push({ key, options }) }, { agentDir: dir });
+		registerCheckpoint({ registerMessageRenderer() {}, on() {}, registerCommand() {}, registerShortcut: (key, options) => shortcuts.push({ key, options }) }, { agentDir: dir });
 		assert.equal(shortcuts[0].key, "ctrl+alt+c");
 	} finally { rmSync(dir, { recursive: true, force: true }); }
 });
@@ -489,6 +489,70 @@ test("fresh kickoff is model context, never visible chat, and resume never start
 		assert.equal(f.contexts.length, 1);
 		assert.equal(readFileSync(f.path, "utf8"), "scratch unchanged");
 	} finally { await f.dispose(); }
+});
+
+test("Apply fetches current CMUX config, runs projection after saving, and reports partial success", async () => {
+	for (const cmux of ["updated", "disabled", "failed", "bad-config"]) {
+		const f = await conversationFixture();
+		try {
+			await f.conversation.start();
+			f.conversation.state.input = "";
+			f.conversation.state.draft = stageDraft(f.pending, f.conversation.options.binding, "approved content", "Updated handoff");
+			let projected = 0, receipt;
+			f.conversation.options.cli.config = async () => { if (cmux === "bad-config") throw new Error("bad shared config"); return { cmux: { enabled: cmux !== "disabled" } }; };
+			f.conversation.options.cli.project = async (slug) => {
+				projected++;
+				assert.equal(slug, "service");
+				assert.equal(readFileSync(f.path, "utf8"), "approved content");
+				if (cmux === "failed") throw new Error("private CMUX diagnostic");
+			};
+			f.conversation.options.applied = (...args) => { receipt = args; };
+			await f.conversation.apply();
+			if (cmux === "bad-config") {
+				assert.match(f.conversation.state.notice.text, /bad shared config/);
+				assert.equal(receipt, undefined);
+				assert.equal(readFileSync(f.path, "utf8"), "scratch unchanged");
+			} else {
+				assert.equal(projected, cmux === "disabled" ? 0 : 1);
+				assert.equal(receipt[1], cmux);
+				assert.equal(readFileSync(f.path, "utf8"), "approved content");
+				assert.equal(readPending(f.dir, f.pending.ownerId, "service"), undefined);
+				if (cmux === "failed") assert.match(receipt[2], /private CMUX diagnostic/);
+			}
+		} finally { await f.dispose(); }
+	}
+});
+
+test("receipts share only the summary and keep expandable diagnostics outside model context", async () => {
+	const { checkpointReceipt, renderCheckpointReceipt } = await jiti.import(new URL("../home/.pi/agent/extensions/stream-checkpoint/receipt.ts", import.meta.url).pathname);
+	const theme = { fg: (_color, text) => text, bg: (_color, text) => text };
+	for (const cmux of ["updated", "disabled", "failed"]) {
+		const receipt = checkpointReceipt({ slug: "service", path: "/notes/service.md", summary: "Updated the next action", cmux,
+			warning: cmux === "failed" ? "private diagnostic" : undefined,
+			commands: [{ args: ["cmux", "update", "-c", "service"], code: cmux === "failed" ? 2 : 0, stdout: "private stdout", stderr: "private stderr" }] });
+		const manager = SessionManager.inMemory(process.cwd());
+		manager.appendCustomMessageEntry(receipt.customType, receipt.content, true, receipt.details);
+		const context = JSON.stringify(convertToLlm(manager.buildSessionContext().messages));
+		assert.match(context, /service.md.*Updated the next action/);
+		assert.match(context, new RegExp(`CMUX ${cmux}`));
+		assert.doesNotMatch(context, /private|streams cmux|exit/);
+		const message = { ...receipt, role: "custom", timestamp: Date.now() };
+		const collapsed = renderCheckpointReceipt(message, { expanded: false, outputPad: 1 }, theme).render(80).join("\n");
+		assert.match(collapsed, new RegExp(`Saved.*CMUX ${cmux}`));
+		assert.doesNotMatch(collapsed, /private/);
+		const expanded = renderCheckpointReceipt(message, { expanded: true, outputPad: 1 }, theme);
+		assert.match(expanded.render(80).join("\n"), /streams cmux update -c service/);
+		assert.match(expanded.render(80).join("\n"), /private stderr/);
+		const { visibleWidth } = await import(pathToFileURL(join(piDist, "../../../@earendil-works/pi-tui/dist/index.js")).href);
+		assert.ok(expanded.render(36).every((line) => visibleWidth(line) <= 36));
+		const { CustomMessageComponent } = await import(pathToFileURL(join(piDist, "modes/interactive/components/custom-message.js")).href);
+		const native = new CustomMessageComponent(message, renderCheckpointReceipt);
+		assert.doesNotMatch(native.render(80).join("\n"), /private stderr/);
+		native.setExpanded(true);
+		assert.match(native.render(80).join("\n"), /private stderr/);
+		native.setExpanded(false);
+		assert.doesNotMatch(native.render(80).join("\n"), /private stderr/);
+	}
 });
 
 test("Apply refuses unsent feedback, then writes the reviewed draft and clears pending state", async () => {
@@ -880,14 +944,128 @@ test("chooser keeps the selected recommendation visible in a short viewport", ()
 	assert.ok(chooser.render(80).length <= Math.floor(16 * 0.8));
 });
 
+test("checkpoint creation and Apply use CLI config and emit a registered expandable receipt", async () => {
+	for (const outcome of ["updated", "disabled", "failed"]) {
+		const f = await conversationFixture();
+		let shutdown;
+		try {
+			savePending(f.dir, f.pending);
+			const stream = { slug: "service", title: "Service", path: f.path, status: "active", state: "Work" };
+			const calls = [], receipts = [], notifications = [], renderers = [];
+			let command, panel, dismissed = false;
+			const cli = new StreamCli(f.dir, async (args, input) => {
+				calls.push(args);
+				let value;
+				if (args[0] === "config") value = { notes: { root: f.dir }, obsidian: { vault: "Notes" }, cmux: { enabled: outcome !== "disabled" } };
+				else if (args[0] === "list") value = [];
+				else if (args[0] === "format") return { code: 0, stdout: "Test format", stderr: "" };
+				else if (args[0] === "update") {
+					if (!args.includes("--dry-run")) writeFileSync(f.path, input);
+					value = { slug: stream.slug, path: stream.path, updated: !args.includes("--dry-run"), findings: [] };
+				} else if (args[0] === "cmux") return { code: outcome === "failed" ? 2 : 0, stdout: "project result", stderr: outcome === "failed" ? "private projection failure" : "" };
+				else assert.fail(args.join(" "));
+				return { code: 0, stdout: JSON.stringify(value), stderr: "" };
+			});
+			registerCheckpoint({ registerCommand: (_name, options) => { command = options.handler; }, registerShortcut() {},
+				registerMessageRenderer: (name, renderer) => renderers.push([name, renderer]), on: (_event, handler) => { shutdown = handler; },
+				appendEntry: (type, data) => f.manager.appendCustomEntry(type, data),
+				sendMessage: (receipt, options) => { receipts.push(receipt); assert.equal(options.triggerTurn, false); },
+			}, { agentDir: f.dir, cli, runtime: f.conversation.options.runtime, skill: "Test skill" });
+			const ctx = { mode: "tui", hasUI: true, cwd: f.dir, model: f.conversation.options.model, thinkingLevel: "off", sessionManager: f.manager,
+				modelRegistry: { getRegisteredProviderConfig() {}, getRegisteredNativeProvider() {}, complete: async () => ({ content: [{ type: "text", text: '{"existing":[]}' }] }) }, getSystemPrompt: () => "Test",
+				ui: { notify: (text) => notifications.push(text), theme: { fg: (_color, text) => text }, setStatus() {},
+					custom: (factory, options) => new Promise((resolve) => {
+						let component;
+						const done = (value) => { component?.dispose?.(); if (component instanceof CheckpointPanel) dismissed = true; resolve(value); };
+						component = factory({ terminal: { rows: 30 }, requestRender() {} }, { fg: (_color, text) => text }, {}, done);
+						if (component instanceof StreamChooser) done({ stream, created: true });
+						if (component instanceof CheckpointPanel) { panel = component; options.onHandle({ focus() {}, setHidden() {}, isHidden() { return false; } }); }
+					}),
+				},
+			};
+			await command("", ctx);
+			await until(() => !!panel && panel.state.activity === null);
+			assert.equal(calls.filter((args) => args[0] === "cmux").length, outcome === "disabled" ? 0 : 1);
+			panel.state.input = "";
+			panel.state.draft = { ...sampleDraft, slug: "service", path: f.path, baseContent: "scratch unchanged", proposedContent: "approved", summary: "Updated handoff" };
+			panel.handleInput("\x07");
+			await until(() => dismissed);
+			assert.equal(readFileSync(f.path, "utf8"), "approved");
+			assert.equal(readPending(f.dir, f.pending.ownerId, "service"), undefined);
+			assert.equal(calls.filter((args) => args[0] === "config").length, 2);
+			assert.equal(calls.filter((args) => args[0] === "cmux").length, outcome === "disabled" ? 0 : 2);
+			assert.equal(receipts.length, 1);
+			assert.equal(receipts[0].details.cmux, outcome);
+			assert.doesNotMatch(receipts[0].content, /private projection failure/);
+			assert.equal(renderers[0][0], receipts[0].customType);
+			assert.equal(typeof renderers[0][1], "function");
+			if (outcome === "failed") assert.match(notifications[0], /CMUX update failed/);
+		} finally { await shutdown?.(); await f.dispose(); }
+	}
+});
+
+test("real CLI subprocess captures stderr on success and stdout-only failures", async () => {
+	const dir = mkdtempSync(join(tmpdir(), "checkpoint-process-"));
+	const oldPath = process.env.PATH;
+	try {
+		const executable = join(dir, "streams");
+		writeFileSync(executable, '#!/bin/sh\nif [ "$1" = "config" ]; then\n  printf \'{"notes":{"root":"/notes"},"obsidian":{"vault":"Notes"},"cmux":{"enabled":true}}\\n\'\n  printf "config warning\\n" >&2\nelse\n  printf "stdout failure\\n"\n  exit 7\nfi\n');
+		chmodSync(executable, 0o700);
+		process.env.PATH = `${dir}:${oldPath}`;
+		const notices = [];
+		const cli = new StreamCli(dir, undefined, (text) => notices.push(text));
+		assert.equal((await cli.config()).cmux.enabled, true);
+		assert.deepEqual(notices, ["config warning"]);
+		await assert.rejects(cli.project("service"), /exit 7.*stdout failure/);
+		assert.equal(cli.diagnostics[1].code, 7);
+		assert.match(cli.diagnostics[1].stdout, /stdout failure/);
+		process.env.PATH = dir + "/missing";
+		await assert.rejects(cli.config(), /ENOENT/);
+		assert.equal(cli.diagnostics.at(-1).code, null);
+	} finally { process.env.PATH = oldPath; rmSync(dir, { recursive: true, force: true }); }
+});
+
+test("CLI config is authoritative, typed, and read through streams", async () => {
+	const calls = [];
+	const config = { notes: { root: "/notes" }, obsidian: { vault: "Notes" }, cmux: { enabled: true } };
+	const cli = new StreamCli("/repo", async (args) => { calls.push(args); return { code: 0, stdout: JSON.stringify(config), stderr: "" }; });
+	assert.deepEqual(await cli.config(), config);
+	assert.deepEqual(calls, [["config", "--json"]]);
+	for (const value of [{}, { ...config, cmux: { enabled: "true" } }]) {
+		await assert.rejects(new StreamCli("/repo", async () => ({ code: 0, stdout: JSON.stringify(value), stderr: "" })).config(), /Invalid streams config/);
+	}
+	await assert.rejects(new StreamCli("/repo", async () => ({ code: 2, stdout: "", stderr: "bad config" })).config(), /bad config/);
+});
+
+test("CLI diagnostics retain bounded output and exit status but never stdin", async () => {
+	const warnings = [];
+	const cli = new StreamCli("/repo", async () => ({ code: 0, stdout: "projected", stderr: "a warning" }), (text) => warnings.push(text));
+	await cli.project("example");
+	assert.deepEqual(cli.diagnostics[0].args, ["cmux", "update", "-c", "example"]);
+	assert.equal(cli.diagnostics[0].code, 0);
+	assert.equal(cli.diagnostics[0].stderr, "a warning");
+	assert.deepEqual(warnings, ["a warning"]);
+	const failed = new StreamCli("/repo", async () => ({ code: 3, stdout: "error only on stdout", stderr: "" }));
+	await assert.rejects(failed.project("example"), /error only on stdout/);
+	assert.equal(failed.diagnostics[0].code, 3);
+	const large = new StreamCli("/repo", async () => ({ code: 0, stdout: "x".repeat(10000), stderr: "" }));
+	for (let i = 0; i < 30; i++) await large.project("example");
+	assert.ok(large.diagnostics.length <= 20);
+	assert.ok(large.diagnostics[0].stdout.length < 5000);
+	assert.match(large.diagnostics[0].stdout, /truncated/);
+	const update = new StreamCli("/repo", async () => ({ code: 0, stdout: JSON.stringify({ slug: "example", path: "/notes/example.md", updated: true, findings: [{ level: "warning", slug: "example", message: "missing next action" }] }), stderr: "" }), (text) => warnings.push(text));
+	await update.update("example", "PRIVATE MARKDOWN DO NOT RECORD");
+	assert.doesNotMatch(JSON.stringify(update.diagnostics), /PRIVATE MARKDOWN/);
+	assert.ok(warnings.includes("missing next action"));
+});
+
 test("CLI integration uses show and update without shell interpolation", async () => {
 	const calls = [];
 	const stream = { slug: "new-stream", path: "/scratch/new-stream.md", title: "New stream", status: "active", state: "Started" };
 	const cli = new StreamCli("/repo", async (args, input) => {
 		calls.push({ args, input });
-		if (args[0] === "show" || args[0] === "start") return JSON.stringify(stream);
-		if (args[0] === "update") return JSON.stringify({ slug: stream.slug, path: stream.path, updated: !args.includes("--dry-run"), findings: [] });
-		return "";
+		const value = args[0] === "update" ? { slug: stream.slug, path: stream.path, updated: !args.includes("--dry-run"), findings: [] } : stream;
+		return { code: 0, stdout: JSON.stringify(value), stderr: "" };
 	});
 	assert.equal((await cli.show("New stream")).slug, "new-stream");
 	assert.equal((await cli.previewStart("New stream")).slug, "new-stream");
@@ -902,9 +1080,9 @@ test("CLI integration uses show and update without shell interpolation", async (
 });
 
 test("CLI integration fails closed on malformed stream lists and update responses", async () => {
-	const cli = new StreamCli("/repo", async () => "{} ");
+	const cli = new StreamCli("/repo", async () => ({ code: 0, stdout: "{}", stderr: "" }));
 	await assert.rejects(cli.list(), /Invalid streams list/);
-	await assert.rejects(new StreamCli("/repo", async () => '[{"slug":"stream","title":"Stream","status":"active","path":"/scratch/stream.md"}]').list(), /Invalid streams list/);
+	await assert.rejects(new StreamCli("/repo", async () => ({ code: 0, stdout: '[{"slug":"stream","title":"Stream","status":"active","path":"/scratch/stream.md"}]', stderr: "" })).list(), /Invalid streams list/);
 	await assert.rejects(cli.update("stream", "candidate", { dryRun: true }), /Invalid streams update response/);
 });
 
@@ -1095,14 +1273,14 @@ test("recommendations cannot invent existing streams or create anything", () => 
 	assert.deepEqual(parseRecommendations("not json", streams), { existing: [] });
 });
 
-test("configuration enables CMUX only with an explicit boolean true", () => {
+test("extension configuration owns models and shortcuts, and rejects the old CMUX setting", () => {
 	const dir = mkdtempSync(join(tmpdir(), "checkpoint-config-"));
 	try {
-		assert.deepEqual(loadConfig(dir), { cmux: false, focusShortcut: "alt+p" });
-		writeFileSync(join(dir, "checkpoint.json"), '{"cmux":true,"focusShortcut":"ctrl+alt+c","selectorModel":{"provider":"openai","id":"selector"},"drafterModel":{"provider":"anthropic","id":"drafter"}}');
-		assert.deepEqual(loadConfig(dir), { cmux: true, focusShortcut: "ctrl+alt+c", selectorModel: { provider: "openai", id: "selector" }, drafterModel: { provider: "anthropic", id: "drafter" } });
-		writeFileSync(join(dir, "checkpoint.json"), '{"cmux":"true"}');
-		assert.throws(() => loadConfig(dir), /cmux must be a boolean/);
+		assert.deepEqual(loadConfig(dir), { focusShortcut: "alt+p" });
+		writeFileSync(join(dir, "checkpoint.json"), '{"focusShortcut":"ctrl+alt+c","selectorModel":{"provider":"openai","id":"selector"},"drafterModel":{"provider":"anthropic","id":"drafter"}}');
+		assert.deepEqual(loadConfig(dir), { focusShortcut: "ctrl+alt+c", selectorModel: { provider: "openai", id: "selector" }, drafterModel: { provider: "anthropic", id: "drafter" } });
+		writeFileSync(join(dir, "checkpoint.json"), '{"cmux":true}');
+		assert.throws(() => loadConfig(dir), /streams config set cmux.enabled/);
 		writeFileSync(join(dir, "checkpoint.json"), '{"selectorModel":{"provider":"openai"}}');
 		assert.throws(() => loadConfig(dir), /selectorModel.*provider.*id/);
 		writeFileSync(join(dir, "checkpoint.json"), '{"focusShortcut":""}');

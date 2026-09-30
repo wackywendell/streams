@@ -10,6 +10,7 @@ import type { Feedback } from "./review.ts";
 import { messageText, transcript } from "./view.ts";
 import type { PanelState } from "./view.ts";
 import type { StreamCli } from "./streams.ts";
+import type { CmuxOutcome } from "./receipt.ts";
 
 type Options = {
 	pending: Pending;
@@ -21,10 +22,9 @@ type Options = {
 	model: Model<any>;
 	thinkingLevel?: Parameters<typeof createCheckpointSession>[0]["thinkingLevel"];
 	systemPrompt: string;
-	cli: Pick<StreamCli, "update" | "project">;
-	cmux: boolean;
+	cli: Pick<StreamCli, "update" | "project" | "config">;
 	changed(): void;
-	applied(summary: string, warning?: string): void;
+	applied(summary: string, cmux: CmuxOutcome, warning?: string): void;
 };
 
 /** Owns model operations and durable state; the terminal only edits idle feedback. */
@@ -209,11 +209,12 @@ export class CheckpointConversation {
 			const draft = this.state.draft;
 			if (!draft) throw new Error("No draft to apply");
 			const o = this.options;
-			const result = await applyDraft(draft, draft.revision, { update: (...args) => o.cli.update(...args), project: o.cmux ? () => o.cli.project(draft.slug) : undefined });
+			const config = await o.cli.config();
+			const result = await applyDraft(draft, draft.revision, { update: (...args) => o.cli.update(...args), project: config.cmux.enabled ? () => o.cli.project(draft.slug) : undefined });
 			if (result.validationError) { this.state.notice = { level: "error", text: result.validationError }; return; }
 			this.finished = true;
 			clearPending(o.agentDir, o.pending.ownerId, o.pending.slug);
-			o.applied(draft.summary ?? "Scratch updated", result.projectionWarning);
+			o.applied(draft.summary ?? "Scratch updated", result.projectionWarning ? "failed" : config.cmux.enabled ? "updated" : "disabled", result.projectionWarning);
 		});
 	}
 

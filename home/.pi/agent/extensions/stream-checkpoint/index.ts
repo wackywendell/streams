@@ -14,6 +14,7 @@ import type { ChosenStream } from "./chooser.ts";
 import { CheckpointConversation } from "./conversation.ts";
 import { checkpointStatus } from "./view.ts";
 import { StreamCli } from "./streams.ts";
+import { checkpointReceipt, renderCheckpointReceipt } from "./receipt.ts";
 
 export function parseCheckpointArgs(args: string): { ref: string; message: string } {
 	const input = args.trim();
@@ -60,6 +61,7 @@ type OpenCheckpoint = {
 
 export default function registerCheckpoint(pi: ExtensionAPI, testDeps: { agentDir?: string; cli?: StreamCli; runtime?: ModelRuntime; skill?: string } = {}): void {
 	let active: OpenCheckpoint | undefined;
+	pi.registerMessageRenderer("checkpoint-receipt", renderCheckpointReceipt);
 	const agentDir = testDeps.agentDir ?? getAgentDir();
 	const focusShortcut = loadConfig(agentDir).focusShortcut;
 	const show = (run: OpenCheckpoint) => { run.handle?.setHidden(false); run.handle?.focus(); run.updateStatus?.(); run.panel?.refresh(); };
@@ -83,7 +85,9 @@ export default function registerCheckpoint(pi: ExtensionAPI, testDeps: { agentDi
 		try {
 			if (!alive()) return;
 			const config = loadConfig(agentDir);
-			const cli = testDeps.cli ?? new StreamCli(ctx.cwd);
+			const cli = testDeps.cli ?? new StreamCli(ctx.cwd, undefined, (text) => { if (alive()) ctx.ui.notify(text, "warning"); });
+			const sharedConfig = await cli.config();
+			if (!alive()) return;
 			const binding = latestBinding(ctx.sessionManager.getEntries(), run.ownerId);
 			const streams = await cli.list();
 			if (!alive()) return;
@@ -121,7 +125,7 @@ export default function registerCheckpoint(pi: ExtensionAPI, testDeps: { agentDi
 				}
 				pi.appendEntry(BINDING_TYPE, { ownerId: run.ownerId, slug: stream.slug, path: stream.path });
 			}
-			if (created && config.cmux) {
+			if (created && sharedConfig.cmux.enabled) {
 				try { await cli.project(stream.slug); }
 				catch (error) { ctx.ui.notify(`CMUX update failed: ${String(error)}`, "warning"); }
 			}
@@ -143,10 +147,10 @@ export default function registerCheckpoint(pi: ExtensionAPI, testDeps: { agentDi
 				ctx.ui.setStatus("checkpoint", value ? ctx.ui.theme.fg("accent", value) : undefined);
 			};
 			const conversation = new CheckpointConversation({ pending, binding: { ownerId: run.ownerId, slug: selected.slug, path: selected.path },
-				agentDir, cwd: ctx.cwd, manager: ctx.sessionManager, runtime, model, thinkingLevel: ctx.thinkingLevel, systemPrompt, cli, cmux: config.cmux,
+				agentDir, cwd: ctx.cwd, manager: ctx.sessionManager, runtime, model, thinkingLevel: ctx.thinkingLevel, systemPrompt, cli,
 				changed: () => { run.panel?.refresh(); run.updateStatus?.(); },
-				applied: (summary, warning) => {
-					if (alive()) pi.sendMessage({ customType: "checkpoint-receipt", content: `Checkpoint applied to ${selected.slug} (${selected.path}): ${summary}${warning ? `\nCMUX: ${warning}` : ""}`, display: true }, { triggerTurn: false });
+				applied: (summary, cmux, warning) => {
+					if (alive()) pi.sendMessage(checkpointReceipt({ slug: selected.slug, path: selected.path, summary, cmux, warning, commands: cli.diagnostics }), { triggerTurn: false });
 					run.dismiss?.();
 				},
 			});

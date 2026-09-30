@@ -2,7 +2,12 @@ import { spawn } from "node:child_process";
 
 type Stream = { slug: string; title: string; status: string; state: string; path: string; [key: string]: unknown };
 type UpdateResult = { slug: string; path: string; updated: boolean; findings: unknown[] };
-type Runner = (args: string[], input?: string) => Promise<string>;
+type CommandResult = { code: number | null; stdout: string; stderr: string };
+type Runner = (args: string[], input?: string) => Promise<CommandResult>;
+export type CommandDiagnostic = CommandResult & { args: string[]; warnings?: string[] };
+export type StreamsConfig = { notes: { root: string }; obsidian: { vault: string }; cmux: { enabled: boolean } };
+
+function bounded(text: string): string { return text.length > 2048 ? `${text.slice(0, 2048)}\n[truncated]` : text; }
 
 function isStream(value: unknown): value is Stream {
 	const stream = value as Partial<Stream> | null;
@@ -17,17 +22,33 @@ function defaultRunner(cwd: string): Runner {
 		child.stdout.setEncoding("utf8").on("data", (chunk: string) => { stdout += chunk; });
 		child.stderr.setEncoding("utf8").on("data", (chunk: string) => { stderr += chunk; });
 		child.on("error", reject);
-		child.on("close", (code) => {
-			if (code === 0) resolve(stdout);
-			else reject(new Error(stderr.trim() || `streams ${args[0]} exited ${code}`));
-		});
+		child.on("close", (code) => resolve({ code, stdout, stderr }));
+		child.stdin.on("error", (error: NodeJS.ErrnoException) => { if (error.code !== "EPIPE") reject(error); });
 		child.stdin.end(input);
 	});
 }
 
 export class StreamCli {
-	private readonly run: Runner;
-	constructor(cwd: string, runner?: Runner) { this.run = runner ?? defaultRunner(cwd); }
+	readonly diagnostics: CommandDiagnostic[] = [];
+	private readonly runner: Runner;
+	constructor(cwd: string, runner?: Runner, private warning?: (text: string) => void) { this.runner = runner ?? defaultRunner(cwd); }
+
+	private async run(args: string[], input?: string): Promise<string> {
+		let result: CommandResult;
+		try { result = await this.runner(args, input); }
+		catch (error) { result = { code: null, stdout: "", stderr: String(error) }; }
+		this.diagnostics.push({ args: [...args], code: result.code, stdout: bounded(result.stdout), stderr: bounded(result.stderr) });
+		if (this.diagnostics.length > 16) this.diagnostics.shift();
+		if (result.code !== 0) throw new Error(`streams ${args[0]} (exit ${result.code ?? "unavailable"}): ${bounded(result.stderr.trim() || result.stdout.trim() || "No output")}`);
+		if (result.stderr.trim()) this.warning?.(bounded(result.stderr.trim()));
+		return result.stdout;
+	}
+
+	async config(): Promise<StreamsConfig> {
+		const value = JSON.parse(await this.run(["config", "--json"]));
+		if (typeof value?.notes?.root !== "string" || !value.notes.root || typeof value?.obsidian?.vault !== "string" || !value.obsidian.vault || typeof value?.cmux?.enabled !== "boolean") throw new Error("Invalid streams config response");
+		return value;
+	}
 
 	async list(): Promise<Stream[]> {
 		const value = JSON.parse(await this.run(["list", "--json"]));
@@ -62,6 +83,9 @@ export class StreamCli {
 		if (typeof value?.slug !== "string" || typeof value.path !== "string" || typeof value.updated !== "boolean" || !Array.isArray(value.findings)) {
 			throw new Error("Invalid streams update response");
 		}
+		const warnings = value.findings.filter((finding: { level?: string; message?: string }) => finding?.level === "warning" && typeof finding.message === "string").slice(0, 16).map((finding: { message: string }) => bounded(finding.message));
+		this.diagnostics.at(-1)!.warnings = warnings;
+		for (const warning of warnings) this.warning?.(warning);
 		return value;
 	}
 
