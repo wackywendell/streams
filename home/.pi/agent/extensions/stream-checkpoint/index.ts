@@ -31,6 +31,7 @@ export async function recommendStreams(
 	streams: Awaited<ReturnType<StreamCli["list"]>>,
 	model = ctx.model,
 	snapshot = checkpointContext(ctx.sessionManager),
+	signal?: AbortSignal,
 ): Promise<Recommendations> {
 	if (!model) return { existing: [] };
 	const metadata = streams.map(({ slug, title, status, state }) => ({ slug, title, status, state }));
@@ -38,7 +39,7 @@ export async function recommendStreams(
 	const answer = await ctx.modelRegistry.complete(model, {
 		systemPrompt: "Use the current conversation to recommend up to 3 existing streams and optionally one new stream. Prefer a short, stable human-readable new title: aim for 6 words and around 40 characters. This is guidance, not a hard limit; return the full title if a longer name is needed. Avoid sentences or progress updates; put details in the reason, since streams keeps a fuller description and state separately. Return only JSON: {\"existing\":[{\"slug\":\"...\",\"reason\":\"...\"}],\"newStream\":{\"title\":\"...\",\"reason\":\"...\"}}. Recommendations do not create or bind streams.",
 		messages: convertToLlm([...snapshot.messages, message]),
-	});
+	}, { signal });
 	return parseRecommendations(answer.content.filter((part) => part.type === "text").map((part) => part.text).join(""), streams);
 }
 
@@ -90,17 +91,38 @@ export default function registerCheckpoint(pi: ExtensionAPI, testDeps: { agentDi
 
 	async function open(run: OpenCheckpoint, ref: string, message: string, ctx: ExtensionCommandContext): Promise<void> {
 		const alive = () => !run.cancellation.signal.aborted && ctx.sessionManager.getSessionId() === run.ownerId;
+		async function loading<T>(label: string, work: () => Promise<T>): Promise<T | undefined> {
+			type Result = { value: T } | { error: unknown } | undefined;
+			const result = await ctx.ui.custom<Result>((tui, theme, _keys, done) => {
+				const loader = new BorderedLoader(tui, theme, label);
+				let finished = false;
+				const finish = (value: Result) => { if (!finished) { finished = true; done(value); } };
+				run.dismiss = () => finish(undefined);
+				loader.onAbort = () => { run.cancellation.abort(); finish(undefined); };
+				void work().then((value) => finish({ value }), (error) => finish({ error }));
+				return loader;
+			}, { overlay: true, overlayOptions: { anchor: "center", width: "52%", minWidth: 50, maxHeight: 10 } });
+			if (!alive() || !result) return undefined;
+			if ("error" in result) throw result.error;
+			return result.value;
+		}
 		try {
 			if (!alive()) return;
 			const config = loadConfig(agentDir);
 			const cli = testDeps.cli ?? new StreamCli(ctx.cwd, undefined, (text) => { if (alive()) ctx.ui.notify(text, "warning"); });
-			const sharedConfig = await cli.config();
-			if (!alive()) return;
 			const binding = latestBinding(ctx.sessionManager.getEntries(), run.ownerId);
-			const streams = await cli.list();
-			if (!alive()) return;
-			let stream = ref.trim() ? await cli.show(ref.trim()).catch((error) => { ctx.ui.notify(String(error), "warning"); return undefined; })
-				: await selectStream("", binding, { list: async () => streams, show: (value) => cli.show(value) });
+			const lookup = await loading("Looking up checkpoint stream…", async () => {
+				const sharedConfig = await cli.config();
+				run.cancellation.signal.throwIfAborted();
+				const streams = await cli.list();
+				run.cancellation.signal.throwIfAborted();
+				const stream = ref.trim() ? await cli.show(ref.trim()).catch((error) => { if (alive()) ctx.ui.notify(String(error), "warning"); return undefined; })
+					: await selectStream("", binding, { list: async () => streams, show: (value) => cli.show(value) });
+				return { sharedConfig, streams, stream };
+			});
+			if (!lookup) return;
+			const { sharedConfig, streams } = lookup;
+			let { stream } = lookup;
 			let created = false;
 			let switchConfirmed = false;
 			if (!alive()) return;
@@ -111,15 +133,9 @@ export default function registerCheckpoint(pi: ExtensionAPI, testDeps: { agentDi
 				}
 				journal.update(run.marker, { label: "Choosing stream", working: true });
 				const selectorModel = configuredModel(ctx, config.selectorModel, "selector");
-				const recommendations = await ctx.ui.custom<Recommendations>((tui, theme, _keys, done) => {
-					const loader = new BorderedLoader(tui, theme, "Finding stream recommendations…", { cancellable: false });
-					let finished = false;
-					const finish = (value: Recommendations) => { if (!finished) { finished = true; done(value); } };
-					run.dismiss = () => finish({ existing: [] });
-					void recommendStreams(ctx, streams, selectorModel, run.snapshot).then(finish, () => finish({ existing: [] }));
-					return loader;
-				}, { overlay: true, overlayOptions: { anchor: "center", width: "52%", minWidth: 50, maxHeight: 10 } });
-				if (!alive()) return;
+				const recommendations = await loading("Finding stream recommendations…", () =>
+					recommendStreams(ctx, streams, selectorModel, run.snapshot, run.cancellation.signal).catch(() => ({ existing: [] })));
+				if (!recommendations) return;
 				const choice = await ctx.ui.custom<ChosenStream | undefined>((tui, theme, _keys, done) => {
 					run.dismiss = () => done(undefined);
 					return new StreamChooser(tui, theme, streams, cli, done, recommendations, ref.trim());

@@ -427,6 +427,53 @@ for (const selection of ["bound", "chooser", "explicit"]) {
 	});
 }
 
+for (const stage of ["config", "list", "show", "recommendations"]) {
+	test(`Esc cancels checkpoint ${stage} without waiting for late results`, async () => {
+		const manager = SessionManager.inMemory(process.cwd());
+		const stream = { slug: "service", title: "Service", path: "/unused/service.md", status: "active", state: "Work" };
+		if (stage === "show") manager.appendCustomEntry("stream-checkpoint-binding", { ownerId: manager.getSessionId(), slug: stream.slug, path: stream.path });
+		const config = { cmux: { enabled: false } };
+		let command, shutdown, loader, pending, selectorSignal;
+		let dialogs = 0, closed = 0;
+		const gate = (name, value) => name === stage ? new Promise((resolve) => { pending = () => resolve(value); }) : Promise.resolve(value);
+		registerCheckpoint({ registerEntryRenderer() {}, registerMessageRenderer() {}, registerShortcut() {},
+			registerCommand: (_name, options) => { command = options.handler; }, on: (_name, handler) => { shutdown = handler; },
+			appendEntry: (type, data) => manager.appendCustomEntry(type, data),
+		}, { cli: { config: () => gate("config", config), list: () => gate("list", [stream]), show: () => gate("show", stream) } });
+		const ctx = { mode: "tui", hasUI: true, cwd: process.cwd(), sessionManager: manager, model: { id: "selector" }, getSystemPrompt: () => "Test",
+			modelRegistry: { complete: (_model, _context, options) => { selectorSignal = options?.signal; return gate("recommendations", { content: [{ type: "text", text: '{"existing":[]}' }] }); } },
+			ui: { notify: (text) => assert.fail(text), setStatus() {},
+				custom: (factory) => new Promise((resolve) => {
+					dialogs++;
+					const component = factory({ terminal: { rows: 30 }, requestRender() {} }, { fg: (_color, text) => text }, {}, (value) => { component.dispose(); closed++; resolve(value); });
+					assert.ok(component instanceof BorderedLoader, "Cancellation must not open a chooser or panel");
+					loader = component;
+				}),
+			},
+		};
+		try {
+			await command(stage === "show" ? "--stream service" : "", ctx);
+			await until(() => !!pending);
+			assert.ok(loader, "Lookups need a cancellable loading UI");
+			loader.handleInput("\x1b");
+			await until(() => manager.getEntries().at(-1)?.data?.label === "Cancelled");
+			assert.equal(closed, dialogs, "Esc immediately returns input to the main composer");
+			if (stage === "recommendations") assert.equal(selectorSignal?.aborted, true);
+			const count = manager.getEntries().length;
+			const before = dialogs;
+			const late = pending;
+			await command(stage === "show" ? "--stream service" : "", ctx);
+			await until(() => pending !== late);
+			assert.ok(dialogs > before, "Cancellation must release the active run for another invocation");
+			await shutdown();
+			late(); pending();
+			await turn();
+			assert.equal(closed, dialogs);
+			assert.ok(manager.getEntries().slice(count).every((entry) => entry.customType !== "stream-checkpoint-binding"));
+		} finally { pending?.(); await shutdown?.(); }
+	});
+}
+
 test("setup failure retains a user-only source marker with inspectable error instead of opening a panel", async () => {
 	const manager = SessionManager.inMemory(process.cwd());
 	let command, shutdown;
@@ -436,7 +483,10 @@ test("setup failure retains a user-only source marker with inspectable error ins
 		appendEntry: (type, data) => manager.appendCustomEntry(type, data),
 	}, { cli: { config: async () => { throw new Error("Broken shared configuration"); } } });
 	const ctx = { mode: "tui", hasUI: true, sessionManager: manager, getSystemPrompt: () => "Test",
-		ui: { notify: (text) => notices.push(text), setStatus() {}, custom() { assert.fail("No panel on setup failure"); } } };
+		ui: { notify: (text) => notices.push(text), setStatus() {}, custom: (factory) => new Promise((resolve) => {
+			const component = factory({ terminal: { rows: 30 }, requestRender() {} }, { fg: (_color, text) => text }, {}, (value) => { component.dispose(); resolve(value); });
+			assert.ok(component instanceof BorderedLoader, "No panel on setup failure");
+		}) } };
 	await command("Record the blocker", ctx);
 	await until(() => notices.length === 1);
 	await shutdown();
@@ -469,9 +519,12 @@ test("checkpoint command releases main input, preserves work on stream switches 
 					return holdSwitch ? new Promise((resolve) => options.signal.addEventListener("abort", () => resolve(false), { once: true })) : allowSwitch;
 				},
 				custom: (factory, options) => new Promise((resolve) => {
-					panel = factory({ terminal: { rows: 30 }, requestRender() {} }, { fg: (_color, text) => text }, {}, () => { dismissed++; resolve(); });
-					const handle = { hidden: false, focus() {}, setHidden(value) { this.hidden = value; }, isHidden() { return this.hidden; } };
-					options.onHandle(handle);
+					const component = factory({ terminal: { rows: 30 }, requestRender() {} }, { fg: (_color, text) => text }, {}, (value) => { component.dispose(); if (component instanceof CheckpointPanel) dismissed++; resolve(value); });
+					if (component instanceof CheckpointPanel) {
+						panel = component;
+						const handle = { hidden: false, focus() {}, setHidden(value) { this.hidden = value; }, isHidden() { return this.hidden; } };
+						options.onHandle(handle);
+					}
 				}),
 			},
 		};

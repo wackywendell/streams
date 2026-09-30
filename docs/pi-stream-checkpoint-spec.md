@@ -99,6 +99,8 @@ If the panel is already open, a message without `--stream` focuses it and sends 
 
 Opening or switching a checkpoint obtains current stream metadata using `streams list --json`. Treat a missing executable, nonzero exit, invalid JSON, or malformed result as an error, not an empty list. Do not offer to create a supposedly missing stream based on a failed lookup.
 
+Show a cancellable loader during configuration and stream lookup, and while generating recommendations. Esc immediately returns to the main composer and records cancellation. Abort the recommendation request; ignore late lookup results so they cannot open a chooser, change the binding or start drafting. A new `/checkpoint` invocation must not wait for the cancelled lookup to finish.
+
 ### Explicit reference
 
 Resolve the supplied reference deterministically against the returned records, following the CLI's rules: normalized exact slug, normalized title, then unique substring match. Use the existing CLI resolver where practical rather than maintaining divergent matching rules.
@@ -387,6 +389,7 @@ Tests must use temporary scratch files and mocked CLI, model, and CMUX boundarie
 | Unbound invocation | Show confirmed CLI candidates, advisory recommendations, and all 3 manual or creation choices |
 | More than 20 streams | Show 20 initially; search or Show more reaches the full non-archived list, and manual or creation choices stay visible |
 | LLM recommends a new stream | Show proposed title and reason; create only after confirmation |
+| Esc during lookup or recommendations | Return to the composer immediately; ignore late results and allow a new invocation |
 | `--stream` title or slug supplied | Resolve deterministically; distinguish one match, ambiguity, invalid input, and absence |
 | Bare instructions | Use the bound stream or retain the message through the chooser; send once instead of the fresh kickoff |
 | Instructions on resume | Preserve saved history and send a new visible turn without another kickoff |
