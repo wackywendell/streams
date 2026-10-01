@@ -2,7 +2,9 @@
 name = "streams-cli"
 version = "0.1.0"
 description = "Manage scratch-first AI coding streams"
+readme = "README.md"
 license = "MIT"
+license-files = ["LICENSE"]
 authors = [{ name = "Wendell Smith", email = "wackywendell@gmail.com" }]
 requires-python = ">=3.11"
 dependencies = ["PyYAML>=6"]
@@ -18,4 +20,4 @@ build-backend = "hatchling.build"
 packages = ["src/_streams"]
 
 [tool.hatch.build.targets.sdist]
-include = ["src/_streams", "tests/python"]
+include = ["src/_streams", "tests/python", "README.md", "LICENSE"]
