@@ -11,8 +11,8 @@ from datetime import date
 from pathlib import Path
 from unittest.mock import patch
 
-BIN_DIR = Path(__file__).resolve().parents[2]
-sys.path.insert(0, str(BIN_DIR))
+SRC_DIR = Path(__file__).resolve().parents[2] / "src"
+sys.path.insert(0, str(SRC_DIR))
 
 from _streams.cli import build_parser, command_archive, command_check, command_cmux_update, command_format, command_list, command_rename, command_resume, command_show, command_start
 from _streams.cmux import (

@@ -1,0 +1,11 @@
+[tasks."test:python"]
+description = "Run streams CLI unit tests"
+run = "uv run --with pyyaml python -m unittest discover tests/python"
+
+[tasks."test:pi"]
+description = "Run Pi checkpoint extension tests"
+run = "node --test tests/stream_checkpoint_test.mjs"
+
+[tasks.test]
+description = "Run all tests"
+depends = ["test:python", "test:pi"]

@@ -19,12 +19,12 @@ const jiti = createJiti(join(agentDir, "npm", "checkpoint-test.mjs"), { alias: {
 const { BorderedLoader, convertToLlm, createAgentSession, DefaultResourceLoader, initTheme, ModelRuntime, SessionManager, SettingsManager } = await import(pathToFileURL(join(piDist, "index.js")).href);
 initTheme("dark");
 const { createAssistantMessageEventStream } = await import(pathToFileURL(join(piDist, "../../../@earendil-works/pi-ai/dist/index.js")).href);
-const { loadConfig, latestBinding, applyDraft, readPending, savePending, clearPending, stageDraft, selectStream, parseRecommendations, includeMainSession } = await jiti.import(new URL("../home/.pi/agent/extensions/stream-checkpoint/core.ts", import.meta.url).pathname);
-const { checkpointContext, completedMessages, assertContextFits, createCheckpointSession } = await jiti.import(new URL("../home/.pi/agent/extensions/stream-checkpoint/agent.ts", import.meta.url).pathname);
-const { StreamCli } = await jiti.import(new URL("../home/.pi/agent/extensions/stream-checkpoint/streams.ts", import.meta.url).pathname);
-const { CheckpointPanel } = await jiti.import(new URL("../home/.pi/agent/extensions/stream-checkpoint/panel.ts", import.meta.url).pathname);
-const { StreamChooser } = await jiti.import(new URL("../home/.pi/agent/extensions/stream-checkpoint/chooser.ts", import.meta.url).pathname);
-const { default: registerCheckpoint, recommendStreams, parseCheckpointArgs } = await jiti.import(new URL("../home/.pi/agent/extensions/stream-checkpoint/index.ts", import.meta.url).pathname);
+const { loadConfig, latestBinding, applyDraft, readPending, savePending, clearPending, stageDraft, selectStream, parseRecommendations, includeMainSession } = await jiti.import(new URL("../extensions/stream-checkpoint/core.ts", import.meta.url).pathname);
+const { checkpointContext, completedMessages, assertContextFits, createCheckpointSession } = await jiti.import(new URL("../extensions/stream-checkpoint/agent.ts", import.meta.url).pathname);
+const { StreamCli } = await jiti.import(new URL("../extensions/stream-checkpoint/streams.ts", import.meta.url).pathname);
+const { CheckpointPanel } = await jiti.import(new URL("../extensions/stream-checkpoint/panel.ts", import.meta.url).pathname);
+const { StreamChooser } = await jiti.import(new URL("../extensions/stream-checkpoint/chooser.ts", import.meta.url).pathname);
+const { default: registerCheckpoint, recommendStreams, parseCheckpointArgs } = await jiti.import(new URL("../extensions/stream-checkpoint/index.ts", import.meta.url).pathname);
 
 const turn = () => new Promise((resolve) => setImmediate(resolve));
 async function until(check) {
@@ -131,7 +131,7 @@ test("checkpoint context is frozen against later mutation of projected messages"
 });
 
 test("checkpoint markers update the same native transcript component and replay outside model context", async () => {
-	const { CheckpointJournal, MARKER_TYPE } = await jiti.import(new URL("../home/.pi/agent/extensions/stream-checkpoint/journal.ts", import.meta.url).pathname);
+	const { CheckpointJournal, MARKER_TYPE } = await jiti.import(new URL("../extensions/stream-checkpoint/journal.ts", import.meta.url).pathname);
 	const { CustomEntryComponent } = await import(pathToFileURL(join(piDist, "modes/interactive/components/custom-entry.js")).href);
 	const { Text, TuiMainScreen, TuiAltScreen, visibleWidth } = await import(pathToFileURL(join(piDist, "../../../@earendil-works/pi-tui/dist/index.js")).href);
 	for (const Backend of [TuiMainScreen, TuiAltScreen]) {
@@ -201,7 +201,7 @@ async function conversationFixture() {
 		return events;
 	};
 	const pending = { version: 1, ownerId: manager.getSessionId(), slug: "service", messages: [], input: "unsent" };
-	const { CheckpointConversation } = await jiti.import(new URL("../home/.pi/agent/extensions/stream-checkpoint/conversation.ts", import.meta.url).pathname);
+	const { CheckpointConversation } = await jiti.import(new URL("../extensions/stream-checkpoint/conversation.ts", import.meta.url).pathname);
 	const conversation = new CheckpointConversation({ pending, binding: { ownerId: pending.ownerId, slug: pending.slug, path }, agentDir: dir, cwd: dir, manager, runtime, model, thinkingLevel: "off", systemPrompt: "Test checkpoint instructions", cli: { config: async () => ({ cmux: { enabled: false } }), update: async (_slug, content, options) => { if (!options.dryRun) writeFileSync(path, content); return { path, updated: !options.dryRun }; } }, changed() {}, applied() {} });
 	return { conversation, pending, contexts, path, dir, manager, finish: (...args) => finish(...args), async dispose() { await conversation.dispose(); rmSync(dir, { recursive: true, force: true }); } };
 }
@@ -689,7 +689,7 @@ test("Apply fetches current CMUX config, runs projection after saving, and repor
 });
 
 test("receipts share only the summary and keep expandable diagnostics outside model context", async () => {
-	const { checkpointReceipt, renderCheckpointReceipt } = await jiti.import(new URL("../home/.pi/agent/extensions/stream-checkpoint/receipt.ts", import.meta.url).pathname);
+	const { checkpointReceipt, renderCheckpointReceipt } = await jiti.import(new URL("../extensions/stream-checkpoint/receipt.ts", import.meta.url).pathname);
 	const theme = { fg: (_color, text) => text, bg: (_color, text) => text };
 	for (const cmux of ["updated", "disabled", "failed"]) {
 		const receipt = checkpointReceipt({ slug: "service", path: "/notes/service.md", summary: "Updated the next action", cmux,
@@ -772,7 +772,7 @@ test("stopping and shutting down a running conversation preserves the accepted q
 });
 
 test("annotations distinguish repeated lines, deletions, and immutable draft revisions", async () => {
-	const { reviewLines, anchorAnnotation, feedbackPrompt } = await jiti.import(new URL("../home/.pi/agent/extensions/stream-checkpoint/review.ts", import.meta.url).pathname);
+	const { reviewLines, anchorAnnotation, feedbackPrompt } = await jiti.import(new URL("../extensions/stream-checkpoint/review.ts", import.meta.url).pathname);
 	const draft = { path: "/scratch/service.md", revision: 2, baseContent: "# First\nsame\n# Second\nsame\nremoved\n", proposedContent: "# First\nsame\n# Second\nsame\nadded\n" };
 	const lines = reviewLines(draft);
 	const first = anchorAnnotation(draft, lines[1]);
@@ -797,7 +797,7 @@ test("annotations distinguish repeated lines, deletions, and immutable draft rev
 });
 
 test("review diff preserves source line numbers through replacements and blank lines", async () => {
-	const { reviewLines } = await jiti.import(new URL("../home/.pi/agent/extensions/stream-checkpoint/review.ts", import.meta.url).pathname);
+	const { reviewLines } = await jiti.import(new URL("../extensions/stream-checkpoint/review.ts", import.meta.url).pathname);
 	assert.deepEqual(reviewLines({ baseContent: "a\n\nb\n", proposedContent: "a\n\nc\n" }), [
 		{ kind: "context", text: "a", oldLine: 1, newLine: 1 },
 		{ kind: "context", text: "", oldLine: 2, newLine: 2 },

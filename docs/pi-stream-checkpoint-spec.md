@@ -319,7 +319,7 @@ Repository locations:
 
 ```text
 docs/pi-stream-checkpoint-spec.md                 this specification
-home/.pi/agent/extensions/stream-checkpoint/       extension source
+extensions/stream-checkpoint/                     extension source
   index.ts                                       command and overlay lifecycle
   conversation.ts                                model operations and durable feedback
   panel.ts                                       Chat/Review rendering and idle input
@@ -332,7 +332,7 @@ home/.pi/agent/extensions/stream-checkpoint/       extension source
   receipt.ts                                     shared receipt and expandable user-only details
   journal.ts                                     source markers and append-only lifecycle status
 tests/stream_checkpoint_test.mjs                  Node regression tests
-home/bin/_streams/                               existing CLI and canonical schema
+src/_streams/                                     existing CLI and canonical schema
 ```
 
 Keep deterministic selection, proposal state, and diff generation separate from LLM calls and rendering. Follow existing TypeScript extension conventions. For example, proposal state should carry the version the user reviewed:
@@ -367,7 +367,7 @@ Execute CLI commands with separate arguments. Load the scratch body from the ret
 Existing CLI test target:
 
 ```sh
-mise run streams:test
+mise run test:python
 ```
 
 Extension test command:
@@ -379,7 +379,7 @@ node --test tests/stream_checkpoint_test.mjs
 Pi loads TypeScript extensions directly, so this proposal does not add a build step. Confirm typechecking and lint commands in the implementation plan instead of claiming a nonexistent target. Manual TUI verification will use:
 
 ```sh
-pi --extension ./home/.pi/agent/extensions/stream-checkpoint/index.ts
+pi --extension ./extensions/stream-checkpoint/index.ts
 ```
 
 Tests must use temporary scratch files and mocked CLI, model, and CMUX boundaries. They must not create, bind, update, or archive the user's real streams.
@@ -472,11 +472,11 @@ Context preflight uses Pi's message-token estimate and rejects input above 90% o
 
 ## Evidence
 
-- [Streams format](../home/bin/_streams/FORMAT.md): schema, intent-focused body, session ordering, and CMUX projection
-- [Streams reference resolution](../home/bin/_streams/resolve.py): deterministic title and slug matching
-- [Streams creation](../home/bin/_streams/store.py): starter note, location discovery, and returned stream
-- [Streams CLI](../home/bin/_streams/cli.py): JSON flags, checks, and projection commands
-- [Local extension test pattern](../tests/wait_extension_test.mjs): Node tests loading TypeScript through jiti
+- [Streams format](../src/_streams/FORMAT.md): schema, intent-focused body, session ordering, and CMUX projection
+- [Streams reference resolution](../src/_streams/resolve.py): deterministic title and slug matching
+- [Streams creation](../src/_streams/store.py): starter note, location discovery, and returned stream
+- [Streams CLI](../src/_streams/cli.py): JSON flags, checks, and projection commands
+- Local extension test pattern (`tests/wait_extension_test.mjs` in the original dotfiles repository): Node tests loading TypeScript through jiti
 - `~/.agents/skills/streams/SKILL.md`: checkpoint and handoff policy
 - Pi 0.87.1 `docs/extensions.md`, `docs/tui.md`, and `docs/sdk.md`: runtime, overlay, and context contracts inspected during research
 - `pi-btw` 0.6.1 and `pi-smart-btw` 0.2.8: researched precedents for independent side sessions, not native concurrent main-tree branches
