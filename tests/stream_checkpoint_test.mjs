@@ -1,24 +1,20 @@
 import assert from "node:assert/strict";
-import { createRequire } from "node:module";
-import { chmodSync, mkdtempSync, readFileSync, rmSync, realpathSync, writeFileSync } from "node:fs";
-import { execFileSync } from "node:child_process";
+import { chmodSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { createHash } from "node:crypto";
-import { tmpdir, homedir } from "node:os";
-import { dirname, join, resolve } from "node:path";
-import { pathToFileURL } from "node:url";
+import { tmpdir } from "node:os";
+import { dirname, join } from "node:path";
+import { fileURLToPath, pathToFileURL } from "node:url";
 import test from "node:test";
+import { createJiti } from "jiti";
 
-const agentDir = process.env.PI_CODING_AGENT_DIR ?? join(homedir(), ".pi", "agent");
-const require = createRequire(join(agentDir, "npm", "package.json"));
-const { createJiti } = require("jiti");
-const piExecutable = realpathSync(execFileSync("which", ["pi"], { encoding: "utf8" }).trim());
-const shimTarget = readFileSync(piExecutable, "utf8").match(/target=([^\s]+)/)?.[1];
-assert.ok(shimTarget, "Expected pi package shim");
-const piDist = dirname(dirname(resolve(dirname(piExecutable), shimTarget)));
-const jiti = createJiti(join(agentDir, "npm", "checkpoint-test.mjs"), { alias: { "@earendil-works/pi-coding-agent": join(piDist, "index.js"), "@earendil-works/pi-tui": join(piDist, "../../../@earendil-works/pi-tui/dist/index.js") } });
-const { BorderedLoader, convertToLlm, createAgentSession, DefaultResourceLoader, initTheme, ModelRuntime, SessionManager, SettingsManager } = await import(pathToFileURL(join(piDist, "index.js")).href);
+const piIndex = fileURLToPath(import.meta.resolve("@earendil-works/pi-coding-agent"));
+const piDist = dirname(piIndex);
+const piTuiIndex = fileURLToPath(import.meta.resolve("@earendil-works/pi-tui"));
+const piAiIndex = fileURLToPath(import.meta.resolve("@earendil-works/pi-ai"));
+const jiti = createJiti(import.meta.url, { alias: { "@earendil-works/pi-coding-agent": piIndex, "@earendil-works/pi-tui": piTuiIndex } });
+const { BorderedLoader, convertToLlm, createAgentSession, DefaultResourceLoader, initTheme, ModelRuntime, SessionManager, SettingsManager } = await import(pathToFileURL(piIndex).href);
 initTheme("dark");
-const { createAssistantMessageEventStream } = await import(pathToFileURL(join(piDist, "../../../@earendil-works/pi-ai/dist/index.js")).href);
+const { createAssistantMessageEventStream } = await import(pathToFileURL(piAiIndex).href);
 const { loadConfig, latestBinding, applyDraft, readPending, savePending, clearPending, stageDraft, selectStream, parseRecommendations, includeMainSession } = await jiti.import(new URL("../extensions/stream-checkpoint/core.ts", import.meta.url).pathname);
 const { checkpointContext, completedMessages, assertContextFits, createCheckpointSession } = await jiti.import(new URL("../extensions/stream-checkpoint/agent.ts", import.meta.url).pathname);
 const { StreamCli } = await jiti.import(new URL("../extensions/stream-checkpoint/streams.ts", import.meta.url).pathname);
@@ -133,7 +129,7 @@ test("checkpoint context is frozen against later mutation of projected messages"
 test("checkpoint markers update the same native transcript component and replay outside model context", async () => {
 	const { CheckpointJournal, MARKER_TYPE } = await jiti.import(new URL("../extensions/stream-checkpoint/journal.ts", import.meta.url).pathname);
 	const { CustomEntryComponent } = await import(pathToFileURL(join(piDist, "modes/interactive/components/custom-entry.js")).href);
-	const { Text, TuiMainScreen, TuiAltScreen, visibleWidth } = await import(pathToFileURL(join(piDist, "../../../@earendil-works/pi-tui/dist/index.js")).href);
+	const { Text, TuiMainScreen, TuiAltScreen, visibleWidth } = await import(pathToFileURL(piTuiIndex).href);
 	for (const Backend of [TuiMainScreen, TuiAltScreen]) {
 		const manager = SessionManager.inMemory(process.cwd());
 		const journal = new CheckpointJournal({ appendEntry: (type, data) => manager.appendCustomEntry(type, data) });
@@ -708,7 +704,7 @@ test("receipts share only the summary and keep expandable diagnostics outside mo
 		const expanded = renderCheckpointReceipt(message, { expanded: true, outputPad: 1 }, theme);
 		assert.match(expanded.render(80).join("\n"), /streams cmux update -c service/);
 		assert.match(expanded.render(80).join("\n"), /private stderr/);
-		const { visibleWidth } = await import(pathToFileURL(join(piDist, "../../../@earendil-works/pi-tui/dist/index.js")).href);
+		const { visibleWidth } = await import(pathToFileURL(piTuiIndex).href);
 		assert.ok(expanded.render(36).every((line) => visibleWidth(line) <= 36));
 		const { CustomMessageComponent } = await import(pathToFileURL(join(piDist, "modes/interactive/components/custom-message.js")).href);
 		const native = new CustomMessageComponent(message, renderCheckpointReceipt);

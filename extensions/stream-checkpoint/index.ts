@@ -1,6 +1,6 @@
 import { readFileSync } from "node:fs";
-import { homedir } from "node:os";
 import { join } from "node:path";
+import { fileURLToPath } from "node:url";
 import type { AgentMessage } from "@earendil-works/pi-agent-core";
 import type { OverlayHandle } from "@earendil-works/pi-tui";
 import { BorderedLoader, convertToLlm, getAgentDir, ModelRuntime } from "@earendil-works/pi-coding-agent";
@@ -161,7 +161,7 @@ export default function registerCheckpoint(pi: ExtensionAPI, testDeps: { agentDi
 			if (providerConfig) runtime.registerProvider(model.provider, providerConfig);
 			const nativeProvider = ctx.modelRegistry.getRegisteredNativeProvider(model.provider);
 			if (nativeProvider) runtime.registerNativeProvider(nativeProvider);
-			const skill = testDeps.skill ?? readFileSync(join(homedir(), ".agents", "skills", "streams", "SKILL.md"), "utf8");
+			const skill = testDeps.skill ?? readFileSync(fileURLToPath(new URL("../../skills/streams/SKILL.md", import.meta.url)), "utf8");
 			const format = await cli.format();
 			if (!alive()) return;
 			const selected = stream;
