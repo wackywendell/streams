@@ -107,7 +107,7 @@ Resolve the supplied reference deterministically against the returned records, f
 
 - one match: select it and persist the binding; explicit selection needs no additional confirmation
 - several matches: show the matches in the panel and ask the user to choose
-- no match: propose creation and show the title, resulting slug, and working directory for confirmation
+- no match: keep the reference editable and offer “Write your own” to enter a new stream title
 - invalid reference: explain the problem and allow correction; do not silently invent a replacement
 
 An explicit reference can select a stream in any current status. If a panel is open, save and dismiss it before resolving the new reference. Confirm a change away from unfinished work; preserve that work under the old stream. Declining leaves the binding unchanged, and `/checkpoint` resumes it. Do not interrupt an in-progress Apply to switch streams.
@@ -127,7 +127,7 @@ The LLM can use the current Pi conversation and stream metadata to recommend:
 - an existing stream, with a short reason
 - a new stream, with a proposed title and a short reason why existing streams do not fit
 
-For suggested new titles, follow `streams format`'s stable human-readable naming guidance: aim for about six words and 40 characters, putting longer context in the reason rather than the title. This is guidance, not a limit: preserve the model's full title in the selectable option and creation preview even if it runs longer. Manually entered stream titles are unaffected.
+For suggested new titles, fewer words are better: 2 to 4 words usually suffice. Use the shortest stable, human-readable title that distinguishes the work. Put fuller context in the reason rather than the title. This is guidance, not a limit: preserve longer suggestions in the selectable option and title editor. Manually entered titles are unaffected.
 
 Recommendations appear first and are labelled as recommendations, with each reason directly beneath its option. Visually separate the new recommendation from existing streams; distinguish titles, statuses, and supporting state with theme colors and italics. They are followed by other `active` streams, then the remaining non-archived streams. Show title, slug, status, and short state without duplicate entries.
 
@@ -137,21 +137,23 @@ Always offer these additional choices:
 
 1. Enter a title or slug.
 2. Create a new stream with an AI-suggested title.
-3. Create a new stream with a user-specified title.
+3. “Write your own”, opening a blank new-stream title field.
 
-The suggested new stream is a selectable row; selecting it opens the same creation preview and confirmation as a manually entered title. The user must confirm before creation; an LLM recommendation alone never binds or creates a stream. Existing choices remain usable if recommendation generation fails. Entering a reference uses the same deterministic resolution flow as `--stream`.
+Keep “Write your own” visible below the list, including when search finds no matches. Selecting a suggested new stream opens the same title editor, prefilled with the suggestion. The first Enter opens editing; a second Enter submits the title and creates the stream. There is no y/n prompt. Esc from editing returns to the choices without creating anything or losing the search text.
+
+An LLM recommendation alone never binds or creates a stream. Existing choices remain usable if recommendation generation fails. Typing a reference in the search field still uses the deterministic resolution flow from `--stream`. Ctrl+N opens the new-stream title editor with the search text prefilled.
 
 ### Creation
 
-For any creation path, show the final proposed title and slug before asking for confirmation. The user can edit the title. For slug-only input, do not silently expand or rename it; any suggested human-readable title must be visible in the confirmation.
+For any creation path, let the user edit the title before submitting it with Enter. Reject an empty title. Do not silently expand or rename slug-only input.
 
-Refresh the list before creation to catch an existing match. On confirmation, immediately run `streams start "<title>" --json` in the intended checkout, without `--current`. The CLI owns slug generation, location discovery, and creation. Persist the session binding to the successful command's actual returned record before beginning the checkpoint discussion. Never interpolate the title into a shell command string.
+On submission, validate the title and obtain its canonical slug through `streams start --dry-run`. Refresh the list to catch an existing match, then run `streams start "<title>" --json` in the intended checkout, without `--current`. Keep input locked during creation to prevent duplicate submissions. The CLI owns slug generation, location discovery, and creation. Persist the session binding to the successful command's actual returned record before beginning the checkpoint discussion. Never interpolate the title into a shell command string.
 
 After successful creation and binding, run `streams cmux update -c <slug>` if shared `cmux.enabled` is `true`. Report a projection failure in the panel and continue the checkpoint discussion with the created stream.
 
 If creation fails, keep the chooser open and the old binding intact. Outside a valid jj or Git checkout, explain the CLI failure and ask for a valid creation location instead of fabricating `repo` or `cwd`.
 
-Creation confirmation commits the choice of title and slug by writing the CLI's starter note and binding the stream. It does not authorize the subsequent checkpoint draft. Minimizing, restarting and Clear all leave the new note and binding in place. An unfilled starter note correctly records what the user has approved; it is not abandoned work to delete.
+Submitting the edited title writes the CLI's starter note and binds the returned stream. It does not authorize the subsequent checkpoint draft. Minimizing, restarting and Clear all leave the new note and binding in place. An unfilled starter note correctly records what the user has approved; it is not abandoned work to delete.
 
 ## Session binding
 
@@ -388,7 +390,8 @@ Tests must use temporary scratch files and mocked CLI, model, and CMUX boundarie
 | --- | --- |
 | Unbound invocation | Show confirmed CLI candidates, advisory recommendations, and all 3 manual or creation choices |
 | More than 20 streams | Show 20 initially; search or Show more reaches the full non-archived list, and manual or creation choices stay visible |
-| LLM recommends a new stream | Show proposed title and reason; create only after confirmation |
+| LLM recommends a new stream | Show title and reason; Enter opens title editing and a second Enter creates |
+| Write your own | Always show the option; open a blank title field and preserve the search when returning |
 | Esc during lookup or recommendations | Return to the composer immediately; ignore late results and allow a new invocation |
 | `--stream` title or slug supplied | Resolve deterministically; distinguish one match, ambiguity, invalid input, and absence |
 | Bare instructions | Use the bound stream or retain the message through the chooser; send once instead of the fresh kickoff |

@@ -632,7 +632,8 @@ test("LLM recommendations are advisory and grounded in the full current branch a
 	assert.deepEqual(suggestions.existing, [{ slug: "parser", reason: "Matches parser work" }]);
 	assert.match(JSON.stringify(seen.messages), /Working on parser/);
 	assert.match(JSON.stringify(seen.messages), /parser/);
-	assert.match(seen.systemPrompt, /aim for 6 words and around 40 characters/);
+	assert.match(seen.systemPrompt, /fewer words.*better/i);
+	assert.match(seen.systemPrompt, /2.?4 words/);
 	assert.match(seen.systemPrompt, /guidance, not a hard limit/);
 	assert.match(seen.systemPrompt, /description and state/);
 });
@@ -925,7 +926,7 @@ test("spinner animates during operations and stops when idle", async () => {
 	} finally { panel.dispose(); }
 });
 
-test("chooser never creates a stream before explicit confirmation", async () => {
+test("write your own opens an empty title editor and only Enter creates", async () => {
 	const tui = { terminal: { rows: 28 }, requestRender() {} };
 	const theme = { fg: (_color, text) => text };
 	const calls = [];
@@ -938,12 +939,14 @@ test("chooser never creates a stream before explicit confirmation", async () => 
 		show: async () => { throw new Error("not found"); },
 	};
 	const chooser = new StreamChooser(tui, theme, [], cli, (choice) => { selected = choice; });
-	chooser.input.setValue("New Stream");
-	chooser.handleInput("\x0e"); // Ctrl+N: preview creation
-	await new Promise((resolve) => setImmediate(resolve));
-	assert.deepEqual(calls, ["preview:New Stream"]);
-	assert.match(chooser.render(58).join("\n"), /new-stream/);
-	chooser.handleInput("y");
+	assert.match(chooser.render(58).join("\n"), /Write your own/);
+	chooser.handleInput("\r");
+	assert.equal(chooser.titleInput.getValue(), "");
+	chooser.handleInput("\r");
+	assert.deepEqual(calls, [], "An empty title cannot create a stream");
+	chooser.handleInput("New Stream");
+	assert.deepEqual(calls, [], "Typing never creates a stream");
+	chooser.handleInput("\r");
 	await new Promise((resolve) => setImmediate(resolve));
 	assert.deepEqual(calls, ["preview:New Stream", "start:New Stream"]);
 	assert.deepEqual(selected, { stream, created: true });
@@ -988,18 +991,19 @@ test("chooser labels recommendations but never treats them as selection", async 
 
 test("Enter selects an existing stream and Alt+M reveals streams beyond the initial 20", () => {
 	const records = Array.from({ length: 21 }, (_, index) => ({ slug: `stream-${index}`, title: `Stream ${String(index).padStart(2, "0")}`, status: "active", state: "Work", path: `/scratch/${index}.md` }));
-	let chosen;
-	const chooser = new StreamChooser({ terminal: { rows: 30 }, requestRender() {} }, { fg: (_color, text) => text }, records, { list: async () => records, show: async () => records[0], start: async () => records[0], previewStart: async () => records[0] }, (choice) => { chosen = choice; });
-	chooser.handleInput("\r");
-	assert.equal(chosen?.stream.slug, "stream-0");
-	chosen = undefined;
-	chooser.handleInput("\x1bm");
-	for (let index = 0; index < 20; index++) chooser.handleInput("\x1b[B");
-	chooser.handleInput("\t");
-	assert.equal(chosen?.stream.slug, "stream-20");
+	for (const expand of [false, true]) {
+		let chosen;
+		const chooser = new StreamChooser({ terminal: { rows: 30 }, requestRender() {} }, { fg: (_color, text) => text }, records, { list: async () => records, show: async () => records[0], start: async () => records[0], previewStart: async () => records[0] }, (choice) => { chosen = choice; });
+		if (expand) {
+			chooser.handleInput("\x1bm");
+			for (let index = 0; index < 20; index++) chooser.handleInput("\x1b[B");
+		}
+		chooser.handleInput(expand ? "\t" : "\r");
+		assert.equal(chosen?.stream.slug, expand ? "stream-20" : "stream-0");
+	}
 });
 
-test("highlighting the suggested new stream previews it before asking to create", async () => {
+test("suggested new stream opens an editable title and the second Enter creates", async () => {
 	const proposed = { slug: "new-stream", title: "New Stream", status: "active", state: "Started", path: "/scratch/new.md", cwd: "/repo" };
 	const existing = { slug: "old-stream", title: "Old Stream", status: "active", state: "Work", path: "/scratch/old.md" };
 	const calls = [];
@@ -1014,16 +1018,20 @@ test("highlighting the suggested new stream previews it before asking to create"
 	assert.match(view, /Different scope/);
 	chooser.handleInput("\r");
 	await new Promise((resolve) => setImmediate(resolve));
-	assert.deepEqual(calls, ["preview:New Stream"]);
+	assert.deepEqual(calls, []);
 	assert.equal(chosen, undefined);
-	assert.match(chooser.render(80).join("\n"), /Create New Stream/);
-	chooser.handleInput("n");
+	assert.equal(chooser.titleInput.getValue(), "New Stream");
+	assert.doesNotMatch(chooser.render(80).join("\n"), /y\/n/);
+	chooser.handleInput("\x1b");
 	assert.equal(chosen, undefined);
+	assert.match(chooser.render(80).join("\n"), /Suggested new:/);
 	chooser.handleInput("\r");
+	chooser.handleInput("\x01"); chooser.handleInput("\x0b"); // Ctrl+A, Ctrl+K replaces the suggested title.
+	chooser.handleInput("Short title");
+	chooser.handleInput("\r");
+	chooser.handleInput("\r"); // Ignore repeated submission during creation.
 	await new Promise((resolve) => setImmediate(resolve));
-	chooser.handleInput("y");
-	await new Promise((resolve) => setImmediate(resolve));
-	assert.deepEqual(calls, ["preview:New Stream", "preview:New Stream", "start:New Stream"]);
+	assert.deepEqual(calls, ["preview:Short title", "start:Short title"]);
 	assert.deepEqual(chosen, { stream: proposed, created: true });
 });
 
@@ -1045,15 +1053,47 @@ test("a long suggested title remains visible and selectable in full", async () =
 	assert.match(view.join("\n"), /No existing stream fits/);
 	chooser.handleInput("\r");
 	await new Promise((resolve) => setImmediate(resolve));
-	assert.deepEqual(calls, [`preview:${title}`]);
-	const preview = chooser.render(60);
-	const promptStart = preview.findIndex((line) => line.includes("Create "));
-	const promptEnd = preview.findIndex((line, index) => index >= promptStart && line.includes("? y/n"));
-	assert.ok(preview.slice(promptStart, promptEnd + 1).map((line) => line.slice(1, -1).trim()).join(" ").includes(title));
-	chooser.handleInput("y");
+	assert.deepEqual(calls, []);
+	assert.equal(chooser.titleInput.getValue(), title);
+	chooser.handleInput("\r");
 	await new Promise((resolve) => setImmediate(resolve));
 	assert.deepEqual(calls, [`preview:${title}`, `start:${title}`]);
 	assert.deepEqual(chosen, { stream: proposed, created: true });
+});
+
+test("manual creation stays visible with filtered or long stream lists and checks duplicates", async () => {
+	const records = Array.from({ length: 21 }, (_, index) => ({ slug: `stream-${index}`, title: `Stream ${index}`, status: "active", state: "Work", path: `/scratch/${index}.md` }));
+	let starts = 0;
+	const chooser = new StreamChooser({ terminal: { rows: 16 }, requestRender() {} }, { fg: (_color, text) => text }, records, {
+		list: async () => records, show: async () => records[0], previewStart: async () => records[0], start: async () => { starts++; return records[0]; },
+	}, () => assert.fail("Duplicate stream must not be selected"));
+	assert.match(chooser.render(80).join("\n"), /Write your own/);
+	assert.ok(chooser.render(80).length <= Math.floor(16 * 0.8));
+	chooser.input.setValue("unmatched search");
+	chooser.handleInput("\t");
+	assert.equal(chooser.titleInput.getValue(), "");
+	chooser.handleInput("Stream 0");
+	chooser.handleInput("\r");
+	await turn();
+	assert.equal(starts, 0);
+	assert.match(chooser.render(80).join("\n"), /now exists/);
+	chooser.handleInput("\x1b");
+	assert.equal(chooser.input.getValue(), "unmatched search");
+});
+
+test("Esc during typed stream lookup dismisses the chooser and ignores late results", async () => {
+	let resolveLookup;
+	const results = [];
+	const chooser = new StreamChooser({ terminal: { rows: 30 }, requestRender() {} }, { fg: (_color, text) => text }, [], {
+		show: () => new Promise((resolve) => { resolveLookup = resolve; }),
+	}, (choice) => results.push(choice));
+	chooser.input.setValue("slow lookup");
+	chooser.handleInput("\r");
+	chooser.handleInput("\x1b");
+	assert.deepEqual(results, [undefined]);
+	resolveLookup({ slug: "late", title: "Late" });
+	await turn();
+	assert.deepEqual(results, [undefined]);
 });
 
 test("typed stream references resolve deterministically even when matching a new recommendation", async () => {
