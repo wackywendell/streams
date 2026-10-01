@@ -172,7 +172,7 @@ def obsidian_link_for_stream(stream: Stream) -> str:
     try:
         file = stream.path.relative_to(root).as_posix()
     except ValueError as exc:
-        raise StreamError(f"stream {stream.slug!r} is outside worknotes root {root}") from exc
+        raise StreamError(f"stream {stream.slug!r} is outside notes root {root}") from exc
     query = urlencode({"vault": load_config()["obsidian"]["vault"], "file": file})
     return f"[🗒︎](obsidian://open?{query})"
 

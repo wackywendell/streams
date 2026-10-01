@@ -965,7 +965,7 @@ class CmuxTest(unittest.TestCase):
                     "--name",
                     "Active Stream",
                     "--description",
-                    "[🗒︎](obsidian://open?vault=worknotes&file=scratch%2Factive-stream.md) _Ready to work_",
+                    "[🗒︎](obsidian://open?vault=streams&file=scratch%2Factive-stream.md) _Ready to work_",
                     "--cwd",
                     str(cwd),
                     "--command",
@@ -1000,7 +1000,7 @@ class CmuxTest(unittest.TestCase):
             with patch("_streams.cmux.notes_root", return_value=vault):
                 update_workspace(stream, workspace, cmux)
             self.assertEqual(cmux.commands[0], ["cmux", "workspace-action", "--workspace", "workspace:2", "--action", "rename", "--title", "Active Stream"])
-            self.assertEqual(cmux.commands[1], ["cmux", "workspace-action", "--workspace", "workspace:2", "--action", "set-description", "--description", "[🗒︎](obsidian://open?vault=worknotes&file=scratch%2Factive-stream.md) _Ready to work_"])
+            self.assertEqual(cmux.commands[1], ["cmux", "workspace-action", "--workspace", "workspace:2", "--action", "set-description", "--description", "[🗒︎](obsidian://open?vault=streams&file=scratch%2Factive-stream.md) _Ready to work_"])
             self.assertEqual(cmux.commands[2], ["cmux", "workspace-action", "--workspace", "workspace:2", "--action", "set-color", "--color", "Green"])
 
     def test_update_all_workspaces_skips_tasks_and_warns_for_unmatched_workspaces(self) -> None:
@@ -1040,12 +1040,12 @@ class CmuxTest(unittest.TestCase):
             self.assertEqual(resolved.display_ref, "workspace:2")
             self.assertEqual(cmux.commands[0], ["cmux", "workspace-action", "--workspace", "workspace:2", "--action", "rename", "--title", "Active Stream"])
 
-    def test_description_rejects_stream_outside_worknotes_root(self) -> None:
+    def test_description_rejects_stream_outside_notes_root(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
             stream = show_stream(write_stream(root, "active-stream").stem, root)
             with patch("_streams.cmux.notes_root", return_value=root / "worknotes"):
-                with self.assertRaisesRegex(StreamError, "outside worknotes root"):
+                with self.assertRaisesRegex(StreamError, "outside notes root"):
                     description_for_stream(stream)
 
     def test_description_includes_italic_state_and_all_links(self) -> None:
@@ -1075,7 +1075,7 @@ class CmuxTest(unittest.TestCase):
                 description,
                 "\n".join(
                     [
-                        "[🗒︎](obsidian://open?vault=worknotes&file=scratch%2Factive-stream.md) _Issue #124 literal conversion helpers_",
+                        "[🗒︎](obsidian://open?vault=streams&file=scratch%2Factive-stream.md) _Issue #124 literal conversion helpers_",
                         "[ℹ︎#124](https://github.com/example-org/widget-lib/issues/124): Literal conversion helpers",
                         "[ℹ︎#7](https://github.com/openai/codex/issues/7): Codex issue",
                         "[⑂︎#150](https://github.com/example-org/widget-lib/pull/150): Literal helper changes",

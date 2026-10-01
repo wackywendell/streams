@@ -39,7 +39,7 @@ class ConfigTest(unittest.TestCase):
     def test_defaults_and_origins_without_creating_config(self):
         code, out, err = self.cli("config", "--json")
         self.assertEqual((code, err), (0, ""))
-        self.assertEqual(json.loads(out), {"notes": {"root": str(self.root / "worknotes")}, "obsidian": {"vault": "worknotes"}, "cmux": {"enabled": False}})
+        self.assertEqual(json.loads(out), {"notes": {"root": str(self.root / "streams")}, "obsidian": {"vault": "streams"}, "cmux": {"enabled": False}})
         self.assertFalse(self.path.exists())
         code, out, _ = self.cli("config")
         self.assertEqual(code, 0)

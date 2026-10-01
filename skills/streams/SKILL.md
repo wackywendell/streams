@@ -7,7 +7,7 @@ metadata:
 
 # Streams
 
-Use this skill to manage AI-assisted coding streams from scratch files under `~/worknotes/scratch`.
+Use this skill to manage AI-assisted coding streams from scratch files under `<notes.root>/scratch`. `notes.root` is the configured notes directory (`streams config get notes.root`, default `~/streams`).
 
 Scratch frontmatter is the source of truth for current state. The markdown body is the pickup document: goal, current status, important decisions, tradeoffs, deferred choices, and open questions. CMUX and status lists are projections of that scratch state.
 
@@ -31,7 +31,7 @@ Use `streams format` as the schema and CLI contract source of truth. If this ski
 
 ## Stream State
 
-One top-level markdown file under `~/worknotes/scratch` is one current stream. Archived streams live under `~/worknotes/scratch/archive`; `archived` is not a status.
+One top-level markdown file under `<notes.root>/scratch` is one current stream. Archived streams live under `<notes.root>/scratch/archive`; `archived` is not a status.
 
 Keep scratch frontmatter tool-neutral. Do not store projection state such as CMUX metadata in scratch. Quote any string containing `#`, such as a PR or issue reference: in unquoted YAML, a whitespace-prefixed `#` starts a comment. Record every issue and PR as a `url` plus a manually maintained 2-to-5-word `description`.
 
@@ -64,11 +64,11 @@ The scratch body is a current-state pickup document. It records what has been le
 
 Edit it in place: remove or replace superseded status, outdated decisions, and stale assumptions. It should read like an ADR-style document organized by concept, not a chronological log. Keep `## Status` current; follow `streams format` for the canonical body shape.
 
-Keep long stream-local drafts and outputs under `~/worknotes/scratch/artifacts/<slug>/` and link them from `## Artifacts`; follow `streams format` for retention and lifecycle rules.
+Keep long stream-local drafts and outputs under `<notes.root>/scratch/artifacts/<slug>/` and link them from `## Artifacts`; follow `streams format` for retention and lifecycle rules.
 
 ## Reference Notes
 
-If a stream produces durable knowledge beyond the immediate task, consider whether `~/worknotes/reference` should be updated. Reference notes are reusable knowledge, not current stream state and not chronological logs.
+If a stream produces durable knowledge beyond the immediate task, consider whether `<notes.root>/reference` should be updated. Reference notes are reusable knowledge, not current stream state and not chronological logs.
 
 Before creating or updating reference notes during `check` / `refresh`, `checkpoint` / `handoff`, or `cleanup`, explain what reference changes you recommend and ask the human for their thoughts. Check existing notes first and prefer updating them with the new current understanding over creating duplicates.
 
@@ -101,7 +101,7 @@ Before replying after material work, ask:
   - Is your own AI session in the `sessions` field?
 - Does `## Status` still let a new human or AI session continue?
 - Did an important decision, tradeoff, deferred choice, or open question change?
-- Did the work produce durable reusable knowledge that may belong in `~/worknotes/reference`?
+- Did the work produce durable reusable knowledge that may belong in `<notes.root>/reference`?
 - Does the linked CMUX display need to be updated from scratch?
 
 If no durable pickup context significantly changed, leave scratch alone.

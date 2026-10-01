@@ -51,11 +51,11 @@ streams config
 streams config --json
 streams config get cmux.enabled
 streams config set cmux.enabled true
-streams config set notes.root ~/worknotes
-streams config set obsidian.vault worknotes
+streams config set notes.root ~/notes
+streams config set obsidian.vault notes
 ```
 
-The CLI stores overrides in `$XDG_CONFIG_HOME/streams/config.json`, defaulting to `~/.config/streams/config.json`. `notes.root` defaults to `~/worknotes`; scratch, archive and artifact paths derive from it. `obsidian.vault` defaults to `worknotes`. `cmux.enabled` defaults to `false`. The human-readable listing shows the config path and whether each value is configured or a default. Unknown keys, invalid types and malformed files fail without overwriting the file.
+The CLI stores overrides in `$XDG_CONFIG_HOME/streams/config.json`, defaulting to `~/.config/streams/config.json`. `notes.root` defaults to `~/streams`; scratch, archive and artifact paths derive from it. `obsidian.vault` defaults to `streams`. `cmux.enabled` defaults to `false`. The human-readable listing shows the config path and whether each value is configured or a default. Unknown keys, invalid types and malformed files fail without overwriting the file.
 
 The extension fetches effective settings with `streams config --json` when opening a checkpoint and again before Apply. A config failure blocks the operation rather than silently disabling CMUX. `streams update` itself does not automatically refresh CMUX; checkpoint clients explicitly perform that step when enabled.
 

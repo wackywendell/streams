@@ -1,6 +1,6 @@
 # Streams Scratch Format
 
-Scratch files live in `<notes.root>/scratch`, defaulting to `~/worknotes/scratch`. One top-level markdown file is one current stream. Archived streams live under `<notes.root>/scratch/archive`; `archived` is not a status. Paths below use the default notes root.
+Scratch files live in `<notes.root>/scratch`, defaulting to `~/streams/scratch`. One top-level markdown file is one current stream. Archived streams live under `<notes.root>/scratch/archive`; `archived` is not a status. Paths below use the default notes root.
 
 `streams format` is the source of truth for the stream schema and CLI behavior contract.
 
@@ -93,7 +93,7 @@ read from version control or the code itself should be removed.
 
 When state changes, replace or remove stale context rather than adding a new
 status entry. Generated artifacts such as drafts, proposals, and PR descriptions
-can be placed under `~/worknotes/scratch/artifacts/<slug>/` and linked from an
+can be placed under `~/streams/scratch/artifacts/<slug>/` and linked from an
 optional `## Artifacts` section in the stream file.
 
 Use this retention test: would removing this information prevent someone from
@@ -134,7 +134,7 @@ _Optional links to retained stream-local outputs. Omit this section when there a
 
 The body is a current pickup document, not an append-only log. Edit it in place so a new human or AI session can resume from the frontmatter and `## Status`.
 
-Reference notes under `~/worknotes/reference` are optional durable outputs for reusable knowledge that outlives one stream. They are not stream state and should stay up to date rather than chronological. During check/refresh, handoff/checkpoint, and cleanup, consider whether new durable knowledge should update an existing reference note or justify a new one. Ask the human before creating or updating reference notes, and link any resulting notes from the scratch body.
+Reference notes under `~/streams/reference` are optional durable outputs for reusable knowledge that outlives one stream. They are not stream state and should stay up to date rather than chronological. During check/refresh, handoff/checkpoint, and cleanup, consider whether new durable knowledge should update an existing reference note or justify a new one. Ask the human before creating or updating reference notes, and link any resulting notes from the scratch body.
 
 The `sessions` frontmatter field is the ordered machine-readable resume list. Use optional `## Sessions` body notes for human-readable roles or labels when multiple sessions need disambiguation. Keep this concise, usually one line per session:
 
@@ -153,15 +153,15 @@ Use `streams config` to see effective settings, the config path and which values
 
 ```sh
 streams config get notes.root
-streams config set notes.root ~/worknotes
-streams config set obsidian.vault worknotes
+streams config set notes.root ~/notes
+streams config set obsidian.vault notes
 streams config set cmux.enabled true
 ```
 
 | Key | Default | Purpose |
 | --- | --- | --- |
-| `notes.root` | `~/worknotes` | Absolute notes path; scratch, archive and artifact paths derive from it |
-| `obsidian.vault` | `worknotes` | Vault name used in CMUX note links |
+| `notes.root` | `~/streams` | Absolute notes path; scratch, archive and artifact paths derive from it |
+| `obsidian.vault` | `streams` | Vault name used in CMUX note links |
 | `cmux.enabled` | `false` | Enables explicit CMUX refresh by checkpoint clients |
 
 Overrides live in `$XDG_CONFIG_HOME/streams/config.json`, or `~/.config/streams/config.json` when the environment variable is unset. `set` validates values and atomically replaces the file. Boolean values must be `true` or `false`. Unknown keys and malformed files are errors, not defaults.
@@ -182,7 +182,7 @@ These settings are shared workflow settings only. Pi models and hotkeys stay in 
 
 `streams cmux` can be abbreviated as `streams c`. `open` and `update` can be abbreviated as `o` and `u`. Use `-c` for `--current` and `-w` for `--workspace`.
 
-`streams archive <slug>` moves a `done` stream to `~/worknotes/scratch/archive/YYYY-MM/`. Use `streams a <slug>` for the short form, `--dry-run` to preview, `--month YYYY-MM` to choose a month, and `--force` only when intentionally archiving a non-`done` stream.
+`streams archive <slug>` moves a `done` stream to `~/streams/scratch/archive/YYYY-MM/`. Use `streams a <slug>` for the short form, `--dry-run` to preview, `--month YYYY-MM` to choose a month, and `--force` only when intentionally archiving a non-`done` stream.
 
 ## CMUX Projection
 

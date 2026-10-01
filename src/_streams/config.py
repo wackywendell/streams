@@ -59,7 +59,7 @@ def read_overrides() -> dict:
 
 
 def load_config() -> dict:
-    config = {"notes": {"root": str(Path.home() / "worknotes")}, "obsidian": {"vault": "worknotes"}, "cmux": {"enabled": False}}
+    config = {"notes": {"root": str(Path.home() / "streams")}, "obsidian": {"vault": "streams"}, "cmux": {"enabled": False}}
     for section, values in read_overrides().items():
         config[section].update(values)
     return config
