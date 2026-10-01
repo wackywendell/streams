@@ -1,0 +1,21 @@
+[project]
+name = "streams-cli"
+version = "0.1.0"
+description = "Manage scratch-first AI coding streams"
+license = "MIT"
+authors = [{ name = "Wendell Smith", email = "wackywendell@gmail.com" }]
+requires-python = ">=3.11"
+dependencies = ["PyYAML>=6"]
+
+[project.scripts]
+streams = "_streams.cli:main"
+
+[build-system]
+requires = ["hatchling>=1.27"]
+build-backend = "hatchling.build"
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/_streams"]
+
+[tool.hatch.build.targets.sdist]
+include = ["src/_streams", "tests/python"]
