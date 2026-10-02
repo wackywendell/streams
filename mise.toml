@@ -1,3 +1,7 @@
+[tools]
+node = "26"
+uv = "latest"
+
 [tasks."test:python"]
 description = "Run streams CLI unit tests"
 run = "uv run python -m unittest discover tests/python"
