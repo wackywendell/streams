@@ -146,7 +146,7 @@ export class CheckpointPanel implements Component {
 			const comments = message.annotations ?? [];
 			const label = comments.length ? [`[${comments.length} annotation${comments.length === 1 ? "" : "s"} · Draft ${comments[0].revision}]`] : [];
 			const details = this.expandedAnnotations ? comments.flatMap((comment) => wrapTextWithAnsi(safeText(annotationContext(comment)), width)) : [];
-			return [this.theme.fg("accent", message.role === "user" ? "You" : "Checkpoint"), ...label, ...details, ...this.transcriptCache[index].markdown.render(width), ""];
+			return [this.theme.fg("accent", message.role === "user" ? (message.author ? "Main agent" : "You") : "Checkpoint"), ...label, ...details, ...this.transcriptCache[index].markdown.render(width), ""];
 		});
 		this.transcriptCache.length = this.state.messages.length;
 		this.lastChatTop = this.chatTop === undefined ? Math.max(0, lines.length - this.contentHeight) : Math.min(this.chatTop, Math.max(0, lines.length - this.contentHeight));

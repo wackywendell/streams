@@ -1,11 +1,12 @@
 import type { AgentMessage } from "@earendil-works/pi-agent-core";
 import type { Draft } from "./core.ts";
-import type { Annotation, AnnotationEditor, Feedback } from "./review.ts";
+import type { Annotation, AnnotationEditor, Author, Feedback } from "./review.ts";
 
 export interface ChatMessage {
 	role: "user" | "assistant";
 	text: string;
 	annotations?: Annotation[];
+	author?: Author;
 }
 
 export interface PanelState {
@@ -30,7 +31,7 @@ export function transcript(messages: AgentMessage[], feedback: Feedback[], kicko
 		const text = messageText(message);
 		if (!text || (message.role === "user" && text === kickoff)) return [];
 		const sent = message.role === "user" ? feedback.find((entry) => entry.prompt === text) : undefined;
-		return [{ role: message.role, text: sent?.text ?? text, ...(sent?.annotations.length ? { annotations: sent.annotations } : {}) }];
+		return [{ role: message.role, text: sent?.text ?? text, ...(sent?.annotations.length ? { annotations: sent.annotations } : {}), ...(sent?.author ? { author: sent.author } : {}) }];
 	});
 }
 

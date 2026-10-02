@@ -2,10 +2,11 @@ import { randomUUID } from "node:crypto";
 import { Box, Text } from "@earendil-works/pi-tui";
 import type { EntryRenderer, ExtensionAPI, SessionEntry } from "@earendil-works/pi-coding-agent";
 import { shortcutLabel } from "./view.ts";
+import type { Author } from "./review.ts";
 
 export const MARKER_TYPE = "checkpoint-start";
 const STATUS_TYPE = "checkpoint-status";
-type Source = { id: string; ownerId: string; leafId: string | null; omitted: number; timestamp: string; instructions: string };
+type Source = { id: string; ownerId: string; leafId: string | null; omitted: number; timestamp: string; instructions: string; author?: Author };
 type Status = { label: string; working?: boolean; slug?: string; detail?: string; closed?: boolean };
 
 /** Append durable lifecycle events, but render their latest state at the source marker. */
@@ -25,11 +26,11 @@ export class CheckpointJournal {
 		}
 	}
 
-	begin(ownerId: string, snapshot: { leafId: string | null; omitted: number }, instructions = ""): string {
+	begin(ownerId: string, snapshot: { leafId: string | null; omitted: number }, instructions = "", author?: Author): string {
 		const id = randomUUID();
 		this.activeId = id;
 		this.states.set(id, { label: "Starting", working: true });
-		this.pi.appendEntry<Source>(MARKER_TYPE, { id, ownerId, leafId: snapshot.leafId, omitted: snapshot.omitted, timestamp: new Date().toISOString(), instructions });
+		this.pi.appendEntry<Source>(MARKER_TYPE, { id, ownerId, leafId: snapshot.leafId, omitted: snapshot.omitted, timestamp: new Date().toISOString(), instructions, ...(author ? { author } : {}) });
 		return id;
 	}
 
@@ -53,6 +54,7 @@ export class CheckpointJournal {
 				if (expanded) {
 					const lines = [status.slug, `Snapshot: ${source.timestamp}`, `Session: ${source.ownerId}`, `Source tree entry: ${source.leafId ?? "root"}`];
 					if (source.omitted) lines.push(`${source.omitted} incomplete message(s) omitted`);
+					if (source.author) lines.push("Started by the main agent");
 					if (source.instructions) lines.push(`Instructions: ${source.instructions}`);
 					if (status.detail) lines.push(status.detail);
 					box.addChild(new Text(lines.filter(Boolean).join("\n"), 0, 0));

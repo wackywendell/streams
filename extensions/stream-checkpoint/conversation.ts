@@ -6,7 +6,7 @@ import { checkpointContext, completedMessages, createCheckpointSession } from ".
 import { applyDraft, clearPending, includeMainSession, savePending, stageDraft } from "./core.ts";
 import type { Binding, Pending } from "./core.ts";
 import { feedbackPrompt } from "./review.ts";
-import type { Feedback } from "./review.ts";
+import type { Author, Feedback } from "./review.ts";
 import { messageText, transcript } from "./view.ts";
 import type { PanelState } from "./view.ts";
 import type { StreamCli } from "./streams.ts";
@@ -91,7 +91,12 @@ export class CheckpointConversation {
 		return !this.options.pending.messages.length && !this.state.draft && !this.state.input.trim() && !this.state.annotations.length && !this.state.annotationEditor;
 	}
 
-	start(message = "", snapshot = checkpointContext(this.options.manager)): Promise<void> {
+	/** Whether instructions sent now would reach the side agent rather than be refused. */
+	get acceptsInstructions(): boolean {
+		return !this.state.activity && !this.state.input.trim() && !this.state.annotations.length && !this.state.annotationEditor;
+	}
+
+	start(message = "", snapshot = checkpointContext(this.options.manager), author?: Author): Promise<void> {
 		return this.run("starting", async () => {
 			const fresh = this.isFresh;
 			const accepted = message ? this.acceptCommandMessage(message) : false;
@@ -101,7 +106,7 @@ export class CheckpointConversation {
 			if ((accepted || (!message && fresh)) && this.isOwner()) {
 				this.state.activity = "drafting";
 				this.options.changed();
-				if (accepted) await this.sendFeedback();
+				if (accepted) await this.sendFeedback(author);
 				else await this.prompt(this.kickoff);
 			}
 		});
@@ -172,7 +177,7 @@ export class CheckpointConversation {
 		return true;
 	}
 
-	send(message?: string): Promise<void> {
+	send(message?: string, author?: Author): Promise<void> {
 		if (message !== undefined && this.state.activity) {
 			this.state.notice = { level: "warning", text: "Checkpoint is busy; instructions were not sent. Retry after the current operation." };
 			this.options.changed();
@@ -180,11 +185,11 @@ export class CheckpointConversation {
 		}
 		return this.run("drafting", async () => {
 			if (message !== undefined && !this.acceptCommandMessage(message)) return;
-			await this.sendFeedback();
+			await this.sendFeedback(message !== undefined ? author : undefined);
 		});
 	}
 
-	private async sendFeedback(): Promise<void> {
+	private async sendFeedback(author?: Author): Promise<void> {
 		if (this.state.annotationEditor) throw new Error("Save or cancel the unfinished annotation in Review first");
 		if (!this.state.input.trim() && !this.state.annotations.length) return;
 		if (this.state.annotations.some((annotation) => annotation.revision !== this.state.draft?.revision || annotation.path !== this.state.draft?.path)) {
@@ -192,7 +197,8 @@ export class CheckpointConversation {
 		}
 		const annotations = this.state.annotations.map((annotation) => ({ ...annotation }));
 		const text = this.state.input;
-		this.accepting = { text, annotations, prompt: feedbackPrompt(text, annotations) };
+		const prompt = feedbackPrompt(text, annotations);
+		this.accepting = author ? { text, annotations, author, prompt: `Instructions from the main agent, not the user:\n\n${prompt}` } : { text, annotations, prompt };
 		await this.prompt(this.accepting.prompt);
 	}
 

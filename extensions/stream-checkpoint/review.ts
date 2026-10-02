@@ -15,7 +15,8 @@ export interface AnnotationAnchor {
 }
 export interface Annotation extends AnnotationAnchor { comment: string }
 export interface AnnotationEditor { anchor: AnnotationAnchor; text: string }
-export interface Feedback { prompt: string; text: string; annotations: Annotation[] }
+export type Author = "main-agent";
+export interface Feedback { prompt: string; text: string; annotations: Annotation[]; author?: Author }
 
 /** Logical document lines, independent of terminal wrapping and inserted comment rows. */
 export function reviewLines(draft: Pick<Draft, "baseContent" | "proposedContent">): ReviewLine[] {

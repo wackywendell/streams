@@ -18,7 +18,7 @@ type ReceiptDetails = {
 type ClearedDetails = { outcome: "cleared"; slug: string; path: string; discussion: string };
 
 export const DISCUSSION_LIMIT = 16_000;
-const LABELS = { user: "User", assistant: "Checkpoint agent" } as const;
+const label = (message: ChatMessage) => message.author ? "Main agent" : message.role === "user" ? "User" : "Checkpoint agent";
 
 /**
  * Side-chat transcript for the main agent. When over the limit, drop the oldest checkpoint-agent
@@ -26,7 +26,7 @@ const LABELS = { user: "User", assistant: "Checkpoint agent" } as const;
  */
 export function discussionText(messages: ChatMessage[], limit = DISCUSSION_LIMIT): string {
 	const entries = messages.map((message) => ({ role: message.role,
-		text: [`${LABELS[message.role]}: ${message.text}`, ...(message.annotations ?? []).map(annotationContext)].join("\n\n") }));
+		text: [`${label(message)}: ${message.text}`, ...(message.annotations ?? []).map(annotationContext)].join("\n\n") }));
 	let omitted = 0;
 	const render = () => [...(omitted ? [`[${omitted} earlier message${omitted === 1 ? "" : "s"} omitted]`] : []), ...entries.map((entry) => entry.text)].join("\n\n");
 	let text = render();

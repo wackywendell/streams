@@ -25,24 +25,27 @@ export interface Draft {
 
 export interface CheckpointConfig {
 	focusShortcut: KeyId;
+	/** Register the main-agent checkpoint tool. */
+	agentTools: boolean;
 	selectorModel?: { provider: string; id: string };
 	drafterModel?: { provider: string; id: string };
 }
 
 export function loadConfig(agentDir: string): CheckpointConfig {
 	const path = join(agentDir, "checkpoint.json");
-	if (!existsSync(path)) return { focusShortcut: "alt+p" };
+	if (!existsSync(path)) return { focusShortcut: "alt+p", agentTools: true };
 	const config = JSON.parse(readFileSync(path, "utf8"));
 	if (config === null || typeof config !== "object" || Array.isArray(config)) throw new Error("checkpoint.json must be an object");
 	if (config.cmux !== undefined) throw new Error("checkpoint.json: cmux moved to streams; use streams config set cmux.enabled true (or false), then remove cmux from checkpoint.json");
 	if (config.focusShortcut !== undefined && (typeof config.focusShortcut !== "string" || !config.focusShortcut.trim())) throw new Error("checkpoint.json: focusShortcut must be a nonempty Pi keybinding");
+	if (config.agentTools !== undefined && typeof config.agentTools !== "boolean") throw new Error("checkpoint.json: agentTools must be true or false");
 	for (const key of ["selectorModel", "drafterModel"] as const) {
 		const model = config[key];
 		if (model !== undefined && (model === null || typeof model !== "object" || Array.isArray(model) || typeof model.provider !== "string" || !model.provider.trim() || typeof model.id !== "string" || !model.id.trim())) {
 			throw new Error(`checkpoint.json: ${key} must contain nonempty provider and id strings`);
 		}
 	}
-	return { focusShortcut: (config.focusShortcut ?? "alt+p") as KeyId,
+	return { focusShortcut: (config.focusShortcut ?? "alt+p") as KeyId, agentTools: config.agentTools ?? true,
 		...(config.selectorModel ? { selectorModel: config.selectorModel } : {}),
 		...(config.drafterModel ? { drafterModel: config.drafterModel } : {}) };
 }

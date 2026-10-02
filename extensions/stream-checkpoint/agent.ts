@@ -20,11 +20,17 @@ export function completedMessages(messages: AgentMessage[]): AgentMessage[] {
 	});
 }
 
-/** Follow Pi's compaction and context edits, then drop incomplete trailing tool batches. */
-export function checkpointContext(manager: ExtensionContext["sessionManager"]): { messages: AgentMessage[]; leafId: string | null; omitted: number } {
+/**
+ * Follow Pi's compaction and context edits, then drop incomplete trailing tool batches.
+ * A checkpoint started by a tool call drops that call's own batch without reporting it as omitted.
+ */
+export function checkpointContext(manager: ExtensionContext["sessionManager"], callerToolCallId?: string): { messages: AgentMessage[]; leafId: string | null; omitted: number } {
 	const projection = manager.buildSessionProjection().messages;
 	const messages = completedMessages(projection);
-	return { messages: structuredClone(messages), leafId: manager.getLeafId(), omitted: projection.length - messages.length };
+	const caller = projection.find((message) => message.role === "assistant" && message.content.some((item) => item.type === "toolCall" && item.id === callerToolCallId));
+	const callerCalls = new Set(caller?.role === "assistant" ? caller.content.flatMap((item) => item.type === "toolCall" ? [item.id] : []) : []);
+	const omitted = projection.filter((message) => !messages.includes(message) && message !== caller && !(message.role === "toolResult" && callerCalls.has(message.toolCallId))).length;
+	return { messages: structuredClone(messages), leafId: manager.getLeafId(), omitted };
 }
 
 export function assertContextFits(model: Pick<Model<any>, "contextWindow">, systemPrompt: string, messages: AgentMessage[]): void {

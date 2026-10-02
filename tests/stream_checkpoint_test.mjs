@@ -1302,6 +1302,81 @@ for (const ending of ["apply", "clear", "clear without user input"]) {
 	});
 }
 
+test("checkpoint tool starts hidden agent checkpoints and reports busy, conflict and unbound states", async () => {
+	const f = await conversationFixture();
+	let shutdown;
+	try {
+		const streams = { service: { slug: "service", title: "Service", path: f.path, status: "active", state: "Work" },
+			other: { slug: "other", title: "Other", path: join(f.dir, "other.md"), status: "active", state: "Work" } };
+		const receipts = [], components = [], handle = [];
+		const tools = new Map();
+		let panel, dismissed = false;
+		const cli = { config: async () => ({ cmux: { enabled: false } }), list: async () => Object.values(streams), format: async () => "format", diagnostics: [],
+			show: async (ref) => streams[ref] ?? assert.fail(`unknown stream ${ref}`),
+			update: async (_slug, content, options) => { if (!options.dryRun) writeFileSync(f.path, content); return { slug: "service", path: f.path, updated: !options.dryRun, findings: [] }; } };
+		const api = { registerTool: (tool) => tools.set(tool.name, tool), registerCommand() {}, registerShortcut() {}, registerEntryRenderer() {}, registerMessageRenderer() {},
+			on: (_event, handler) => { shutdown = handler; }, appendEntry: (type, data) => f.manager.appendCustomEntry(type, data),
+			sendMessage: (receipt, options) => { receipts.push(receipt); assert.equal(options.triggerTurn, false); } };
+		writeFileSync(join(f.dir, "checkpoint.json"), '{"agentTools":false}');
+		registerCheckpoint(api, { agentDir: f.dir, cli, runtime: f.conversation.options.runtime, skill: "Test skill" });
+		assert.equal(tools.has("checkpoint"), false);
+		rmSync(join(f.dir, "checkpoint.json"));
+		registerCheckpoint(api, { agentDir: f.dir, cli, runtime: f.conversation.options.runtime, skill: "Test skill" });
+		const tool = tools.get("checkpoint");
+		assert.match(tool.promptGuidelines.join("\n"), /significant decision/);
+		const usage = { input: 1, output: 1, cacheRead: 0, cacheWrite: 0, totalTokens: 2, cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 } };
+		f.manager.appendMessage({ role: "user", content: "Retry twice, then give up", timestamp: Date.now() });
+		f.manager.appendMessage({ role: "assistant", content: [{ type: "toolCall", id: "call-1", name: "checkpoint", arguments: {} }], api: "openai-responses", provider: "openai", model: "test", usage, stopReason: "toolUse", timestamp: Date.now() });
+		const ctx = { mode: "tui", hasUI: true, cwd: f.dir, model: f.conversation.options.model, thinkingLevel: "off", sessionManager: f.manager, getSystemPrompt: () => "Test",
+			modelRegistry: { getRegisteredProviderConfig() {}, getRegisteredNativeProvider() {} },
+			ui: { getEditorText: () => "typing", notify() {}, theme: { fg: (_color, text) => text }, setStatus() {}, confirm: () => assert.fail("agent checkpoints never confirm"),
+				custom: (factory, options) => new Promise((resolve) => {
+					let component;
+					component = factory({ terminal: { rows: 30 }, requestRender() {} }, { fg: (_color, text) => text }, {}, (value) => { component?.dispose?.(); if (component instanceof CheckpointPanel) dismissed = true; resolve(value); });
+					components.push(component.constructor.name);
+					if (component instanceof CheckpointPanel) { panel = component; options.onHandle({ focus() { handle.push("focus"); }, setHidden(value) { handle.push(`hidden:${value}`); }, isHidden() { return true; } }); }
+				}) } };
+		const call = async (params, id = "call-1") => (await tool.execute(id, params, undefined, undefined, ctx)).details;
+
+		await assert.rejects(tool.execute("call-0", {}, undefined, undefined, { ...ctx, mode: "print" }), /interactive Pi terminal/);
+		assert.deepEqual(await call({ instructions: "Record it" }), { status: "needs-stream", instructionsSent: false });
+		assert.deepEqual(components, []);
+
+		assert.deepEqual(await call({ stream: "service", instructions: "Record the retry decision" }), { status: "started", slug: "service", instructionsSent: true });
+		await until(() => f.contexts.length === 1);
+		assert.deepEqual(components, ["CheckpointPanel"], "No loader or chooser overlays");
+		assert.deepEqual(handle, ["hidden:true"], "The panel never takes focus");
+		assert.equal(latestBinding(f.manager.getEntries(), f.pending.ownerId).slug, "service");
+		const sent = JSON.stringify(f.contexts[0].messages.at(-1));
+		assert.match(sent, /Instructions from the main agent, not the user:\\n\\nRecord the retry decision/);
+		assert.match(JSON.stringify(f.contexts[0].messages), /Retry twice, then give up/);
+		assert.equal(panel.state.notice, undefined, "The caller's own tool call is not an omitted message");
+		assert.deepEqual(panel.state.messages.map(({ role, author, text }) => ({ role, author, text })), [{ role: "user", author: "main-agent", text: "Record the retry decision" }]);
+		assert.match(panel.render(80).join("\n"), /Main agent/);
+
+		assert.deepEqual(await call({ instructions: "Also note the limit" }, "call-2"), { status: "already-open", slug: "service", instructionsSent: false });
+		assert.deepEqual(await call({ stream: "other" }, "call-3"), { status: "conflict", slug: "service", instructionsSent: false });
+		f.finish("Recorded");
+		await until(() => panel.state.activity === null);
+		assert.deepEqual(await call({ instructions: "Also note the limit" }, "call-4"), { status: "already-open", slug: "service", instructionsSent: true });
+		await until(() => f.contexts.length === 2);
+		f.finish("Noted");
+		await until(() => panel.state.activity === null);
+		panel.state.input = "half-typed";
+		assert.deepEqual(await call({ instructions: "More" }, "call-5"), { status: "already-open", slug: "service", instructionsSent: false });
+		panel.state.input = "";
+
+		panel.state.draft = { ...sampleDraft, slug: "service", path: f.path, baseContent: "scratch unchanged", proposedContent: "approved", summary: "Updated handoff" };
+		panel.handleInput("\x07");
+		await until(() => dismissed);
+		assert.match(receipts[0].content, /Main agent: Record the retry decision\n\nCheckpoint agent: Recorded\n\nMain agent: Also note the limit\n\nCheckpoint agent: Noted$/);
+		await until(() => f.manager.getEntries().some((entry) => entry.customType === "checkpoint-status" && entry.data.label === "Applied"));
+		assert.deepEqual(await call({ stream: "other" }, "call-6"), { status: "conflict", slug: "service", instructionsSent: false });
+		const marker = f.manager.getEntries().find((entry) => entry.customType === "checkpoint-start");
+		assert.equal(marker.data.author, "main-agent");
+	} finally { await shutdown?.(); await f.dispose(); }
+});
+
 test("discussion text keeps user words and anchored comments, dropping oldest agent replies first", async () => {
 	const { discussionText, clearedReceipt, renderCheckpointReceipt } = await jiti.import(new URL("../extensions/stream-checkpoint/receipt.ts", import.meta.url).pathname);
 	const annotation = { path: "/notes/service.md", revision: 2, side: "proposed", line: 4, section: "# Jobs", excerpt: "4: retry twice", comment: "Say why" };
@@ -1605,15 +1680,17 @@ test("recommendations cannot invent existing streams or create anything", () => 
 test("extension configuration owns models and shortcuts, and rejects the old CMUX setting", () => {
 	const dir = mkdtempSync(join(tmpdir(), "checkpoint-config-"));
 	try {
-		assert.deepEqual(loadConfig(dir), { focusShortcut: "alt+p" });
-		writeFileSync(join(dir, "checkpoint.json"), '{"focusShortcut":"ctrl+alt+c","selectorModel":{"provider":"openai","id":"selector"},"drafterModel":{"provider":"anthropic","id":"drafter"}}');
-		assert.deepEqual(loadConfig(dir), { focusShortcut: "ctrl+alt+c", selectorModel: { provider: "openai", id: "selector" }, drafterModel: { provider: "anthropic", id: "drafter" } });
+		assert.deepEqual(loadConfig(dir), { focusShortcut: "alt+p", agentTools: true });
+		writeFileSync(join(dir, "checkpoint.json"), '{"focusShortcut":"ctrl+alt+c","agentTools":false,"selectorModel":{"provider":"openai","id":"selector"},"drafterModel":{"provider":"anthropic","id":"drafter"}}');
+		assert.deepEqual(loadConfig(dir), { focusShortcut: "ctrl+alt+c", agentTools: false, selectorModel: { provider: "openai", id: "selector" }, drafterModel: { provider: "anthropic", id: "drafter" } });
 		writeFileSync(join(dir, "checkpoint.json"), '{"cmux":true}');
 		assert.throws(() => loadConfig(dir), /streams config set cmux.enabled/);
 		writeFileSync(join(dir, "checkpoint.json"), '{"selectorModel":{"provider":"openai"}}');
 		assert.throws(() => loadConfig(dir), /selectorModel.*provider.*id/);
 		writeFileSync(join(dir, "checkpoint.json"), '{"focusShortcut":""}');
 		assert.throws(() => loadConfig(dir), /focusShortcut/);
+		writeFileSync(join(dir, "checkpoint.json"), '{"agentTools":"no"}');
+		assert.throws(() => loadConfig(dir), /agentTools must be true or false/);
 	} finally {
 		rmSync(dir, { recursive: true, force: true });
 	}

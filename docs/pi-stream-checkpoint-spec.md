@@ -14,7 +14,7 @@ Scratch remains the source of truth. The extension follows the streams skill and
 
 Agreed behavior:
 
-- manual trigger only: `/checkpoint [--stream <ref>] [instructions]`
+- the user triggers `/checkpoint [--stream <ref>] [instructions]`; the main agent can start the same review with the `checkpoint` tool, but only the user can apply it
 - bare text is instructions; an explicit `--stream` reference can be a slug or quoted title
 - a successful explicit selection changes the binding for the current Pi session
 - an unbound session opens a chooser with recommendations, existing streams, and creation options
@@ -64,12 +64,15 @@ Keep extension-only settings in `~/.pi/agent/checkpoint.json` (or the active Pi 
 ```json
 {
   "focusShortcut": "alt+p",
+  "agentTools": true,
   "selectorModel": { "provider": "<provider>", "id": "<model-id>" },
   "drafterModel": { "provider": "<provider>", "id": "<model-id>" }
 }
 ```
 
 All extension fields are optional. The old `cmux` field is rejected with migration instructions: set `cmux.enabled` through the CLI, then remove `cmux` from `checkpoint.json`. `focusShortcut` defaults to `alt+p`; change it in this file and run `/reload` to register the shortcut. It toggles between the open checkpoint and main editor, but does not open a closed checkpoint. Escape also minimizes. Neither action stops the side agent.
+
+`agentTools` defaults to `true`. Set it to `false` and run `/reload` to stop registering the main-agent `checkpoint` tool. It does not affect `stream_read`.
 
 While minimized, the footer shows only checkpoint state and the restore shortcut, such as `Checkpoint · Draft 2 ready · Alt+P`. While expanded, the panel header shows its selected tab and activity; omit duplicate checkpoint footer status. Capitalize modifier names in visible shortcuts.
 
@@ -321,6 +324,25 @@ Reload or Pi session replacement preserves saved unfinished work but disposes th
 
 ## Main-agent tools
 
+### `checkpoint`
+
+The main agent can start a checkpoint with the `checkpoint` tool, using the same inputs as the command: an optional `stream` ref and optional `instructions`. Prompt guidance tells it to do this occasionally, after a significant decision or when the task changes substantially, and not after routine steps. The tool returns at once, and the result arrives later as the receipt. Only the user can apply.
+
+An agent-started checkpoint never interrupts the user. It shows no loader, chooser or confirmation, and its panel starts minimized even when resuming saved work. As with the command, a finished reply opens the panel only if the main editor is empty. The source snapshot leaves out the assistant message that made the tool call, without reporting it as an omitted message. The journal card says the main agent started it. The checkpoint agent receives the instructions marked as coming from the main agent, and the panel and receipt label them `Main agent`.
+
+| Situation | Status | Instructions |
+| --- | --- | --- |
+| No checkpoint open; stream resolved | `started` | Sent, unless saved work has unsent user feedback |
+| No binding and no `stream`, or the binding no longer resolves | `needs-stream` | Not sent; no chooser opens |
+| `stream` differs from the session binding | `conflict` | Not sent; the binding is unchanged |
+| A checkpoint for another stream is open | `conflict` | Not sent |
+| The same stream's checkpoint is open and idle, with no unsent feedback | `already-open` | Sent |
+| The same stream's checkpoint is drafting or has unsent feedback | `already-open` | Not sent, and not queued |
+| That checkpoint is applying | `applying` | Not sent |
+| The user is choosing a stream | `awaiting-stream-choice` | Not sent |
+
+The result's `details` carries `status`, `slug` where known, and `instructionsSent`. An unknown or ambiguous `stream` is a tool error. Outside the interactive terminal the tool fails, as `/checkpoint` does.
+
 ### `stream_read`
 
 The main agent reads stream notes with `stream_read` instead of `read`, so it gets no path-access prompt. The tool is read-only and can read only paths returned by `streams show --json`.
@@ -467,6 +489,10 @@ Tests must use temporary scratch files and mocked CLI, model, and CMUX boundarie
 | CMUX update fails | Preserve the scratch write and binding, report projection failure, and never target a fallback workspace |
 | CMUX retry | Retry only projection, without recreating the stream or rewriting scratch |
 | Compaction | Do not start a checkpoint automatically |
+| `checkpoint` tool on a bound session | Start minimized with no loader or chooser; return `started` at once |
+| `checkpoint` tool while a checkpoint is open | Return `already-open`, `applying`, `awaiting-stream-choice` or `conflict`; send instructions only to an idle same-stream checkpoint |
+| `checkpoint` tool with a different stream or no binding | Return `conflict` or `needs-stream`; never rebind or open a chooser |
+| `agentTools: false` | Do not register the `checkpoint` tool |
 | `stream_read` without a binding or `stream` | Return an error suggesting a `stream` ref or `streams list`; resolve nothing |
 | `stream_read` with `draft: true` | Return this session's pending draft and its revision, or an error if none exists; never the applied note |
 | `stream_read` paging | Honour `offset` and `limit` and truncate exactly as `read` does |
@@ -487,7 +513,7 @@ Ask first:
 
 - create a stream, apply a proposal, or discard pending panel work
 - choose among ambiguous streams or creation locations
-- expand scope to reference notes, external mutations, or automatic checkpointing
+- expand scope to reference notes, external mutations, or checkpointing triggered by anything other than the user or main agent
 
 Never:
 
