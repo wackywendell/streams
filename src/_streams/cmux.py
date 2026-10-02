@@ -15,7 +15,7 @@ from typing import Any
 from .config import load_config, notes_root
 from .errors import StreamError
 from .agent_sessions import latest_session_command
-from .models import Stream
+from .models import Link, Stream
 from .resolve import resolve_stream_ref
 from .store import list_streams
 
@@ -158,13 +158,13 @@ def resume_command(stream: Stream) -> str | None:
 GITHUB_ITEM_RE = re.compile(r"^https://github\.com/([^/]+)/([^/]+)/(issues|pull)/([0-9]+)(?:[/?#].*)?$")
 
 
-def markdown_link_for_item(item: dict[str, str], label: str) -> str:
-    url = item["url"]
+def markdown_link_for_item(item: Link, label: str) -> str:
+    url = item.url
     match = GITHUB_ITEM_RE.fullmatch(url)
     if not match:
         return url
     number = match.group(4)
-    return f"[{label}#{number}]({url}): {item['description']}"
+    return f"[{label}#{number}]({url}): {item.description}"
 
 
 def obsidian_link_for_stream(stream: Stream) -> str:
@@ -179,14 +179,14 @@ def obsidian_link_for_stream(stream: Stream) -> str:
 
 def description_for_stream(stream: Stream) -> str:
     lines = [f"{obsidian_link_for_stream(stream)} _{stream.state}_"]
-    for field, label in (("issues", "ℹ︎"), ("prs", "⑂︎")):
-        for item in stream.frontmatter.get(field) or []:
+    for items, label in ((stream.issues, "ℹ︎"), (stream.prs, "⑂︎")):
+        for item in items:
             lines.append(markdown_link_for_item(item, label))
     return "\n".join(lines)
 
 
 def stream_cwd(stream: Stream) -> Path:
-    path = Path(str(stream.frontmatter.get("cwd") or "")).expanduser()
+    path = stream.location.working_root
     if not path.exists():
         raise StreamError(f"stream {stream.slug!r} cwd does not exist: {path}")
     if not path.is_dir():

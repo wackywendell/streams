@@ -5,47 +5,62 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 from datetime import date, datetime
 from pathlib import Path
-from typing import Any
+from typing import Any, Literal, cast
 
 from .errors import StreamError
 from .location import StreamLocation
 from .schema import error_messages, validate_frontmatter
 
+Status = Literal["active", "waiting", "blocked", "parked", "done"]
+
+
+@dataclass(frozen=True)
+class Link:
+    """An entry in `issues` or `prs`."""
+
+    url: str
+    description: str
+
 
 @dataclass(frozen=True)
 class Stream:
+    """A scratch note whose frontmatter passed the schema. Build one with `Stream.parse`."""
+
     path: Path
-    frontmatter: dict[str, Any]
+    # As stored, for JSON output and rewrites; read the typed fields instead.
+    frontmatter: dict[str, Any] = field(repr=False)
     body: str = field(repr=False, compare=False)
+    title: str
+    status: Status
+    description: str
+    state: str
+    location: StreamLocation
+    issues: tuple[Link, ...]
+    prs: tuple[Link, ...]
+    sessions: tuple[str, ...]
+
+    @classmethod
+    def parse(cls, path: Path, frontmatter: dict[str, Any], body: str) -> Stream:
+        errors = error_messages(validate_frontmatter(path, frontmatter))
+        if errors:
+            raise StreamError(f"{path}: {'; '.join(errors)}", kind="invalid-stream")
+        return cls(
+            path=path,
+            frontmatter=frontmatter,
+            body=body,
+            title=frontmatter["title"],
+            status=cast(Status, frontmatter["status"]),
+            description=frontmatter["description"],
+            state=frontmatter["state"],
+            location=StreamLocation.from_strings(vcs=frontmatter["vcs"], repo=frontmatter["repo"], cwd=frontmatter["cwd"]),
+            issues=tuple(Link(item["url"], item["description"]) for item in frontmatter["issues"]),
+            prs=tuple(Link(item["url"], item["description"]) for item in frontmatter["prs"]),
+            sessions=tuple(frontmatter["sessions"]),
+        )
 
     @property
     def slug(self) -> str:
         return self.path.stem
-
-    @property
-    def title(self) -> str:
-        return str(self.frontmatter.get("title") or self.slug)
-
-    @property
-    def status(self) -> str:
-        return str(self.frontmatter.get("status") or "")
-
-    @property
-    def state(self) -> str:
-        return str(self.frontmatter.get("state") or "")
-
-    @property
-    def location(self) -> StreamLocation:
-        return StreamLocation.from_strings(
-            vcs=str(self.frontmatter.get("vcs") or ""),
-            repo=str(self.frontmatter.get("repo") or ""),
-            cwd=str(self.frontmatter.get("cwd") or ""),
-        )
-
-    def validate(self) -> None:
-        errors = error_messages(validate_frontmatter(self.path, self.frontmatter))
-        if errors:
-            raise StreamError(f"{self.path}: {'; '.join(errors)}", kind="invalid-stream")
 
     def as_json(self) -> dict[str, Any]:
         payload = json_value(dict(self.frontmatter))

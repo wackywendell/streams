@@ -53,7 +53,6 @@ def command_from_session(session: str) -> AgentSessionCommand:
 
 
 def latest_session_command(stream: Stream) -> AgentSessionCommand | None:
-    sessions = stream.frontmatter.get("sessions") or []
-    if not sessions:
+    if not stream.sessions:
         return None
-    return command_from_session(str(sessions[-1]))
+    return command_from_session(stream.sessions[-1])

@@ -72,9 +72,7 @@ def load_stream(path: Path) -> Stream:
         raise StreamError(f"could not read {path}: {exc}") from exc
     except (StreamError, yaml.YAMLError) as exc:
         raise StreamError(f"{path}: could not parse frontmatter: {exc}", kind="invalid-stream") from exc
-    stream = Stream(path=path, frontmatter=frontmatter, body=body)
-    stream.validate()
-    return stream
+    return Stream.parse(path, frontmatter, body)
 
 
 def scan_streams(root: Path | None = None) -> tuple[list[Stream], list[SchemaFinding]]:
@@ -186,7 +184,7 @@ _Record important decisions, reasoning, tradeoffs, and deferred choices._
 
 _List unresolved questions that affect how to continue._
 """
-    return Stream(path=path, frontmatter=frontmatter, body=body)
+    return Stream.parse(path, frontmatter, body)
 
 
 def start_stream(title: str, *, root: Path | None = None, cwd: Path | None = None) -> Stream:

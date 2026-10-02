@@ -48,10 +48,16 @@ from _streams.location import (
     discover_stream_location,
     format_local_path,
 )
-from _streams.models import Stream
+from _streams.models import Link, Stream
 from _streams.resolve import resolve_check_path_ref, resolve_slug_ref, resolve_stream_ref
 from _streams.resume import exec_resume, resolve_stream_for_resume, resume_command_for_stream
 from _streams.store import archive_stream, check_paths, list_streams, rename_stream, show_stream, start_stream
+
+
+def make_stream(path: Path, body: str = "", **fields: object) -> Stream:
+    """A valid `Stream` for tests that don't need a file on disk."""
+    frontmatter = {"title": "Example", "status": "active", "description": "Overall task description", "state": "Doing work", "repo": "/repo", "cwd": "/repo", "vcs": "jj", "issues": [], "prs": [], "sessions": []}
+    return Stream.parse(path, {**frontmatter, **fields}, body)
 
 
 def write_stream(
@@ -553,7 +559,7 @@ class CliTest(unittest.TestCase):
 
         with tempfile.TemporaryDirectory() as tmp, patch("_streams.cli.preview_start") as preview_mock, patch("builtins.print") as print_mock:
             root = Path(tmp)
-            preview = Stream(root / "new-stream.md", {"title": "New Stream", "status": "active", "state": "Started", "repo": "/repo", "cwd": "/repo", "vcs": "jj"}, "# New Stream\n")
+            preview = make_stream(root / "new-stream.md", "# New Stream\n", title="New Stream", state="Started")
             preview_mock.return_value = preview
             args = build_parser().parse_args(["start", "New Stream", "--dry-run", "--json"])
             self.assertEqual(command_start(args), 0)
@@ -585,8 +591,8 @@ class CliTest(unittest.TestCase):
 
     def test_rename_current_resolves_ref_and_updates_current_workspace(self) -> None:
         with patch("_streams.cli.resolve_stream_ref") as resolve_mock, patch("_streams.cli.rename_stream") as rename_mock, patch("_streams.cli.update_current_workspace") as update_mock, patch("builtins.print") as print_mock:
-            original = Stream(Path("/scratch/old-stream.md"), {"title": "Old Stream"}, "")
-            renamed = Stream(Path("/scratch/focused-review.md"), {"title": "Focused Review"}, "")
+            original = make_stream(Path("/scratch/old-stream.md"), title="Old Stream")
+            renamed = make_stream(Path("/scratch/focused-review.md"), title="Focused Review")
             workspace = CmuxWorkspace({"ref": "workspace:2", "title": "Old Stream"})
             resolve_mock.return_value = original
             rename_mock.return_value = renamed
@@ -604,7 +610,7 @@ class CliTest(unittest.TestCase):
     def test_update_all_prints_updates_and_warnings(self) -> None:
         with patch("_streams.cli.CmuxClient") as cmux_class, patch("_streams.cli.update_all_workspaces") as update_mock, patch("builtins.print") as print_mock:
             matching = CmuxWorkspace({"ref": "workspace:2", "title": "Active Stream"})
-            stream = Stream(Path("/scratch/active-stream.md"), {"title": "Active Stream"}, "")
+            stream = make_stream(Path("/scratch/active-stream.md"), title="Active Stream")
             cmux = cmux_class.return_value
             update_mock.return_value = ([(matching, stream)], ["Warning: workspace:3 'Other' has no matching scratch stream"])
             args = type("Args", (), {"slug": None, "all": True, "current": False, "workspace": None})()
@@ -618,7 +624,7 @@ class CliTest(unittest.TestCase):
     def test_update_all_stream_with_target_uses_regular_update(self) -> None:
         with patch("_streams.cli.CmuxClient") as cmux_class, patch("_streams.cli.load_stream_for_update") as load_mock, patch("_streams.cli.update_workspace") as update_mock, patch("builtins.print") as print_mock:
             cmux = cmux_class.return_value
-            stream = Stream(Path("/scratch/all.md"), {"title": "all"}, "")
+            stream = make_stream(Path("/scratch/all.md"), title="all")
             workspace = CmuxWorkspace({"ref": "workspace:2", "title": "Other"})
             load_mock.return_value = (stream, workspace)
             args = type("Args", (), {"slug": "all", "all": False, "current": True, "workspace": None})()
@@ -743,6 +749,20 @@ def write_invalid_status(root: Path, slug: str) -> Path:
     path = write_stream(root, slug, title=slug.replace("-", " ").title())
     path.write_text(path.read_text().replace("status: active", "status: nope"))
     return path
+
+
+class StreamModelTest(unittest.TestCase):
+    def test_parse_exposes_typed_fields(self) -> None:
+        issue = {"url": "https://github.com/o/r/issues/1", "description": "Fix the thing"}
+        stream = make_stream(Path("/scratch/example.md"), issues=[issue], sessions=["pi:abc"], cwd="~/work")
+        self.assertEqual(stream.issues, (Link(issue["url"], "Fix the thing"),))
+        self.assertEqual((stream.prs, stream.sessions), ((), ("pi:abc",)))
+        self.assertEqual(stream.location.working_root, Path("~/work").expanduser())
+
+    def test_parse_rejects_invalid_frontmatter(self) -> None:
+        with self.assertRaises(StreamError) as caught:
+            make_stream(Path("/scratch/example.md"), status="nope")
+        self.assertEqual(caught.exception.kind, "invalid-stream")
 
 
 class CliContractTest(unittest.TestCase):
@@ -1073,8 +1093,7 @@ class CmuxTest(unittest.TestCase):
     def test_resume_command_quotes_session_ids(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
-            stream = show_stream(write_stream(root, "active-stream").stem, root)
-            stream.frontmatter["sessions"] = ["claude:session with spaces"]
+            stream = show_stream(write_stream(root, "active-stream", sessions=["claude:session with spaces"]).stem, root)
             self.assertEqual(resume_command(stream), "claude --resume 'session with spaces'")
 
     def test_resume_command_uses_last_session(self) -> None:

@@ -91,7 +91,7 @@ class ConfigTest(unittest.TestCase):
         self.assertEqual(show_stream("example").path, path)
         self.assertEqual(resolve_stream_ref("Example").path, path)
         self.assertEqual(resolve_check_path_ref("Example"), path)
-        self.assertIn("vault=My+notes&file=scratch%2Fexample.md", obsidian_link_for_stream(Stream(path, fields, "")))
+        self.assertIn("vault=My+notes&file=scratch%2Fexample.md", obsidian_link_for_stream(Stream.parse(path, fields, "")))
         # Changing configuration in the same process must not leave frozen defaults.
         self.assertEqual(self.cli("config", "set", "notes.root", str(self.root / "Other"))[0], 0)
         self.assertEqual(list_streams(), [])

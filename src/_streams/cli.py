@@ -35,19 +35,19 @@ def render_list(streams: list[Stream]) -> str:
 
 
 def render_show(stream: Stream) -> str:
-    issues = ", ".join(markdown_link_for_item(item, "I") for item in stream.frontmatter.get("issues") or []) or "-"
-    prs = ", ".join(markdown_link_for_item(item, "PR") for item in stream.frontmatter.get("prs") or []) or "-"
-    sessions = ", ".join(str(item) for item in stream.frontmatter.get("sessions") or []) or "-"
+    issues = ", ".join(markdown_link_for_item(item, "I") for item in stream.issues) or "-"
+    prs = ", ".join(markdown_link_for_item(item, "PR") for item in stream.prs) or "-"
+    sessions = ", ".join(stream.sessions) or "-"
     return "\n".join(
         [
             f"title:       {stream.title}",
             f"slug:        {stream.slug}",
             f"status:      {stream.status}",
             f"state:       {stream.state}",
-            f"description: {stream.frontmatter.get('description') or ''}",
-            f"repo:        {stream.frontmatter.get('repo') or ''}",
-            f"cwd:         {stream.frontmatter.get('cwd') or ''}",
-            f"vcs:         {stream.frontmatter.get('vcs') or ''}",
+            f"description: {stream.description}",
+            f"repo:        {stream.location.repo_root}",
+            f"cwd:         {stream.location.working_root}",
+            f"vcs:         {stream.location.vcs}",
             f"issues:      {issues}",
             f"prs:         {prs}",
             f"sessions:    {sessions}",
