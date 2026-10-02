@@ -42,7 +42,7 @@ streams config set notes.root ~/notes
 
 `streams resume` restarts the latest recorded Codex, Claude Code or Pi session for a stream. CMUX workspace integration is optional and off by default; see `streams format` for details.
 
-In Pi, run `/checkpoint` to draft an update to the current stream. The agent can read stream notes with the `stream_read` tool, and can start a checkpoint for you to review with the `checkpoint` tool. See [docs/pi-stream-checkpoint-spec.md](docs/pi-stream-checkpoint-spec.md) for behaviour and configuration.
+In Pi, run `/checkpoint` to draft an update to the current stream. The agent can read stream notes with the `stream_read` tool, can ask you to choose the session's stream with the `select_stream` tool, and can start a checkpoint for you to review with the `checkpoint` tool. See [docs/pi-stream-checkpoint-spec.md](docs/pi-stream-checkpoint-spec.md) for behaviour and configuration.
 
 ## Supported versions
 

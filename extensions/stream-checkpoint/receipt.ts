@@ -16,6 +16,8 @@ type ReceiptDetails = {
 	discussion?: string;
 };
 type ClearedDetails = { outcome: "cleared"; slug: string; path: string; discussion: string };
+/** Reports a select_stream outcome; `slug` is the stream bound afterwards, if any. */
+type ChoiceDetails = { outcome: "bound" | "choice-cancelled"; slug?: string; path?: string; created?: boolean };
 
 export const DISCUSSION_LIMIT = 16_000;
 const label = (message: ChatMessage) => message.author ? "Main agent" : message.role === "user" ? "User" : "Checkpoint agent";
@@ -57,9 +59,29 @@ export function clearedReceipt(details: Omit<ClearedDetails, "outcome">) {
 	};
 }
 
-export const renderCheckpointReceipt: MessageRenderer<ReceiptDetails | ClearedDetails> = (message, { expanded, outputPad }, theme) => {
+export function streamChosenReceipt(details: { slug: string; path: string; created: boolean }) {
+	return {
+		customType: "checkpoint-receipt", display: true,
+		content: `The user chose ${details.created ? "a new stream, " : ""}${details.slug} (${details.path}). This session is now bound to it, so checkpoint and stream_read use it.`,
+		details: { ...details, outcome: "bound" as const },
+	};
+}
+
+export function choiceCancelledReceipt(bound?: { slug: string; path: string }) {
+	return {
+		customType: "checkpoint-receipt", display: true,
+		content: `The user closed the stream chooser without choosing. ${bound ? `This session is still bound to ${bound.slug}.` : "No stream is bound to this session."}`,
+		details: { outcome: "choice-cancelled" as const, slug: bound?.slug, path: bound?.path },
+	};
+}
+
+export const renderCheckpointReceipt: MessageRenderer<ReceiptDetails | ClearedDetails | ChoiceDetails> = (message, { expanded, outputPad }, theme) => {
 	const details = message.details;
 	if (!details) return new Text(typeof message.content === "string" ? message.content : "Checkpoint", outputPad, 1);
+	if (details.outcome === "bound" || details.outcome === "choice-cancelled") {
+		const label = details.outcome === "bound" ? `Bound${details.created ? " · Created" : ""}` : "Choice cancelled";
+		return new Text(`${theme.fg("accent", `Stream${details.slug ? ` · ${details.slug}` : ""}`)} · ${theme.fg("muted", label)}`, outputPad, 1);
+	}
 	if (details.outcome === "cleared") {
 		const box = new Box(outputPad, 1, (text) => theme.bg("customMessageBg", text));
 		box.addChild(new Text(`${theme.fg("accent", `Checkpoint · ${details.slug}`)} · ${theme.fg("muted", "Cleared, not applied")}`, 0, 0));

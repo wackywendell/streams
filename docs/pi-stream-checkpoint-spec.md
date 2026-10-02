@@ -72,7 +72,7 @@ Keep extension-only settings in `~/.pi/agent/checkpoint.json` (or the active Pi 
 
 All extension fields are optional. The old `cmux` field is rejected with migration instructions: set `cmux.enabled` through the CLI, then remove `cmux` from `checkpoint.json`. `focusShortcut` defaults to `alt+p`; change it in this file and run `/reload` to register the shortcut. It toggles between the open checkpoint and main editor, but does not open a closed checkpoint. Escape also minimizes. Neither action stops the side agent.
 
-`agentTools` defaults to `true`. Set it to `false` and run `/reload` to stop registering the main-agent `checkpoint` tool. It does not affect `stream_read`.
+`agentTools` defaults to `true`. Set it to `false` and run `/reload` to stop registering the main-agent `checkpoint` and `select_stream` tools. It does not affect `stream_read`.
 
 While minimized, the footer shows only checkpoint state and the restore shortcut, such as `Checkpoint · Draft 2 ready · Alt+P`. While expanded, the panel header shows its selected tab and activity; omit duplicate checkpoint footer status. Capitalize modifier names in visible shortcuts.
 
@@ -102,7 +102,7 @@ If the panel is already open, a message without `--stream` focuses it and sends 
 
 Opening or switching a checkpoint obtains current stream metadata using `streams list --json`. Treat a missing executable, nonzero exit, invalid JSON, or malformed result as an error, not an empty list. Do not offer to create a supposedly missing stream based on a failed lookup.
 
-Show a cancellable loader during configuration and stream lookup, and while generating recommendations. Esc immediately returns to the main composer and records cancellation. Abort the recommendation request; ignore late lookup results so they cannot open a chooser, change the binding or start drafting. A new `/checkpoint` invocation must not wait for the cancelled lookup to finish.
+Configuration and stream lookup run in the background with no loader, so the main editor stays usable. Session shutdown abandons a lookup at once rather than waiting for the CLI. Ignore late lookup results so they cannot open a chooser, change the binding or start drafting. A new `/checkpoint` invocation after shutdown must not wait for the abandoned lookup.
 
 ### Explicit reference
 
@@ -123,7 +123,7 @@ If the stream was renamed, follow a verifiable CLI compatibility alias to its ca
 
 ### Unbound session without a reference
 
-Show a loading indicator while gathering recommendations, then open a centered chooser. After selection, fresh drafting starts in the background; saved unfinished work opens the right-anchored conversation panel. Its existing-stream choices come from `streams list --json`, never from model-generated names.
+Create the centered chooser hidden while recommendations are generated, with the footer showing `Checkpoint · Finding streams · Alt+P`. When they arrive, show it if the main editor is empty; otherwise leave it minimized with `Checkpoint · Choose stream · Alt+P`, the same rule as a finished draft reply. The focus shortcut shows or hides the chooser, and Esc cancels it. Opened early, it lists streams and says `Finding recommendations…` until they fill in. Choosing or cancelling aborts the recommendation request, and a later result changes nothing. After selection, fresh drafting starts in the background; saved unfinished work opens the right-anchored conversation panel. Its existing-stream choices come from `streams list --json`, never from model-generated names.
 
 The LLM can use the current Pi conversation and stream metadata to recommend:
 
@@ -326,22 +326,35 @@ Reload or Pi session replacement preserves saved unfinished work but disposes th
 
 ### `checkpoint`
 
-The main agent can start a checkpoint with the `checkpoint` tool, using the same inputs as the command: an optional `stream` ref and optional `instructions`. Prompt guidance tells it to do this occasionally, after a significant decision or when the task changes substantially, and not after routine steps. The tool returns at once, and the result arrives later as the receipt. Only the user can apply.
+The main agent can start a checkpoint of the session's bound stream with the `checkpoint` tool, which takes optional `instructions`. It does not choose streams; `select_stream` does. Prompt guidance tells it to do this occasionally, after a significant decision or when the task changes substantially, and not after routine steps. The tool returns at once, and the result arrives later as the receipt. Only the user can apply.
 
-An agent-started checkpoint never interrupts the user. It shows no loader, chooser or confirmation, and its panel starts minimized even when resuming saved work. As with the command, a finished reply opens the panel only if the main editor is empty. The source snapshot leaves out the assistant message that made the tool call, without reporting it as an omitted message. The journal card says the main agent started it. The checkpoint agent receives the instructions marked as coming from the main agent, and the panel and receipt label them `Main agent`.
+An agent-started checkpoint never interrupts the user. It shows no chooser or confirmation, and its panel starts minimized even when resuming saved work. As with the command, a finished reply opens the panel only if the main editor is empty. The source snapshot leaves out the assistant message that made the tool call, without reporting it as an omitted message. The journal card says the main agent started it. The checkpoint agent receives the instructions marked as coming from the main agent, and the panel and receipt label them `Main agent`.
 
 | Situation | Status | Instructions |
 | --- | --- | --- |
 | No checkpoint open; stream resolved | `started` | Sent, unless saved work has unsent user feedback |
-| No binding and no `stream`, or the binding no longer resolves | `needs-stream` | Not sent; no chooser opens |
-| `stream` differs from the session binding | `conflict` | Not sent; the binding is unchanged |
-| A checkpoint for another stream is open | `conflict` | Not sent |
-| The same stream's checkpoint is open and idle, with no unsent feedback | `already-open` | Sent |
-| The same stream's checkpoint is drafting or has unsent feedback | `already-open` | Not sent, and not queued |
+| No binding, or the binding no longer resolves | `needs-stream` | Not sent; no chooser opens, and the result points to `select_stream` |
+| A checkpoint is open, idle and has no unsent feedback | `already-open` | Sent |
+| A checkpoint is open and drafting or has unsent feedback | `already-open` | Not sent, and not queued |
 | That checkpoint is applying | `applying` | Not sent |
 | The user is choosing a stream | `awaiting-stream-choice` | Not sent |
 
-The result's `details` carries `status`, `slug` where known, and `instructionsSent`. An unknown or ambiguous `stream` is a tool error. Outside the interactive terminal the tool fails, as `/checkpoint` does.
+The result's `details` carries `status`, `slug` where known, and `instructionsSent`. Outside the interactive terminal the tool fails, as `/checkpoint` does.
+
+### `select_stream`
+
+The main agent asks the user to choose the session's stream, or to switch to another, with `select_stream`. It takes an optional `stream` recommendation and an optional one-sentence `reason`. Prompt guidance tells it to call this when substantive work has no bound stream, or when the work has clearly moved to another stream, and never to re-confirm the current one. Only the user's choice changes the binding.
+
+The tool opens the same background chooser as an unbound `/checkpoint`, and returns `awaiting-stream-choice` at once. A `stream` that resolves through `streams show` is starred; anything else is offered as a suggested new title, since the user confirms either way. Its reason is shown prefixed `Main agent:`. A recommendation replaces the selector model; without one, the selector model suggests streams as usual. The chooser skips the up-front switch confirmation, but choosing another stream while unfinished work exists still asks before switching.
+
+Choosing ends the run without starting a checkpoint, and posts a receipt saying which stream is now bound. Cancelling, declining the switch, or a failure posts a receipt saying the chooser closed and which stream, if any, is still bound. Neither receipt triggers a turn, and neither creates a journal card.
+
+| Situation | Status |
+| --- | --- |
+| The chooser opened | `awaiting-stream-choice` |
+| The user is already choosing a stream | `awaiting-stream-choice` |
+| `stream` resolves to the bound stream | `already-bound`; no chooser opens |
+| A checkpoint is open | `already-open`; its stream can change after Apply or Clear |
 
 ### `stream_read`
 
@@ -441,7 +454,8 @@ Tests must use temporary scratch files and mocked CLI, model, and CMUX boundarie
 | More than 20 streams | Show 20 initially; search or Show more reaches the full non-archived list, and manual or creation choices stay visible |
 | LLM recommends a new stream | Show title and reason; Enter opens title editing and a second Enter creates |
 | Write your own | Always show the option; open a blank title field and preserve the search when returning |
-| Esc during lookup or recommendations | Return to the composer immediately; ignore late results and allow a new invocation |
+| Shutdown during lookup or recommendations | Abandon it at once; ignore late results and allow a new invocation |
+| Esc in the chooser before recommendations arrive | Cancel and abort the recommendation request; a late result reveals nothing |
 | `--stream` title or slug supplied | Resolve deterministically; distinguish one match, ambiguity, invalid input, and absence |
 | Bare instructions | Use the bound stream or retain the message through the chooser; send once instead of the fresh kickoff |
 | Instructions on resume | Preserve saved history and send a new visible turn without another kickoff |
@@ -489,10 +503,13 @@ Tests must use temporary scratch files and mocked CLI, model, and CMUX boundarie
 | CMUX update fails | Preserve the scratch write and binding, report projection failure, and never target a fallback workspace |
 | CMUX retry | Retry only projection, without recreating the stream or rewriting scratch |
 | Compaction | Do not start a checkpoint automatically |
-| `checkpoint` tool on a bound session | Start minimized with no loader or chooser; return `started` at once |
-| `checkpoint` tool while a checkpoint is open | Return `already-open`, `applying`, `awaiting-stream-choice` or `conflict`; send instructions only to an idle same-stream checkpoint |
-| `checkpoint` tool with a different stream or no binding | Return `conflict` or `needs-stream`; never rebind or open a chooser |
-| `agentTools: false` | Do not register the `checkpoint` tool |
+| `checkpoint` tool on a bound session | Start minimized with no chooser; return `started` at once |
+| `checkpoint` tool while a checkpoint is open | Return `already-open`, `applying` or `awaiting-stream-choice`; send instructions only to an idle checkpoint |
+| `checkpoint` tool with no binding | Return `needs-stream`, pointing to `select_stream`; never rebind or open a chooser |
+| Unbound `/checkpoint` while the user types | Find recommendations with no loader; leave the chooser minimized when they arrive |
+| `select_stream` with a recommendation | Star it without calling the selector model; bind only on the user's choice; post a receipt on choice or cancel |
+| `select_stream` naming the bound stream | Return `already-bound` without a chooser |
+| `agentTools: false` | Do not register the `checkpoint` or `select_stream` tools |
 | `stream_read` without a binding or `stream` | Return an error suggesting a `stream` ref or `streams list`; resolve nothing |
 | `stream_read` with `draft: true` | Return this session's pending draft and its revision, or an error if none exists; never the applied note |
 | `stream_read` paging | Honour `offset` and `limit` and truncate exactly as `read` does |

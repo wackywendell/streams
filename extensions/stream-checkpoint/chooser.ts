@@ -3,6 +3,7 @@ import type { Component, TUI } from "@earendil-works/pi-tui";
 import type { Theme } from "@earendil-works/pi-coding-agent";
 import type { Recommendations } from "./core.ts";
 import type { StreamCli } from "./streams.ts";
+import { shortcutLabel } from "./view.ts";
 
 export type ChosenStream = { stream: Awaited<ReturnType<StreamCli["list"]>>[number]; created: boolean };
 type ChooserChoice = { kind: "existing"; stream: ChosenStream["stream"] } | { kind: "new"; title: string; reason: string } | { kind: "manual" };
@@ -16,6 +17,7 @@ export class StreamChooser implements Component {
 	private creating = false;
 	private closed = false;
 	private busy = false;
+	private moved = false;
 	private status = "↑↓ choose · Enter select · Ctrl+N Write your own";
 
 	constructor(
@@ -26,6 +28,8 @@ export class StreamChooser implements Component {
 		private done: (choice: ChosenStream | undefined) => void,
 		private recommendations: Recommendations = { existing: [] },
 		initialRef = "",
+		/** `minimize` hides the chooser on `shortcut`; `finding` shows that recommendations are still on their way. */
+		private options: { shortcut?: string; minimize?: () => void; finding?: boolean } = {},
 	) {
 		this.input.setValue(initialRef);
 		this.input.onSubmit = (value) => {
@@ -45,6 +49,13 @@ export class StreamChooser implements Component {
 				this.finish({ stream: await this.cli.start(title), created: true });
 			});
 		};
+	}
+
+	setRecommendations(recommendations: Recommendations): void {
+		this.recommendations = recommendations;
+		this.options.finding = false;
+		if (!this.moved) this.selected = 0;
+		if (!this.closed) this.tui.requestRender();
 	}
 
 	private choices(): ChooserChoice[] {
@@ -86,6 +97,7 @@ export class StreamChooser implements Component {
 
 	handleInput(data: string): void {
 		if (this.closed) return;
+		if (this.options.minimize && this.options.shortcut && matchesKey(data, this.options.shortcut)) { this.options.minimize(); return; }
 		if (this.busy) {
 			if (!this.creating && matchesKey(data, "escape")) this.finish(undefined);
 			return;
@@ -103,6 +115,7 @@ export class StreamChooser implements Component {
 		} else if (matchesKey(data, "ctrl+n")) {
 			this.editTitle(this.input.getValue().trim());
 		} else if (matchesKey(data, "up") || matchesKey(data, "down")) {
+			this.moved = true;
 			this.selected = Math.max(0, Math.min(this.choices().length - 1, this.selected + (matchesKey(data, "down") ? 1 : -1)));
 		} else {
 			this.input.handleInput(data);
@@ -166,8 +179,8 @@ export class StreamChooser implements Component {
 			...(rendered.lines.length ? rendered.lines : [row("No matching streams")]),
 			row(`${this.selected === choices.length - 1 ? "▶" : " "} ${this.theme.fg("accent", "Write your own…")}`, true),
 			inputRow,
-			row(this.busy ? "Working…" : this.status),
-			row("Tab select highlighted · Alt+M Show more · Esc Cancel"),
+			row(this.busy ? "Working…" : this.options.finding ? "Finding recommendations…" : this.status),
+			row(`Tab select highlighted · Alt+M Show more · Esc Cancel${this.options.minimize && this.options.shortcut ? ` · ${shortcutLabel(this.options.shortcut)} Hide` : ""}`),
 			this.theme.fg("border", `╰${"─".repeat(inside)}╯`),
 		];
 	}

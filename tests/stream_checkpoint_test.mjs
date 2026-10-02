@@ -317,7 +317,7 @@ for (const selection of ["bound", "chooser", "explicit"]) {
 		try {
 			const stream = { slug: "service", title: "Service ownership", path: f.path, status: "active", state: "In progress" };
 			if (selection === "bound") f.manager.appendCustomEntry("stream-checkpoint-binding", { ownerId: f.pending.ownerId, slug: stream.slug, path: stream.path });
-			let command, panel, chooser, handle, lists = 0;
+			let command, panel, chooser, chooserHandle, handle, lists = 0;
 			const shown = [], notifications = [], selectorContexts = [];
 			let mainInput = "";
 			f.manager.appendMessage({ role: "user", content: "Context at invocation", timestamp: Date.now() });
@@ -329,7 +329,11 @@ for (const selection of ["bound", "chooser", "explicit"]) {
 					custom: (factory, options) => new Promise((resolve) => {
 						let component;
 						component = factory({ terminal: { rows: 30 }, requestRender() {} }, { fg: (_color, text) => text }, {}, (value) => { component?.dispose?.(); resolve(value); });
-						if (component instanceof StreamChooser) chooser = component;
+						if (component instanceof StreamChooser) {
+							chooser = component;
+							chooserHandle = { hidden: false, focus() {}, setHidden(value) { this.hidden = value; }, isHidden() { return this.hidden; } };
+							options.onHandle(chooserHandle);
+						}
 						if (component instanceof CheckpointPanel) {
 							panel = component;
 							handle = { hidden: false, focus() {}, setHidden(value) { this.hidden = value; }, isHidden() { return this.hidden; } };
@@ -351,7 +355,7 @@ for (const selection of ["bound", "chooser", "explicit"]) {
 			assert.equal(marker.data.leafId, sourceLeaf);
 			f.manager.appendMessage({ role: "user", content: "Arrived after invocation", timestamp: Date.now() });
 			if (selection === "chooser") {
-				await until(() => !!chooser);
+				await until(() => chooserHandle?.hidden === false);
 				assert.equal(chooser.input.getValue(), "", "Instructions must not become a stream search");
 				assert.match(JSON.stringify(selectorContexts[0]), /Context at invocation/);
 				assert.doesNotMatch(JSON.stringify(selectorContexts[0]), /Arrived after invocation/);
@@ -423,52 +427,156 @@ for (const selection of ["bound", "chooser", "explicit"]) {
 	});
 }
 
+function chooserHarness({ stage, editor = "", others = [] } = {}) {
+	const manager = SessionManager.inMemory(process.cwd());
+	const stream = { slug: "service", title: "Service", path: "/unused/service.md", status: "active", state: "Work" };
+	const streams = [stream, ...others];
+	const h = { manager, stream, editor, tools: new Map(), receipts: [], dialogs: 0, closed: 0, statuses: [], chooser: undefined, handle: undefined, pending: undefined, selectorSignal: undefined, command: undefined, shortcut: undefined, shutdown: undefined };
+	const gate = (name, value) => name === stage ? new Promise((resolve) => { h.pending = () => resolve(value); }) : Promise.resolve(value);
+	registerCheckpoint({ registerTool: (tool) => h.tools.set(tool.name, tool), registerEntryRenderer() {}, registerMessageRenderer() {},
+		registerShortcut: (_key, options) => { h.shortcut = options.handler; },
+		sendMessage: (message, options) => { assert.equal(options.triggerTurn, false); h.receipts.push(message); },
+		registerCommand: (_name, options) => { h.command = options.handler; }, on: (_name, handler) => { h.shutdown = handler; },
+		appendEntry: (type, data) => manager.appendCustomEntry(type, data),
+	}, { agentDir: mkdtempSync(join(tmpdir(), "checkpoint-chooser-")), cli: { config: () => gate("config", { cmux: { enabled: false } }), list: () => gate("list", streams),
+		show: (ref) => { const found = streams.find((item) => ref === item.slug || ref === item.title); return found ? gate("show", found) : Promise.reject(new Error(`No stream ${ref}`)); } } });
+	h.ctx = { mode: "tui", hasUI: true, cwd: process.cwd(), sessionManager: manager, model: { id: "selector" }, getSystemPrompt: () => "Test",
+		modelRegistry: { complete: (_model, _context, options) => { h.selectorSignal = options?.signal; return gate("recommendations", { content: [{ type: "text", text: '{"existing":[{"slug":"service","reason":"Fits"}]}' }] }); } },
+		ui: { notify: (text) => assert.fail(text), setStatus: (_key, value) => h.statuses.push(value), getEditorText: () => h.editor, theme: { fg: (_color, text) => text },
+			custom: (factory, options) => new Promise((resolve) => {
+				h.dialogs++;
+				const component = factory({ terminal: { rows: 30 }, requestRender() {} }, { fg: (_color, text) => text }, {}, (value) => { component.dispose(); h.closed++; resolve(value); });
+				assert.ok(component instanceof StreamChooser, "Only the chooser may open during stream selection");
+				h.chooser = component;
+				h.handle = { hidden: false, focused: 0, focus() { this.focused++; }, setHidden(value) { this.hidden = value; }, isHidden() { return this.hidden; } };
+				options.onHandle(h.handle);
+			}),
+		},
+	};
+	return h;
+}
+
 for (const stage of ["config", "list", "show", "recommendations"]) {
-	test(`Esc cancels checkpoint ${stage} without waiting for late results`, async () => {
-		const manager = SessionManager.inMemory(process.cwd());
-		const stream = { slug: "service", title: "Service", path: "/unused/service.md", status: "active", state: "Work" };
-		if (stage === "show") manager.appendCustomEntry("stream-checkpoint-binding", { ownerId: manager.getSessionId(), slug: stream.slug, path: stream.path });
-		const config = { cmux: { enabled: false } };
-		let command, shutdown, loader, pending, selectorSignal;
-		let dialogs = 0, closed = 0;
-		const gate = (name, value) => name === stage ? new Promise((resolve) => { pending = () => resolve(value); }) : Promise.resolve(value);
-		registerCheckpoint({ registerTool() {}, registerEntryRenderer() {}, registerMessageRenderer() {}, registerShortcut() {},
-			registerCommand: (_name, options) => { command = options.handler; }, on: (_name, handler) => { shutdown = handler; },
-			appendEntry: (type, data) => manager.appendCustomEntry(type, data),
-		}, { cli: { config: () => gate("config", config), list: () => gate("list", [stream]), show: () => gate("show", stream) } });
-		const ctx = { mode: "tui", hasUI: true, cwd: process.cwd(), sessionManager: manager, model: { id: "selector" }, getSystemPrompt: () => "Test",
-			modelRegistry: { complete: (_model, _context, options) => { selectorSignal = options?.signal; return gate("recommendations", { content: [{ type: "text", text: '{"existing":[]}' }] }); } },
-			ui: { notify: (text) => assert.fail(text), setStatus() {},
-				custom: (factory) => new Promise((resolve) => {
-					dialogs++;
-					const component = factory({ terminal: { rows: 30 }, requestRender() {} }, { fg: (_color, text) => text }, {}, (value) => { component.dispose(); closed++; resolve(value); });
-					assert.ok(component instanceof BorderedLoader, "Cancellation must not open a chooser or panel");
-					loader = component;
-				}),
-			},
-		};
+	test(`checkpoint ${stage} lookup takes no focus, and shutdown drops late results`, async () => {
+		const h = chooserHarness({ stage });
+		if (stage === "show") h.manager.appendCustomEntry("stream-checkpoint-binding", { ownerId: h.manager.getSessionId(), slug: h.stream.slug, path: h.stream.path });
 		try {
-			await command(stage === "show" ? "--stream service" : "", ctx);
-			await until(() => !!pending);
-			assert.ok(loader, "Lookups need a cancellable loading UI");
-			loader.handleInput("\x1b");
-			await until(() => manager.getEntries().at(-1)?.data?.label === "Cancelled");
-			assert.equal(closed, dialogs, "Esc immediately returns input to the main composer");
-			if (stage === "recommendations") assert.equal(selectorSignal?.aborted, true);
-			const count = manager.getEntries().length;
-			const before = dialogs;
-			const late = pending;
-			await command(stage === "show" ? "--stream service" : "", ctx);
-			await until(() => pending !== late);
-			assert.ok(dialogs > before, "Cancellation must release the active run for another invocation");
-			await shutdown();
-			late(); pending();
+			await h.command(stage === "show" ? "--stream service" : "", h.ctx);
+			await until(() => !!h.pending);
+			if (stage === "recommendations") {
+				assert.equal(h.handle.hidden, true, "The chooser waits hidden while recommendations are found");
+				assert.equal(h.statuses.at(-1), "Checkpoint · Finding streams · Alt+P");
+			} else assert.equal(h.dialogs, 0, "Lookups must not open an overlay");
+			const count = h.manager.getEntries().length;
+			await h.shutdown();
+			if (stage === "recommendations") assert.equal(h.selectorSignal?.aborted, true);
+			assert.equal(h.manager.getEntries().at(-1).data.label, "Cancelled");
+			const late = h.pending;
+			late();
 			await turn();
-			assert.equal(closed, dialogs);
-			assert.ok(manager.getEntries().slice(count).every((entry) => entry.customType !== "stream-checkpoint-binding"));
-		} finally { pending?.(); await shutdown?.(); }
+			assert.equal(h.closed, h.dialogs);
+			assert.ok(h.manager.getEntries().slice(count).every((entry) => entry.customType !== "stream-checkpoint-binding"));
+			await h.command(stage === "show" ? "--stream service" : "", h.ctx);
+			await until(() => h.pending !== late);
+		} finally { h.pending?.(); await h.shutdown?.(); }
 	});
 }
+
+for (const typing of [false, true]) {
+	test(`the chooser ${typing ? "stays minimized while the user types" : "opens"} once recommendations arrive`, async () => {
+		const h = chooserHarness({ stage: "recommendations", editor: typing ? "half a thought" : "" });
+		try {
+			await h.command("", h.ctx);
+			await until(() => !!h.pending);
+			assert.equal(h.handle.hidden, true);
+			assert.match(h.chooser.render(100).join("\n"), /Finding recommendations…/);
+			h.pending();
+			await until(() => h.statuses.at(-1) !== "Checkpoint · Finding streams · Alt+P");
+			assert.equal(h.handle.hidden, typing);
+			assert.equal(h.statuses.at(-1), typing ? "Checkpoint · Choose stream · Alt+P" : undefined);
+			assert.match(h.chooser.render(100).join("\n"), /★ Service[\s\S]*Fits/);
+			h.shortcut(h.ctx);
+			assert.equal(h.handle.hidden, false);
+			h.chooser.handleInput("\x1bp");
+			assert.equal(h.handle.hidden, true, "The focus shortcut minimizes the chooser");
+			h.shortcut(h.ctx);
+			h.chooser.handleInput("\x1b");
+			await until(() => h.manager.getEntries().at(-1)?.data?.label === "Cancelled");
+			assert.equal(h.statuses.at(-1), undefined);
+			assert.ok(h.manager.getEntries().every((entry) => entry.customType !== "stream-checkpoint-binding"));
+		} finally { h.pending?.(); await h.shutdown?.(); }
+	});
+}
+
+test("Esc in the chooser stops a pending recommendation lookup", async () => {
+	const h = chooserHarness({ stage: "recommendations" });
+	try {
+		await h.command("", h.ctx);
+		await until(() => !!h.pending);
+		h.shortcut(h.ctx);
+		h.chooser.handleInput("\x1b");
+		await until(() => h.manager.getEntries().at(-1)?.data?.label === "Cancelled");
+		assert.equal(h.selectorSignal.aborted, true);
+		h.pending();
+		await turn();
+		assert.equal(h.handle.focused, 1, "Late recommendations must not reopen a cancelled chooser");
+	} finally { await h.shutdown?.(); }
+});
+
+test("select_stream offers the agent's recommendation and reports the user's choice", async () => {
+	const { renderCheckpointReceipt } = await jiti.import(new URL("../extensions/stream-checkpoint/receipt.ts", import.meta.url).pathname);
+	const h = chooserHarness({ stage: "recommendations", editor: "typing", others: [{ slug: "other", title: "Other work", path: "/unused/other.md", status: "active", state: "Work" }] });
+	const tool = h.tools.get("select_stream");
+	const call = async (params, id) => (await tool.execute(id, params, undefined, undefined, h.ctx)).details;
+	const binding = () => latestBinding(h.manager.getEntries(), h.manager.getSessionId())?.slug;
+	const rendered = () => h.chooser.render(100).join("\n");
+	try {
+		await assert.rejects(tool.execute("call-0", {}, undefined, undefined, { ...h.ctx, mode: "print" }), /interactive Pi terminal/);
+		assert.match(tool.promptGuidelines.join("\n"), /no bound stream/);
+
+		assert.deepEqual(await call({ stream: "Other work", reason: "Same retry code" }, "call-1"), { status: "awaiting-stream-choice" });
+		await until(() => !!h.chooser);
+		assert.equal(h.handle.hidden, true, "The user is typing, so the chooser stays minimized");
+		assert.equal(h.statuses.at(-1), "Checkpoint · Choose stream · Alt+P");
+		assert.equal(h.selectorSignal, undefined, "An agent recommendation replaces the selector model");
+		assert.match(rendered(), /▶ ★ Other work[\s\S]*Main agent: Same retry code/);
+		assert.deepEqual(await call({}, "call-2"), { status: "awaiting-stream-choice" });
+		assert.deepEqual((await h.tools.get("checkpoint").execute("call-3", { instructions: "Record it" }, undefined, undefined, h.ctx)).details,
+			{ status: "awaiting-stream-choice", instructionsSent: false });
+		h.shortcut(h.ctx);
+		h.chooser.handleInput("\r");
+		await until(() => h.receipts.length === 1);
+		assert.equal(binding(), "other");
+		assert.match(h.receipts[0].content, /^The user chose other \(\/unused\/other\.md\)\. This session is now bound to it/);
+		const theme = { fg: (_color, text) => text, bg: (_color, text) => text };
+		assert.match(renderCheckpointReceipt({ ...h.receipts[0], role: "custom", timestamp: 0 }, { expanded: false, outputPad: 1 }, theme).render(80).join("\n"), /Stream · other · Bound/);
+		assert.ok(h.manager.getEntries().every((entry) => entry.customType !== "checkpoint-start"), "Choosing a stream starts no checkpoint");
+		await turn();
+
+		assert.deepEqual(await call({ stream: "other" }, "call-4"), { status: "already-bound", slug: "other" });
+		assert.equal(h.dialogs, 1);
+
+		h.editor = "";
+		assert.deepEqual(await call({ stream: "Brand new work", reason: "Nothing fits" }, "call-5"), { status: "awaiting-stream-choice" });
+		await until(() => h.dialogs === 2 && h.handle.hidden === false);
+		assert.match(rendered(), /★ Suggested new: Brand new work[\s\S]*Main agent: Nothing fits/);
+		h.chooser.handleInput("\x1b");
+		await until(() => h.receipts.length === 2);
+		assert.equal(h.receipts[1].content, "The user closed the stream chooser without choosing. This session is still bound to other.");
+		assert.equal(binding(), "other");
+		await turn();
+
+		assert.deepEqual(await call({}, "call-6"), { status: "awaiting-stream-choice" });
+		await until(() => !!h.pending);
+		assert.equal(h.handle.hidden, true, "Without a recommendation, the chooser waits for the selector model");
+		h.pending();
+		await until(() => h.handle.hidden === false);
+		assert.match(rendered(), /▶ ★ Service[\s\S]*Fits/);
+		h.chooser.handleInput("\r");
+		await until(() => h.receipts.length === 3);
+		assert.equal(binding(), "service");
+	} finally { h.pending?.(); await h.shutdown?.(); }
+});
 
 test("setup failure retains a user-only source marker with inspectable error instead of opening a panel", async () => {
 	const manager = SessionManager.inMemory(process.cwd());
@@ -1302,7 +1410,7 @@ for (const ending of ["apply", "clear", "clear without user input"]) {
 	});
 }
 
-test("checkpoint tool starts hidden agent checkpoints and reports busy, conflict and unbound states", async () => {
+test("checkpoint tool starts hidden agent checkpoints of the bound stream and reports busy and unbound states", async () => {
 	const f = await conversationFixture();
 	let shutdown;
 	try {
@@ -1320,6 +1428,7 @@ test("checkpoint tool starts hidden agent checkpoints and reports busy, conflict
 		writeFileSync(join(f.dir, "checkpoint.json"), '{"agentTools":false}');
 		registerCheckpoint(api, { agentDir: f.dir, cli, runtime: f.conversation.options.runtime, skill: "Test skill" });
 		assert.equal(tools.has("checkpoint"), false);
+		assert.equal(tools.has("select_stream"), false);
 		rmSync(join(f.dir, "checkpoint.json"));
 		registerCheckpoint(api, { agentDir: f.dir, cli, runtime: f.conversation.options.runtime, skill: "Test skill" });
 		const tool = tools.get("checkpoint");
@@ -1339,10 +1448,14 @@ test("checkpoint tool starts hidden agent checkpoints and reports busy, conflict
 		const call = async (params, id = "call-1") => (await tool.execute(id, params, undefined, undefined, ctx)).details;
 
 		await assert.rejects(tool.execute("call-0", {}, undefined, undefined, { ...ctx, mode: "print" }), /interactive Pi terminal/);
-		assert.deepEqual(await call({ instructions: "Record it" }), { status: "needs-stream", instructionsSent: false });
+		const unbound = await tool.execute("call-1", { instructions: "Record it" }, undefined, undefined, ctx);
+		assert.deepEqual(unbound.details, { status: "needs-stream", instructionsSent: false });
+		assert.match(unbound.content[0].text, /Call select_stream/);
 		assert.deepEqual(components, []);
+		assert.equal(tool.parameters.properties.stream, undefined, "Only select_stream picks streams");
 
-		assert.deepEqual(await call({ stream: "service", instructions: "Record the retry decision" }), { status: "started", slug: "service", instructionsSent: true });
+		f.manager.appendCustomEntry("stream-checkpoint-binding", { ownerId: f.manager.getSessionId(), slug: "service", path: f.path });
+		assert.deepEqual(await call({ instructions: "Record the retry decision" }), { status: "started", slug: "service", instructionsSent: true });
 		await until(() => f.contexts.length === 1);
 		assert.deepEqual(components, ["CheckpointPanel"], "No loader or chooser overlays");
 		assert.deepEqual(handle, ["hidden:true"], "The panel never takes focus");
@@ -1355,7 +1468,6 @@ test("checkpoint tool starts hidden agent checkpoints and reports busy, conflict
 		assert.match(panel.render(80).join("\n"), /Main agent/);
 
 		assert.deepEqual(await call({ instructions: "Also note the limit" }, "call-2"), { status: "already-open", slug: "service", instructionsSent: false });
-		assert.deepEqual(await call({ stream: "other" }, "call-3"), { status: "conflict", slug: "service", instructionsSent: false });
 		f.finish("Recorded");
 		await until(() => panel.state.activity === null);
 		assert.deepEqual(await call({ instructions: "Also note the limit" }, "call-4"), { status: "already-open", slug: "service", instructionsSent: true });
@@ -1371,7 +1483,6 @@ test("checkpoint tool starts hidden agent checkpoints and reports busy, conflict
 		await until(() => dismissed);
 		assert.match(receipts[0].content, /Main agent: Record the retry decision\n\nCheckpoint agent: Recorded\n\nMain agent: Also note the limit\n\nCheckpoint agent: Noted$/);
 		await until(() => f.manager.getEntries().some((entry) => entry.customType === "checkpoint-status" && entry.data.label === "Applied"));
-		assert.deepEqual(await call({ stream: "other" }, "call-6"), { status: "conflict", slug: "service", instructionsSent: false });
 		const marker = f.manager.getEntries().find((entry) => entry.customType === "checkpoint-start");
 		assert.equal(marker.data.author, "main-agent");
 	} finally { await shutdown?.(); await f.dispose(); }
