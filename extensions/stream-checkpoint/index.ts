@@ -16,6 +16,7 @@ import { checkpointLabel, checkpointStatus } from "./view.ts";
 import { CheckpointJournal, MARKER_TYPE } from "./journal.ts";
 import { StreamCli } from "./streams.ts";
 import { checkpointReceipt, renderCheckpointReceipt } from "./receipt.ts";
+import { streamReadTool } from "./read.ts";
 
 export function parseCheckpointArgs(args: string): { ref: string; message: string } {
 	const input = args.trim();
@@ -72,6 +73,7 @@ export default function registerCheckpoint(pi: ExtensionAPI, testDeps: { agentDi
 	const focusShortcut = loadConfig(agentDir).focusShortcut;
 	const journal = new CheckpointJournal(pi, focusShortcut);
 	pi.registerEntryRenderer(MARKER_TYPE, journal.render);
+	pi.registerTool(streamReadTool(agentDir, (ctx) => testDeps.cli ?? new StreamCli(ctx.cwd)));
 	pi.on("session_start", (_event, ctx) => journal.restore(ctx.sessionManager.getEntries()));
 	const show = (run: OpenCheckpoint) => { run.handle?.setHidden(false); run.handle?.focus(); run.updateStatus?.(); run.panel?.refresh(); };
 	pi.registerShortcut(focusShortcut, {

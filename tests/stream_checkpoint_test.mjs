@@ -338,7 +338,7 @@ for (const selection of ["bound", "chooser", "explicit"]) {
 					}),
 				},
 			};
-			registerCheckpoint({ registerEntryRenderer() {}, registerMessageRenderer() {}, registerCommand: (_name, options) => { command = options.handler; }, registerShortcut() {}, on: (_event, handler) => { shutdown = handler; }, appendEntry: (type, data) => f.manager.appendCustomEntry(type, data) }, {
+			registerCheckpoint({ registerTool() {}, registerEntryRenderer() {}, registerMessageRenderer() {}, registerCommand: (_name, options) => { command = options.handler; }, registerShortcut() {}, on: (_event, handler) => { shutdown = handler; }, appendEntry: (type, data) => f.manager.appendCustomEntry(type, data) }, {
 				agentDir: f.dir, runtime: f.conversation.options.runtime, skill: "Test skill",
 				cli: { config: async () => ({ cmux: { enabled: false } }), list: async () => { lists++; return [stream]; }, show: async (ref) => { shown.push(ref); return stream; }, format: async () => "format" },
 			});
@@ -432,7 +432,7 @@ for (const stage of ["config", "list", "show", "recommendations"]) {
 		let command, shutdown, loader, pending, selectorSignal;
 		let dialogs = 0, closed = 0;
 		const gate = (name, value) => name === stage ? new Promise((resolve) => { pending = () => resolve(value); }) : Promise.resolve(value);
-		registerCheckpoint({ registerEntryRenderer() {}, registerMessageRenderer() {}, registerShortcut() {},
+		registerCheckpoint({ registerTool() {}, registerEntryRenderer() {}, registerMessageRenderer() {}, registerShortcut() {},
 			registerCommand: (_name, options) => { command = options.handler; }, on: (_name, handler) => { shutdown = handler; },
 			appendEntry: (type, data) => manager.appendCustomEntry(type, data),
 		}, { cli: { config: () => gate("config", config), list: () => gate("list", [stream]), show: () => gate("show", stream) } });
@@ -474,7 +474,7 @@ test("setup failure retains a user-only source marker with inspectable error ins
 	const manager = SessionManager.inMemory(process.cwd());
 	let command, shutdown;
 	const notices = [];
-	registerCheckpoint({ registerEntryRenderer() {}, registerMessageRenderer() {}, registerShortcut() {},
+	registerCheckpoint({ registerTool() {}, registerEntryRenderer() {}, registerMessageRenderer() {}, registerShortcut() {},
 		registerCommand: (_name, options) => { command = options.handler; }, on: (_event, handler) => { shutdown = handler; },
 		appendEntry: (type, data) => manager.appendCustomEntry(type, data),
 	}, { cli: { config: async () => { throw new Error("Broken shared configuration"); } } });
@@ -524,7 +524,7 @@ test("checkpoint command releases main input, preserves work on stream switches 
 				}),
 			},
 		};
-		registerCheckpoint({ registerEntryRenderer() {}, registerMessageRenderer() {}, registerCommand: (_name, options) => { command = options.handler; }, registerShortcut: (_key, options) => { shortcut = options.handler; }, on: (_event, handler) => { shutdown = handler; }, appendEntry: (type, data) => f.manager.appendCustomEntry(type, data) }, {
+		registerCheckpoint({ registerTool() {}, registerEntryRenderer() {}, registerMessageRenderer() {}, registerCommand: (_name, options) => { command = options.handler; }, registerShortcut: (_key, options) => { shortcut = options.handler; }, on: (_event, handler) => { shutdown = handler; }, appendEntry: (type, data) => f.manager.appendCustomEntry(type, data) }, {
 			agentDir: f.dir, runtime: f.conversation.options.runtime, skill: "Test skill", cli: { config: async () => ({ cmux: { enabled: false } }), list: async () => streams, show: async (ref) => streams.find((stream) => stream.slug === ref), format: async () => "format" },
 		});
 		let returned = false;
@@ -590,21 +590,64 @@ test("refresh without a draft succeeds without a review warning and preserves un
 // importing main-session extensions, bash, edit, or write.
 test("registers the manual checkpoint command without starting work", () => {
 	const commands = [];
-	registerCheckpoint({ registerEntryRenderer() {}, registerMessageRenderer() {}, on() {}, registerCommand: (name, options) => { commands.push({ name, options }); }, registerShortcut() {} });
+	registerCheckpoint({ registerTool() {}, registerEntryRenderer() {}, registerMessageRenderer() {}, on() {}, registerCommand: (name, options) => { commands.push({ name, options }); }, registerShortcut() {} });
 	assert.equal(commands.length, 1);
 	assert.equal(commands[0].name, "checkpoint");
 	assert.equal(typeof commands[0].options.handler, "function");
+});
+
+test("stream_read reads the bound or named stream, its pending draft, and pages like read", async () => {
+	const dir = mkdtempSync(join(tmpdir(), "stream-read-"));
+	try {
+		const path = join(dir, "service.md");
+		writeFileSync(path, "---\ntitle: Service\n---\n# Body\nline 5\n");
+		const stream = { slug: "service", title: "Service", status: "active", state: "Doing work", updated: "2026-01-02", path };
+		const shown = [];
+		const tools = [];
+		registerCheckpoint({ registerTool: (tool) => tools.push(tool), registerEntryRenderer() {}, registerMessageRenderer() {}, on() {}, registerCommand() {}, registerShortcut() {} },
+			{ agentDir: dir, cli: { show: async (ref) => { shown.push(ref); return stream; } } });
+		const tool = tools.find((item) => item.name === "stream_read");
+		assert.equal(tool.annotations.readOnlyHint, true);
+		const manager = SessionManager.inMemory(dir);
+		const ctx = { cwd: dir, sessionManager: manager };
+		const run = async (args) => (await tool.execute("call", args, undefined, undefined, ctx)).content[0].text;
+		await assert.rejects(run({}), /No stream is bound.*streams list/);
+		assert.deepEqual(shown, []);
+
+		const named = await run({ stream: "Service" });
+		assert.deepEqual(shown, ["Service"]);
+		assert.match(named, new RegExp(`^Stream: service\nPath: ${path}\nTitle: Service\nStatus: active\nState: Doing work\nUpdated: 2026-01-02\n\n---\ntitle: Service`));
+
+		manager.appendCustomEntry("stream-checkpoint-binding", { ownerId: manager.getSessionId(), slug: "service", path });
+		assert.match(await run({ offset: 4, limit: 1 }), /\n\n# Body\n\n\[2 more lines in file\. Use offset=5 to continue\.\]$/);
+		assert.equal(shown.at(-1), "service");
+		await assert.rejects(run({ offset: 99 }), /Offset 99 is beyond end of file/);
+
+		await assert.rejects(run({ draft: true }), /No pending checkpoint draft for service/);
+		savePending(dir, { version: 1, ownerId: manager.getSessionId(), slug: "service", messages: [], input: "",
+			draft: { path, slug: "service", revision: 3, baseContent: "old", proposedContent: "---\ntitle: Service\n---\n# Drafted\n" } });
+		const drafted = await run({ draft: true });
+		assert.match(drafted, /Draft: revision 3, pending review and not applied/);
+		assert.match(drafted, /# Drafted/);
+		assert.doesNotMatch(await run({}), /Drafted/);
+
+		writeFileSync(path, Array.from({ length: 2005 }, (_, i) => `line ${i + 1}`).join("\n"));
+		assert.match(await run({}), /line 2000\n\n\[Showing lines 1-2000 of 2005\. Use offset=2001 to continue\.\]$/);
+
+		manager.appendCustomEntry("stream-checkpoint-binding", { ownerId: manager.getSessionId(), slug: "service", path: "/moved/service.md" });
+		await assert.rejects(run({}), /moved from \/moved\/service\.md/);
+	} finally { rmSync(dir, { recursive: true, force: true }); }
 });
 
 test("registers a configurable shortcut for returning to an open checkpoint", () => {
 	const dir = mkdtempSync(join(tmpdir(), "checkpoint-shortcut-"));
 	try {
 		const shortcuts = [];
-		registerCheckpoint({ registerEntryRenderer() {}, registerMessageRenderer() {}, on() {}, registerCommand() {}, registerShortcut: (key, options) => shortcuts.push({ key, options }) }, { agentDir: dir });
+		registerCheckpoint({ registerTool() {}, registerEntryRenderer() {}, registerMessageRenderer() {}, on() {}, registerCommand() {}, registerShortcut: (key, options) => shortcuts.push({ key, options }) }, { agentDir: dir });
 		assert.equal(shortcuts[0].key, "alt+p");
 		writeFileSync(join(dir, "checkpoint.json"), '{"focusShortcut":"ctrl+alt+c"}');
 		shortcuts.length = 0;
-		registerCheckpoint({ registerEntryRenderer() {}, registerMessageRenderer() {}, on() {}, registerCommand() {}, registerShortcut: (key, options) => shortcuts.push({ key, options }) }, { agentDir: dir });
+		registerCheckpoint({ registerTool() {}, registerEntryRenderer() {}, registerMessageRenderer() {}, on() {}, registerCommand() {}, registerShortcut: (key, options) => shortcuts.push({ key, options }) }, { agentDir: dir });
 		assert.equal(shortcuts[0].key, "ctrl+alt+c");
 	} finally { rmSync(dir, { recursive: true, force: true }); }
 });
@@ -1166,7 +1209,7 @@ test("checkpoint creation and Apply use CLI config and emit a registered expanda
 				else assert.fail(args.join(" "));
 				return { code: 0, stdout: JSON.stringify(value), stderr: "" };
 			});
-			registerCheckpoint({ registerCommand: (_name, options) => { command = options.handler; }, registerShortcut() {},
+			registerCheckpoint({ registerTool() {}, registerCommand: (_name, options) => { command = options.handler; }, registerShortcut() {},
 				registerEntryRenderer() {}, registerMessageRenderer: (name, renderer) => renderers.push([name, renderer]), on: (_event, handler) => { shutdown = handler; },
 				appendEntry: (type, data) => f.manager.appendCustomEntry(type, data),
 				sendMessage: (receipt, options) => { receipts.push(receipt); assert.equal(options.triggerTurn, false); },

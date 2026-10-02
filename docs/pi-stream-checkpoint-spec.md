@@ -307,6 +307,20 @@ Reload or Pi session replacement preserves saved unfinished work but disposes th
 
 `/tree` does not change the session-wide binding. An open panel keeps its labelled source snapshot until an explicit refresh. Reopening refreshes from the then-current branch while preserving the earlier checkpoint discussion.
 
+## Main-agent tools
+
+### `stream_read`
+
+The main agent reads stream notes with `stream_read` instead of `read`, so it gets no path-access prompt. The tool is read-only and can read only paths returned by `streams show --json`.
+
+| Parameter | Meaning |
+| --- | --- |
+| `stream` | Slug, path or title, resolved by `streams show`. Defaults to this session's binding. |
+| `offset`, `limit` | 1-based line paging, matching `read` |
+| `draft` | When `true`, read this session's saved pending draft for the stream instead of the note. Defaults to `false`. |
+
+The result starts with the stream's slug, path, title, status, state and `updated` date, followed by the selected lines. Truncation and continuation notices match `read`. A bound stream must still resolve to its bound path. Without a binding or `stream`, the tool returns an error that suggests passing `stream` or running `streams list`. It does not list streams itself. With `draft`, the metadata still comes from the applied note, and the result names the draft revision. If there is no pending draft, it returns an error.
+
 ## Technical direction
 
 Use the Pi SDK and TUI extension APIs, targeting the researched Pi 0.87.1 baseline. An embedded, separate `AgentSession` is the starting option, following the useful parts of `pi-btw`: independent execution, main-context seeding through `SessionManager`, and event-driven UI. Do not mutate `agent.state.messages` to seed history.
@@ -331,6 +345,7 @@ extensions/stream-checkpoint/                     extension source
   streams.ts                                     argument-array CLI boundary and diagnostics
   receipt.ts                                     shared receipt and expandable user-only details
   journal.ts                                     source markers and append-only lifecycle status
+  read.ts                                        main-agent stream_read tool
 tests/stream_checkpoint_test.mjs                  Node regression tests
 src/_streams/                                     existing CLI and canonical schema
 ```
@@ -437,6 +452,9 @@ Tests must use temporary scratch files and mocked CLI, model, and CMUX boundarie
 | CMUX update fails | Preserve the scratch write and binding, report projection failure, and never target a fallback workspace |
 | CMUX retry | Retry only projection, without recreating the stream or rewriting scratch |
 | Compaction | Do not start a checkpoint automatically |
+| `stream_read` without a binding or `stream` | Return an error suggesting a `stream` ref or `streams list`; resolve nothing |
+| `stream_read` with `draft: true` | Return this session's pending draft and its revision, or an error if none exists; never the applied note |
+| `stream_read` paging | Honour `offset` and `limit` and truncate exactly as `read` does |
 
 Cover selection and binding with unit tests; cover draft and apply transitions with temporary-file integration tests. Check the panel manually in regular and fullscreen modes, narrow terminals, resize events, streaming, Unicode text, focus changes, and cancellation.
 
