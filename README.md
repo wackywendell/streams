@@ -46,7 +46,7 @@ In Pi, run `/checkpoint` to draft an update to the current stream. See [docs/pi-
 
 ## Supported versions
 
-Tested with Python 3.11 and 3.14, Node 26 and Pi 0.99, on macOS.
+Tested with Python 3.11 and 3.14, Node 26 and Pi 0.99, on macOS and Linux.
 
 ## Develop
 
