@@ -15,7 +15,7 @@ import { CheckpointConversation } from "./conversation.ts";
 import { checkpointLabel, checkpointStatus } from "./view.ts";
 import { CheckpointJournal, MARKER_TYPE } from "./journal.ts";
 import { StreamCli } from "./streams.ts";
-import { checkpointReceipt, renderCheckpointReceipt } from "./receipt.ts";
+import { checkpointReceipt, clearedReceipt, discussionText, renderCheckpointReceipt } from "./receipt.ts";
 import { streamReadTool } from "./read.ts";
 
 export function parseCheckpointArgs(args: string): { ref: string; message: string } {
@@ -190,7 +190,8 @@ export default function registerCheckpoint(pi: ExtensionAPI, testDeps: { agentDi
 					if (alive()) {
 						run.finalized = true;
 						journal.update(run.marker, { label: "Applied", slug: selected.slug, closed: true });
-						pi.sendMessage(checkpointReceipt({ slug: selected.slug, path: selected.path, summary, cmux, warning, commands: cli.diagnostics }), { triggerTurn: false });
+						const discussion = discussionText(conversation.state.messages) || undefined;
+						pi.sendMessage(checkpointReceipt({ slug: selected.slug, path: selected.path, summary, cmux, warning, commands: cli.diagnostics, discussion }), { triggerTurn: false });
 					}
 					run.dismiss?.();
 				},
@@ -209,6 +210,9 @@ export default function registerCheckpoint(pi: ExtensionAPI, testDeps: { agentDi
 					stop: () => { void conversation.stop(); },
 					clear: () => {
 						conversation.clear(); run.finalized = true;
+						if (conversation.state.messages.some((message) => message.role === "user")) {
+							pi.sendMessage(clearedReceipt({ slug: selected.slug, path: selected.path, discussion: discussionText(conversation.state.messages) }), { triggerTurn: false });
+						}
 						journal.update(run.marker, { label: "Cleared", slug: selected.slug, closed: true });
 						done();
 					},

@@ -1247,6 +1247,92 @@ test("checkpoint creation and Apply use CLI config and emit a registered expanda
 	}
 });
 
+for (const ending of ["apply", "clear", "clear without user input"]) {
+	test(`checkpoint discussion returns to the main session on ${ending}`, async () => {
+		const f = await conversationFixture();
+		let shutdown;
+		try {
+			const stream = { slug: "service", title: "Service", path: f.path, status: "active", state: "Work" };
+			f.manager.appendCustomEntry("stream-checkpoint-binding", { ownerId: f.pending.ownerId, slug: stream.slug, path: stream.path });
+			const receipts = [];
+			let command, panel, dismissed = false;
+			registerCheckpoint({ registerTool() {}, registerCommand: (_name, options) => { command = options.handler; }, registerShortcut() {}, registerEntryRenderer() {}, registerMessageRenderer() {},
+				on: (_event, handler) => { shutdown = handler; }, appendEntry: (type, data) => f.manager.appendCustomEntry(type, data),
+				sendMessage: (receipt, options) => { receipts.push(receipt); assert.equal(options.triggerTurn, false); },
+			}, { agentDir: f.dir, runtime: f.conversation.options.runtime, skill: "Test skill",
+				cli: { config: async () => ({ cmux: { enabled: false } }), list: async () => [stream], show: async () => stream, format: async () => "format", diagnostics: [],
+					update: async (_slug, content, options) => { if (!options.dryRun) writeFileSync(f.path, content); return { slug: stream.slug, path: f.path, updated: !options.dryRun, findings: [] }; } } });
+			const ctx = { mode: "tui", hasUI: true, cwd: f.dir, model: f.conversation.options.model, thinkingLevel: "off", sessionManager: f.manager, getSystemPrompt: () => "Test",
+				modelRegistry: { getRegisteredProviderConfig() {}, getRegisteredNativeProvider() {} },
+				ui: { getEditorText: () => "typing", notify() {}, theme: { fg: (_color, text) => text }, setStatus() {},
+					custom: (factory, options) => new Promise((resolve) => {
+						let component;
+						component = factory({ terminal: { rows: 30 }, requestRender() {} }, { fg: (_color, text) => text }, {}, (value) => { component?.dispose?.(); if (component instanceof CheckpointPanel) dismissed = true; resolve(value); });
+						if (component instanceof CheckpointPanel) { panel = component; options.onHandle({ focus() {}, setHidden() {}, isHidden() { return false; } }); }
+					}) } };
+			await command("", ctx);
+			await until(() => f.contexts.length === 1);
+			f.finish("Kickoff reply");
+			await until(() => panel.state.activity === null);
+			if (ending !== "clear without user input") {
+				panel.state.input = "Keep the retry note";
+				panel.handleInput("\r");
+				await until(() => f.contexts.length === 2);
+				f.finish("Noted the retry");
+				await until(() => panel.state.activity === null);
+			}
+			if (ending === "apply") {
+				panel.state.draft = { ...sampleDraft, slug: "service", path: f.path, baseContent: "scratch unchanged", proposedContent: "approved", summary: "Updated handoff" };
+				panel.handleInput("\x07");
+			} else { panel.handleInput("\x1bc"); panel.handleInput("y"); }
+			await until(() => dismissed);
+			const discussion = "Checkpoint discussion:\nCheckpoint agent: Kickoff reply\n\nUser: Keep the retry note\n\nCheckpoint agent: Noted the retry";
+			if (ending === "apply") {
+				assert.equal(receipts.length, 1);
+				assert.match(receipts[0].content, /^Checkpoint applied to service/);
+				assert.ok(receipts[0].content.endsWith(`\n\n${discussion}`));
+			} else if (ending === "clear") {
+				assert.equal(receipts.length, 1);
+				assert.equal(receipts[0].details.outcome, "cleared");
+				assert.match(receipts[0].content, /^Checkpoint for service .* was discussed but not applied/);
+				assert.ok(receipts[0].content.endsWith(`\n\n${discussion}`));
+			} else assert.equal(receipts.length, 0, "A kickoff-only discussion has nothing for the main agent");
+			assert.doesNotMatch(JSON.stringify(receipts), /Draft a handoff|approved/);
+		} finally { await shutdown?.(); await f.dispose(); }
+	});
+}
+
+test("discussion text keeps user words and anchored comments, dropping oldest agent replies first", async () => {
+	const { discussionText, clearedReceipt, renderCheckpointReceipt } = await jiti.import(new URL("../extensions/stream-checkpoint/receipt.ts", import.meta.url).pathname);
+	const annotation = { path: "/notes/service.md", revision: 2, side: "proposed", line: 4, section: "# Jobs", excerpt: "4: retry twice", comment: "Say why" };
+	const messages = [
+		{ role: "assistant", text: "a".repeat(40) },
+		{ role: "user", text: "first question" },
+		{ role: "assistant", text: "b".repeat(40) },
+		{ role: "user", text: "See comment", annotations: [annotation] },
+		{ role: "assistant", text: "final reply" },
+	];
+	const full = discussionText(messages);
+	assert.match(full, /^Checkpoint agent: a+\n\nUser: first question\n\n/);
+	assert.match(full, /User: See comment\n\nDraft 2 · \/notes\/service.md · proposed line 4\nSection: # Jobs\n4: retry twice\nComment: Say why/);
+	const fitted = discussionText(messages, full.length - 30);
+	assert.match(fitted, /^\[1 earlier message omitted\]\n\nUser: first question\n\nCheckpoint agent: b+/);
+	const userOnly = discussionText(messages, 180);
+	assert.match(userOnly, /^\[3 earlier messages omitted\]\n\nUser: first question\n\nUser: See comment/);
+	assert.doesNotMatch(userOnly, /Checkpoint agent/);
+	const tiny = discussionText([{ role: "user", text: "x".repeat(100) }], 20);
+	assert.equal(tiny, `User: ${"x".repeat(14)}\n[truncated]`);
+	assert.equal(discussionText([]), "");
+
+	const receipt = clearedReceipt({ slug: "service", path: "/notes/service.md", discussion: full });
+	const theme = { fg: (_color, text) => text, bg: (_color, text) => text };
+	const message = { ...receipt, role: "custom", timestamp: Date.now() };
+	const collapsed = renderCheckpointReceipt(message, { expanded: false, outputPad: 1 }, theme).render(80).join("\n");
+	assert.match(collapsed, /Checkpoint · service · Cleared, not applied/);
+	assert.doesNotMatch(collapsed, /first question/);
+	assert.match(renderCheckpointReceipt(message, { expanded: true, outputPad: 1 }, theme).render(80).join("\n"), /first question/);
+});
+
 test("real CLI subprocess captures stderr on success and stdout-only failures", async () => {
 	const dir = mkdtempSync(join(tmpdir(), "checkpoint-process-"));
 	const oldPath = process.env.PATH;

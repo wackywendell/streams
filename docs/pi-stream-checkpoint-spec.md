@@ -265,7 +265,7 @@ Do not edit reference notes or stream-local artifacts as a hidden part of a chec
 4. Send the same approved bytes to `streams update --if-match <base-sha256> <canonical-slug> --json`. The CLI validates before replacing the file and rejects a changed base. Validation checks format, not the truth of the AI's claims.
 5. If shared `cmux.enabled` is `true`, run `streams cmux update -c <canonical-slug>` to project the validated scratch onto the current workspace. Otherwise make no CMUX call.
 6. Update the session binding if its canonical stream identity changed. Do not defer a new stream's initial binding until this step.
-7. Add a main-chat receipt with the stream slug, scratch filename, a short summary of the applied changes and CMUX outcome (`updated`, `disabled` or `failed`). Keep raw diagnostic output outside model context. Do not trigger a main-agent response; if the main agent is streaming, Pi may defer receipt delivery until the turn ends.
+7. Add a main-chat receipt with the stream slug, scratch filename, a short summary of the applied changes, CMUX outcome (`updated`, `disabled` or `failed`) and the checkpoint discussion. Keep raw diagnostic output outside model context. Do not trigger a main-agent response; if the main agent is streaming, Pi may defer receipt delivery until the turn ends.
 8. Mark this checkpoint complete and close the panel. It is no longer resumable as unfinished work. The next `/checkpoint` starts a new side conversation using the updated scratch and current main context.
 
 A new model response, stream switch, context refresh, or edited target must not cause Apply to write an unseen revision. Applying one snapshot does not claim to cover later main-session work.
@@ -280,9 +280,21 @@ If only CMUX refresh fails, record scratch success and the projection warning in
 
 Render the receipt as a compact box in the main transcript. Pi's normal tool-expansion action (Ctrl+O by default) reveals command arguments, exit statuses, output and projection warnings. CMUX failure remains visible in the collapsed box alongside scratch success.
 
-Use custom-message `content` for the minimal shared receipt and `details` for diagnostic data. Pi persists both, but sends only `content` to the model. Expanding the box changes presentation, not model context. Do not trigger a model turn to announce completion.
+Use custom-message `content` for the minimal shared receipt and discussion, and `details` for diagnostic data. Pi persists both, but sends only `content` to the model. Expanding the box changes presentation, not model context. Do not trigger a model turn to announce completion.
 
 Retain the latest 16 CLI calls from the current panel lifetime, with stdout and stderr limited to 2,048 characters each plus a truncation marker. Never record the Markdown passed on stdin. Capture successful stderr and structured update warnings; show them through notifications and retain them in receipt details. Errors remain visible in the panel or notifications. These diagnostics are not a complete historical log across checkpoint restarts.
+
+### Discussion
+
+The main agent needs what the user said during a checkpoint, such as decisions, corrections and constraints, not just the resulting note. The receipt's model-visible content therefore ends with the checkpoint discussion, a verbatim transcript in order:
+
+- user messages, labelled `User:`, including instructions passed to `/checkpoint`
+- the checkpoint agent's text replies, labelled `Checkpoint agent:`
+- each sent annotation, with its draft revision, side, line, section, quoted excerpt and comment
+
+It excludes the automatic kickoff, the seeded source context, tool calls, tool results and draft contents. Above 16,000 characters, drop the oldest checkpoint-agent replies first, then the oldest user messages, and start the transcript with `[N earlier messages omitted]`. A single entry over the limit is cut and marked `[truncated]`. The collapsed receipt box does not show the discussion; expanding it does.
+
+Confirmed Clear posts a separate receipt, `Cleared, not applied`, with the same discussion, but only if it contains a user message. A discussion with only the kickoff and the agent's replies posts nothing. Closing, reloading or shutting down with unfinished work posts nothing, because the discussion arrives when that work is later applied or cleared. There is no setting to turn this off.
 
 ## Panel lifecycle
 
@@ -297,7 +309,7 @@ Retain the latest 16 CLI calls from the current panel lifetime, with stdout and 
 | Applied | Update binding if needed, post the main-chat receipt, mark complete, and close; the next invocation starts fresh |
 | Minimized | Hide the overlay and focus the main editor without stopping side work; submissions run in the main session |
 | Closed by shutdown or reload | Stop side work and save unfinished state; reopening resumes with fresh context |
-| Cleared | After confirmation, discard checkpoint chat, draft, annotations and input; keep the stream and binding |
+| Cleared | After confirmation, discard checkpoint chat, draft, annotations and input; keep the stream and binding; post the discussion if it contains a user message |
 
 Minimizing neither applies nor discards a draft. Alt+C Clear is the explicit discard action and requires confirmation. It closes the panel without undoing stream creation or successful scratch writes.
 
@@ -449,6 +461,9 @@ Tests must use temporary scratch files and mocked CLI, model, and CMUX boundarie
 | `cmux.enabled: false` or absent | Make no CMUX calls on creation or Apply |
 | Shared configuration | Fetch through `streams config --json`; never read its file from Pi or store model/shortcut settings in streams config |
 | Expand receipt | Show diagnostic details through Pi's tool-expansion control without adding them to model context |
+| Apply after discussion | Receipt content carries user messages, agent replies and annotations verbatim and in order, without kickoff, tool calls or drafts |
+| Long discussion | Stay within 16,000 characters, dropping oldest agent replies before user messages, with an omission marker |
+| Clear after discussion | Post a `Cleared, not applied` receipt with the discussion only if the user spoke; do not trigger a turn |
 | CMUX update fails | Preserve the scratch write and binding, report projection failure, and never target a fallback workspace |
 | CMUX retry | Retry only projection, without recreating the stream or rewriting scratch |
 | Compaction | Do not start a checkpoint automatically |
