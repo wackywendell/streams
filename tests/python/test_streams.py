@@ -14,6 +14,15 @@ from unittest.mock import patch
 SRC_DIR = Path(__file__).resolve().parents[2] / "src"
 sys.path.insert(0, str(SRC_DIR))
 
+
+def setUpModule() -> None:
+    # Keep the developer's ~/.config/streams/config.json (e.g. obsidian.vault) out of expected output.
+    config_dir = tempfile.TemporaryDirectory()
+    env = patch.dict("os.environ", {"XDG_CONFIG_HOME": config_dir.name})
+    env.start()
+    unittest.addModuleCleanup(config_dir.cleanup)
+    unittest.addModuleCleanup(env.stop)
+
 from _streams.cli import build_parser, command_archive, command_check, command_cmux_update, command_format, command_list, command_rename, command_resume, command_show, command_start
 from _streams.cmux import (
     CmuxClient,
