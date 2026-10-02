@@ -162,7 +162,7 @@ Submitting the edited title writes the CLI's starter note and binds the returned
 
 The binding belongs to the main Pi session, not to a conversation branch or checkpoint agent.
 
-Store extension metadata containing the owning Pi session ID, canonical stream slug, and scratch path. Restore the latest binding for that owner across the complete session entry list. This is deliberately session-wide: `/tree` navigation must not revert the binding to an older branch's selection.
+Store extension metadata containing the owning Pi session ID, canonical stream slug, and scratch path. Pi uses the path only to notice that a bound stream was renamed or removed. Restore the latest binding for that owner across the complete session entry list. This is deliberately session-wide: `/tree` navigation must not revert the binding to an older branch's selection.
 
 - reopening the same Pi session restores its binding
 - a successful explicit selection replaces it
@@ -246,7 +246,7 @@ While an operation runs, disable chat edits, annotation edits and submissions. K
 
 While idle, select a logical diff line in Review and press Alt+K. Enter saves the comment locally; Ctrl+C cancels its unfinished edit. Editing an existing comment to empty removes it. Show saved comments beneath their selected lines. Saving a comment never starts a model turn.
 
-Each annotation contains the scratch path, immutable draft revision, original or proposed document side, exact line number, nearest heading and a numbered surrounding excerpt. Deleted lines refer to the original document. Wrapped and repeated lines retain their distinct document anchors.
+Each annotation contains the immutable draft revision, original or proposed document side, exact line number, nearest heading and a numbered surrounding excerpt. Deleted lines refer to the original document. Wrapped and repeated lines retain their distinct document anchors.
 
 Switch to Chat to add optional overall feedback and send the batch once. Chat shows a collapsed count, such as `[3 annotations · Draft 1]`; Alt+A expands the evidence. The model receives every comment and anchor as ordinary message text. Preserve feedback until the SDK accepts it, then clear only the accepted composer text and annotation batch.
 
@@ -254,7 +254,9 @@ The AI may replace the draft after receiving feedback. Keep sent annotations wit
 
 ## Proposal and apply contract
 
-A proposal targets one selected scratch file. Store its base content or digest, full proposed content, and a revision ID. Render the diff deterministically from those contents; do not ask the LLM to produce the displayed diff separately.
+Pi reads and writes notes only through the CLI: `streams read <slug> --hash` returns a note's exact text and the hash `--if-match` checks, and `streams update` writes it. Pi never opens note files, and nothing it shows an agent contains a note path.
+
+A proposal targets one selected scratch file. Store its base content as read through the CLI, full proposed content, and a revision ID. Render the diff deterministically from those contents; do not ask the LLM to produce the displayed diff separately.
 
 The proposal follows the streams retention rule: preserve what a new human or agent needs to resume or understand intent. Replace stale state instead of appending a chronology. Include frontmatter changes, session registration, and date changes in the visible diff.
 
@@ -263,12 +265,12 @@ Do not edit reference notes or stream-local artifacts as a hidden part of a chec
 ### Apply
 
 1. The user selects Apply for the displayed draft revision. Freeze that revision and disable duplicate application.
-2. Reread the target scratch file and compare it with the draft's base. If it changed, do not overwrite it. Show the conflict and let the side agent propose a new draft against the latest content, requiring new approval.
-3. Preview the exact candidate with `streams update --dry-run --if-match <base-sha256> <canonical-slug> --json`, sending the complete Markdown on stdin. This validates against the canonical schema without writing; a changed base rejects the preview.
+2. Reread the note with `streams read <canonical-slug> --hash` and compare it with the draft's base. If it changed, do not overwrite it. Show the conflict and let the side agent propose a new draft against the latest content, requiring new approval.
+3. Preview the exact candidate with `streams update --dry-run --if-match <base-sha256> <canonical-slug> --json`, using the hash from step 2, sending the complete Markdown on stdin. This validates against the canonical schema without writing; a changed base rejects the preview.
 4. Send the same approved bytes to `streams update --if-match <base-sha256> <canonical-slug> --json`. The CLI validates before replacing the file and rejects a changed base. Validation checks format, not the truth of the AI's claims.
 5. If shared `cmux.enabled` is `true`, run `streams cmux update -c <canonical-slug>` to project the validated scratch onto the current workspace. Otherwise make no CMUX call.
 6. Update the session binding if its canonical stream identity changed. Do not defer a new stream's initial binding until this step.
-7. Add a main-chat receipt with the stream slug, scratch filename, a short summary of the applied changes, CMUX outcome (`updated`, `disabled` or `failed`) and the checkpoint discussion. Keep raw diagnostic output outside model context. Do not trigger a main-agent response; if the main agent is streaming, Pi may defer receipt delivery until the turn ends.
+7. Add a main-chat receipt with the stream slug, a short summary of the applied changes, CMUX outcome (`updated`, `disabled` or `failed`) and the checkpoint discussion. Keep raw diagnostic output outside model context. Do not trigger a main-agent response; if the main agent is streaming, Pi may defer receipt delivery until the turn ends.
 8. Mark this checkpoint complete and close the panel. It is no longer resumable as unfinished work. The next `/checkpoint` starts a new side conversation using the updated scratch and current main context.
 
 A new model response, stream switch, context refresh, or edited target must not cause Apply to write an unseen revision. Applying one snapshot does not claim to cover later main-session work.
@@ -358,15 +360,15 @@ Choosing ends the run without starting a checkpoint, and posts a receipt saying 
 
 ### `stream_read`
 
-The main agent reads stream notes with `stream_read` instead of `read`, so it gets no path-access prompt. The tool is read-only and can read only paths returned by `streams show --json`.
+The main agent reads stream notes with `stream_read` instead of `read`, so it gets no path-access prompt. The tool is read-only, reads notes with `streams read`, and never shows a note path.
 
 | Parameter | Meaning |
 | --- | --- |
-| `stream` | Slug, path or title, resolved by `streams show`. Defaults to this session's binding. |
+| `stream` | Slug or title, resolved by `streams show`. Defaults to this session's binding. |
 | `offset`, `limit` | 1-based line paging, matching `read` |
 | `draft` | When `true`, read this session's saved pending draft for the stream instead of the note. Defaults to `false`. |
 
-The result starts with the stream's slug, path, title, status, state and `updated` date, followed by the selected lines. Truncation and continuation notices match `read`. A bound stream must still resolve to its bound path. Without a binding or `stream`, the tool returns an error that suggests passing `stream` or running `streams list`. It does not list streams itself. With `draft`, the metadata still comes from the applied note, and the result names the draft revision. If there is no pending draft, it returns an error.
+The result starts with the stream's slug, title, status, state and `updated` date, followed by the selected lines. Truncation and continuation notices match `read`. A bound stream that was renamed or removed is an error. An invalid note is still shown: the result names its problems and the `streams update --if-match` command that replaces it, in place of the metadata. Without a binding or `stream`, the tool returns an error that suggests passing `stream` or running `streams list`. It does not list streams itself. With `draft`, the metadata still comes from the applied note, and the result names the draft revision. If there is no pending draft, it returns an error.
 
 ## Technical direction
 
@@ -402,7 +404,7 @@ Keep deterministic selection, proposal state, and diff generation separate from 
 ```typescript
 interface CheckpointDraft {
     revision: number;
-    targetPath: string;
+    slug: string;
     baseContent: string;
     proposedContent: string;
 }
@@ -417,6 +419,7 @@ Existing runtime contracts:
 ```sh
 streams list --json
 streams show "Parser ownership cleanup" --json
+streams read parser-ownership-cleanup --hash
 streams format
 streams start "Parser ownership cleanup" --json
 streams update --dry-run --if-match <base-sha256> parser-ownership-cleanup --json < proposed.md
@@ -424,7 +427,7 @@ streams update --if-match <base-sha256> parser-ownership-cleanup --json < propos
 streams cmux update -c parser-ownership-cleanup
 ```
 
-Execute CLI commands with separate arguments. Load the scratch body from the returned path: `streams show --json` returns metadata, not the markdown body.
+Execute CLI commands with separate arguments. `streams show --json` returns metadata; `streams read --hash` returns the note's hash on the first line, then its exact text.
 
 Existing CLI test target:
 
@@ -482,7 +485,7 @@ Tests must use temporary scratch files and mocked CLI, model, and CMUX boundarie
 | Chat and Review tabs | Switching tabs preserves chat input, unfinished comments and scroll position |
 | Minimized panel | Escape and Alt+P do not stop the side agent; main-session submissions run normally |
 | Refresh succeeds | Preserve feedback and draft; show informational status rather than “Needs attention” |
-| Apply | Write exactly the approved revision, validate, update binding if needed, post slug/path/change-summary receipt without triggering the main agent, and close |
+| Apply | Write exactly the approved revision, validate, update binding if needed, post slug/change-summary receipt without triggering the main agent, and close |
 | Invocation after Apply | Start a fresh checkpoint chat with current main context and updated scratch |
 | Apply fails | Keep the panel and draft available; distinguish rejected validation, a stale base, a failed write, and uncertain post-write confirmation |
 | Concurrent scratch edit | Reject the stale proposal and require approval of a revised diff |

@@ -6,7 +6,6 @@ export type ReviewLine =
 	| { kind: "added"; text: string; newLine: number };
 
 export interface AnnotationAnchor {
-	path: string;
 	revision: number;
 	side: "original" | "proposed";
 	line: number;
@@ -58,15 +57,15 @@ export function anchorAnnotation(draft: Draft, selected: ReviewLine): Annotation
 	const section = source.slice(0, line).reverse().find((text) => /^#{1,6}\s/.test(text)) ?? "(frontmatter or document start)";
 	const start = Math.max(0, line - 3);
 	const excerpt = source.slice(start, line + 2).map((text, index) => `${start + index + 1}: ${text}`).join("\n");
-	return { path: draft.path, revision: draft.revision, side, line, section, excerpt };
+	return { revision: draft.revision, side, line, section, excerpt };
 }
 
 export function sameAnchor(a: AnnotationAnchor, b: AnnotationAnchor): boolean {
-	return a.path === b.path && a.revision === b.revision && a.side === b.side && a.line === b.line;
+	return a.revision === b.revision && a.side === b.side && a.line === b.line;
 }
 
 export function annotationContext(annotation: Annotation): string {
-	return `Draft ${annotation.revision} · ${annotation.path} · ${annotation.side} line ${annotation.line}\nSection: ${annotation.section}\n${annotation.excerpt}\nComment: ${annotation.comment}`;
+	return `Draft ${annotation.revision} · ${annotation.side} line ${annotation.line}\nSection: ${annotation.section}\n${annotation.excerpt}\nComment: ${annotation.comment}`;
 }
 
 /** The model receives the full evidence; only the transcript presentation collapses it. */

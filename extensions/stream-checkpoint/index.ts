@@ -193,7 +193,7 @@ export default function registerCheckpoint(pi: ExtensionAPI, testDeps: { agentDi
 			}
 			if (run.select) {
 				reported = true;
-				pi.sendMessage(streamChosenReceipt({ slug: stream.slug, path: stream.path, created }), { triggerTurn: false });
+				pi.sendMessage(streamChosenReceipt({ slug: stream.slug, created }), { triggerTurn: false });
 				return;
 			}
 			const model = configuredModel(ctx, config.drafterModel, "drafter");
@@ -228,7 +228,7 @@ export default function registerCheckpoint(pi: ExtensionAPI, testDeps: { agentDi
 						run.finalized = true;
 						mark({ label: "Applied", slug: selected.slug, closed: true });
 						const discussion = discussionText(conversation.state.messages) || undefined;
-						pi.sendMessage(checkpointReceipt({ slug: selected.slug, path: selected.path, summary, cmux, warning, commands: cli.diagnostics, discussion }), { triggerTurn: false });
+						pi.sendMessage(checkpointReceipt({ slug: selected.slug, summary, cmux, warning, commands: cli.diagnostics, discussion }), { triggerTurn: false });
 					}
 					run.dismiss?.();
 				},
@@ -248,7 +248,7 @@ export default function registerCheckpoint(pi: ExtensionAPI, testDeps: { agentDi
 					clear: () => {
 						conversation.clear(); run.finalized = true;
 						if (conversation.state.messages.some((message) => message.role === "user")) {
-							pi.sendMessage(clearedReceipt({ slug: selected.slug, path: selected.path, discussion: discussionText(conversation.state.messages) }), { triggerTurn: false });
+							pi.sendMessage(clearedReceipt({ slug: selected.slug, discussion: discussionText(conversation.state.messages) }), { triggerTurn: false });
 						}
 						mark({ label: "Cleared", slug: selected.slug, closed: true });
 						done();
@@ -341,7 +341,7 @@ export default function registerCheckpoint(pi: ExtensionAPI, testDeps: { agentDi
 				"select_stream returns at once and the user may choose later; do not wait for it. Call checkpoint only after a receipt confirms the binding.",
 			],
 			parameters: Type.Object({
-				stream: Type.Optional(Type.String({ description: "Recommended stream: an existing stream's slug, path or title, or a short title for a new stream. Omit to let the chooser suggest streams." })),
+				stream: Type.Optional(Type.String({ description: "Recommended stream: an existing stream's slug or title, or a short title for a new stream. Omit to let the chooser suggest streams." })),
 				reason: Type.Optional(Type.String({ description: "One sentence on why the recommended stream fits, shown beside it in the chooser." })),
 			}),
 			executionMode: "sequential",

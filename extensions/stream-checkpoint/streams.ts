@@ -2,6 +2,8 @@ import { spawn } from "node:child_process";
 
 type Stream = { slug: string; title: string; status: string; state: string; path: string; [key: string]: unknown };
 type UpdateResult = { slug: string; path: string; updated: boolean; findings: unknown[] };
+/** A note exactly as stored. `sha256` is the CLI's hash, for `update --if-match`; `findings` is set when the note is invalid. */
+export type Note = { content: string; sha256: string; findings?: string };
 type CommandResult = { code: number | null; stdout: string; stderr: string };
 type Runner = (args: string[], input?: string) => Promise<CommandResult>;
 export type CommandDiagnostic = CommandResult & { args: string[]; warnings?: string[] };
@@ -45,12 +47,15 @@ export class StreamCli {
 	private readonly runner: Runner;
 	constructor(cwd: string, runner?: Runner, private warning?: (text: string) => void) { this.runner = runner ?? defaultRunner(cwd); }
 
-	/** `okCodes` lists the exit codes that still mean success, such as `list` exiting 1 to report invalid notes. */
-	private async run(args: string[], input?: string, okCodes = [0]): Promise<string> {
+	/**
+	 * Run a command, throwing unless it exits with one of `okCodes`, such as `list` exiting 1 to report invalid notes.
+	 * `noteOutput` keeps note text out of the diagnostics, which receipts carry, as stdin already is.
+	 */
+	private async exec(args: string[], { input, okCodes = [0], noteOutput = false }: { input?: string; okCodes?: number[]; noteOutput?: boolean } = {}): Promise<CommandResult> {
 		let result: CommandResult;
 		try { result = await this.runner(args, input); }
 		catch (error) { result = { code: null, stdout: "", stderr: String(error) }; }
-		this.diagnostics.push({ args: [...args], code: result.code, stdout: bounded(result.stdout), stderr: bounded(result.stderr) });
+		this.diagnostics.push({ args: [...args], code: result.code, stdout: noteOutput ? "[note text omitted]" : bounded(result.stdout), stderr: bounded(result.stderr) });
 		if (this.diagnostics.length > 16) this.diagnostics.shift();
 		if (result.code === null || !okCodes.includes(result.code)) {
 			const error = jsonError(result.stdout);
@@ -58,6 +63,11 @@ export class StreamCli {
 			const candidates = Array.isArray(error?.candidates) ? error.candidates.filter((item): item is string => typeof item === "string") : [];
 			throw new StreamsCliError(`streams ${args[0]} (exit ${result.code ?? "unavailable"}): ${bounded(detail)}`, error?.kind, candidates);
 		}
+		return result;
+	}
+
+	private async run(args: string[], input?: string, okCodes?: number[]): Promise<string> {
+		const result = await this.exec(args, { input, okCodes });
 		if (result.stderr.trim()) this.warning?.(bounded(result.stderr.trim()));
 		return result.stdout;
 	}
@@ -82,6 +92,15 @@ export class StreamCli {
 		return value;
 	}
 
+	/** Read a note through the CLI, even an invalid one, which only its exact slug reaches. */
+	async read(ref: string): Promise<Note> {
+		const result = await this.exec(["read", ref, "--hash"], { okCodes: [0, 1], noteOutput: true });
+		const sha256 = result.stdout.slice(0, 64);
+		if (!/^[0-9a-f]{64}$/.test(sha256) || result.stdout[64] !== "\n") throw new Error("Invalid streams read response");
+		const findings = result.code === 1 ? bounded(result.stderr.trim()) || "The note is invalid" : undefined;
+		return { content: result.stdout.slice(65), sha256, ...(findings ? { findings } : {}) };
+	}
+
 	async previewStart(title: string): Promise<Stream> {
 		const value = JSON.parse(await this.run(["start", title, "--dry-run", "--json"]));
 		if (!isStream(value)) throw new Error("Invalid streams start preview response");
@@ -103,7 +122,7 @@ export class StreamCli {
 		if (typeof value?.slug !== "string" || typeof value.path !== "string" || typeof value.updated !== "boolean" || !Array.isArray(value.findings)) {
 			throw new Error("Invalid streams update response");
 		}
-		const warnings = value.findings.filter((finding: { level?: string; message?: string }) => finding?.level === "warning" && typeof finding.message === "string").slice(0, 16).map((finding: { message: string }) => bounded(finding.message));
+		const warnings = value.findings.filter((finding: { level?: string; message?: string }) => finding?.level === "warn" && typeof finding.message === "string").slice(0, 16).map((finding: { message: string }) => bounded(finding.message));
 		this.diagnostics.at(-1)!.warnings = warnings;
 		for (const warning of warnings) this.warning?.(warning);
 		return value;

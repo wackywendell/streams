@@ -2,7 +2,7 @@ import { existsSync, mkdirSync, readFileSync, renameSync, unlinkSync, writeFileS
 import { dirname, join } from "node:path";
 import { createHash, randomUUID } from "node:crypto";
 import type { KeyId } from "@earendil-works/pi-tui";
-import type { StreamCli } from "./streams.ts";
+import type { Note, StreamCli } from "./streams.ts";
 import type { Annotation, AnnotationEditor, Feedback } from "./review.ts";
 import { isSeq, parseDocument } from "yaml";
 
@@ -11,11 +11,11 @@ export const BINDING_TYPE = "stream-checkpoint-binding";
 export interface Binding {
 	ownerId: string;
 	slug: string;
+	/** The note's path when bound, compared only to notice a renamed stream; Pi reads notes through the CLI. */
 	path: string;
 }
 
 export interface Draft {
-	path: string;
 	slug: string;
 	revision: number;
 	baseContent: string;
@@ -146,11 +146,10 @@ export function clearPending(agentDir: string, ownerId: string, slug: string): v
 	if (existsSync(path)) unlinkSync(path);
 }
 
-export function stageDraft(pending: Pending, binding: Binding, content: string, summary: string): Draft {
+/** `baseContent` is the note as read through the CLI when the draft was proposed. */
+export function stageDraft(pending: Pending, binding: Binding, content: string, summary: string, baseContent: string): Draft {
 	if (pending.ownerId !== binding.ownerId || pending.slug !== binding.slug) throw new Error("Checkpoint does not belong to this session and stream");
-	const baseContent = readFileSync(binding.path, "utf8");
 	const draft: Draft = {
-		path: binding.path,
 		slug: binding.slug,
 		revision: (pending.draft?.revision ?? 0) + 1,
 		baseContent,
@@ -162,25 +161,28 @@ export function stageDraft(pending: Pending, binding: Binding, content: string, 
 }
 
 export interface ApplyDependencies {
-	update(slug: string, content: string, options: { dryRun?: boolean; ifMatch: string }): Promise<{ path: string; updated: boolean }>;
+	read(slug: string): Promise<Note>;
+	update(slug: string, content: string, options: { dryRun?: boolean; ifMatch: string }): Promise<{ slug: string; updated: boolean }>;
 	project?(): Promise<void>;
 }
 
-/** Apply only the UI-approved revision; the CLI owns validation and writing. */
+/**
+ * Apply only the UI-approved revision; the CLI owns reading, hashing, validation and writing.
+ * `--if-match` with the hash of the note as drafted makes the CLI refuse a write over newer changes.
+ */
 export async function applyDraft(draft: Draft, approvedRevision: number, deps: ApplyDependencies): Promise<{ written: true; validationError?: string; projectionWarning?: string }> {
 	if (draft.revision !== approvedRevision) throw new Error("Draft revision differs from the approved revision");
-	const current = readFileSync(draft.path, "utf8");
-	if (current === draft.proposedContent) throw new Error("Draft already applied; do not repeat the write");
-	if (current !== draft.baseContent) throw new Error("Scratch changed since this draft was proposed");
-	const ifMatch = createHash("sha256").update(draft.baseContent).digest("hex");
+	const current = await deps.read(draft.slug);
+	if (current.content === draft.proposedContent) throw new Error("Draft already applied; do not repeat the write");
+	if (current.content !== draft.baseContent) throw new Error("Scratch changed since this draft was proposed");
+	const ifMatch = current.sha256;
 	const preview = await deps.update(draft.slug, draft.proposedContent, { dryRun: true, ifMatch });
-	if (preview.path !== draft.path || preview.updated) throw new Error("Dry-run did not confirm the draft target");
-	if (readFileSync(draft.path, "utf8") !== draft.baseContent) throw new Error("Scratch changed since this draft was proposed");
+	if (preview.slug !== draft.slug || preview.updated) throw new Error("Dry-run did not confirm the draft target");
 	try {
 		const applied = await deps.update(draft.slug, draft.proposedContent, { ifMatch });
-		if (applied.path !== draft.path || !applied.updated) throw new Error("CLI did not confirm the update");
+		if (applied.slug !== draft.slug || !applied.updated) throw new Error("CLI did not confirm the update");
 	} catch (error) {
-		if (readFileSync(draft.path, "utf8") === draft.proposedContent) {
+		if ((await deps.read(draft.slug).catch(() => undefined))?.content === draft.proposedContent) {
 			return { written: true, validationError: `Update confirmation failed: ${String(error)}` };
 		}
 		throw error;

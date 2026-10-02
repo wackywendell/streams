@@ -1,5 +1,6 @@
 import assert from "node:assert/strict";
-import { chmodSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { spawn, spawnSync } from "node:child_process";
+import { chmodSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { createHash } from "node:crypto";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
@@ -41,7 +42,10 @@ function panelFixture(overrides = {}) {
 	return { panel, state, events };
 }
 
-const sampleDraft = { path: "/scratch/service.md", slug: "service", revision: 2, baseContent: "# Jobs\nold\n", proposedContent: "# Jobs\nnew\n" };
+/** A fake `streams read` for tests whose notes are real files. */
+const readFrom = (path) => async () => { const content = readFileSync(path, "utf8"); return { content, sha256: createHash("sha256").update(content).digest("hex") }; };
+
+const sampleDraft = { slug: "service", revision: 2, baseContent: "# Jobs\nold\n", proposedContent: "# Jobs\nnew\n" };
 
 test("review batches inline comments without sending and retains a separate chat composer", () => {
 	const { panel, state, events } = panelFixture({ draft: sampleDraft, input: "Overall feedback" });
@@ -198,7 +202,7 @@ async function conversationFixture() {
 	};
 	const pending = { version: 1, ownerId: manager.getSessionId(), slug: "service", messages: [], input: "unsent" };
 	const { CheckpointConversation } = await jiti.import(new URL("../extensions/stream-checkpoint/conversation.ts", import.meta.url).pathname);
-	const conversation = new CheckpointConversation({ pending, binding: { ownerId: pending.ownerId, slug: pending.slug, path }, agentDir: dir, cwd: dir, manager, runtime, model, thinkingLevel: "off", systemPrompt: "Test checkpoint instructions", cli: { config: async () => ({ cmux: { enabled: false } }), update: async (_slug, content, options) => { if (!options.dryRun) writeFileSync(path, content); return { path, updated: !options.dryRun }; } }, changed() {}, applied() {} });
+	const conversation = new CheckpointConversation({ pending, binding: { ownerId: pending.ownerId, slug: pending.slug, path }, agentDir: dir, cwd: dir, manager, runtime, model, thinkingLevel: "off", systemPrompt: "Test checkpoint instructions", cli: { read: readFrom(path), config: async () => ({ cmux: { enabled: false } }), update: async (_slug, content, options) => { if (!options.dryRun) writeFileSync(path, content); return { slug: pending.slug, path, updated: !options.dryRun }; } }, changed() {}, applied() {} });
 	return { conversation, pending, contexts, path, dir, manager, finish: (...args) => finish(...args), async dispose() { await conversation.dispose(); rmSync(dir, { recursive: true, force: true }); } };
 }
 
@@ -206,8 +210,8 @@ test("conversation sends full annotation evidence but displays feedback immediat
 	const f = await conversationFixture();
 	try {
 		await f.conversation.start();
-		const annotation = { path: f.path, revision: 2, side: "proposed", line: 4, section: "# Jobs", excerpt: "4: same text", comment: "Explain the retry limit" };
-		f.conversation.state.draft = { ...sampleDraft, path: f.path };
+		const annotation = { revision: 2, side: "proposed", line: 4, section: "# Jobs", excerpt: "4: same text", comment: "Explain the retry limit" };
+		f.conversation.state.draft = { ...sampleDraft };
 		f.conversation.state.annotations = [annotation];
 		f.conversation.state.input = "Overall feedback";
 		const sending = f.conversation.send();
@@ -284,7 +288,7 @@ test("command instructions never overwrite saved input or pending annotations", 
 		assert.match(f.conversation.state.notice.text, /unsent feedback.*not sent/i);
 		await f.conversation.send("Do not replace the composer");
 		assert.equal(f.conversation.state.input, "unsent");
-		const annotation = { path: f.path, revision: 1, side: "proposed", line: 1, section: "", excerpt: "1: old", comment: "Keep this" };
+		const annotation = { revision: 1, side: "proposed", line: 1, section: "", excerpt: "1: old", comment: "Keep this" };
 		f.conversation.state.input = "";
 		f.conversation.state.annotations = [annotation];
 		await f.conversation.send("Do not send this batch");
@@ -302,7 +306,7 @@ test("initialization failure preserves command instructions as unsent input", as
 	const f = await conversationFixture();
 	try {
 		f.pending.input = f.conversation.state.input = "";
-		f.conversation.options.binding.path = join(f.dir, "missing.md");
+		f.conversation.options.cli.read = async () => { throw new Error("No stream service"); };
 		await f.conversation.start("let's park this");
 		assert.equal(f.contexts.length, 0);
 		assert.equal(f.conversation.state.notice.level, "error");
@@ -344,7 +348,7 @@ for (const selection of ["bound", "chooser", "explicit"]) {
 			};
 			registerCheckpoint({ registerTool() {}, registerEntryRenderer() {}, registerMessageRenderer() {}, registerCommand: (_name, options) => { command = options.handler; }, registerShortcut() {}, on: (_event, handler) => { shutdown = handler; }, appendEntry: (type, data) => f.manager.appendCustomEntry(type, data) }, {
 				agentDir: f.dir, runtime: f.conversation.options.runtime, skill: "Test skill",
-				cli: { config: async () => ({ cmux: { enabled: false } }), list: async () => { lists++; return [stream]; }, show: async (ref) => { shown.push(ref); return stream; }, format: async () => "format" },
+				cli: { read: readFrom(f.path), config: async () => ({ cmux: { enabled: false } }), list: async () => { lists++; return [stream]; }, show: async (ref) => { shown.push(ref); return stream; }, format: async () => "format" },
 			});
 			await command("--stream", ctx);
 			assert.match(notifications.pop(), /Usage: \/checkpoint/);
@@ -547,7 +551,7 @@ test("select_stream offers the agent's recommendation and reports the user's cho
 		h.chooser.handleInput("\r");
 		await until(() => h.receipts.length === 1);
 		assert.equal(binding(), "other");
-		assert.match(h.receipts[0].content, /^The user chose other \(\/unused\/other\.md\)\. This session is now bound to it/);
+		assert.match(h.receipts[0].content, /^The user chose other\. This session is now bound to it/);
 		const theme = { fg: (_color, text) => text, bg: (_color, text) => text };
 		assert.match(renderCheckpointReceipt({ ...h.receipts[0], role: "custom", timestamp: 0 }, { expanded: false, outputPad: 1 }, theme).render(80).join("\n"), /Stream · other · Bound/);
 		assert.ok(h.manager.getEntries().every((entry) => entry.customType !== "checkpoint-start"), "Choosing a stream starts no checkpoint");
@@ -633,7 +637,8 @@ test("checkpoint command releases main input, preserves work on stream switches 
 			},
 		};
 		registerCheckpoint({ registerTool() {}, registerEntryRenderer() {}, registerMessageRenderer() {}, registerCommand: (_name, options) => { command = options.handler; }, registerShortcut: (_key, options) => { shortcut = options.handler; }, on: (_event, handler) => { shutdown = handler; }, appendEntry: (type, data) => f.manager.appendCustomEntry(type, data) }, {
-			agentDir: f.dir, runtime: f.conversation.options.runtime, skill: "Test skill", cli: { config: async () => ({ cmux: { enabled: false } }), list: async () => streams, show: async (ref) => streams.find((stream) => stream.slug === ref), format: async () => "format" },
+			agentDir: f.dir, runtime: f.conversation.options.runtime, skill: "Test skill", cli: { config: async () => ({ cmux: { enabled: false } }), list: async () => streams, show: async (ref) => streams.find((stream) => stream.slug === ref), format: async () => "format",
+				read: (slug) => readFrom(streams.find((stream) => stream.slug === slug).path)() },
 		});
 		let returned = false;
 		Promise.resolve(command("--stream service", ctx)).then(() => { returned = true; });
@@ -684,7 +689,7 @@ test("refresh without a draft succeeds without a review warning and preserves un
 	const f = await conversationFixture();
 	try {
 		await f.conversation.start();
-		f.conversation.state.annotationEditor = { anchor: { path: f.path, revision: 1, side: "original", line: 1, section: "# Jobs", excerpt: "1: old" }, text: "Unfinished comment" };
+		f.conversation.state.annotationEditor = { anchor: { revision: 1, side: "original", line: 1, section: "# Jobs", excerpt: "1: old" }, text: "Unfinished comment" };
 		f.conversation.persist();
 		await f.conversation.refreshContext();
 		assert.equal(f.conversation.state.activity, null);
@@ -713,7 +718,7 @@ test("stream_read reads the bound or named stream, its pending draft, and pages 
 		const shown = [];
 		const tools = [];
 		registerCheckpoint({ registerTool: (tool) => tools.push(tool), registerEntryRenderer() {}, registerMessageRenderer() {}, on() {}, registerCommand() {}, registerShortcut() {} },
-			{ agentDir: dir, cli: { show: async (ref) => { shown.push(ref); return stream; } } });
+			{ agentDir: dir, cli: { show: async (ref) => { shown.push(ref); return stream; }, read: readFrom(path) } });
 		const tool = tools.find((item) => item.name === "stream_read");
 		assert.equal(tool.annotations.readOnlyHint, true);
 		const manager = SessionManager.inMemory(dir);
@@ -724,7 +729,7 @@ test("stream_read reads the bound or named stream, its pending draft, and pages 
 
 		const named = await run({ stream: "Service" });
 		assert.deepEqual(shown, ["Service"]);
-		assert.match(named, new RegExp(`^Stream: service\nPath: ${path}\nTitle: Service\nStatus: active\nState: Doing work\nUpdated: 2026-01-02\n\n---\ntitle: Service`));
+		assert.match(named, new RegExp(`^Stream: service\nTitle: Service\nStatus: active\nState: Doing work\nUpdated: 2026-01-02\n\n---\ntitle: Service`));
 
 		manager.appendCustomEntry("stream-checkpoint-binding", { ownerId: manager.getSessionId(), slug: "service", path });
 		assert.match(await run({ offset: 4, limit: 1 }), /\n\n# Body\n\n\[2 more lines in file\. Use offset=5 to continue\.\]$/);
@@ -733,7 +738,7 @@ test("stream_read reads the bound or named stream, its pending draft, and pages 
 
 		await assert.rejects(run({ draft: true }), /No pending checkpoint draft for service/);
 		savePending(dir, { version: 1, ownerId: manager.getSessionId(), slug: "service", messages: [], input: "",
-			draft: { path, slug: "service", revision: 3, baseContent: "old", proposedContent: "---\ntitle: Service\n---\n# Drafted\n" } });
+			draft: { slug: "service", revision: 3, baseContent: "old", proposedContent: "---\ntitle: Service\n---\n# Drafted\n" } });
 		const drafted = await run({ draft: true });
 		assert.match(drafted, /Draft: revision 3, pending review and not applied/);
 		assert.match(drafted, /# Drafted/);
@@ -743,7 +748,7 @@ test("stream_read reads the bound or named stream, its pending draft, and pages 
 		assert.match(await run({}), /line 2000\n\n\[Showing lines 1-2000 of 2005\. Use offset=2001 to continue\.\]$/);
 
 		manager.appendCustomEntry("stream-checkpoint-binding", { ownerId: manager.getSessionId(), slug: "service", path: "/moved/service.md" });
-		await assert.rejects(run({}), /moved from \/moved\/service\.md/);
+		await assert.rejects(run({}), /Bound stream service was renamed or removed/);
 	} finally { rmSync(dir, { recursive: true, force: true }); }
 });
 
@@ -809,7 +814,7 @@ test("Apply fetches current CMUX config, runs projection after saving, and repor
 		try {
 			await f.conversation.start();
 			f.conversation.state.input = "";
-			f.conversation.state.draft = stageDraft(f.pending, f.conversation.options.binding, "approved content", "Updated handoff");
+			f.conversation.state.draft = stageDraft(f.pending, f.conversation.options.binding, "approved content", "Updated handoff", readFileSync(f.path, "utf8"));
 			let projected = 0, receipt;
 			f.conversation.options.cli.config = async () => { if (cmux === "bad-config") throw new Error("bad shared config"); return { cmux: { enabled: cmux !== "disabled" } }; };
 			f.conversation.options.cli.project = async (slug) => {
@@ -839,13 +844,13 @@ test("receipts share only the summary and keep expandable diagnostics outside mo
 	const { checkpointReceipt, renderCheckpointReceipt } = await jiti.import(new URL("../extensions/stream-checkpoint/receipt.ts", import.meta.url).pathname);
 	const theme = { fg: (_color, text) => text, bg: (_color, text) => text };
 	for (const cmux of ["updated", "disabled", "failed"]) {
-		const receipt = checkpointReceipt({ slug: "service", path: "/notes/service.md", summary: "Updated the next action", cmux,
+		const receipt = checkpointReceipt({ slug: "service", summary: "Updated the next action", cmux,
 			warning: cmux === "failed" ? "private diagnostic" : undefined,
 			commands: [{ args: ["cmux", "update", "-c", "service"], code: cmux === "failed" ? 2 : 0, stdout: "private stdout", stderr: "private stderr" }] });
 		const manager = SessionManager.inMemory(process.cwd());
 		manager.appendCustomMessageEntry(receipt.customType, receipt.content, true, receipt.details);
 		const context = JSON.stringify(convertToLlm(manager.buildSessionContext().messages));
-		assert.match(context, /service.md.*Updated the next action/);
+		assert.match(context, /^.*Checkpoint applied to service: Updated the next action/);
 		assert.match(context, new RegExp(`CMUX ${cmux}`));
 		assert.doesNotMatch(context, /private|streams cmux|exit/);
 		const message = { ...receipt, role: "custom", timestamp: Date.now() };
@@ -871,7 +876,7 @@ test("Apply refuses unsent feedback, then writes the reviewed draft and clears p
 	const f = await conversationFixture();
 	try {
 		await f.conversation.start();
-		const draft = stageDraft(f.pending, f.conversation.options.binding, "approved content", "Updated handoff");
+		const draft = stageDraft(f.pending, f.conversation.options.binding, "approved content", "Updated handoff", readFileSync(f.path, "utf8"));
 		f.conversation.state.draft = draft;
 		await f.conversation.apply();
 		assert.match(f.conversation.state.notice.text, /pending feedback/);
@@ -890,7 +895,7 @@ test("refresh keeps the original review snapshot when scratch changes externally
 	const f = await conversationFixture();
 	try {
 		await f.conversation.start();
-		const draft = stageDraft(f.pending, f.conversation.options.binding, "proposed", "Updated");
+		const draft = stageDraft(f.pending, f.conversation.options.binding, "proposed", "Updated", readFileSync(f.path, "utf8"));
 		f.conversation.state.draft = draft;
 		writeFileSync(f.path, "external change");
 		await f.conversation.refreshContext();
@@ -920,7 +925,7 @@ test("stopping and shutting down a running conversation preserves the accepted q
 
 test("annotations distinguish repeated lines, deletions, and immutable draft revisions", async () => {
 	const { reviewLines, anchorAnnotation, feedbackPrompt } = await jiti.import(new URL("../extensions/stream-checkpoint/review.ts", import.meta.url).pathname);
-	const draft = { path: "/scratch/service.md", revision: 2, baseContent: "# First\nsame\n# Second\nsame\nremoved\n", proposedContent: "# First\nsame\n# Second\nsame\nadded\n" };
+	const draft = { revision: 2, baseContent: "# First\nsame\n# Second\nsame\nremoved\n", proposedContent: "# First\nsame\n# Second\nsame\nadded\n" };
 	const lines = reviewLines(draft);
 	const first = anchorAnnotation(draft, lines[1]);
 	const second = anchorAnnotation(draft, lines[3]);
@@ -933,7 +938,7 @@ test("annotations distinguish repeated lines, deletions, and immutable draft rev
 	assert.match(deleted.excerpt, /4: same\n5: removed/);
 	const comments = [{ ...second, comment: "Clarify this occurrence" }, { ...deleted, comment: "Keep the exception" }];
 	const prompt = feedbackPrompt("Please revise", comments);
-	assert.match(prompt, /Draft 2.*\/scratch\/service.md/);
+	assert.match(prompt, /Draft 2 · proposed line 4\nSection: # Second/);
 	assert.match(prompt, /proposed line 4/);
 	assert.match(prompt, /original line 5/);
 	assert.match(prompt, /Clarify this occurrence/);
@@ -997,7 +1002,7 @@ test("wrapped review lines retain their document anchors and comments can be edi
 });
 
 test("sent annotations collapse in chat, expand on demand and never attach to a later draft", () => {
-	const annotation = { path: sampleDraft.path, revision: 2, side: "proposed", line: 2, section: "# Jobs", excerpt: "2: new", comment: "Unique annotation detail" };
+	const annotation = { revision: 2, side: "proposed", line: 2, section: "# Jobs", excerpt: "2: new", comment: "Unique annotation detail" };
 	const { panel, state } = panelFixture({ draft: sampleDraft, messages: [{ role: "user", text: "Please revise", annotations: [annotation] }] });
 	let view = panel.render(100).join("\n");
 	assert.match(view, /1 annotation · Draft 2/);
@@ -1310,6 +1315,7 @@ test("checkpoint creation and Apply use CLI config and emit a registered expanda
 				if (args[0] === "config") value = { notes: { root: f.dir }, obsidian: { vault: "Notes" }, cmux: { enabled: outcome !== "disabled" } };
 				else if (args[0] === "list") value = { streams: [], findings: [] };
 				else if (args[0] === "format") return { code: 0, stdout: "Test format", stderr: "" };
+				else if (args[0] === "read") { const note = await readFrom(f.path)(); return { code: 0, stdout: `${note.sha256}\n${note.content}`, stderr: "" }; }
 				else if (args[0] === "update") {
 					if (!args.includes("--dry-run")) writeFileSync(f.path, input);
 					value = { slug: stream.slug, path: stream.path, updated: !args.includes("--dry-run"), findings: [] };
@@ -1338,7 +1344,7 @@ test("checkpoint creation and Apply use CLI config and emit a registered expanda
 			await until(() => !!panel && panel.state.activity === null);
 			assert.equal(calls.filter((args) => args[0] === "cmux").length, outcome === "disabled" ? 0 : 1);
 			panel.state.input = "";
-			panel.state.draft = { ...sampleDraft, slug: "service", path: f.path, baseContent: "scratch unchanged", proposedContent: "approved", summary: "Updated handoff" };
+			panel.state.draft = { ...sampleDraft, slug: "service", baseContent: "scratch unchanged", proposedContent: "approved", summary: "Updated handoff" };
 			panel.handleInput("\x07");
 			await until(() => dismissed);
 			assert.equal(readFileSync(f.path, "utf8"), "approved");
@@ -1368,7 +1374,7 @@ for (const ending of ["apply", "clear", "clear without user input"]) {
 				on: (_event, handler) => { shutdown = handler; }, appendEntry: (type, data) => f.manager.appendCustomEntry(type, data),
 				sendMessage: (receipt, options) => { receipts.push(receipt); assert.equal(options.triggerTurn, false); },
 			}, { agentDir: f.dir, runtime: f.conversation.options.runtime, skill: "Test skill",
-				cli: { config: async () => ({ cmux: { enabled: false } }), list: async () => [stream], show: async () => stream, format: async () => "format", diagnostics: [],
+				cli: { read: readFrom(f.path), config: async () => ({ cmux: { enabled: false } }), list: async () => [stream], show: async () => stream, format: async () => "format", diagnostics: [],
 					update: async (_slug, content, options) => { if (!options.dryRun) writeFileSync(f.path, content); return { slug: stream.slug, path: f.path, updated: !options.dryRun, findings: [] }; } } });
 			const ctx = { mode: "tui", hasUI: true, cwd: f.dir, model: f.conversation.options.model, thinkingLevel: "off", sessionManager: f.manager, getSystemPrompt: () => "Test",
 				modelRegistry: { getRegisteredProviderConfig() {}, getRegisteredNativeProvider() {} },
@@ -1390,7 +1396,7 @@ for (const ending of ["apply", "clear", "clear without user input"]) {
 				await until(() => panel.state.activity === null);
 			}
 			if (ending === "apply") {
-				panel.state.draft = { ...sampleDraft, slug: "service", path: f.path, baseContent: "scratch unchanged", proposedContent: "approved", summary: "Updated handoff" };
+				panel.state.draft = { ...sampleDraft, slug: "service", baseContent: "scratch unchanged", proposedContent: "approved", summary: "Updated handoff" };
 				panel.handleInput("\x07");
 			} else { panel.handleInput("\x1bc"); panel.handleInput("y"); }
 			await until(() => dismissed);
@@ -1402,7 +1408,7 @@ for (const ending of ["apply", "clear", "clear without user input"]) {
 			} else if (ending === "clear") {
 				assert.equal(receipts.length, 1);
 				assert.equal(receipts[0].details.outcome, "cleared");
-				assert.match(receipts[0].content, /^Checkpoint for service .* was discussed but not applied/);
+				assert.match(receipts[0].content, /^Checkpoint for service was discussed but not applied/);
 				assert.ok(receipts[0].content.endsWith(`\n\n${discussion}`));
 			} else assert.equal(receipts.length, 0, "A kickoff-only discussion has nothing for the main agent");
 			assert.doesNotMatch(JSON.stringify(receipts), /Draft a handoff|approved/);
@@ -1419,7 +1425,7 @@ test("checkpoint tool starts hidden agent checkpoints of the bound stream and re
 		const receipts = [], components = [], handle = [];
 		const tools = new Map();
 		let panel, dismissed = false;
-		const cli = { config: async () => ({ cmux: { enabled: false } }), list: async () => Object.values(streams), format: async () => "format", diagnostics: [],
+		const cli = { read: readFrom(f.path), config: async () => ({ cmux: { enabled: false } }), list: async () => Object.values(streams), format: async () => "format", diagnostics: [],
 			show: async (ref) => streams[ref] ?? assert.fail(`unknown stream ${ref}`),
 			update: async (_slug, content, options) => { if (!options.dryRun) writeFileSync(f.path, content); return { slug: "service", path: f.path, updated: !options.dryRun, findings: [] }; } };
 		const api = { registerTool: (tool) => tools.set(tool.name, tool), registerCommand() {}, registerShortcut() {}, registerEntryRenderer() {}, registerMessageRenderer() {},
@@ -1478,7 +1484,7 @@ test("checkpoint tool starts hidden agent checkpoints of the bound stream and re
 		assert.deepEqual(await call({ instructions: "More" }, "call-5"), { status: "already-open", slug: "service", instructionsSent: false });
 		panel.state.input = "";
 
-		panel.state.draft = { ...sampleDraft, slug: "service", path: f.path, baseContent: "scratch unchanged", proposedContent: "approved", summary: "Updated handoff" };
+		panel.state.draft = { ...sampleDraft, slug: "service", baseContent: "scratch unchanged", proposedContent: "approved", summary: "Updated handoff" };
 		panel.handleInput("\x07");
 		await until(() => dismissed);
 		assert.match(receipts[0].content, /Main agent: Record the retry decision\n\nCheckpoint agent: Recorded\n\nMain agent: Also note the limit\n\nCheckpoint agent: Noted$/);
@@ -1490,7 +1496,7 @@ test("checkpoint tool starts hidden agent checkpoints of the bound stream and re
 
 test("discussion text keeps user words and anchored comments, dropping oldest agent replies first", async () => {
 	const { discussionText, clearedReceipt, renderCheckpointReceipt } = await jiti.import(new URL("../extensions/stream-checkpoint/receipt.ts", import.meta.url).pathname);
-	const annotation = { path: "/notes/service.md", revision: 2, side: "proposed", line: 4, section: "# Jobs", excerpt: "4: retry twice", comment: "Say why" };
+	const annotation = { revision: 2, side: "proposed", line: 4, section: "# Jobs", excerpt: "4: retry twice", comment: "Say why" };
 	const messages = [
 		{ role: "assistant", text: "a".repeat(40) },
 		{ role: "user", text: "first question" },
@@ -1500,17 +1506,17 @@ test("discussion text keeps user words and anchored comments, dropping oldest ag
 	];
 	const full = discussionText(messages);
 	assert.match(full, /^Checkpoint agent: a+\n\nUser: first question\n\n/);
-	assert.match(full, /User: See comment\n\nDraft 2 · \/notes\/service.md · proposed line 4\nSection: # Jobs\n4: retry twice\nComment: Say why/);
+	assert.match(full, /User: See comment\n\nDraft 2 · proposed line 4\nSection: # Jobs\n4: retry twice\nComment: Say why/);
 	const fitted = discussionText(messages, full.length - 30);
 	assert.match(fitted, /^\[1 earlier message omitted\]\n\nUser: first question\n\nCheckpoint agent: b+/);
-	const userOnly = discussionText(messages, 180);
+	const userOnly = discussionText(messages, 160);
 	assert.match(userOnly, /^\[3 earlier messages omitted\]\n\nUser: first question\n\nUser: See comment/);
 	assert.doesNotMatch(userOnly, /Checkpoint agent/);
 	const tiny = discussionText([{ role: "user", text: "x".repeat(100) }], 20);
 	assert.equal(tiny, `User: ${"x".repeat(14)}\n[truncated]`);
 	assert.equal(discussionText([]), "");
 
-	const receipt = clearedReceipt({ slug: "service", path: "/notes/service.md", discussion: full });
+	const receipt = clearedReceipt({ slug: "service", discussion: full });
 	const theme = { fg: (_color, text) => text, bg: (_color, text) => text };
 	const message = { ...receipt, role: "custom", timestamp: Date.now() };
 	const collapsed = renderCheckpointReceipt(message, { expanded: false, outputPad: 1 }, theme).render(80).join("\n");
@@ -1568,10 +1574,72 @@ test("CLI diagnostics retain bounded output and exit status but never stdin", as
 	assert.ok(large.diagnostics.length <= 20);
 	assert.ok(large.diagnostics[0].stdout.length < 5000);
 	assert.match(large.diagnostics[0].stdout, /truncated/);
-	const update = new StreamCli("/repo", async () => ({ code: 0, stdout: JSON.stringify({ slug: "example", path: "/notes/example.md", updated: true, findings: [{ level: "warning", slug: "example", message: "missing next action" }] }), stderr: "" }), (text) => warnings.push(text));
+	const update = new StreamCli("/repo", async () => ({ code: 0, stdout: JSON.stringify({ slug: "example", path: "/notes/example.md", updated: true, findings: [{ level: "warn", slug: "example", message: "missing next action" }] }), stderr: "" }), (text) => warnings.push(text));
 	await update.update("example", "PRIVATE MARKDOWN DO NOT RECORD");
 	assert.doesNotMatch(JSON.stringify(update.diagnostics), /PRIVATE MARKDOWN/);
 	assert.ok(warnings.includes("missing next action"));
+	const read = new StreamCli("/repo", async () => ({ code: 0, stdout: `${"a".repeat(64)}\nPRIVATE NOTE`, stderr: "" }));
+	assert.deepEqual(await read.read("example"), { content: "PRIVATE NOTE", sha256: "a".repeat(64) });
+	assert.doesNotMatch(JSON.stringify(read.diagnostics), /PRIVATE NOTE/);
+});
+
+test("StreamCli agrees with the real streams CLI on its JSON, read and error contracts", async () => {
+	const dir = mkdtempSync(join(tmpdir(), "streams-contract-"));
+	try {
+		const root = join(dir, "notes");
+		mkdirSync(join(dir, "config", "streams"), { recursive: true });
+		writeFileSync(join(dir, "config", "streams", "config.json"), JSON.stringify({ notes: { root } }));
+		const project = fileURLToPath(new URL("..", import.meta.url));
+		// `streams start` records the repository a stream belongs to.
+		assert.equal(spawnSync("git", ["init", "-q", dir]).status, 0);
+		const runner = (args, input) => new Promise((resolve, reject) => {
+			const child = spawn("uv", ["run", "--quiet", "--project", project, "streams", ...args], { cwd: dir, env: { ...process.env, XDG_CONFIG_HOME: join(dir, "config") } });
+			let stdout = "", stderr = "";
+			child.stdout.setEncoding("utf8").on("data", (chunk) => { stdout += chunk; });
+			child.stderr.setEncoding("utf8").on("data", (chunk) => { stderr += chunk; });
+			child.on("error", reject);
+			child.on("close", (code) => resolve({ code, stdout, stderr }));
+			child.stdin.end(input);
+		});
+		const warnings = [];
+		const cli = new StreamCli(dir, runner, (text) => warnings.push(text));
+		assert.equal((await cli.config()).notes.root, root);
+		const stream = await cli.start("Contract stream");
+		assert.deepEqual((await cli.list()).map((item) => item.slug), [stream.slug]);
+		assert.equal((await cli.show("Contract stream")).slug, stream.slug);
+
+		const note = await cli.read(stream.slug);
+		const onDisk = readFileSync(stream.path, "utf8");
+		assert.deepEqual(note, { content: onDisk, sha256: createHash("sha256").update(onDisk).digest("hex") });
+		const retitled = onDisk.replace("title: Contract stream", "title: Renamed stream");
+		assert.equal((await cli.update(stream.slug, retitled, { dryRun: true, ifMatch: note.sha256 })).updated, false);
+		assert.ok(warnings.some((text) => /differs from slugified title/.test(text)), "the CLI's warning findings reach the user");
+		await assert.rejects(cli.update(stream.slug, retitled, { ifMatch: "0".repeat(64) }), /changed/);
+		assert.equal(readFileSync(stream.path, "utf8"), onDisk);
+
+		writeFileSync(join(root, "scratch", "broken.md"), "---\ntitle: Broken\n---\nbody\n");
+		warnings.length = 0;
+		assert.deepEqual((await cli.list()).map((item) => item.slug), [stream.slug]);
+		assert.match(warnings.join("\n"), /broken/);
+		await assert.rejects(cli.show("broken"), (error) => error.kind === "invalid-stream");
+		await assert.rejects(cli.show("missing"), (error) => error.kind === "not-found");
+		await assert.rejects(cli.show("!!!"), (error) => error.kind === "invalid-ref");
+		const broken = await cli.read("broken");
+		assert.equal(broken.content, "---\ntitle: Broken\n---\nbody\n");
+		assert.match(broken.findings, /status/);
+
+		const tools = [];
+		registerCheckpoint({ registerTool: (tool) => tools.push(tool), registerEntryRenderer() {}, registerMessageRenderer() {}, on() {}, registerCommand() {}, registerShortcut() {} }, { agentDir: dir, cli });
+		const read = tools.find((item) => item.name === "stream_read");
+		const ctx = { cwd: dir, sessionManager: SessionManager.inMemory(dir) };
+		const shown = (await read.execute("call", { stream: "broken" }, undefined, undefined, ctx)).content[0].text;
+		assert.match(shown, new RegExp(`^Stream: broken\nInvalid note:\n[^]*status[^]*streams update broken --if-match ${broken.sha256}[^]*\n\n---\ntitle: Broken\n---\nbody\n$`));
+		const valid = (await read.execute("call", { stream: stream.slug }, undefined, undefined, ctx)).content[0].text;
+		assert.match(valid, /^Stream: contract-stream\nTitle: Contract stream\nStatus: active\n/);
+		assert.doesNotMatch(valid, new RegExp(root));
+	} finally {
+		rmSync(dir, { recursive: true, force: true });
+	}
 });
 
 test("CLI integration uses show and update without shell interpolation", async () => {
@@ -1648,18 +1716,13 @@ test("drafts include the owning Pi session once without changing the body", () =
 });
 
 test("proposal staging changes only pending state, never scratch", () => {
-	const dir = mkdtempSync(join(tmpdir(), "checkpoint-propose-"));
-	try {
-		const path = join(dir, "stream.md");
-		writeFileSync(path, "original");
-		const pending = { version: 1, ownerId: "main", slug: "stream", messages: [], input: "" };
-		const draft = stageDraft(pending, { ownerId: "main", slug: "stream", path }, "proposal", "Clarify state");
-		assert.deepEqual(draft, { path, slug: "stream", revision: 1, baseContent: "original", proposedContent: "proposal", summary: "Clarify state" });
-		assert.equal(readFileSync(path, "utf8"), "original");
-		assert.equal(stageDraft(pending, { ownerId: "main", slug: "stream", path }, "revision", "Second").revision, 2);
-	} finally {
-		rmSync(dir, { recursive: true, force: true });
-	}
+	const pending = { version: 1, ownerId: "main", slug: "stream", messages: [], input: "" };
+	const binding = { ownerId: "main", slug: "stream", path: "/unused/stream.md" };
+	const draft = stageDraft(pending, binding, "proposal", "Clarify state", "original");
+	assert.deepEqual(draft, { slug: "stream", revision: 1, baseContent: "original", proposedContent: "proposal", summary: "Clarify state" });
+	assert.equal(pending.draft, draft);
+	assert.equal(stageDraft(pending, binding, "revision", "Second", "original").revision, 2);
+	assert.throws(() => stageDraft(pending, { ...binding, slug: "other" }, "x", "y", "original"), /does not belong/);
 });
 
 test("resuming seeds current main context plus saved side history exactly once", async () => {
@@ -1850,9 +1913,10 @@ test("Apply asks CLI to preview and write exactly the approved revision with its
 	try {
 		const path = join(dir, "stream.md");
 		writeFileSync(path, "base");
-		const draft = { path, slug: "stream", revision: 3, baseContent: "base", proposedContent: "candidate" };
+		const draft = { slug: "stream", revision: 3, baseContent: "base", proposedContent: "candidate" };
 		const calls = [];
 		const deps = {
+			read: readFrom(path),
 			update: async (slug, content, options) => {
 				calls.push({ slug, content, options });
 				if (!options.dryRun) writeFileSync(path, content);
@@ -1880,7 +1944,8 @@ test("Apply refuses changed scratch before invoking update", async () => {
 	try {
 		const path = join(dir, "stream.md");
 		writeFileSync(path, "changed elsewhere");
-		await assert.rejects(applyDraft({ path, slug: "stream", revision: 1, baseContent: "base", proposedContent: "candidate" }, 1, {
+		await assert.rejects(applyDraft({ slug: "stream", revision: 1, baseContent: "base", proposedContent: "candidate" }, 1, {
+			read: readFrom(path),
 			update: async () => { throw new Error("should not run"); },
 		}), /changed since/);
 	} finally {
@@ -1893,7 +1958,8 @@ test("Apply treats a failed CLI confirmation after a write as partial success", 
 	try {
 		const path = join(dir, "stream.md");
 		writeFileSync(path, "base");
-		const result = await applyDraft({ path, slug: "stream", revision: 1, baseContent: "base", proposedContent: "candidate" }, 1, {
+		const result = await applyDraft({ slug: "stream", revision: 1, baseContent: "base", proposedContent: "candidate" }, 1, {
+			read: readFrom(path),
 			update: async (_slug, content, options) => {
 				if (!options.dryRun) { writeFileSync(path, content); throw new Error("confirmation failed"); }
 				return { slug: "stream", path, updated: false, findings: [] };
@@ -1912,8 +1978,9 @@ test("Apply records projection failure without repeating the CLI write", async (
 		const path = join(dir, "stream.md");
 		writeFileSync(path, "base");
 		let writes = 0;
-		const draft = { path, slug: "stream", revision: 1, baseContent: "base", proposedContent: "candidate" };
+		const draft = { slug: "stream", revision: 1, baseContent: "base", proposedContent: "candidate" };
 		const deps = {
+			read: readFrom(path),
 			update: async (slug, content, options) => {
 				if (!options.dryRun) { writes++; writeFileSync(path, content); }
 				return { slug, path, updated: !options.dryRun, findings: [] };

@@ -1,4 +1,3 @@
-import { readFileSync } from "node:fs";
 import type { AgentMessage } from "@earendil-works/pi-agent-core";
 import type { AgentSession, ExtensionContext, ModelRuntime } from "@earendil-works/pi-coding-agent";
 import type { Model } from "@earendil-works/pi-ai/compat";
@@ -22,7 +21,7 @@ type Options = {
 	model: Model<any>;
 	thinkingLevel?: Parameters<typeof createCheckpointSession>[0]["thinkingLevel"];
 	systemPrompt: string;
-	cli: Pick<StreamCli, "update" | "project" | "config">;
+	cli: Pick<StreamCli, "read" | "update" | "project" | "config">;
 	changed(): void;
 	applied(summary: string, cmux: CmuxOutcome, warning?: string): void;
 };
@@ -118,15 +117,16 @@ export class CheckpointConversation {
 		if (safe.length !== o.pending.messages.length) this.state.notice = { level: "info", text: "Interrupted answer omitted; earlier question preserved" };
 		o.pending.messages = safe;
 		o.pending.source = { ownerId: o.pending.ownerId, leafId: snapshot.leafId };
-		const scratch = readFileSync(o.binding.path, "utf8");
+		const scratch = (await o.cli.read(o.binding.slug)).content;
 		if (o.pending.draft && o.pending.draft.baseContent !== scratch) this.state.notice = { level: "warning", text: "Scratch changed; request a new draft before Apply" };
 		if (snapshot.omitted) this.state.notice = { level: "warning", text: `${snapshot.omitted} incomplete main message(s) omitted from context` };
-		const source: AgentMessage = { role: "user", content: [{ type: "text", text: `Checkpoint source: main session ${o.pending.ownerId}, leaf ${snapshot.leafId ?? "root"}. Stream ${o.binding.slug}, scratch ${o.binding.path}. Current scratch Markdown:\n${scratch}` }], timestamp: Date.now() };
+		const source: AgentMessage = { role: "user", content: [{ type: "text", text: `Checkpoint source: main session ${o.pending.ownerId}, leaf ${snapshot.leafId ?? "root"}. Stream ${o.binding.slug}. Current scratch Markdown:\n${scratch}` }], timestamp: Date.now() };
 		const side = await createCheckpointSession({ cwd: o.cwd, agentDir: o.agentDir, modelRuntime: o.runtime, model: o.model,
 			thinkingLevel: o.thinkingLevel, systemPrompt: o.systemPrompt, mainMessages: [...snapshot.messages, source], savedMessages: safe,
 			onProposal: async (content, summary) => {
 				if (!this.isOwner()) throw new Error("Owning Pi session changed; proposal discarded");
-				const draft = stageDraft(o.pending, o.binding, includeMainSession(content, o.pending.ownerId), summary);
+				const base = (await o.cli.read(o.binding.slug)).content;
+				const draft = stageDraft(o.pending, o.binding, includeMainSession(content, o.pending.ownerId), summary, base);
 				this.state.draft = draft;
 				this.persist();
 				o.changed();
@@ -192,7 +192,7 @@ export class CheckpointConversation {
 	private async sendFeedback(author?: Author): Promise<void> {
 		if (this.state.annotationEditor) throw new Error("Save or cancel the unfinished annotation in Review first");
 		if (!this.state.input.trim() && !this.state.annotations.length) return;
-		if (this.state.annotations.some((annotation) => annotation.revision !== this.state.draft?.revision || annotation.path !== this.state.draft?.path)) {
+		if (this.state.annotations.some((annotation) => annotation.revision !== this.state.draft?.revision)) {
 			throw new Error("Annotations belong to an older draft; remove them before sending");
 		}
 		const annotations = this.state.annotations.map((annotation) => ({ ...annotation }));
@@ -219,7 +219,7 @@ export class CheckpointConversation {
 			if (!draft) throw new Error("No draft to apply");
 			const o = this.options;
 			const config = await o.cli.config();
-			const result = await applyDraft(draft, draft.revision, { update: (...args) => o.cli.update(...args), project: config.cmux.enabled ? () => o.cli.project(draft.slug) : undefined });
+			const result = await applyDraft(draft, draft.revision, { read: (slug) => o.cli.read(slug), update: (...args) => o.cli.update(...args), project: config.cmux.enabled ? () => o.cli.project(draft.slug) : undefined });
 			if (result.validationError) { this.state.notice = { level: "error", text: result.validationError }; return; }
 			this.finished = true;
 			clearPending(o.agentDir, o.pending.ownerId, o.pending.slug);

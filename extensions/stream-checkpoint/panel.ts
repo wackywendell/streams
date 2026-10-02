@@ -157,7 +157,7 @@ export class CheckpointPanel implements Component {
 		const diff = this.diff();
 		if (!diff) return [this.theme.fg("muted", "No draft yet")];
 		const sent = this.state.messages.flatMap((message) => message.annotations ?? []);
-		const comments = [...sent, ...this.state.annotations].filter((comment) => comment.revision === diff.draft.revision && comment.path === diff.draft.path);
+		const comments = [...sent, ...this.state.annotations].filter((comment) => comment.revision === diff.draft.revision);
 		const lines: string[] = [];
 		this.reviewStarts = [];
 		diff.lines.forEach((line, index) => {
