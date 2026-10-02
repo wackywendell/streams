@@ -1,6 +1,6 @@
 # Pi stream checkpoint extension
 
-Status: implemented against Pi 0.87.1. This document records the accepted behavior, including batched annotations and independent main-session input.
+Status: implemented against Pi 0.99. This document records the accepted behavior, including batched annotations and independent main-session input.
 
 ## Objective
 
