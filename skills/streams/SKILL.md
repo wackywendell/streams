@@ -19,6 +19,7 @@ Use the `streams` CLI for mechanics instead of reimplementing parsing or matchin
 | ------------------------------------- | ----------------------------------------------------- |
 | List current streams                  | `streams list` or `streams list --json`               |
 | Inspect one stream                    | `streams show <slug>` or `streams show <slug> --json` |
+| Read a note as stored, even invalid   | `streams read <slug>` or `streams read <slug> --json` |
 | Validate stream files                 | `streams check [slug]`                                |
 | Create a stream                       | `streams start "Title"` or `streams s "Title"`        |
 | Rename a stream                       | `streams rename <stream-ref> "New Title"`              |
@@ -131,4 +132,4 @@ For a single stream, recap briefly:
 - `Just completed`: what changed now.
 - `Still to do`: concrete next work, blockers, or verification.
 
-For portfolio status, group streams by `active`, `waiting`, `blocked`, `parked`, and `done`. Use `streams list --json` rather than scraping human output.
+For portfolio status, group streams by `active`, `waiting`, `blocked`, `parked`, and `done`. Use `streams list --json` rather than scraping human output; it returns `{"streams": [...], "findings": [...]}`, and `findings` names notes left out because they're invalid.

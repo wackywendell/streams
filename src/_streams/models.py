@@ -45,22 +45,22 @@ class Stream:
     def validate(self) -> None:
         errors = error_messages(validate_frontmatter(self.path, self.frontmatter))
         if errors:
-            raise StreamError(f"{self.path}: {'; '.join(errors)}")
+            raise StreamError(f"{self.path}: {'; '.join(errors)}", kind="invalid-stream")
 
     def as_json(self) -> dict[str, Any]:
-        payload = _json_value(dict(self.frontmatter))
+        payload = json_value(dict(self.frontmatter))
         payload["slug"] = self.slug
         payload["path"] = str(self.path)
         return payload
 
 
-def _json_value(value: Any) -> Any:
+def json_value(value: Any) -> Any:
     if isinstance(value, (date, datetime)):
         return value.isoformat()
     if isinstance(value, dict):
-        return {str(key): _json_value(item) for key, item in value.items()}
+        return {str(key): json_value(item) for key, item in value.items()}
     if isinstance(value, list):
-        return [_json_value(item) for item in value]
+        return [json_value(item) for item in value]
     if isinstance(value, tuple):
-        return [_json_value(item) for item in value]
+        return [json_value(item) for item in value]
     return value

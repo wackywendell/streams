@@ -1308,7 +1308,7 @@ test("checkpoint creation and Apply use CLI config and emit a registered expanda
 				calls.push(args);
 				let value;
 				if (args[0] === "config") value = { notes: { root: f.dir }, obsidian: { vault: "Notes" }, cmux: { enabled: outcome !== "disabled" } };
-				else if (args[0] === "list") value = [];
+				else if (args[0] === "list") value = { streams: [], findings: [] };
 				else if (args[0] === "format") return { code: 0, stdout: "Test format", stderr: "" };
 				else if (args[0] === "update") {
 					if (!args.includes("--dry-run")) writeFileSync(f.path, input);
@@ -1599,6 +1599,21 @@ test("CLI integration fails closed on malformed stream lists and update response
 	await assert.rejects(cli.list(), /Invalid streams list/);
 	await assert.rejects(new StreamCli("/repo", async () => ({ code: 0, stdout: '[{"slug":"stream","title":"Stream","status":"active","path":"/scratch/stream.md"}]', stderr: "" })).list(), /Invalid streams list/);
 	await assert.rejects(cli.update("stream", "candidate", { dryRun: true }), /Invalid streams update response/);
+});
+
+test("CLI list keeps valid streams when some notes are invalid, and errors carry the CLI's kind", async () => {
+	const stream = { slug: "good", path: "/scratch/good.md", title: "Good", status: "active", state: "Started" };
+	const findings = [{ level: "error", slug: "broken", message: "invalid status" }, { level: "warn", slug: "broken", message: "slug differs" }];
+	const warnings = [];
+	const listed = new StreamCli("/repo", async () => ({ code: 1, stdout: JSON.stringify({ streams: [stream], findings }), stderr: "" }), (text) => warnings.push(text));
+	assert.deepEqual((await listed.list()).map((item) => item.slug), ["good"]);
+	assert.deepEqual(warnings, ["Skipped 1 invalid stream note: broken. Run `streams check` for details."]);
+	const error = { error: { kind: "ambiguous", message: "stream reference 'auth' is ambiguous: auth-tokens, oauth-cleanup", candidates: ["auth-tokens", "oauth-cleanup"] } };
+	const failed = await new StreamCli("/repo", async () => ({ code: 2, stdout: JSON.stringify(error), stderr: "" })).show("auth").catch((caught) => caught);
+	assert.equal(failed.kind, "ambiguous");
+	assert.deepEqual(failed.candidates, ["auth-tokens", "oauth-cleanup"]);
+	assert.match(failed.message, /exit 2\): stream reference 'auth' is ambiguous/);
+	await assert.rejects(new StreamCli("/repo", async () => ({ code: 2, stdout: JSON.stringify({ error: { kind: "error", message: "boom" } }), stderr: "" })).list(), /boom/);
 });
 
 test("side session has only the explicit read-only tools", async () => {

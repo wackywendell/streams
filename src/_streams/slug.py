@@ -5,11 +5,14 @@ from __future__ import annotations
 import re
 import unicodedata
 
+from .errors import StreamError
+
 SLUG_RE = re.compile(r"^[a-z0-9](?:[a-z0-9-]{0,62}[a-z0-9])?$")
 
 
-class SlugError(ValueError):
-    pass
+class SlugError(StreamError):
+    def __init__(self, message: str) -> None:
+        super().__init__(message, kind="invalid-ref")
 
 
 def slugify(text: str) -> str:

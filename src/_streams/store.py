@@ -2,14 +2,18 @@
 
 from __future__ import annotations
 
+from dataclasses import dataclass
 from datetime import date
 import hashlib
 import os
 from pathlib import Path
 import re
 import tempfile
+from typing import Any
 
-from .check import check_content
+import yaml
+
+from .check import check_content, check_path
 from .config import ARCHIVE_DIRNAME, DEFAULT_STATE, DEFAULT_STATUS, scratch_root
 from .errors import StreamError
 from .frontmatter import render_frontmatter, split_frontmatter
@@ -66,21 +70,75 @@ def load_stream(path: Path) -> Stream:
         frontmatter, body = split_frontmatter(path.read_text())
     except OSError as exc:
         raise StreamError(f"could not read {path}: {exc}") from exc
+    except (StreamError, yaml.YAMLError) as exc:
+        raise StreamError(f"{path}: could not parse frontmatter: {exc}", kind="invalid-stream") from exc
     stream = Stream(path=path, frontmatter=frontmatter, body=body)
     stream.validate()
     return stream
 
 
+def scan_streams(root: Path | None = None) -> tuple[list[Stream], list[SchemaFinding]]:
+    """Load the valid current streams, and report the findings of notes that failed to load.
+
+    One malformed note leaves the others usable: it's left out and reported
+    instead of failing the whole scan.
+    """
+    streams: list[Stream] = []
+    invalid: list[SchemaFinding] = []
+    for path in stream_paths(root):
+        findings = check_path(path)
+        if error_messages(findings):
+            invalid.extend(findings)
+        else:
+            streams.append(load_stream(path))
+    return streams, invalid
+
+
 def list_streams(root: Path | None = None) -> list[Stream]:
-    return [load_stream(path) for path in stream_paths(root)]
+    """Return the valid current streams; `scan_streams()` also reports the invalid ones."""
+    return scan_streams(root)[0]
 
 
 def show_stream(slug: str, root: Path | None = None) -> Stream:
     slug = normalized_slug(slug)
     path = (root if root is not None else scratch_root()).expanduser() / f"{slug}.md"
     if not path.exists():
-        raise StreamError(f"no stream found for slug {slug!r}")
+        raise StreamError(f"no stream found for slug {slug!r}", kind="not-found")
     return load_stream(path)
+
+
+@dataclass(frozen=True)
+class Note:
+    """A scratch file as stored, valid or not, so a broken note can still be read and fixed."""
+
+    path: Path
+    raw: bytes
+    # None when the YAML can't be parsed; `contents` is then the whole file.
+    frontmatter: dict[str, Any] | None
+    contents: str
+    findings: list[SchemaFinding]
+
+    @property
+    def slug(self) -> str:
+        return self.path.stem
+
+    @property
+    def sha256(self) -> str:
+        """The digest `update --if-match` compares against."""
+        return hashlib.sha256(self.raw).hexdigest()
+
+
+def read_note(path: Path) -> Note:
+    try:
+        raw = path.read_bytes()
+        text = raw.decode("utf-8")
+    except (OSError, UnicodeDecodeError) as exc:
+        raise StreamError(f"could not read {path}: {exc}") from exc
+    try:
+        frontmatter, contents = split_frontmatter(text)
+    except (StreamError, yaml.YAMLError):
+        frontmatter, contents = None, text
+    return Note(path=path, raw=raw, frontmatter=frontmatter, contents=contents, findings=check_content(path, text))
 
 
 def preview_start(title: str, *, root: Path | None = None, cwd: Path | None = None) -> Stream:
@@ -143,10 +201,14 @@ def start_stream(title: str, *, root: Path | None = None, cwd: Path | None = Non
 
 
 def update_stream(
-    stream: Stream, content: str, *, dry_run: bool = False, if_match: str | None = None
+    path: Path, content: str, *, dry_run: bool = False, if_match: str | None = None
 ) -> list[SchemaFinding]:
-    """Validate complete Markdown and replace an existing stream, optionally guarding its base."""
-    path = stream.path
+    """Validate complete Markdown and replace an existing stream, optionally guarding its base.
+
+    An invalid note can be replaced only with `if_match`, so the writer has
+    read the broken note it's overwriting.
+    """
+    slug = path.stem
     if if_match is not None and not re.fullmatch(r"[0-9a-f]{64}", if_match):
         raise StreamError("--if-match must be a lowercase SHA-256 digest")
     if path.is_symlink():
@@ -157,18 +219,23 @@ def update_stream(
     except OSError as exc:
         raise StreamError(f"could not read {path}: {exc}") from exc
     if if_match is not None and hashlib.sha256(original).hexdigest() != if_match:
-        raise StreamError(f"stream {stream.slug!r} changed since the reviewed draft")
+        raise StreamError(f"stream {slug!r} changed since the reviewed draft")
+    if if_match is None and error_messages(check_content(path, original.decode("utf-8", errors="replace"))):
+        raise StreamError(
+            f"stream {slug!r} is invalid; pass --if-match with the hash from `streams read {slug} --hash` to replace it",
+            kind="invalid-stream",
+        )
 
     findings = check_content(path, content)
     errors = error_messages(findings)
     if errors:
-        raise StreamError(f"invalid stream {stream.slug!r}: {'; '.join(errors)}")
+        raise StreamError(f"invalid stream {slug!r}: {'; '.join(errors)}")
     if dry_run or original == content.encode("utf-8"):
         return findings
 
     temporary: Path | None = None
     try:
-        fd, filename = tempfile.mkstemp(prefix=f".{stream.slug}.", suffix=".tmp", dir=path.parent)
+        fd, filename = tempfile.mkstemp(prefix=f".{slug}.", suffix=".tmp", dir=path.parent)
         temporary = Path(filename)
         with os.fdopen(fd, "wb") as handle:
             handle.write(content.encode("utf-8"))
@@ -176,7 +243,7 @@ def update_stream(
             os.fchmod(handle.fileno(), mode)
             os.fsync(handle.fileno())
         if path.is_symlink() or path.read_bytes() != original:
-            raise StreamError(f"stream {stream.slug!r} changed since the reviewed draft")
+            raise StreamError(f"stream {slug!r} changed since the reviewed draft")
         temporary.replace(path)
     except OSError as exc:
         raise StreamError(f"could not update {path}: {exc}") from exc

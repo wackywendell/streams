@@ -100,7 +100,7 @@ Send supplied instructions once, after stream selection and side-session initial
 
 If the panel is already open, a message without `--stream` focuses it and sends to the idle conversation. If it is busy, a chooser is open, or there is unsent chat or annotation feedback, report that the instructions were not sent. Do not silently queue a message, merge it with a feedback batch, or overwrite saved input. A bare `/checkpoint` only focuses an open panel.
 
-Opening or switching a checkpoint obtains current stream metadata using `streams list --json`. Treat a missing executable, nonzero exit, invalid JSON, or malformed result as an error, not an empty list. Do not offer to create a supposedly missing stream based on a failed lookup.
+Opening or switching a checkpoint obtains current stream metadata using `streams list --json`. Treat a missing executable, an exit code other than 0 or 1, invalid JSON, or a malformed result as an error, not an empty list. Exit 1 means some notes were invalid and left out: use the streams that were returned, and warn with the invalid slugs and a pointer to `streams check`. Do not offer to create a supposedly missing stream based on a failed lookup.
 
 Configuration and stream lookup run in the background with no loader, so the main editor stays usable. Session shutdown abandons a lookup at once rather than waiting for the CLI. Ignore late lookup results so they cannot open a chooser, change the binding or start drafting. A new `/checkpoint` invocation after shutdown must not wait for the abandoned lookup.
 

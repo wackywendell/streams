@@ -9,12 +9,13 @@ from pathlib import Path
 
 from .errors import StreamError
 from .config import CONFIG_KEYS, config_path, load_config, read_overrides, set_config
-from .models import Stream
-from .store import archive_stream, list_streams, preview_start, rename_stream, start_stream, update_stream
+from .models import Stream, json_value
+from .schema import SchemaFinding, error_messages
+from .store import archive_stream, preview_start, read_note, rename_stream, scan_streams, start_stream, update_stream
 from .cmux import CmuxClient, load_stream_for_update, markdown_link_for_item, open_workspace, update_all_workspaces, update_current_workspace, update_workspace
 from .check import check_streams, findings_json
 from .store import check_paths
-from .resolve import resolve_check_path_ref, resolve_stream_ref
+from .resolve import resolve_check_path_ref, resolve_note_path, resolve_stream_ref
 from .resume import exec_resume, resolve_stream_for_resume
 
 
@@ -77,13 +78,42 @@ def command_config(args: argparse.Namespace) -> int:
     return 0
 
 
+def print_findings(findings: list[SchemaFinding], file=None) -> None:
+    for finding in findings:
+        print(f"{finding.level}: {finding.slug}: {finding.message}", file=file)
+
+
 def command_list(args: argparse.Namespace) -> int:
-    streams = list_streams()
+    streams, findings = scan_streams()
     if args.json:
-        print(json.dumps([stream.as_json() for stream in streams], indent=2, sort_keys=True))
+        payload = {"streams": [stream.as_json() for stream in streams], "findings": [finding.as_json() for finding in findings]}
+        print(json.dumps(payload, indent=2, sort_keys=True))
     else:
         print(render_list(streams))
-    return 0
+        print_findings(findings, file=sys.stderr)
+    return 1 if error_messages(findings) else 0
+
+
+def command_read(args: argparse.Namespace) -> int:
+    note = read_note(resolve_note_path(args.slug))
+    if args.json:
+        payload = {
+            "slug": note.slug,
+            "frontmatter": json_value(note.frontmatter),
+            "contents": note.contents,
+            "sha256": note.sha256,
+            "findings": [finding.as_json() for finding in note.findings],
+        }
+        print(json.dumps(payload, indent=2, sort_keys=True))
+    else:
+        # Exact bytes, so callers can diff the note and hash it as `--if-match` does.
+        sys.stdout.flush()
+        if args.hash:
+            sys.stdout.buffer.write(f"{note.sha256}\n".encode())
+        sys.stdout.buffer.write(note.raw)
+        sys.stdout.buffer.flush()
+        print_findings(note.findings, file=sys.stderr)
+    return 1 if error_messages(note.findings) else 0
 
 
 def command_show(args: argparse.Namespace) -> int:
@@ -158,8 +188,7 @@ def command_check(args: argparse.Namespace) -> int:
     if args.json:
         print(findings_json(findings))
     elif findings:
-        for finding in findings:
-            print(f"{finding.level}: {finding.slug}: {finding.message}")
+        print_findings(findings)
     else:
         target = args.slug or "all streams"
         print(f"ok: {target}")
@@ -167,16 +196,15 @@ def command_check(args: argparse.Namespace) -> int:
 
 
 def command_update(args: argparse.Namespace) -> int:
-    stream = resolve_stream_ref(args.slug)
+    path = resolve_note_path(args.slug)
     candidate = sys.stdin.read()
-    findings = update_stream(stream, candidate, dry_run=args.dry_run, if_match=args.if_match)
-    payload = {"slug": stream.slug, "path": str(stream.path), "updated": not args.dry_run, "findings": [finding.as_json() for finding in findings]}
+    findings = update_stream(path, candidate, dry_run=args.dry_run, if_match=args.if_match)
+    payload = {"slug": path.stem, "path": str(path), "updated": not args.dry_run, "findings": [finding.as_json() for finding in findings]}
     if args.json:
         print(json.dumps(payload, indent=2, sort_keys=True))
     else:
-        print(f"{'validated' if args.dry_run else 'updated'}: {stream.slug} {stream.path}")
-        for finding in findings:
-            print(f"{finding.level}: {finding.slug}: {finding.message}")
+        print(f"{'validated' if args.dry_run else 'updated'}: {path.stem} {path}")
+        print_findings(findings)
     return 0
 
 
@@ -215,13 +243,20 @@ def build_parser() -> argparse.ArgumentParser:
         action_parser.add_argument("--json", action="store_true", default=argparse.SUPPRESS)
 
     list_parser = subparsers.add_parser("list", help="list current streams")
-    list_parser.add_argument("--json", action="store_true", help="print stream frontmatter as JSON")
+    list_parser.add_argument("--json", action="store_true", help="print valid streams and invalid-note findings as JSON")
     list_parser.set_defaults(func=command_list)
 
     show_parser = subparsers.add_parser("show", help="show one stream")
     show_parser.add_argument("slug", help="stream filename stem")
     show_parser.add_argument("--json", action="store_true", help="print stream frontmatter as JSON")
     show_parser.set_defaults(func=command_show)
+
+    read_parser = subparsers.add_parser("read", help="print a stream's note exactly as stored, even if it's invalid")
+    read_parser.add_argument("slug", help="stream title or slug; only the exact slug reaches an invalid note")
+    read_output = read_parser.add_mutually_exclusive_group()
+    read_output.add_argument("--hash", action="store_true", help="print the note's SHA-256 for --if-match on the first line")
+    read_output.add_argument("--json", action="store_true", help="print parsed frontmatter, contents, SHA-256 and findings as JSON")
+    read_parser.set_defaults(func=command_read)
 
     check_parser = subparsers.add_parser("check", help="check stream frontmatter")
     check_parser.add_argument("slug", nargs="?", help="stream filename stem")
@@ -285,5 +320,8 @@ def main(argv: list[str] | None = None) -> int:
     try:
         return args.func(args)
     except StreamError as exc:
-        print(f"streams: {exc}", file=sys.stderr)
+        if getattr(args, "json", False):
+            print(json.dumps({"error": exc.as_json()}, indent=2, sort_keys=True))
+        else:
+            print(f"streams: {exc}", file=sys.stderr)
         return 2

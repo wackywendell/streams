@@ -23,7 +23,7 @@ def setUpModule() -> None:
     unittest.addModuleCleanup(config_dir.cleanup)
     unittest.addModuleCleanup(env.stop)
 
-from _streams.cli import build_parser, command_archive, command_check, command_cmux_update, command_format, command_list, command_rename, command_resume, command_show, command_start
+from _streams.cli import main as cli_main, build_parser, command_archive, command_check, command_cmux_update, command_format, command_list, command_rename, command_resume, command_show, command_start
 from _streams.cmux import (
     CmuxClient,
     CmuxWorkspace,
@@ -517,15 +517,16 @@ class ResolveTest(unittest.TestCase):
 
 class CliTest(unittest.TestCase):
     def test_list_json_shape(self) -> None:
-        with tempfile.TemporaryDirectory() as tmp, patch("_streams.cli.list_streams") as list_mock, patch("builtins.print") as print_mock:
+        with tempfile.TemporaryDirectory() as tmp, patch("_streams.cli.scan_streams") as scan_mock, patch("builtins.print") as print_mock:
             root = Path(tmp)
             stream = show_stream(write_stream(root, "active-stream").stem, root)
-            list_mock.return_value = [stream]
+            scan_mock.return_value = ([stream], [])
             args = type("Args", (), {"json": True})()
-            command_list(args)
+            self.assertEqual(command_list(args), 0)
             payload = json.loads(print_mock.call_args.args[0])
-            self.assertEqual(payload[0]["slug"], "active-stream")
-            self.assertEqual(payload[0]["path"], str(stream.path))
+            self.assertEqual(payload["streams"][0]["slug"], "active-stream")
+            self.assertEqual(payload["streams"][0]["path"], str(stream.path))
+            self.assertEqual(payload["findings"], [])
 
     def test_show_human_includes_slug_and_link_descriptions(self) -> None:
         with tempfile.TemporaryDirectory() as tmp, patch("_streams.cli.resolve_stream_ref") as show_mock, patch("builtins.print") as print_mock:
@@ -681,13 +682,13 @@ class CliTest(unittest.TestCase):
     def test_update_reads_stdin_and_reports_dry_run_without_writing(self) -> None:
         from _streams.cli import command_update
 
-        with tempfile.TemporaryDirectory() as tmp, patch("_streams.cli.resolve_stream_ref") as resolve_mock, patch("sys.stdin", new_callable=io.StringIO) as input_mock, patch("builtins.print") as print_mock:
+        with tempfile.TemporaryDirectory() as tmp, patch("_streams.cli.resolve_note_path") as resolve_mock, patch("sys.stdin", new_callable=io.StringIO) as input_mock, patch("builtins.print") as print_mock:
             root = Path(tmp)
             path = write_stream(root, "active-stream", title="Active Stream")
             original = path.read_text()
             input_mock.write(original.replace("Doing work", "Ready for review"))
             input_mock.seek(0)
-            resolve_mock.return_value = show_stream(path.stem, root)
+            resolve_mock.return_value = path
             args = build_parser().parse_args(["update", "Active Stream", "-n", "--json"])
             self.assertEqual(command_update(args), 0)
             self.assertEqual(path.read_text(), original)
@@ -696,7 +697,7 @@ class CliTest(unittest.TestCase):
     def test_update_writes_validated_stdin_with_base_precondition(self) -> None:
         from _streams.cli import command_update
 
-        with tempfile.TemporaryDirectory() as tmp, patch("_streams.cli.resolve_stream_ref") as resolve_mock, patch("sys.stdin", new_callable=io.StringIO) as input_mock:
+        with tempfile.TemporaryDirectory() as tmp, patch("_streams.cli.resolve_note_path") as resolve_mock, patch("sys.stdin", new_callable=io.StringIO) as input_mock:
             root = Path(tmp)
             path = write_stream(root, "active-stream", title="Active Stream")
             original = path.read_text()
@@ -704,7 +705,7 @@ class CliTest(unittest.TestCase):
             digest = hashlib.sha256(original.encode()).hexdigest()
             input_mock.write(candidate)
             input_mock.seek(0)
-            resolve_mock.return_value = show_stream(path.stem, root)
+            resolve_mock.return_value = path
             args = build_parser().parse_args(["update", "active-stream", "--if-match", digest])
             self.assertEqual(command_update(args), 0)
             self.assertEqual(path.read_text(), candidate)
@@ -729,16 +730,149 @@ class CliTest(unittest.TestCase):
             exec_mock.assert_called_once_with(stream)
 
 
+def run_cli(root: Path, *argv: str, stdin: str = "") -> tuple[int, bytes, str]:
+    stdout = io.TextIOWrapper(io.BytesIO(), encoding="utf-8")
+    stderr = io.StringIO()
+    with patch("_streams.store.scratch_root", return_value=root), patch("sys.stdout", stdout), patch("sys.stderr", stderr), patch("sys.stdin", io.StringIO(stdin)):
+        code = cli_main(list(argv))
+    stdout.flush()
+    return code, stdout.buffer.getvalue(), stderr.getvalue()
+
+
+def write_invalid_status(root: Path, slug: str) -> Path:
+    path = write_stream(root, slug, title=slug.replace("-", " ").title())
+    path.write_text(path.read_text().replace("status: active", "status: nope"))
+    return path
+
+
+class CliContractTest(unittest.TestCase):
+    """End-to-end CLI behaviour that other tools, like the Pi extension, rely on."""
+
+    def test_list_reports_invalid_notes_without_hiding_valid_ones(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            write_stream(root, "good-stream", title="Good Stream")
+            write_invalid_status(root, "broken-stream")
+            code, stdout, _ = run_cli(root, "list", "--json")
+            payload = json.loads(stdout)
+            self.assertEqual(code, 1)
+            self.assertEqual([stream["slug"] for stream in payload["streams"]], ["good-stream"])
+            self.assertEqual({(finding["level"], finding["slug"]) for finding in payload["findings"]}, {("error", "broken-stream")})
+
+            code, stdout, stderr = run_cli(root, "list")
+            self.assertEqual(code, 1)
+            self.assertIn(b"good-stream", stdout)
+            self.assertIn("error: broken-stream: invalid status 'nope'", stderr)
+
+    def test_list_exits_zero_when_every_note_is_valid(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            write_stream(root, "good-stream", title="Good Stream")
+            code, stdout, _ = run_cli(root, "list", "--json")
+            self.assertEqual(code, 0)
+            self.assertEqual(json.loads(stdout)["findings"], [])
+
+    def test_other_commands_skip_unrelated_invalid_notes(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            write_stream(root, "good-stream", title="Good Stream")
+            write_invalid_status(root, "broken-stream")
+            code, stdout, _ = run_cli(root, "show", "good", "--json")
+            self.assertEqual(code, 0)
+            self.assertEqual(json.loads(stdout)["slug"], "good-stream")
+
+    def test_json_errors_name_their_kind(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            write_stream(root, "auth-tokens", title="Auth Tokens")
+            write_stream(root, "oauth-cleanup", title="Oauth Cleanup")
+            write_invalid_status(root, "broken-stream")
+            cases = {
+                "!!!": "invalid-ref",
+                "missing": "not-found",
+                "auth": "ambiguous",
+                "broken-stream": "invalid-stream",
+                "broken": "not-found",  # only the exact slug reaches an invalid note
+            }
+            for ref, kind in cases.items():
+                with self.subTest(ref=ref):
+                    code, stdout, stderr = run_cli(root, "show", ref, "--json")
+                    self.assertEqual(code, 2)
+                    self.assertEqual(stderr, "")
+                    self.assertEqual(json.loads(stdout)["error"]["kind"], kind)
+            _, stdout, _ = run_cli(root, "show", "auth", "--json")
+            self.assertEqual(json.loads(stdout)["error"]["candidates"], ["auth-tokens", "oauth-cleanup"])
+
+    def test_plain_errors_stay_one_line_on_stderr(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            code, stdout, stderr = run_cli(Path(tmp), "show", "!!!")
+            self.assertEqual((code, stdout), (2, b""))
+            self.assertEqual(stderr, "streams: invalid slug ''; use lowercase kebab-case\n")
+
+    def test_read_prints_exact_bytes_and_hash(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            raw = write_stream(root, "good-stream", title="Good Stream").read_bytes()
+            self.assertEqual(run_cli(root, "read", "Good Stream"), (0, raw, ""))
+            code, stdout, _ = run_cli(root, "read", "good-stream", "--hash")
+            digest, _, rest = stdout.partition(b"\n")
+            self.assertEqual((code, digest.decode(), rest), (0, hashlib.sha256(raw).hexdigest(), raw))
+
+    def test_read_json_splits_frontmatter_and_contents(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            raw = write_stream(root, "good-stream", title="Good Stream").read_bytes()
+            code, stdout, _ = run_cli(root, "read", "good-stream", "--json")
+            payload = json.loads(stdout)
+            self.assertEqual(code, 0)
+            self.assertEqual((payload["slug"], payload["frontmatter"]["title"], payload["contents"]), ("good-stream", "Good Stream", "# Body\n"))
+            self.assertEqual((payload["sha256"], payload["findings"]), (hashlib.sha256(raw).hexdigest(), []))
+
+    def test_read_shows_invalid_notes_so_they_can_be_fixed(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            raw = write_invalid_status(root, "broken-stream").read_bytes()
+            code, stdout, stderr = run_cli(root, "read", "broken-stream")
+            self.assertEqual((code, stdout), (1, raw))
+            self.assertIn("error: broken-stream: invalid status 'nope'", stderr)
+            payload = json.loads(run_cli(root, "read", "broken-stream", "--json")[1])
+            self.assertEqual((payload["frontmatter"]["status"], payload["contents"]), ("nope", "# Body\n"))
+            self.assertEqual(payload["findings"][0]["level"], "error")
+
+    def test_read_json_keeps_unparseable_yaml_in_contents(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            text = "---\ntitle: [unclosed\n---\n# Body\n"
+            (root / "bad-yaml.md").write_text(text)
+            code, stdout, _ = run_cli(root, "read", "bad-yaml", "--json")
+            payload = json.loads(stdout)
+            self.assertEqual((code, payload["frontmatter"], payload["contents"]), (1, None, text))
+            self.assertIn("could not parse frontmatter", payload["findings"][0]["message"])
+
+    def test_update_replaces_an_invalid_note_only_with_its_hash(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            path = write_invalid_status(root, "broken-stream")
+            broken = path.read_text()
+            fixed = broken.replace("status: nope", "status: active")
+            code, stdout, _ = run_cli(root, "update", "broken-stream", "--json", stdin=fixed)
+            self.assertEqual((code, json.loads(stdout)["error"]["kind"]), (2, "invalid-stream"))
+            self.assertEqual(path.read_text(), broken)
+
+            digest = run_cli(root, "read", "broken-stream", "--hash")[1].partition(b"\n")[0].decode()
+            code, _, _ = run_cli(root, "update", "broken-stream", "--if-match", digest, stdin=fixed)
+            self.assertEqual((code, path.read_text()), (0, fixed))
+
+
 class UpdateTest(unittest.TestCase):
     def test_invalid_candidate_never_writes_even_without_dry_run(self) -> None:
         from _streams.store import update_stream
 
         with tempfile.TemporaryDirectory() as tmp:
             path = write_stream(Path(tmp), "active-stream", title="Active Stream")
-            stream = show_stream(path.stem, Path(tmp))
             original = path.read_text()
             with self.assertRaisesRegex(StreamError, "invalid status"):
-                update_stream(stream, original.replace("status: active", "status: nope"))
+                update_stream(path, original.replace("status: active", "status: nope"))
             self.assertEqual(path.read_text(), original)
 
     def test_dry_run_validates_without_writing(self) -> None:
@@ -746,10 +880,9 @@ class UpdateTest(unittest.TestCase):
 
         with tempfile.TemporaryDirectory() as tmp:
             path = write_stream(Path(tmp), "active-stream", title="Active Stream")
-            stream = show_stream(path.stem, Path(tmp))
             original = path.read_text()
             candidate = original.replace("Doing work", "Ready for review")
-            findings = update_stream(stream, candidate, dry_run=True)
+            findings = update_stream(path, candidate, dry_run=True)
             self.assertEqual(findings, [])
             self.assertEqual(path.read_text(), original)
 
@@ -758,12 +891,11 @@ class UpdateTest(unittest.TestCase):
 
         with tempfile.TemporaryDirectory() as tmp:
             path = write_stream(Path(tmp), "active-stream", title="Active Stream")
-            stream = show_stream(path.stem, Path(tmp))
             original = path.read_text()
             candidate = original.replace("Doing work", "Ready for review")
             path.write_text(original.replace("Doing work", "Changed elsewhere"))
             with self.assertRaisesRegex(StreamError, "changed since"):
-                update_stream(stream, candidate, if_match=hashlib.sha256(original.encode()).hexdigest())
+                update_stream(path, candidate, if_match=hashlib.sha256(original.encode()).hexdigest())
             self.assertIn("Changed elsewhere", path.read_text())
 
     def test_update_preserves_exact_candidate_and_file_permissions(self) -> None:
@@ -772,9 +904,8 @@ class UpdateTest(unittest.TestCase):
         with tempfile.TemporaryDirectory() as tmp:
             path = write_stream(Path(tmp), "active-stream", title="Active Stream")
             path.chmod(0o600)
-            stream = show_stream(path.stem, Path(tmp))
             candidate = path.read_text().replace("Doing work", "Ready for review")
-            self.assertEqual(update_stream(stream, candidate), [])
+            self.assertEqual(update_stream(path, candidate), [])
             self.assertEqual(path.read_text(), candidate)
             self.assertEqual(path.stat().st_mode & 0o777, 0o600)
 
