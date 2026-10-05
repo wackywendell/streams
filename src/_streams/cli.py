@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import argparse
+import hashlib
 import json
 import sys
 from pathlib import Path
@@ -198,8 +199,14 @@ def command_check(args: argparse.Namespace) -> int:
 def command_update(args: argparse.Namespace) -> int:
     path = resolve_note_path(args.slug)
     candidate = sys.stdin.read()
-    findings = update_stream(path, candidate, dry_run=args.dry_run, if_match=args.if_match)
-    payload = {"slug": path.stem, "path": str(path), "updated": not args.dry_run, "findings": [finding.as_json() for finding in findings]}
+    findings, written = update_stream(path, candidate, dry_run=args.dry_run, if_match=args.if_match)
+    payload = {
+        "slug": path.stem,
+        "path": str(path),
+        "updated": not args.dry_run,
+        "sha256": hashlib.sha256(written.encode("utf-8")).hexdigest(),
+        "findings": [finding.as_json() for finding in findings],
+    }
     if args.json:
         print(json.dumps(payload, indent=2, sort_keys=True))
     else:

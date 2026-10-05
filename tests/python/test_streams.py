@@ -91,6 +91,11 @@ def write_stream(
     return path
 
 
+def dated(text: str) -> str:
+    """`text` as `streams update` writes it: `write_stream` notes have no `updated`, so it's added, dated today."""
+    return text.replace("\n---\n", f"\nupdated: {date.today().isoformat()}\n---\n", 1)
+
+
 class FrontmatterTest(unittest.TestCase):
     def test_round_trip_frontmatter(self) -> None:
         text = render_frontmatter({"title": "Example", "sessions": ["codex:abc"]}, "# Body\n")
@@ -698,7 +703,10 @@ class CliTest(unittest.TestCase):
             args = build_parser().parse_args(["update", "Active Stream", "-n", "--json"])
             self.assertEqual(command_update(args), 0)
             self.assertEqual(path.read_text(), original)
-            self.assertEqual(json.loads(print_mock.call_args.args[0])["updated"], False)
+            payload = json.loads(print_mock.call_args.args[0])
+            self.assertEqual(payload["updated"], False)
+            would_write = dated(original.replace("Doing work", "Ready for review"))
+            self.assertEqual(payload["sha256"], hashlib.sha256(would_write.encode()).hexdigest())
 
     def test_update_writes_validated_stdin_with_base_precondition(self) -> None:
         from _streams.cli import command_update
@@ -714,7 +722,7 @@ class CliTest(unittest.TestCase):
             resolve_mock.return_value = path
             args = build_parser().parse_args(["update", "active-stream", "--if-match", digest])
             self.assertEqual(command_update(args), 0)
-            self.assertEqual(path.read_text(), candidate)
+            self.assertEqual(path.read_text(), dated(candidate))
 
     def test_format_prints_markdown_spec(self) -> None:
         with patch("builtins.print") as print_mock:
@@ -881,7 +889,7 @@ class CliContractTest(unittest.TestCase):
 
             digest = run_cli(root, "read", "broken-stream", "--hash")[1].partition(b"\n")[0].decode()
             code, _, _ = run_cli(root, "update", "broken-stream", "--if-match", digest, stdin=fixed)
-            self.assertEqual((code, path.read_text()), (0, fixed))
+            self.assertEqual((code, path.read_text()), (0, dated(fixed)))
 
 
 class UpdateTest(unittest.TestCase):
@@ -902,8 +910,7 @@ class UpdateTest(unittest.TestCase):
             path = write_stream(Path(tmp), "active-stream", title="Active Stream")
             original = path.read_text()
             candidate = original.replace("Doing work", "Ready for review")
-            findings = update_stream(path, candidate, dry_run=True)
-            self.assertEqual(findings, [])
+            self.assertEqual(update_stream(path, candidate, dry_run=True), ([], dated(candidate)))
             self.assertEqual(path.read_text(), original)
 
     def test_stale_digest_rejects_valid_candidate(self) -> None:
@@ -918,16 +925,37 @@ class UpdateTest(unittest.TestCase):
                 update_stream(path, candidate, if_match=hashlib.sha256(original.encode()).hexdigest())
             self.assertIn("Changed elsewhere", path.read_text())
 
-    def test_update_preserves_exact_candidate_and_file_permissions(self) -> None:
+    def test_update_dates_the_candidate_and_keeps_its_other_bytes_and_file_permissions(self) -> None:
         from _streams.store import update_stream
 
         with tempfile.TemporaryDirectory() as tmp:
             path = write_stream(Path(tmp), "active-stream", title="Active Stream")
             path.chmod(0o600)
-            candidate = path.read_text().replace("Doing work", "Ready for review")
-            self.assertEqual(update_stream(path, candidate), [])
-            self.assertEqual(path.read_text(), candidate)
+            original = path.read_text().replace("title: Active Stream\n", "title: Active Stream\nupdated: '2020-01-01'  # old\n") + "updated: in the body\n"
+            path.write_text(original)
+            candidate = original.replace("Doing work", "Ready for review")
+            written = candidate.replace("updated: '2020-01-01'  # old", f"updated: '{date.today().isoformat()}'")
+            self.assertEqual(update_stream(path, candidate), ([], written))
+            self.assertEqual(path.read_text(), written)
             self.assertEqual(path.stat().st_mode & 0o777, 0o600)
+
+    def test_update_adds_a_missing_updated_date(self) -> None:
+        from _streams.store import update_stream
+
+        with tempfile.TemporaryDirectory() as tmp:
+            path = write_stream(Path(tmp), "active-stream", title="Active Stream")
+            candidate = path.read_text().replace("Doing work", "Ready for review")
+            update_stream(path, candidate)
+            self.assertEqual(path.read_text(), dated(candidate))
+
+    def test_unchanged_candidate_keeps_its_date(self) -> None:
+        from _streams.store import update_stream
+
+        with tempfile.TemporaryDirectory() as tmp:
+            path = write_stream(Path(tmp), "active-stream", title="Active Stream")
+            original = path.read_text()
+            self.assertEqual(update_stream(path, original), ([], original))
+            self.assertEqual(path.read_text(), original)
 
 
 class CheckTest(unittest.TestCase):

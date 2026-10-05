@@ -109,7 +109,7 @@ If no durable pickup context significantly changed, leave scratch alone.
 
 If context has changed:
 
-- Update relevant frontmatter fields, including `updated`, `status`, `description`, and `state` when they changed.
+- Update relevant frontmatter fields, including `updated` (`streams update` sets it for you), `status`, `description`, and `state` when they changed.
 - Check that `sessions`, `repo`, `cwd`, `prs`, `issues`, and other schema fields cover the current state. Add or update the 2-to-5-word description for every tracked issue and PR.
 - Edit the markdown body so `## Status` is coherent pickup context.
 - If multiple sessions are recorded or their roles are ambiguous, add or refresh `## Sessions`.

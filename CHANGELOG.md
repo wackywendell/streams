@@ -5,6 +5,7 @@
 - `streams read` prints a note exactly as stored, even when it's invalid. `--hash` adds the SHA-256 for `update --if-match`, and `--json` gives parsed frontmatter, contents, hash and findings. `streams update --if-match` can now replace an invalid note
 - **Breaking:** `streams list --json` returns `{"streams": [...], "findings": [...]}` instead of a bare array. An invalid note no longer breaks `list` and every lookup: it's skipped and reported, and `list` exits 1
 - With `--json`, failing commands print `{"error": {"kind", "message", "candidates"}}`, so callers can tell a missing stream from an ambiguous ref or a broken note
+- `streams update` sets `updated` to today when it changes a note, and `--json` reports the SHA-256 of the note as written
 - Malformed refs such as `streams show '!!!'` print a one-line error instead of a Python traceback
 - Pi `stream_read` tool: the main agent can read the bound stream's note, another stream or the pending draft without a path-access prompt ([#3](https://github.com/wackywendell/streams/issues/3))
 - Pi reads notes only through `streams read`, and Apply checks the note against the hash the CLI reports. Receipts, line comments and `stream_read` no longer show note paths, and `stream_read` shows an invalid note with its problems

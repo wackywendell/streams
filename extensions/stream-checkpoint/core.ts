@@ -180,27 +180,29 @@ export function stageDraft(pending: Pending, binding: Binding, content: string, 
 
 export interface ApplyDependencies {
 	read(slug: string): Promise<Note>;
-	update(slug: string, content: string, options: { dryRun?: boolean; ifMatch: string }): Promise<{ slug: string; updated: boolean }>;
+	update(slug: string, content: string, options: { dryRun?: boolean; ifMatch: string }): Promise<{ slug: string; updated: boolean; sha256: string }>;
 	project?(): Promise<void>;
 }
 
 /**
  * Apply only the UI-approved revision; the CLI owns reading, hashing, validation and writing.
  * `--if-match` with the hash of the note as drafted makes the CLI refuse a write over newer changes.
+ * The CLI dates what it writes, so the dry-run's hash, not the draft's bytes, identifies the applied note.
  */
 export async function applyDraft(draft: Draft, approvedRevision: number, deps: ApplyDependencies): Promise<{ written: true; validationError?: string; projectionWarning?: string }> {
 	if (draft.revision !== approvedRevision) throw new Error("Draft revision differs from the approved revision");
 	const current = await deps.read(draft.slug);
-	if (current.content === draft.proposedContent) throw new Error("Draft already applied; do not repeat the write");
-	if (current.content !== draft.baseContent) throw new Error("Scratch changed since this draft was proposed");
 	const ifMatch = current.sha256;
 	const preview = await deps.update(draft.slug, draft.proposedContent, { dryRun: true, ifMatch });
 	if (preview.slug !== draft.slug || preview.updated) throw new Error("Dry-run did not confirm the draft target");
+	if (current.content !== draft.baseContent) {
+		throw new Error(current.sha256 === preview.sha256 ? "Draft already applied; do not repeat the write" : "Scratch changed since this draft was proposed");
+	}
 	try {
 		const applied = await deps.update(draft.slug, draft.proposedContent, { ifMatch });
 		if (applied.slug !== draft.slug || !applied.updated) throw new Error("CLI did not confirm the update");
 	} catch (error) {
-		if ((await deps.read(draft.slug).catch(() => undefined))?.content === draft.proposedContent) {
+		if ((await deps.read(draft.slug).catch(() => undefined))?.sha256 === preview.sha256) {
 			return { written: true, validationError: `Update confirmation failed: ${String(error)}` };
 		}
 		throw error;

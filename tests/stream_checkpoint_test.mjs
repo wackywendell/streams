@@ -45,6 +45,14 @@ function panelFixture(overrides = {}) {
 
 /** A fake `streams read` for tests whose notes are real files. */
 const readFrom = (path) => async () => { const content = readFileSync(path, "utf8"); return { content, sha256: createHash("sha256").update(content).digest("hex") }; };
+/** As `streams update` sets `updated`, a write here dates the note by appending a line. */
+const dated = (content) => `${content}updated: today\n`;
+/** Fakes `streams update` on the note at `path`, calling `onWrite` after a real write. */
+const updateAt = (path, slug, onWrite = () => {}) => async (_slug, content, options) => {
+	const written = dated(content);
+	if (!options.dryRun) { writeFileSync(path, written); onWrite(); }
+	return { slug, path, updated: !options.dryRun, sha256: createHash("sha256").update(written).digest("hex"), findings: [] };
+};
 
 const sampleDraft = { slug: "service", revision: 2, baseContent: "# Jobs\nold\n", proposedContent: "# Jobs\nnew\n" };
 
@@ -1373,7 +1381,7 @@ test("checkpoint creation and Apply use CLI config and emit a registered expanda
 				else if (args[0] === "read") { const note = await readFrom(f.path)(); return { code: 0, stdout: `${note.sha256}\n${note.content}`, stderr: "" }; }
 				else if (args[0] === "update") {
 					if (!args.includes("--dry-run")) writeFileSync(f.path, input);
-					value = { slug: stream.slug, path: stream.path, updated: !args.includes("--dry-run"), findings: [] };
+					value = { slug: stream.slug, path: stream.path, updated: !args.includes("--dry-run"), sha256: "0".repeat(64), findings: [] };
 				} else if (args[0] === "cmux") return { code: outcome === "failed" ? 2 : 0, stdout: "project result", stderr: outcome === "failed" ? "private projection failure" : "" };
 				else assert.fail(args.join(" "));
 				return { code: 0, stdout: JSON.stringify(value), stderr: "" };
@@ -1430,7 +1438,7 @@ for (const ending of ["apply", "clear", "clear without user input"]) {
 				sendMessage: (receipt, options) => { receipts.push(receipt); assert.equal(options.triggerTurn, false); },
 			}, { agentDir: f.dir, runtime: f.conversation.options.runtime, skill: "Test skill",
 				cli: { read: readFrom(f.path), config: async () => ({ cmux: { enabled: false } }), list: async () => [stream], show: async () => stream, format: async () => "format", diagnostics: [],
-					update: async (_slug, content, options) => { if (!options.dryRun) writeFileSync(f.path, content); return { slug: stream.slug, path: f.path, updated: !options.dryRun, findings: [] }; } } });
+					update: updateAt(f.path, stream.slug) } });
 			const ctx = { mode: "tui", hasUI: true, cwd: f.dir, model: f.conversation.options.model, thinkingLevel: "off", sessionManager: f.manager, getSystemPrompt: () => "Test",
 				modelRegistry: { getRegisteredProviderConfig() {}, getRegisteredNativeProvider() {} },
 				ui: { getEditorText: () => "typing", notify() {}, theme: { fg: (_color, text) => text }, setStatus() {},
@@ -1482,7 +1490,7 @@ test("checkpoint tool starts hidden agent checkpoints of the bound stream and re
 		let panel, dismissed = false;
 		const cli = { read: readFrom(f.path), config: async () => ({ cmux: { enabled: false } }), list: async () => Object.values(streams), format: async () => "format", diagnostics: [],
 			show: async (ref) => streams[ref] ?? assert.fail(`unknown stream ${ref}`),
-			update: async (_slug, content, options) => { if (!options.dryRun) writeFileSync(f.path, content); return { slug: "service", path: f.path, updated: !options.dryRun, findings: [] }; } };
+			update: updateAt(f.path, "service") };
 		const api = { registerTool: (tool) => tools.set(tool.name, tool), registerCommand() {}, registerShortcut() {}, registerEntryRenderer() {}, registerMessageRenderer() {},
 			on: (_event, handler) => { shutdown = handler; }, appendEntry: (type, data) => f.manager.appendCustomEntry(type, data),
 			sendMessage: (receipt, options) => { receipts.push(receipt); assert.equal(options.triggerTurn, false); } };
@@ -1629,7 +1637,7 @@ test("CLI diagnostics retain bounded output and exit status but never stdin", as
 	assert.ok(large.diagnostics.length <= 20);
 	assert.ok(large.diagnostics[0].stdout.length < 5000);
 	assert.match(large.diagnostics[0].stdout, /truncated/);
-	const update = new StreamCli("/repo", async () => ({ code: 0, stdout: JSON.stringify({ slug: "example", path: "/notes/example.md", updated: true, findings: [{ level: "warn", slug: "example", message: "missing next action" }] }), stderr: "" }), (text) => warnings.push(text));
+	const update = new StreamCli("/repo", async () => ({ code: 0, stdout: JSON.stringify({ slug: "example", path: "/notes/example.md", updated: true, sha256: "0".repeat(64), findings: [{ level: "warn", slug: "example", message: "missing next action" }] }), stderr: "" }), (text) => warnings.push(text));
 	await update.update("example", "PRIVATE MARKDOWN DO NOT RECORD");
 	assert.doesNotMatch(JSON.stringify(update.diagnostics), /PRIVATE MARKDOWN/);
 	assert.ok(warnings.includes("missing next action"));
@@ -1672,6 +1680,15 @@ test("StreamCli agrees with the real streams CLI on its JSON, read and error con
 		await assert.rejects(cli.update(stream.slug, retitled, { ifMatch: "0".repeat(64) }), /changed/);
 		assert.equal(readFileSync(stream.path, "utf8"), onDisk);
 
+		const old = onDisk.replace(/^updated: .*$/m, "updated: '2020-01-01'");
+		writeFileSync(stream.path, old);
+		const draft = { slug: stream.slug, revision: 1, baseContent: old, proposedContent: old.replace(/^state: .*$/m, "state: Applied by contract test.") };
+		const deps = { read: (slug) => cli.read(slug), update: (slug, content, options) => cli.update(slug, content, options) };
+		assert.deepEqual(await applyDraft(draft, 1, deps), { written: true });
+		const today = new Date().toLocaleDateString("en-CA");
+		assert.equal(readFileSync(stream.path, "utf8"), draft.proposedContent.replace("updated: '2020-01-01'", `updated: '${today}'`), "the CLI dates the write");
+		await assert.rejects(applyDraft(draft, 1, deps), /already applied/, "Pi still recognises its own dated write");
+
 		writeFileSync(join(root, "scratch", "broken.md"), "---\ntitle: Broken\n---\nbody\n");
 		warnings.length = 0;
 		assert.deepEqual((await cli.list()).map((item) => item.slug), [stream.slug]);
@@ -1702,7 +1719,7 @@ test("CLI integration uses show and update without shell interpolation", async (
 	const stream = { slug: "new-stream", path: "/scratch/new-stream.md", title: "New stream", status: "active", state: "Started" };
 	const cli = new StreamCli("/repo", async (args, input) => {
 		calls.push({ args, input });
-		const value = args[0] === "update" ? { slug: stream.slug, path: stream.path, updated: !args.includes("--dry-run"), findings: [] } : stream;
+		const value = args[0] === "update" ? { slug: stream.slug, path: stream.path, updated: !args.includes("--dry-run"), sha256: "0".repeat(64), findings: [] } : stream;
 		return { code: 0, stdout: JSON.stringify(value), stderr: "" };
 	});
 	assert.equal((await cli.show("New stream")).slug, "new-stream");
@@ -1975,8 +1992,7 @@ test("Apply asks CLI to preview and write exactly the approved revision with its
 			read: readFrom(path),
 			update: async (slug, content, options) => {
 				calls.push({ slug, content, options });
-				if (!options.dryRun) writeFileSync(path, content);
-				return { slug, path, updated: !options.dryRun, findings: [] };
+				return updateAt(path, slug)(slug, content, options);
 			},
 			project: async () => {},
 		};
@@ -1989,21 +2005,24 @@ test("Apply asks CLI to preview and write exactly the approved revision with its
 			{ slug: "stream", content: "candidate", options: { dryRun: true, ifMatch: hash } },
 			{ slug: "stream", content: "candidate", options: { ifMatch: hash } },
 		]);
-		await assert.rejects(applyDraft(draft, 3, deps), /already applied/);
+		assert.equal(readFileSync(path, "utf8"), dated("candidate"));
+		await assert.rejects(applyDraft(draft, 3, deps), /already applied/, "The dated note is recognised as this draft");
+		assert.equal(calls.length, 3, "Only a dry run, never a second write");
 	} finally {
 		rmSync(dir, { recursive: true, force: true });
 	}
 });
 
-test("Apply refuses changed scratch before invoking update", async () => {
+test("Apply refuses changed scratch without writing", async () => {
 	const dir = mkdtempSync(join(tmpdir(), "checkpoint-stale-"));
 	try {
 		const path = join(dir, "stream.md");
 		writeFileSync(path, "changed elsewhere");
 		await assert.rejects(applyDraft({ slug: "stream", revision: 1, baseContent: "base", proposedContent: "candidate" }, 1, {
 			read: readFrom(path),
-			update: async () => { throw new Error("should not run"); },
+			update: updateAt(path, "stream", () => { throw new Error("should not write"); }),
 		}), /changed since/);
+		assert.equal(readFileSync(path, "utf8"), "changed elsewhere");
 	} finally {
 		rmSync(dir, { recursive: true, force: true });
 	}
@@ -2016,10 +2035,7 @@ test("Apply treats a failed CLI confirmation after a write as partial success", 
 		writeFileSync(path, "base");
 		const result = await applyDraft({ slug: "stream", revision: 1, baseContent: "base", proposedContent: "candidate" }, 1, {
 			read: readFrom(path),
-			update: async (_slug, content, options) => {
-				if (!options.dryRun) { writeFileSync(path, content); throw new Error("confirmation failed"); }
-				return { slug: "stream", path, updated: false, findings: [] };
-			},
+			update: updateAt(path, "stream", () => { throw new Error("confirmation failed"); }),
 		});
 		assert.equal(result.written, true);
 		assert.match(result.validationError, /confirmation failed/);
@@ -2037,10 +2053,7 @@ test("Apply records projection failure without repeating the CLI write", async (
 		const draft = { slug: "stream", revision: 1, baseContent: "base", proposedContent: "candidate" };
 		const deps = {
 			read: readFrom(path),
-			update: async (slug, content, options) => {
-				if (!options.dryRun) { writes++; writeFileSync(path, content); }
-				return { slug, path, updated: !options.dryRun, findings: [] };
-			},
+			update: updateAt(path, "stream", () => { writes++; }),
 			project: async () => { throw new Error("CMUX unavailable"); },
 		};
 		const result = await applyDraft(draft, 1, deps);

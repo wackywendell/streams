@@ -1,7 +1,8 @@
 import { spawn } from "node:child_process";
 
 type Stream = { slug: string; title: string; status: string; state: string; path: string; [key: string]: unknown };
-type UpdateResult = { slug: string; path: string; updated: boolean; findings: unknown[] };
+/** `sha256` is the hash of the note as written, or as it would be on a dry run. */
+type UpdateResult = { slug: string; path: string; updated: boolean; sha256: string; findings: unknown[] };
 /** A note exactly as stored. `sha256` is the CLI's hash, for `update --if-match`; `findings` is set when the note is invalid. */
 export type Note = { content: string; sha256: string; findings?: string };
 type CommandResult = { code: number | null; stdout: string; stderr: string };
@@ -119,7 +120,7 @@ export class StreamCli {
 		if (options.ifMatch) args.push("--if-match", options.ifMatch);
 		args.push("--json");
 		const value = JSON.parse(await this.run(args, content));
-		if (typeof value?.slug !== "string" || typeof value.path !== "string" || typeof value.updated !== "boolean" || !Array.isArray(value.findings)) {
+		if (typeof value?.slug !== "string" || typeof value.path !== "string" || typeof value.updated !== "boolean" || typeof value.sha256 !== "string" || !Array.isArray(value.findings)) {
 			throw new Error("Invalid streams update response");
 		}
 		const warnings = value.findings.filter((finding: { level?: string; message?: string }) => finding?.level === "warn" && typeof finding.message === "string").slice(0, 16).map((finding: { message: string }) => bounded(finding.message));

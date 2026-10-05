@@ -200,8 +200,11 @@ def start_stream(title: str, *, root: Path | None = None, cwd: Path | None = Non
 
 def update_stream(
     path: Path, content: str, *, dry_run: bool = False, if_match: str | None = None
-) -> list[SchemaFinding]:
+) -> tuple[list[SchemaFinding], str]:
     """Validate complete Markdown and replace an existing stream, optionally guarding its base.
+
+    A write that changes the note sets `updated` to today. Returns the findings
+    and the text now on disk, or that would be with `dry_run`.
 
     An invalid note can be replaced only with `if_match`, so the writer has
     read the broken note it's overwriting.
@@ -228,8 +231,11 @@ def update_stream(
     errors = error_messages(findings)
     if errors:
         raise StreamError(f"invalid stream {slug!r}: {'; '.join(errors)}")
-    if dry_run or original == content.encode("utf-8"):
-        return findings
+    if original == content.encode("utf-8"):
+        return findings, content
+    content = dated_today(content)
+    if dry_run:
+        return findings, content
 
     temporary: Path | None = None
     try:
@@ -248,7 +254,20 @@ def update_stream(
     finally:
         if temporary is not None:
             temporary.unlink(missing_ok=True)
-    return findings
+    return findings, content
+
+
+def dated_today(content: str) -> str:
+    """Set validated Markdown's top-level `updated` to today, in its existing quotes, adding it if missing.
+
+    Every other line keeps its bytes.
+    """
+    today = date.today().isoformat()
+    end = content.find("\n---", 4)
+    head, found = re.subn(r"(?m)^updated:[ \t]*(['\"]?).*$", lambda match: f"updated: {match[1]}{today}{match[1]}", content[:end], count=1)
+    if not found:
+        head += f"\nupdated: {today}"
+    return head + content[end:]
 
 
 def rename_stream(stream: Stream, title: str) -> Stream:
