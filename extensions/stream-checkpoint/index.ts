@@ -180,7 +180,7 @@ export default function registerCheckpoint(pi: ExtensionAPI, testDeps: { agentDi
 		const choosing = ctx.ui.custom<ChosenStream | undefined>((tui, theme, _keys, done) => {
 			phase.dismiss = () => done(undefined);
 			chooser = new StreamChooser(tui, theme, streams, cli, done, recommendations ?? { existing: [] }, options.ref ?? "",
-				{ shortcut: focusShortcut, minimize: () => { phase.handle?.setHidden(true); updateStatus(run); }, finding: phase.finding, reason: options.reason, create: options.create });
+				{ shortcut: focusShortcut, minimize: () => { phase.handle?.setHidden(true); updateStatus(run); }, finding: phase.finding, reason: options.reason, create: options.create, drafting: run.kind === "checkpoint" });
 			return chooser;
 		}, { overlay: true, overlayOptions: { anchor: "center", width: "78%", minWidth: 64, margin: 2, maxHeight: "80%" },
 			onHandle: (handle) => { phase.handle = handle; handle.setHidden(true); updateStatus(run); reveal(); } });

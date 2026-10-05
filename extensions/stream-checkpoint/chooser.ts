@@ -33,10 +33,11 @@ export class StreamChooser implements Component {
 		/**
 		 * `minimize` hides the chooser on `shortcut`; `finding` shows that recommendations are still on their way.
 		 * `reason` says why the chooser opened. `create` opens it editing the suggested new stream, with Esc back to the list.
+		 * `drafting` says a checkpoint draft follows the choice.
 		 */
-		private options: { shortcut?: string; minimize?: () => void; finding?: boolean; reason?: string; create?: boolean } = {},
+		private options: { shortcut?: string; minimize?: () => void; finding?: boolean; reason?: string; create?: boolean; drafting?: boolean } = {},
 	) {
-		this.input.setValue(initialRef);
+		fill(this.input, initialRef);
 		const suggested = recommendations.newStream;
 		if (options.create && suggested) this.editTitle(suggested.title, suggested.reason);
 		this.input.onSubmit = (value) => {
@@ -88,8 +89,8 @@ export class StreamChooser implements Component {
 	private editTitle(title: string, reason?: string): void {
 		this.creating = true;
 		this.creatingReason = reason;
-		this.titleInput.setValue(title);
-		this.status = "Enter creates the stream; the checkpoint draft still needs Apply";
+		fill(this.titleInput, title);
+		this.status = this.options.drafting ? "Enter creates the stream; the checkpoint draft still needs Apply" : "Enter creates the stream";
 	}
 
 	private finish(choice: ChosenStream | undefined): void {
@@ -196,4 +197,10 @@ export class StreamChooser implements Component {
 			this.theme.fg("border", `╰${"─".repeat(inside)}╯`),
 		];
 	}
+}
+
+/** Replaces an input's text with the cursor at the end, where `setValue` alone would leave it at the start. */
+function fill(input: Input, text: string): void {
+	input.setValue("");
+	input.handleInput(text);
 }

@@ -603,6 +603,9 @@ test("create_stream opens the chooser editing the agent's title, and Esc goes ba
 		assert.equal(h.selectorSignal, undefined, "The agent's title replaces the selector model");
 		assert.match(rendered(), /New stream · Edit title[\s\S]*Main agent: Nothing fits/);
 		assert.equal(h.chooser.titleInput.getValue(), "Brand new work");
+		assert.doesNotMatch(rendered(), /Apply/, "Choosing a stream has no draft to apply");
+		h.chooser.handleInput(" v2");
+		assert.equal(h.chooser.titleInput.getValue(), "Brand new work v2", "Typing extends the suggested title");
 		h.chooser.handleInput("\x1b");
 		assert.match(rendered(), /▶ ★ Suggested new: Brand new work[\s\S]*Main agent: Nothing fits[\s\S]*Service/, "Esc goes back to the list");
 		h.chooser.handleInput("\x1b");
@@ -1215,7 +1218,7 @@ test("suggested new stream opens an editable title and the second Enter creates"
 		previewStart: async (title) => { calls.push(`preview:${title}`); return proposed; },
 		start: async (title) => { calls.push(`start:${title}`); return proposed; },
 		list: async () => [existing], show: async () => existing,
-	}, (choice) => { chosen = choice; }, { existing: [], newStream: { title: "New Stream", reason: "Different scope" } });
+	}, (choice) => { chosen = choice; }, { existing: [], newStream: { title: "New Stream", reason: "Different scope" } }, "", { drafting: true });
 	const view = chooser.render(80).join("\n");
 	assert.match(view, /▶ ★ Suggested new: New Stream/);
 	assert.match(view, /Different scope/);
@@ -1224,6 +1227,7 @@ test("suggested new stream opens an editable title and the second Enter creates"
 	assert.deepEqual(calls, []);
 	assert.equal(chosen, undefined);
 	assert.equal(chooser.titleInput.getValue(), "New Stream");
+	assert.match(chooser.render(80).join("\n"), /the checkpoint draft still needs Apply/);
 	assert.doesNotMatch(chooser.render(80).join("\n"), /y\/n/);
 	chooser.handleInput("\x1b");
 	assert.equal(chosen, undefined);
