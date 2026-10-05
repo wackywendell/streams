@@ -2,7 +2,7 @@ import { existsSync, mkdirSync, readFileSync, renameSync, unlinkSync, writeFileS
 import { dirname, join } from "node:path";
 import { createHash, randomUUID } from "node:crypto";
 import type { KeyId } from "@earendil-works/pi-tui";
-import type { Note, StreamCli } from "./streams.ts";
+import { StreamsCliError, type Note, type StreamCli } from "./streams.ts";
 import type { Annotation, AnnotationEditor, Feedback } from "./review.ts";
 import { isSeq, parseDocument } from "yaml";
 
@@ -64,6 +64,25 @@ export async function selectStream(ref: string, binding: Binding | undefined, cl
 	const streams = await cli.list();
 	if (ref.trim()) return cli.show(ref.trim());
 	return binding ? streams.find((stream) => stream.slug === binding.slug && stream.path === binding.path) : undefined;
+}
+
+/**
+ * The stream whose slug is exactly `slug`, for tools that must not guess. A title, prefix or unknown
+ * slug fails, naming the streams it matched or the slugs containing it; other failures, such as a broken note, pass through.
+ */
+export async function exactStream(slug: string, cli: Pick<StreamCli, "list" | "show">): Promise<Awaited<ReturnType<StreamCli["show"]>>> {
+	let candidates: string[] = [];
+	try {
+		const stream = await cli.show(slug);
+		if (stream.slug === slug) return stream;
+		candidates = [stream.slug];
+	} catch (error) {
+		if (!(error instanceof StreamsCliError && ["not-found", "ambiguous", "invalid-ref"].includes(error.kind ?? ""))) throw error;
+		candidates = error.candidates;
+	}
+	if (!candidates.length) candidates = (await cli.list()).map((stream) => stream.slug).filter((candidate) => candidate.includes(slug));
+	const similar = candidates.length ? ` Close matches: ${candidates.slice(0, 10).join(", ")}.` : "";
+	throw new Error(`No stream has the slug "${slug}".${similar} Pass an exact slug from \`streams list\`, or call create_stream if no stream fits.`);
 }
 
 export interface Recommendations {

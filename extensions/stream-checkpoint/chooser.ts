@@ -15,6 +15,8 @@ export class StreamChooser implements Component {
 	private selected = 0;
 	private expanded = false;
 	private creating = false;
+	/** Why the title being edited was suggested, if it was. */
+	private creatingReason?: string;
 	private closed = false;
 	private busy = false;
 	private moved = false;
@@ -28,10 +30,15 @@ export class StreamChooser implements Component {
 		private done: (choice: ChosenStream | undefined) => void,
 		private recommendations: Recommendations = { existing: [] },
 		initialRef = "",
-		/** `minimize` hides the chooser on `shortcut`; `finding` shows that recommendations are still on their way. */
-		private options: { shortcut?: string; minimize?: () => void; finding?: boolean } = {},
+		/**
+		 * `minimize` hides the chooser on `shortcut`; `finding` shows that recommendations are still on their way.
+		 * `reason` says why the chooser opened. `create` opens it editing the suggested new stream, with Esc back to the list.
+		 */
+		private options: { shortcut?: string; minimize?: () => void; finding?: boolean; reason?: string; create?: boolean } = {},
 	) {
 		this.input.setValue(initialRef);
+		const suggested = recommendations.newStream;
+		if (options.create && suggested) this.editTitle(suggested.title, suggested.reason);
 		this.input.onSubmit = (value) => {
 			const choice = this.choices()[this.selected];
 			if (!value.trim() && choice) this.choose(choice);
@@ -74,11 +81,13 @@ export class StreamChooser implements Component {
 
 	private choose(choice: ChooserChoice): void {
 		if (choice.kind === "existing") this.finish({ stream: choice.stream, created: false });
-		else this.editTitle(choice.kind === "new" ? choice.title : "");
+		else if (choice.kind === "new") this.editTitle(choice.title, choice.reason);
+		else this.editTitle("");
 	}
 
-	private editTitle(title: string): void {
+	private editTitle(title: string, reason?: string): void {
 		this.creating = true;
+		this.creatingReason = reason;
 		this.titleInput.setValue(title);
 		this.status = "Enter creates the stream; the checkpoint draft still needs Apply";
 	}
@@ -138,17 +147,19 @@ export class StreamChooser implements Component {
 		input.focused = this.focused;
 		const inputLine = input.render(inside)[0] ?? "";
 		const inputRow = this.theme.fg("border", "│") + inputLine + " ".repeat(Math.max(0, inside - visibleWidth(inputLine))) + this.theme.fg("border", "│");
+		const reasonRows = (reason: string) => wrapTextWithAnsi(this.theme.fg("muted", `  ↳ ${reason.replace(/\p{Cc}/gu, "")}`), inside).map((line) => row(line, true));
 		if (this.creating) return [
 			this.theme.fg("border", `╭${"─".repeat(inside)}╮`),
 			row("New stream · Edit title"), inputRow,
+			...(this.creatingReason ? reasonRows(this.creatingReason) : []),
 			row(this.busy ? "Creating stream…" : this.status),
 			row(this.busy ? "Please wait for creation to finish" : "Enter Create · Esc Back"),
 			this.theme.fg("border", `╰${"─".repeat(inside)}╯`),
 		];
 		const choices = this.choices();
-		const reasonRows = (reason: string) => wrapTextWithAnsi(this.theme.fg("muted", `  ↳ ${reason.replace(/\p{Cc}/gu, "")}`), inside).map((line) => row(line, true));
+		const header = this.options.reason ? wrapTextWithAnsi(this.theme.fg("muted", this.options.reason.replace(/\p{Cc}/gu, "")), inside).map((line) => row(line, true)) : [];
 		const maxHeight = Math.min(36, Math.floor(this.tui.terminal.rows * 0.8));
-		const available = Math.max(1, maxHeight - 7);
+		const available = Math.max(1, maxHeight - 7 - header.length);
 		const renderChoices = (first: number) => {
 			const lines: string[] = [];
 			let used = 0;
@@ -176,6 +187,7 @@ export class StreamChooser implements Component {
 		return [
 			this.theme.fg("border", `╭${"─".repeat(inside)}╮`),
 			row("Select or create a stream"),
+			...header,
 			...(rendered.lines.length ? rendered.lines : [row("No matching streams")]),
 			row(`${this.selected === choices.length - 1 ? "▶" : " "} ${this.theme.fg("accent", "Write your own…")}`, true),
 			inputRow,

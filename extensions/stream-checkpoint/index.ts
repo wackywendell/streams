@@ -7,7 +7,7 @@ import { convertToLlm, getAgentDir, ModelRuntime } from "@earendil-works/pi-codi
 import type { ExtensionAPI, ExtensionCommandContext, ExtensionContext } from "@earendil-works/pi-coding-agent";
 import { Type } from "typebox";
 import { checkpointContext } from "./agent.ts";
-import { BINDING_TYPE, latestBinding, loadConfig, parseRecommendations, readPending, selectStream } from "./core.ts";
+import { BINDING_TYPE, exactStream, latestBinding, loadConfig, parseRecommendations, readPending, selectStream } from "./core.ts";
 import type { Recommendations } from "./core.ts";
 import { CheckpointPanel } from "./panel.ts";
 import { StreamChooser } from "./chooser.ts";
@@ -68,8 +68,11 @@ type OpenCheckpoint = {
 	cancellation: AbortController;
 	/** Set for agent-started runs: drafting starts hidden, and choosing skips the up-front switch confirmation. */
 	author?: Author;
-	/** Set for select_stream runs, which always show the chooser and end once the stream is bound. */
-	select?: { recommendations?: Recommendations };
+	/**
+	 * Set for select_stream and create_stream runs, which always show the chooser and end once the stream is bound.
+	 * `reason` heads a chooser with no recommendation of the agent's; `create` opens it editing the new stream.
+	 */
+	select?: { recommendations?: Recommendations; reason?: string; create?: boolean };
 	slug?: string;
 	choosing?: boolean;
 	finding?: boolean;
@@ -155,7 +158,7 @@ export default function registerCheckpoint(pi: ExtensionAPI, testDeps: { agentDi
 				const choosing = ctx.ui.custom<ChosenStream | undefined>((tui, theme, _keys, done) => {
 					run.dismiss = () => done(undefined);
 					chooser = new StreamChooser(tui, theme, streams, cli, done, recommendations ?? { existing: [] }, ref.trim(),
-						{ shortcut: focusShortcut, minimize: () => { run.handle?.setHidden(true); run.updateStatus?.(); }, finding: !recommendations });
+						{ shortcut: focusShortcut, minimize: () => { run.handle?.setHidden(true); run.updateStatus?.(); }, finding: !recommendations, reason: run.select?.reason, create: run.select?.create });
 					return chooser;
 				}, { overlay: true, overlayOptions: { anchor: "center", width: "78%", minWidth: 64, margin: 2, maxHeight: "80%" },
 					onHandle: (handle) => { run.handle = handle; handle.setHidden(true); run.updateStatus?.(); reveal(); } });
@@ -316,7 +319,7 @@ export default function registerCheckpoint(pi: ExtensionAPI, testDeps: { agentDi
 				const binding = latestBinding(ctx.sessionManager.getEntries(), ownerId);
 				const stream = binding ? await selectStream("", binding, testDeps.cli ?? new StreamCli(ctx.cwd)) : undefined;
 				if (!stream) {
-					return toolResult("needs-stream", `${binding ? `The bound stream ${binding.slug} no longer resolves.` : "No stream is bound to this session."} Call select_stream so the user can choose one, and checkpoint after a receipt confirms the binding.`, { instructionsSent: false });
+					return toolResult("needs-stream", `${binding ? `The bound stream ${binding.slug} no longer resolves.` : "No stream is bound to this session."} Call select_stream (or create_stream) so the user can choose one, and checkpoint after a receipt confirms the binding.`, { instructionsSent: false });
 				}
 				const saved = readPending(agentDir, ownerId, stream.slug);
 				const blocked = !!message && !!(saved?.input.trim() || saved?.annotations?.length || saved?.annotationEditor);
@@ -331,41 +334,74 @@ export default function registerCheckpoint(pi: ExtensionAPI, testDeps: { agentDi
 			},
 		});
 
+		/** The result for a select_stream or create_stream call made while a checkpoint or chooser is open. */
+		const busyResult = () => {
+			const busy = active;
+			if (busy?.choosing) return toolResult("awaiting-stream-choice", "The user is already choosing a stream.", {});
+			if (busy) return toolResult("already-open", `A checkpoint${busy.slug ? ` for ${busy.slug}` : ""} is open. Its stream can change after the user applies or clears it.`, busy.slug ? { slug: busy.slug } : {});
+			return undefined;
+		};
+		const openChooser = (toolCallId: string, ctx: ExtensionContext, select: NonNullable<OpenCheckpoint["select"]>) => {
+			const busy = busyResult();
+			if (busy) return busy;
+			const ownerId = ctx.sessionManager.getSessionId();
+			const run: OpenCheckpoint = { ownerId, snapshot: checkpointContext(ctx.sessionManager, toolCallId), systemPrompt: ctx.getSystemPrompt(),
+				cancellation: new AbortController(), author: "main-agent", select, choosing: true, finding: !select.recommendations };
+			active = run;
+			run.task = open(run, "", "", ctx);
+			return toolResult("awaiting-stream-choice", "The stream chooser is open for the user. It appears once ready, unless they are typing. A receipt arrives here when they choose or cancel. Do not wait for it.", {});
+		};
+		const interactive = (ctx: ExtensionContext, name: string) => { if (ctx.mode !== "tui" || !ctx.hasUI) throw new Error(`${name} requires an interactive Pi terminal`); };
+		const reasonParameter = Type.String({ minLength: 1, description: "One sentence on why, shown to the user in the chooser." });
+
 		pi.registerTool({
 			name: "select_stream",
 			label: "Select stream",
-			description: "Ask the user to choose the stream this session works on, or to switch to another. Opens the stream chooser in the background with your recommendation starred; only the user's choice binds the session. Returns at once with a status: awaiting-stream-choice, already-bound or already-open. A receipt arrives here when the user chooses or cancels.",
+			description: "Ask the user to choose the existing stream this session works on, or to switch to another. Opens the stream chooser in the background; with a slug, that stream is starred with your reason, and without one the chooser suggests streams. Only the user's choice binds the session. Returns at once with a status: awaiting-stream-choice, already-bound or already-open. A receipt arrives here when the user chooses or cancels.",
 			promptSnippet: "Ask the user to choose or switch this session's stream",
 			promptGuidelines: [
 				"Use select_stream when substantive work has no bound stream, or when the work has clearly moved to a different stream. Do not use it to re-confirm the current stream.",
+				"select_stream takes an exact slug from `streams list`, or no slug to let the chooser suggest streams. Use create_stream to propose a new stream.",
 				"select_stream returns at once and the user may choose later; do not wait for it. Call checkpoint only after a receipt confirms the binding.",
 			],
 			parameters: Type.Object({
-				stream: Type.Optional(Type.String({ description: "Recommended stream: an existing stream's slug or title, or a short title for a new stream. Omit to let the chooser suggest streams." })),
-				reason: Type.Optional(Type.String({ description: "One sentence on why the recommended stream fits, shown beside it in the chooser." })),
+				slug: Type.Optional(Type.String({ description: "Exact slug of the existing stream you recommend. Omit to let the chooser suggest streams." })),
+				reason: reasonParameter,
 			}),
 			executionMode: "sequential",
 			async execute(toolCallId, params, _signal, _onUpdate, ctx) {
-				if (ctx.mode !== "tui" || !ctx.hasUI) throw new Error("select_stream requires an interactive Pi terminal");
-				const busy = active;
-				if (busy?.choosing) return toolResult("awaiting-stream-choice", "The user is already choosing a stream.", {});
-				if (busy) return toolResult("already-open", `A checkpoint${busy.slug ? ` for ${busy.slug}` : ""} is open. Its stream can change after the user applies or clears it.`, busy.slug ? { slug: busy.slug } : {});
-				const ownerId = ctx.sessionManager.getSessionId();
-				const binding = latestBinding(ctx.sessionManager.getEntries(), ownerId);
-				const ref = params.stream?.trim() ?? "";
-				const reason = `Main agent: ${params.reason?.trim() || "recommended for this conversation"}`;
-				let recommendations: Recommendations | undefined;
-				if (ref) {
-					// Anything that doesn't resolve is offered as a new title; the user confirms either way.
-					const existing = await (testDeps.cli ?? new StreamCli(ctx.cwd)).show(ref).catch(() => undefined);
-					if (existing && binding?.slug === existing.slug && binding.path === existing.path) return toolResult("already-bound", `This session is already bound to ${existing.slug}.`, { slug: existing.slug });
-					recommendations = existing ? { existing: [{ slug: existing.slug, reason }] } : { existing: [], newStream: { title: ref, reason } };
-				}
-				const run: OpenCheckpoint = { ownerId, snapshot: checkpointContext(ctx.sessionManager, toolCallId), systemPrompt: ctx.getSystemPrompt(),
-					cancellation: new AbortController(), author: "main-agent", select: { recommendations }, choosing: true, finding: !recommendations };
-				active = run;
-				run.task = open(run, "", "", ctx);
-				return toolResult("awaiting-stream-choice", "The stream chooser is open for the user. It appears once ready, unless they are typing. A receipt arrives here when they choose or cancel. Do not wait for it.", {});
+				interactive(ctx, "select_stream");
+				const busy = busyResult();
+				if (busy) return busy;
+				const reason = `Main agent: ${params.reason.trim()}`;
+				const slug = params.slug?.trim();
+				if (!slug) return openChooser(toolCallId, ctx, { reason });
+				const stream = await exactStream(slug, testDeps.cli ?? new StreamCli(ctx.cwd));
+				const binding = latestBinding(ctx.sessionManager.getEntries(), ctx.sessionManager.getSessionId());
+				if (binding?.slug === stream.slug && binding.path === stream.path) return toolResult("already-bound", `This session is already bound to ${stream.slug}.`, { slug: stream.slug });
+				return openChooser(toolCallId, ctx, { recommendations: { existing: [{ slug: stream.slug, reason }] } });
+			},
+		});
+
+		pi.registerTool({
+			name: "create_stream",
+			label: "Create stream",
+			description: "Ask the user to start a new stream for this session's work. Opens the stream chooser in the background, editing your title for the new stream; the user can change it and create the stream, or go back and choose an existing one. Only the user's choice creates a stream or binds the session. Returns at once with a status: awaiting-stream-choice or already-open. A receipt arrives here when the user chooses or cancels.",
+			promptSnippet: "Ask the user to start a new stream for this session",
+			promptGuidelines: [
+				"Use create_stream only when no existing stream fits the work; check `streams list` first, and use select_stream for an existing stream.",
+			],
+			parameters: Type.Object({
+				title: Type.String({ minLength: 1, description: "Short title for the new stream, usually 2–4 words. The user can edit it." }),
+				reason: reasonParameter,
+			}),
+			executionMode: "sequential",
+			async execute(toolCallId, params, _signal, _onUpdate, ctx) {
+				interactive(ctx, "create_stream");
+				const title = params.title.trim();
+				if (!title) throw new Error("create_stream needs a title");
+				const newStream = { title, reason: `Main agent: ${params.reason.trim()}` };
+				return openChooser(toolCallId, ctx, { recommendations: { existing: [], newStream }, create: true });
 			},
 		});
 	}

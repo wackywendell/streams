@@ -16,9 +16,9 @@ const jiti = createJiti(import.meta.url, { alias: { "@earendil-works/pi-coding-a
 const { BorderedLoader, convertToLlm, createAgentSession, DefaultResourceLoader, initTheme, ModelRuntime, SessionManager, SettingsManager } = await import(pathToFileURL(piIndex).href);
 initTheme("dark");
 const { createAssistantMessageEventStream } = await import(pathToFileURL(piAiIndex).href);
-const { loadConfig, latestBinding, applyDraft, readPending, savePending, clearPending, stageDraft, selectStream, parseRecommendations, includeMainSession } = await jiti.import(new URL("../extensions/stream-checkpoint/core.ts", import.meta.url).pathname);
+const { loadConfig, latestBinding, applyDraft, readPending, savePending, clearPending, stageDraft, selectStream, exactStream, parseRecommendations, includeMainSession } = await jiti.import(new URL("../extensions/stream-checkpoint/core.ts", import.meta.url).pathname);
 const { checkpointContext, completedMessages, assertContextFits, createCheckpointSession } = await jiti.import(new URL("../extensions/stream-checkpoint/agent.ts", import.meta.url).pathname);
-const { StreamCli } = await jiti.import(new URL("../extensions/stream-checkpoint/streams.ts", import.meta.url).pathname);
+const { StreamCli, StreamsCliError } = await jiti.import(new URL("../extensions/stream-checkpoint/streams.ts", import.meta.url).pathname);
 const { CheckpointPanel } = await jiti.import(new URL("../extensions/stream-checkpoint/panel.ts", import.meta.url).pathname);
 const { StreamChooser } = await jiti.import(new URL("../extensions/stream-checkpoint/chooser.ts", import.meta.url).pathname);
 const { default: registerCheckpoint, recommendStreams, parseCheckpointArgs } = await jiti.import(new URL("../extensions/stream-checkpoint/index.ts", import.meta.url).pathname);
@@ -443,7 +443,7 @@ function chooserHarness({ stage, editor = "", others = [] } = {}) {
 		registerCommand: (_name, options) => { h.command = options.handler; }, on: (_name, handler) => { h.shutdown = handler; },
 		appendEntry: (type, data) => manager.appendCustomEntry(type, data),
 	}, { agentDir: mkdtempSync(join(tmpdir(), "checkpoint-chooser-")), cli: { config: () => gate("config", { cmux: { enabled: false } }), list: () => gate("list", streams),
-		show: (ref) => { const found = streams.find((item) => ref === item.slug || ref === item.title); return found ? gate("show", found) : Promise.reject(new Error(`No stream ${ref}`)); } } });
+		show: (ref) => { const found = streams.find((item) => ref === item.slug || ref === item.title); return found ? gate("show", found) : Promise.reject(new StreamsCliError(`No stream ${ref}`, "not-found")); } } });
 	h.ctx = { mode: "tui", hasUI: true, cwd: process.cwd(), sessionManager: manager, model: { id: "selector" }, getSystemPrompt: () => "Test",
 		modelRegistry: { complete: (_model, _context, options) => { h.selectorSignal = options?.signal; return gate("recommendations", { content: [{ type: "text", text: '{"existing":[{"slug":"service","reason":"Fits"}]}' }] }); } },
 		ui: { notify: (text) => assert.fail(text), setStatus: (_key, value) => h.statuses.push(value), getEditorText: () => h.editor, theme: { fg: (_color, text) => text },
@@ -527,6 +527,19 @@ test("Esc in the chooser stops a pending recommendation lookup", async () => {
 	} finally { await h.shutdown?.(); }
 });
 
+test("exactStream accepts only an exact slug, and names close matches otherwise", async () => {
+	const streams = [{ slug: "retry-work", title: "Retry work" }, { slug: "retry-docs", title: "Retry docs" }, { slug: "other", title: "Other" }];
+	const cli = (show) => ({ list: async () => streams, show });
+	const byTitle = cli(async (ref) => streams.find((item) => item.slug === ref || item.title === ref) ?? Promise.reject(new StreamsCliError("missing", "not-found")));
+	assert.equal((await exactStream("other", byTitle)).slug, "other");
+	await assert.rejects(exactStream("Other", byTitle), /No stream has the slug "Other"\. Close matches: other\. [\s\S]*create_stream/);
+	await assert.rejects(exactStream("retry", byTitle), /Close matches: retry-work, retry-docs\./);
+	await assert.rejects(exactStream("ret", cli(async () => { throw new StreamsCliError("ambiguous", "ambiguous", ["retry-docs", "retry-work"]); })), /Close matches: retry-docs, retry-work\./);
+	await assert.rejects(exactStream("!!!", cli(async () => { throw new StreamsCliError("bad ref", "invalid-ref"); })), /No stream has the slug "!!!"\. Pass an exact slug/);
+	await assert.rejects(exactStream("other", cli(async () => { throw new StreamsCliError("other.md is invalid", "invalid-stream"); })), /^Error: other\.md is invalid$/,
+		"A broken note is reported as itself, not as a missing stream");
+});
+
 test("select_stream offers the agent's recommendation and reports the user's choice", async () => {
 	const { renderCheckpointReceipt } = await jiti.import(new URL("../extensions/stream-checkpoint/receipt.ts", import.meta.url).pathname);
 	const h = chooserHarness({ stage: "recommendations", editor: "typing", others: [{ slug: "other", title: "Other work", path: "/unused/other.md", status: "active", state: "Work" }] });
@@ -535,16 +548,20 @@ test("select_stream offers the agent's recommendation and reports the user's cho
 	const binding = () => latestBinding(h.manager.getEntries(), h.manager.getSessionId())?.slug;
 	const rendered = () => h.chooser.render(100).join("\n");
 	try {
-		await assert.rejects(tool.execute("call-0", {}, undefined, undefined, { ...h.ctx, mode: "print" }), /interactive Pi terminal/);
+		await assert.rejects(tool.execute("call-0", { reason: "Fits" }, undefined, undefined, { ...h.ctx, mode: "print" }), /interactive Pi terminal/);
 		assert.match(tool.promptGuidelines.join("\n"), /no bound stream/);
+		await assert.rejects(call({ slug: "Other work", reason: "Fits" }, "call-0"), /No stream has the slug "Other work"\. Close matches: other\./, "A title is not a slug");
+		await assert.rejects(call({ slug: "oth", reason: "Fits" }, "call-0"), /Close matches: other\./);
+		assert.equal(h.dialogs, 0);
 
-		assert.deepEqual(await call({ stream: "Other work", reason: "Same retry code" }, "call-1"), { status: "awaiting-stream-choice" });
+		assert.deepEqual(await call({ slug: "other", reason: "Same retry code" }, "call-1"), { status: "awaiting-stream-choice" });
 		await until(() => !!h.chooser);
 		assert.equal(h.handle.hidden, true, "The user is typing, so the chooser stays minimized");
 		assert.equal(h.statuses.at(-1), "Checkpoint · Choose stream · Alt+P");
 		assert.equal(h.selectorSignal, undefined, "An agent recommendation replaces the selector model");
 		assert.match(rendered(), /▶ ★ Other work[\s\S]*Main agent: Same retry code/);
-		assert.deepEqual(await call({}, "call-2"), { status: "awaiting-stream-choice" });
+		assert.deepEqual(await call({ reason: "Again" }, "call-2"), { status: "awaiting-stream-choice" });
+		assert.deepEqual((await h.tools.get("create_stream").execute("call-2b", { title: "New", reason: "Again" }, undefined, undefined, h.ctx)).details, { status: "awaiting-stream-choice" });
 		assert.deepEqual((await h.tools.get("checkpoint").execute("call-3", { instructions: "Record it" }, undefined, undefined, h.ctx)).details,
 			{ status: "awaiting-stream-choice", instructionsSent: false });
 		h.shortcut(h.ctx);
@@ -557,29 +574,39 @@ test("select_stream offers the agent's recommendation and reports the user's cho
 		assert.ok(h.manager.getEntries().every((entry) => entry.customType !== "checkpoint-start"), "Choosing a stream starts no checkpoint");
 		await turn();
 
-		assert.deepEqual(await call({ stream: "other" }, "call-4"), { status: "already-bound", slug: "other" });
+		assert.deepEqual(await call({ slug: "other", reason: "Fits" }, "call-4"), { status: "already-bound", slug: "other" });
 		assert.equal(h.dialogs, 1);
 
 		h.editor = "";
-		assert.deepEqual(await call({ stream: "Brand new work", reason: "Nothing fits" }, "call-5"), { status: "awaiting-stream-choice" });
-		await until(() => h.dialogs === 2 && h.handle.hidden === false);
-		assert.match(rendered(), /★ Suggested new: Brand new work[\s\S]*Main agent: Nothing fits/);
-		h.chooser.handleInput("\x1b");
-		await until(() => h.receipts.length === 2);
-		assert.equal(h.receipts[1].content, "The user closed the stream chooser without choosing. This session is still bound to other.");
-		assert.equal(binding(), "other");
-		await turn();
-
-		assert.deepEqual(await call({}, "call-6"), { status: "awaiting-stream-choice" });
+		assert.deepEqual(await call({ reason: "The work moved" }, "call-6"), { status: "awaiting-stream-choice" });
 		await until(() => !!h.pending);
-		assert.equal(h.handle.hidden, true, "Without a recommendation, the chooser waits for the selector model");
+		assert.equal(h.handle.hidden, true, "Without a slug, the chooser waits for the selector model");
 		h.pending();
 		await until(() => h.handle.hidden === false);
-		assert.match(rendered(), /▶ ★ Service[\s\S]*Fits/);
+		assert.match(rendered(), /Select or create a stream[^\n]*\n[^\n]*Main agent: The work moved[\s\S]*▶ ★ Service[\s\S]*Fits/);
 		h.chooser.handleInput("\r");
-		await until(() => h.receipts.length === 3);
+		await until(() => h.receipts.length === 2);
 		assert.equal(binding(), "service");
 	} finally { h.pending?.(); await h.shutdown?.(); }
+});
+
+test("create_stream opens the chooser editing the agent's title, and Esc goes back to the list", async () => {
+	const h = chooserHarness();
+	const tool = h.tools.get("create_stream");
+	const rendered = () => h.chooser.render(100).join("\n");
+	try {
+		await assert.rejects(tool.execute("call-0", { title: "Brand new work", reason: "Nothing fits" }, undefined, undefined, { ...h.ctx, mode: "print" }), /interactive Pi terminal/);
+		assert.deepEqual((await tool.execute("call-1", { title: " Brand new work ", reason: "Nothing fits" }, undefined, undefined, h.ctx)).details, { status: "awaiting-stream-choice" });
+		await until(() => h.dialogs === 1 && h.handle.hidden === false);
+		assert.equal(h.selectorSignal, undefined, "The agent's title replaces the selector model");
+		assert.match(rendered(), /New stream · Edit title[\s\S]*Main agent: Nothing fits/);
+		assert.equal(h.chooser.titleInput.getValue(), "Brand new work");
+		h.chooser.handleInput("\x1b");
+		assert.match(rendered(), /▶ ★ Suggested new: Brand new work[\s\S]*Main agent: Nothing fits[\s\S]*Service/, "Esc goes back to the list");
+		h.chooser.handleInput("\x1b");
+		await until(() => h.receipts.length === 1);
+		assert.equal(h.receipts[0].content, "The user closed the stream chooser without choosing. No stream is bound to this session.");
+	} finally { await h.shutdown?.(); }
 });
 
 test("setup failure retains a user-only source marker with inspectable error instead of opening a panel", async () => {
