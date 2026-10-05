@@ -20,18 +20,40 @@ export interface PanelState {
 	annotationEditor?: AnnotationEditor;
 }
 
+/** The part of the state a user edits before sending it; see `CheckpointConversation.editFeedback`. */
+export type UnsentFeedback = Pick<PanelState, "input" | "annotations" | "annotationEditor">;
+
+const TAG = /^\[streams (kickoff|feedback) ([0-9a-f]+)\]\n/;
+
+/** Prefixes a message for the checkpoint agent with a tag line, so the transcript can recognize it however it is worded. */
+export function tagMessage(kind: "kickoff" | "feedback", id: string, text: string): string {
+	return `[streams ${kind} ${id}]\n${text}`;
+}
+
+function messageTag(text: string): { kind: string; id: string; body: string } | undefined {
+	const match = TAG.exec(text);
+	return match ? { kind: match[1], id: match[2], body: text.slice(match[0].length) } : undefined;
+}
+
 export function messageText(message: Extract<AgentMessage, { role: "user" | "assistant" }>): string {
 	return typeof message.content === "string" ? message.content
 		: message.content.filter((part) => part.type === "text").map((part) => part.text).join("\n");
 }
 
+/**
+ * The messages to show: the kickoff is hidden, and feedback is shown as the user wrote it. Messages are recognized
+ * by their tags; ones saved before tagging are matched by text, against `kickoff` and each feedback prompt.
+ */
 export function transcript(messages: AgentMessage[], feedback: Feedback[], kickoff: string): ChatMessage[] {
 	return messages.flatMap((message): ChatMessage[] => {
 		if (message.role !== "user" && message.role !== "assistant") return [];
 		const text = messageText(message);
-		if (!text || (message.role === "user" && text === kickoff)) return [];
-		const sent = message.role === "user" ? feedback.find((entry) => entry.prompt === text) : undefined;
-		return [{ role: message.role, text: sent?.text ?? text, ...(sent?.annotations.length ? { annotations: sent.annotations } : {}), ...(sent?.author ? { author: sent.author } : {}) }];
+		if (!text) return [];
+		if (message.role === "assistant") return [{ role: "assistant", text }];
+		const tag = messageTag(text);
+		if (tag ? tag.kind === "kickoff" : text === kickoff) return [];
+		const sent = feedback.find((entry) => tag ? entry.id === tag.id : entry.prompt === text);
+		return [{ role: "user", text: sent?.text ?? tag?.body ?? text, ...(sent?.annotations.length ? { annotations: sent.annotations } : {}), ...(sent?.author ? { author: sent.author } : {}) }];
 	});
 }
 

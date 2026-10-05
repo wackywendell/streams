@@ -19,6 +19,7 @@ const { createAssistantMessageEventStream } = await import(pathToFileURL(piAiInd
 const { loadConfig, latestBinding, applyDraft, readPending, savePending, clearPending, stageDraft, selectStream, exactStream, parseRecommendations, includeMainSession } = await jiti.import(new URL("../extensions/stream-checkpoint/core.ts", import.meta.url).pathname);
 const { checkpointContext, completedMessages, assertContextFits, createCheckpointSession } = await jiti.import(new URL("../extensions/stream-checkpoint/agent.ts", import.meta.url).pathname);
 const { StreamCli, StreamsCliError } = await jiti.import(new URL("../extensions/stream-checkpoint/streams.ts", import.meta.url).pathname);
+const { tagMessage, transcript } = await jiti.import(new URL("../extensions/stream-checkpoint/view.ts", import.meta.url).pathname);
 const { CheckpointPanel } = await jiti.import(new URL("../extensions/stream-checkpoint/panel.ts", import.meta.url).pathname);
 const { StreamChooser } = await jiti.import(new URL("../extensions/stream-checkpoint/chooser.ts", import.meta.url).pathname);
 const { default: registerCheckpoint, recommendStreams, parseCheckpointArgs } = await jiti.import(new URL("../extensions/stream-checkpoint/index.ts", import.meta.url).pathname);
@@ -36,7 +37,7 @@ function panelFixture(overrides = {}) {
 		send: () => { events.push("send"); }, apply: () => { events.push("apply"); },
 		refresh: () => { events.push("refresh"); }, clear: () => { events.push("clear"); },
 		stop: () => { events.push("stop"); }, focusMain: () => { events.push("hide"); },
-		changed: () => { events.push("changed"); },
+		editFeedback: (change) => { change(state); events.push("changed"); },
 	};
 	const panel = new CheckpointPanel({ terminal: { rows: 30 }, requestRender() {} }, { fg: (_color, text) => text }, state, actions);
 	return { panel, state, events };
@@ -258,7 +259,7 @@ test("command instructions replace the fresh kickoff, remain visible and survive
 		f.conversation.state.input = "";
 		const opening = f.conversation.start("let's park this");
 		await until(() => f.contexts.length === 1);
-		assert.equal(f.contexts[0].messages.at(-1).content[0].text, "let's park this");
+		assert.match(f.contexts[0].messages.at(-1).content[0].text, /^\[streams feedback [0-9a-f]{8}\]\nlet's park this$/);
 		assert.equal(f.conversation.state.messages.at(-1).text, "let's park this");
 		assert.equal(f.conversation.state.input, "");
 		assert.match(JSON.stringify(readPending(f.dir, f.pending.ownerId, "service").messages), /let's park this/);
@@ -374,7 +375,8 @@ for (const selection of ["bound", "chooser", "explicit"]) {
 			assert.doesNotMatch(JSON.stringify(f.contexts[0]), /Arrived after invocation/);
 			assert.equal(readPending(f.dir, f.pending.ownerId, stream.slug).source.leafId, sourceLeaf);
 			assert.equal(panel.state.messages.at(-1).text, message);
-			assert.equal(f.contexts[0].messages.at(-1).content[0].text, message);
+			const sentFirst = new RegExp(`^\\[streams feedback [0-9a-f]{8}\\]\\n${message}$`);
+			assert.match(f.contexts[0].messages.at(-1).content[0].text, sentFirst);
 			assert.deepEqual(shown, selection === "explicit" ? [stream.title] : []);
 			assert.equal(latestBinding(f.manager.getEntries(), f.pending.ownerId).slug, stream.slug);
 			await command("Do not queue while drafting", ctx);
@@ -407,7 +409,7 @@ for (const selection of ["bound", "chooser", "explicit"]) {
 			assert.equal(handle.hidden, false, "Existing unfinished work opens immediately");
 			assert.notEqual(panel, originalPanel);
 			assert.equal(panel.state.messages.at(-1).text, "Resume with this instruction");
-			assert.equal(f.contexts[2].messages.filter((item) => item.role === "user" && item.content[0]?.text === message).length, 1);
+			assert.equal(f.contexts[2].messages.filter((item) => item.role === "user" && sentFirst.test(item.content[0]?.text)).length, 1);
 			assert.doesNotMatch(JSON.stringify(f.contexts), /Draft a handoff|Do not queue/);
 			f.finish();
 			await until(() => panel.state.activity === null);
@@ -817,6 +819,26 @@ test("LLM recommendations are advisory and grounded in the full current branch a
 	assert.match(seen.systemPrompt, /description and state/);
 });
 
+test("the transcript recognizes messages by tag, and untagged ones saved before tagging by text", () => {
+	const user = (text) => ({ role: "user", content: [{ type: "text", text }], timestamp: 0 });
+	const feedback = [
+		{ id: "aaaa1111", prompt: tagMessage("feedback", "aaaa1111", "same words"), text: "first", annotations: [] },
+		{ id: "bbbb2222", prompt: tagMessage("feedback", "bbbb2222", "same words"), text: "second", annotations: [], author: "main-agent" },
+		{ prompt: "legacy prompt", text: "legacy", annotations: [] },
+	];
+	const messages = [
+		user(tagMessage("kickoff", "cccc3333", "An older kickoff wording")),
+		user("Current kickoff"),
+		user(feedback[1].prompt), user(feedback[0].prompt), user("legacy prompt"),
+		user(tagMessage("feedback", "dddd4444", "unrecorded")),
+		{ role: "assistant", content: [{ type: "text", text: "Reply" }], timestamp: 0 },
+	];
+	assert.deepEqual(transcript(messages, feedback, "Current kickoff"), [
+		{ role: "user", text: "second", author: "main-agent" }, { role: "user", text: "first" }, { role: "user", text: "legacy" },
+		{ role: "user", text: "unrecorded" }, { role: "assistant", text: "Reply" },
+	]);
+});
+
 test("fresh kickoff is model context, never visible chat, and resume never starts another draft", async () => {
 	const f = await conversationFixture();
 	try {
@@ -824,8 +846,10 @@ test("fresh kickoff is model context, never visible chat, and resume never start
 		f.conversation.state.input = "";
 		const opening = f.conversation.start();
 		await until(() => f.contexts.length === 1);
-		assert.match(JSON.stringify(f.contexts[0]), /Draft a handoff/);
+		assert.match(f.contexts[0].messages.at(-1).content[0].text, /^\[streams kickoff [0-9a-f]{8}\]\n.*Draft a handoff/s);
 		assert.deepEqual(f.conversation.state.messages, []);
+		assert.equal(f.conversation.editFeedback((feedback) => { feedback.input = "typed while drafting"; }), false);
+		assert.equal(f.conversation.state.input, "");
 		f.finish();
 		await opening;
 		assert.deepEqual(f.conversation.state.messages.map((message) => message.text), ["Response ready"]);
@@ -923,7 +947,7 @@ test("refresh keeps the original review snapshot when scratch changes externally
 	try {
 		await f.conversation.start();
 		const draft = stageDraft(f.pending, f.conversation.options.binding, "proposed", "Updated", readFileSync(f.path, "utf8"));
-		f.conversation.state.draft = draft;
+		f.pending.draft = f.conversation.state.draft = draft;
 		writeFileSync(f.path, "external change");
 		await f.conversation.refreshContext();
 		assert.equal(f.conversation.state.draft.baseContent, "scratch unchanged");
@@ -1742,12 +1766,13 @@ test("drafts include the owning Pi session once without changing the body", () =
 	assert.throws(() => includeMainSession("---\ntitle: Stream\n---\n", "owner"), /sessions list/);
 });
 
-test("proposal staging changes only pending state, never scratch", () => {
+test("proposal staging builds the next revision without changing pending state or scratch", () => {
 	const pending = { version: 1, ownerId: "main", slug: "stream", messages: [], input: "" };
 	const binding = { ownerId: "main", slug: "stream", path: "/unused/stream.md" };
 	const draft = stageDraft(pending, binding, "proposal", "Clarify state", "original");
 	assert.deepEqual(draft, { slug: "stream", revision: 1, baseContent: "original", proposedContent: "proposal", summary: "Clarify state" });
-	assert.equal(pending.draft, draft);
+	assert.equal(pending.draft, undefined);
+	pending.draft = draft;
 	assert.equal(stageDraft(pending, binding, "revision", "Second", "original").revision, 2);
 	assert.throws(() => stageDraft(pending, { ...binding, slug: "other" }, "x", "y", "original"), /does not belong/);
 });

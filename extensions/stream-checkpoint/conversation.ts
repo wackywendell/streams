@@ -1,3 +1,4 @@
+import { randomUUID } from "node:crypto";
 import type { AgentMessage } from "@earendil-works/pi-agent-core";
 import type { AgentSession, ExtensionContext, ModelRuntime } from "@earendil-works/pi-coding-agent";
 import type { Model } from "@earendil-works/pi-ai/compat";
@@ -6,8 +7,8 @@ import { applyDraft, clearPending, includeMainSession, savePending, stageDraft }
 import type { Binding, Pending } from "./core.ts";
 import { feedbackPrompt } from "./review.ts";
 import type { Author, Feedback } from "./review.ts";
-import { messageText, transcript } from "./view.ts";
-import type { PanelState } from "./view.ts";
+import { messageText, tagMessage, transcript } from "./view.ts";
+import type { PanelState, UnsentFeedback } from "./view.ts";
 import type { StreamCli } from "./streams.ts";
 import type { CmuxOutcome } from "./receipt.ts";
 
@@ -26,7 +27,7 @@ type Options = {
 	applied(summary: string, cmux: CmuxOutcome, warning?: string): void;
 };
 
-/** Owns model operations and durable state; the terminal only edits idle feedback. */
+/** Owns model operations and durable state; the terminal edits only unsent feedback, through `editFeedback`. */
 export class CheckpointConversation {
 	readonly state: PanelState;
 	private side?: AgentSession;
@@ -45,6 +46,17 @@ export class CheckpointConversation {
 	}
 
 	private isOwner(): boolean { return !this.closed && this.options.manager.getSessionId() === this.options.pending.ownerId; }
+
+	/**
+	 * Applies the user's edit to unsent feedback, and saves it. Refused while an operation runs, since sending reads
+	 * and then clears that feedback, or once the checkpoint is applied or cleared.
+	 */
+	editFeedback(change: (feedback: UnsentFeedback) => void): boolean {
+		if (this.state.activity || this.finished) return false;
+		change(this.state);
+		this.persist();
+		return true;
+	}
 
 	persist(): void {
 		if (this.finished) return;
@@ -106,7 +118,7 @@ export class CheckpointConversation {
 				this.state.activity = "drafting";
 				this.options.changed();
 				if (accepted) await this.sendFeedback(author);
-				else await this.prompt(this.kickoff);
+				else await this.prompt(tagMessage("kickoff", randomUUID().slice(0, 8), this.kickoff));
 			}
 		});
 	}
@@ -127,6 +139,7 @@ export class CheckpointConversation {
 				if (!this.isOwner()) throw new Error("Owning Pi session changed; proposal discarded");
 				const base = (await o.cli.read(o.binding.slug)).content;
 				const draft = stageDraft(o.pending, o.binding, includeMainSession(content, o.pending.ownerId), summary, base);
+				o.pending.draft = draft;
 				this.state.draft = draft;
 				this.persist();
 				o.changed();
@@ -197,8 +210,10 @@ export class CheckpointConversation {
 		}
 		const annotations = this.state.annotations.map((annotation) => ({ ...annotation }));
 		const text = this.state.input;
-		const prompt = feedbackPrompt(text, annotations);
-		this.accepting = author ? { text, annotations, author, prompt: `Instructions from the main agent, not the user:\n\n${prompt}` } : { text, annotations, prompt };
+		const body = feedbackPrompt(text, annotations);
+		const id = randomUUID().slice(0, 8);
+		const prompt = tagMessage("feedback", id, author ? `Instructions from the main agent, not the user:\n\n${body}` : body);
+		this.accepting = { id, text, annotations, prompt, ...(author ? { author } : {}) };
 		await this.prompt(this.accepting.prompt);
 	}
 

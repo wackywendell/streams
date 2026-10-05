@@ -13,6 +13,7 @@
 - Pi `select_stream` and `create_stream` tools: the main agent can recommend an existing stream by its exact slug, or propose a title for a new stream, and the user confirms the choice in the chooser. A receipt reports the choice or cancellation
 - The stream chooser no longer blocks behind a loader: recommendations are found in the background, and the chooser opens when they're ready unless you're typing. Alt+P shows or hides it
 - Checkpoint receipts return the side discussion to the main agent: user messages, checkpoint-agent replies and line comments, capped at 16,000 characters. Clear also reports the discussion if the user took part ([#2](https://github.com/wackywendell/streams/issues/2))
+- Messages to the checkpoint agent start with a tag line, such as `[streams feedback 8f3c1a2b]`, which you can search for in session files. The chat recognizes messages by tag, so rewording the kickoff can no longer make it appear as yours
 
 ## 0.1.0 - 2026-10-01
 

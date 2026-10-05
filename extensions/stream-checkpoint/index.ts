@@ -288,7 +288,7 @@ export default function registerCheckpoint(pi: ExtensionAPI, testDeps: { agentDi
 						done();
 					},
 					focusMain: () => { phase.panel?.dispose(); phase.handle?.setHidden(true); updateStatus(run); },
-					changed: () => conversation.persist(),
+					editFeedback: (change) => { conversation.editFeedback(change); },
 				}, focusShortcut);
 				return phase.panel;
 			}, { overlay: true, overlayOptions: { anchor: "right-center", width: "64%", minWidth: 60, margin: { right: 1 }, maxHeight: 36 },

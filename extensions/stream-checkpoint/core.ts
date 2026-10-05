@@ -175,7 +175,6 @@ export function stageDraft(pending: Pending, binding: Binding, content: string, 
 		proposedContent: content,
 		summary,
 	};
-	pending.draft = draft;
 	return draft;
 }
 

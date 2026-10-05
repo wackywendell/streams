@@ -6,7 +6,7 @@ import { anchorAnnotation, annotationContext, diffText, reviewLines, sameAnchor 
 import type { ReviewLine } from "./review.ts";
 import type { Draft } from "./core.ts";
 import { activityLabel, shortcutLabel } from "./view.ts";
-import type { PanelState } from "./view.ts";
+import type { PanelState, UnsentFeedback } from "./view.ts";
 
 export interface PanelActions {
 	send(): void;
@@ -15,7 +15,8 @@ export interface PanelActions {
 	clear(): void;
 	stop(): void;
 	focusMain(): void;
-	changed(): void;
+	/** Edits unsent feedback; the conversation refuses while it is busy. */
+	editFeedback(change: (feedback: UnsentFeedback) => void): void;
 }
 
 const safeText = (text: string) => text.replace(/[\x00-\x09\x0b-\x1f\x7f]/g, "");
@@ -43,9 +44,10 @@ export class CheckpointPanel implements Component {
 		this.input = new Editor(tui, { borderColor: (text) => this.theme.fg("border", text), selectList: getSelectListTheme() });
 		this.input.onChange = (text) => {
 			if (this.syncingInput) return;
-			if (this.tab === "review" && this.state.annotationEditor) this.state.annotationEditor.text = text;
-			else this.state.input = text;
-			this.actions.changed();
+			this.actions.editFeedback((feedback) => {
+				if (this.tab === "review" && feedback.annotationEditor) feedback.annotationEditor.text = text;
+				else feedback.input = text;
+			});
 		};
 		// The controller clears feedback only after the SDK accepts it, not on Enter.
 		this.input.disableSubmit = true;
@@ -74,21 +76,24 @@ export class CheckpointPanel implements Component {
 		const line = this.diff()?.lines[this.selected];
 		if (!line || !this.state.draft) return;
 		const anchor = anchorAnnotation(this.state.draft, line);
-		const existing = this.state.annotations.find((comment) => sameAnchor(comment, anchor));
-		this.state.annotationEditor = { anchor, text: existing?.comment ?? "" };
-		this.actions.changed();
+		this.actions.editFeedback((feedback) => {
+			const existing = feedback.annotations.find((comment) => sameAnchor(comment, anchor));
+			feedback.annotationEditor = { anchor, text: existing?.comment ?? "" };
+		});
 	}
 
 	private saveAnnotation(): void {
-		const editor = this.state.annotationEditor!;
-		const index = this.state.annotations.findIndex((annotation) => sameAnchor(annotation, editor.anchor));
-		const comment = editor.text.trim();
-		if (index >= 0) {
-			if (comment) this.state.annotations[index] = { ...editor.anchor, comment };
-			else this.state.annotations.splice(index, 1);
-		} else if (comment) this.state.annotations.push({ ...editor.anchor, comment });
-		this.state.annotationEditor = undefined;
-		this.actions.changed();
+		this.actions.editFeedback((feedback) => {
+			const editor = feedback.annotationEditor;
+			if (!editor) return;
+			const index = feedback.annotations.findIndex((annotation) => sameAnchor(annotation, editor.anchor));
+			const comment = editor.text.trim();
+			if (index >= 0) {
+				if (comment) feedback.annotations[index] = { ...editor.anchor, comment };
+				else feedback.annotations.splice(index, 1);
+			} else if (comment) feedback.annotations.push({ ...editor.anchor, comment });
+			feedback.annotationEditor = undefined;
+		});
 	}
 
 	private syncInput(): void {
@@ -111,7 +116,7 @@ export class CheckpointPanel implements Component {
 			this.tab = this.tab === "chat" ? "review" : "chat";
 		} else if (matchesKey(data, "ctrl+c")) {
 			if (this.state.activity === "drafting") this.actions.stop();
-			else if (!this.state.activity && this.state.annotationEditor) { this.state.annotationEditor = undefined; this.actions.changed(); }
+			else if (this.state.annotationEditor) this.actions.editFeedback((feedback) => { feedback.annotationEditor = undefined; });
 		} else if (matchesKey(data, "alt+a") && this.tab === "chat") {
 			this.expandedAnnotations = !this.expandedAnnotations;
 		} else if (matchesKey(data, "pageUp") || matchesKey(data, "pageDown")) {
