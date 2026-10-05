@@ -1908,6 +1908,31 @@ test("checkpoint context excludes an unfinished tool-call batch", () => {
 	assert.equal(checkpointContext(manager).omitted, 1);
 });
 
+test("checkpoint context keeps the text of the message that called checkpoint", () => {
+	const manager = SessionManager.inMemory(process.cwd());
+	const assistant = { provider: "test", model: "test", api: "test", usage: { input: 0, output: 0 }, timestamp: Date.now() };
+	manager.appendMessage({ role: "user", content: [{ type: "text", text: "pick one" }], timestamp: Date.now() });
+	manager.appendMessage({ ...assistant, role: "assistant", stopReason: "toolUse", content: [
+		{ type: "thinking", thinking: "weighing", thinkingSignature: "sig" },
+		{ type: "text", text: "We chose B because A leaks." },
+		{ type: "toolCall", id: "call-read", name: "read", arguments: { path: "file" } },
+		{ type: "toolCall", id: "call-cp", name: "checkpoint", arguments: {} },
+	] });
+	manager.appendMessage({ role: "toolResult", toolCallId: "call-read", toolName: "read", content: [{ type: "text", text: "contents" }], isError: false, timestamp: Date.now() });
+	const snapshot = checkpointContext(manager, "call-cp");
+	assert.deepEqual(snapshot.messages.map((message) => [message.role, message.content]), [
+		["user", [{ type: "text", text: "pick one" }]],
+		["assistant", [{ type: "text", text: "We chose B because A leaks." }]],
+	], "Only the caller's text survives: no thinking, tool calls or batch results");
+	assert.equal(snapshot.messages[1].stopReason, "stop");
+	assert.equal(snapshot.omitted, 0);
+
+	const silent = SessionManager.inMemory(process.cwd());
+	silent.appendMessage({ role: "user", content: [{ type: "text", text: "go" }], timestamp: Date.now() });
+	silent.appendMessage({ ...assistant, role: "assistant", stopReason: "toolUse", content: [{ type: "toolCall", id: "call-cp", name: "checkpoint", arguments: {} }] });
+	assert.equal(checkpointContext(silent, "call-cp").messages.length, 1, "A caller with no text adds nothing");
+});
+
 test("explicit stream choice resolves through show; bound choice stays exact and session-wide", async () => {
 	const streams = [
 		{ slug: "alpha", title: "Alpha", status: "active", state: "Working", path: "/scratch/alpha.md" },

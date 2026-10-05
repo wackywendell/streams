@@ -22,13 +22,21 @@ export function completedMessages(messages: AgentMessage[]): AgentMessage[] {
 
 /**
  * Follow Pi's compaction and context edits, then drop incomplete trailing tool batches.
- * A checkpoint started by a tool call drops that call's own batch without reporting it as omitted.
+ * A checkpoint started by a tool call drops that call's own batch without reporting it as omitted,
+ * but keeps the calling message's text, which often explains what the checkpoint should record.
+ * Its thinking goes too: signed reasoning detached from its tool calls may not replay on another model.
  */
 export function checkpointContext(manager: ExtensionContext["sessionManager"], callerToolCallId?: string): { messages: AgentMessage[]; leafId: string | null; omitted: number } {
 	const projection = manager.buildSessionProjection().messages;
-	const messages = completedMessages(projection);
 	const caller = projection.find((message) => message.role === "assistant" && message.content.some((item) => item.type === "toolCall" && item.id === callerToolCallId));
 	const callerCalls = new Set(caller?.role === "assistant" ? caller.content.flatMap((item) => item.type === "toolCall" ? [item.id] : []) : []);
+	const callerText = caller?.role === "assistant" ? caller.content.filter((item) => item.type === "text" && item.text.trim()) : [];
+	const messages = caller?.role === "assistant"
+		? completedMessages(projection.flatMap((message) => {
+			if (message === caller) return callerText.length ? [{ ...caller, content: callerText, stopReason: "stop" as const }] : [];
+			return message.role === "toolResult" && callerCalls.has(message.toolCallId) ? [] : [message];
+		}))
+		: completedMessages(projection);
 	const omitted = projection.filter((message) => !messages.includes(message) && message !== caller && !(message.role === "toolResult" && callerCalls.has(message.toolCallId))).length;
 	return { messages: structuredClone(messages), leafId: manager.getLeafId(), omitted };
 }
