@@ -67,7 +67,7 @@ export class StreamChooser implements Component {
 
 	private choices(): ChooserChoice[] {
 		const query = this.input.getValue().trim().toLowerCase();
-		const matching = this.streams.filter((item) => item.status !== "archived" && (!query || `${item.title} ${item.slug}`.toLowerCase().includes(query)));
+		const matching = this.streams.filter((item) => !query || `${item.title} ${item.slug}`.toLowerCase().includes(query));
 		const rank = (slug: string) => this.recommendations.existing.findIndex((item) => item.slug === slug);
 		const existing: ChooserChoice[] = matching.sort((a, b) => {
 			const ar = rank(a.slug);

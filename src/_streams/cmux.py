@@ -145,16 +145,6 @@ def stream_for_workspace_hint(workspace: CmuxWorkspace, *, root: Path | None = N
     )
 
 
-def stream_for_workspace_exact(workspace: CmuxWorkspace, *, root: Path | None = None) -> Stream:
-    """Find a stream from an exact title or unique dedicated working root."""
-    return stream_for_workspace_hint(workspace, root=root)
-
-
-def resume_command(stream: Stream) -> str | None:
-    command = latest_session_command(stream)
-    return command.command_text if command else None
-
-
 GITHUB_ITEM_RE = re.compile(r"^https://github\.com/([^/]+)/([^/]+)/(issues|pull)/([0-9]+)(?:[/?#].*)?$")
 
 
@@ -207,8 +197,8 @@ def open_workspace(stream: Stream, cmux: CmuxClient | None = None) -> None:
         "--cwd",
         str(cwd),
     ]
-    if session_command := resume_command(stream):
-        command.extend(["--command", session_command])
+    if session_command := latest_session_command(stream):
+        command.extend(["--command", session_command.command_text])
     cmux.run(command)
 
 
@@ -260,7 +250,7 @@ def update_all_workspaces(
         if workspace.index == 0 and workspace.title == "Tasks":
             continue
         try:
-            stream = stream_for_workspace_exact(workspace, root=root)
+            stream = stream_for_workspace_hint(workspace, root=root)
         except StreamError:
             warnings.append(f"Warning: {workspace.display_ref} {workspace.title!r} has no matching scratch stream")
             continue

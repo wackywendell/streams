@@ -23,6 +23,7 @@ def setUpModule() -> None:
     unittest.addModuleCleanup(config_dir.cleanup)
     unittest.addModuleCleanup(env.stop)
 
+from _streams.agent_sessions import latest_session_command
 from _streams.cli import main as cli_main, build_parser, command_archive, command_check, command_cmux_update, command_format, command_list, command_rename, command_resume, command_show, command_start
 from _streams.cmux import (
     CmuxClient,
@@ -31,7 +32,6 @@ from _streams.cmux import (
     description_for_stream,
     load_stream_for_update,
     open_workspace,
-    resume_command,
     stream_cwd,
     update_all_workspaces,
     update_current_workspace,
@@ -1094,7 +1094,7 @@ class CmuxTest(unittest.TestCase):
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
             stream = show_stream(write_stream(root, "active-stream", sessions=["claude:session with spaces"]).stem, root)
-            self.assertEqual(resume_command(stream), "claude --resume 'session with spaces'")
+            self.assertEqual(latest_session_command(stream).command_text, "claude --resume 'session with spaces'")
 
     def test_resume_command_uses_last_session(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
@@ -1103,7 +1103,7 @@ class CmuxTest(unittest.TestCase):
                 write_stream(root, "active-stream", sessions=["codex:old", "claude:new session"]).stem,
                 root,
             )
-            self.assertEqual(resume_command(stream), "claude --resume 'new session'")
+            self.assertEqual(latest_session_command(stream).command_text, "claude --resume 'new session'")
 
     def test_open_workspace_uses_stream_fields(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:

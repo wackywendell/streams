@@ -906,7 +906,7 @@ test("receipts share only the summary and keep expandable diagnostics outside mo
 		assert.doesNotMatch(context, /private|streams cmux|exit/);
 		const message = { ...receipt, role: "custom", timestamp: Date.now() };
 		const collapsed = renderCheckpointReceipt(message, { expanded: false, outputPad: 1 }, theme).render(80).join("\n");
-		assert.match(collapsed, new RegExp(`Saved.*CMUX ${cmux}`));
+		assert.match(collapsed, new RegExp(`Applied · CMUX ${cmux}`));
 		assert.doesNotMatch(collapsed, /private/);
 		const expanded = renderCheckpointReceipt(message, { expanded: true, outputPad: 1 }, theme);
 		assert.match(expanded.render(80).join("\n"), /streams cmux update -c service/);

@@ -6,6 +6,7 @@ import type { ChatMessage } from "./view.ts";
 
 export type CmuxOutcome = "updated" | "disabled" | "failed";
 type ReceiptDetails = {
+	/** Absent on receipts saved before Clear receipts existed, all of which were for Apply. */
 	outcome?: "applied";
 	slug: string;
 	summary: string;
@@ -89,7 +90,7 @@ export const renderCheckpointReceipt: MessageRenderer<ReceiptDetails | ClearedDe
 	}
 	const warnings = details.commands.some((command) => command.stderr.trim() || command.warnings?.length);
 	const box = new Box(outputPad, 1, (text) => theme.bg("customMessageBg", text));
-	const status = `Saved · CMUX ${details.cmux}${warnings ? " · Diagnostics" : ""}`;
+	const status = `Applied · CMUX ${details.cmux}${warnings ? " · Diagnostics" : ""}`;
 	box.addChild(new Text(`${theme.fg("accent", `Checkpoint · ${details.slug}`)} · ${theme.fg(details.cmux === "failed" || warnings ? "warning" : "success", status)}\n${details.summary}`, 0, 0));
 	if (expanded) {
 		if (details.warning) box.addChild(new Text(theme.fg("warning", details.warning), 0, 0));
