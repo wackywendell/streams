@@ -1502,6 +1502,7 @@ test("checkpoint tool starts hidden agent checkpoints of the bound stream and re
 		registerCheckpoint(api, { agentDir: f.dir, cli, runtime: f.conversation.options.runtime, skill: "Test skill" });
 		const tool = tools.get("checkpoint");
 		assert.match(tool.promptGuidelines.join("\n"), /significant decision/);
+		assert.match(tool.promptGuidelines.join("\n"), /sees this whole conversation/);
 		const usage = { input: 1, output: 1, cacheRead: 0, cacheWrite: 0, totalTokens: 2, cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 } };
 		f.manager.appendMessage({ role: "user", content: "Retry twice, then give up", timestamp: Date.now() });
 		f.manager.appendMessage({ role: "assistant", content: [{ type: "toolCall", id: "call-1", name: "checkpoint", arguments: {} }], api: "openai-responses", provider: "openai", model: "test", usage, stopReason: "toolUse", timestamp: Date.now() });

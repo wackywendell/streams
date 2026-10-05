@@ -356,10 +356,11 @@ export default function registerCheckpoint(pi: ExtensionAPI, testDeps: { agentDi
 			promptSnippet: "Start a background checkpoint of the bound stream for the user to review",
 			promptGuidelines: [
 				"Use checkpoint occasionally, at natural points: after a significant decision, or when the task changes substantially. Do not use it after routine steps.",
-				"checkpoint returns at once; do not wait for it or call it again to check progress. Put everything for one checkpoint in a single call's instructions.",
+				"checkpoint returns at once; do not wait for it or call it again to check progress. Call it once per checkpoint.",
+				"The checkpoint agent sees this whole conversation. Usually call checkpoint with no instructions. Add a sentence only for something it couldn't infer, such as which decision matters most or what to leave out.",
 			],
 			parameters: Type.Object({
-				instructions: Type.Optional(Type.String({ description: "What the checkpoint agent should focus on, such as decisions to record. The user sees these, labelled as coming from the main agent." })),
+				instructions: Type.Optional(Type.String({ description: "Optional, usually omitted. One or two sentences on focus. Don't summarise the conversation; the checkpoint agent already has it. The user sees these, labelled as coming from the main agent." })),
 			}),
 			executionMode: "sequential",
 			async execute(toolCallId, params, _signal, _onUpdate, ctx) {
