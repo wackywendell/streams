@@ -93,6 +93,10 @@ Link created or updated reference notes from the scratch body so future sessions
 
 ## Update / Handoff Protocol
 
+In a main Pi session, follow the `stream_prompting_policy` system-prompt section for initiating stream selection, creation and checkpoints. It takes precedence over the proactive update triggers below. Keep the tools available, but do not bypass this policy by editing scratch directly or using equivalent CLI actions. Use `checkpoint` for a scratch update the user can review; only the user applies it. Do not select or create a stream merely to enable automatic checkpointing. User-invoked `/checkpoint` and the separate checkpoint conversation are not restricted by these initiation settings. `/checkpoint:settings` edits the policy; Alt+S opens the same view from the chooser or draft panel.
+
+For other agents, or when that Pi policy is absent, use the update triggers below.
+
 On stream start or resume, read the scratch file before implementation work.
 
 Before replying after material work, ask:

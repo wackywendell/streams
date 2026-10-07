@@ -7,7 +7,7 @@ import { convertToLlm, getAgentDir, ModelRuntime } from "@earendil-works/pi-codi
 import type { ExtensionAPI, ExtensionCommandContext, ExtensionContext } from "@earendil-works/pi-coding-agent";
 import { Type } from "typebox";
 import { checkpointContext } from "./agent.ts";
-import { BINDING_TYPE, exactStream, latestBinding, loadConfig, parseRecommendations, readPending, selectStream } from "./core.ts";
+import { BINDING_TYPE, exactStream, latestBinding, loadConfig, savePromptingConfig, parseRecommendations, readPending, selectStream } from "./core.ts";
 import type { Recommendations } from "./core.ts";
 import { CheckpointPanel } from "./panel.ts";
 import { StreamChooser } from "./chooser.ts";
@@ -19,6 +19,8 @@ import { StreamCli } from "./streams.ts";
 import { checkpointReceipt, choiceCancelledReceipt, clearedReceipt, discussionText, renderCheckpointReceipt, streamChosenReceipt } from "./receipt.ts";
 import { streamReadTool } from "./read.ts";
 import type { Author } from "./review.ts";
+import { promptingPolicy } from "./policy.ts";
+import { CheckpointSettings } from "./settings.ts";
 
 type Stream = Awaited<ReturnType<StreamCli["show"]>>;
 type ToolStatus = "started" | "needs-stream" | "already-open" | "applying" | "awaiting-stream-choice" | "already-bound";
@@ -60,6 +62,7 @@ function configuredModel(ctx: Pick<ExtensionCommandContext, "model" | "modelRegi
 
 /** The overlay a phase shows. `dismiss` exists once the overlay is built, and `handle` once Pi has placed it. */
 type Overlay = { handle?: OverlayHandle; dismiss?: () => void };
+type SettingsOverlay = Overlay & { ownerId: string; closing: boolean; closed: Promise<void> };
 type Phase =
 	/** Looking up streams or asking a question; no overlay of the run's own is open. */
 	| { kind: "starting" }
@@ -95,9 +98,14 @@ function untilAborted(signal: AbortSignal): Promise<never> {
 
 export default function registerCheckpoint(pi: ExtensionAPI, testDeps: { agentDir?: string; cli?: StreamCli; runtime?: ModelRuntime; skill?: string } = {}): void {
 	let active: Run | undefined;
+	let settings: SettingsOverlay | undefined;
 	pi.registerMessageRenderer("checkpoint-receipt", renderCheckpointReceipt);
 	const agentDir = testDeps.agentDir ?? getAgentDir();
-	const focusShortcut = loadConfig(agentDir).focusShortcut;
+	const config = loadConfig(agentDir);
+	const focusShortcut = config.focusShortcut;
+	if (config.agentTools) pi.on("before_agent_start", (event) => {
+		event.systemPromptOptions.sections.stream_prompting_policy = promptingPolicy(loadConfig(agentDir));
+	});
 	const journal = new CheckpointJournal(pi, focusShortcut);
 	pi.registerEntryRenderer(MARKER_TYPE, journal.render);
 	pi.registerTool(streamReadTool(agentDir, (ctx) => testDeps.cli ?? new StreamCli(ctx.cwd)));
@@ -109,6 +117,19 @@ export default function registerCheckpoint(pi: ExtensionAPI, testDeps: { agentDi
 	const mark = (run: Run, status: Parameters<typeof journal.update>[1]) => { if (run.marker) journal.update(run.marker, status); };
 	/** Lookups take no focus, and cancellation abandons them at once, so shutdown never waits on a slow CLI call. */
 	const whileOpen = <T>(run: Run, work: Promise<T>) => Promise.race([work, untilAborted(run.cancellation.signal)]);
+	const closeSettings = (editor: SettingsOverlay) => {
+		editor.closing = true;
+		// Pi's custom-UI completion pops the stack, so wait until this overlay has actually been placed.
+		if (editor.handle) editor.dismiss?.();
+		return editor.closed;
+	};
+	const finishOverlay = (run: Run, done: () => void) => {
+		if (settings?.ownerId === run.ownerId) void closeSettings(settings).then(done);
+		else done();
+	};
+	const waitForSettings = async (run: Run) => {
+		if (settings?.ownerId === run.ownerId) await whileOpen(run, settings.closed);
+	};
 	const updateStatus = (run: Run) => {
 		const phase = run.phase;
 		const value = phase.kind === "starting" || !phase.handle?.isHidden() ? undefined
@@ -117,6 +138,7 @@ export default function registerCheckpoint(pi: ExtensionAPI, testDeps: { agentDi
 		run.ctx.ui.setStatus("checkpoint", value ? run.ctx.ui.theme.fg("accent", value) : undefined);
 	};
 	const show = (run: Run) => {
+		if (settings?.ownerId === run.ownerId) { settings.handle?.focus(); return; }
 		const phase = run.phase;
 		if (phase.kind === "starting") return;
 		phase.handle?.setHidden(false);
@@ -124,6 +146,35 @@ export default function registerCheckpoint(pi: ExtensionAPI, testDeps: { agentDi
 		updateStatus(run);
 		if (phase.kind === "drafting") phase.panel?.refresh();
 	};
+	async function showSettings(ctx: ExtensionContext): Promise<void> {
+		if (!ctx.hasUI) { ctx.ui.notify("Checkpoint settings require an interactive UI", "error"); return; }
+		if (settings) { settings.handle?.focus(); return; }
+		const parent = active?.ownerId === ctx.sessionManager.getSessionId() ? active : undefined;
+		const phase = parent?.phase;
+		const wasVisible = phase && phase.kind !== "starting" && phase.handle && !phase.handle.isHidden();
+		let resolveClosed!: () => void;
+		const editor: SettingsOverlay = { ownerId: ctx.sessionManager.getSessionId(), closing: false, closed: new Promise((resolve) => { resolveClosed = resolve; }) };
+		try {
+			const current = loadConfig(agentDir);
+			settings = editor;
+			if (wasVisible && phase && phase.kind !== "starting") phase.handle?.setHidden(true);
+			await ctx.ui.custom<boolean>((tui, theme, _keys, done) => {
+				editor.dismiss = () => done(false);
+				return new CheckpointSettings(tui, theme, current, (policy) => {
+					if (settings !== editor || editor.closing || ctx.sessionManager.getSessionId() !== editor.ownerId) throw new Error("Settings session has closed");
+					savePromptingConfig(agentDir, policy);
+				}, done);
+			}, { overlay: true, overlayOptions: { anchor: "center", width: "78%", minWidth: 60, margin: { left: 2, right: 2 }, maxHeight: 36 }, onHandle: (handle) => { editor.handle = handle; if (editor.closing) editor.dismiss?.(); } });
+		} catch (error) { ctx.ui.notify(`Checkpoint settings: ${String(error)}`, "error"); }
+		finally {
+			if (settings === editor) settings = undefined;
+			if (!editor.closing && wasVisible && parent && parent === active && parent.phase === phase && alive(parent)) show(parent);
+			resolveClosed();
+		}
+	}
+
+	pi.registerCommand("checkpoint:settings", { description: "Configure agent stream selection and checkpoint prompting", handler: (_args, ctx) => { void showSettings(ctx); } });
+
 	const confirmSwitch = (run: Run, slug: string) =>
 		run.ctx.ui.confirm("Switch checkpoint stream?", `Unfinished work for ${slug} will remain saved.`, { signal: run.cancellation.signal });
 
@@ -136,8 +187,9 @@ export default function registerCheckpoint(pi: ExtensionAPI, testDeps: { agentDi
 	});
 	pi.on("session_shutdown", async () => {
 		const run = active;
+		run?.cancellation.abort();
+		if (settings) await closeSettings(settings);
 		if (!run) return;
-		run.cancellation.abort();
 		if (run.phase.kind !== "starting") run.phase.dismiss?.();
 		await run.task;
 	});
@@ -165,6 +217,8 @@ export default function registerCheckpoint(pi: ExtensionAPI, testDeps: { agentDi
 	 * unless the user is typing in the main editor. Without `recommendations`, the selector model finds them.
 	 */
 	async function choose(run: Run, cli: StreamCli, streams: Stream[], options: { ref?: string; recommendations?: Recommendations; reason?: string; create?: boolean }): Promise<ChosenStream | undefined> {
+		await waitForSettings(run);
+		if (!alive(run)) return undefined;
 		const { ctx } = run;
 		mark(run, { label: "Choosing stream", working: true });
 		let recommendations = options.recommendations;
@@ -173,14 +227,15 @@ export default function registerCheckpoint(pi: ExtensionAPI, testDeps: { agentDi
 		run.phase = phase;
 		let chooser: StreamChooser | undefined;
 		const reveal = () => {
-			if (run.phase !== phase || !phase.handle || !recommendations || !alive(run)) return;
+			if (run.phase !== phase || !phase.handle || !recommendations || !alive(run) || settings?.ownerId === run.ownerId) return;
 			if (ctx.ui.getEditorText() === "") show(run);
 			else updateStatus(run);
 		};
 		const choosing = ctx.ui.custom<ChosenStream | undefined>((tui, theme, _keys, done) => {
-			phase.dismiss = () => done(undefined);
-			chooser = new StreamChooser(tui, theme, streams, cli, done, recommendations ?? { existing: [] }, options.ref ?? "",
-				{ shortcut: focusShortcut, minimize: () => { phase.handle?.setHidden(true); updateStatus(run); }, finding: phase.finding, reason: options.reason, create: options.create, drafting: run.kind === "checkpoint" });
+			const finish = (choice: ChosenStream | undefined) => finishOverlay(run, () => done(choice));
+			phase.dismiss = () => finish(undefined);
+			chooser = new StreamChooser(tui, theme, streams, cli, finish, recommendations ?? { existing: [] }, options.ref ?? "",
+				{ shortcut: focusShortcut, minimize: () => { phase.handle?.setHidden(true); updateStatus(run); }, settings: () => { void showSettings(ctx); }, finding: phase.finding, reason: options.reason, create: options.create, drafting: run.kind === "checkpoint" });
 			return chooser;
 		}, { overlay: true, overlayOptions: { anchor: "center", width: "78%", minWidth: 64, margin: 2, maxHeight: "80%" },
 			onHandle: (handle) => { phase.handle = handle; handle.setHidden(true); updateStatus(run); reveal(); } });
@@ -238,6 +293,7 @@ export default function registerCheckpoint(pi: ExtensionAPI, testDeps: { agentDi
 		if (nativeProvider) runtime.registerNativeProvider(nativeProvider);
 		const skill = testDeps.skill ?? readFileSync(fileURLToPath(new URL("../../skills/streams/SKILL.md", import.meta.url)), "utf8");
 		const format = await cli.format();
+		await waitForSettings(run);
 		if (!alive(run)) return;
 		const { slug } = stream;
 		const systemPrompt = `${run.systemPrompt}\n\n<checkpoint_rules>\nYou are a separate checkpoint conversation. Read and discuss stream state; propose only complete scratch Markdown through propose_checkpoint. Do not claim to have written scratch. You have only local read-only tools and the proposal tool. The user alone approves Apply. Every proposal must include pi:${run.ownerId} in frontmatter sessions (preserve ordering), never the checkpoint session ID. After proposing a draft, summarize only substantive changes since the previous scratch note in one or two sentences. Do not announce staging, routine verification, or that scratch was not changed; mention material failures or blockers. Annotations identify an exact draft revision and original/proposed document line, with a quoted excerpt. Treat them as feedback on that snapshot, not as coordinates in a later revision.\n\n${skill}\n\n${format}\n</checkpoint_rules>`;
@@ -269,7 +325,7 @@ export default function registerCheckpoint(pi: ExtensionAPI, testDeps: { agentDi
 		run.phase = phase;
 		try {
 			await ctx.ui.custom<void>((tui, theme, _keys, done) => {
-				phase.dismiss = done;
+				phase.dismiss = () => finishOverlay(run, done);
 				phase.panel = new CheckpointPanel(tui, theme, conversation.state, {
 					send: () => { void conversation.send(); },
 					apply: () => { void conversation.apply(); },
@@ -285,9 +341,10 @@ export default function registerCheckpoint(pi: ExtensionAPI, testDeps: { agentDi
 							pi.sendMessage(clearedReceipt({ slug, discussion: discussionText(conversation.state.messages) }), { triggerTurn: false });
 						}
 						mark(run, { label: "Cleared", slug, closed: true });
-						done();
+						phase.dismiss?.();
 					},
 					focusMain: () => { phase.panel?.dispose(); phase.handle?.setHidden(true); updateStatus(run); },
+					settings: () => { void showSettings(ctx); },
 					editFeedback: (change) => { conversation.editFeedback(change); },
 				}, focusShortcut);
 				return phase.panel;
@@ -348,14 +405,14 @@ export default function registerCheckpoint(pi: ExtensionAPI, testDeps: { agentDi
 		if (!reported && alive(run)) pi.sendMessage(choiceCancelledReceipt(latestBinding(run.ctx.sessionManager.getEntries(), run.ownerId)), { triggerTurn: false });
 	}
 
-	if (loadConfig(agentDir).agentTools) {
+	if (config.agentTools) {
 		pi.registerTool({
 			name: "checkpoint",
 			label: "Checkpoint",
 			description: "Start a checkpoint of this session's bound stream in the background, like the user's /checkpoint command. A separate checkpoint agent drafts an update to the stream's scratch note from this conversation, and the user reviews and applies it. Returns at once with a status: started, needs-stream, already-open, applying or awaiting-stream-choice. When the user applies or clears the checkpoint, a receipt with the discussion arrives in this conversation.",
 			promptSnippet: "Start a background checkpoint of the bound stream for the user to review",
 			promptGuidelines: [
-				"Use checkpoint occasionally, at natural points: after a significant decision, or when the task changes substantially. Do not use it after routine steps.",
+				"Follow stream_prompting_policy for when to initiate checkpoint. Only the user can apply the draft.",
 				"checkpoint returns at once; do not wait for it or call it again to check progress. Call it once per checkpoint.",
 				"The checkpoint agent sees this whole conversation. Usually call checkpoint with no instructions. Add a sentence only for something it couldn't infer, such as which decision matters most or what to leave out.",
 			],
@@ -384,7 +441,7 @@ export default function registerCheckpoint(pi: ExtensionAPI, testDeps: { agentDi
 				const binding = latestBinding(ctx.sessionManager.getEntries(), ownerId);
 				const stream = binding ? await selectStream("", binding, testDeps.cli ?? new StreamCli(ctx.cwd)) : undefined;
 				if (!stream) {
-					return toolResult("needs-stream", `${binding ? `The bound stream ${binding.slug} no longer resolves.` : "No stream is bound to this session."} Call select_stream (or create_stream) so the user can choose one, and checkpoint after a receipt confirms the binding.`, { instructionsSent: false });
+					return toolResult("needs-stream", `${binding ? `The bound stream ${binding.slug} no longer resolves.` : "No stream is bound to this session."} Follow stream_prompting_policy: do not initiate stream selection merely to enable an automatic checkpoint. If the user requests selection or creation, use select_stream or create_stream and checkpoint only after a receipt confirms the binding.`, { instructionsSent: false });
 				}
 				const saved = readPending(agentDir, ownerId, stream.slug);
 				const blocked = !!message && !!(saved?.input.trim() || saved?.annotations?.length || saved?.annotationEditor);
@@ -423,7 +480,7 @@ export default function registerCheckpoint(pi: ExtensionAPI, testDeps: { agentDi
 			description: "Ask the user to choose the existing stream this session works on, or to switch to another. Opens the stream chooser in the background; with a slug, that stream is starred with your reason, and without one the chooser suggests streams. Only the user's choice binds the session. Returns at once with a status: awaiting-stream-choice, already-bound or already-open. A receipt arrives here when the user chooses or cancels.",
 			promptSnippet: "Ask the user to choose or switch this session's stream",
 			promptGuidelines: [
-				"Use select_stream when substantive work has no bound stream, or when the work has clearly moved to a different stream. Do not use it to re-confirm the current stream.",
+				"Follow stream_prompting_policy for when to initiate select_stream. Do not use it to re-confirm the current stream.",
 				"select_stream takes an exact slug from `streams list`, or no slug to let the chooser suggest streams. Use create_stream to propose a new stream.",
 				"select_stream returns at once and the user may choose later; do not wait for it. Call checkpoint only after a receipt confirms the binding.",
 			],
@@ -452,7 +509,7 @@ export default function registerCheckpoint(pi: ExtensionAPI, testDeps: { agentDi
 			description: "Ask the user to start a new stream for this session's work. Opens the stream chooser in the background, editing your title for the new stream; the user can change it and create the stream, or go back and choose an existing one. Only the user's choice creates a stream or binds the session. Returns at once with a status: awaiting-stream-choice or already-open. A receipt arrives here when the user chooses or cancels.",
 			promptSnippet: "Ask the user to start a new stream for this session",
 			promptGuidelines: [
-				"Use create_stream only when no existing stream fits the work; check `streams list` first, and use select_stream for an existing stream.",
+				"Follow stream_prompting_policy for when to initiate create_stream. Once authorised, check `streams list` first and use select_stream if an existing stream fits.",
 			],
 			parameters: Type.Object({
 				title: Type.String({ minLength: 1, description: "Short title for the new stream, usually 2–4 words. The user can edit it." }),

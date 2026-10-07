@@ -15,6 +15,7 @@ export interface PanelActions {
 	clear(): void;
 	stop(): void;
 	focusMain(): void;
+	settings(): void;
 	/** Edits unsent feedback; the conversation refuses while it is busy. */
 	editFeedback(change: (feedback: UnsentFeedback) => void): void;
 }
@@ -109,6 +110,7 @@ export class CheckpointPanel implements Component {
 			this.actions.focusMain();
 			return;
 		}
+		if (matchesKey(data, "alt+s")) { this.actions.settings(); return; }
 		if (this.confirmingClear) {
 			if (data === "y") { this.confirmingClear = false; this.actions.clear(); }
 			if (data === "n") this.confirmingClear = false;
@@ -179,10 +181,10 @@ export class CheckpointPanel implements Component {
 
 	private shortcuts(width: number): string {
 		const hide = `${shortcutLabel(this.focusShortcut)} Hide`;
-		if (this.state.activity) return ["Tab", ...(this.state.activity === "drafting" ? ["Ctrl+C Stop"] : []), hide].join(" · ");
-		if (this.tab === "review" && this.state.annotationEditor) return `Enter Save · Ctrl+C Cancel · ${hide}`;
+		if (this.state.activity) return ["Tab", ...(this.state.activity === "drafting" ? ["Ctrl+C Stop"] : []), "Alt+S Settings", hide].join(" · ");
+		if (this.tab === "review" && this.state.annotationEditor) return `Enter Save · Ctrl+C Cancel · Alt+S Settings · ${hide}`;
 		const primary = this.tab === "review" ? "Alt+K Comment" : this.state.draft ? "Ctrl+G Apply" : "Ctrl+R Refresh";
-		let hints = `Tab · ${primary} · ${hide} · Alt+C Clear`;
+		let hints = `Tab · ${primary} · Alt+S Settings · ${hide} · Alt+C Clear`;
 		const secondary = this.tab === "review" ? ["Ctrl+G Apply", "Ctrl+R Refresh"] : ["Ctrl+R Refresh", ...(this.state.messages.some((message) => message.annotations?.length) || this.state.annotations.length ? ["Alt+A Details"] : [])];
 		for (const hint of secondary) if (!hints.includes(hint) && visibleWidth(`${hints} · ${hint}`) <= width) hints += ` · ${hint}`;
 		return hints;

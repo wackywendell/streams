@@ -5,6 +5,8 @@ import type { KeyId } from "@earendil-works/pi-tui";
 import { StreamsCliError, type Note, type StreamCli } from "./streams.ts";
 import type { Annotation, AnnotationEditor, Feedback } from "./review.ts";
 import { isSeq, parseDocument } from "yaml";
+import { CHECKPOINT_PROMPTING, STREAM_PROMPTING } from "./policy.ts";
+import type { PromptingConfig } from "./policy.ts";
 
 export const BINDING_TYPE = "stream-checkpoint-binding";
 
@@ -23,7 +25,7 @@ export interface Draft {
 	summary?: string;
 }
 
-export interface CheckpointConfig {
+export interface CheckpointConfig extends PromptingConfig {
 	focusShortcut: KeyId;
 	/** Register the main-agent checkpoint tool. */
 	agentTools: boolean;
@@ -31,14 +33,21 @@ export interface CheckpointConfig {
 	drafterModel?: { provider: string; id: string };
 }
 
-export function loadConfig(agentDir: string): CheckpointConfig {
+function readConfig(agentDir: string): any {
 	const path = join(agentDir, "checkpoint.json");
-	if (!existsSync(path)) return { focusShortcut: "alt+p", agentTools: true };
-	const config = JSON.parse(readFileSync(path, "utf8"));
+	return existsSync(path) ? JSON.parse(readFileSync(path, "utf8")) : {};
+}
+
+function parseConfig(config: any): CheckpointConfig {
 	if (config === null || typeof config !== "object" || Array.isArray(config)) throw new Error("checkpoint.json must be an object");
 	if (config.cmux !== undefined) throw new Error("checkpoint.json: cmux moved to streams; use streams config set cmux.enabled true (or false), then remove cmux from checkpoint.json");
 	if (config.focusShortcut !== undefined && (typeof config.focusShortcut !== "string" || !config.focusShortcut.trim())) throw new Error("checkpoint.json: focusShortcut must be a nonempty Pi keybinding");
 	if (config.agentTools !== undefined && typeof config.agentTools !== "boolean") throw new Error("checkpoint.json: agentTools must be true or false");
+	for (const [key, values] of [["streamPrompting", STREAM_PROMPTING], ["checkpointPrompting", CHECKPOINT_PROMPTING]] as const) {
+		if (config[key] !== undefined && (typeof config[key] !== "string" || !Object.hasOwn(values, config[key]))) {
+			throw new Error(`checkpoint.json: ${key} must be one of ${Object.keys(values).join(", ")}`);
+		}
+	}
 	for (const key of ["selectorModel", "drafterModel"] as const) {
 		const model = config[key];
 		if (model !== undefined && (model === null || typeof model !== "object" || Array.isArray(model) || typeof model.provider !== "string" || !model.provider.trim() || typeof model.id !== "string" || !model.id.trim())) {
@@ -46,8 +55,28 @@ export function loadConfig(agentDir: string): CheckpointConfig {
 		}
 	}
 	return { focusShortcut: (config.focusShortcut ?? "alt+p") as KeyId, agentTools: config.agentTools ?? true,
+		streamPrompting: config.streamPrompting ?? "manual", checkpointPrompting: config.checkpointPrompting ?? "low",
 		...(config.selectorModel ? { selectorModel: config.selectorModel } : {}),
 		...(config.drafterModel ? { drafterModel: config.drafterModel } : {}) };
+}
+
+export function loadConfig(agentDir: string): CheckpointConfig { return parseConfig(readConfig(agentDir)); }
+
+/** Save only the prompting fields, preserving settings read at Save rather than when the editor opened. */
+export function savePromptingConfig(agentDir: string, policy: PromptingConfig): void {
+	const current = readConfig(agentDir);
+	parseConfig(current);
+	const config = { ...current, streamPrompting: policy.streamPrompting, checkpointPrompting: policy.checkpointPrompting };
+	parseConfig(config);
+	mkdirSync(agentDir, { recursive: true, mode: 0o700 });
+	const path = join(agentDir, "checkpoint.json");
+	const temporary = `${path}.${randomUUID()}.tmp`;
+	try {
+		writeFileSync(temporary, `${JSON.stringify(config, null, 2)}\n`, { flag: "wx", mode: 0o600 });
+		renameSync(temporary, path);
+	} finally {
+		if (existsSync(temporary)) unlinkSync(temporary);
+	}
 }
 
 export function latestBinding(entries: readonly { type: string; customType?: string; data?: unknown }[], ownerId: string): Binding | undefined {

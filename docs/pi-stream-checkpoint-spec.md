@@ -65,6 +65,8 @@ Keep extension-only settings in `~/.pi/agent/checkpoint.json` (or the active Pi 
 {
   "focusShortcut": "alt+p",
   "agentTools": true,
+  "streamPrompting": "manual",
+  "checkpointPrompting": "low",
   "selectorModel": { "provider": "<provider>", "id": "<model-id>" },
   "drafterModel": { "provider": "<provider>", "id": "<model-id>" }
 }
@@ -73,6 +75,36 @@ Keep extension-only settings in `~/.pi/agent/checkpoint.json` (or the active Pi 
 All extension fields are optional. The old `cmux` field is rejected with migration instructions: set `cmux.enabled` through the CLI, then remove `cmux` from `checkpoint.json`. `focusShortcut` defaults to `alt+p`; change it in this file and run `/reload` to register the shortcut. It toggles between the open checkpoint and main editor, but does not open a closed checkpoint. Escape also minimizes. Neither action stops the side agent.
 
 `agentTools` defaults to `true`. Set it to `false` and run `/reload` to stop registering the main-agent `checkpoint`, `select_stream` and `create_stream` tools. It does not affect `stream_read`.
+
+### Agent prompting settings
+
+`streamPrompting` controls when the main agent initiates stream selection or creation:
+
+| Value | When to initiate |
+| --- | --- |
+| `manual` (default) | Only when the user asks to choose, switch or create a stream |
+| `auto` | When substantive work has no binding, or clearly changes scope; the user still confirms |
+
+`checkpointPrompting` controls when the main agent initiates a checkpoint:
+
+| Value | When to initiate |
+| --- | --- |
+| `manual` | Only when the user asks |
+| `low` (default) | At substantial task completion or a clear pause/handoff, when durable pickup context changed |
+| `medium` | Also after major decisions or a substantial change in direction |
+| `high` | Also at meaningful subtask milestones, preserving useful partial progress |
+
+All automatic checkpoint levels skip routine steps, unchanged context, open checkpoints and unbound sessions. They do not choose or create a stream merely to enable checkpointing. These are contextual triggers, not timers.
+
+The tools remain available. A `before_agent_start` hook reads the current config and adds a `stream_prompting_policy` system-prompt section. Tool guidelines and the bundled skill defer to it. This is behavioural guidance, not a tool permission check. User-invoked `/checkpoint` and its side conversation are unchanged.
+
+Open `/checkpoint:settings`, or press Alt+S in the stream chooser or checkpoint draft panel, to edit both fields in one view. The selected value shows its definition. The view applies across sessions sharing the active Pi agent directory, not to one stream. Arrow keys select a field; Enter or Space cycles its value. Ctrl+S saves; Esc cancels without writing.
+
+Save preserves other config fields, including unknown fields, from the file as read at Save. Invalid config blocks saving. A failed write leaves edited values available for retry. Saved prompting settings take effect on the next main-agent turn without `/reload`; a running turn keeps its existing instructions. This does not change the reload requirement for `agentTools` or `focusShortcut`.
+
+Returning from settings restores the same open panel with its search, title, chat input and unfinished annotations intact. Recommendations and drafting may continue behind it without stealing focus. If Apply or confirmed creation finishes while settings are open, settings closes without saving before the parent panel closes. A checkpoint still starting waits before opening an overlay above settings. Shutdown dismisses settings without saving or reopening the parent panel. Save/Cancel controls and the selected setting remain visible in short terminals.
+
+### Panel status and models
 
 While minimized, the footer shows only checkpoint state and the restore shortcut, such as `Checkpoint · Draft 2 ready · Alt+P`. While expanded, the panel header shows its selected tab and activity; omit duplicate checkpoint footer status. Capitalize modifier names in visible shortcuts.
 
@@ -328,14 +360,14 @@ Reload or Pi session replacement preserves saved unfinished work but disposes th
 
 ### `checkpoint`
 
-The main agent can start a checkpoint of the session's bound stream with the `checkpoint` tool, which takes optional `instructions`. It does not choose streams; `select_stream` and `create_stream` do. Prompt guidance tells it to do this occasionally, after a significant decision or when the task changes substantially, and not after routine steps. Because the side agent already sees the main conversation, the guidance also says to usually omit `instructions` and, when giving them, to add only a sentence or two the side agent couldn't infer rather than summarising the conversation. The tool returns at once, and the result arrives later as the receipt. Only the user can apply.
+The main agent can start a checkpoint of the session's bound stream with the `checkpoint` tool, which takes optional `instructions`. It does not choose streams; `select_stream` and `create_stream` do. The `stream_prompting_policy` section governs initiation according to `checkpointPrompting`. Because the side agent already sees the main conversation, the guidance also says to usually omit `instructions` and, when giving them, to add only a sentence or two the side agent couldn't infer rather than summarising the conversation. The tool returns at once, and the result arrives later as the receipt. Only the user can apply.
 
 An agent-started checkpoint never interrupts the user. It shows no chooser or confirmation, and its panel starts minimized even when resuming saved work. As with the command, a finished reply opens the panel only if the main editor is empty. The source snapshot leaves out the assistant message that made the tool call, without reporting it as an omitted message. The journal card says the main agent started it. The checkpoint agent receives the instructions marked as coming from the main agent, and the panel and receipt label them `Main agent`.
 
 | Situation | Status | Instructions |
 | --- | --- | --- |
 | No checkpoint open; stream resolved | `started` | Sent, unless saved work has unsent user feedback |
-| No binding, or the binding no longer resolves | `needs-stream` | Not sent; no chooser opens, and the result points to `select_stream` and `create_stream` |
+| No binding, or the binding no longer resolves | `needs-stream` | Not sent; no chooser opens. The result defers to the prompting policy rather than directing unsolicited selection |
 | A checkpoint is open, idle and has no unsent feedback | `already-open` | Sent |
 | A checkpoint is open and drafting or has unsent feedback | `already-open` | Not sent, and not queued |
 | That checkpoint is applying | `applying` | Not sent |
@@ -345,7 +377,7 @@ The result's `details` carries `status`, `slug` where known, and `instructionsSe
 
 ### `select_stream` and `create_stream`
 
-The main agent asks the user to choose the session's stream, or to switch to another, with `select_stream`. It takes an optional `slug` and a required one-sentence `reason`. Prompt guidance tells it to call this when substantive work has no bound stream, or when the work has clearly moved to another stream, and never to re-confirm the current one. Only the user's choice changes the binding.
+The main agent asks the user to choose the session's stream, or to switch to another, with `select_stream`. It takes an optional `slug` and a required one-sentence `reason`. The `stream_prompting_policy` section governs initiation according to `streamPrompting`. Never re-confirm the current stream. Only the user's choice changes the binding.
 
 The tool opens the same background chooser as an unbound `/checkpoint`, and returns `awaiting-stream-choice` at once. The `slug` must name a stream exactly; the tool does not resolve titles or prefixes, so the agent cannot bind the wrong stream by guessing. If no stream has that slug, the tool fails with no chooser, naming the streams the ref matched or the slugs containing it, and pointing to `streams list` and `create_stream`. Other failures, such as an invalid note at that slug, are reported as themselves. The starred stream shows the reason prefixed `Main agent:`, and replaces the selector model. Without a `slug`, the selector model suggests streams as usual, and the reason heads the chooser. The chooser skips the up-front switch confirmation, but choosing another stream while unfinished work exists still asks before switching.
 
@@ -511,13 +543,20 @@ Tests must use temporary scratch files and mocked CLI, model, and CMUX boundarie
 | Compaction | Do not start a checkpoint automatically |
 | `checkpoint` tool on a bound session | Start minimized with no chooser; return `started` at once |
 | `checkpoint` tool while a checkpoint is open | Return `already-open`, `applying` or `awaiting-stream-choice`; send instructions only to an idle checkpoint |
-| `checkpoint` tool with no binding | Return `needs-stream`, pointing to `select_stream`; never rebind or open a chooser |
+| `checkpoint` tool with no binding | Return `needs-stream`, deferring to prompting policy; never rebind or open a chooser |
 | Unbound `/checkpoint` while the user types | Find recommendations with no loader; leave the chooser minimized when they arrive |
 | `select_stream` with a slug | Star it without calling the selector model; bind only on the user's choice; post a receipt on choice or cancel |
 | `select_stream` with a title, prefix or unknown slug | Fail with close matches and no chooser |
 | `select_stream` naming the bound stream | Return `already-bound` without a chooser |
 | `create_stream` | Open the chooser editing the title; Esc returns to the list; create only on the user's Enter |
 | `agentTools: false` | Do not register the `checkpoint`, `select_stream` or `create_stream` tools |
+| Prompting defaults | Keep tools available; stream prompting is `manual`, checkpoint prompting is `low` |
+| Prompting save | Preserve other config fields and update the next turn's policy without reload |
+| Settings Cancel or write failure | Cancel writes nothing; failure retains edited values for retry |
+| Settings from either panel | Restore the same panel and unfinished input; open only one settings view |
+| Settings shutdown | Dismiss without saving or reopening the parent panel, including before placement |
+| Parent completes behind settings | Close settings before the parent; keep later settings invocations usable |
+| Short-terminal settings | Keep Save/Cancel and the selected field visible in the composited terminal |
 | `stream_read` without a binding or `stream` | Return an error suggesting a `stream` ref or `streams list`; resolve nothing |
 | `stream_read` with `draft: true` | Return this session's pending draft and its revision, or an error if none exists; never the applied note |
 | `stream_read` paging | Honour `offset` and `limit` and truncate exactly as `read` does |

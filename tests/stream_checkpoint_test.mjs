@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { spawn, spawnSync } from "node:child_process";
-import { chmodSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { createHash } from "node:crypto";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
@@ -16,7 +16,7 @@ const jiti = createJiti(import.meta.url, { alias: { "@earendil-works/pi-coding-a
 const { BorderedLoader, convertToLlm, createAgentSession, DefaultResourceLoader, initTheme, ModelRuntime, SessionManager, SettingsManager } = await import(pathToFileURL(piIndex).href);
 initTheme("dark");
 const { createAssistantMessageEventStream } = await import(pathToFileURL(piAiIndex).href);
-const { loadConfig, latestBinding, applyDraft, readPending, savePending, clearPending, stageDraft, selectStream, exactStream, parseRecommendations, includeMainSession } = await jiti.import(new URL("../extensions/stream-checkpoint/core.ts", import.meta.url).pathname);
+const { loadConfig, savePromptingConfig, latestBinding, applyDraft, readPending, savePending, clearPending, stageDraft, selectStream, exactStream, parseRecommendations, includeMainSession } = await jiti.import(new URL("../extensions/stream-checkpoint/core.ts", import.meta.url).pathname);
 const { checkpointContext, completedMessages, assertContextFits, createCheckpointSession } = await jiti.import(new URL("../extensions/stream-checkpoint/agent.ts", import.meta.url).pathname);
 const { StreamCli, StreamsCliError } = await jiti.import(new URL("../extensions/stream-checkpoint/streams.ts", import.meta.url).pathname);
 const { tagMessage, transcript } = await jiti.import(new URL("../extensions/stream-checkpoint/view.ts", import.meta.url).pathname);
@@ -36,7 +36,7 @@ function panelFixture(overrides = {}) {
 	const actions = {
 		send: () => { events.push("send"); }, apply: () => { events.push("apply"); },
 		refresh: () => { events.push("refresh"); }, clear: () => { events.push("clear"); },
-		stop: () => { events.push("stop"); }, focusMain: () => { events.push("hide"); },
+		stop: () => { events.push("stop"); }, focusMain: () => { events.push("hide"); }, settings: () => { events.push("settings"); },
 		editFeedback: (change) => { change(state); events.push("changed"); },
 	};
 	const panel = new CheckpointPanel({ terminal: { rows: 30 }, requestRender() {} }, { fg: (_color, text) => text }, state, actions);
@@ -441,7 +441,7 @@ for (const selection of ["bound", "chooser", "explicit"]) {
 	});
 }
 
-function chooserHarness({ stage, editor = "", others = [] } = {}) {
+function chooserHarness({ stage, editor = "", others = [], cli, agentDir } = {}) {
 	const manager = SessionManager.inMemory(process.cwd());
 	const stream = { slug: "service", title: "Service", path: "/unused/service.md", status: "active", state: "Work" };
 	const streams = [stream, ...others];
@@ -450,9 +450,9 @@ function chooserHarness({ stage, editor = "", others = [] } = {}) {
 	registerCheckpoint({ registerTool: (tool) => h.tools.set(tool.name, tool), registerEntryRenderer() {}, registerMessageRenderer() {},
 		registerShortcut: (_key, options) => { h.shortcut = options.handler; },
 		sendMessage: (message, options) => { assert.equal(options.triggerTurn, false); h.receipts.push(message); },
-		registerCommand: (_name, options) => { h.command = options.handler; }, on: (_name, handler) => { h.shutdown = handler; },
+		registerCommand: (name, options) => { if (name === "checkpoint:settings") h.settingsCommand = options.handler; else h.command = options.handler; }, on: (_name, handler) => { h.shutdown = handler; },
 		appendEntry: (type, data) => manager.appendCustomEntry(type, data),
-	}, { agentDir: mkdtempSync(join(tmpdir(), "checkpoint-chooser-")), cli: { config: () => gate("config", { cmux: { enabled: false } }), list: () => gate("list", streams),
+	}, { agentDir: agentDir ?? mkdtempSync(join(tmpdir(), "checkpoint-chooser-")), cli: cli ?? { config: () => gate("config", { cmux: { enabled: false } }), list: () => gate("list", streams),
 		show: (ref) => { const found = streams.find((item) => ref === item.slug || ref === item.title); return found ? gate("show", found) : Promise.reject(new StreamsCliError(`No stream ${ref}`, "not-found")); } } });
 	h.ctx = { mode: "tui", hasUI: true, cwd: process.cwd(), sessionManager: manager, model: { id: "selector" }, getSystemPrompt: () => "Test",
 		modelRegistry: { complete: (_model, _context, options) => { h.selectorSignal = options?.signal; return gate("recommendations", { content: [{ type: "text", text: '{"existing":[{"slug":"service","reason":"Fits"}]}' }] }); } },
@@ -460,10 +460,10 @@ function chooserHarness({ stage, editor = "", others = [] } = {}) {
 			custom: (factory, options) => new Promise((resolve) => {
 				h.dialogs++;
 				const component = factory({ terminal: { rows: 30 }, requestRender() {} }, { fg: (_color, text) => text }, {}, (value) => { component.dispose(); h.closed++; resolve(value); });
-				assert.ok(component instanceof StreamChooser, "Only the chooser may open during stream selection");
-				h.chooser = component;
-				h.handle = { hidden: false, focused: 0, focus() { this.focused++; }, setHidden(value) { this.hidden = value; }, isHidden() { return this.hidden; } };
-				options.onHandle(h.handle);
+				const handle = { hidden: false, focused: 0, focus() { this.focused++; }, setHidden(value) { this.hidden = value; }, isHidden() { return this.hidden; } };
+				if (component instanceof StreamChooser) { h.chooser = component; h.handle = handle; }
+				else { assert.equal(component.constructor.name, "CheckpointSettings"); h.settings = component; h.settingsHandle = handle; }
+				options.onHandle(handle);
 			}),
 		},
 	};
@@ -559,7 +559,7 @@ test("select_stream offers the agent's recommendation and reports the user's cho
 	const rendered = () => h.chooser.render(100).join("\n");
 	try {
 		await assert.rejects(tool.execute("call-0", { reason: "Fits" }, undefined, undefined, { ...h.ctx, mode: "print" }), /interactive Pi terminal/);
-		assert.match(tool.promptGuidelines.join("\n"), /no bound stream/);
+		assert.match(tool.promptGuidelines.join("\n"), /stream_prompting_policy/);
 		await assert.rejects(call({ slug: "Other work", reason: "Fits" }, "call-0"), /No stream has the slug "Other work"\. Close matches: other\./, "A title is not a slug");
 		await assert.rejects(call({ slug: "oth", reason: "Fits" }, "call-0"), /Close matches: other\./);
 		assert.equal(h.dialogs, 0);
@@ -654,7 +654,7 @@ test("checkpoint command releases main input, preserves work on stream switches 
 		writeFileSync(otherPath, "other scratch");
 		savePending(f.dir, { ...f.pending, slug: "other", input: "other feedback" });
 		const streams = [{ slug: "service", path: f.path }, { slug: "other", path: otherPath }];
-		let command, shortcut, panel, dismissed = 0, confirmations = 0, allowSwitch = true, holdSwitch = false;
+		let command, shortcut, panel, panelHandle, settingsPanel, dismissed = 0, confirmations = 0, allowSwitch = true, holdSwitch = false;
 		const statuses = [];
 		const confirmationSignals = [];
 		const ctx = { mode: "tui", hasUI: true, cwd: f.dir, model: f.conversation.options.model, thinkingLevel: "off", sessionManager: f.manager,
@@ -668,11 +668,10 @@ test("checkpoint command releases main input, preserves work on stream switches 
 				},
 				custom: (factory, options) => new Promise((resolve) => {
 					const component = factory({ terminal: { rows: 30 }, requestRender() {} }, { fg: (_color, text) => text }, {}, (value) => { component.dispose(); if (component instanceof CheckpointPanel) dismissed++; resolve(value); });
-					if (component instanceof CheckpointPanel) {
-						panel = component;
-						const handle = { hidden: false, focus() {}, setHidden(value) { this.hidden = value; }, isHidden() { return this.hidden; } };
-						options.onHandle(handle);
-					}
+					const handle = { hidden: false, focus() {}, setHidden(value) { this.hidden = value; }, isHidden() { return this.hidden; } };
+					if (component instanceof CheckpointPanel) { panel = component; panelHandle = handle; }
+					else { assert.equal(component.constructor.name, "CheckpointSettings"); settingsPanel = component; }
+					options.onHandle(handle);
 				}),
 			},
 		};
@@ -686,6 +685,16 @@ test("checkpoint command releases main input, preserves work on stream switches 
 		assert.equal(returned, true, "The command must not occupy Pi's prompt queue for the overlay lifetime");
 		assert.equal(dismissed, 0);
 		await until(() => panel.state.activity === null);
+		const beforeSettings = panel;
+		panel.handleInput("\x1bs");
+		await until(() => !!settingsPanel);
+		assert.equal(panelHandle.hidden, true);
+		settingsPanel.handleInput("\x1b[B"); settingsPanel.handleInput("\r"); settingsPanel.handleInput("\x13");
+		await until(() => !panelHandle.hidden);
+		assert.equal(loadConfig(f.dir).checkpointPrompting, "medium");
+		assert.equal(panel, beforeSettings);
+		assert.equal(panel.state.input, "unsent");
+		assert.equal(dismissed, 0, "Opening settings must not dispose the draft panel");
 		panel.handleInput("\x1b");
 		assert.match(statuses.at(-1), /Checkpoint.*Alt\+P/);
 		assert.doesNotMatch(statuses.at(-1), /composer|return|alt\+p/);
@@ -725,6 +734,43 @@ test("checkpoint command releases main input, preserves work on stream switches 
 	} finally { await shutdown?.(); await f.dispose(); }
 });
 
+test("draft completion behind settings does not reveal the parent or steal focus", async () => {
+	const f = await conversationFixture();
+	let shutdown, command, shortcut;
+	const views = [];
+	try {
+		const ctx = { mode: "tui", hasUI: true, cwd: f.dir, model: f.conversation.options.model, thinkingLevel: "off", sessionManager: f.manager,
+			modelRegistry: { getRegisteredProviderConfig() {}, getRegisteredNativeProvider() {} }, getSystemPrompt: () => "Test",
+			ui: { notify: (text) => assert.fail(text), theme: { fg: (_color, text) => text }, setStatus() {}, getEditorText: () => "",
+				custom: (factory, options) => new Promise((resolve) => {
+					const component = factory({ terminal: { rows: 30 }, requestRender() {} }, { fg: (_color, text) => text }, {}, (value) => { component.dispose(); resolve(value); });
+					const handle = { hidden: false, focused: 0, focus() { this.focused++; }, setHidden(value) { this.hidden = value; }, isHidden() { return this.hidden; } };
+					views.push({ component, handle }); options.onHandle(handle);
+				}),
+			},
+		};
+		registerCheckpoint({ registerTool() {}, registerEntryRenderer() {}, registerMessageRenderer() {}, registerCommand: (_name, options) => { command = options.handler; },
+			registerShortcut: (_key, options) => { shortcut = options.handler; }, on: (_name, handler) => { shutdown = handler; }, appendEntry: (type, data) => f.manager.appendCustomEntry(type, data) },
+			{ agentDir: f.dir, runtime: f.conversation.options.runtime, skill: "Test skill", cli: { config: async () => ({ cmux: { enabled: false } }), list: async () => [], show: async () => ({ slug: "service", path: f.path }), format: async () => "format", read: readFrom(f.path) } });
+		await command("--stream service", ctx);
+		await until(() => f.contexts.length === 1);
+		const parent = views[0];
+		await shortcut(ctx);
+		parent.component.handleInput("\x1bs");
+		await until(() => views.length === 2);
+		const settings = views[1];
+		assert.equal(parent.handle.hidden, true);
+		f.finish();
+		await until(() => parent.component.state.activity === null);
+		assert.equal(parent.handle.hidden, true);
+		assert.equal(settings.handle.hidden, false);
+		settings.component.handleInput("\x1b");
+		await until(() => !parent.handle.hidden);
+		assert.equal(views[0], parent);
+		assert.equal(existsSync(join(f.dir, "checkpoint.json")), false);
+	} finally { await shutdown?.(); await f.dispose(); }
+});
+
 test("refresh without a draft succeeds without a review warning and preserves unfinished annotations", async () => {
 	const f = await conversationFixture();
 	try {
@@ -744,9 +790,8 @@ test("refresh without a draft succeeds without a review warning and preserves un
 test("registers the manual checkpoint command without starting work", () => {
 	const commands = [];
 	registerCheckpoint({ registerTool() {}, registerEntryRenderer() {}, registerMessageRenderer() {}, on() {}, registerCommand: (name, options) => { commands.push({ name, options }); }, registerShortcut() {} });
-	assert.equal(commands.length, 1);
-	assert.equal(commands[0].name, "checkpoint");
-	assert.equal(typeof commands[0].options.handler, "function");
+	assert.deepEqual(commands.map((command) => command.name), ["checkpoint:settings", "checkpoint"]);
+	assert.ok(commands.every((command) => typeof command.options.handler === "function"));
 });
 
 test("stream_read reads the bound or named stream, its pending draft, and pages like read", async () => {
@@ -1501,7 +1546,7 @@ test("checkpoint tool starts hidden agent checkpoints of the bound stream and re
 		rmSync(join(f.dir, "checkpoint.json"));
 		registerCheckpoint(api, { agentDir: f.dir, cli, runtime: f.conversation.options.runtime, skill: "Test skill" });
 		const tool = tools.get("checkpoint");
-		assert.match(tool.promptGuidelines.join("\n"), /significant decision/);
+		assert.match(tool.promptGuidelines.join("\n"), /stream_prompting_policy/);
 		assert.match(tool.promptGuidelines.join("\n"), /sees this whole conversation/);
 		const usage = { input: 1, output: 1, cacheRead: 0, cacheWrite: 0, totalTokens: 2, cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 } };
 		f.manager.appendMessage({ role: "user", content: "Retry twice, then give up", timestamp: Date.now() });
@@ -1520,7 +1565,7 @@ test("checkpoint tool starts hidden agent checkpoints of the bound stream and re
 		await assert.rejects(tool.execute("call-0", {}, undefined, undefined, { ...ctx, mode: "print" }), /interactive Pi terminal/);
 		const unbound = await tool.execute("call-1", { instructions: "Record it" }, undefined, undefined, ctx);
 		assert.deepEqual(unbound.details, { status: "needs-stream", instructionsSent: false });
-		assert.match(unbound.content[0].text, /Call select_stream/);
+		assert.match(unbound.content[0].text, /If the user requests selection or creation, use select_stream/);
 		assert.deepEqual(components, []);
 		assert.equal(tool.parameters.properties.stream, undefined, "Only select_stream picks streams");
 
@@ -1999,9 +2044,9 @@ test("recommendations cannot invent existing streams or create anything", () => 
 test("extension configuration owns models and shortcuts, and rejects the old CMUX setting", () => {
 	const dir = mkdtempSync(join(tmpdir(), "checkpoint-config-"));
 	try {
-		assert.deepEqual(loadConfig(dir), { focusShortcut: "alt+p", agentTools: true });
+		assert.deepEqual(loadConfig(dir), { focusShortcut: "alt+p", agentTools: true, streamPrompting: "manual", checkpointPrompting: "low" });
 		writeFileSync(join(dir, "checkpoint.json"), '{"focusShortcut":"ctrl+alt+c","agentTools":false,"selectorModel":{"provider":"openai","id":"selector"},"drafterModel":{"provider":"anthropic","id":"drafter"}}');
-		assert.deepEqual(loadConfig(dir), { focusShortcut: "ctrl+alt+c", agentTools: false, selectorModel: { provider: "openai", id: "selector" }, drafterModel: { provider: "anthropic", id: "drafter" } });
+		assert.deepEqual(loadConfig(dir), { focusShortcut: "ctrl+alt+c", agentTools: false, streamPrompting: "manual", checkpointPrompting: "low", selectorModel: { provider: "openai", id: "selector" }, drafterModel: { provider: "anthropic", id: "drafter" } });
 		writeFileSync(join(dir, "checkpoint.json"), '{"cmux":true}');
 		assert.throws(() => loadConfig(dir), /streams config set cmux.enabled/);
 		writeFileSync(join(dir, "checkpoint.json"), '{"selectorModel":{"provider":"openai"}}');
@@ -2013,6 +2058,360 @@ test("extension configuration owns models and shortcuts, and rejects the old CMU
 	} finally {
 		rmSync(dir, { recursive: true, force: true });
 	}
+});
+
+test("settings view cycles policies locally, describes them, and saves only on Ctrl+S", async () => {
+	const { CheckpointSettings } = await jiti.import(new URL("../extensions/stream-checkpoint/settings.ts", import.meta.url).pathname);
+	const saved = [], closed = [];
+	const config = { streamPrompting: "manual", checkpointPrompting: "low", agentTools: true };
+	const view = new CheckpointSettings({ terminal: { rows: 30 }, requestRender() {} }, { fg: (_color, text) => text }, config, (policy) => saved.push(policy), (value) => closed.push(value));
+	view.handleInput("\r");
+	assert.match(view.render(72).join("\n"), /substantive work/);
+	assert.match(view.render(72).join("\n"), /has no bound stream/);
+	view.handleInput("\x1b[B");
+	view.handleInput(" ");
+	assert.match(view.render(72).join("\n"), /major decisions/);
+	assert.equal(config.streamPrompting, "manual");
+	assert.deepEqual(saved, []);
+	view.handleInput("\x13");
+	assert.deepEqual(saved, [{ streamPrompting: "auto", checkpointPrompting: "medium" }]);
+	assert.deepEqual(closed, [true]);
+	view.handleInput("\x13");
+	assert.equal(saved.length, 1);
+});
+
+test("settings remain within short viewports with Save and Cancel visible", async () => {
+	const { CheckpointSettings } = await jiti.import(new URL("../extensions/stream-checkpoint/settings.ts", import.meta.url).pathname);
+	const { visibleWidth } = await import(pathToFileURL(piTuiIndex).href);
+	for (const rows of [8, 12, 24]) for (const width of [32, 48, 72]) {
+		const view = new CheckpointSettings({ terminal: { rows }, requestRender() {} }, { fg: (_color, text) => text }, { streamPrompting: "auto", checkpointPrompting: "high", agentTools: true }, () => {}, () => {});
+		view.handleInput("\x1b[B");
+		const lines = view.render(width);
+		assert.ok(lines.length <= rows);
+		assert.ok(lines.every((line) => visibleWidth(line) <= width));
+		assert.match(lines.join("\n"), /Ctrl\+S Save · Esc Cancel/);
+	}
+});
+
+test("settings Cancel writes nothing, and failed Save retains edited values for retry", async () => {
+	const { CheckpointSettings } = await jiti.import(new URL("../extensions/stream-checkpoint/settings.ts", import.meta.url).pathname);
+	const tui = { terminal: { rows: 12 }, requestRender() {} }, theme = { fg: (_color, text) => text };
+	const closed = [], config = { streamPrompting: "manual", checkpointPrompting: "low", agentTools: false };
+	const cancelled = new CheckpointSettings(tui, theme, config, () => assert.fail("Cancel must not save"), (value) => closed.push(value));
+	cancelled.handleInput("\r");
+	cancelled.handleInput("\x1b");
+	assert.deepEqual(closed, [false]);
+	let fail = true;
+	const saved = [];
+	const retry = new CheckpointSettings(tui, theme, config, (policy) => { if (fail) throw new Error("cannot write config"); saved.push(policy); }, (value) => closed.push(value));
+	retry.handleInput("\r");
+	retry.handleInput("\x13");
+	assert.match(retry.render(72).join("\n"), /cannot write config/);
+	assert.match(retry.render(72).join("\n"), /tools disabled/i);
+	assert.deepEqual(closed, [false]);
+	fail = false;
+	retry.handleInput("\x13");
+	assert.deepEqual(saved, [{ streamPrompting: "auto", checkpointPrompting: "low" }]);
+	assert.deepEqual(closed, [false, true]);
+});
+
+test("settings shortcut in chooser and draft panel preserves unfinished input", async () => {
+	let opened = 0;
+	const chooser = new StreamChooser({ terminal: { rows: 30 }, requestRender() {} }, { fg: (_color, text) => text }, [], {}, () => {}, { existing: [] }, "", { settings: () => opened++ });
+	chooser.handleInput("\x0e");
+	chooser.handleInput("Work in progress");
+	chooser.handleInput("\x1bs");
+	assert.equal(opened, 1);
+	assert.match(chooser.render(72).join("\n"), /Work in progress/);
+	assert.match(chooser.render(72).join("\n"), /Alt\+S Settings/);
+	const { panel, state, events } = panelFixture({ input: "Keep feedback", annotationEditor: { anchor: { revision: 1, side: "original", line: 1, section: "# Jobs", excerpt: "old" }, text: "Keep annotation" } });
+	panel.handleInput("\x1bs");
+	assert.deepEqual(events, ["settings"]);
+	assert.equal(state.input, "Keep feedback");
+	assert.equal(state.annotationEditor.text, "Keep annotation");
+	assert.match(panel.render(88).join("\n"), /Alt\+S Settings/);
+	panel.dispose();
+});
+
+test("settings command and chooser action share one editor and restore search or title input", async () => {
+	const dir = mkdtempSync(join(tmpdir(), "checkpoint-settings-entry-"));
+	const h = chooserHarness({ agentDir: dir });
+	try {
+		assert.equal(await h.settingsCommand("", h.ctx), undefined, "Settings must not occupy the prompt queue");
+		await until(() => !!h.settings);
+		const first = h.settings;
+		await h.settingsCommand("", h.ctx);
+		assert.equal(h.dialogs, 1, "The same editor is focused, not opened twice");
+		assert.equal(h.settingsHandle.focused, 1);
+		first.handleInput("\r");
+		first.handleInput("\x13");
+		await until(() => h.closed === 1);
+		assert.equal(loadConfig(dir).streamPrompting, "auto");
+		await h.tools.get("create_stream").execute("create", { title: "Keep this title", reason: "Test" }, undefined, undefined, h.ctx);
+		await until(() => !!h.chooser);
+		assert.equal(h.handle.hidden, false);
+		const chooser = h.chooser, handle = h.handle;
+		chooser.handleInput("\x1bs");
+		await until(() => h.settings !== first);
+		assert.equal(handle.hidden, true);
+		assert.match(chooser.render(90).join("\n"), /Keep this title/);
+		h.settings.handleInput("\r");
+		h.settings.handleInput("\x1b");
+		await until(() => !handle.hidden);
+		assert.equal(loadConfig(dir).streamPrompting, "auto", "Cancel must not save the changed manual value");
+		assert.equal(h.chooser, chooser);
+		assert.match(chooser.render(90).join("\n"), /Keep this title/);
+		chooser.handleInput("\x1b");
+		chooser.handleInput("serv");
+		const previous = h.settings;
+		chooser.handleInput("\x1bs");
+		await until(() => h.settings !== previous);
+		h.settings.handleInput("\x1b[B"); h.settings.handleInput("\r"); h.settings.handleInput("\x13");
+		await until(() => !handle.hidden);
+		assert.equal(loadConfig(dir).checkpointPrompting, "medium");
+		assert.match(chooser.render(90).join("\n"), /serv/);
+		assert.deepEqual(h.receipts, [], "Editing settings must not bind or create a stream");
+	} finally { await h.shutdown(); rmSync(dir, { recursive: true, force: true }); }
+});
+
+async function nativeOverlayUI(rows = 30, mode = "TuiMainScreen") {
+	const tuiModule = await import(pathToFileURL(piTuiIndex).href);
+	const { InteractiveMode } = await import(pathToFileURL(join(piDist, "modes/interactive/interactive-mode.js")).href);
+	const tui = new tuiModule[mode]({ rows, columns: 80, hideCursor() {}, showCursor() {}, write() {} });
+	const interactive = { ui: tui, editor: { getText: () => "" }, keybindings: {} };
+	const views = [];
+	return { tui, views, custom: (factory, options) => {
+		const view = {};
+		views.push(view);
+		return InteractiveMode.prototype.showExtensionCustom.call(interactive, (tui, theme, keys, done) => {
+			view.component = factory(tui, theme, keys, done);
+			return view.component;
+		}, { ...options, onHandle: (handle) => { view.handle = handle; options.onHandle?.(handle); } });
+	} };
+}
+
+test("native Pi overlay dismissal closes settings before an Apply completes", async () => {
+	const f = await conversationFixture();
+	const native = await nativeOverlayUI();
+	const commands = new Map();
+	let shutdown, releaseWrite;
+	const writing = new Promise((resolve) => { releaseWrite = resolve; });
+	try {
+		savePending(f.dir, { ...f.pending, input: "", draft: { ...sampleDraft, baseContent: "scratch unchanged", proposedContent: "new scratch" } });
+		const ctx = { mode: "tui", hasUI: true, cwd: f.dir, model: f.conversation.options.model, thinkingLevel: "off", sessionManager: f.manager,
+			modelRegistry: { getRegisteredProviderConfig() {}, getRegisteredNativeProvider() {} }, getSystemPrompt: () => "Test",
+			ui: { notify: (text) => assert.fail(text), theme: { fg: (_color, text) => text }, setStatus() {}, getEditorText: () => "", custom: native.custom } };
+		registerCheckpoint({ registerTool() {}, registerEntryRenderer() {}, registerMessageRenderer() {}, registerCommand: (name, options) => commands.set(name, options.handler),
+			registerShortcut() {}, on: (_name, handler) => { shutdown = handler; }, appendEntry: (type, data) => f.manager.appendCustomEntry(type, data), sendMessage() {} },
+			{ agentDir: f.dir, runtime: f.conversation.options.runtime, skill: "Test skill", cli: { config: async () => ({ cmux: { enabled: false } }), list: async () => [], show: async () => ({ slug: "service", path: f.path }), format: async () => "format", read: readFrom(f.path), diagnostics: [],
+				update: async (_slug, content, options) => { if (!options.dryRun) { await writing; writeFileSync(f.path, content); } return { slug: "service", path: f.path, updated: !options.dryRun }; } } });
+		await commands.get("checkpoint")("--stream service", ctx);
+		await until(() => native.views[0]?.handle && native.views[0].component.state.activity === null);
+		const parent = native.views[0].component;
+		parent.handleInput("\x07");
+		await until(() => parent.state.activity === "applying");
+		parent.handleInput("\x1bs");
+		await until(() => native.views[1]?.handle);
+		releaseWrite();
+		await until(() => parent.state.activity === null);
+		await turn();
+		assert.equal(readFileSync(f.path, "utf8"), "new scratch");
+		assert.notEqual(parent.state.notice?.level, "error", parent.state.notice?.text);
+		assert.equal(native.tui.hasOverlayEntries, false, "Both settings and the parent must leave the real overlay stack");
+		assert.equal(existsSync(join(f.dir, "checkpoint.json")), false);
+		await commands.get("checkpoint:settings")("", ctx);
+		await until(() => native.views[2]?.handle);
+		native.views[2].component.handleInput("\x1b");
+		await until(() => !native.tui.hasOverlayEntries);
+	} finally { releaseWrite(); await shutdown?.(); await f.dispose(); }
+});
+
+test("startup waits for settings to close before adding a parent to Pi's overlay stack", async () => {
+	const dir = mkdtempSync(join(tmpdir(), "checkpoint-settings-startup-"));
+	const h = chooserHarness({ agentDir: dir, stage: "config" });
+	const native = await nativeOverlayUI();
+	h.ctx.ui.custom = native.custom;
+	try {
+		await h.command("", h.ctx);
+		await h.settingsCommand("", h.ctx);
+		await until(() => !!native.views[0]?.handle);
+		h.pending();
+		for (let i = 0; i < 10; i++) await turn();
+		assert.equal(native.views.length, 1, "Startup must not push its chooser above settings");
+		native.views[0].component.handleInput("\x1b");
+		await until(() => !!native.views[1]?.handle);
+		native.views[1].component.handleInput("\x1b");
+		await until(() => !native.tui.hasOverlayEntries);
+	} finally { await h.shutdown(); rmSync(dir, { recursive: true, force: true }); }
+});
+
+test("settings controls and selected field survive Pi's real short-terminal compositor", async () => {
+	const { stripTerminalSequences } = await import(pathToFileURL(piTuiIndex).href);
+	for (const rows of [8, 12]) for (const mode of ["TuiMainScreen", "TuiAltScreen"]) {
+		const dir = mkdtempSync(join(tmpdir(), "checkpoint-settings-viewport-"));
+		const h = chooserHarness({ agentDir: dir });
+		const native = await nativeOverlayUI(rows, mode);
+		h.ctx.ui.custom = native.custom;
+		try {
+			await h.settingsCommand("", h.ctx);
+			await until(() => !!native.views[0]?.handle);
+			native.views[0].component.handleInput("\x1b[B");
+			const screen = stripTerminalSequences(native.tui.compositeOverlays([], 80, rows).join("\n"));
+			assert.match(screen, /Ctrl\+S Save · Esc Cancel/);
+			assert.match(screen, /▶.*Checkpoint frequency/);
+		} finally { await h.shutdown(); rmSync(dir, { recursive: true, force: true }); }
+	}
+});
+
+test("shutdown before Pi places settings closes only its own overlay", async () => {
+	const dir = mkdtempSync(join(tmpdir(), "checkpoint-settings-placement-"));
+	const h = chooserHarness({ agentDir: dir });
+	const native = await nativeOverlayUI();
+	h.ctx.ui.custom = native.custom;
+	try {
+		h.settingsCommand("", h.ctx);
+		assert.equal(native.views[0].handle, undefined, "Pi has not placed the modal until its promise callback runs");
+		await h.shutdown();
+		assert.equal(native.tui.hasOverlayEntries, false);
+		native.views[0].component.handleInput("\x13");
+		assert.equal(existsSync(join(dir, "checkpoint.json")), false);
+	} finally { await h.shutdown(); rmSync(dir, { recursive: true, force: true }); }
+});
+
+test("settings shutdown dismisses the editor and drops subsequent save input", async () => {
+	const dir = mkdtempSync(join(tmpdir(), "checkpoint-settings-shutdown-"));
+	const h = chooserHarness({ agentDir: dir });
+	try {
+		await h.tools.get("select_stream").execute("select", { slug: "service", reason: "Test" }, undefined, undefined, h.ctx);
+		await until(() => !!h.chooser);
+		h.chooser.handleInput("\x1bs");
+		await until(() => !!h.settings);
+		h.settings.handleInput("\r");
+		await h.shutdown();
+		h.settings.handleInput("\x13");
+		assert.equal(existsSync(join(dir, "checkpoint.json")), false);
+		assert.equal(h.closed, 2);
+		assert.equal(h.handle.hidden, true, "Shutdown must not restore the chooser");
+	} finally { await h.shutdown(); rmSync(dir, { recursive: true, force: true }); }
+});
+
+test("main-agent policy follows live configuration without changing tool availability", () => {
+	const dir = mkdtempSync(join(tmpdir(), "checkpoint-live-policy-"));
+	const events = new Map(), tools = [];
+	try {
+		registerCheckpoint({ registerTool: (tool) => tools.push(tool), registerEntryRenderer() {}, registerMessageRenderer() {}, registerCommand() {}, registerShortcut() {}, on: (name, handler) => events.set(name, handler) }, { agentDir: dir });
+		const hook = events.get("before_agent_start");
+		assert.equal(typeof hook, "function");
+		const policy = () => {
+			const event = { systemPromptOptions: { sections: { unrelated: "Keep this section" } } };
+			hook(event);
+			assert.equal(event.systemPromptOptions.sections.unrelated, "Keep this section");
+			return event.systemPromptOptions.sections.stream_prompting_policy;
+		};
+		const original = policy();
+		assert.match(original, /Stream selection \/ creation: manual/);
+		assert.match(original, /Checkpoint frequency: low/);
+		assert.match(original, /substantial task's completion|pause\/handoff/);
+		assert.doesNotMatch(original, /Also checkpoint/);
+		for (const level of ["manual", "low", "medium", "high"]) {
+			savePromptingConfig(dir, { streamPrompting: "auto", checkpointPrompting: level });
+			const text = policy();
+			assert.match(text, /Stream selection \/ creation: auto/);
+			assert.match(text, new RegExp(`Checkpoint frequency: ${level}`));
+			assert.match(text, /skip routine steps, unchanged context, an already-open checkpoint and unbound sessions/);
+			assert.match(text, /Do not choose or create a stream merely to enable checkpointing/);
+			if (level === "manual") assert.match(text, /Only initiate a checkpoint when the user asks/);
+			if (["medium", "high"].includes(level)) assert.match(text, /major decisions/);
+			if (level === "high") assert.match(text, /meaningful subtask milestones/);
+		}
+		assert.match(original, /Checkpoint frequency: low/, "A running turn's snapshot must not mutate");
+		assert.deepEqual(tools.map((tool) => tool.name), ["stream_read", "checkpoint", "select_stream", "create_stream"]);
+		assert.doesNotMatch(tools.flatMap((tool) => tool.promptGuidelines ?? []).join("\n"), /Use checkpoint occasionally|Use select_stream when substantive work/);
+	} finally { rmSync(dir, { recursive: true, force: true }); }
+});
+
+test("real Pi session sends updated policy to the model on the next turn without reload", async () => {
+	const f = await conversationFixture();
+	let session;
+	try {
+		const settings = SettingsManager.create(f.dir, f.dir);
+		const loader = new DefaultResourceLoader({ cwd: f.dir, agentDir: f.dir, settingsManager: settings, noExtensions: true, noSkills: true, noContextFiles: true,
+			extensionFactories: [(pi) => registerCheckpoint(pi, { agentDir: f.dir })] });
+		await loader.reload();
+		assert.deepEqual(loader.getExtensions().errors, []);
+		({ session } = await createAgentSession({ cwd: f.dir, agentDir: f.dir, modelRuntime: f.conversation.options.runtime, model: f.conversation.options.model,
+			settingsManager: settings, resourceLoader: loader, sessionManager: SessionManager.inMemory(f.dir), tools: [] }));
+		const policyAt = (turn) => f.contexts[turn].messages.filter((message) => message.role === "system").map((message) => message.sections?.stream_prompting_policy).filter(Boolean).at(-1);
+		let pending = session.prompt("First turn");
+		await until(() => f.contexts.length === 1);
+		assert.match(policyAt(0), /Stream selection \/ creation: manual/);
+		assert.match(policyAt(0), /Checkpoint frequency: low/);
+		savePromptingConfig(f.dir, { streamPrompting: "auto", checkpointPrompting: "high" });
+		assert.match(policyAt(0), /Checkpoint frequency: low/, "Already-running turns keep their original instructions");
+		f.finish(); await pending;
+		pending = session.prompt("Second turn");
+		await until(() => f.contexts.length === 2);
+		assert.match(policyAt(1), /Stream selection \/ creation: auto/);
+		assert.match(policyAt(1), /Checkpoint frequency: high/);
+		assert.match(policyAt(1), /meaningful subtask milestones/);
+		f.finish(); await pending;
+	} finally { session?.dispose(); await f.dispose(); }
+});
+
+test("needs-stream reports absence without directing unsolicited selection", async () => {
+	const h = chooserHarness();
+	try {
+		const result = await h.tools.get("checkpoint").execute("unbound", {}, undefined, undefined, h.ctx);
+		assert.equal(result.details.status, "needs-stream");
+		assert.match(result.content[0].text, /stream_prompting_policy/);
+		assert.doesNotMatch(result.content[0].text, /Call select_stream/);
+		assert.equal(h.dialogs, 0);
+	} finally { await h.shutdown(); }
+});
+
+test("prompting settings validate every level and reject unknown or null values", () => {
+	const dir = mkdtempSync(join(tmpdir(), "checkpoint-policy-"));
+	try {
+		for (const streamPrompting of ["manual", "auto"]) for (const checkpointPrompting of ["manual", "low", "medium", "high"]) {
+			writeFileSync(join(dir, "checkpoint.json"), JSON.stringify({ streamPrompting, checkpointPrompting }));
+			const config = loadConfig(dir);
+			assert.equal(config.streamPrompting, streamPrompting);
+			assert.equal(config.checkpointPrompting, checkpointPrompting);
+		}
+		for (const key of ["streamPrompting", "checkpointPrompting"]) for (const value of [null, false, "", "proactive", "toString"]) {
+			writeFileSync(join(dir, "checkpoint.json"), JSON.stringify({ [key]: value }));
+			assert.throws(() => loadConfig(dir), new RegExp(key));
+		}
+	} finally { rmSync(dir, { recursive: true, force: true }); }
+});
+
+test("saving prompting settings creates config and preserves other settings from the latest file", () => {
+	const dir = mkdtempSync(join(tmpdir(), "checkpoint-policy-save-"));
+	try {
+		const policy = { streamPrompting: "auto", checkpointPrompting: "high" };
+		savePromptingConfig(dir, policy);
+		assert.deepEqual(JSON.parse(readFileSync(join(dir, "checkpoint.json"), "utf8")), policy);
+		const other = { focusShortcut: "ctrl+alt+c", agentTools: false, drafterModel: { provider: "test", id: "draft" }, futureSetting: { retained: true } };
+		writeFileSync(join(dir, "checkpoint.json"), JSON.stringify(other));
+		savePromptingConfig(dir, { streamPrompting: "manual", checkpointPrompting: "low" });
+		assert.deepEqual(JSON.parse(readFileSync(join(dir, "checkpoint.json"), "utf8")), { ...other, streamPrompting: "manual", checkpointPrompting: "low" });
+		assert.equal(loadConfig(dir).agentTools, false);
+	} finally { rmSync(dir, { recursive: true, force: true }); }
+});
+
+test("saving prompting settings refuses invalid config without changing the file", () => {
+	const dir = mkdtempSync(join(tmpdir(), "checkpoint-policy-invalid-"));
+	try {
+		const path = join(dir, "checkpoint.json");
+		for (const content of ["not json", "null", '{"focusShortcut":""}', '{"cmux":true}']) {
+			writeFileSync(path, content);
+			assert.throws(() => savePromptingConfig(dir, { streamPrompting: "manual", checkpointPrompting: "low" }));
+			assert.equal(readFileSync(path, "utf8"), content);
+		}
+		writeFileSync(path, "{}");
+		assert.throws(() => savePromptingConfig(dir, { streamPrompting: "invalid", checkpointPrompting: "low" }));
+		assert.equal(readFileSync(path, "utf8"), "{}");
+	} finally { rmSync(dir, { recursive: true, force: true }); }
 });
 
 test("binding is latest by append order across branches, but cannot cross session IDs", () => {

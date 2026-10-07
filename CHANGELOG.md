@@ -2,6 +2,9 @@
 
 ## Unreleased
 
+- Pi agent prompting is configurable: stream selection/creation defaults to `manual`, while checkpoint prompting defaults to `low`, with `manual`, `medium` and `high` available. The tools remain available; these settings guide initiation rather than enforce permissions
+- `/checkpoint:settings` and Alt+S in the chooser or draft panel open the same settings editor. Save preserves other config fields and updates the next agent turn without reload; Cancel leaves the file unchanged and returns to the same panel
+
 - Streams can be created outside jj or Git, including through Pi's chooser. These notes record `repo: null`, `vcs: null` and the working directory as `cwd`; `streams check` accepts them
 
 - `streams read` prints a note exactly as stored, even when it's invalid. `--hash` adds the SHA-256 for `update --if-match`, and `--json` gives parsed frontmatter, contents, hash and findings. `streams update --if-match` can now replace an invalid note
@@ -12,7 +15,7 @@
 - Pi `stream_read` tool: the main agent can read the bound stream's note, another stream or the pending draft without a path-access prompt ([#3](https://github.com/wackywendell/streams/issues/3))
 - Pi reads notes only through `streams read`, and Apply checks the note against the hash the CLI reports. Receipts, line comments and `stream_read` no longer show note paths, and `stream_read` shows an invalid note with its problems
 - Pi now shows the CLI's warnings from `streams update`, which it had been dropping
-- Pi `checkpoint` tool: the main agent can start a checkpoint of the bound stream in the background, at natural points such as a significant decision. Its guidance says to usually omit instructions, since the checkpoint agent already sees the conversation, including any text the main agent wrote just before calling it. It never opens a chooser or takes focus, and only the user can apply. Set `agentTools: false` in `checkpoint.json` to turn it off ([#1](https://github.com/wackywendell/streams/issues/1))
+- Pi `checkpoint` tool: the main agent can start a checkpoint of the bound stream in the background, according to the configured prompting policy. Its guidance says to usually omit instructions, since the checkpoint agent already sees the conversation, including any text the main agent wrote just before calling it. It never opens a chooser or takes focus, and only the user can apply. Set `agentTools: false` in `checkpoint.json` to turn it off ([#1](https://github.com/wackywendell/streams/issues/1))
 - Pi `select_stream` and `create_stream` tools: the main agent can recommend an existing stream by its exact slug, or propose a title for a new stream, and the user confirms the choice in the chooser. A receipt reports the choice or cancellation
 - The stream chooser no longer blocks behind a loader: recommendations are found in the background, and the chooser opens when they're ready unless you're typing. Alt+P shows or hides it
 - Checkpoint receipts return the side discussion to the main agent: user messages, checkpoint-agent replies and line comments, capped at 16,000 characters. Clear also reports the discussion if the user took part ([#2](https://github.com/wackywendell/streams/issues/2))

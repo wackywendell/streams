@@ -35,7 +35,7 @@ export class StreamChooser implements Component {
 		 * `reason` says why the chooser opened. `create` opens it editing the suggested new stream, with Esc back to the list.
 		 * `drafting` says a checkpoint draft follows the choice.
 		 */
-		private options: { shortcut?: string; minimize?: () => void; finding?: boolean; reason?: string; create?: boolean; drafting?: boolean } = {},
+		private options: { shortcut?: string; minimize?: () => void; settings?: () => void; finding?: boolean; reason?: string; create?: boolean; drafting?: boolean } = {},
 	) {
 		fill(this.input, initialRef);
 		const suggested = recommendations.newStream;
@@ -112,6 +112,7 @@ export class StreamChooser implements Component {
 			if (!this.creating && matchesKey(data, "escape")) this.finish(undefined);
 			return;
 		}
+		if (this.options.settings && matchesKey(data, "alt+s")) { this.options.settings(); return; }
 		if (this.creating) {
 			if (matchesKey(data, "escape")) { this.creating = false; this.status = "↑↓ choose · Enter select · Ctrl+N Write your own"; }
 			else this.titleInput.handleInput(data);
@@ -154,7 +155,7 @@ export class StreamChooser implements Component {
 			row("New stream · Edit title"), inputRow,
 			...(this.creatingReason ? reasonRows(this.creatingReason) : []),
 			row(this.busy ? "Creating stream…" : this.status),
-			row(this.busy ? "Please wait for creation to finish" : "Enter Create · Esc Back"),
+			row(this.busy ? "Please wait for creation to finish" : `Enter Create · Esc Back${this.options.settings ? " · Alt+S Settings" : ""}`),
 			this.theme.fg("border", `╰${"─".repeat(inside)}╯`),
 		];
 		const choices = this.choices();
@@ -193,7 +194,7 @@ export class StreamChooser implements Component {
 			row(`${this.selected === choices.length - 1 ? "▶" : " "} ${this.theme.fg("accent", "Write your own…")}`, true),
 			inputRow,
 			row(this.busy ? "Working…" : this.options.finding ? "Finding recommendations…" : this.status),
-			row(`Tab select highlighted · Alt+M Show more · Esc Cancel${this.options.minimize && this.options.shortcut ? ` · ${shortcutLabel(this.options.shortcut)} Hide` : ""}`),
+			row(`Tab select · ${this.options.settings ? "Alt+S Settings · " : ""}Alt+M Show more · Esc Cancel${this.options.minimize && this.options.shortcut ? ` · ${shortcutLabel(this.options.shortcut)} Hide` : ""}`),
 			this.theme.fg("border", `╰${"─".repeat(inside)}╯`),
 		];
 	}
