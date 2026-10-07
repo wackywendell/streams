@@ -159,7 +159,7 @@ def preview_start(title: str, *, root: Path | None = None, cwd: Path | None = No
         "updated": today,
         "description": "",
         "state": DEFAULT_STATE,
-        "repo": format_local_path(location.repo_root, aliases=path_aliases),
+        "repo": format_local_path(location.repo_root, aliases=path_aliases) if location.repo_root is not None else None,
         "cwd": format_local_path(location.working_root, aliases=path_aliases),
         "vcs": location.vcs,
         "issues": [],

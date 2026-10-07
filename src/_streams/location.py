@@ -72,23 +72,23 @@ def format_local_path(
 
 @dataclass(frozen=True)
 class StreamLocation:
-    """The main checkout and working-copy roots for one stream."""
+    """A stream's working directory and optional repository roots."""
 
-    vcs: str
-    repo_root: Path
+    vcs: str | None
+    repo_root: Path | None
     working_root: Path
 
     @classmethod
-    def from_strings(cls, *, vcs: str, repo: str, cwd: str) -> StreamLocation:
+    def from_strings(cls, *, vcs: str | None, repo: str | None, cwd: str) -> StreamLocation:
         return cls(
             vcs=vcs,
-            repo_root=Path(repo).expanduser(),
+            repo_root=Path(repo).expanduser() if repo is not None else None,
             working_root=Path(cwd).expanduser(),
         )
 
     @property
     def is_dedicated(self) -> bool:
-        return self.repo_root.resolve() != self.working_root.resolve()
+        return self.repo_root is not None and self.repo_root.resolve() != self.working_root.resolve()
 
     def matches_working_root(self, path: str | Path) -> bool:
         return self.working_root.resolve() == Path(path).expanduser().resolve()
@@ -99,7 +99,7 @@ def discover_stream_location(
     *,
     runner: CommandRunner | None = None,
 ) -> StreamLocation:
-    """Discover main and current working-copy roots containing `cwd`."""
+    """Discover repository roots containing `cwd`, or keep it as a repo-less directory."""
     runner = runner or _run_command
     cwd = cwd.expanduser().resolve()
 
@@ -108,6 +108,8 @@ def discover_stream_location(
             runner(["jj", "workspace", "root", "--ignore-working-copy"], cwd).strip()
         ).resolve()
     except StreamError:
+        if _has_vcs_metadata(cwd, ".jj"):
+            raise
         working_root = None
 
     if working_root is not None:
@@ -139,20 +141,28 @@ def discover_stream_location(
                 cwd,
             ).strip()
         )
-        worktrees = runner(["git", "worktree", "list", "--porcelain"], cwd)
-        first_line = next(
-            (line for line in worktrees.splitlines() if line.startswith("worktree ")),
-            None,
-        )
-        if first_line is None:
-            raise StreamError("git worktree list did not report a main worktree")
-        return StreamLocation(
-            vcs="git",
-            repo_root=Path(first_line.removeprefix("worktree ")).resolve(),
-            working_root=working_root.resolve(),
-        )
-    except StreamError as exc:
-        raise StreamError(f"{cwd} is not inside a jj workspace or Git worktree") from exc
+    except StreamError:
+        if _has_vcs_metadata(cwd, ".git"):
+            raise
+        return StreamLocation(vcs=None, repo_root=None, working_root=cwd)
+
+    worktrees = runner(["git", "worktree", "list", "--porcelain"], cwd)
+    first_line = next(
+        (line for line in worktrees.splitlines() if line.startswith("worktree ")),
+        None,
+    )
+    if first_line is None:
+        raise StreamError("git worktree list did not report a main worktree")
+    return StreamLocation(
+        vcs="git",
+        repo_root=Path(first_line.removeprefix("worktree ")).resolve(),
+        working_root=working_root.resolve(),
+    )
+
+
+def _has_vcs_metadata(cwd: Path, marker: str) -> bool:
+    """Do not mistake broken or inaccessible repository metadata for absence."""
+    return any((root / marker).exists() or (root / marker).is_symlink() for root in (cwd, *cwd.parents))
 
 
 def _legacy_jj_repo_root(working_root: Path) -> Path:

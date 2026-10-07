@@ -136,7 +136,7 @@ def stream_for_workspace_hint(workspace: CmuxWorkspace, *, root: Path | None = N
         )
     if cwd_matches:
         raise StreamError(
-            "current CMUX workspace is in a main checkout, which does not identify one stream; "
+            "current CMUX workspace is in a main checkout or a directory without a repository, which does not identify one stream; "
             "pass a slug"
         )
     raise StreamError(

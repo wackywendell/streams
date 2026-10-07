@@ -47,8 +47,13 @@ def validate_frontmatter(path: Path, frontmatter: dict[str, Any]) -> list[Schema
             findings.append(_finding("error", path, f"field {field!r} does not belong in stream frontmatter"))
 
     for field in STRING_FIELDS:
+        if field in ("repo", "vcs") and frontmatter.get(field) is None:
+            continue
         if field in frontmatter and not isinstance(frontmatter[field], str):
             findings.append(_finding("error", path, f"field {field!r} must be a string"))
+
+    if "repo" in frontmatter and "vcs" in frontmatter and (frontmatter["repo"] is None) != (frontmatter["vcs"] is None):
+        findings.append(_finding("error", path, "repo and vcs must both be null for a stream without a repository"))
 
     for field in ("title", "status", "state", "repo", "cwd", "vcs"):
         if isinstance(frontmatter.get(field), str) and not frontmatter[field].strip():

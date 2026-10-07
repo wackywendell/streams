@@ -1647,15 +1647,15 @@ test("CLI diagnostics retain bounded output and exit status but never stdin", as
 	assert.doesNotMatch(JSON.stringify(read.diagnostics), /PRIVATE NOTE/);
 });
 
-test("StreamCli agrees with the real streams CLI on its JSON, read and error contracts", async () => {
+for (const withRepo of [true, false]) {
+test(`StreamCli agrees with the real streams CLI ${withRepo ? "inside" : "outside"} a repository`, async () => {
 	const dir = mkdtempSync(join(tmpdir(), "streams-contract-"));
 	try {
 		const root = join(dir, "notes");
 		mkdirSync(join(dir, "config", "streams"), { recursive: true });
 		writeFileSync(join(dir, "config", "streams", "config.json"), JSON.stringify({ notes: { root } }));
 		const project = fileURLToPath(new URL("..", import.meta.url));
-		// `streams start` records the repository a stream belongs to.
-		assert.equal(spawnSync("git", ["init", "-q", dir]).status, 0);
+		if (withRepo) assert.equal(spawnSync("git", ["init", "-q", dir]).status, 0);
 		const runner = (args, input) => new Promise((resolve, reject) => {
 			const child = spawn("uv", ["run", "--quiet", "--project", project, "streams", ...args], { cwd: dir, env: { ...process.env, XDG_CONFIG_HOME: join(dir, "config") } });
 			let stdout = "", stderr = "";
@@ -1668,7 +1668,37 @@ test("StreamCli agrees with the real streams CLI on its JSON, read and error con
 		const warnings = [];
 		const cli = new StreamCli(dir, runner, (text) => warnings.push(text));
 		assert.equal((await cli.config()).notes.root, root);
-		const stream = await cli.start("Contract stream");
+		const preview = await cli.previewStart("Contract stream");
+		assert.equal((await cli.list()).length, 0, "Preview must not create a note");
+		let stream;
+		if (withRepo) stream = await cli.start("Contract stream");
+		else {
+			const h = chooserHarness({ cli, agentDir: dir });
+			h.ctx.cwd = dir;
+			const custom = h.ctx.ui.custom;
+			let shown, chosen;
+			const ready = new Promise((resolve) => { shown = resolve; });
+			const choice = new Promise((resolve) => { chosen = resolve; });
+			h.ctx.ui.custom = (factory, options) => custom((tui, theme, keys, done) => {
+				const component = factory(tui, theme, keys, (value) => { done(value); chosen(value); });
+				shown(component);
+				return component;
+			}, options);
+			try {
+				await h.tools.get("create_stream").execute("create", { title: "Contract stream", reason: "Writing outside a repository" }, undefined, undefined, h.ctx);
+				const chooser = await ready;
+				assert.equal(latestBinding(h.manager.getEntries(), h.manager.getSessionId()), undefined);
+				chooser.handleInput("\r");
+				stream = (await choice).stream;
+				await turn();
+				assert.equal(latestBinding(h.manager.getEntries(), h.manager.getSessionId()).slug, stream.slug);
+				assert.match(h.receipts[0].content, /The user chose a new stream/);
+			} finally { await h.shutdown(); }
+			assert.equal(stream.repo, null);
+			assert.equal(stream.vcs, null);
+		}
+		assert.deepEqual(stream, preview);
+		assert.equal((await runner(["check", stream.slug])).code, 0);
 		assert.deepEqual((await cli.list()).map((item) => item.slug), [stream.slug]);
 		assert.equal((await cli.show("Contract stream")).slug, stream.slug);
 
@@ -1714,6 +1744,7 @@ test("StreamCli agrees with the real streams CLI on its JSON, read and error con
 		rmSync(dir, { recursive: true, force: true });
 	}
 });
+}
 
 test("CLI integration uses show and update without shell interpolation", async () => {
 	const calls = [];

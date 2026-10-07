@@ -27,7 +27,7 @@ The Pi extension calls the `streams` CLI, so install both. To use the skill with
 ## Use
 
 ```sh
-streams start "Fix flaky login test"   # run inside a jj workspace or Git worktree
+streams start "Fix flaky login test"   # works inside or outside a repository
 streams list
 streams show fix-flaky-login-test
 streams check

@@ -67,9 +67,9 @@ def write_stream(
     title: str = "Example",
     status: str = "active",
     state: str = "Doing work",
-    repo: str = "/repo",
+    repo: str | None = "/repo",
     cwd: str = "/repo",
-    vcs: str = "jj",
+    vcs: str | None = "jj",
     issues: list[dict[str, str]] | None = None,
     prs: list[dict[str, str]] | None = None,
     sessions: list[str] | None = None,
@@ -217,12 +217,40 @@ class StreamLocationTest(unittest.TestCase):
             self.assertEqual(location.working_root, working.resolve())
             self.assertTrue(location.is_dedicated)
 
-    def test_discover_location_requires_a_vcs_working_copy(self) -> None:
+    def test_discover_location_without_vcs_keeps_the_current_directory(self) -> None:
         def run(args: list[str], cwd: Path) -> str:
             raise StreamError("not a repository")
 
-        with self.assertRaisesRegex(StreamError, "not inside a jj workspace or Git worktree"):
-            discover_stream_location(Path("/tmp/not-a-repo"), runner=run)
+        location = discover_stream_location(Path("/tmp/not-a-repo"), runner=run)
+        self.assertEqual(location, StreamLocation(vcs=None, repo_root=None, working_root=Path("/tmp/not-a-repo").resolve()))
+        self.assertFalse(location.is_dedicated)
+
+    def test_discover_location_does_not_hide_git_worktree_failures(self) -> None:
+        def run(args: list[str], cwd: Path) -> str:
+            if args[0] == "jj":
+                raise StreamError("not a jj repository")
+            if args[1] == "rev-parse":
+                return "/repo\n"
+            raise StreamError("worktree metadata unavailable")
+
+        with self.assertRaisesRegex(StreamError, "worktree metadata unavailable"):
+            discover_stream_location(Path("/repo"), runner=run)
+
+    def test_discover_location_preserves_root_lookup_failures_when_metadata_exists(self) -> None:
+        for vcs, marker in [("git", ".git"), ("jj", ".jj")]:
+            with self.subTest(vcs=vcs), tempfile.TemporaryDirectory() as tmp:
+                root = Path(tmp)
+                (root / marker).mkdir()
+                cwd = root / "subdir"
+                cwd.mkdir()
+
+                def run(args: list[str], cwd: Path) -> str:
+                    if args[0] == vcs:
+                        raise StreamError("repository metadata is inaccessible")
+                    raise StreamError("not a repository")
+
+                with self.assertRaisesRegex(StreamError, "repository metadata is inaccessible"):
+                    discover_stream_location(cwd, runner=run)
 
     def test_discover_git_location_uses_first_worktree_as_repo_root(self) -> None:
         def run(args: list[str], cwd: Path) -> str:
@@ -307,6 +335,24 @@ class StoreTest(unittest.TestCase):
             self.assertFalse(preview.path.exists())
             created = start_stream("New Stream", root=root, cwd=root)
             self.assertEqual(preview.as_json(), created.as_json())
+
+    def test_start_without_repo_records_explicit_nulls_and_valid_cwd(self) -> None:
+        from _streams.store import preview_start
+
+        with tempfile.TemporaryDirectory() as tmp:
+            cwd = Path(tmp).resolve()
+            root = cwd / "scratch"
+            preview = preview_start("Writing Notes", root=root, cwd=cwd)
+            self.assertFalse(root.exists())
+            created = start_stream("Writing Notes", root=root, cwd=cwd)
+            self.assertEqual(created.as_json(), preview.as_json())
+            self.assertIsNone(created.frontmatter["repo"])
+            self.assertIsNone(created.frontmatter["vcs"])
+            self.assertEqual(created.location.working_root, cwd)
+            self.assertFalse(created.location.is_dedicated)
+            self.assertEqual(check_path(created.path), [])
+            self.assertEqual(list_streams(root)[0].as_json(), created.as_json())
+            self.assertEqual(show_stream(created.slug, root).as_json(), created.as_json())
 
     def test_start_stream_writes_discovered_home_symlink_aliases(self) -> None:
         with (
@@ -965,6 +1011,33 @@ class CheckTest(unittest.TestCase):
             path = write_stream(root, "active-stream", title="Active Stream")
             self.assertEqual(check_path(path), [])
 
+    def test_repo_and_vcs_nulls_are_valid_only_together(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            path = write_stream(root, "active-stream", title="Active Stream", repo=None, vcs=None)
+            self.assertEqual(check_path(path), [])
+            for repo, vcs in [(None, "git"), ("/repo", None)]:
+                with self.subTest(repo=repo, vcs=vcs):
+                    write_stream(root, "active-stream", title="Active Stream", repo=repo, vcs=vcs)
+                    self.assertTrue(any(f.level == "error" and "repo and vcs must both be null" in f.message for f in check_path(path)))
+
+    def test_repo_less_notes_still_require_explicit_fields_and_a_local_cwd(self) -> None:
+        from _streams.check import check_content
+
+        with tempfile.TemporaryDirectory() as tmp:
+            path = write_stream(Path(tmp), "active-stream", title="Active Stream", repo=None, vcs=None)
+            content = path.read_text()
+            for field in ("repo", "vcs"):
+                with self.subTest(field=field):
+                    findings = check_content(path, content.replace(f"{field}: null\n", ""))
+                    self.assertTrue(any(f.level == "error" and f"missing required field '{field}'" in f.message for f in findings))
+            for cwd in (None, "", "relative/path"):
+                with self.subTest(cwd=cwd):
+                    frontmatter, body = split_frontmatter(content)
+                    frontmatter["cwd"] = cwd
+                    findings = check_content(path, render_frontmatter(frontmatter, body))
+                    self.assertTrue(any(f.level == "error" and "cwd" in f.message for f in findings))
+
     def test_candidate_uses_same_findings_as_saved_content(self) -> None:
         from _streams.check import check_content
 
@@ -1160,6 +1233,16 @@ class CmuxTest(unittest.TestCase):
                 ],
             )
 
+    def test_open_repo_less_workspace_uses_the_recorded_directory(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            path = write_stream(root, "writing-notes", title="Writing Notes", repo=None, vcs=None, cwd=str(root))
+            cmux = FakeCmux()
+            with patch("_streams.cmux.notes_root", return_value=root):
+                open_workspace(show_stream(path.stem, root), cmux)
+            command = cmux.commands[0]
+            self.assertEqual(command[command.index("--cwd") + 1], str(root))
+
     def test_open_workspace_requires_existing_cwd(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
@@ -1311,6 +1394,14 @@ class CmuxTest(unittest.TestCase):
             with self.assertRaisesRegex(Exception, "main checkout"):
                 load_stream_for_update(None, None, True, cmux, root=root)
 
+    def test_update_current_does_not_infer_repo_less_stream_from_cwd(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            write_stream(root, "writing-notes", title="Writing Notes", repo=None, vcs=None, cwd=str(root))
+            workspace = CmuxWorkspace({"ref": "workspace:2", "title": "Unrelated", "current_directory": str(root)})
+            with self.assertRaisesRegex(StreamError, "pass a slug"):
+                load_stream_for_update(None, None, True, FakeCmux([workspace]), root=root)
+
     def test_update_current_does_not_fuzzy_match_workspace_title(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
@@ -1349,6 +1440,15 @@ class ResumeTest(unittest.TestCase):
             exec_resume(stream)
             chdir_mock.assert_called_once_with(cwd)
             exec_mock.assert_called_once_with("codex", ["codex", "resume", "abc"])
+
+    def test_repo_less_stream_can_resume_in_its_cwd(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp, patch("_streams.resume.os.chdir") as chdir_mock, patch("_streams.resume.os.execvp") as exec_mock:
+            root = Path(tmp)
+            write_stream(root, "writing-notes", title="Writing Notes", repo=None, vcs=None, cwd=str(root), sessions=["pi:last"])
+            stream = resolve_stream_for_resume("writing-notes", root=root)
+            exec_resume(stream)
+            chdir_mock.assert_called_once_with(root)
+            exec_mock.assert_called_once_with("pi", ["pi", "--session", "last"])
 
     def test_exec_resume_requires_existing_cwd(self) -> None:
         with tempfile.TemporaryDirectory() as tmp, patch("_streams.resume.os.execvp") as exec_mock:

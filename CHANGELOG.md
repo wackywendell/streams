@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+- Streams can be created outside jj or Git, including through Pi's chooser. These notes record `repo: null`, `vcs: null` and the working directory as `cwd`; `streams check` accepts them
+
 - `streams read` prints a note exactly as stored, even when it's invalid. `--hash` adds the SHA-256 for `update --if-match`, and `--json` gives parsed frontmatter, contents, hash and findings. `streams update --if-match` can now replace an invalid note
 - **Breaking:** `streams list --json` returns `{"streams": [...], "findings": [...]}` instead of a bare array. An invalid note no longer breaks `list` and every lookup: it's skipped and reported, and `list` exits 1
 - With `--json`, failing commands print `{"error": {"kind", "message", "candidates"}}`, so callers can tell a missing stream from an ambiguous ref or a broken note

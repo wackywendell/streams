@@ -154,7 +154,7 @@ On submission, validate the title and obtain its canonical slug through `streams
 
 After successful creation and binding, run `streams cmux update -c <slug>` if shared `cmux.enabled` is `true`. Report a projection failure in the panel and continue the checkpoint discussion with the created stream.
 
-If creation fails, keep the chooser open and the old binding intact. Outside a valid jj or Git checkout, explain the CLI failure and ask for a valid creation location instead of fabricating `repo` or `cwd`.
+If creation fails, keep the chooser open and the old binding intact. Creation outside jj or Git is valid: the CLI records `repo: null`, `vcs: null` and the current directory as `cwd`. Continue creation and binding normally; do not ask for a repository or fabricate one.
 
 Submitting the edited title writes the CLI's starter note and binds the returned stream. It does not authorize the subsequent checkpoint draft. Minimizing, restarting and Clear all leave the new note and binding in place. An unfilled starter note correctly records what the user has approved; it is not abandoned work to delete.
 
@@ -469,6 +469,7 @@ Tests must use temporary scratch files and mocked CLI, model, and CMUX boundarie
 | Listing fails | Explain failure; do not treat it as proof a stream is missing |
 | Create is cancelled or fails | Preserve the old binding and do not continue as though creation succeeded |
 | Create succeeds | Persist the binding to the actual returned stream immediately, before checkpoint discussion or Apply |
+| Create outside jj or Git | Create and bind normally, retaining `cwd` and explicit null `repo` and `vcs` |
 | Later no-argument invocation | Reuse the stored binding without asking again |
 | Different explicit stream | Rebind only after successful resolution or creation and handle pending panel work |
 | Restart or tree navigation | Restore the main session's latest binding; do not inherit another session ID's binding |

@@ -42,11 +42,11 @@ Required fields:
 - `updated`: last meaningful stream-state update date, `YYYY-MM-DD`. `streams update` sets it to today whenever it changes the note. When editing the file directly, update it for handoffs, checkpoints, status changes, and durable pickup-context changes; do not churn it for typo-only edits.
 - `description`: one-sentence overall task description. Longer than `state`, stable across handoffs, and focused on the stream goal.
 - `state`: short current display state, roughly 5-12 words. This is used in compact displays and CMUX descriptions. Put transient workflow phases here, such as `PR in review; waiting for reviewer feedback.`
-- `repo`: local root directory of the main/default checkout. This is always a path, not an `owner/repo` identity or multi-repo description.
-- `cwd`: local root directory of the jj workspace or Git worktree where work should resume. Use the main checkout root when there is no dedicated working copy. AI sessions and CMUX workspaces start from this directory.
+- `repo`: local root directory of the main/default checkout, or `null` when the stream has no repository. A path must not be an `owner/repo` identity or multi-repo description.
+- `cwd`: directory where work should resume. Inside a repository, use the jj workspace or Git worktree root, not an arbitrary subdirectory. Without a repository, use the current working directory. AI sessions and CMUX workspaces start here; this field cannot be null.
 
-`repo` and `cwd` form one location invariant: their canonical paths are equal for the main checkout and differ for a dedicated jj workspace or Git worktree. `streams start` discovers both roots from the current VCS working copy and fails outside jj or Git. When writing either path, it automatically prefers a matching direct home-directory symlink such as `~/work`; otherwise it uses `~` for paths under home. Do not use `repo` or `cwd` for an arbitrary subdirectory.
-- `vcs`: local VCS, usually `jj` or `git`.
+Inside a repository, `repo` and `cwd` have equal canonical paths for the main checkout and differ for a dedicated workspace or worktree. `streams start` discovers both roots. Outside jj or Git, it records `repo: null`, `vcs: null` and the current directory as `cwd`. Both null fields must be present; missing fields and inconsistent pairs are errors. `streams check` accepts intentional repository absence without a warning. Paths prefer a matching direct home-directory symlink such as `~/work`, then `~` for paths under home.
+- `vcs`: `jj` or `git`, or `null` together with `repo: null`.
 - `issues`: list of GitHub issue mappings. Each has a `url` and a manually maintained `description` of 2 to 5 words. Replace older URL-only entries with these mappings.
 - `prs`: list of GitHub pull request mappings. Each has a `url` and a manually maintained `description` of 2 to 5 words. Replace older URL-only entries with these mappings.
 - `sessions`: AI session ids in `codex:<id>`, `claude:<id-or-slug>`, or `pi:<id>` form, ordered oldest to newest. `streams resume` uses the last entry.
@@ -184,7 +184,7 @@ With `--json`, a failing command prints `{"error": {"kind", "message", "candidat
 
 `streams rename <stream-ref> "New Title"` renames the scratch file, title, leading heading, and artifact directory. It leaves relative symlinks at the old scratch and artifact paths for compatibility. Rename symlinks are not separate streams and are omitted from list and check operations. Use `--current` or `-c` to update the current CMUX workspace after renaming.
 
-`streams resume [slug]` starts the last session listed in `sessions`. Without a slug, it infers the stream from an exact current CMUX workspace title or from a unique dedicated `cwd` match. It does not infer a stream from the main checkout because multiple streams can share it. If `sessions` is empty, start a new AI session intentionally and record it in scratch.
+`streams resume [slug]` starts the last session listed in `sessions`. Without a slug, it infers the stream from an exact current CMUX workspace title or from a unique dedicated `cwd` match. It does not infer a stream from the main checkout or a repo-less directory because multiple streams can share it. If `sessions` is empty, start a new AI session intentionally and record it in scratch.
 
 `cwd` must exist and be a directory for `streams resume [slug]` and `streams cmux open <slug>`. `streams resume [slug]` changes into `cwd` before executing the latest recorded AI session. If the agent's saved session directory differs from scratch `cwd`, choose the scratch/current directory unless you intentionally want the old session directory.
 
