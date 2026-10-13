@@ -276,7 +276,7 @@ async function conversationFixture() {
 	};
 	const pending = { version: 1, ownerId: manager.getSessionId(), slug: "service", messages: [], input: "unsent" };
 	const { CheckpointConversation } = await jiti.import(new URL("../extensions/stream-checkpoint/conversation.ts", import.meta.url).pathname);
-	const conversation = new CheckpointConversation({ pending, binding: { ownerId: pending.ownerId, slug: pending.slug, path }, agentDir: dir, cwd: dir, manager, runtime, model, thinkingLevel: "off", systemPrompt: "Test checkpoint instructions", cli: { read: readFrom(path), config: async () => ({ cmux: { enabled: false } }), update: async (_slug, content, options) => { if (!options.dryRun) writeFileSync(path, content); return { slug: pending.slug, path, updated: !options.dryRun }; } }, changed() {}, applied() {} });
+	const conversation = new CheckpointConversation({ pending, binding: { ownerId: pending.ownerId, slug: pending.slug, path }, agentDir: dir, cwd: dir, manager, runtime, model, thinkingLevel: "off", systemPrompt: "Test checkpoint instructions", cli: { read: readFrom(path), refresh: async () => ({ status: "skipped", reason: "disabled" }), update: async (_slug, content, options) => { if (!options.dryRun) writeFileSync(path, content); return { slug: pending.slug, path, updated: !options.dryRun }; } }, changed() {}, applied() {} });
 	return { conversation, pending, contexts, path, dir, manager, finish: (...args) => finish(...args), async dispose() { await conversation.dispose(); rmSync(dir, { recursive: true, force: true }); } };
 }
 
@@ -422,7 +422,7 @@ for (const selection of ["bound", "chooser", "chooser-minimized", "explicit"]) {
 			};
 			registerCheckpoint({ registerTool() {}, registerEntryRenderer() {}, registerMessageRenderer() {}, registerCommand: (_name, options) => { command = options.handler; }, registerShortcut() {}, on: (_event, handler) => { shutdown = handler; }, appendEntry: (type, data) => f.manager.appendCustomEntry(type, data) }, {
 				agentDir: f.dir, runtime: f.conversation.options.runtime, skill: "Test skill",
-				cli: { read: readFrom(f.path), config: async () => ({ cmux: { enabled: false } }), list: async () => { lists++; return [stream]; }, show: async (ref) => { shown.push(ref); if (selection === "chooser-minimized") await new Promise((resolve) => { finishLookup = resolve; }); return stream; }, format: async () => "format" },
+				cli: { read: readFrom(f.path), refresh: async () => ({ status: "skipped", reason: "disabled" }), list: async () => { lists++; return [stream]; }, show: async (ref) => { shown.push(ref); if (selection === "chooser-minimized") await new Promise((resolve) => { finishLookup = resolve; }); return stream; }, format: async () => "format" },
 			});
 			await command("--stream", ctx);
 			assert.match(notifications.pop(), /Usage: \/checkpoint/);
@@ -518,13 +518,15 @@ function chooserHarness({ stage, editor = "", others = [], cli, agentDir } = {})
 	const stream = { slug: "service", title: "Service", path: "/unused/service.md", status: "active", state: "Work" };
 	const streams = [stream, ...others];
 	const h = { manager, stream, editor, tools: new Map(), receipts: [], dialogs: 0, closed: 0, renders: 0, statuses: [], chooser: undefined, handle: undefined, pending: undefined, selectorSignal: undefined, command: undefined, shortcut: undefined, shutdown: undefined };
+	let received;
+	h.receiptReady = new Promise((resolve) => { received = resolve; });
 	const gate = (name, value) => name === stage ? new Promise((resolve) => { h.pending = () => resolve(value); }) : Promise.resolve(value);
 	registerCheckpoint({ registerTool: (tool) => h.tools.set(tool.name, tool), registerEntryRenderer() {}, registerMessageRenderer() {},
 		registerShortcut: (_key, options) => { h.shortcut = options.handler; },
-		sendMessage: (message, options) => { assert.equal(options.triggerTurn, false); h.receipts.push(message); },
+		sendMessage: (message, options) => { assert.equal(options.triggerTurn, false); h.receipts.push(message); received(message); },
 		registerCommand: (name, options) => { if (name === "checkpoint:settings") h.settingsCommand = options.handler; else h.command = options.handler; }, on: (_name, handler) => { h.shutdown = handler; },
 		appendEntry: (type, data) => manager.appendCustomEntry(type, data),
-	}, { agentDir: agentDir ?? mkdtempSync(join(tmpdir(), "checkpoint-chooser-")), cli: cli ?? { config: () => gate("config", { cmux: { enabled: false } }), list: () => gate("list", streams),
+	}, { agentDir: agentDir ?? mkdtempSync(join(tmpdir(), "checkpoint-chooser-")), cli: cli ?? { refresh: async () => ({ status: "skipped", reason: "disabled" }), list: () => gate("list", streams),
 		show: (ref) => { const found = streams.find((item) => ref === item.slug || ref === item.title); return found ? gate("show", found) : Promise.reject(new StreamsCliError(`No stream ${ref}`, "not-found")); } } });
 	h.ctx = { mode: "tui", hasUI: true, cwd: process.cwd(), sessionManager: manager, model: { id: "selector" }, getSystemPrompt: () => "Test",
 		modelRegistry: { complete: (_model, _context, options) => { h.selectorSignal = options?.signal; return gate("recommendations", { content: [{ type: "text", text: '{"existing":[{"slug":"service","reason":"Fits"}]}' }] }); } },
@@ -542,7 +544,7 @@ function chooserHarness({ stage, editor = "", others = [], cli, agentDir } = {})
 	return h;
 }
 
-for (const stage of ["config", "list", "show", "recommendations"]) {
+for (const stage of ["list", "show", "recommendations"]) {
 	test(`checkpoint ${stage} lookup takes no focus, and shutdown drops late results`, async () => {
 		const h = chooserHarness({ stage });
 		if (stage === "show") h.manager.appendCustomEntry("stream-checkpoint-binding", { ownerId: h.manager.getSessionId(), slug: h.stream.slug, path: h.stream.path });
@@ -599,7 +601,7 @@ test("chooser card stops spinning while waiting for a choice and resumes for loo
 	const stream = { slug: "service", title: "Service", path: "/unused/service.md", status: "active", state: "Work" };
 	let release;
 	const h = chooserHarness({ stage: "recommendations", cli: {
-		config: async () => ({ cmux: { enabled: false } }), list: async () => [stream],
+		refresh: async () => ({ status: "skipped", reason: "disabled" }), list: async () => [stream],
 		show: () => new Promise((resolve) => { release = () => resolve(stream); }),
 	} });
 	const status = () => h.manager.getEntries().filter((entry) => entry.customType === "checkpoint-status").at(-1)?.data;
@@ -743,6 +745,86 @@ test("create_stream opens the chooser editing the agent's title, and Esc goes ba
 	} finally { await h.shutdown?.(); }
 });
 
+test("creation binds the actual CLI result before optional refresh; existing selection does not refresh", async () => {
+	for (const scenario of ["cmux", "herdr", "disabled", "no-context", "selection-failed", "backend-failed", "existing", "invalid", "failed"]) {
+		const calls = [], notices = [];
+		const stream = { slug: "actual-created-slug", title: "New title", path: "/notes/actual-created-slug.md", status: "active", state: "Work" };
+		let h, created = false;
+		const cli = new StreamCli("/repo", async (args) => {
+			calls.push(args);
+			if (args[0] === "list") return { code: 0, stdout: JSON.stringify({ streams: scenario === "existing" ? [stream] : [], findings: [] }), stderr: "" };
+			if (args[0] === "show") return { code: 0, stdout: JSON.stringify(stream), stderr: "" };
+			if (args[0] === "start") {
+				assert.equal(calls.some((call) => call[0] === "frontend"), false);
+				if (scenario === "invalid" && args.includes("--dry-run") || scenario === "failed" && !args.includes("--dry-run")) return { code: 2, stdout: "", stderr: "creation refused" };
+				if (!args.includes("--dry-run")) created = true;
+				// Start can return a different actual slug than its preview.
+				return { code: 0, stdout: JSON.stringify(args.includes("--dry-run") ? { ...stream, slug: "preview-slug" } : stream), stderr: "" };
+			}
+			assert.equal(created, true, "No selection or projection until creation succeeds");
+			assert.equal(latestBinding(h.manager.getEntries(), h.manager.getSessionId()).slug, stream.slug, "Actual stream is bound before selection or native projection");
+			if (args[0] === "frontend") {
+				if (scenario === "selection-failed") return { code: 2, stdout: "", stderr: "private ambiguous selection" };
+				return { code: 0, stdout: JSON.stringify({ configured: scenario === "disabled" ? "none" : "auto", requested: null, resolved: ["disabled", "no-context"].includes(scenario) ? null : scenario === "cmux" ? "cmux" : "herdr" }), stderr: "" };
+			}
+			assert.deepEqual(args, [scenario === "cmux" ? "cmux" : "herdr", "update", "-c", stream.slug]);
+			return { code: scenario === "backend-failed" ? 2 : 0, stdout: "", stderr: scenario === "backend-failed" ? "private backend failure" : "" };
+		});
+		h = chooserHarness({ cli });
+		h.ctx.ui.notify = (text) => notices.push(text);
+		try {
+			const tool = h.tools.get(scenario === "existing" ? "select_stream" : "create_stream");
+			await tool.execute("choice", scenario === "existing" ? { slug: stream.slug, reason: "Fits" } : { title: "New title", reason: "Nothing fits" }, undefined, undefined, h.ctx);
+			await until(() => !!h.chooser);
+			assert.equal(calls.some((args) => args[0] === "frontend"), false, "No replacement startup gate");
+			h.chooser.handleInput("\r");
+			if (["invalid", "failed"].includes(scenario)) {
+				await until(() => h.chooser.render(100).join("\n").includes("creation refused"));
+				assert.equal(latestBinding(h.manager.getEntries(), h.manager.getSessionId()), undefined);
+				assert.equal(calls.some((args) => args[0] === "frontend"), false);
+				h.chooser.handleInput("\x1b");
+				h.chooser.handleInput("\x1b");
+				await until(() => h.receipts.length === 1);
+				assert.equal(h.receipts[0].details.outcome, "choice-cancelled");
+			} else {
+				await until(() => h.receipts.length === 1);
+				const receipt = h.receipts[0];
+				assert.equal(receipt.details.slug, stream.slug);
+				assert.equal(calls.filter((args) => args[0] === "frontend").length, scenario === "existing" ? 0 : 1);
+				assert.equal(receipt.details.refresh?.status, scenario === "existing" ? undefined : ["disabled", "no-context"].includes(scenario) ? "skipped" : scenario.endsWith("failed") ? scenario : "updated");
+				assert.doesNotMatch(receipt.content, /private/);
+			}
+			assert.doesNotMatch(JSON.stringify(notices), /private/);
+		} finally { await h.shutdown(); }
+	}
+});
+
+test("pre-save validation and write failures never query the optional frontend", async () => {
+	for (const failure of ["feedback", "no-draft", "read", "preview", "changed", "write"]) {
+		const f = await conversationFixture();
+		try {
+			await f.conversation.start();
+			f.conversation.state.input = failure === "feedback" ? "Unsent feedback" : "";
+			f.conversation.state.draft = failure === "no-draft" ? undefined : { ...sampleDraft, revision: 1, baseContent: failure === "changed" ? "old content" : "scratch unchanged", proposedContent: "approved" };
+			const calls = [];
+			f.conversation.options.cli = new StreamCli(f.dir, async (args) => {
+				calls.push(args);
+				assert.ok(["read", "update"].includes(args[0]), "No frontend query on validation/write failure");
+				if (args[0] === "read") return failure === "read" ? { code: 2, stdout: "", stderr: "read failure" } : { code: 0, stdout: "a".repeat(64) + "\nscratch unchanged", stderr: "" };
+				if (failure === "preview" || failure === "write" && !args.includes("--dry-run")) return { code: 2, stdout: "", stderr: failure + " failure" };
+				return { code: 0, stdout: JSON.stringify({ slug: "service", path: f.path, updated: false, sha256: "b".repeat(64), findings: [] }), stderr: "" };
+			});
+			let applied = false;
+			f.conversation.options.applied = () => { applied = true; };
+			await f.conversation.apply();
+			assert.equal(applied, false);
+			assert.equal(f.conversation.state.notice.level, "error");
+			assert.equal(calls.filter((args) => args[0] === "frontend").length, 0);
+			assert.equal(readFileSync(f.path, "utf8"), "scratch unchanged");
+		} finally { await f.dispose(); }
+	}
+});
+
 test("setup failure retains a user-only source marker with inspectable error instead of opening a panel", async () => {
 	const manager = SessionManager.inMemory(process.cwd());
 	let command, shutdown;
@@ -750,7 +832,7 @@ test("setup failure retains a user-only source marker with inspectable error ins
 	registerCheckpoint({ registerTool() {}, registerEntryRenderer() {}, registerMessageRenderer() {}, registerShortcut() {},
 		registerCommand: (_name, options) => { command = options.handler; }, on: (_event, handler) => { shutdown = handler; },
 		appendEntry: (type, data) => manager.appendCustomEntry(type, data),
-	}, { cli: { config: async () => { throw new Error("Broken shared configuration"); } } });
+	}, { cli: { list: async () => { throw new Error("Broken stream list"); } } });
 	const ctx = { mode: "tui", hasUI: true, sessionManager: manager, getSystemPrompt: () => "Test",
 		ui: { notify: (text) => notices.push(text), setStatus() {}, custom: (factory) => new Promise((resolve) => {
 			const component = factory({ terminal: { rows: 30 }, requestRender() {} }, { fg: (_color, text) => text }, {}, (value) => { component.dispose(); resolve(value); });
@@ -762,7 +844,7 @@ test("setup failure retains a user-only source marker with inspectable error ins
 	assert.equal(manager.getEntries().filter((entry) => entry.customType === "checkpoint-start").length, 1);
 	const status = manager.getEntries().at(-1).data;
 	assert.equal(status.label, "Needs attention");
-	assert.match(status.detail, /Broken shared configuration/);
+	assert.match(status.detail, /Broken stream list/);
 	assert.deepEqual(manager.buildSessionProjection().messages, []);
 });
 
@@ -797,7 +879,7 @@ test("checkpoint command releases main input, preserves work on stream switches 
 			},
 		};
 		registerCheckpoint({ registerTool() {}, registerEntryRenderer() {}, registerMessageRenderer() {}, registerCommand: (_name, options) => { command = options.handler; }, registerShortcut: (_key, options) => { shortcut = options.handler; }, on: (_event, handler) => { shutdown = handler; }, appendEntry: (type, data) => f.manager.appendCustomEntry(type, data) }, {
-			agentDir: f.dir, runtime: f.conversation.options.runtime, skill: "Test skill", cli: { config: async () => ({ cmux: { enabled: false } }), list: async () => streams, show: async (ref) => streams.find((stream) => stream.slug === ref), format: async () => "format",
+			agentDir: f.dir, runtime: f.conversation.options.runtime, skill: "Test skill", cli: { refresh: async () => ({ status: "skipped", reason: "disabled" }), list: async () => streams, show: async (ref) => streams.find((stream) => stream.slug === ref), format: async () => "format",
 				read: (slug) => readFrom(streams.find((stream) => stream.slug === slug).path)() },
 		});
 		let returned = false;
@@ -872,7 +954,7 @@ test("draft completion behind settings does not reveal the parent or steal focus
 		};
 		registerCheckpoint({ registerTool() {}, registerEntryRenderer() {}, registerMessageRenderer() {}, registerCommand: (_name, options) => { command = options.handler; },
 			registerShortcut: (_key, options) => { shortcut = options.handler; }, on: (_name, handler) => { shutdown = handler; }, appendEntry: (type, data) => f.manager.appendCustomEntry(type, data) },
-			{ agentDir: f.dir, runtime: f.conversation.options.runtime, skill: "Test skill", cli: { config: async () => ({ cmux: { enabled: false } }), list: async () => [], show: async () => ({ slug: "service", path: f.path }), format: async () => "format", read: readFrom(f.path) } });
+			{ agentDir: f.dir, runtime: f.conversation.options.runtime, skill: "Test skill", cli: { refresh: async () => ({ status: "skipped", reason: "disabled" }), list: async () => [], show: async () => ({ slug: "service", path: f.path }), format: async () => "format", read: readFrom(f.path) } });
 		await command("--stream service", ctx);
 		await until(() => f.contexts.length === 1);
 		const parent = views[0];
@@ -1036,67 +1118,82 @@ test("fresh kickoff is model context, never visible chat, and resume never start
 	} finally { await f.dispose(); }
 });
 
-test("Apply fetches current CMUX config, runs projection after saving, and reports partial success", async () => {
-	for (const cmux of ["updated", "disabled", "failed", "bad-config"]) {
+test("Apply saves once before fresh frontend selection, including bad config and unavailable backends", async () => {
+	for (const scenario of ["cmux", "herdr", "disabled", "no-context", "backend", "caller", "bad-config", "unavailable", "ambiguous"]) {
 		const f = await conversationFixture();
 		try {
 			await f.conversation.start();
 			f.conversation.state.input = "";
 			f.conversation.state.draft = stageDraft(f.pending, f.conversation.options.binding, "approved content", "Updated handoff", readFileSync(f.path, "utf8"));
-			let projected = 0, receipt;
-			f.conversation.options.cli.config = async () => { if (cmux === "bad-config") throw new Error("bad shared config"); return { cmux: { enabled: cmux !== "disabled" } }; };
-			f.conversation.options.cli.project = async (slug) => {
-				projected++;
-				assert.equal(slug, "service");
+			let writes = 0, receipt, policy = "none";
+			const calls = [];
+			const cli = new StreamCli(f.dir, async (args, input) => {
+				calls.push(args);
+				if (args[0] === "read") { const note = await readFrom(f.path)(); return { code: 0, stdout: note.sha256 + "\n" + note.content, stderr: "" }; }
+				if (args[0] === "update") {
+					if (!args.includes("--dry-run")) { writeFileSync(f.path, input); writes++; policy = scenario; }
+					return { code: 0, stdout: JSON.stringify({ slug: "service", path: f.path, updated: !args.includes("--dry-run"), sha256: createHash("sha256").update(input).digest("hex"), findings: [] }), stderr: "" };
+				}
 				assert.equal(readFileSync(f.path, "utf8"), "approved content");
-				if (cmux === "failed") throw new Error("private CMUX diagnostic");
-			};
+				assert.equal(policy, scenario, "Selection reads the policy changed by the successful write");
+				if (args[0] === "frontend") {
+					if (scenario === "unavailable") throw new Error("private unavailable");
+					if (["bad-config", "ambiguous"].includes(scenario)) return { code: 2, stdout: "", stderr: "private " + scenario };
+					return { code: 0, stdout: JSON.stringify({ configured: scenario === "disabled" ? "none" : "auto", requested: null, resolved: ["disabled", "no-context"].includes(scenario) ? null : scenario === "cmux" ? "cmux" : "herdr" }), stderr: "" };
+				}
+				return { code: ["backend", "caller"].includes(scenario) ? 2 : 0, stdout: "", stderr: ["backend", "caller"].includes(scenario) ? "private " + scenario : "" };
+			});
+			f.conversation.options.cli = cli;
 			f.conversation.options.applied = (...args) => { receipt = args; };
 			await f.conversation.apply();
-			if (cmux === "bad-config") {
-				assert.match(f.conversation.state.notice.text, /bad shared config/);
-				assert.equal(receipt, undefined);
-				assert.equal(readFileSync(f.path, "utf8"), "scratch unchanged");
-			} else {
-				assert.equal(projected, cmux === "disabled" ? 0 : 1);
-				assert.equal(receipt[1], cmux);
-				assert.equal(readFileSync(f.path, "utf8"), "approved content");
-				assert.equal(readPending(f.dir, f.pending.ownerId, "service"), undefined);
-				if (cmux === "failed") assert.match(receipt[2], /private CMUX diagnostic/);
-			}
+			const status = ["bad-config", "unavailable", "ambiguous"].includes(scenario) ? "selection-failed" : ["backend", "caller"].includes(scenario) ? "backend-failed" : ["disabled", "no-context"].includes(scenario) ? "skipped" : "updated";
+			assert.equal(receipt[1].status, status);
+			assert.equal(writes, 1);
+			assert.equal(calls.filter((args) => args[0] === "frontend").length, 1);
+			assert.equal(readFileSync(f.path, "utf8"), "approved content");
+			assert.equal(readPending(f.dir, f.pending.ownerId, "service"), undefined);
+			await f.conversation.apply();
+			assert.equal(writes, 1);
 		} finally { await f.dispose(); }
 	}
 });
 
-test("receipts share only the summary and keep expandable diagnostics outside model context", async () => {
-	const { checkpointReceipt, renderCheckpointReceipt } = await jiti.import(new URL("../extensions/stream-checkpoint/receipt.ts", import.meta.url).pathname);
+test("receipts keep refresh diagnostics outside model context and read saved legacy receipts", async () => {
+	const { checkpointReceipt, renderCheckpointReceipt, streamChosenReceipt } = await jiti.import(new URL("../extensions/stream-checkpoint/receipt.ts", import.meta.url).pathname);
 	const theme = { fg: (_color, text) => text, bg: (_color, text) => text };
+	const { visibleWidth } = await import(pathToFileURL(piTuiIndex).href);
+	for (const refresh of [
+		{ status: "updated", frontend: "herdr" }, { status: "updated", frontend: "cmux" },
+		{ status: "skipped", reason: "disabled" }, { status: "skipped", reason: "no-context" },
+		{ status: "selection-failed", warning: "private selection diagnostic" },
+		{ status: "backend-failed", frontend: "herdr", warning: "private backend diagnostic" },
+	]) {
+		const commands = [{ args: ["herdr", "update", "-c", "service"], code: 2, stdout: "private stdout", stderr: "private stderr" }];
+		for (const receipt of [
+			checkpointReceipt({ slug: "service", summary: "Updated the next action", refresh, commands }),
+			streamChosenReceipt({ slug: "service", created: true, refresh, commands }),
+		]) {
+			const manager = SessionManager.inMemory(process.cwd());
+			manager.appendCustomMessageEntry(receipt.customType, receipt.content, true, receipt.details);
+			const context = JSON.stringify(convertToLlm(manager.buildSessionContext().messages));
+			assert.match(context, /service/);
+			assert.doesNotMatch(context, /private|streams herdr|exit/);
+			const message = { ...receipt, role: "custom", timestamp: Date.now() };
+			const collapsed = renderCheckpointReceipt(message, { expanded: false, outputPad: 1 }, theme).render(80).join("\n");
+			assert.doesNotMatch(collapsed, /private/);
+			const expanded = renderCheckpointReceipt(message, { expanded: true, outputPad: 1 }, theme);
+			assert.match(expanded.render(80).join("\n"), /private stderr/);
+			if ("warning" in refresh) assert.match(expanded.render(80).join("\n"), new RegExp(refresh.warning));
+			assert.ok(expanded.render(36).every((line) => visibleWidth(line) <= 36));
+		}
+	}
 	for (const cmux of ["updated", "disabled", "failed"]) {
-		const receipt = checkpointReceipt({ slug: "service", summary: "Updated the next action", cmux,
-			warning: cmux === "failed" ? "private diagnostic" : undefined,
-			commands: [{ args: ["cmux", "update", "-c", "service"], code: cmux === "failed" ? 2 : 0, stdout: "private stdout", stderr: "private stderr" }] });
-		const manager = SessionManager.inMemory(process.cwd());
-		manager.appendCustomMessageEntry(receipt.customType, receipt.content, true, receipt.details);
-		const context = JSON.stringify(convertToLlm(manager.buildSessionContext().messages));
-		assert.match(context, /^.*Checkpoint applied to service: Updated the next action/);
-		assert.match(context, new RegExp(`CMUX ${cmux}`));
-		assert.doesNotMatch(context, /private|streams cmux|exit/);
-		const message = { ...receipt, role: "custom", timestamp: Date.now() };
-		const collapsed = renderCheckpointReceipt(message, { expanded: false, outputPad: 1 }, theme).render(80).join("\n");
-		assert.match(collapsed, new RegExp(`Applied · CMUX ${cmux}`));
-		assert.doesNotMatch(collapsed, /private/);
-		const expanded = renderCheckpointReceipt(message, { expanded: true, outputPad: 1 }, theme);
-		assert.match(expanded.render(80).join("\n"), /streams cmux update -c service/);
-		assert.match(expanded.render(80).join("\n"), /private stderr/);
-		const { visibleWidth } = await import(pathToFileURL(piTuiIndex).href);
-		assert.ok(expanded.render(36).every((line) => visibleWidth(line) <= 36));
-		const { CustomMessageComponent } = await import(pathToFileURL(join(piDist, "modes/interactive/components/custom-message.js")).href);
-		const native = new CustomMessageComponent(message, renderCheckpointReceipt);
-		assert.doesNotMatch(native.render(80).join("\n"), /private stderr/);
-		native.setExpanded(true);
-		assert.match(native.render(80).join("\n"), /private stderr/);
-		native.setExpanded(false);
-		assert.doesNotMatch(native.render(80).join("\n"), /private stderr/);
+		const details = { slug: "service", summary: "Legacy summary", cmux, warning: "private legacy warning", commands: [] };
+		const message = { role: "custom", content: "Old receipt", details, timestamp: Date.now() };
+		const before = JSON.stringify(details);
+		assert.match(renderCheckpointReceipt(message, { expanded: false, outputPad: 1 }, theme).render(80).join("\n"), /Applied/);
+		assert.match(renderCheckpointReceipt(message, { expanded: true, outputPad: 1 }, theme).render(80).join("\n"), /private legacy warning/);
+		assert.equal(JSON.stringify(details), before, "Rendering must not rewrite persisted legacy details");
 	}
 });
 
@@ -1570,8 +1667,8 @@ test("chooser keeps the selected recommendation visible in a short viewport", ()
 	assert.ok(chooser.render(80).length <= Math.floor(16 * 0.8));
 });
 
-test("checkpoint creation and Apply use CLI config and emit a registered expandable receipt", async () => {
-	for (const outcome of ["updated", "disabled", "failed"]) {
+test("checkpoint creation and Apply use fresh frontend selection and emit a registered expandable receipt", async () => {
+	for (const outcome of ["cmux", "herdr", "disabled", "no-context", "selection-failed", "backend-failed"]) {
 		const f = await conversationFixture();
 		let shutdown;
 		try {
@@ -1582,14 +1679,18 @@ test("checkpoint creation and Apply use CLI config and emit a registered expanda
 			const cli = new StreamCli(f.dir, async (args, input) => {
 				calls.push(args);
 				let value;
-				if (args[0] === "config") value = { notes: { root: f.dir }, obsidian: { vault: "Notes" }, cmux: { enabled: outcome !== "disabled" } };
+				if (args[0] === "frontend") {
+					assert.equal(latestBinding(f.manager.getEntries(), f.pending.ownerId).slug, stream.slug, "Pi binding precedes selection");
+					if (outcome === "selection-failed") return { code: 2, stdout: "", stderr: "private selection failure" };
+					value = { configured: outcome === "disabled" ? "none" : "auto", requested: null, resolved: ["disabled", "no-context"].includes(outcome) ? null : outcome === "cmux" ? "cmux" : "herdr" };
+				}
 				else if (args[0] === "list") value = { streams: [], findings: [] };
 				else if (args[0] === "format") return { code: 0, stdout: "Test format", stderr: "" };
 				else if (args[0] === "read") { const note = await readFrom(f.path)(); return { code: 0, stdout: `${note.sha256}\n${note.content}`, stderr: "" }; }
 				else if (args[0] === "update") {
 					if (!args.includes("--dry-run")) writeFileSync(f.path, input);
 					value = { slug: stream.slug, path: stream.path, updated: !args.includes("--dry-run"), sha256: "0".repeat(64), findings: [] };
-				} else if (args[0] === "cmux") return { code: outcome === "failed" ? 2 : 0, stdout: "project result", stderr: outcome === "failed" ? "private projection failure" : "" };
+				} else if (["cmux", "herdr"].includes(args[0])) return { code: outcome === "backend-failed" ? 2 : 0, stdout: "project result", stderr: outcome === "backend-failed" ? "private projection failure" : "" };
 				else assert.fail(args.join(" "));
 				return { code: 0, stdout: JSON.stringify(value), stderr: "" };
 			});
@@ -1612,21 +1713,23 @@ test("checkpoint creation and Apply use CLI config and emit a registered expanda
 			};
 			await command("", ctx);
 			await until(() => !!panel && panel.state.activity === null);
-			assert.equal(calls.filter((args) => args[0] === "cmux").length, outcome === "disabled" ? 0 : 1);
+			assert.equal(calls.filter((args) => ["cmux", "herdr"].includes(args[0])).length, ["disabled", "no-context", "selection-failed"].includes(outcome) ? 0 : 1);
 			panel.state.input = "";
 			panel.state.draft = { ...sampleDraft, slug: "service", baseContent: "scratch unchanged", proposedContent: "approved", summary: "Updated handoff" };
 			panel.handleInput("\x07");
 			await until(() => dismissed);
 			assert.equal(readFileSync(f.path, "utf8"), "approved");
 			assert.equal(readPending(f.dir, f.pending.ownerId, "service"), undefined);
-			assert.equal(calls.filter((args) => args[0] === "config").length, 2);
-			assert.equal(calls.filter((args) => args[0] === "cmux").length, outcome === "disabled" ? 0 : 2);
+			assert.equal(calls.filter((args) => args[0] === "frontend").length, 2);
+			assert.equal(calls.filter((args) => ["cmux", "herdr"].includes(args[0])).length, ["disabled", "no-context", "selection-failed"].includes(outcome) ? 0 : 2);
 			assert.equal(receipts.length, 1);
-			assert.equal(receipts[0].details.cmux, outcome);
+			assert.equal(receipts[0].details.refresh.status, ["cmux", "herdr"].includes(outcome) ? "updated" : ["disabled", "no-context"].includes(outcome) ? "skipped" : outcome);
+			assert.equal(calls.filter((args) => args[0] === "update" && !args.includes("--dry-run")).length, 1);
 			assert.doesNotMatch(receipts[0].content, /private projection failure/);
 			assert.equal(renderers[0][0], receipts[0].customType);
 			assert.equal(typeof renderers[0][1], "function");
-			if (outcome === "failed") assert.match(notifications[0], /CMUX update failed/);
+			if (outcome.endsWith("failed")) assert.match(notifications[0], /optional workspace refresh failed/);
+			assert.doesNotMatch(JSON.stringify(notifications), /private/);
 		} finally { await shutdown?.(); await f.dispose(); }
 	}
 });
@@ -1644,7 +1747,7 @@ for (const ending of ["apply", "clear", "clear without user input"]) {
 				on: (_event, handler) => { shutdown = handler; }, appendEntry: (type, data) => f.manager.appendCustomEntry(type, data),
 				sendMessage: (receipt, options) => { receipts.push(receipt); assert.equal(options.triggerTurn, false); },
 			}, { agentDir: f.dir, runtime: f.conversation.options.runtime, skill: "Test skill",
-				cli: { read: readFrom(f.path), config: async () => ({ cmux: { enabled: false } }), list: async () => [stream], show: async () => stream, format: async () => "format", diagnostics: [],
+				cli: { read: readFrom(f.path), refresh: async () => ({ status: "skipped", reason: "disabled" }), list: async () => [stream], show: async () => stream, format: async () => "format", diagnostics: [],
 					update: updateAt(f.path, stream.slug) } });
 			const ctx = { mode: "tui", hasUI: true, cwd: f.dir, model: f.conversation.options.model, thinkingLevel: "off", sessionManager: f.manager, getSystemPrompt: () => "Test",
 				modelRegistry: { getRegisteredProviderConfig() {}, getRegisteredNativeProvider() {} },
@@ -1695,7 +1798,7 @@ test("checkpoint tool starts hidden agent checkpoints of the bound stream and re
 		const receipts = [], components = [], handle = [];
 		const tools = new Map();
 		let panel, dismissed = false;
-		const cli = { read: readFrom(f.path), config: async () => ({ cmux: { enabled: false } }), list: async () => Object.values(streams), format: async () => "format", diagnostics: [],
+		const cli = { read: readFrom(f.path), refresh: async () => ({ status: "skipped", reason: "disabled" }), list: async () => Object.values(streams), format: async () => "format", diagnostics: [],
 			show: async (ref) => streams[ref] ?? assert.fail(`unknown stream ${ref}`),
 			update: updateAt(f.path, "service") };
 		const api = { registerTool: (tool) => tools.set(tool.name, tool), registerCommand() {}, registerShortcut() {}, registerEntryRenderer() {}, registerMessageRenderer() {},
@@ -1801,47 +1904,127 @@ test("real CLI subprocess captures stderr on success and stdout-only failures", 
 	const oldPath = process.env.PATH;
 	try {
 		const executable = join(dir, "streams");
-		writeFileSync(executable, '#!/bin/sh\nif [ "$1" = "config" ]; then\n  printf \'{"notes":{"root":"/notes"},"obsidian":{"vault":"Notes"},"cmux":{"enabled":true}}\\n\'\n  printf "config warning\\n" >&2\nelse\n  printf "stdout failure\\n"\n  exit 7\nfi\n');
+		writeFileSync(executable, '#!/bin/sh\nif [ "$1" = "frontend" ]; then\n  printf \'{"configured":"cmux","requested":null,"resolved":"cmux"}\\n\'\n  printf "selection warning\\n" >&2\nelse\n  printf "stdout failure\\n"\n  exit 7\nfi\n');
 		chmodSync(executable, 0o700);
 		process.env.PATH = `${dir}:${oldPath}`;
 		const notices = [];
 		const cli = new StreamCli(dir, undefined, (text) => notices.push(text));
-		assert.equal((await cli.config()).cmux.enabled, true);
-		assert.deepEqual(notices, ["config warning"]);
-		await assert.rejects(cli.project("service"), /exit 7.*stdout failure/);
+		assert.equal((await cli.frontend()).resolved, "cmux");
+		assert.deepEqual(notices, []);
+		assert.equal(cli.diagnostics[0].stderr.trim(), "selection warning");
+		await assert.rejects(cli.project("service", "cmux"), /exit 7.*stdout failure/);
 		assert.equal(cli.diagnostics[1].code, 7);
 		assert.match(cli.diagnostics[1].stdout, /stdout failure/);
 		process.env.PATH = dir + "/missing";
-		await assert.rejects(cli.config(), /ENOENT/);
+		await assert.rejects(cli.frontend(), /ENOENT/);
 		assert.equal(cli.diagnostics.at(-1).code, null);
 	} finally { process.env.PATH = oldPath; rmSync(dir, { recursive: true, force: true }); }
 });
 
-test("CLI config is authoritative, typed, and read through streams", async () => {
-	const calls = [];
-	const config = { notes: { root: "/notes" }, obsidian: { vault: "Notes" }, cmux: { enabled: true } };
-	const cli = new StreamCli("/repo", async (args) => { calls.push(args); return { code: 0, stdout: JSON.stringify(config), stderr: "" }; });
-	assert.deepEqual(await cli.config(), config);
-	assert.deepEqual(calls, [["config", "--json"]]);
-	for (const value of [{}, { ...config, cmux: { enabled: "true" } }]) {
-		await assert.rejects(new StreamCli("/repo", async () => ({ code: 0, stdout: JSON.stringify(value), stderr: "" })).config(), /Invalid streams config/);
+test("shared optional refresh resolves once and dispatches only a concrete frontend", async () => {
+	for (const [configured, resolved, expected] of [
+		["none", null, { status: "skipped", reason: "disabled" }],
+		["auto", null, { status: "skipped", reason: "no-context" }],
+		["cmux", "cmux", { status: "updated", frontend: "cmux" }],
+		["auto", "herdr", { status: "updated", frontend: "herdr" }],
+	]) {
+		const calls = [], notices = [];
+		const cli = new StreamCli("/repo", async (args) => {
+			calls.push(args);
+			return { code: 0, stdout: args[0] === "frontend" ? JSON.stringify({ configured, requested: null, resolved }) : "updated", stderr: "private warning" };
+		}, (text) => notices.push(text));
+		assert.deepEqual(await cli.refresh("service"), expected);
+		assert.deepEqual(calls, [["frontend", "get", "--json"], ...(resolved ? [[resolved, "update", "-c", "service"]] : [])]);
+		assert.deepEqual(notices, [], "Refresh diagnostics are private receipt details");
+		assert.equal(cli.diagnostics[0].stderr, "private warning");
 	}
-	await assert.rejects(new StreamCli("/repo", async () => ({ code: 2, stdout: "", stderr: "bad config" })).config(), /bad config/);
+});
+
+test("shared refresh separates bounded selection errors from backend errors", async () => {
+	for (const failure of ["ambiguous", "invalid-json", "unavailable", "caller", "backend"]) {
+		const calls = [], notices = [];
+		const cli = new StreamCli("/repo", async (args) => {
+			calls.push(args);
+			if (failure === "unavailable") throw new Error("private unavailable");
+			if (args[0] === "frontend") {
+				if (failure === "ambiguous") return { code: 2, stdout: JSON.stringify({ error: { kind: "ambiguous", message: "private ambiguity " + "x".repeat(10000) } }), stderr: "" };
+				return { code: 0, stdout: failure === "invalid-json" ? "bad json" : '{"configured":"herdr","requested":null,"resolved":"herdr"}', stderr: "" };
+			}
+			return { code: 2, stdout: "", stderr: "private " + failure + "x".repeat(10000) };
+		}, (text) => notices.push(text));
+		const outcome = await cli.refresh("service");
+		assert.equal(outcome.status, ["caller", "backend"].includes(failure) ? "backend-failed" : "selection-failed");
+		if (outcome.status === "backend-failed") assert.equal(outcome.frontend, "herdr");
+		assert.ok(outcome.warning.length < 2200);
+		assert.equal(calls.filter((args) => args[0] === "frontend").length, 1);
+		assert.equal(calls.length, outcome.status === "backend-failed" ? 2 : 1);
+		assert.deepEqual(notices, []);
+	}
+});
+
+test("CLI frontend query decodes configured policy, request and nullable concrete selection", async () => {
+	const calls = [];
+	let response;
+	const cli = new StreamCli("/repo", async (args) => { calls.push(args); return { code: 0, stdout: JSON.stringify(response), stderr: "" }; });
+	for (const configured of ["auto", "cmux", "herdr", "none"]) {
+		for (const requested of [null, "auto", "cmux", "herdr"]) {
+			for (const resolved of [null, "cmux", "herdr"]) {
+				// The CLI owns policy: decoding validates types, never re-resolves from process.env.
+				response = { configured, requested, resolved };
+				assert.deepEqual(await cli.frontend(), response);
+			}
+		}
+	}
+	assert.ok(calls.every((args) => JSON.stringify(args) === JSON.stringify(["frontend", "get", "--json"])));
+});
+
+test("CLI frontend query rejects missing, malformed and untyped response values", async () => {
+	const valid = { configured: "auto", requested: null, resolved: "herdr" };
+	const invalid = [null, [], {}, { error: { kind: "error", message: "failed" } },
+		{ ...valid, configured: "unknown" }, { ...valid, configured: null },
+		{ ...valid, requested: "none" }, { ...valid, requested: false },
+		{ ...valid, resolved: "auto" }, { ...valid, resolved: false },
+		{ requested: null, resolved: null }, { configured: "auto", resolved: null },
+		{ configured: "auto", requested: null }];
+	for (const value of invalid) {
+		await assert.rejects(new StreamCli("/repo", async () => ({ code: 0, stdout: JSON.stringify(value), stderr: "" })).frontend(), /Invalid streams frontend response/);
+	}
+	await assert.rejects(new StreamCli("/repo", async () => ({ code: 0, stdout: "not json", stderr: "" })).frontend());
+});
+
+test("CLI frontend query retains private warnings and bounded structured failure diagnostics", async () => {
+	const warnings = [];
+	const selected = new StreamCli("/repo", async () => ({ code: 0, stdout: '{"configured":"none","requested":null,"resolved":null}', stderr: "selection warning" }), (text) => warnings.push(text));
+	assert.equal((await selected.frontend()).resolved, null);
+	assert.deepEqual(warnings, [], "Selection output stays in private diagnostics");
+	assert.deepEqual(selected.diagnostics[0].args, ["frontend", "get", "--json"]);
+	const failed = new StreamCli("/repo", async () => ({ code: 2, stdout: JSON.stringify({ error: { kind: "ambiguous", message: "private ambiguity " + "x".repeat(10000), candidates: ["cmux", "herdr"] } }), stderr: "" }));
+	const error = await failed.frontend().catch((caught) => caught);
+	assert.ok(error instanceof StreamsCliError);
+	assert.equal(error.kind, "ambiguous");
+	assert.deepEqual(error.candidates, ["cmux", "herdr"]);
+	assert.match(error.message, /streams frontend.*exit 2.*private ambiguity/);
+	assert.ok(error.message.length < 2200);
+	assert.ok(failed.diagnostics[0].stdout.length < 2200);
+	assert.equal(failed.diagnostics[0].code, 2);
+	const missing = new StreamCli("/repo", async () => { throw new Error("CLI unavailable"); });
+	await assert.rejects(missing.frontend(), /unavailable/);
+	assert.equal(missing.diagnostics[0].code, null);
 });
 
 test("CLI diagnostics retain bounded output and exit status but never stdin", async () => {
 	const warnings = [];
 	const cli = new StreamCli("/repo", async () => ({ code: 0, stdout: "projected", stderr: "a warning" }), (text) => warnings.push(text));
-	await cli.project("example");
+	await cli.project("example", "cmux");
 	assert.deepEqual(cli.diagnostics[0].args, ["cmux", "update", "-c", "example"]);
 	assert.equal(cli.diagnostics[0].code, 0);
 	assert.equal(cli.diagnostics[0].stderr, "a warning");
-	assert.deepEqual(warnings, ["a warning"]);
+	assert.deepEqual(warnings, [], "Projection output stays in private diagnostics");
 	const failed = new StreamCli("/repo", async () => ({ code: 3, stdout: "error only on stdout", stderr: "" }));
-	await assert.rejects(failed.project("example"), /error only on stdout/);
+	await assert.rejects(failed.project("example", "cmux"), /error only on stdout/);
 	assert.equal(failed.diagnostics[0].code, 3);
 	const large = new StreamCli("/repo", async () => ({ code: 0, stdout: "x".repeat(10000), stderr: "" }));
-	for (let i = 0; i < 30; i++) await large.project("example");
+	for (let i = 0; i < 30; i++) await large.project("example", "cmux");
 	assert.ok(large.diagnostics.length <= 20);
 	assert.ok(large.diagnostics[0].stdout.length < 5000);
 	assert.match(large.diagnostics[0].stdout, /truncated/);
@@ -1862,9 +2045,12 @@ test(`StreamCli agrees with the real streams CLI ${withRepo ? "inside" : "outsid
 		mkdirSync(join(dir, "config", "streams"), { recursive: true });
 		writeFileSync(join(dir, "config", "streams", "config.json"), JSON.stringify({ notes: { root } }));
 		const project = fileURLToPath(new URL("..", import.meta.url));
+		const env = { ...process.env, XDG_CONFIG_HOME: join(dir, "config") };
+		// Real CLI contracts must not acquire the developer's live terminal workspace.
+		for (const name of ["CMUX_WORKSPACE_ID", "HERDR_ENV", "HERDR_PANE_ID"]) delete env[name];
 		if (withRepo) assert.equal(spawnSync("git", ["init", "-q", dir]).status, 0);
 		const runner = (args, input) => new Promise((resolve, reject) => {
-			const child = spawn("uv", ["run", "--quiet", "--project", project, "streams", ...args], { cwd: dir, env: { ...process.env, XDG_CONFIG_HOME: join(dir, "config") } });
+			const child = spawn("uv", ["run", "--quiet", "--project", project, "streams", ...args], { cwd: dir, env });
 			let stdout = "", stderr = "";
 			child.stdout.setEncoding("utf8").on("data", (chunk) => { stdout += chunk; });
 			child.stderr.setEncoding("utf8").on("data", (chunk) => { stderr += chunk; });
@@ -1874,7 +2060,8 @@ test(`StreamCli agrees with the real streams CLI ${withRepo ? "inside" : "outsid
 		});
 		const warnings = [];
 		const cli = new StreamCli(dir, runner, (text) => warnings.push(text));
-		assert.equal((await cli.config()).notes.root, root);
+
+		assert.deepEqual(await cli.frontend(), { configured: "auto", requested: null, resolved: null });
 		const preview = await cli.previewStart("Contract stream");
 		assert.equal((await cli.list()).length, 0, "Preview must not create a note");
 		let stream;
@@ -1899,6 +2086,7 @@ test(`StreamCli agrees with the real streams CLI ${withRepo ? "inside" : "outsid
 				stream = (await choice).stream;
 				await turn();
 				assert.equal(latestBinding(h.manager.getEntries(), h.manager.getSessionId()).slug, stream.slug);
+				await h.receiptReady;
 				assert.match(h.receipts[0].content, /The user chose a new stream/);
 			} finally { await h.shutdown(); }
 			assert.equal(stream.repo, null);
@@ -1926,6 +2114,20 @@ test(`StreamCli agrees with the real streams CLI ${withRepo ? "inside" : "outsid
 		const today = new Date().toLocaleDateString("en-CA");
 		assert.equal(readFileSync(stream.path, "utf8"), draft.proposedContent.replace("updated: '2020-01-01'", `updated: '${today}'`), "the CLI dates the write");
 		await assert.rejects(applyDraft(draft, 1, deps), /already applied/, "Pi still recognises its own dated write");
+
+		for (const policy of [{ frontend: { mode: "unknown" } }, { frontend: { mode: "herdr" }, cmux: { enabled: true } }]) {
+			const base = await cli.read(stream.slug);
+			const candidate = base.content.replace(/^state: .*$/m, "state: Saved with invalid optional policy.");
+			writeFileSync(join(dir, "config", "streams", "config.json"), JSON.stringify({ notes: { root }, ...policy }));
+			cli.diagnostics.length = 0;
+			const result = await applyDraft({ slug: stream.slug, revision: 1, baseContent: base.content, proposedContent: candidate }, 1, { ...deps, project: () => cli.refresh(stream.slug) });
+			assert.equal(result.written, true);
+			assert.equal(result.refresh.status, "selection-failed", "Invalid optional policy warns after a valid save");
+			assert.equal(readFileSync(stream.path, "utf8"), candidate);
+			assert.deepEqual(cli.diagnostics.map((command) => command.args[0]), ["read", "update", "update", "frontend"]);
+			writeFileSync(join(dir, "config", "streams", "config.json"), JSON.stringify({ notes: { root } }));
+			writeFileSync(stream.path, base.content);
+		}
 
 		writeFileSync(join(root, "scratch", "broken.md"), "---\ntitle: Broken\n---\nbody\n");
 		warnings.length = 0;
@@ -2210,7 +2412,7 @@ test("extension configuration owns models and shortcuts, and rejects the old CMU
 		writeFileSync(join(dir, "checkpoint.json"), '{"focusShortcut":"ctrl+alt+c","agentTools":false,"selectorModel":{"provider":"openai","id":"selector"},"drafterModel":{"provider":"anthropic","id":"drafter"}}');
 		assert.deepEqual(loadConfig(dir), { focusShortcut: "ctrl+alt+c", agentTools: false, streamPrompting: "manual", checkpointPrompting: "low", selectorModel: { provider: "openai", id: "selector" }, drafterModel: { provider: "anthropic", id: "drafter" } });
 		writeFileSync(join(dir, "checkpoint.json"), '{"cmux":true}');
-		assert.throws(() => loadConfig(dir), /streams config set cmux.enabled/);
+		assert.throws(() => loadConfig(dir), /streams config set frontend.mode/);
 		writeFileSync(join(dir, "checkpoint.json"), '{"selectorModel":{"provider":"openai"}}');
 		assert.throws(() => loadConfig(dir), /selectorModel.*provider.*id/);
 		writeFileSync(join(dir, "checkpoint.json"), '{"focusShortcut":""}');
@@ -2365,7 +2567,7 @@ test("native Pi overlay dismissal closes settings before an Apply completes", as
 			ui: { notify: (text) => assert.fail(text), theme: { fg: (_color, text) => text }, setStatus() {}, getEditorText: () => "", custom: native.custom } };
 		registerCheckpoint({ registerTool() {}, registerEntryRenderer() {}, registerMessageRenderer() {}, registerCommand: (name, options) => commands.set(name, options.handler),
 			registerShortcut() {}, on: (_name, handler) => { shutdown = handler; }, appendEntry: (type, data) => f.manager.appendCustomEntry(type, data), sendMessage() {} },
-			{ agentDir: f.dir, runtime: f.conversation.options.runtime, skill: "Test skill", cli: { config: async () => ({ cmux: { enabled: false } }), list: async () => [], show: async () => ({ slug: "service", path: f.path }), format: async () => "format", read: readFrom(f.path), diagnostics: [],
+			{ agentDir: f.dir, runtime: f.conversation.options.runtime, skill: "Test skill", cli: { refresh: async () => ({ status: "skipped", reason: "disabled" }), list: async () => [], show: async () => ({ slug: "service", path: f.path }), format: async () => "format", read: readFrom(f.path), diagnostics: [],
 				update: async (_slug, content, options) => { if (!options.dryRun) { await writing; writeFileSync(f.path, content); } return { slug: "service", path: f.path, updated: !options.dryRun }; } } });
 		await commands.get("checkpoint")("--stream service", ctx);
 		await until(() => native.views[0]?.handle && native.views[0].component.state.activity === null);
@@ -2390,7 +2592,7 @@ test("native Pi overlay dismissal closes settings before an Apply completes", as
 
 test("startup waits for settings to close before adding a parent to Pi's overlay stack", async () => {
 	const dir = mkdtempSync(join(tmpdir(), "checkpoint-settings-startup-"));
-	const h = chooserHarness({ agentDir: dir, stage: "config" });
+	const h = chooserHarness({ agentDir: dir, stage: "list" });
 	const native = await nativeOverlayUI();
 	h.ctx.ui.custom = native.custom;
 	try {
@@ -2612,12 +2814,13 @@ test("Apply asks CLI to preview and write exactly the approved revision with its
 				calls.push({ slug, content, options });
 				return updateAt(path, slug)(slug, content, options);
 			},
-			project: async () => {},
+			project: async () => ({ status: "updated", frontend: "herdr" }),
 		};
 		await assert.rejects(applyDraft(draft, 2, deps), /revision/);
 		assert.equal(calls.length, 0);
 		const result = await applyDraft(draft, 3, deps);
 		assert.equal(result.written, true);
+		assert.deepEqual(result.refresh, { status: "updated", frontend: "herdr" });
 		const hash = createHash("sha256").update("base").digest("hex");
 		assert.deepEqual(calls, [
 			{ slug: "stream", content: "candidate", options: { dryRun: true, ifMatch: hash } },
@@ -2654,9 +2857,11 @@ test("Apply treats a failed CLI confirmation after a write as partial success", 
 		const result = await applyDraft({ slug: "stream", revision: 1, baseContent: "base", proposedContent: "candidate" }, 1, {
 			read: readFrom(path),
 			update: updateAt(path, "stream", () => { throw new Error("confirmation failed"); }),
+			project: async () => assert.fail("Uncertain confirmation must not query or refresh the frontend"),
 		});
 		assert.equal(result.written, true);
 		assert.match(result.validationError, /confirmation failed/);
+		assert.equal(result.refresh, undefined);
 	} finally {
 		rmSync(dir, { recursive: true, force: true });
 	}
@@ -2672,10 +2877,10 @@ test("Apply records projection failure without repeating the CLI write", async (
 		const deps = {
 			read: readFrom(path),
 			update: updateAt(path, "stream", () => { writes++; }),
-			project: async () => { throw new Error("CMUX unavailable"); },
+			project: async () => ({ status: "backend-failed", frontend: "cmux", warning: "CMUX unavailable" }),
 		};
 		const result = await applyDraft(draft, 1, deps);
-		assert.match(result.projectionWarning, /CMUX unavailable/);
+		assert.deepEqual(result.refresh, { status: "backend-failed", frontend: "cmux", warning: "CMUX unavailable" });
 		await assert.rejects(applyDraft(draft, 1, deps), /already applied/);
 		assert.equal(writes, 1);
 	} finally {

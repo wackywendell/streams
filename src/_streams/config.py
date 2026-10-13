@@ -8,8 +8,10 @@ from pathlib import Path
 import tempfile
 
 from .errors import StreamError
+from .frontend import FrontendMode
 
-CONFIG_KEYS = ("notes.root", "obsidian.vault", "cmux.enabled")
+CONFIG_KEYS = ("notes.root", "obsidian.vault", "frontend.mode")
+LEGACY_CONFIG_KEYS = ("cmux.enabled",)
 ARCHIVE_DIRNAME = "archive"
 VALID_STATUSES = frozenset({"active", "waiting", "blocked", "parked", "done"})
 DEFAULT_STATUS = "active"
@@ -22,11 +24,14 @@ def config_path() -> Path:
 
 
 def validate_value(key: str, value: object) -> str | bool:
-    if key not in CONFIG_KEYS:
+    if key not in (*CONFIG_KEYS, *LEGACY_CONFIG_KEYS):
         raise StreamError(f"unknown streams config key: {key}")
     if key == "cmux.enabled":
         if not isinstance(value, bool):
             raise StreamError(f"{key} must be a boolean (true or false)")
+    elif key == "frontend.mode":
+        if not isinstance(value, str) or value not in {mode.value for mode in FrontendMode}:
+            raise StreamError(f"{key} must be one of auto, cmux, herdr, none")
     elif not isinstance(value, str) or not value.strip():
         raise StreamError(f"{key} must be a nonempty string")
     elif key == "notes.root":
@@ -40,7 +45,8 @@ def validate_value(key: str, value: object) -> str | bool:
     return value
 
 
-def read_overrides() -> dict:
+def _read_overrides() -> dict:
+    """Decode the document; consumers validate the settings they depend on."""
     path = config_path()
     try:
         data = json.loads(path.read_text())
@@ -50,26 +56,55 @@ def read_overrides() -> dict:
         raise StreamError(f"could not read {path}: {exc}") from exc
     if not isinstance(data, dict):
         raise StreamError(f"{path} must contain a JSON object")
-    for section, values in data.items():
-        if section not in {key.split('.')[0] for key in CONFIG_KEYS} or not isinstance(values, dict):
-            raise StreamError(f"{path}: invalid config section {section!r}")
-        for name, value in values.items():
-            values[name] = validate_value(f"{section}.{name}", value)
     return data
 
 
+def read_overrides() -> dict:
+    data = _read_overrides()
+    path = config_path()
+    for section, values in data.items():
+        if section not in {key.split('.')[0] for key in (*CONFIG_KEYS, *LEGACY_CONFIG_KEYS)} or not isinstance(values, dict):
+            raise StreamError(f"{path}: invalid config section {section!r}")
+        for name, value in values.items():
+            values[name] = validate_value(f"{section}.{name}", value)
+    _frontend_mode(data)  # Reject conflicting selectors at the configuration boundary.
+    return data
+
+
+def _frontend_mode(overrides: dict) -> FrontendMode:
+    configured = overrides.get("frontend", {}).get("mode")
+    enabled = overrides.get("cmux", {}).get("enabled")
+    legacy = FrontendMode.CMUX if enabled else FrontendMode.NONE
+    if configured is not None:
+        mode = FrontendMode(configured)
+        if enabled is not None and mode != legacy:
+            raise StreamError("conflicting frontend.mode and legacy cmux.enabled selectors")
+        return mode
+    return legacy if enabled is not None else FrontendMode.AUTO
+
+
+def get_frontend_mode() -> FrontendMode:
+    return _frontend_mode(read_overrides())
+
+
 def load_config() -> dict:
-    config = {"notes": {"root": str(Path.home() / "streams")}, "obsidian": {"vault": "streams"}, "cmux": {"enabled": False}}
-    for section, values in read_overrides().items():
-        config[section].update(values)
+    overrides = read_overrides()
+    config = {"notes": {"root": str(Path.home() / "streams")}, "obsidian": {"vault": "streams"},
+              "frontend": {"mode": _frontend_mode(overrides).value}}
+    for section in ("notes", "obsidian"):
+        config[section].update(overrides.get(section, {}))
     return config
 
 
 def set_config(key: str, text: str) -> None:
-    value = validate_value(key, {"true": True, "false": False}.get(text, text) if key == "cmux.enabled" else text)
+    if key not in CONFIG_KEYS:
+        raise StreamError(f"unknown streams config key: {key}; use frontend.mode for selection")
+    value = validate_value(key, text)
     data = read_overrides()
     section, name = key.split(".")
     data.setdefault(section, {})[name] = value
+    if key == "frontend.mode":
+        data.pop("cmux", None)
     # Resolve Stow-managed symlinks so replacing the file preserves the link.
     path = config_path().resolve()
     temporary = None
@@ -90,7 +125,12 @@ def set_config(key: str, text: str) -> None:
 
 
 def notes_root() -> Path:
-    return Path(load_config()["notes"]["root"])
+    # Note operations must not depend on optional frontend or display policy.
+    notes = _read_overrides().get("notes", {})
+    if not isinstance(notes, dict):
+        raise StreamError(f"{config_path()}: invalid config section 'notes'")
+    values = {name: validate_value(f"notes.{name}", value) for name, value in notes.items()}
+    return Path(values.get("root", str(Path.home() / "streams")))
 
 
 def scratch_root() -> Path:

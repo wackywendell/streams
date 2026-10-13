@@ -2,7 +2,7 @@ import { existsSync, mkdirSync, readFileSync, renameSync, unlinkSync, writeFileS
 import { dirname, join } from "node:path";
 import { createHash, randomUUID } from "node:crypto";
 import type { KeyId } from "@earendil-works/pi-tui";
-import { StreamsCliError, type Note, type StreamCli } from "./streams.ts";
+import { StreamsCliError, type Note, type RefreshOutcome, type StreamCli } from "./streams.ts";
 import type { Annotation, AnnotationEditor, Feedback } from "./review.ts";
 import { isSeq, parseDocument } from "yaml";
 import { CHECKPOINT_PROMPTING, STREAM_PROMPTING } from "./policy.ts";
@@ -40,7 +40,7 @@ function readConfig(agentDir: string): any {
 
 function parseConfig(config: any): CheckpointConfig {
 	if (config === null || typeof config !== "object" || Array.isArray(config)) throw new Error("checkpoint.json must be an object");
-	if (config.cmux !== undefined) throw new Error("checkpoint.json: cmux moved to streams; use streams config set cmux.enabled true (or false), then remove cmux from checkpoint.json");
+	if (config.cmux !== undefined) throw new Error("checkpoint.json: frontend selection belongs to streams; use streams config set frontend.mode auto (or cmux, herdr, none), then remove cmux from checkpoint.json");
 	if (config.focusShortcut !== undefined && (typeof config.focusShortcut !== "string" || !config.focusShortcut.trim())) throw new Error("checkpoint.json: focusShortcut must be a nonempty Pi keybinding");
 	if (config.agentTools !== undefined && typeof config.agentTools !== "boolean") throw new Error("checkpoint.json: agentTools must be true or false");
 	for (const [key, values] of [["streamPrompting", STREAM_PROMPTING], ["checkpointPrompting", CHECKPOINT_PROMPTING]] as const) {
@@ -210,7 +210,7 @@ export function stageDraft(pending: Pending, binding: Binding, content: string, 
 export interface ApplyDependencies {
 	read(slug: string): Promise<Note>;
 	update(slug: string, content: string, options: { dryRun?: boolean; ifMatch: string }): Promise<{ slug: string; updated: boolean; sha256: string }>;
-	project?(): Promise<void>;
+	project?(): Promise<RefreshOutcome>;
 }
 
 /**
@@ -218,7 +218,7 @@ export interface ApplyDependencies {
  * `--if-match` with the hash of the note as drafted makes the CLI refuse a write over newer changes.
  * The CLI dates what it writes, so the dry-run's hash, not the draft's bytes, identifies the applied note.
  */
-export async function applyDraft(draft: Draft, approvedRevision: number, deps: ApplyDependencies): Promise<{ written: true; validationError?: string; projectionWarning?: string }> {
+export async function applyDraft(draft: Draft, approvedRevision: number, deps: ApplyDependencies): Promise<{ written: true; validationError?: string; refresh?: RefreshOutcome }> {
 	if (draft.revision !== approvedRevision) throw new Error("Draft revision differs from the approved revision");
 	const current = await deps.read(draft.slug);
 	const ifMatch = current.sha256;
@@ -236,10 +236,5 @@ export async function applyDraft(draft: Draft, approvedRevision: number, deps: A
 		}
 		throw error;
 	}
-	try {
-		await deps.project?.();
-	} catch (error) {
-		return { written: true, projectionWarning: String(error) };
-	}
-	return { written: true };
+	return deps.project ? { written: true, refresh: await deps.project() } : { written: true };
 }

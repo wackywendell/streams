@@ -15,7 +15,7 @@ import type { ChosenStream } from "./chooser.ts";
 import { CheckpointConversation } from "./conversation.ts";
 import { checkpointLabel, checkpointStatus, shortcutLabel } from "./view.ts";
 import { CheckpointJournal, MARKER_TYPE } from "./journal.ts";
-import { StreamCli } from "./streams.ts";
+import { StreamCli, type RefreshOutcome } from "./streams.ts";
 import { checkpointReceipt, choiceCancelledReceipt, clearedReceipt, discussionText, renderCheckpointReceipt, streamChosenReceipt } from "./receipt.ts";
 import { streamReadTool } from "./read.ts";
 import type { Author } from "./review.ts";
@@ -275,7 +275,7 @@ export default function registerCheckpoint(pi: ExtensionAPI, testDeps: { agentDi
 	 * Binds the session to `stream`, asking first if that leaves unfinished work for the bound stream, unless the user
 	 * already agreed to switch. Returns false if the user declines or the run ended.
 	 */
-	async function bind(run: Run, cli: StreamCli, cmux: boolean, stream: Stream, created: boolean, switchConfirmed: boolean): Promise<boolean> {
+	async function bind(run: Run, cli: StreamCli, stream: Stream, created: boolean, switchConfirmed: boolean): Promise<{ refresh?: RefreshOutcome } | false> {
 		const binding = latestBinding(run.ctx.sessionManager.getEntries(), run.ownerId);
 		if (binding?.slug !== stream.slug || binding.path !== stream.path) {
 			if (binding && !switchConfirmed && readPending(agentDir, run.ownerId, binding.slug)) {
@@ -283,11 +283,12 @@ export default function registerCheckpoint(pi: ExtensionAPI, testDeps: { agentDi
 			}
 			pi.appendEntry(BINDING_TYPE, { ownerId: run.ownerId, slug: stream.slug, path: stream.path });
 		}
-		if (created && cmux) {
-			try { await cli.project(stream.slug); }
-			catch (error) { run.ctx.ui.notify(`CMUX update failed: ${String(error)}`, "warning"); }
+		if (!created) return {};
+		const refresh = await cli.refresh(stream.slug);
+		if (refresh.status === "selection-failed" || refresh.status === "backend-failed") {
+			run.ctx.ui.notify("Stream bound; optional workspace refresh failed.", "warning");
 		}
-		return true;
+		return { refresh };
 	}
 
 	/**
@@ -324,12 +325,12 @@ export default function registerCheckpoint(pi: ExtensionAPI, testDeps: { agentDi
 				if (completed && run.visibility === "auto" && state.notice?.level !== "error" && last?.role === "assistant" && last.stopReason === "stop" && ctx.ui.getEditorText() === "") show(run);
 				phase.panel?.refresh(); updateStatus(run);
 			},
-			applied: (summary, cmux, warning) => {
+			applied: (summary, refresh) => {
 				if (alive(run)) {
 					run.finalized = true;
 					mark(run, { label: "Applied", slug, closed: true });
 					const discussion = discussionText(conversation.state.messages) || undefined;
-					pi.sendMessage(checkpointReceipt({ slug, summary, cmux, warning, commands: cli.diagnostics, discussion }), { triggerTurn: false });
+					pi.sendMessage(checkpointReceipt({ slug, summary, refresh, commands: cli.diagnostics, discussion }), { triggerTurn: false });
 				}
 				phase.dismiss?.();
 			},
@@ -379,7 +380,6 @@ export default function registerCheckpoint(pi: ExtensionAPI, testDeps: { agentDi
 	/** /checkpoint: drafts for `ref`, or the bound stream, letting the user choose when neither resolves. */
 	function checkpointCommand(run: Run, ref: string, message: string): Promise<void> {
 		return guarded(run, async (cli) => {
-			const shared = await whileOpen(run, cli.config());
 			const streams = await whileOpen(run, cli.list());
 			const binding = latestBinding(run.ctx.sessionManager.getEntries(), run.ownerId);
 			let stream = await whileOpen(run, ref ? cli.show(ref).catch((error) => { if (alive(run)) run.ctx.ui.notify(String(error), "warning"); return undefined; })
@@ -397,7 +397,7 @@ export default function registerCheckpoint(pi: ExtensionAPI, testDeps: { agentDi
 				({ stream, created } = choice);
 				mark(run, { label: "Starting", working: true, slug: stream.slug });
 			}
-			if (!await bind(run, cli, shared.cmux.enabled, stream, created, switchConfirmed)) return;
+			if (!await bind(run, cli, stream, created, switchConfirmed)) return;
 			await draft(run, cli, stream, message, { startHidden: false });
 		});
 	}
@@ -409,13 +409,14 @@ export default function registerCheckpoint(pi: ExtensionAPI, testDeps: { agentDi
 	async function streamSelection(run: Run, options: Parameters<typeof choose>[3]): Promise<void> {
 		let reported = false;
 		await guarded(run, async (cli) => {
-			const shared = await whileOpen(run, cli.config());
 			const streams = await whileOpen(run, cli.list());
 			if (!alive(run)) return;
 			const choice = await choose(run, cli, streams, options);
-			if (!choice || !alive(run) || !await bind(run, cli, shared.cmux.enabled, choice.stream, choice.created, false)) return;
+			if (!choice || !alive(run)) return;
+			const bound = await bind(run, cli, choice.stream, choice.created, false);
+			if (!bound) return;
 			reported = true;
-			pi.sendMessage(streamChosenReceipt({ slug: choice.stream.slug, created: choice.created }), { triggerTurn: false });
+			pi.sendMessage(streamChosenReceipt({ slug: choice.stream.slug, created: choice.created, refresh: bound.refresh, commands: cli.diagnostics }), { triggerTurn: false });
 		});
 		// The agent was told a receipt follows its call, so report a choice that ended any other way.
 		if (!reported && alive(run)) pi.sendMessage(choiceCancelledReceipt(latestBinding(run.ctx.sessionManager.getEntries(), run.ownerId)), { triggerTurn: false });

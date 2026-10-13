@@ -13,7 +13,7 @@ from .slug import slugify
 REQUIRED_FIELDS = ("title", "status", "description", "state", "repo", "cwd", "vcs", "issues", "prs", "sessions")
 STRING_FIELDS = ("title", "status", "description", "state", "repo", "cwd", "vcs")
 LIST_FIELDS = ("issues", "prs", "sessions")
-FORBIDDEN_FIELDS = ("slug", "cmux", "taskwarrior", "current")
+FORBIDDEN_FIELDS = ("slug", "cmux", "herdr", "taskwarrior", "current")
 SESSION_PREFIXES = ("codex:", "claude:", "pi:")
 GITHUB_ISSUE_RE = re.compile(r"^https://github\.com/[^/]+/[^/]+/issues/[0-9]+(?:[/?#].*)?$")
 GITHUB_PR_RE = re.compile(r"^https://github\.com/[^/]+/[^/]+/pull/[0-9]+(?:[/?#].*)?$")

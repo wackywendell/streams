@@ -31,8 +31,8 @@ Agreed behavior:
 - Escape and Alt+P minimize without stopping the side agent; main-session submissions still run
 - restart and reload preserve unfinished chat, draft, comments and input; confirmed Clear discards them without undoing stream creation or binding
 - reopening resumes unfinished work with fresh main-session context and the current scratch note
-- shared `cmux.enabled: true` runs `streams cmux update -c <slug>` after creation, including starter notes, and after validated scratch updates
-- successful Apply validates the update, refreshes CMUX when enabled, posts a main-chat receipt, and closes the panel
+- shared `frontend.mode` selects optional workspace refresh after creation and binding, including starter notes, and after validated scratch updates
+- successful Apply validates the update, attempts optional workspace refresh, posts a main-chat receipt, and closes the panel; refresh failure does not undo the save
 - invoking `/checkpoint` after successful Apply starts a new checkpoint conversation
 
 Current defaults:
@@ -49,15 +49,18 @@ Shared settings belong to `streams`, not Pi or scratch frontmatter. Use the CLI 
 ```sh
 streams config
 streams config --json
-streams config get cmux.enabled
-streams config set cmux.enabled true
+streams config get frontend.mode
+streams config set frontend.mode auto
+streams frontend get --json
 streams config set notes.root ~/notes
 streams config set obsidian.vault notes
 ```
 
-The CLI stores overrides in `$XDG_CONFIG_HOME/streams/config.json`, defaulting to `~/.config/streams/config.json`. `notes.root` defaults to `~/streams`; scratch, archive and artifact paths derive from it. `obsidian.vault` defaults to `streams`. `cmux.enabled` defaults to `false`. The human-readable listing shows the config path and whether each value is configured or a default. Unknown keys, invalid types and malformed files fail without overwriting the file.
+The CLI stores overrides in `$XDG_CONFIG_HOME/streams/config.json`, defaulting to `~/.config/streams/config.json`. `notes.root` defaults to `~/streams`; scratch, archive and artifact paths derive from it. `obsidian.vault` defaults to `streams`. `frontend.mode` accepts `auto`, `cmux`, `herdr` or `none`, and defaults to `auto`. The human-readable listing shows the config path and each value's origin. Unknown keys, invalid types and malformed files fail without overwriting the file.
 
-The extension fetches effective settings with `streams config --json` when opening a checkpoint and again before Apply. A config failure blocks the operation rather than silently disabling CMUX. `streams update` itself does not automatically refresh CMUX; checkpoint clients explicitly perform that step when enabled.
+Read legacy `cmux.enabled` only as migration input: explicitly stored `true` maps to `cmux`, `false` to `none`, and absence to `auto`. Canonical output contains only `frontend.mode`. Setting that key removes the legacy setting atomically; conflicting stored selectors fail rather than choosing precedence.
+
+The extension queries `streams frontend get --json` once inside each optional refresh, after creation/binding or a confirmed Apply save. Python owns configured selection and caller detection; Pi does not inspect terminal environment variables. `none` skips refresh. Effective `auto` recognises caller context, skips when none exists, and reports incomplete or mixed context as a selection failure. Named modes still require their frontend's caller workspace; they never target another client's GUI focus. `streams update` itself does not refresh a workspace. Selection or native refresh failure does not prevent, undo or repeat a valid note save. CLI note validation, concurrency checks and write confirmation remain separate. Note-root lookup validates only its required settings, so invalid frontend policy does not block a valid save. Malformed/unreadable JSON or an invalid notes root still prevents safe note access.
 
 Keep extension-only settings in `~/.pi/agent/checkpoint.json` (or the active Pi agent directory):
 
@@ -72,7 +75,7 @@ Keep extension-only settings in `~/.pi/agent/checkpoint.json` (or the active Pi 
 }
 ```
 
-All extension fields are optional. The old `cmux` field is rejected with migration instructions: set `cmux.enabled` through the CLI, then remove `cmux` from `checkpoint.json`. `focusShortcut` defaults to `alt+p`; change it in this file and run `/reload` to register the shortcut. It toggles between the open checkpoint and main editor, but does not open a closed checkpoint. Escape also minimizes. Neither action stops the side agent.
+All extension fields are optional. The old `cmux` field is rejected with migration instructions: set `frontend.mode` through the CLI, then remove `cmux` from `checkpoint.json`. `focusShortcut` defaults to `alt+p`; change it in this file and run `/reload` to register the shortcut. It toggles between the open checkpoint and main editor, but does not open a closed checkpoint. Escape also minimizes. Neither action stops the side agent.
 
 `agentTools` defaults to `true`. Set it to `false` and run `/reload` to stop registering the main-agent `checkpoint`, `select_stream` and `create_stream` tools. It does not affect `stream_read`.
 
@@ -110,12 +113,20 @@ While minimized, the footer shows only checkpoint state and the restore shortcut
 
 `selectorModel` controls recommendation generation; `drafterModel` controls the side conversation and draft. Omit either to use the current main-session model for that role. Resolve configured provider/ID pairs through Pi's model registry; report an unavailable configured model instead of silently falling back. Neither setting changes the main session's model.
 
-When enabled, run `streams cmux update -c <slug>` using the actual canonical slug:
+### Optional workspace refresh
+
+One `StreamCli.refresh(slug)` operation queries selection, then runs `streams <resolved-frontend> update -c <slug>` using the actual canonical slug:
 
 - after `streams start` succeeds and the stream is bound, even before a checkpoint draft exists
 - after `streams update` validates and writes the approved scratch document
 
-The current workspace is the intended target. Do not search for another workspace, open one, or change focus. Report command failures separately from scratch success. Never undo creation, binding, or a validated update because CMUX is unavailable. Retrying projection runs only the CMUX command.
+Choosing an existing stream changes only the Pi session binding; it does not immediately project onto the workspace. A subsequent successful Apply performs optional refresh.
+
+The operation returns one discriminated outcome: `skipped` with reason `disabled` or `no-context`, `updated` with the concrete frontend, `selection-failed` with a warning, or `backend-failed` with the concrete frontend and warning. Callers and receipts consume that result rather than reconstructing success from configuration or separate flags. Detailed warnings stay in expanded receipt diagnostics, not model-visible status text.
+
+The caller's current workspace is the intended target. Do not search for another workspace, open one, or change focus. Report refresh failure separately from scratch success. Never undo creation, binding or a validated update because selection or a backend is unavailable. A projection retry runs only the explicit frontend command.
+
+For Herdr, the workspace-to-stream association is a real JSON file outside notes, shared by current lookup and the links pane. Publish it atomically before deriving the native label and metadata. If publication fails, do not mutate native display. If display fails later, keep the new association and report partial display. The Pi session binding is independent. Present associations resolve only exact slugs or safe same-scratch rename aliases; broken associations fail rather than falling back to label/cwd hints. Only absence allows conservative inference. Notes remain the source of stream contents.
 
 ## Command and stream selection
 
@@ -134,7 +145,7 @@ If the panel is already open, a message without `--stream` focuses it and sends 
 
 Opening or switching a checkpoint obtains current stream metadata using `streams list --json`. Treat a missing executable, an exit code other than 0 or 1, invalid JSON, or a malformed result as an error, not an empty list. Exit 1 means some notes were invalid and left out: use the streams that were returned, and warn with the invalid slugs and a pointer to `streams check`. Do not offer to create a supposedly missing stream based on a failed lookup.
 
-Configuration and stream lookup run in the background with no loader, so the main editor stays usable. Session shutdown abandons a lookup at once rather than waiting for the CLI. Ignore late lookup results so they cannot open a chooser, change the binding or start drafting. A new `/checkpoint` invocation after shutdown must not wait for the abandoned lookup.
+Stream lookup runs in the background with no loader, so the main editor stays usable. Session shutdown abandons a lookup at once rather than waiting for the CLI. Ignore late lookup results so they cannot open a chooser, change the binding or start drafting. A new `/checkpoint` invocation after shutdown must not wait for the abandoned lookup.
 
 ### Explicit reference
 
@@ -186,7 +197,7 @@ For any creation path, let the user edit the title before submitting it with Ent
 
 On submission, validate the title and obtain its canonical slug through `streams start --dry-run`. Refresh the list to catch an existing match, then run `streams start "<title>" --json` in the intended checkout, without `--current`. Keep input locked during creation to prevent duplicate submissions. The CLI owns slug generation, location discovery, and creation. Persist the session binding to the successful command's actual returned record before beginning the checkpoint discussion. Never interpolate the title into a shell command string.
 
-After successful creation and binding, run `streams cmux update -c <slug>` if shared `cmux.enabled` is `true`. Report a projection failure in the panel and continue the checkpoint discussion with the created stream.
+After successful creation and binding, invoke the shared optional refresh operation. Report a refresh failure separately and continue the checkpoint discussion with the created stream.
 
 If creation fails, keep the chooser open and the old binding intact. Creation outside jj or Git is valid: the CLI records `repo: null`, `vcs: null` and the current directory as `cwd`. Continue creation and binding normally; do not ask for a repository or fabricate one.
 
@@ -302,9 +313,9 @@ Do not edit reference notes or stream-local artifacts as a hidden part of a chec
 2. Reread the note with `streams read <canonical-slug> --hash` and compare it with the draft's base. If it changed, do not overwrite it. Show the conflict and let the side agent propose a new draft against the latest content, requiring new approval.
 3. Preview the exact candidate with `streams update --dry-run --if-match <base-sha256> <canonical-slug> --json`, using the hash from step 2, sending the complete Markdown on stdin. This validates against the canonical schema without writing; a changed base rejects the preview.
 4. Send the same approved bytes to `streams update --if-match <base-sha256> <canonical-slug> --json`. The CLI validates before replacing the file and rejects a changed base. Validation checks format, not the truth of the AI's claims. The CLI sets `updated` to today, so the note as written can differ from the draft by that line. Pi recognises its own write by the `sha256` the dry-run reported, both when a write's confirmation fails and when the same draft is applied again.
-5. If shared `cmux.enabled` is `true`, run `streams cmux update -c <canonical-slug>` to project the validated scratch onto the current workspace. Otherwise make no CMUX call.
+5. Invoke the shared optional refresh operation for the canonical slug. Resolve selection once here, after confirmed save; skip disabled/no-context cases, or run the concrete frontend's current-workspace update. Return selection/backend failures as refresh outcomes, not note-write errors.
 6. Update the session binding if its canonical stream identity changed. Do not defer a new stream's initial binding until this step.
-7. Add a main-chat receipt with the stream slug, a short summary of the applied changes, CMUX outcome (`updated`, `disabled` or `failed`) and the checkpoint discussion. Keep raw diagnostic output outside model context. Do not trigger a main-agent response; if the main agent is streaming, Pi may defer receipt delivery until the turn ends.
+7. Add a main-chat receipt with the stream slug, a short summary of the applied changes, the typed workspace-refresh outcome and the checkpoint discussion. Keep raw diagnostic output outside model context. Do not trigger a main-agent response; if the main agent is streaming, Pi may defer receipt delivery until the turn ends.
 8. Mark this checkpoint complete and close the panel. It is no longer resumable as unfinished work. The next `/checkpoint` starts a new side conversation using the updated scratch and current main context.
 
 A new model response, stream switch, context refresh, or edited target must not cause Apply to write an unseen revision. Applying one snapshot does not claim to cover later main-session work.
@@ -313,15 +324,15 @@ The write path must not knowingly overwrite a concurrent edit. Cross-process cha
 
 If the CLI fails before writing, keep the panel and draft available and show the error. If it writes successfully but confirmation fails, report the uncertain or partial result rather than retrying blindly. Offer a reviewed correction rather than a silent fix.
 
-If only CMUX refresh fails, record scratch success and the projection warning in the receipt, then close the completed checkpoint. A projection retry must not write scratch again. Failure handling must distinguish completed writes from pending work to prevent duplicate application.
+If only workspace selection or refresh fails, record scratch success and the refresh outcome in the receipt, then close the completed checkpoint. A projection retry must not write scratch again. Failure handling must distinguish completed writes from pending work to prevent duplicate application.
 
 ### Receipt and diagnostics
 
-Render the receipt as a compact box in the main transcript. Pi's normal tool-expansion action (Ctrl+O by default) reveals command arguments, exit statuses, output and projection warnings. CMUX failure remains visible in the collapsed box alongside scratch success.
+Render the receipt as a compact box in the main transcript. Pi's normal tool-expansion action (Ctrl+O by default) reveals command arguments, exit statuses, output and projection warnings. Workspace selection/backend failure remains visible in the collapsed box alongside scratch success. Render persisted legacy CMUX receipts without rewriting them.
 
 Use custom-message `content` for the minimal shared receipt and discussion, and `details` for diagnostic data. Pi persists both, but sends only `content` to the model. Expanding the box changes presentation, not model context. Do not trigger a model turn to announce completion.
 
-Retain the latest 16 CLI calls from the current panel lifetime, with stdout and stderr limited to 2,048 characters each plus a truncation marker. Never record the Markdown passed on stdin. Capture successful stderr and structured update warnings; show them through notifications and retain them in receipt details. Errors remain visible in the panel or notifications. These diagnostics are not a complete historical log across checkpoint restarts.
+Retain the latest 16 CLI calls from the current panel lifetime, with stdout and stderr limited to 2,048 characters each plus a truncation marker. Never record the Markdown passed on stdin. Capture successful stderr and structured update warnings and retain them in receipt details. Note-command warnings may appear in notifications; optional-refresh notifications carry only a generic failure status, with detailed warnings available on expansion. Note errors remain visible in the panel or notifications. These diagnostics are not a complete historical log across checkpoint restarts.
 
 ### Discussion
 
@@ -460,7 +471,9 @@ streams format
 streams start "Parser ownership cleanup" --json
 streams update --dry-run --if-match <base-sha256> parser-ownership-cleanup --json < proposed.md
 streams update --if-match <base-sha256> parser-ownership-cleanup --json < proposed.md
-streams cmux update -c parser-ownership-cleanup
+streams frontend get --json
+streams cmux update -c parser-ownership-cleanup  # when resolved=cmux
+streams herdr update -c parser-ownership-cleanup # when resolved=herdr
 ```
 
 Execute CLI commands with separate arguments. `streams show --json` returns metadata; `streams read --hash` returns the note's hash on the first line, then its exact text.
@@ -535,16 +548,21 @@ Tests must use temporary scratch files and mocked CLI, model, and CMUX boundarie
 | Scratch changes while closed | Preserve chat but regenerate the diff against the current file and require new approval |
 | Clear | Discard pending checkpoint work after confirmation; keep the stream and binding; next invocation starts fresh |
 | Session replacement during side work | Preserve the old session's unfinished work; cancel or ignore late results without changing the new session or its files |
-| `cmux.enabled: true` on creation | Run `streams cmux update -c <actual-slug>` after creation and binding, even if only the starter note exists |
-| `cmux.enabled: true` on Apply | Run `streams cmux update -c <canonical-slug>` after the write passes validation |
-| `cmux.enabled: false` or absent | Make no CMUX calls on creation or Apply |
-| Shared configuration | Fetch through `streams config --json`; never read its file from Pi or store model/shortcut settings in streams config |
+| New stream creation | Resolve once after creation and binding, then optionally refresh the actual slug, even if only the starter note exists |
+| Successful Apply | Resolve once after the confirmed save, then optionally refresh the canonical slug |
+| Existing stream selection | Change the Pi binding without immediate workspace projection |
+| `frontend.mode: none` or effective `auto` without context | Return a skipped refresh without a native call |
+| Shared selection | Query through `streams frontend get --json`; never read its file or detect frontend context in Pi |
+| Legacy configuration | Read stored `cmux.enabled` as migration input; canonical setting removes it atomically and conflicts fail |
 | Expand receipt | Show diagnostic details through Pi's tool-expansion control without adding them to model context |
 | Apply after discussion | Receipt content carries user messages, agent replies and annotations verbatim and in order, without kickoff, tool calls or drafts |
 | Long discussion | Stay within 16,000 characters, dropping oldest agent replies before user messages, with an omission marker |
 | Clear after discussion | Post a `Cleared, not applied` receipt with the discussion only if the user spoke; do not trigger a turn |
-| CMUX update fails | Preserve the scratch write and binding, report projection failure, and never target a fallback workspace |
-| CMUX retry | Retry only projection, without recreating the stream or rewriting scratch |
+| Selection or backend refresh fails | Preserve the scratch write and Pi binding, return a typed failure, and never target a fallback workspace |
+| Herdr association publication fails | Make no native display changes; retain the existing association |
+| Herdr display update fails | Keep the newly published association and report partial display |
+| Broken Herdr association | Fail current lookup and clear stale links actions; do not infer another stream from label/cwd |
+| Projection retry | Retry only the explicit frontend projection, without recreating the stream or rewriting scratch |
 | Compaction | Do not start a checkpoint automatically |
 | `checkpoint` tool on a bound session | Start minimized with no chooser; return `started` at once |
 | `checkpoint` tool while a checkpoint is open | Return `already-open`, `applying` or `awaiting-stream-choice`; send instructions only to an idle checkpoint |

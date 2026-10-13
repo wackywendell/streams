@@ -8,7 +8,6 @@ import re
 import subprocess
 import sys
 from dataclasses import dataclass
-from urllib.parse import urlencode
 from pathlib import Path
 from typing import Any
 
@@ -16,6 +15,7 @@ from .config import load_config, notes_root
 from .errors import StreamError
 from .agent_sessions import latest_session_command
 from .models import Link, Stream
+from .projection import obsidian_uri_for_stream, stream_cwd, stream_for_hints
 from .resolve import resolve_stream_ref
 from .store import list_streams
 
@@ -87,14 +87,18 @@ class CmuxClient:
     def current_workspace_ref(self) -> str:
         if workspace_id := os.environ.get("CMUX_WORKSPACE_ID"):
             return workspace_id
-        return self.run(["cmux", "current-workspace"]).stdout.strip()
+        raise StreamError("current CMUX targeting requires caller context; pass --workspace outside CMUX")
 
     def resolve_workspace(self, selector: str | None) -> CmuxWorkspace:
-        selector = selector or self.current_workspace_ref()
+        current = selector is None
+        if current:
+            selector = self.current_workspace_ref()
+        elif not selector:
+            raise StreamError("CMUX workspace selector must be nonempty")
         matches = [
             workspace
             for workspace in self.workspaces()
-            if selector in {workspace.ref, workspace.id, workspace.title}
+            if selector in {workspace.ref, workspace.id} or (not current and selector == workspace.title)
         ]
         if not matches:
             raise StreamError(f"could not find CMUX workspace {selector!r}")
@@ -113,35 +117,9 @@ def stream_for_workspace_hint(workspace: CmuxWorkspace, *, root: Path | None = N
     root_args = {"root": root} if root is not None else {}
     streams = list_streams(**root_args)
 
-    title_matches = [stream for stream in streams if stream.title == workspace.title]
-    if len(title_matches) == 1:
-        return title_matches[0]
-    if len(title_matches) > 1:
-        choices = ", ".join(sorted(stream.slug for stream in title_matches))
-        raise StreamError(f"current CMUX workspace title matches multiple streams: {choices}")
-
-    cwd_matches = [
-        stream
-        for stream in streams
-        if workspace.current_directory
-        and stream.location.matches_working_root(workspace.current_directory)
-    ]
-    dedicated_matches = [stream for stream in cwd_matches if stream.location.is_dedicated]
-    if len(dedicated_matches) == 1:
-        return dedicated_matches[0]
-    if len(dedicated_matches) > 1:
-        choices = ", ".join(sorted(stream.slug for stream in dedicated_matches))
-        raise StreamError(
-            f"current CMUX workspace matches multiple streams by dedicated cwd; pass a slug: {choices}"
-        )
-    if cwd_matches:
-        raise StreamError(
-            "current CMUX workspace is in a main checkout or a directory without a repository, which does not identify one stream; "
-            "pass a slug"
-        )
-    raise StreamError(
-        f"current CMUX workspace {workspace.display_ref} title {workspace.title!r} "
-        "does not identify one stream; pass a slug"
+    return stream_for_hints(
+        streams, title=workspace.title, cwd=workspace.current_directory,
+        source=f"current CMUX workspace {workspace.display_ref}",
     )
 
 
@@ -158,13 +136,8 @@ def markdown_link_for_item(item: Link, label: str) -> str:
 
 
 def obsidian_link_for_stream(stream: Stream) -> str:
-    root = notes_root()
-    try:
-        file = stream.path.relative_to(root).as_posix()
-    except ValueError as exc:
-        raise StreamError(f"stream {stream.slug!r} is outside notes root {root}") from exc
-    query = urlencode({"vault": load_config()["obsidian"]["vault"], "file": file})
-    return f"[🗒︎](obsidian://open?{query})"
+    uri = obsidian_uri_for_stream(stream, root=notes_root(), vault=load_config()["obsidian"]["vault"])
+    return f"[🗒︎]({uri})"
 
 
 def description_for_stream(stream: Stream) -> str:
@@ -173,15 +146,6 @@ def description_for_stream(stream: Stream) -> str:
         for item in items:
             lines.append(markdown_link_for_item(item, label))
     return "\n".join(lines)
-
-
-def stream_cwd(stream: Stream) -> Path:
-    path = stream.location.working_root
-    if not path.exists():
-        raise StreamError(f"stream {stream.slug!r} cwd does not exist: {path}")
-    if not path.is_dir():
-        raise StreamError(f"stream {stream.slug!r} cwd is not a directory: {path}")
-    return path
 
 
 def open_workspace(stream: Stream, cmux: CmuxClient | None = None) -> None:

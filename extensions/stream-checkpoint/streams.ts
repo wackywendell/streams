@@ -8,7 +8,24 @@ export type Note = { content: string; sha256: string; findings?: string };
 type CommandResult = { code: number | null; stdout: string; stderr: string };
 type Runner = (args: string[], input?: string) => Promise<CommandResult>;
 export type CommandDiagnostic = CommandResult & { args: string[]; warnings?: string[] };
-export type StreamsConfig = { notes: { root: string }; obsidian: { vault: string }; cmux: { enabled: boolean } };
+export type Frontend = "cmux" | "herdr";
+export type RefreshOutcome =
+	| { status: "skipped"; reason: "disabled" | "no-context" }
+	| { status: "updated"; frontend: Frontend }
+	| { status: "selection-failed"; warning: string }
+	| { status: "backend-failed"; frontend: Frontend; warning: string };
+export type FrontendMode = "auto" | Frontend | "none";
+export type FrontendSelection = { configured: FrontendMode; requested: "auto" | Frontend | null; resolved: Frontend | null };
+
+function isFrontend(value: unknown): value is Frontend { return value === "cmux" || value === "herdr"; }
+function isFrontendMode(value: unknown): value is FrontendMode { return value === "auto" || value === "none" || isFrontend(value); }
+
+function isFrontendSelection(value: unknown): value is FrontendSelection {
+	const selection = value as Partial<FrontendSelection> | null;
+	return !!selection && isFrontendMode(selection.configured)
+		&& (selection.requested === null || selection.requested === "auto" || isFrontend(selection.requested))
+		&& (selection.resolved === null || isFrontend(selection.resolved));
+}
 
 /** A failed CLI command; `kind` comes from the CLI's `--json` error, when it printed one. */
 export class StreamsCliError extends Error {
@@ -73,9 +90,10 @@ export class StreamCli {
 		return result.stdout;
 	}
 
-	async config(): Promise<StreamsConfig> {
-		const value = JSON.parse(await this.run(["config", "--json"]));
-		if (typeof value?.notes?.root !== "string" || !value.notes.root || typeof value?.obsidian?.vault !== "string" || !value.obsidian.vault || typeof value?.cmux?.enabled !== "boolean") throw new Error("Invalid streams config response");
+	/** The CLI owns selection policy and caller detection; this query never contacts a backend. */
+	async frontend(): Promise<FrontendSelection> {
+		const value: unknown = JSON.parse((await this.exec(["frontend", "get", "--json"])).stdout);
+		if (!isFrontendSelection(value)) throw new Error("Invalid streams frontend response");
 		return value;
 	}
 
@@ -129,6 +147,18 @@ export class StreamCli {
 		return value;
 	}
 
-	async project(slug: string): Promise<void> { await this.run(["cmux", "update", "-c", slug]); }
+	/** Optional refresh never turns a completed note write or session binding into a failure. */
+	async refresh(slug: string): Promise<RefreshOutcome> {
+		let selection: FrontendSelection;
+		try { selection = await this.frontend(); }
+		catch (error) { return { status: "selection-failed", warning: bounded(String(error)) }; }
+		if (selection.resolved === null) return { status: "skipped", reason: selection.configured === "none" ? "disabled" : "no-context" };
+		const frontend = selection.resolved;
+		try { await this.project(slug, frontend); }
+		catch (error) { return { status: "backend-failed", frontend, warning: bounded(String(error)) }; }
+		return { status: "updated", frontend };
+	}
+
+	async project(slug: string, frontend: Frontend): Promise<void> { await this.exec([frontend, "update", "-c", slug]); }
 	async format(): Promise<string> { return this.run(["format"]); }
 }

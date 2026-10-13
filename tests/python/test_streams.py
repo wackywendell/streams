@@ -598,7 +598,7 @@ class CliTest(unittest.TestCase):
                 root,
             )
             show_mock.return_value = stream
-            args = type("Args", (), {"slug": "active-stream", "json": False})()
+            args = type("Args", (), {"slug": "active-stream", "json": False, "exact": False})()
             command_show(args)
             output = print_mock.call_args.args[0]
             self.assertIn("slug:        active-stream", output)
@@ -623,38 +623,42 @@ class CliTest(unittest.TestCase):
             root = Path(tmp)
             stream = show_stream(write_stream(root, "active-stream").stem, root)
             start_mock.return_value = stream
-            args = type("Args", (), {"title": "Active Stream", "json": True, "current": False})()
+            args = build_parser().parse_args(["start", "Active Stream", "--json"])
             command_start(args)
             self.assertEqual(json.loads(print_mock.call_args.args[0])["slug"], "active-stream")
 
     def test_start_current_updates_current_workspace(self) -> None:
-        with tempfile.TemporaryDirectory() as tmp, patch("_streams.cli.start_stream") as start_mock, patch("_streams.cli.update_current_workspace") as update_mock, patch("builtins.print") as print_mock:
+        with tempfile.TemporaryDirectory() as tmp, patch("_streams.cli.start_stream") as start_mock, patch("_streams.cli.selected_current_target") as target_mock, patch("builtins.print") as print_mock:
             root = Path(tmp)
             stream = show_stream(write_stream(root, "active-stream").stem, root)
             workspace = CmuxWorkspace({"ref": "workspace:2", "title": "Old"})
             start_mock.return_value = stream
-            update_mock.return_value = workspace
-            args = type("Args", (), {"title": "Active Stream", "json": False, "current": True})()
+            target = target_mock.return_value
+            target.ref = workspace.display_ref
+            args = build_parser().parse_args(["start", "Active Stream", "-c"])
             command_start(args)
-            update_mock.assert_called_once_with(stream)
+            target_mock.assert_called_once_with("auto")
+            target.update.assert_called_once_with(stream)
             self.assertEqual(print_mock.call_args_list[0].args[0], f"created: active-stream {stream.path}")
             self.assertEqual(print_mock.call_args_list[1].args[0], "updated: workspace:2 active-stream")
 
     def test_rename_current_resolves_ref_and_updates_current_workspace(self) -> None:
-        with patch("_streams.cli.resolve_stream_ref") as resolve_mock, patch("_streams.cli.rename_stream") as rename_mock, patch("_streams.cli.update_current_workspace") as update_mock, patch("builtins.print") as print_mock:
+        with patch("_streams.cli.resolve_stream_ref") as resolve_mock, patch("_streams.cli.rename_stream") as rename_mock, patch("_streams.cli.selected_current_target") as target_mock, patch("builtins.print") as print_mock:
             original = make_stream(Path("/scratch/old-stream.md"), title="Old Stream")
             renamed = make_stream(Path("/scratch/focused-review.md"), title="Focused Review")
             workspace = CmuxWorkspace({"ref": "workspace:2", "title": "Old Stream"})
             resolve_mock.return_value = original
             rename_mock.return_value = renamed
-            update_mock.return_value = workspace
-            args = type("Args", (), {"stream_ref": "Old Stream", "title": "Focused Review", "current": True})()
+            target = target_mock.return_value
+            target.ref = workspace.display_ref
+            args = build_parser().parse_args(["rename", "Old Stream", "Focused Review", "-c"])
 
             self.assertEqual(command_rename(args), 0)
 
             resolve_mock.assert_called_once_with("Old Stream")
             rename_mock.assert_called_once_with(original, "Focused Review")
-            update_mock.assert_called_once_with(renamed)
+            target_mock.assert_called_once_with("auto")
+            target.update.assert_called_once_with(renamed)
             self.assertEqual(print_mock.call_args_list[0].args[0], "renamed: old-stream -> focused-review /scratch/focused-review.md")
             self.assertEqual(print_mock.call_args_list[1].args[0], "updated: workspace:2 focused-review")
 
@@ -689,7 +693,7 @@ class CliTest(unittest.TestCase):
         start_args = parser.parse_args(["s", "Active Stream", "-c"])
         self.assertEqual(start_args.command, "s")
         self.assertEqual(start_args.title, "Active Stream")
-        self.assertTrue(start_args.current)
+        self.assertEqual(start_args.frontend, "auto")
 
         cmux_args = parser.parse_args(["c", "u", "active", "-c"])
         self.assertEqual(cmux_args.command, "c")
@@ -711,7 +715,7 @@ class CliTest(unittest.TestCase):
         rename_args = parser.parse_args(["rename", "Old Stream", "Focused Review", "-c"])
         self.assertEqual(rename_args.stream_ref, "Old Stream")
         self.assertEqual(rename_args.title, "Focused Review")
-        self.assertTrue(rename_args.current)
+        self.assertEqual(rename_args.frontend, "auto")
 
     def test_archive_prints_destination(self) -> None:
         with tempfile.TemporaryDirectory() as tmp, patch("_streams.cli.resolve_stream_ref") as resolve_mock, patch("builtins.print") as print_mock:
@@ -784,7 +788,7 @@ class CliTest(unittest.TestCase):
             root = Path(tmp)
             stream = show_stream(write_stream(root, "active-stream").stem, root)
             resolve_mock.return_value = stream
-            args = type("Args", (), {"slug": "active"})()
+            args = build_parser().parse_args(["resume", "active"])
             self.assertEqual(command_resume(args), 0)
             resolve_mock.assert_called_once_with("active")
             exec_mock.assert_called_once_with(stream)
@@ -793,7 +797,7 @@ class CliTest(unittest.TestCase):
 def run_cli(root: Path, *argv: str, stdin: str = "") -> tuple[int, bytes, str]:
     stdout = io.TextIOWrapper(io.BytesIO(), encoding="utf-8")
     stderr = io.StringIO()
-    with patch("_streams.store.scratch_root", return_value=root), patch("sys.stdout", stdout), patch("sys.stderr", stderr), patch("sys.stdin", io.StringIO(stdin)):
+    with patch("_streams.store.scratch_root", return_value=root), patch("_streams.resolve.scratch_root", return_value=root), patch("sys.stdout", stdout), patch("sys.stderr", stderr), patch("sys.stdin", io.StringIO(stdin)):
         code = cli_main(list(argv))
     stdout.flush()
     return code, stdout.buffer.getvalue(), stderr.getvalue()
@@ -1102,6 +1106,14 @@ class CheckTest(unittest.TestCase):
             path.write_text(path.read_text().replace("title: Example", "slug: active-stream\ntitle: Example"))
             findings = check_path(path)
             self.assertTrue(any("slug" in finding.message for finding in findings))
+
+    def test_frontend_metadata_stays_outside_frontmatter(self) -> None:
+        for frontend in ("cmux", "herdr"):
+            with self.subTest(frontend=frontend), tempfile.TemporaryDirectory() as tmp:
+                path = write_stream(Path(tmp), "active-stream")
+                path.write_text(path.read_text().replace("title: Example", f"{frontend}: {{workspace: native-id}}\ntitle: Example"))
+                findings = check_path(path)
+                self.assertTrue(any(finding.level == "error" and f"field {frontend!r}" in finding.message for finding in findings))
 
     def test_invalid_session_shape_is_error(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
@@ -1471,22 +1483,28 @@ class ResumeTest(unittest.TestCase):
             write_stream(root, "active-stream", title="Active Stream")
             self.assertEqual(resolve_stream_for_resume("active", root=root).slug, "active-stream")
 
-    def test_resolve_resume_without_ref_uses_current_cmux_workspace(self) -> None:
+    def test_current_cmux_infers_resume_stream(self) -> None:
+        from _streams.current import CurrentCmux
+
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
             write_stream(root, "active-stream", title="Active Stream")
             workspace = CmuxWorkspace({"ref": "workspace:2", "title": "Active Stream"})
             cmux = FakeCmux([workspace])
-            self.assertEqual(resolve_stream_for_resume(None, cmux=cmux, root=root).slug, "active-stream")
+            target = CurrentCmux(cmux, cmux.resolve_workspace(None))
+            self.assertEqual(target.infer_stream(root=root).slug, "active-stream")
 
-    def test_resolve_resume_without_ref_fails_clearly(self) -> None:
+    def test_current_cmux_resume_inference_fails_clearly(self) -> None:
+        from _streams.current import CurrentCmux
+
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
             write_stream(root, "active-stream", title="Active Stream", cwd="/repo/active")
             workspace = CmuxWorkspace({"ref": "workspace:2", "title": "unknown", "current_directory": "/repo/missing"})
             cmux = FakeCmux([workspace])
-            with self.assertRaisesRegex(Exception, "could not infer stream to resume"):
-                resolve_stream_for_resume(None, cmux=cmux, root=root)
+            target = CurrentCmux(cmux, cmux.resolve_workspace(None))
+            with self.assertRaisesRegex(Exception, "pass a slug"):
+                target.infer_stream(root=root)
 
 
 if __name__ == "__main__":

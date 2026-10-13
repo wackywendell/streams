@@ -5,21 +5,36 @@ from __future__ import annotations
 from pathlib import Path
 from typing import Sequence
 
+from .config import scratch_root
 from .errors import StreamError
 from .models import Stream
 from .schema import error_messages
-from .slug import normalized_slug, slugify
+from .slug import normalized_slug, slugify, validate_slug
 from .store import check_paths, scan_streams
 
 
-def resolve_stream_ref(ref: str, *, root: Path | None = None) -> Stream:
+def resolve_stream_ref(ref: str, *, root: Path | None = None, exact: bool = False) -> Stream:
     """Resolve a user-facing stream title or slug to one current, valid stream.
 
     Invalid notes are skipped, except that naming one by its exact slug reports
-    why it's invalid rather than matching some other stream.
+    why it's invalid rather than matching some other stream. Exact mode accepts
+    only a validated slug or exact rename alias, without human-reference fallback.
     """
+    if exact:
+        validate_slug(ref)
+    root = (root if root is not None else scratch_root()).expanduser()
+    normalized_ref = ref if exact else normalized_slug(ref)
+    alias = root / f"{normalized_ref}.md"
+    is_alias = alias.is_symlink()
+    if is_alias:
+        try:
+            target = alias.resolve(strict=True)
+        except (OSError, RuntimeError) as exc:
+            raise StreamError(f"stream alias {normalized_ref!r} has no readable target", kind="not-found") from exc
+        if target.parent != root.resolve() or target.suffix != ".md":
+            raise StreamError(f"stream alias {normalized_ref!r} is not a current scratch note", kind="invalid-ref")
+        normalized_ref = target.stem
     streams, invalid = scan_streams(root)
-    normalized_ref = normalized_slug(ref)
 
     for stream in streams:
         if stream.slug == normalized_ref:
@@ -31,6 +46,10 @@ def resolve_stream_ref(ref: str, *, root: Path | None = None) -> Stream:
             f"see it with `streams read {normalized_ref}`",
             kind="invalid-stream",
         )
+    if is_alias:
+        raise StreamError(f"stream alias {ref!r} does not identify a current stream", kind="not-found")
+    if exact:
+        raise StreamError(f"no current stream found for slug {ref!r}", kind="not-found")
 
     title_matches = [stream for stream in streams if slugify(stream.title) == normalized_ref]
     if len(title_matches) == 1:

@@ -6,28 +6,15 @@ import os
 from pathlib import Path
 
 from .agent_sessions import AgentSessionCommand, latest_session_command
-from .cmux import CmuxClient, stream_cwd, stream_for_workspace_hint
 from .errors import StreamError
 from .models import Stream
+from .projection import stream_cwd
 from .resolve import resolve_stream_ref
 
 
-def resolve_stream_for_resume(
-    ref: str | None,
-    *,
-    cmux: CmuxClient | None = None,
-    root: Path | None = None,
-) -> Stream:
-    root_args = {"root": root} if root is not None else {}
-    if ref is not None:
-        return resolve_stream_ref(ref, **root_args)
-
-    cmux = cmux or CmuxClient()
-    workspace = cmux.resolve_workspace(None)
-    try:
-        return stream_for_workspace_hint(workspace, root=root)
-    except StreamError as exc:
-        raise StreamError(f"could not infer stream to resume from current CMUX workspace: {exc}") from exc
+def resolve_stream_for_resume(ref: str, *, root: Path | None = None) -> Stream:
+    """Resolve an explicit reference without consulting a frontend."""
+    return resolve_stream_ref(ref, **({"root": root} if root is not None else {}))
 
 
 def resume_command_for_stream(stream: Stream) -> AgentSessionCommand:

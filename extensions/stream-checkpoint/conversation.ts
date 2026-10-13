@@ -9,8 +9,7 @@ import { feedbackPrompt } from "./review.ts";
 import type { Author, Feedback } from "./review.ts";
 import { messageText, tagMessage, transcript } from "./view.ts";
 import type { PanelState, UnsentFeedback } from "./view.ts";
-import type { StreamCli } from "./streams.ts";
-import type { CmuxOutcome } from "./receipt.ts";
+import type { RefreshOutcome, StreamCli } from "./streams.ts";
 
 type Options = {
 	pending: Pending;
@@ -22,9 +21,9 @@ type Options = {
 	model: Model<any>;
 	thinkingLevel?: Parameters<typeof createCheckpointSession>[0]["thinkingLevel"];
 	systemPrompt: string;
-	cli: Pick<StreamCli, "read" | "update" | "project" | "config">;
+	cli: Pick<StreamCli, "read" | "update" | "refresh">;
 	changed(): void;
-	applied(summary: string, cmux: CmuxOutcome, warning?: string): void;
+	applied(summary: string, refresh: RefreshOutcome): void;
 };
 
 /** Owns model operations and durable state; the terminal edits only unsent feedback, through `editFeedback`. */
@@ -233,12 +232,11 @@ export class CheckpointConversation {
 			const draft = this.state.draft;
 			if (!draft) throw new Error("No draft to apply");
 			const o = this.options;
-			const config = await o.cli.config();
-			const result = await applyDraft(draft, draft.revision, { read: (slug) => o.cli.read(slug), update: (...args) => o.cli.update(...args), project: config.cmux.enabled ? () => o.cli.project(draft.slug) : undefined });
+			const result = await applyDraft(draft, draft.revision, { read: (slug) => o.cli.read(slug), update: (...args) => o.cli.update(...args), project: () => o.cli.refresh(draft.slug) });
 			if (result.validationError) { this.state.notice = { level: "error", text: result.validationError }; return; }
 			this.finished = true;
 			clearPending(o.agentDir, o.pending.ownerId, o.pending.slug);
-			o.applied(draft.summary ?? "Scratch updated", result.projectionWarning ? "failed" : config.cmux.enabled ? "updated" : "disabled", result.projectionWarning);
+			o.applied(draft.summary ?? "Scratch updated", result.refresh!);
 		});
 	}
 

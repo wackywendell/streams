@@ -41,9 +41,9 @@ Required fields:
 - `created`: creation date, `YYYY-MM-DD`.
 - `updated`: last meaningful stream-state update date, `YYYY-MM-DD`. `streams update` sets it to today whenever it changes the note. When editing the file directly, update it for handoffs, checkpoints, status changes, and durable pickup-context changes; do not churn it for typo-only edits.
 - `description`: one-sentence overall task description. Longer than `state`, stable across handoffs, and focused on the stream goal.
-- `state`: short current display state, roughly 5-12 words. This is used in compact displays and CMUX descriptions. Put transient workflow phases here, such as `PR in review; waiting for reviewer feedback.`
+- `state`: short current display state, roughly 5-12 words. This is used in compact displays, CMUX descriptions and Herdr metadata. Put transient workflow phases here, such as `PR in review; waiting for reviewer feedback.`
 - `repo`: local root directory of the main/default checkout, or `null` when the stream has no repository. A path must not be an `owner/repo` identity or multi-repo description.
-- `cwd`: directory where work should resume. Inside a repository, use the jj workspace or Git worktree root, not an arbitrary subdirectory. Without a repository, use the current working directory. AI sessions and CMUX workspaces start here; this field cannot be null.
+- `cwd`: directory where work should resume. Inside a repository, use the jj workspace or Git worktree root, not an arbitrary subdirectory. Without a repository, use the current working directory. AI sessions and frontend workspaces start here; this field cannot be null.
 
 Inside a repository, `repo` and `cwd` have equal canonical paths for the main checkout and differ for a dedicated workspace or worktree. `streams start` discovers both roots. Outside jj or Git, it records `repo: null`, `vcs: null` and the current directory as `cwd`. Both null fields must be present; missing fields and inconsistent pairs are errors. `streams check` accepts intentional repository absence without a warning. Paths prefer a matching direct home-directory symlink such as `~/work`, then `~` for paths under home.
 - `vcs`: `jj` or `git`, or `null` together with `repo: null`.
@@ -70,7 +70,7 @@ Issue `url` values must look like `https://github.com/<owner>/<repo>/issues/<num
 Do not include derived or projection-specific fields in frontmatter:
 
 - `slug`: derived from the filename stem.
-- `cmux`: CMUX state is a projection and can be stale or workspace-local.
+- `cmux` or `herdr`: native metadata and workspace associations stay outside notes.
 - `current`: currentness is a view/query, not stream state.
 - `taskwarrior`: legacy task database state is not part of scratch-first streams.
 
@@ -155,18 +155,38 @@ Use `streams config` to see effective settings, the config path and which values
 streams config get notes.root
 streams config set notes.root ~/notes
 streams config set obsidian.vault notes
-streams config set cmux.enabled true
+streams config set frontend.mode auto
 ```
 
 | Key | Default | Purpose |
 | --- | --- | --- |
 | `notes.root` | `~/streams` | Absolute notes path; scratch, archive and artifact paths derive from it |
-| `obsidian.vault` | `streams` | Vault name used in CMUX note links |
-| `cmux.enabled` | `false` | Enables explicit CMUX refresh by checkpoint clients |
+| `obsidian.vault` | `streams` | Vault name used for scratch-note links |
+| `frontend.mode` | `auto` | Optional projection policy: `auto`, `cmux`, `herdr` or `none` |
 
-Overrides live in `$XDG_CONFIG_HOME/streams/config.json`, or `~/.config/streams/config.json` when the environment variable is unset. `set` validates values and atomically replaces the file. Boolean values must be `true` or `false`. Unknown keys and malformed files are errors, not defaults.
+Overrides live in `$XDG_CONFIG_HOME/streams/config.json`, or `~/.config/streams/config.json` when the environment variable is unset. `set` validates values and atomically replaces the file, preserving a managed symlink. Unknown keys, invalid values and malformed files are errors, not defaults.
 
-These settings are shared workflow settings only. Pi models and hotkeys stay in the extension's separate `checkpoint.json`. `cmux.enabled` does not make every `streams update` or `start` call run CMUX; a checkpoint client follows a successful write with `streams cmux update -c <slug>` when enabled. Explicit CMUX commands and `--current` remain available regardless of this preference.
+Read legacy `cmux.enabled` only as migration input: stored `true` maps to `cmux`, `false` to `none`, and absence to `auto`. Canonical output contains only `frontend.mode`. Setting that key atomically removes the legacy section. Conflicting stored selectors fail; matching redundant selectors may be canonicalized by setting `frontend.mode`.
+
+```json
+{"notes":{"root":"/home/user/streams"},"obsidian":{"vault":"streams"},"frontend":{"mode":"auto"}}
+```
+
+Note operations validate their required notes-root settings independently of optional frontend policy. Invalid policy can therefore warn after a valid save. Malformed/unreadable JSON or invalid note-root settings still prevent locating notes safely.
+
+Pi models and hotkeys stay in the extension's separate `checkpoint.json`. Plain `streams update` and selector-free start/rename do not project. Pi resolves optional projection after successful creation/binding or approved note save. Selection and native failures warn without undoing or repeating the write. Explicit named frontend commands ignore the automatic-projection preference.
+
+### Frontend selection
+
+`streams frontend get --json` loads configured policy and caller context without contacting native servers:
+
+```json
+{"configured":"auto","requested":null,"resolved":"herdr"}
+```
+
+A missing request or `-f auto` follows configuration. Only effective `auto` detects context: nonempty `CMUX_WORKSPACE_ID`, or `HERDR_ENV=1` plus nonempty `HERDR_PANE_ID`. A socket path alone is not context. Incomplete Herdr context or both recognized frontends is an error; select a named frontend to avoid ambiguity. Named requests override configuration. `none`, or `auto` with no context, resolves to `null`.
+
+Optional refresh skips a null resolution. A mandatory current-workspace action fails before note changes. Named current actions still require that frontend's caller context; configuration never permits using another client's focus.
 
 ## CLI Notes
 
@@ -176,17 +196,27 @@ These settings are shared workflow settings only. Pi models and hotkeys stay in 
 
 Other commands skip invalid notes the same way. Naming one by its exact slug fails with an `invalid-stream` error that points to `streams read`.
 
+`streams show <slug> --exact [--json]` accepts a canonical slug or an exact same-scratch rename alias. It does not normalize titles or fall back to substring matches. Broken, external, archived and cyclic alias targets fail. Use this contract for stored identities; ordinary `show` retains human-friendly reference matching.
+
 With `--json`, a failing command prints `{"error": {"kind", "message", "candidates"}}` on stdout and exits 2. `kind` is one of `not-found`, `ambiguous` (with the matching slugs in `candidates`), `invalid-ref`, `invalid-stream` or `error`. Without `--json`, the message goes to stderr.
 
-`streams start "Title"` creates a scratch file only. `streams start "Title" --current` or `streams s "Title" -c` creates the scratch file and projects it onto the current CMUX workspace.
+`streams start "Title"` creates a scratch file only. Generic start, rename and slug-free resume accept one selector:
+
+| Selector | Current-workspace action |
+| --- | --- |
+| `-c`, `--current`, `-f auto`, `--frontend auto` | Follow configured frontend policy |
+| `-f cmux` | Use the caller's CMUX workspace |
+| `-f herdr` | Use the caller's Herdr workspace |
+
+Named selectors need no additional `-c`. Bare `-f`, repeated or combined forms, and start dry-run with a selector are errors. Start/rename preflight selection and target before writes. A later projection failure retains the note and reports its actual slug/path and target, without retrying.
 
 `streams update [-n|--dry-run] <stream-ref>` reads a complete Markdown document from stdin and validates it against the existing stream's filename and frontmatter schema. Dry-run leaves scratch unchanged; otherwise it replaces the existing file with the input, setting `updated` to today and adding it if missing. Only that line changes, and input identical to the file writes nothing. For a reviewed draft, use `--if-match <sha256>` with the SHA-256 of the original file's UTF-8 bytes to reject stale updates. An invalid note can be replaced, with a valid document, only when `--if-match` is given, so the caller has read what it's overwriting. It does not create a stream; use `streams start` for that. `--json` reports the target, whether a write was requested, the SHA-256 of the note as written (or as a dry-run would write it), and schema warnings.
 
-`streams rename <stream-ref> "New Title"` renames the scratch file, title, leading heading, and artifact directory. It leaves relative symlinks at the old scratch and artifact paths for compatibility. Rename symlinks are not separate streams and are omitted from list and check operations. Use `--current` or `-c` to update the current CMUX workspace after renaming.
+`streams rename <stream-ref> "New Title"` renames the scratch file, title, leading heading, and artifact directory. It leaves relative symlinks at the old scratch and artifact paths for compatibility. Rename symlinks are not separate streams and are omitted from list and check operations. Use one current-workspace selector to update the selected frontend after renaming. Exact old-slug aliases resolve to the current canonical note.
 
-`streams resume [slug]` starts the last session listed in `sessions`. Without a slug, it infers the stream from an exact current CMUX workspace title or from a unique dedicated `cwd` match. It does not infer a stream from the main checkout or a repo-less directory because multiple streams can share it. If `sessions` is empty, start a new AI session intentionally and record it in scratch.
+`streams resume <stream-ref>` starts the last session listed in `sessions`, independently of a frontend, and rejects a selector. Without a reference, resume requires a current-workspace selector. CMUX uses an exact workspace title or unique dedicated `cwd`. Herdr uses its explicit workspace association first; only an unassociated workspace uses those hints. Main checkouts, repo-less directories and ambiguous hints do not identify a stream. If `sessions` is empty, start a new AI session intentionally and record it in scratch.
 
-`cwd` must exist and be a directory for `streams resume [slug]` and `streams cmux open <slug>`. `streams resume [slug]` changes into `cwd` before executing the latest recorded AI session. If the agent's saved session directory differs from scratch `cwd`, choose the scratch/current directory unless you intentionally want the old session directory.
+`cwd` must exist and be a directory for resume and either frontend's open command. Terminal resume changes into `cwd` before executing the latest recorded AI session. If the agent's saved session directory differs from scratch `cwd`, choose the scratch/current directory unless you intentionally want the old session directory.
 
 `streams cmux` can be abbreviated as `streams c`. `open` and `update` can be abbreviated as `o` and `u`. Use `-c` for `--current` and `-w` for `--workspace`.
 
@@ -203,4 +233,18 @@ CMUX is a projection of generic stream state:
 
 `streams cmux open <slug>` creates a new CMUX workspace using the stream `cwd` and the latest recorded session command when present.
 
-`streams cmux update -c <slug>` updates the current title, description, and color from scratch.
+`streams cmux update -c <slug>` updates the caller's title, description and color from scratch. Current lookup matches native ID/ref only, never a title or global GUI focus. Outside CMUX, pass `--workspace`. Explicit workspace selectors may match ID, ref or title; ambiguous matches fail.
+
+## Herdr projection
+
+`streams herdr update [slug] [-c | -w <workspace-id>]` updates an existing workspace without changing focus, layout or agent state. Current targeting uses the calling pane's live workspace, even after pane movement. Outside Herdr, pass an explicit workspace ID. With no slug, use the existing workspace association; only an unassociated workspace permits conservative label/cwd inference.
+
+The association is a real JSON file containing `{"stream":"canonical-slug"}`, under `$XDG_STATE_HOME/streams/herdr/` or `~/.local/state/streams/herdr/`. Actual server socket/session and native workspace ID determine its namespace. The links pane and current-stream lookup share this exact identity. Rename aliases resolve to canonical current notes. A malformed association, invalid slug, unavailable note or unsafe alias fails without label/cwd fallback. Repair it with an explicit stream update.
+
+Publish the validated association atomically before updating the workspace label and `stream_slug`, `stream_status`, `stream_state` metadata. If publication fails, do not attempt native display changes. If a later native command fails, retain the new association and report the possibly stale display. Neither failure repeats a scratch write. Pi's session binding is independent; projection does not rename or switch its running agent.
+
+`streams herdr open <slug>` is a macOS-only prototype requiring compatible Herdr 0.9.3 or newer. It creates a workspace at recorded cwd, resumes the latest supported recorded session or leaves a shell, and places a small links pane beneath the root terminal in its working tab. The links pane does not steal root focus. It is movable and tab-local, not a locked workspace-wide dock.
+
+Explicit opening links a missing bundled `streams.links` plugin, reuses a matching enabled registration, and refuses conflicting or disabled registrations. Its launcher pins the opening interpreter, loaded import root, home and configuration directory. Partial startup errors list created resources and attempted agent names; inspect native state rather than blindly repeat opening.
+
+The links pane refreshes its exact note reference. Press `n` to reread the association/note/vault and open Obsidian. Terminal link activation is restricted to HTTP(S) issue/PR URLs. A failed note lookup leaves nothing stale available to open. Refresh never creates panes/workspaces, starts agents or changes focus. Checkout management, live-agent migration and restart automation are outside this prototype.
