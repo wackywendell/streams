@@ -2,6 +2,9 @@
 
 ## Unreleased
 
+- `/checkpoint` keeps the chooser's open or minimized state when drafting begins. Explicitly minimizing either stage keeps it closed after recommendations or a draft finish
+- Animated busy indicators now appear in the stream chooser and checkpoint card, including when the draft panel is minimized. Card frames do not add session entries; off-screen frames pause in regular terminal mode to avoid repeated scrollback redraws
+
 - Pi agent prompting is configurable: stream selection/creation defaults to `manual`, while checkpoint prompting defaults to `low`, with `manual`, `medium` and `high` available. The tools remain available; these settings guide initiation rather than enforce permissions
 - `/checkpoint:settings` and Alt+S in the chooser or draft panel open the same settings editor. Save preserves other config fields and updates the next agent turn without reload; Cancel leaves the file unchanged and returns to the same panel
 

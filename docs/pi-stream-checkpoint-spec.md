@@ -21,9 +21,9 @@ Agreed behavior:
 - all non-archived streams remain available, with 20 shown initially
 - the LLM may recommend an existing stream or creating a named new stream
 - confirmed creation runs `streams start` immediately and binds the returned stream, independently of checkpoint approval
-- fresh drafting starts in the background; stream selection and saved unfinished work open their UI immediately
+- fresh drafting normally starts in the background; a draft opened from the chooser inherits its open or minimized state
 - a user-only transcript card records the invocation snapshot and updates when the draft or reply is ready
-- completion opens the panel only if the main composer is empty, whether or not the main agent is still running
+- automatic completion reveal requires an empty main composer; an explicit minimize persists until the user reopens the window
 - the side agent can discuss and investigate, rather than following a fixed verification checklist
 - Chat and Review are separate tabs; Tab switches between them without losing feedback or scroll position
 - annotations remain local until sent as one batch, optionally with overall chat feedback
@@ -155,7 +155,9 @@ If the stream was renamed, follow a verifiable CLI compatibility alias to its ca
 
 ### Unbound session without a reference
 
-Create the centered chooser hidden while recommendations are generated, with the footer showing `Checkpoint · Finding streams · Alt+P`. When they arrive, show it if the main editor is empty; otherwise leave it minimized with `Checkpoint · Choose stream · Alt+P`, the same rule as a finished draft reply. The focus shortcut shows or hides the chooser, and Esc cancels it. Opened early, it lists streams and says `Finding recommendations…` until they fill in. Choosing or cancelling aborts the recommendation request, and a later result changes nothing. After selection, fresh drafting starts in the background; saved unfinished work opens the right-anchored conversation panel. Its existing-stream choices come from `streams list --json`, never from model-generated names.
+Create the centered chooser hidden while recommendations are generated, with the footer showing `Checkpoint · Finding streams · Alt+P`. When they arrive, show it if the main editor is empty, unless the user explicitly minimized it. Otherwise leave it minimized with `Checkpoint · Choose stream · Alt+P`. The focus shortcut shows or hides the chooser, and Esc cancels it. Opened early, it lists streams with an animated `Finding recommendations…` indicator. Lookups and creation also show animated busy indicators. Choosing or cancelling aborts the recommendation request, and a later result changes nothing.
+
+The `/checkpoint` chooser and draft panel share one visibility state. Selecting from an open chooser opens the draft panel before the first reply. Minimizing during lookup or creation keeps the following draft panel minimized, including when resuming saved work. Its existing-stream choices come from `streams list --json`, never from model-generated names. The `select_stream` and `create_stream` tools still bind without starting a draft.
 
 The LLM can use the current Pi conversation and stream metadata to recommend:
 
@@ -209,13 +211,13 @@ Capture the main-branch context and system prompt when opening or switching a ch
 
 Update the card in place as setup and drafting progress. Show `Draft N ready` after a completed response with a draft, or `Reply ready` without one. Show `Needs attention` for errors and `Stopped` for interrupted output. The footer repeats readiness while the panel is hidden. Alt+P can open the active panel during drafting or after completion.
 
-Keep a fresh drafting panel hidden initially. Open stream selection and saved unfinished work without waiting for a new response. When a side response finishes successfully, check the main composer once. Open the panel if its text is exactly empty, including while the main agent is running. Otherwise, leave the composer and focus unchanged. Clearing the composer later does not trigger an opening. Stopping, failing or shutting down a response does not auto-open the panel.
+Fresh drafting without a chooser starts hidden. A draft following the chooser inherits its visibility; saved unfinished work otherwise opens without waiting for a new response. Automatic reveal is allowed only before the user opens or minimizes the window. When a side response finishes successfully, check the main composer once. Reveal an untouched window if its text is exactly empty, including while the main agent is running. An explicit minimize persists after completion until the user reopens the window. Clearing the composer later does not trigger an opening. Stopping, failing or shutting down a response does not auto-open the panel.
 
 Ctrl+O expands the card to show the snapshot timestamp, main-session ID, source tree entry, supplied instructions and omitted incomplete-message count. Store lifecycle changes as append-only custom entries and render their latest state at the original marker. These entries stay outside model context; the separate Apply receipt still shares its minimal summary at the time of the write. Reload reconstructs saved status without starting work; interrupted runs must not remain labelled as drafting.
 
 Refresh captures a new snapshot and adds a new source marker. Simply focusing an already open checkpoint neither refreshes context nor adds a marker.
 
-Use state changes, not an animated transcript spinner. Pi's regular terminal mode redraws the transcript when an updated card is above the visible viewport; fullscreen mode updates its managed transcript.
+Animate the active card during recommendation lookup, stream lookup or creation, and drafting, including when the panel is minimized. Waiting for the user to choose is idle and stops the spinner. Frames do not append session entries. Stop animation when work settles or the session shuts down. In regular terminal mode, freeze a spinner line outside the visible viewport: changing it would repeatedly clear and redraw scrollback. Real status changes still update the card. Fullscreen mode updates its managed transcript.
 
 ## Side conversation
 
@@ -506,9 +508,10 @@ Tests must use temporary scratch files and mocked CLI, model, and CMUX boundarie
 | Different explicit stream | Rebind only after successful resolution or creation and handle pending panel work |
 | Restart or tree navigation | Restore the main session's latest binding; do not inherit another session ID's binding |
 | Invocation snapshot | Record the source before setup; recommendations and drafting exclude later main-session messages |
-| Fresh drafting | Keep the panel hidden; show a user-only transcript marker and footer status |
-| Saved unfinished work | Open immediately, preserving draft, chat and unsent feedback |
-| Completion with an empty composer | Open the panel even if the main agent is still running |
+| Chooser to drafting | Inherit open or minimized state; an open chooser leads straight to an open draft panel |
+| Fresh drafting without a chooser | Keep the panel hidden; show a user-only transcript marker and footer status |
+| Saved unfinished work | Open immediately unless the chooser was explicitly minimized; preserve draft, chat and unsent feedback |
+| Completion with an empty composer | Reveal an untouched window even if the main agent is still running; never undo an explicit minimize |
 | Completion with composer text | Keep focus and text untouched; later clearing does not auto-open |
 | Status replay | Update the original card, persist status outside model context and distinguish interrupted work after reload |
 | Main agent is busy | Side discussion works without steering or aborting the main run |
@@ -518,7 +521,9 @@ Tests must use temporary scratch files and mocked CLI, model, and CMUX boundarie
 | Drafting/editing exclusion | Drafting blocks chat and annotation edits; reading, minimizing and Stop remain available |
 | Submitted feedback | Show the accepted user message during generation with a collapsed annotation count; the model receives full evidence |
 | Chat and Review tabs | Switching tabs preserves chat input, unfinished comments and scroll position |
-| Minimized panel | Escape and Alt+P do not stop the side agent; main-session submissions run normally |
+| Minimized panel | Escape and Alt+P do not stop side work; completion leaves it minimized; main-session submissions run normally |
+| Busy chooser | Animate finding, lookup and creation indicators; stop timers on settlement, cancellation or disposal |
+| Busy checkpoint card | Animate while the panel is minimized without appending frames to the session; freeze off-screen frames in regular mode |
 | Refresh succeeds | Preserve feedback and draft; show informational status rather than “Needs attention” |
 | Apply | Write exactly the approved revision, validate, update binding if needed, post slug/change-summary receipt without triggering the main agent, and close |
 | Invocation after Apply | Start a fresh checkpoint chat with current main context and updated scratch |
@@ -544,7 +549,7 @@ Tests must use temporary scratch files and mocked CLI, model, and CMUX boundarie
 | `checkpoint` tool on a bound session | Start minimized with no chooser; return `started` at once |
 | `checkpoint` tool while a checkpoint is open | Return `already-open`, `applying` or `awaiting-stream-choice`; send instructions only to an idle checkpoint |
 | `checkpoint` tool with no binding | Return `needs-stream`, deferring to prompting policy; never rebind or open a chooser |
-| Unbound `/checkpoint` while the user types | Find recommendations with no loader; leave the chooser minimized when they arrive |
+| Unbound `/checkpoint` while the user types | Find recommendations without blocking main input; leave the chooser minimized when they arrive |
 | `select_stream` with a slug | Star it without calling the selector model; bind only on the user's choice; post a receipt on choice or cancel |
 | `select_stream` with a title, prefix or unknown slug | Fail with close matches and no chooser |
 | `select_stream` naming the bound stream | Return `already-bound` without a chooser |

@@ -81,6 +81,8 @@ type Run = {
 	systemPrompt: string;
 	cancellation: AbortController;
 	phase: Phase;
+	/** Automatic reveal is allowed only until the user opens or minimizes this run. */
+	visibility: "auto" | "visible" | "minimized";
 	marker?: string;
 	/** Set once the run has reported its own end, so it is not also marked saved or cancelled. */
 	finalized?: boolean;
@@ -112,7 +114,7 @@ export default function registerCheckpoint(pi: ExtensionAPI, testDeps: { agentDi
 	pi.on("session_start", (_event, ctx) => journal.restore(ctx.sessionManager.getEntries()));
 
 	const newRun = (kind: Run["kind"], ctx: ExtensionContext, snapshot: Run["snapshot"], marker?: string): Run =>
-		({ kind, ctx, ownerId: ctx.sessionManager.getSessionId(), snapshot, systemPrompt: ctx.getSystemPrompt(), cancellation: new AbortController(), phase: { kind: "starting" }, marker });
+		({ kind, ctx, ownerId: ctx.sessionManager.getSessionId(), snapshot, systemPrompt: ctx.getSystemPrompt(), cancellation: new AbortController(), phase: { kind: "starting" }, visibility: "auto", marker });
 	const alive = (run: Run) => !run.cancellation.signal.aborted && run.ctx.sessionManager.getSessionId() === run.ownerId;
 	const mark = (run: Run, status: Parameters<typeof journal.update>[1]) => { if (run.marker) journal.update(run.marker, status); };
 	/** Lookups take no focus, and cancellation abandons them at once, so shutdown never waits on a slow CLI call. */
@@ -137,10 +139,19 @@ export default function registerCheckpoint(pi: ExtensionAPI, testDeps: { agentDi
 			: `Checkpoint · ${phase.finding ? "Finding streams" : "Choose stream"} · ${shortcutLabel(focusShortcut)}`;
 		run.ctx.ui.setStatus("checkpoint", value ? run.ctx.ui.theme.fg("accent", value) : undefined);
 	};
+	const minimize = (run: Run) => {
+		run.visibility = "minimized";
+		const phase = run.phase;
+		if (phase.kind === "starting") return;
+		phase.handle?.setHidden(true);
+		if (phase.kind === "drafting") phase.panel?.dispose();
+		updateStatus(run);
+	};
 	const show = (run: Run) => {
 		if (settings?.ownerId === run.ownerId) { settings.handle?.focus(); return; }
 		const phase = run.phase;
 		if (phase.kind === "starting") return;
+		run.visibility = "visible";
 		phase.handle?.setHidden(false);
 		phase.handle?.focus();
 		updateStatus(run);
@@ -186,6 +197,7 @@ export default function registerCheckpoint(pi: ExtensionAPI, testDeps: { agentDi
 		},
 	});
 	pi.on("session_shutdown", async () => {
+		journal.dispose();
 		const run = active;
 		run?.cancellation.abort();
 		if (settings) await closeSettings(settings);
@@ -228,17 +240,18 @@ export default function registerCheckpoint(pi: ExtensionAPI, testDeps: { agentDi
 		let chooser: StreamChooser | undefined;
 		const reveal = () => {
 			if (run.phase !== phase || !phase.handle || !recommendations || !alive(run) || settings?.ownerId === run.ownerId) return;
-			if (ctx.ui.getEditorText() === "") show(run);
+			if (run.visibility === "auto" && ctx.ui.getEditorText() === "") show(run);
 			else updateStatus(run);
 		};
 		const choosing = ctx.ui.custom<ChosenStream | undefined>((tui, theme, _keys, done) => {
+			journal.attach(tui);
 			const finish = (choice: ChosenStream | undefined) => finishOverlay(run, () => done(choice));
 			phase.dismiss = () => finish(undefined);
 			chooser = new StreamChooser(tui, theme, streams, cli, finish, recommendations ?? { existing: [] }, options.ref ?? "",
-				{ shortcut: focusShortcut, minimize: () => { phase.handle?.setHidden(true); updateStatus(run); }, settings: () => { void showSettings(ctx); }, finding: phase.finding, reason: options.reason, create: options.create, drafting: run.kind === "checkpoint" });
+				{ shortcut: focusShortcut, minimize: () => minimize(run), settings: () => { void showSettings(ctx); }, finding: phase.finding, busyChanged: (working) => { if (alive(run) && run.phase === phase) mark(run, { label: "Choosing stream", working }); }, reason: options.reason, create: options.create, drafting: run.kind === "checkpoint" });
 			return chooser;
 		}, { overlay: true, overlayOptions: { anchor: "center", width: "78%", minWidth: 64, margin: 2, maxHeight: "80%" },
-			onHandle: (handle) => { phase.handle = handle; handle.setHidden(true); updateStatus(run); reveal(); } });
+			onHandle: (handle) => { phase.handle = handle; handle.setHidden(run.visibility !== "visible"); updateStatus(run); reveal(); } });
 		const stopFinding = new AbortController();
 		if (!recommendations) {
 			void recommendStreams(ctx, streams, selectorModel, run.snapshot, AbortSignal.any([run.cancellation.signal, stopFinding.signal]))
@@ -278,9 +291,9 @@ export default function registerCheckpoint(pi: ExtensionAPI, testDeps: { agentDi
 	}
 
 	/**
-	 * Opens the checkpoint conversation for the bound `stream` and waits until its panel closes. The panel starts
-	 * hidden when `startHidden` is set, or until the first reply of a fresh conversation is ready. `author` marks
-	 * `message` as not the user's.
+	 * Opens the checkpoint conversation for the bound `stream` and waits until its panel closes. Inherit any explicit
+	 * chooser visibility; otherwise start hidden when `startHidden` is set or until a fresh conversation's first reply.
+	 * `author` marks `message` as not the user's.
 	 */
 	async function draft(run: Run, cli: StreamCli, stream: Stream, message: string, options: { author?: Author; startHidden: boolean }): Promise<void> {
 		const { ctx } = run;
@@ -308,7 +321,7 @@ export default function registerCheckpoint(pi: ExtensionAPI, testDeps: { agentDi
 				const completed = previousActivity === "drafting" && state.activity === null;
 				previousActivity = state.activity;
 				const last = (pending.messages as AgentMessage[]).at(-1);
-				if (completed && state.notice?.level !== "error" && last?.role === "assistant" && last.stopReason === "stop" && ctx.ui.getEditorText() === "") show(run);
+				if (completed && run.visibility === "auto" && state.notice?.level !== "error" && last?.role === "assistant" && last.stopReason === "stop" && ctx.ui.getEditorText() === "") show(run);
 				phase.panel?.refresh(); updateStatus(run);
 			},
 			applied: (summary, cmux, warning) => {
@@ -325,6 +338,7 @@ export default function registerCheckpoint(pi: ExtensionAPI, testDeps: { agentDi
 		run.phase = phase;
 		try {
 			await ctx.ui.custom<void>((tui, theme, _keys, done) => {
+				journal.attach(tui);
 				phase.dismiss = () => finishOverlay(run, done);
 				phase.panel = new CheckpointPanel(tui, theme, conversation.state, {
 					send: () => { void conversation.send(); },
@@ -343,7 +357,7 @@ export default function registerCheckpoint(pi: ExtensionAPI, testDeps: { agentDi
 						mark(run, { label: "Cleared", slug, closed: true });
 						phase.dismiss?.();
 					},
-					focusMain: () => { phase.panel?.dispose(); phase.handle?.setHidden(true); updateStatus(run); },
+					focusMain: () => minimize(run),
 					settings: () => { void showSettings(ctx); },
 					editFeedback: (change) => { conversation.editFeedback(change); },
 				}, focusShortcut);
@@ -351,7 +365,8 @@ export default function registerCheckpoint(pi: ExtensionAPI, testDeps: { agentDi
 			}, { overlay: true, overlayOptions: { anchor: "right-center", width: "64%", minWidth: 60, margin: { right: 1 }, maxHeight: 36 },
 				onHandle: (handle) => {
 					phase.handle = handle;
-					if (conversation.isFresh || options.startHidden) handle.setHidden(true);
+					if (run.visibility === "visible" || (run.visibility === "auto" && !conversation.isFresh && !options.startHidden)) show(run);
+					else handle.setHidden(true);
 					void conversation.start(message, run.snapshot, options.author);
 					updateStatus(run);
 				} });
@@ -380,6 +395,7 @@ export default function registerCheckpoint(pi: ExtensionAPI, testDeps: { agentDi
 				const choice = await choose(run, cli, streams, { ref });
 				if (!choice || !alive(run)) return;
 				({ stream, created } = choice);
+				mark(run, { label: "Starting", working: true, slug: stream.slug });
 			}
 			if (!await bind(run, cli, shared.cmux.enabled, stream, created, switchConfirmed)) return;
 			await draft(run, cli, stream, message, { startHidden: false });

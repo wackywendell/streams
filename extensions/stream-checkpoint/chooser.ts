@@ -1,4 +1,4 @@
-import { Input, matchesKey, truncateToWidth, visibleWidth, wrapTextWithAnsi } from "@earendil-works/pi-tui";
+import { Input, Loader, matchesKey, truncateToWidth, visibleWidth, wrapTextWithAnsi } from "@earendil-works/pi-tui";
 import type { Component, TUI } from "@earendil-works/pi-tui";
 import type { Theme } from "@earendil-works/pi-coding-agent";
 import type { Recommendations } from "./core.ts";
@@ -19,6 +19,7 @@ export class StreamChooser implements Component {
 	private creatingReason?: string;
 	private closed = false;
 	private busy = false;
+	private loader?: Loader;
 	private moved = false;
 	private status = "↑↓ choose · Enter select · Ctrl+N Write your own";
 
@@ -35,7 +36,7 @@ export class StreamChooser implements Component {
 		 * `reason` says why the chooser opened. `create` opens it editing the suggested new stream, with Esc back to the list.
 		 * `drafting` says a checkpoint draft follows the choice.
 		 */
-		private options: { shortcut?: string; minimize?: () => void; settings?: () => void; finding?: boolean; reason?: string; create?: boolean; drafting?: boolean } = {},
+		private options: { shortcut?: string; minimize?: () => void; settings?: () => void; finding?: boolean; busyChanged?: (busy: boolean) => void; reason?: string; create?: boolean; drafting?: boolean } = {},
 	) {
 		fill(this.input, initialRef);
 		const suggested = recommendations.newStream;
@@ -57,11 +58,25 @@ export class StreamChooser implements Component {
 				this.finish({ stream: await this.cli.start(title), created: true });
 			});
 		};
+		this.syncLoader();
+	}
+
+	private syncLoader(): void {
+		if (!this.closed) this.options.busyChanged?.(this.busy || !!this.options.finding);
+		if (this.closed || (!this.busy && !this.options.finding)) {
+			this.loader?.stop();
+			this.loader = undefined;
+			return;
+		}
+		const message = this.busy ? this.creating ? "Creating stream…" : "Working…" : "Finding recommendations…";
+		if (this.loader) this.loader.setMessage(message);
+		else this.loader = new Loader(this.tui, (text) => this.theme.fg("accent", text), (text) => text, message);
 	}
 
 	setRecommendations(recommendations: Recommendations): void {
 		this.recommendations = recommendations;
 		this.options.finding = false;
+		this.syncLoader();
 		if (!this.moved) this.selected = 0;
 		if (!this.closed) this.tui.requestRender();
 	}
@@ -95,14 +110,15 @@ export class StreamChooser implements Component {
 
 	private finish(choice: ChosenStream | undefined): void {
 		if (this.closed) return;
-		this.closed = true;
+		this.dispose();
 		this.done(choice);
 	}
 
 	private run(work: () => Promise<void>): void {
 		if (this.busy || this.closed) return;
 		this.busy = true;
-		void work().catch((error) => { this.status = String(error); }).finally(() => { this.busy = false; if (!this.closed) this.tui.requestRender(); });
+		this.syncLoader();
+		void work().catch((error) => { this.status = String(error); }).finally(() => { this.busy = false; this.syncLoader(); if (!this.closed) this.tui.requestRender(); });
 	}
 
 	handleInput(data: string): void {
@@ -135,9 +151,9 @@ export class StreamChooser implements Component {
 		this.tui.requestRender();
 	}
 
-	dispose(): void { this.closed = true; }
+	dispose(): void { this.closed = true; this.loader?.stop(); this.loader = undefined; }
 
-	invalidate(): void { this.input.invalidate(); this.titleInput.invalidate(); }
+	invalidate(): void { this.input.invalidate(); this.titleInput.invalidate(); this.loader?.invalidate(); }
 
 	render(width: number): string[] {
 		const inside = Math.max(1, width - 2);
@@ -149,12 +165,14 @@ export class StreamChooser implements Component {
 		input.focused = this.focused;
 		const inputLine = input.render(inside)[0] ?? "";
 		const inputRow = this.theme.fg("border", "│") + inputLine + " ".repeat(Math.max(0, inside - visibleWidth(inputLine))) + this.theme.fg("border", "│");
+		const activity = this.loader?.render(inside + 2)[1]?.trim();
+		const statusRow = activity ? row(activity, true) : row(this.status);
 		const reasonRows = (reason: string) => wrapTextWithAnsi(this.theme.fg("muted", `  ↳ ${reason.replace(/\p{Cc}/gu, "")}`), inside).map((line) => row(line, true));
 		if (this.creating) return [
 			this.theme.fg("border", `╭${"─".repeat(inside)}╮`),
 			row("New stream · Edit title"), inputRow,
 			...(this.creatingReason ? reasonRows(this.creatingReason) : []),
-			row(this.busy ? "Creating stream…" : this.status),
+			statusRow,
 			row(this.busy ? "Please wait for creation to finish" : `Enter Create · Esc Back${this.options.settings ? " · Alt+S Settings" : ""}`),
 			this.theme.fg("border", `╰${"─".repeat(inside)}╯`),
 		];
@@ -193,7 +211,7 @@ export class StreamChooser implements Component {
 			...(rendered.lines.length ? rendered.lines : [row("No matching streams")]),
 			row(`${this.selected === choices.length - 1 ? "▶" : " "} ${this.theme.fg("accent", "Write your own…")}`, true),
 			inputRow,
-			row(this.busy ? "Working…" : this.options.finding ? "Finding recommendations…" : this.status),
+			statusRow,
 			row(`Tab select · ${this.options.settings ? "Alt+S Settings · " : ""}Alt+M Show more · Esc Cancel${this.options.minimize && this.options.shortcut ? ` · ${shortcutLabel(this.options.shortcut)} Hide` : ""}`),
 			this.theme.fg("border", `╰${"─".repeat(inside)}╯`),
 		];

@@ -188,6 +188,71 @@ test("checkpoint markers update the same native transcript component and replay 
 	}
 });
 
+test("checkpoint card animates while busy without session entries or off-screen redraws", async (t) => {
+	const { CheckpointJournal, MARKER_TYPE } = await jiti.import(new URL("../extensions/stream-checkpoint/journal.ts", import.meta.url).pathname);
+	const { CustomEntryComponent } = await import(pathToFileURL(join(piDist, "modes/interactive/components/custom-entry.js")).href);
+	const { Text, TuiMainScreen, TuiAltScreen } = await import(pathToFileURL(piTuiIndex).href);
+	t.mock.timers.enable({ apis: ["setInterval"] });
+	for (const Backend of [TuiMainScreen, TuiAltScreen]) {
+		const manager = SessionManager.inMemory(process.cwd());
+		const journal = new CheckpointJournal({ appendEntry: (type, data) => manager.appendCustomEntry(type, data) });
+		const tui = new Backend({ columns: 80, rows: 12, start() {}, stop() {}, write() {}, hideCursor() {}, showCursor() {} });
+		let requests = 0;
+		const requestRender = tui.requestRender.bind(tui);
+		tui.requestRender = () => { requests++; requestRender(); };
+		journal.attach(tui);
+		const id = journal.begin(manager.getSessionId(), { leafId: "source", omitted: 0 });
+		const entry = manager.getEntries().find((entry) => entry.customType === MARKER_TYPE);
+		const card = new CustomEntryComponent(entry, journal.render);
+		tui.addChild(card);
+		tui.start();
+		try {
+			tui.renderNow();
+			const initial = card.render(80).join("\n");
+			assert.match(initial, /[⠋⠙⠹⠸⠼⠴⠦⠧⠇⠏].*Starting/);
+			const count = manager.getEntries().length;
+			t.mock.timers.tick(80); tui.renderNow();
+			assert.notEqual(card.render(80).join("\n"), initial, "A busy card must animate without an open overlay");
+			assert.equal(manager.getEntries().length, count, "Frames are not durable status events");
+
+			journal.update(id, { label: "Drafting", working: true });
+			tui.renderNow();
+			assert.match(card.render(80).join("\n"), /[⠋⠙⠹⠸⠼⠴⠦⠧⠇⠏].*Drafting/);
+			const following = new Text(Array.from({ length: 25 }, (_, i) => `Main line ${i}`).join("\n"), 0, 0);
+			tui.addChild(following);
+			tui.renderNow();
+			const redraws = tui.fullRedraws;
+			for (let i = 0; i < 3; i++) { t.mock.timers.tick(80); tui.renderNow(); }
+			assert.equal(tui.fullRedraws, redraws, "An off-screen spinner must not clear and redraw scrollback");
+			tui.terminal.rows = 40; tui.renderNow();
+			const revealed = card.render(80).join("\n");
+			t.mock.timers.tick(80); tui.renderNow();
+			assert.notEqual(card.render(80).join("\n"), revealed, "Animation resumes when the card re-enters the viewport");
+			tui.terminal.columns = 60; tui.renderNow();
+			const resized = card.render(60).join("\n");
+			t.mock.timers.tick(80); tui.renderNow();
+			assert.notEqual(card.render(60).join("\n"), resized, "Resize cannot permanently freeze the cached spinner line");
+			tui.removeChild(following); tui.terminal.rows = 12; tui.renderNow();
+			const shortened = card.render(60).join("\n");
+			t.mock.timers.tick(80); tui.renderNow();
+			assert.notEqual(card.render(60).join("\n"), shortened, "Content shrink keeps a visible card animated");
+			assert.equal(manager.getEntries().length, count + 1, "Viewport changes never append animation frames");
+
+			journal.update(id, { label: "Draft 1 ready" });
+			tui.renderNow();
+			const idle = card.render(80).join("\n");
+			assert.doesNotMatch(idle, /[⠋⠙⠹⠸⠼⠴⠦⠧⠇⠏]/);
+			t.mock.timers.tick(800); tui.renderNow();
+			assert.equal(card.render(80).join("\n"), idle);
+			journal.update(id, { label: "Drafting", working: true });
+			journal.dispose();
+			const stopped = requests;
+			t.mock.timers.tick(800);
+			assert.equal(requests, stopped, "Shutdown releases the animation timer");
+		} finally { journal.dispose(); tui.stop(); }
+	}
+});
+
 async function conversationFixture() {
 	const dir = mkdtempSync(join(tmpdir(), "checkpoint-conversation-"));
 	const path = join(dir, "service.md");
@@ -323,14 +388,14 @@ test("initialization failure preserves command instructions as unsent input", as
 	} finally { await f.dispose(); }
 });
 
-for (const selection of ["bound", "chooser", "explicit"]) {
+for (const selection of ["bound", "chooser", "chooser-minimized", "explicit"]) {
 	test(`checkpoint instructions reach the ${selection} stream once without holding main input`, async () => {
 		const f = await conversationFixture();
 		let shutdown;
 		try {
 			const stream = { slug: "service", title: "Service ownership", path: f.path, status: "active", state: "In progress" };
 			if (selection === "bound") f.manager.appendCustomEntry("stream-checkpoint-binding", { ownerId: f.pending.ownerId, slug: stream.slug, path: stream.path });
-			let command, panel, chooser, chooserHandle, handle, lists = 0;
+			let command, panel, chooser, chooserHandle, handle, finishLookup, lists = 0;
 			const shown = [], notifications = [], selectorContexts = [];
 			let mainInput = "";
 			f.manager.appendMessage({ role: "user", content: "Context at invocation", timestamp: Date.now() });
@@ -357,7 +422,7 @@ for (const selection of ["bound", "chooser", "explicit"]) {
 			};
 			registerCheckpoint({ registerTool() {}, registerEntryRenderer() {}, registerMessageRenderer() {}, registerCommand: (_name, options) => { command = options.handler; }, registerShortcut() {}, on: (_event, handler) => { shutdown = handler; }, appendEntry: (type, data) => f.manager.appendCustomEntry(type, data) }, {
 				agentDir: f.dir, runtime: f.conversation.options.runtime, skill: "Test skill",
-				cli: { read: readFrom(f.path), config: async () => ({ cmux: { enabled: false } }), list: async () => { lists++; return [stream]; }, show: async (ref) => { shown.push(ref); return stream; }, format: async () => "format" },
+				cli: { read: readFrom(f.path), config: async () => ({ cmux: { enabled: false } }), list: async () => { lists++; return [stream]; }, show: async (ref) => { shown.push(ref); if (selection === "chooser-minimized") await new Promise((resolve) => { finishLookup = resolve; }); return stream; }, format: async () => "format" },
 			});
 			await command("--stream", ctx);
 			assert.match(notifications.pop(), /Usage: \/checkpoint/);
@@ -367,7 +432,7 @@ for (const selection of ["bound", "chooser", "explicit"]) {
 			const marker = f.manager.getEntries().find((entry) => entry.customType === "checkpoint-start");
 			assert.equal(marker.data.leafId, sourceLeaf);
 			f.manager.appendMessage({ role: "user", content: "Arrived after invocation", timestamp: Date.now() });
-			if (selection === "chooser") {
+			if (selection.startsWith("chooser")) {
 				await until(() => chooserHandle?.hidden === false);
 				assert.equal(chooser.input.getValue(), "", "Instructions must not become a stream search");
 				assert.match(JSON.stringify(selectorContexts[0]), /Context at invocation/);
@@ -375,17 +440,24 @@ for (const selection of ["bound", "chooser", "explicit"]) {
 				await command("Do not queue while choosing", ctx);
 				assert.match(notifications.pop(), /busy.*not sent/i);
 				assert.equal(f.contexts.length, 0);
+				if (selection === "chooser-minimized") chooser.input.setValue(stream.slug);
 				chooser.handleInput("\r");
+				if (selection === "chooser-minimized") {
+					chooser.handleInput("\x1bp");
+					assert.equal(chooserHandle.hidden, true);
+					finishLookup();
+				}
 			}
 			await until(() => f.contexts.length === 1);
-			assert.equal(handle.hidden, true, "Fresh drafting must start hidden, including after stream selection");
+			assert.equal(handle.hidden, selection !== "chooser", "Drafting inherits the chooser's open or minimized state");
+			if (selection === "chooser") assert.match(panel.render(80).join("\n"), /[⠋⠙⠹⠸⠼⠴⠦⠧⠇⠏].*Drafting/);
 			assert.match(JSON.stringify(f.contexts[0]), /Context at invocation/);
 			assert.doesNotMatch(JSON.stringify(f.contexts[0]), /Arrived after invocation/);
 			assert.equal(readPending(f.dir, f.pending.ownerId, stream.slug).source.leafId, sourceLeaf);
 			assert.equal(panel.state.messages.at(-1).text, message);
 			const sentFirst = new RegExp(`^\\[streams feedback [0-9a-f]{8}\\]\\n${message}$`);
 			assert.match(f.contexts[0].messages.at(-1).content[0].text, sentFirst);
-			assert.deepEqual(shown, selection === "explicit" ? [stream.title] : []);
+			assert.deepEqual(shown, selection === "explicit" ? [stream.title] : selection === "chooser-minimized" ? [stream.slug] : []);
 			assert.equal(latestBinding(f.manager.getEntries(), f.pending.ownerId).slug, stream.slug);
 			await command("Do not queue while drafting", ctx);
 			assert.match(panel.state.notice.text, /busy.*not sent/i);
@@ -394,10 +466,10 @@ for (const selection of ["bound", "chooser", "explicit"]) {
 			ctx.isIdle = () => { assert.fail("Auto-open must not depend on main-agent idleness"); };
 			f.finish();
 			await until(() => panel.state.activity === null);
-			assert.equal(handle.hidden, mainInput !== "", "Only the actual composer contents at completion gate auto-open");
+			assert.equal(handle.hidden, true, "An explicit minimize persists after completion, even with an empty composer");
 			mainInput = "";
 			await turn();
-			assert.equal(handle.hidden, selection !== "bound", "Clearing the composer later must not cause a delayed auto-open");
+			assert.equal(handle.hidden, true, "Clearing the composer later must not cause a delayed auto-open");
 			const originalPanel = panel;
 			panel.handleInput("\x1b");
 			assert.equal(handle.hidden, true);
@@ -445,7 +517,7 @@ function chooserHarness({ stage, editor = "", others = [], cli, agentDir } = {})
 	const manager = SessionManager.inMemory(process.cwd());
 	const stream = { slug: "service", title: "Service", path: "/unused/service.md", status: "active", state: "Work" };
 	const streams = [stream, ...others];
-	const h = { manager, stream, editor, tools: new Map(), receipts: [], dialogs: 0, closed: 0, statuses: [], chooser: undefined, handle: undefined, pending: undefined, selectorSignal: undefined, command: undefined, shortcut: undefined, shutdown: undefined };
+	const h = { manager, stream, editor, tools: new Map(), receipts: [], dialogs: 0, closed: 0, renders: 0, statuses: [], chooser: undefined, handle: undefined, pending: undefined, selectorSignal: undefined, command: undefined, shortcut: undefined, shutdown: undefined };
 	const gate = (name, value) => name === stage ? new Promise((resolve) => { h.pending = () => resolve(value); }) : Promise.resolve(value);
 	registerCheckpoint({ registerTool: (tool) => h.tools.set(tool.name, tool), registerEntryRenderer() {}, registerMessageRenderer() {},
 		registerShortcut: (_key, options) => { h.shortcut = options.handler; },
@@ -459,7 +531,7 @@ function chooserHarness({ stage, editor = "", others = [], cli, agentDir } = {})
 		ui: { notify: (text) => assert.fail(text), setStatus: (_key, value) => h.statuses.push(value), getEditorText: () => h.editor, theme: { fg: (_color, text) => text },
 			custom: (factory, options) => new Promise((resolve) => {
 				h.dialogs++;
-				const component = factory({ terminal: { rows: 30 }, requestRender() {} }, { fg: (_color, text) => text }, {}, (value) => { component.dispose(); h.closed++; resolve(value); });
+				const component = factory({ terminal: { rows: 30 }, requestRender() { h.renders++; } }, { fg: (_color, text) => text }, {}, (value) => { component.dispose(); h.closed++; resolve(value); });
 				const handle = { hidden: false, focused: 0, focus() { this.focused++; }, setHidden(value) { this.hidden = value; }, isHidden() { return this.hidden; } };
 				if (component instanceof StreamChooser) { h.chooser = component; h.handle = handle; }
 				else { assert.equal(component.constructor.name, "CheckpointSettings"); h.settings = component; h.settingsHandle = handle; }
@@ -521,6 +593,55 @@ for (const typing of [false, true]) {
 		} finally { h.pending?.(); await h.shutdown?.(); }
 	});
 }
+
+test("chooser card stops spinning while waiting for a choice and resumes for lookup", async (t) => {
+	t.mock.timers.enable({ apis: ["setInterval"] });
+	const stream = { slug: "service", title: "Service", path: "/unused/service.md", status: "active", state: "Work" };
+	let release;
+	const h = chooserHarness({ stage: "recommendations", cli: {
+		config: async () => ({ cmux: { enabled: false } }), list: async () => [stream],
+		show: () => new Promise((resolve) => { release = () => resolve(stream); }),
+	} });
+	const status = () => h.manager.getEntries().filter((entry) => entry.customType === "checkpoint-status").at(-1)?.data;
+	try {
+		await h.command("", h.ctx);
+		await until(() => !!h.pending);
+		assert.equal(status().working, true);
+		h.pending();
+		await until(() => /★ Service/.test(h.chooser.render(100).join("\n")));
+		assert.equal(status().working, false, "Waiting for the user's choice is not background work");
+		const idle = h.renders;
+		t.mock.timers.tick(800);
+		assert.equal(h.renders, idle, "Both chooser and card timers stop when recommendations are ready");
+		h.chooser.handleInput("service"); h.chooser.handleInput("\r");
+		assert.equal(status().working, true, "Lookup makes the minimized card busy again");
+		const busy = h.renders;
+		t.mock.timers.tick(80);
+		assert.ok(h.renders > busy);
+		h.chooser.handleInput("\x1b");
+		await until(() => status()?.label === "Cancelled");
+		const count = h.manager.getEntries().length, stopped = h.renders;
+		release(); await turn(); t.mock.timers.tick(800);
+		assert.equal(h.manager.getEntries().length, count, "Late lookup settlement cannot revive the card");
+		assert.equal(h.renders, stopped, "Cancellation releases both animation timers");
+	} finally { release?.(); h.pending?.(); await h.shutdown?.(); }
+});
+
+test("explicitly minimized chooser stays minimized when recommendations finish", async () => {
+	const h = chooserHarness({ stage: "recommendations" });
+	try {
+		await h.command("", h.ctx);
+		await until(() => !!h.pending);
+		h.shortcut(h.ctx);
+		assert.equal(h.handle.hidden, false);
+		h.chooser.handleInput("\x1bp");
+		h.pending();
+		await until(() => /★ Service/.test(h.chooser.render(100).join("\n")));
+		assert.equal(h.handle.hidden, true, "Recommendations cannot undo a user's minimize action");
+		h.shortcut(h.ctx);
+		assert.equal(h.handle.hidden, false);
+	} finally { h.pending?.(); await h.shutdown?.(); }
+});
 
 test("Esc in the chooser stops a pending recommendation lookup", async () => {
 	const h = chooserHarness({ stage: "recommendations" });
@@ -1171,6 +1292,47 @@ test("input stays durable until accepted and hiding an annotation preserves its 
 	panel.handleInput("\t"); panel.handleInput("\x1bk"); panel.handleInput("unfinished"); panel.handleInput("\x1b");
 	assert.equal(state.annotationEditor.text, "unfinished");
 	assert.equal(events.at(-1), "hide");
+});
+
+for (const operation of ["finding", "lookup", "creation"]) {
+	test(`chooser spinner animates during ${operation} and stops when settled`, async (t) => {
+		t.mock.timers.enable({ apis: ["setInterval"] });
+		let requests = 0, settle, chosen;
+		const stream = { slug: "new-stream", title: "New stream", path: "/unused/new.md", status: "active", state: "Work" };
+		const work = () => new Promise((resolve) => { settle = () => resolve(stream); });
+		const chooser = new StreamChooser({ terminal: { rows: 30 }, requestRender() { requests++; } }, { fg: (_color, text) => text }, [], {
+			show: work, previewStart: work, list: async () => [], start: async () => stream,
+		}, (choice) => { chosen = choice; }, { existing: [] }, "", { finding: operation === "finding" });
+		try {
+			if (operation === "lookup") { chooser.handleInput("New stream"); chooser.handleInput("\r"); }
+			if (operation === "creation") { chooser.handleInput("\x0e"); chooser.handleInput("New stream"); chooser.handleInput("\r"); }
+			const first = chooser.render(80).join("\n");
+			const label = operation === "finding" ? "Finding recommendations…" : operation === "creation" ? "Creating stream…" : "Working…";
+			assert.match(first, new RegExp(`[⠋⠙⠹⠸⠼⠴⠦⠧⠇⠏] ${label}`));
+			const count = requests;
+			t.mock.timers.tick(80);
+			assert.notEqual(chooser.render(80).join("\n"), first);
+			assert.ok(requests > count, "Animation requests a terminal repaint");
+			if (operation === "finding") chooser.setRecommendations({ existing: [] });
+			else { settle(); await until(() => !!chosen); }
+			assert.doesNotMatch(chooser.render(80).join("\n"), /[⠋⠙⠹⠸⠼⠴⠦⠧⠇⠏]/);
+			const idle = requests;
+			t.mock.timers.tick(800);
+			assert.equal(requests, idle, "Settled work releases its timer");
+		} finally { chooser.dispose(); }
+	});
+}
+
+test("disposing a busy chooser stops animation and ignores late recommendations", (t) => {
+	t.mock.timers.enable({ apis: ["setInterval"] });
+	let requests = 0;
+	const chooser = new StreamChooser({ terminal: { rows: 30 }, requestRender() { requests++; } }, { fg: (_color, text) => text }, [], {}, () => {}, { existing: [] }, "", { finding: true });
+	assert.match(chooser.render(80).join("\n"), /[⠋⠙⠹⠸⠼⠴⠦⠧⠇⠏]/);
+	chooser.dispose();
+	const stopped = requests;
+	t.mock.timers.tick(800);
+	chooser.setRecommendations({ existing: [] });
+	assert.equal(requests, stopped);
 });
 
 test("spinner animates during operations and stops when idle", async () => {
