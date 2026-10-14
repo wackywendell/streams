@@ -10,7 +10,7 @@ import { buildSummaryContext, requestSummary } from './summarizer.js';
 import { recentText, type TextEvidence } from './evidence.js';
 
 const bindingEntry = 'work-cards.binding';
-const usage = 'Usage: /work-card new <title> | open <slug> | show | detach';
+const usage = 'Usage: /work-card new <title> | open [slug] | show | detach';
 const documentGuidance = "Substantive plans and ADRs belong in the attached card's project checkout (cwd); card metadata only references them. This tool does not create documents.";
 interface Dependencies {
   cardDirectory: typeof cardDirectory;
@@ -237,11 +237,16 @@ export function registerWorkCards(pi: ExtensionAPI, overrides: Partial<Dependenc
           binding = undefined;
           pi.appendEntry(bindingEntry, { slug: null, sessionId });
           runtime!.notify('Work card detached.', 'info');
-        } else if ((command === 'new' || command === 'open') && value && (command === 'new' || !/\s/.test(value))) {
+        } else if ((command === 'new' && value) || (command === 'open' && !/\s/.test(value))) {
+          const savedBinding = command === 'open' && !value ? binding : undefined;
+          if (command === 'open' && !value && savedBinding?.sessionId !== sessionId) {
+            runtime!.notify('No work card bound to this session. Use /work-card open <slug> or /work-card new <title>.', 'info');
+            return;
+          }
           requireHerdr();
           const snapshot = command === 'new'
             ? created = await createCard({ title: value, status: 'active', state: '', cwd, documents: [], issues: [], prs: [] }, directory)
-            : await readCard(value, directory);
+            : savedBinding ? await readCard(savedBinding.target.slug, dirname(savedBinding.target.path)) : await readCard(value, directory);
           if (generation !== token) {
             if (created) reportPartial(created, 'session or binding changed before attachment');
             return;

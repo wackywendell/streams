@@ -41,7 +41,7 @@ Use these Pi commands:
 | Command | Purpose |
 | --- | --- |
 | `/work-card new <title>` | Create a card for Pi's current directory and attach it in the caller's Herdr workspace |
-| `/work-card open <slug>` | Attach an existing card in the caller's Herdr workspace |
+| `/work-card open [slug]` | Reopen this session's bound card, or attach an existing card by slug, in the caller's Herdr workspace |
 | `/work-card show` | Show the attached card and its source path |
 | `/work-card detach` | Stop updates, close the owned card pane and clear the binding without deleting the YAML |
 
@@ -53,7 +53,9 @@ Explicit attachment or detachment can clear a departed owner's workspace markers
 
 Pi records the binding in custom session entries. Those entries reach disk only after user or assistant activity; `--no-session` does not persist them. Resuming the same originating session restores a binding only if its YAML still exists and validates. Restore never reconstructs a missing card or opens a pane. Forks and cloned sessions require explicit `/work-card open <slug>`.
 
-Detach records `updates: false` before loading configuration or cleaning up Herdr. Failed cleanup or invalid configuration retains this durable paused binding so you can inspect Herdr and retry. It stays paused after restore until explicit `open` succeeds. Legacy entries without an updates flag enable updates; malformed flags leave them paused. The custom-entry disk-flush caveat above still applies.
+After closing the card pane or reloading Pi in the same session, run `/work-card open` to reopen its bound card. It reads fresh YAML from the saved slug and path, not Pi's current directory. An explicit slug reads from the configured card directory. Without a same-session binding, bare `open` asks you to use `/work-card open <slug>` or `/work-card new <title>`; it does not search or create cards. Successful `detach` forgets the binding, so reopening then requires a slug.
+
+Detach records `updates: false` before loading configuration or cleaning up Herdr. Failed cleanup or invalid configuration retains this durable paused binding so you can inspect Herdr and retry. It stays paused after restore until explicit `open` succeeds, with or without a slug. A failed `open` preserves the binding and its update permission. Legacy entries without an updates flag enable updates; malformed flags leave them paused. The custom-entry disk-flush caveat above still applies.
 
 The current binding can detach after its YAML is deleted, using the canonical existing parent directory and filename to prove identity. A missing parent or ambiguous identity still blocks cleanup.
 
@@ -73,11 +75,11 @@ Press a displayed document letter to open it in a new focused Herdr tab, named a
 
 The tab runs `document_command`, then `$EDITOR` if the setting is `null`, then `less` if `$EDITOR` is unset or blank. There is no `$VISUAL` preference. An editor can modify the document; the card display and helper do not. Command failures stay visible in the document terminal with a configuration hint and a press-Enter-to-close prompt. Partial tab-opening failures appear on the card with the returned tab ID when known; inspect that tab before retrying. Work Cards never closes a possibly used document tab.
 
-In the main card view, `q` exits the display; it does not detach the Pi session or stop its updates. Explicit `open` recreates a departed display, or explicit `detach` clears its validated orphan markers. Neither action reclaims a surviving or restored owner.
+In the main card view, `q` exits the display; it does not detach the Pi session or stop its updates. Run `/work-card open` in the bound session to recreate a departed display, or explicit `detach` to clear its validated orphan markers. Neither action reclaims a surviving or restored owner.
 
 The card pane does not require sidebar configuration. An optional `$wc_summary` sidebar row requires a separate Herdr configuration change.
 
-Exiting Pi leaves the card pane running independently. Disconnecting the client retains server processes. A cold server restart does not automatically preserve arbitrary pane processes. Run `/work-card open <slug>` to reopen the pane; resuming Pi alone never opens it.
+Exiting Pi leaves the card pane running independently. Disconnecting the client retains server processes. A cold server restart does not automatically preserve arbitrary pane processes. Run `/work-card open` in the bound session, or `/work-card open <slug>` otherwise, to reopen the pane; resuming Pi alone never opens it.
 
 ## Update from Pi evidence
 
@@ -157,7 +159,7 @@ These are installation instructions, not a record of changes to normal user sett
 
 ## Verification status
 
-On macOS, `npm run check && npm test` passed on Node.js 26.11.1 and 22.23.3: 203 tests on each, with no failures or skips.
+On macOS, `npm run check && npm test` passed on Node.js 26.11.1 and 22.23.3: 206 tests on each, with no failures or skips.
 
 During initial packaging verification, installed Pi 1.2.0 loaded the extracted npm tarball on both Node versions in isolated, sandboxed RPC sessions. This verification was not rerun for the current refactored artifact. The `work-card` command and read-only `work_card` tool registered. Both runs exited successfully with empty stderr and no messages, tokens or model calls. That 28-file tarball included compiled entrypoints, manifest and docs, without `src`, tests or `node_modules`. The runs used supplied read-only host dependencies; they were not clean dependency-install tests.
 

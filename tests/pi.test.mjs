@@ -4,7 +4,7 @@ import { mkdtemp, open, readFile, readdir, rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { registerWorkCards } from '../dist/pi/index.js';
-import { readCard, updateCard } from '../dist/card.js';
+import { createCard, readCard, updateCard } from '../dist/card.js';
 import { DEFAULT_CONFIG } from '../dist/config.js';
 
 const tick = () => new Promise(resolve => setImmediate(resolve));
@@ -26,6 +26,7 @@ async function host(t, config = {}) {
   let branch = [], messages = [], sessionId = 'session-1', leaf = 'root';
   let modelResult = async () => answer({ action: 'no_change' });
   let attachError, detachError, configError, attachWait;
+  let configuredDirectory = directory;
   const env = { HERDR_ENV: '1', HERDR_PANE_ID: 'pane-1', HERDR_SOCKET_PATH: '/socket' };
   const settings = { ...DEFAULT_CONFIG, model: 'fake/simple', ...config };
   const ctx = {
@@ -54,7 +55,7 @@ async function host(t, config = {}) {
     },
   };
   registerWorkCards(pi, {
-    cardDirectory: () => directory, loadConfig: async () => { if (configError) throw new Error(configError); return { ...settings }; }, env,
+    cardDirectory: () => configuredDirectory, loadConfig: async () => { if (configError) throw new Error(configError); return { ...settings }; }, env,
     attachCard: async snapshot => { attachments.push(snapshot); if (attachWait) await attachWait; if (attachError) throw new Error(attachError); },
     detachCard: async snapshot => { detachments.push(snapshot); if (detachError) throw new Error(detachError); },
   });
@@ -72,6 +73,7 @@ async function host(t, config = {}) {
     setResult: value => { modelResult = value; }, setAttachError: value => { attachError = value; },
     setDetachError: value => { detachError = value; }, setConfigError: value => { configError = value; },
     setAttachWait: value => { attachWait = value; },
+    setDirectory: value => { configuredDirectory = value; },
     current: () => tools.get('work_card').execute('call', {}, new AbortController().signal, undefined, ctx),
   };
 }
@@ -98,6 +100,38 @@ test('only explicit new/open binds; initial card and read-only tool contain sour
   assert.equal(h.attachments.length, 2);
 });
 
+test('bare open without a binding gives explicit recovery commands without mutation', async t => {
+  const h = await host(t);
+  delete h.env.HERDR_ENV;
+  await h.command('open');
+  assert.match(h.notices.at(-1).text, /No work card/i);
+  assert.match(h.notices.at(-1).text, /\/work-card open <slug>/);
+  assert.match(h.notices.at(-1).text, /\/work-card new <title>/);
+  assert.deepEqual(await readdir(h.directory), []);
+  assert.deepEqual(h.branch(), []);
+  assert.equal(h.attachments.length, 0);
+  assert.equal(h.detachments.length, 0);
+  await h.command('new');
+  assert.match(h.notices.at(-1).text, /Usage:.*open \[slug\]/);
+});
+
+test('bare open rereads the saved target rather than cwd or a changed configured directory', async t => {
+  const h = await host(t), other = await host(t);
+  await h.command('new Fresh');
+  const initial = await readCard('fresh', h.directory);
+  const fresh = await updateCard('fresh', { state: 'Externally edited' }, initial.revision, h.directory);
+  await createCard({ ...card('Fresh'), state: 'Different directory' }, other.directory);
+  h.setDirectory(other.directory);
+  h.ctx.cwd = '/unrelated-checkout';
+  await h.command('open');
+  assert.equal(h.attachments.length, 2);
+  assert.deepEqual(h.attachments.at(-1), fresh);
+  assert.deepEqual(h.branch().at(-1).data, { slug: 'fresh', sessionId: 'session-1', path: initial.path, updates: true });
+  await h.command('open fresh');
+  assert.equal(h.attachments.at(-1).path, join(other.directory, 'fresh.yaml'));
+  assert.equal((await h.current()).details.card.state, 'Different directory');
+});
+
 test('binding retains only its target while show, tool and checks read fresh card data', async t => {
   const h = await host(t);
   await h.command('new Fresh');
@@ -120,6 +154,12 @@ test('current-binding deleted YAML cleanup uses its saved target without rereadi
   const path = join(h.directory, 'deleted.yaml');
   await rm(path);
   await assert.rejects(h.current(), /ENOENT/);
+  const saved = h.branch();
+  await h.command('open');
+  assert.match(h.notices.at(-1).text, /ENOENT/);
+  assert.deepEqual(h.branch(), saved);
+  assert.equal(h.attachments.length, 1);
+  assert.deepEqual(await readdir(h.directory), []);
   await h.command('detach');
   assert.deepEqual(h.detachments, [{ path }]);
   assert.deepEqual(h.branch().at(-1).data, { slug: null, sessionId: 'session-1' });
@@ -188,9 +228,17 @@ test('resume restores exact path without pane opening; fork and changed path nev
   await h.emit('session_start', { reason: 'resume' });
   assert.equal((await h.current()).details.slug, 'durable');
   assert.equal(h.attachments.length, 1);
+  await h.command('open');
+  assert.equal(h.attachments.length, 2);
+  assert.equal((await h.current()).details.slug, 'durable');
+  const resumed = h.branch();
   h.setSession('fork');
   await h.emit('session_start', { reason: 'fork' });
   assert.equal((await h.current()).details, null);
+  await h.command('open');
+  assert.match(h.notices.at(-1).text, /No work card/i);
+  assert.equal(h.attachments.length, 2);
+  assert.deepEqual(h.branch(), resumed);
   await h.command('open durable');
   assert.equal((await h.current()).details.slug, 'durable');
   h.setSession('session-1');
@@ -198,6 +246,9 @@ test('resume restores exact path without pane opening; fork and changed path nev
   h.setBranch(saved);
   await h.emit('session_tree');
   assert.equal((await h.current()).details, null);
+  await h.command('open');
+  assert.match(h.notices.at(-1).text, /No work card/i);
+  assert.equal(h.attachments.length, 3);
 });
 
 test('detach failure stops automatic work but preserves explicit cleanup; tombstone wins on tree restore', async t => {
@@ -215,6 +266,11 @@ test('detach failure stops automatic work but preserves explicit cleanup; tombst
   assert.equal(h.branch().at(-1).data.slug, null);
   await h.emit('session_tree');
   assert.equal((await h.current()).details, null);
+  const saved = h.branch();
+  await h.command('open');
+  assert.match(h.notices.at(-1).text, /No work card/i);
+  assert.deepEqual(h.branch(), saved);
+  assert.equal(h.attachments.length, 1);
 });
 
 test('failed detach persists pause across reload and tree restore until explicit open', async t => {
@@ -233,7 +289,18 @@ test('failed detach persists pause across reload and tree restore until explicit
     assert.equal(h.calls.length, 0);
     assert.equal(h.attachments.length, 1);
   }
-  await h.command('open paused');
+  const saved = h.branch();
+  h.setAttachError('attachment failed');
+  await h.command('open');
+  assert.match(h.notices.at(-1).text, /attachment failed/);
+  assert.deepEqual(h.branch(), saved);
+  assert.equal((await h.current()).details.slug, 'paused');
+  h.evidence('failed-open');
+  await h.emit('agent_settled', { aborted: false });
+  for (let i = 0; i < 5; i++) await readCard('paused', h.directory);
+  assert.equal(h.calls.length, 0);
+  h.setAttachError(undefined);
+  await h.command('open');
   assert.equal(h.branch().at(-1).data.updates, true);
   h.evidence('explicit-open');
   await h.emit('agent_settled', { aborted: false });
@@ -274,6 +341,10 @@ test('detach cannot persist a pause for a different originating session', async 
   await h.command('detach');
   assert.deepEqual(h.branch(), saved);
   assert.equal(h.detachments.length, 0);
+  await h.command('open');
+  assert.match(h.notices.at(-1).text, /No work card/i);
+  assert.deepEqual(h.branch(), saved);
+  assert.equal(h.attachments.length, 1);
 });
 
 test('completed cycles and response boundaries deduplicate evidence and apply helper patch without transcript entries', async t => {
@@ -468,6 +539,41 @@ test('stale attachments never bind to a replacement session and report the durab
   assert.match(h.notices.at(-1).text, /partial.*session|session.*partial/i);
 });
 
+test('bare open cannot save a binding after lifecycle changes during read or attachment', async t => {
+  for (const stage of ['read', 'attach']) {
+    const h = await host(t);
+    await h.command('new Reopen race');
+    const saved = h.branch();
+    let entered = false, release, mocked;
+    const suspended = new Promise(resolve => { release = resolve; });
+    if (stage === 'read') {
+      const handle = await open(join(h.directory, 'reopen-race.yaml'), 'r');
+      const prototype = Object.getPrototypeOf(handle), read = prototype.readFile;
+      await handle.close();
+      mocked = t.mock.method(prototype, 'readFile', async function (...args) {
+        entered = true;
+        await suspended;
+        return read.apply(this, args);
+      });
+    } else {
+      h.setAttachWait(suspended);
+    }
+    const pending = h.command('open');
+    try {
+      await until(() => stage === 'read' ? entered : h.attachments.length === 2);
+      h.setSession('replacement');
+      await h.emit('session_start', { reason: 'new' });
+    } finally {
+      release();
+      mocked?.mock.restore();
+    }
+    await pending;
+    assert.equal((await h.current()).details, null);
+    assert.deepEqual(h.branch(), saved);
+    assert.equal(h.attachments.length, stage === 'read' ? 1 : 2);
+  }
+});
+
 test('tree navigation and explicit binding replacement cancel a stale helper', async t => {
   const h = await host(t);
   await h.command('new First');
@@ -535,6 +641,8 @@ test('read/show restored binding works outside Herdr and never opens or selects 
   await h.command('show');
   assert.match(h.notices.at(-1).text, /read-only.yaml/);
   assert.equal((await h.current()).details.slug, 'read-only');
+  await h.command('open');
+  assert.match(h.notices.at(-1).text, /Herdr/);
   await h.command('open read-only');
   assert.match(h.notices.at(-1).text, /Herdr/);
   assert.equal(h.attachments.length, 1);
