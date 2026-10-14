@@ -140,13 +140,13 @@ herdr plugin link /absolute/path/to/work-cards/herdr-plugin.toml
 
 Explicit attachment also registers the plugin if its exact registration is missing. It refuses conflicting or disabled registrations rather than replacing them. Herdr must have a running, compatible server version 0.9.3 or later; Work Cards does not restart or update it.
 
-These are installation instructions, not a record of changes to normal user settings. No such installation has been performed.
+These are installation instructions, not a record of changes to normal user settings.
 
 ## Verification status
 
-On macOS, `npm run check && npm test` passed on Node.js 26.11.1 and 22.23.3: 124 tests on each, with no failures or skips.
+On macOS, `npm run check && npm test` passed on Node.js 26.11.1 and 22.23.3: 163 tests on each, with no failures or skips.
 
-Installed Pi 1.2.0 loaded the extracted npm tarball on both Node versions in isolated, sandboxed RPC sessions. The `work-card` command and read-only `work_card` tool registered. Both runs exited successfully with empty stderr and no messages, tokens or model calls. The 28-file tarball includes compiled entrypoints, manifest and docs, without `src`, tests or `node_modules`. The runs used supplied read-only host dependencies; they were not clean dependency-install tests.
+During initial packaging verification, installed Pi 1.2.0 loaded the extracted npm tarball on both Node versions in isolated, sandboxed RPC sessions. This verification was not rerun for the current refactored artifact. The `work-card` command and read-only `work_card` tool registered. Both runs exited successfully with empty stderr and no messages, tokens or model calls. That 28-file tarball included compiled entrypoints, manifest and docs, without `src`, tests or `node_modules`. The runs used supplied read-only host dependencies; they were not clean dependency-install tests.
 
 The final isolated native smoke passed all 13 checks with no failures, using installed Herdr client and server 0.9.4 (protocol 22) on macOS arm64 with Node.js 26.11.1. Checks covered registration, startup, no-focus attachment and pane reuse, YAML-to-pane updates, workspace/sidebar metadata tokens, HTTP OSC 8 output, read-only byte-capped previews with real `j`/`k` scrolling and `q` back, and detach/reopen. Separate checks passed main-view `q` followed by `open` or `detach`. After fixture YAML deletion, detach closed only the owned pane, cleared its markers and did not recreate the file. The isolated server and workspace stopped cleanly.
 
