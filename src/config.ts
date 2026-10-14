@@ -11,6 +11,7 @@ export interface WorkCardsConfig {
   check_every_n_cycles: number;
   max_context_chars: number;
   max_document_bytes: number;
+  document_command: string | null;
   max_output_tokens: number;
   request_timeout_ms: number;
   pane_poll_interval_ms: number;
@@ -26,6 +27,7 @@ export const DEFAULT_CONFIG: Readonly<WorkCardsConfig> = Object.freeze({
   check_every_n_cycles: 10,
   max_context_chars: 24000,
   max_document_bytes: 262144,
+  document_command: null,
   max_output_tokens: 2048,
   request_timeout_ms: 30000,
   pane_poll_interval_ms: 1000,
@@ -33,6 +35,18 @@ export const DEFAULT_CONFIG: Readonly<WorkCardsConfig> = Object.freeze({
   pane_height_fraction: 0.2,
   update_guidance: 'Update only for significant, evidenced changes. Preserve stable facts. Do not infer progress, invent links or documents, or rewrite wording without a substantive change. Return no_change when nothing important changed.',
 });
+
+function validateDocumentCommand(value: unknown, label: string): asserts value is string {
+  if (typeof value !== 'string' || !value.trim() || /[\p{Cc}\p{Cf}]/u.test(value)) {
+    throw new Error(`${label} must be a nonblank command string without controls`);
+  }
+}
+
+export function documentCommand(config: WorkCardsConfig, env: NodeJS.ProcessEnv = process.env): string {
+  const command = config.document_command ?? (env.EDITOR?.trim() ? env.EDITOR : 'less');
+  validateDocumentCommand(command, config.document_command !== null ? 'document_command' : 'EDITOR');
+  return command;
+}
 
 export function configPath(env: NodeJS.ProcessEnv = process.env): string {
   return join(env.PI_CODING_AGENT_DIR || join(env.HOME || homedir(), '.pi', 'agent'), 'work-cards.json');
@@ -54,6 +68,8 @@ export async function loadConfig(path = configPath()): Promise<WorkCardsConfig> 
         if (typeof value !== 'string' || !/^[^\s/\p{Cc}\p{Cf}]+\/[^\s\p{Cc}\p{Cf}]+$/u.test(value)) {
           throw new Error('model must be provider/model or a configured helpers/alias');
         }
+      } else if (key === 'document_command') {
+        if (value !== null) validateDocumentCommand(value, key);
       } else if (key === 'thinking_level') {
         if (value !== null && (typeof value !== 'string' || !['off', 'minimal', 'low', 'medium', 'high', 'xhigh', 'max'].includes(value))) {
           throw new Error('thinking_level must be null or off, minimal, low, medium, high, xhigh, max');

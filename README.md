@@ -69,7 +69,9 @@ The compact pane shows each document's repository-relative path, not its descrip
 
 Issues and PRs share consecutive numbered labels, with issues first: `[1] Issue: …`, `[2] PR: …`. Numbering is independent of document letters and continues beyond 9. These HTTP labels are Ctrl-click-only, using OSC 8 terminal links and Herdr's local-client handling. Number-key opening is deferred; digits do nothing.
 
-Document actions use letter keys, not numbers. Press a displayed document shortcut for a bounded, read-only preview in the pane. Use `j` and `k` to scroll and `q` to return to the card. A `byte-capped` label marks truncated previews. No document action runs macOS `open` or remote `xdg-open`.
+Press a displayed document letter to open it in a new focused Herdr tab, named after the displayed path's filename. `j` and `k` are document letters, not scrolling controls. The card display and its updater stay alive. Documents must still be listed on the freshly read card and resolve to regular files inside its checkout. No document action runs macOS `open` or remote `xdg-open`.
+
+The tab runs `document_command`, then `$EDITOR` if the setting is `null`, then `less` if `$EDITOR` is unset or blank. There is no `$VISUAL` preference. An editor can modify the document; the card display and helper do not. Command failures stay visible in the document terminal with a configuration hint and a press-Enter-to-close prompt. Partial tab-opening failures appear on the card with the returned tab ID when known; inspect that tab before retrying. Work Cards never closes a possibly used document tab.
 
 In the main card view, `q` exits the display; it does not detach the Pi session or stop its updates. Explicit `open` recreates a departed display, or explicit `detach` clears its validated orphan markers. Neither action reclaims a surviving or restored owner.
 
@@ -105,7 +107,8 @@ Configuration lives at `<PI_CODING_AGENT_DIR>/work-cards.json`, defaulting to `~
 | `check_every_n_responses` | `1` | Overall-response check interval |
 | `check_every_n_cycles` | `10` | Within-response cycle check interval |
 | `max_context_chars` | `24000` | Full helper context limit in characters, not tokens |
-| `max_document_bytes` | `262144` | Maximum bytes read for a document preview |
+| `max_document_bytes` | `262144` | Legacy preview setting; accepted but has no effect on external tools |
+| `document_command` | `null` | Global command prefix; otherwise use `$EDITOR`, then `less` |
 | `max_output_tokens` | `2048` | Helper output limit |
 | `request_timeout_ms` | `30000` | Helper request timeout |
 | `pane_poll_interval_ms` | `1000` | Card pane refresh interval |
@@ -116,6 +119,10 @@ Configuration lives at `<PI_CODING_AGENT_DIR>/work-cards.json`, defaulting to `~
 The default `update_guidance` is:
 
 > Update only for significant, evidenced changes. Preserve stable facts. Do not infer progress, invent links or documents, or rewrite wording without a substantive change. Return no_change when nothing important changed.
+
+`document_command` accepts `null` or a nonblank string without control characters. Examples are `vim`, `nano`, `less -R` or a quoted executable path with arguments. Malformed nonblank `$EDITOR` values fail visibly instead of falling back.
+
+This command prefix is trusted global user configuration, executed by a POSIX shell. Do not copy untrusted card or model text into it. Card YAML and helper output cannot select an executable. The document's absolute filename is passed separately as one quoted positional argument, never inserted into shell source. The command runs in the canonical checkout on the server host. Pi's `$EDITOR` is forwarded explicitly to the card pane, including an empty value when unset, rather than inheriting an unexpected server value. A defined caller `$PATH` is forwarded to the card and document panes so editor lookup uses the same search path. No other caller environment or Herdr identity is forwarded. `max_document_bytes` does not cap files opened by the editor or pager.
 
 Positive limits must remain positive; check intervals allow `0`. Override `thinking_level` with `off`, `minimal`, `low`, `medium`, `high`, `xhigh` or `max`.
 
@@ -144,18 +151,24 @@ pi install /absolute/path/to/work-cards
 herdr plugin link /absolute/path/to/work-cards/herdr-plugin.toml
 ```
 
-Explicit attachment also registers the plugin if its exact registration is missing. It refuses conflicting or disabled registrations rather than replacing them. Herdr must have a running, compatible server version 0.9.3 or later; Work Cards does not restart or update it.
+Explicit attachment also registers the plugin if its exact registration is missing. It requires both the `card` and `document` entrypoints and refuses conflicting or disabled registrations rather than replacing them. Existing users may need to run the explicit `herdr plugin link` command again: linked manifests are read at server startup, and hot reload is not assumed. Work Cards does not approve hooks. Herdr must have a running, compatible server version 0.9.3 or later; Work Cards does not restart or update it.
 
 These are installation instructions, not a record of changes to normal user settings.
 
 ## Verification status
 
-On macOS, `npm run check && npm test` passed on Node.js 26.11.1 and 22.23.3: 172 tests on each, with no failures or skips.
+On macOS, `npm run check && npm test` passed on Node.js 26.11.1 and 22.23.3: 203 tests on each, with no failures or skips.
 
 During initial packaging verification, installed Pi 1.2.0 loaded the extracted npm tarball on both Node versions in isolated, sandboxed RPC sessions. This verification was not rerun for the current refactored artifact. The `work-card` command and read-only `work_card` tool registered. Both runs exited successfully with empty stderr and no messages, tokens or model calls. That 28-file tarball included compiled entrypoints, manifest and docs, without `src`, tests or `node_modules`. The runs used supplied read-only host dependencies; they were not clean dependency-install tests.
 
-The final isolated native smoke passed all 13 checks with no failures, using installed Herdr client and server 0.9.4 (protocol 22) on macOS arm64 with Node.js 26.11.1. Checks covered registration, startup, no-focus attachment and pane reuse, YAML-to-pane updates, workspace/sidebar metadata tokens, HTTP OSC 8 output, read-only byte-capped previews with real `j`/`k` scrolling and `q` back, and detach/reopen. Separate checks passed main-view `q` followed by `open` or `detach`. After fixture YAML deletion, detach closed only the owned pane, cleared its markers and did not recreate the file. The isolated server and workspace stopped cleanly.
+The current isolated native suite passed all 21 checks on macOS arm64, Node.js 26.11.1 and Herdr 0.9.4 (protocol 22). It verified registration, card startup, OSC 8 output, exact same-workspace basename/title and focus, input coalescing, command precedence, literal filenames and canonical checkout cwd. Card polling continued; caller/card identities, processes and geometry were preserved.
 
-Linux and SSH, browser-click handling, actual sidebar UI rendering and live-model requests remain untested. Sidebar metadata tokens were verified, not the visual sidebar. Linux is a design target, not a tested compatibility claim. Pulling a Docker image for verification was declined. Verification did not install or activate Work Cards in normal Pi or Herdr settings, or edit global settings.
+The suite exercised `less` fallback, missing-command failure with Enter-to-close, and real Vim with Ctrl-C and `:q!`. All 5 document tabs closed normally, leaving the caller and card panes intact. Card-view `q`, detach/reopen and deleted-YAML cleanup safety also passed. The caller was a shell, not a live Pi process; this does not verify real Pi lifecycle behavior.
+
+All 5 isolated workspaces were closed. The disposable server stopped and its PID was absent. On this Herdr 0.9.4 run, the linked document entrypoint was visible before explicit relink and remained valid afterward. Relink explicitly if registration is stale; this observation is not a universal hot-reload guarantee.
+
+Current `npm pack --dry-run` succeeded: 35 files included all 7 required entries, including `bin/open-document.sh`. This verifies package contents, not a clean dependency install or loading the current artifact in Pi. Native and package results are recorded under `/tmp/wc-herdr-editor-fixed1-final-QRS9lz`.
+
+Native Node.js 22, Linux, SSH, remote hosts, browser-click handling, real Pi lifecycle, live-model requests and visual sidebar rendering remain untested. Sidebar metadata tokens were verified, not the visual sidebar. Linux remains an untested design target. Verification did not activate Work Cards in normal Pi or Herdr settings or edit global settings.
 
 See [the design document](docs/design.md) for the schema, shared APIs and file-write guarantees.

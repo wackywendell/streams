@@ -1,8 +1,5 @@
-import { constants } from 'node:fs';
-import { open } from 'node:fs/promises';
 import { basename, dirname, isAbsolute } from 'node:path';
-import { readCard, resolveDocument, type CardSnapshot } from '../card.js';
-import type { WorkCardsConfig } from '../config.js';
+import { readCard, type CardSnapshot } from '../card.js';
 
 const documentKeys = 'abcdefghijklmnoprstuvwxyz';
 export function plain(text: string): string { return text.replace(/[\p{Cc}\p{Cf}]/gu, ''); }
@@ -72,10 +69,9 @@ export class KeyInput {
 }
 
 interface Notice { source: 'card' | 'projection' | 'document'; text: string }
-interface Preview { path: string; text: string; truncated: boolean; bytesRead: number; offset: number }
+export type KeyResult = { kind: 'exit' } | { kind: 'none' } | { kind: 'open-document'; snapshot: CardSnapshot; relativePath: string };
 export class CardView {
   current?: CardSnapshot;
-  preview?: Preview;
   private activeNotice?: Readonly<Notice>;
   get notice(): Readonly<Notice> | undefined { return this.activeNotice; }
   setNotice(source: Notice['source'], text: string): void { this.activeNotice = { source, text }; }
@@ -85,18 +81,17 @@ export class CardView {
   private documents = new Map<string, DocumentTarget>();
   private columns = 80;
   private rows = 24;
-  constructor(readonly path: string, readonly config: WorkCardsConfig) {
+  constructor(readonly path: string) {
     if (!isAbsolute(path) || !path.endsWith('.yaml')) throw new Error('WORK_CARDS_CARD must be an absolute card YAML path');
   }
   async refresh(): Promise<CardSnapshot | undefined> {
     try {
       const next = await readCard(basename(this.path, '.yaml'), dirname(this.path));
-      if (this.current && next.revision !== this.current.revision) this.preview = undefined;
       this.current = next;
       this.clearNotice('card');
       return next;
     } catch (error) {
-      this.current = undefined; this.preview = undefined; this.documents.clear();
+      this.current = undefined; this.documents.clear();
       this.setNotice('card', `Card unavailable (${this.path}): ${(error as Error).message}. Fix the saved card and retry.`);
       return undefined;
     }
@@ -105,55 +100,24 @@ export class CardView {
     this.columns = columns; this.rows = rows;
     const height = Math.max(0, rows - Number(Boolean(this.notice)));
     let text: string;
-    if (this.preview) {
-      const lines = this.preview.text.split('\n'), visibleRows = Math.max(0, height - 1);
-      this.preview.offset = Math.min(this.preview.offset, Math.max(0, lines.length - Math.max(1, visibleRows)));
-      const end = Math.min(lines.length, this.preview.offset + visibleRows);
-      const position = `${visibleRows ? this.preview.offset + 1 : 0}-${visibleRows ? end : 0}/${lines.length}`;
-      const header = `${this.preview.truncated ? 'byte-capped · ' : ''}${position} [q] back j/k · ${this.preview.path}`;
-      text = [header, ...lines.slice(this.preview.offset, end)].slice(0, height).map(line => clipped(line, columns)).join('\n');
-      this.documents.clear();
-    } else if (this.current) {
+    if (this.current) {
       const rendered = renderCard(this.current, columns, height); this.documents = rendered.documents; text = rendered.text;
     } else { this.documents.clear(); text = ''; }
     if (this.notice && rows) text += `${text ? '\n' : ''}${clipped(this.notice.text, columns)}`;
     return text;
   }
-  async key(key: string): Promise<boolean> {
-    if (key === '\x03') return true;
-    if (key === 'q') {
-      if (!this.preview) return true;
-      this.preview = undefined; this.clearNotice(); return false;
-    }
-    if (this.preview) {
-      const visibleRows = Math.max(1, this.rows - Number(Boolean(this.notice)) - 1);
-      const maximum = Math.max(0, this.preview.text.split('\n').length - visibleRows);
-      if (key === 'j') this.preview.offset = Math.min(maximum, this.preview.offset + 1);
-      if (key === 'k') this.preview.offset = Math.max(0, this.preview.offset - 1);
-      return false;
-    }
+  async key(key: string): Promise<KeyResult> {
+    if (key === '\x03' || key === 'q') return { kind: 'exit' };
     const displayed = this.documents.get(key);
-    if (!displayed) return false;
+    if (!displayed) return { kind: 'none' };
     this.clearNotice();
     await this.refresh();
-    if (!this.current) return false;
+    if (!this.current) return { kind: 'none' };
     const next = renderCard(this.current, this.columns, this.rows).documents.get(key);
     if (!next || next.cwd !== displayed.cwd || next.path !== displayed.path) {
       this.setNotice('document', 'Document checkout/target changed; redraw and press the displayed shortcut again.');
-      return false;
+      return { kind: 'none' };
     }
-    try {
-      const path = await resolveDocument(this.current.card, displayed.path);
-      const file = await open(path, constants.O_RDONLY | constants.O_NOFOLLOW | constants.O_NONBLOCK);
-      try {
-        const info = await file.stat();
-        if (!info.isFile()) throw new Error('Preview target must be a regular file');
-        const bytes = Buffer.alloc(Math.min(info.size, this.config.max_document_bytes));
-        const { bytesRead } = await file.read(bytes, 0, bytes.length, 0);
-        this.preview = { path: displayed.path, text: new TextDecoder().decode(bytes.subarray(0, bytesRead)), truncated: info.size > bytesRead, bytesRead, offset: 0 };
-        this.documents.clear();
-      } finally { await file.close(); }
-    } catch (error) { this.setNotice('document', `Cannot preview ${displayed.path}: ${(error as Error).message}`); }
-    return false;
+    return { kind: 'open-document', snapshot: this.current, relativePath: displayed.path };
   }
 }

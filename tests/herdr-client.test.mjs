@@ -1,8 +1,9 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { mkdtemp, writeFile, rm, realpath, unlink, mkdir, symlink } from 'node:fs/promises';
-import { tmpdir } from 'node:os';
-import { join } from 'node:path';
+import { tmpdir, homedir } from 'node:os';
+import { join, relative } from 'node:path';
+import { spawnSync } from 'node:child_process';
 import { HerdrClient, cardIdentity, withWorkspaceLock } from '../dist/herdr/client.js';
 import { DEFAULT_CONFIG } from '../dist/config.js';
 
@@ -18,7 +19,8 @@ async function fixture(t) {
   let plugins = []; let nextPane = 2;
   const plugin = { plugin_id: 'work-cards', enabled: true, manifest_path: join(root, 'herdr-plugin.toml'), plugin_root: root,
     source: { kind: 'local' }, version: '0.1.0', min_herdr_version: '0.9.3', platforms: ['macos', 'linux'],
-    panes: [{ id: 'card', title: 'Work card', placement: 'split', command: ['node', 'dist/herdr/pane.js'] }] };
+    panes: [{ id: 'card', title: 'Work card', placement: 'split', command: ['node', 'dist/herdr/pane.js'] },
+      { id: 'document', title: 'Document', placement: 'tab', command: ['/bin/sh', 'bin/open-document.sh'] }] };
   const result = (type, rest = {}) => JSON.stringify({ result: { type, ...rest } });
   const run = async args => {
     calls.push(args);
@@ -29,8 +31,11 @@ async function fixture(t) {
     if (args[0] === 'plugin' && args[1] === 'list') return result('plugin_list', { plugins });
     if (args[0] === 'plugin' && args[1] === 'link') { plugins = [plugin]; return result('plugin_linked', { plugin }); }
     if (args.slice(0, 3).join(' ') === 'plugin pane open') {
-      const number = nextPane++; const opened = pane(`w1:p${number}`, `term${number}`); panes.push(opened);
-      return result('plugin_pane_opened', { plugin_pane: { plugin_id: 'work-cards', entrypoint: 'card', pane: opened } });
+      const number = nextPane++; const opened = pane(`w1:p${number}`, `term${number}`);
+      const entrypoint = args[args.indexOf('--entrypoint') + 1];
+      if (entrypoint === 'document') opened.tab_id = `w1:t${number}`;
+      panes.push(opened);
+      return result('plugin_pane_opened', { plugin_pane: { plugin_id: 'work-cards', entrypoint, pane: opened } });
     }
     if (args.slice(0, 3).join(' ') === 'plugin pane close') { panes.splice(panes.findIndex(p => p.pane_id === args[3]), 1); return result('plugin_pane_closed', { pane_id: args[3] }); }
     if (args[1] === 'report-metadata') {
@@ -41,6 +46,8 @@ async function fixture(t) {
       }
       return '';
     }
+    if (args[0] === 'tab' && args[1] === 'rename') return result('tab_info', { tab: { tab_id: args[2], workspace_id: 'w1', label: args.slice(3).join(' ') } });
+    if (args[0] === 'tab' && args[1] === 'focus') return result('documented-but-unchecked-focus-result');
     if (args[1] === 'rename') return result('workspace_info', { workspace });
     if (args[1] === 'resize') return result('pane_resize', { resize: { pane_id: caller.pane_id, focused_pane_id: caller.pane_id, changed: true, layout: {} } });
     throw new Error(`Unexpected ${JSON.stringify(args)}`);
@@ -61,6 +68,8 @@ test('attach opens an explicit no-focus bottom split, passes paths as argv and n
   assert.ok(open.includes('--no-focus')); assert.equal(open[open.indexOf('--target-pane') + 1], 'w1:p1');
   assert.equal(open[open.indexOf('--direction') + 1], 'down');
   assert.ok(open.includes(`WORK_CARDS_CARD=${f.path}`));
+  assert.ok(open.includes('EDITOR='));
+  assert.equal(open.some(value => value.startsWith('PATH=')), false);
   assert.equal(f.workspace.tokens.wc_card, await cardIdentity(f.path));
   assert.equal(f.workspace.tokens.wc_summary, undefined);
   const rename = f.calls.find(a => a[1] === 'rename'); assert.equal(rename[3], snapshot(f.path).card.title);
@@ -248,4 +257,183 @@ test('workspace lock is exclusive, fails immediately and never steals a stale lo
     await assert.rejects(withWorkspaceLock(socket, 'w1', async () => {}), /lock.*Inspect|Inspect.*lock/i);
   });
   await withWorkspaceLock(socket, 'w1', async () => {});
+});
+
+async function documentFixture(t, intercept) {
+  const f = await fixture(t);
+  await f.client.attachCard(snapshot(f.path), DEFAULT_CONFIG);
+  const owner = f.panes[1];
+  const env = { ...f.env, HERDR_PANE_ID: owner.pane_id, WORK_CARDS_NONCE: f.workspace.tokens.wc_nonce, EDITOR: 'nano -w' };
+  const attempts = [];
+  const run = async args => {
+    attempts.push([...args]);
+    if (intercept) { const reply = await intercept(args, f); if (reply !== undefined) return reply; }
+    if (args[0] === 'pane' && args[1] === 'current') return JSON.stringify({ result: { type: 'pane_current', pane: owner } });
+    return f.run(args);
+  };
+  const client = new HerdrClient({ env, run, pluginRoot: f.root });
+  const saved = snapshot(f.path); saved.card.cwd = f.root;
+  saved.card.documents = [{ path: '-notes $;\'".md', description: '' }];
+  await writeFile(join(f.root, saved.card.documents[0].path), 'hello');
+  f.calls.length = 0;
+  return { ...f, owner, env, client, saved, attempts, relative: saved.card.documents[0].path };
+}
+const mutations = calls => calls.filter(a => a[1] === 'report-metadata' || a[1] === 'rename' || a[1] === 'focus' || a[1] === 'link' || a.slice(0, 3).join(' ') === 'plugin pane open');
+
+test('document opens a new exact-workspace tab, titles basename safely, then focuses only that tab', async t => {
+  const f = await documentFixture(t); const before = structuredClone(f.workspace);
+  await f.client.openDocument(f.saved, f.relative, DEFAULT_CONFIG);
+  const calls = mutations(f.attempts);
+  assert.equal(calls.length, 3);
+  const [open, rename, focus] = calls;
+  assert.deepEqual(open.slice(0, 3), ['plugin', 'pane', 'open']);
+  assert.equal(open[open.indexOf('--entrypoint') + 1], 'document');
+  assert.equal(open[open.indexOf('--placement') + 1], 'tab');
+  assert.equal(open[open.indexOf('--workspace') + 1], 'w1');
+  assert.equal(open[open.indexOf('--cwd') + 1], f.root);
+  assert.ok(open.includes('--no-focus'));
+  assert.ok(open.includes('WORK_CARDS_DOCUMENT_COMMAND=nano -w'));
+  assert.equal(open.some(value => value.startsWith('PATH=')), false);
+  assert.ok(open.includes('WORK_CARDS_DOCUMENT_CWD=' + f.root));
+  assert.ok(open.includes('WORK_CARDS_DOCUMENT_PATH=' + join(f.root, f.relative)));
+  assert.deepEqual(rename, ['tab', 'rename', 'w1:t3', f.relative]);
+  assert.deepEqual(focus, ['tab', 'focus', 'w1:t3']);
+  assert.deepEqual(f.workspace, before);
+  assert.ok(f.panes.includes(f.owner));
+});
+test('document validation, FIFO and escaping symlinks fail before any Herdr mutation', async t => {
+  const f = await documentFixture(t);
+  for (const path of ['../private', 'unlisted.md']) {
+    await assert.rejects(f.client.openDocument(f.saved, path, DEFAULT_CONFIG));
+    assert.deepEqual(mutations(f.attempts), []);
+  }
+  await assert.rejects(f.client.openDocument(f.saved, f.relative, { ...DEFAULT_CONFIG, document_command: 'bad\n' }), /command/);
+  await rm(join(f.root, f.relative)); await mkdir(join(f.root, f.relative));
+  await assert.rejects(f.client.openDocument(f.saved, f.relative, DEFAULT_CONFIG), /regular file/);
+  await rm(join(f.root, f.relative), { recursive: true });
+  const outside = join(f.root, '..', 'work-cards-outside-' + process.pid);
+  await writeFile(outside, 'private'); t.after(() => rm(outside, { force: true }));
+  await symlink(outside, join(f.root, f.relative));
+  await assert.rejects(f.client.openDocument(f.saved, f.relative, DEFAULT_CONFIG), /outside/);
+  await unlink(join(f.root, f.relative));
+  assert.equal(spawnSync('mkfifo', [join(f.root, f.relative)]).status, 0);
+  await assert.rejects(f.client.openDocument(f.saved, f.relative, DEFAULT_CONFIG), /regular file/);
+  assert.deepEqual(mutations(f.attempts), []);
+});
+test('document refuses rebound, duplicate, missing, moved and wrong-nonce owners without mutations', async t => {
+  for (const mode of ['rebound', 'duplicate', 'missing', 'moved', 'nonce', 'socket', 'pane env']) await t.test(mode, async sub => {
+    const f = await documentFixture(sub);
+    if (mode === 'rebound') f.workspace.tokens.wc_card = 'f'.repeat(64);
+    if (mode === 'duplicate') f.panes.push({ ...pane('w1:p9', 'term9'), tokens: { ...f.owner.tokens } });
+    if (mode === 'missing') f.panes.splice(1, 1);
+    if (mode === 'moved') f.owner.workspace_id = 'w2';
+    if (mode === 'nonce') f.client.env.WORK_CARDS_NONCE = 'wrong';
+    if (mode === 'socket') f.client.env.HERDR_SOCKET_PATH = join(f.root, 'wrong.sock');
+    if (mode === 'pane env') f.client.env.HERDR_PANE_ID = 'w1:p9';
+    await assert.rejects(f.client.openDocument(f.saved, f.relative, DEFAULT_CONFIG));
+    assert.deepEqual(mutations(f.attempts), []);
+  });
+});
+test('document rejects stale plugin registrations and directs explicit relink without replacing them', async t => {
+  const f = await documentFixture(t, async (args, f) => {
+    if (args[0] === 'plugin' && args[1] === 'list') return JSON.stringify({ result: { type: 'plugin_list', plugins: [{ ...f.plugin, panes: f.plugin.panes.slice(0, 1) }] } });
+  });
+  await assert.rejects(f.client.openDocument(f.saved, f.relative, DEFAULT_CONFIG), /relink|plugin link/i);
+  assert.deepEqual(mutations(f.attempts), []);
+});
+test('document partial failures include known new tab and never close or retry', async t => {
+  for (const mode of ['open', 'rename', 'rename identity', 'focus', 'focus error']) await t.test(mode, async sub => {
+    const f = await documentFixture(sub, async (args, f) => {
+      if ((mode === 'open' && args.slice(0, 3).join(' ') === 'plugin pane open') ||
+          (mode === 'rename' && args[1] === 'rename') || (mode === 'focus' && args[1] === 'focus')) throw new Error('injected failure');
+      if (mode === 'rename identity' && args[1] === 'rename') return JSON.stringify({ result: { type: 'tab_info', tab: { tab_id: 'wrong', workspace_id: 'w1' } } });
+      if (mode === 'focus error' && args[1] === 'focus') return JSON.stringify({ error: 'focus failed' });
+    });
+    await assert.rejects(f.client.openDocument(f.saved, f.relative, DEFAULT_CONFIG), mode === 'open' ? /inspect|partial/i : /w1:t3/);
+    assert.equal(f.attempts.some(a => a[1] === 'run' || a[1] === 'report-metadata' || a.slice(0, 3).join(' ') === 'plugin pane close'), false);
+    assert.equal(f.attempts.filter(a => a.slice(0, 3).join(' ') === 'plugin pane open').length, 1);
+    const expected = [['plugin', 'pane', 'open']];
+    if (mode !== 'open') expected.push(['tab', 'rename']);
+    if (mode.startsWith('focus')) expected.push(['tab', 'focus']);
+    assert.deepEqual(mutations(f.attempts).map(a => a.slice(0, a[0] === 'plugin' ? 3 : 2)), expected);
+  });
+});
+test('document rejects returned plugin/entrypoint/workspace or any reused pane/tab/terminal before rename', async t => {
+  for (const mode of ['plugin', 'entrypoint', 'workspace', 'pane', 'terminal', 'tab']) await t.test(mode, async sub => {
+    const f = await documentFixture(sub, async (args, f) => {
+      if (args.slice(0, 3).join(' ') !== 'plugin pane open') return;
+      const p = { ...pane('w1:p9', 'term9'), tab_id: 'w1:t9' };
+      if (mode === 'workspace') p.workspace_id = 'w2';
+      if (mode === 'pane') p.pane_id = f.owner.pane_id;
+      if (mode === 'terminal') p.terminal_id = f.owner.terminal_id;
+      if (mode === 'tab') p.tab_id = f.owner.tab_id;
+      return JSON.stringify({ result: { type: 'plugin_pane_opened', plugin_pane: {
+        plugin_id: mode === 'plugin' ? 'other' : 'work-cards', entrypoint: mode === 'entrypoint' ? 'card' : 'document', pane: p,
+      } } });
+    });
+    await assert.rejects(f.client.openDocument(f.saved, f.relative, DEFAULT_CONFIG), /inspect|partial/i);
+    const opens = f.attempts.filter(a => a.slice(0, 3).join(' ') === 'plugin pane open');
+    assert.equal(opens.length, 1);
+    assert.deepEqual(mutations(f.attempts), opens);
+  });
+});
+
+test('document canonicalizes home checkout aliases, applies command override and titles displayed basename', async t => {
+  const f = await documentFixture(t);
+  const alias = join(f.root, 'alias'); await symlink(f.root, alias);
+  await mkdir(join(f.root, 'docs')); await writeFile(join(f.root, 'docs', '-label.md'), 'document');
+  f.saved.card.cwd = '~/' + relative(homedir(), alias);
+  f.saved.card.documents = [{ path: 'docs/-label.md', description: '' }];
+  await f.client.openDocument(f.saved, 'docs/-label.md', { ...DEFAULT_CONFIG, document_command: 'less -R' });
+  const [open, rename] = mutations(f.attempts);
+  assert.ok(open.includes('WORK_CARDS_DOCUMENT_CWD=' + f.root));
+  assert.ok(open.includes('WORK_CARDS_DOCUMENT_PATH=' + join(f.root, 'docs', '-label.md')));
+  assert.ok(open.includes('WORK_CARDS_DOCUMENT_COMMAND=less -R'));
+  assert.deepEqual(rename, ['tab', 'rename', 'w1:t3', '-label.md']);
+});
+test('attach forwards caller EDITOR verbatim rather than server inherited environment', async t => {
+  const f = await fixture(t);
+  f.client.env.EDITOR = '"/editor path" -f';
+  await f.client.attachCard(snapshot(f.path), DEFAULT_CONFIG);
+  const open = mutations(f.calls).find(a => a.slice(0, 3).join(' ') === 'plugin pane open');
+  assert.ok(open.includes('EDITOR="/editor path" -f'));
+});
+test('malformed nonblank EDITOR is rejected before Herdr calls, while unset uses less', async t => {
+  const f = await documentFixture(t);
+  f.client.env.EDITOR = 'vim\n';
+  await assert.rejects(f.client.openDocument(f.saved, f.relative, DEFAULT_CONFIG), /EDITOR/);
+  assert.deepEqual(f.attempts, []);
+  f.client.env.EDITOR = '';
+  await f.client.openDocument(f.saved, f.relative, DEFAULT_CONFIG);
+  assert.ok(mutations(f.attempts)[0].includes('WORK_CARDS_DOCUMENT_COMMAND=less'));
+});
+test('document refuses a caller that moves between initial lookup and the locked lookup', async t => {
+  let reads = 0;
+  const f = await documentFixture(t, async (args, f) => {
+    if (args[0] === 'pane' && args[1] === 'current' && ++reads === 2) {
+      return JSON.stringify({ result: { type: 'pane_current', pane: { ...f.panes[1], tab_id: 'w1:t9' } } });
+    }
+  });
+  await assert.rejects(f.client.openDocument(f.saved, f.relative, DEFAULT_CONFIG), /moved/);
+  assert.deepEqual(mutations(f.attempts), []);
+});
+
+test('attach and document forward only explicitly defined caller PATH, not Herdr identities or entire env', async t => {
+  const f = await fixture(t);
+  const path = '/custom mise/bin:/caller bin:/usr/bin:/bin';
+  f.client.env.PATH = path; f.client.env.EDITOR = 'custom-editor';
+  f.client.env.SECRET_TEST_VALUE = 'do not forward';
+  await f.client.attachCard(snapshot(f.path), DEFAULT_CONFIG);
+  const cardOpen = f.calls.find(a => a.slice(0, 3).join(' ') === 'plugin pane open');
+  const envValues = args => args.flatMap((value, i) => value === '--env' ? [args[i + 1]] : []);
+  assert.ok(envValues(cardOpen).includes('PATH=' + path));
+  assert.ok(envValues(cardOpen).includes('EDITOR=custom-editor'));
+  assert.ok(envValues(cardOpen).every(value => !value.startsWith('HERDR_') && !value.startsWith('SECRET_TEST_VALUE=')));
+  const doc = await documentFixture(t);
+  doc.client.env.PATH = path; doc.client.env.SECRET_TEST_VALUE = 'do not forward';
+  await doc.client.openDocument(doc.saved, doc.relative, DEFAULT_CONFIG);
+  const documentOpen = mutations(doc.attempts)[0];
+  assert.ok(envValues(documentOpen).includes('PATH=' + path));
+  assert.deepEqual(envValues(documentOpen).map(value => value.split('=')[0]).sort(),
+    ['PATH', 'WORK_CARDS_DOCUMENT_COMMAND', 'WORK_CARDS_DOCUMENT_CWD', 'WORK_CARDS_DOCUMENT_PATH']);
 });

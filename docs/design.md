@@ -55,7 +55,8 @@ Exports: `WorkCardsConfig`, immutable `DEFAULT_CONFIG`, `configPath(env?: NodeJS
 | check_every_n_responses | 1 | integer >=0; zero independently disables response checks |
 | check_every_n_cycles | 10 | integer >=0; zero independently disables cycle checks |
 | max_context_chars | 24000 | positive integer, actual characters, not a token estimate |
-| max_document_bytes | 262144 | positive integer; read-only document preview byte budget |
+| max_document_bytes | 262144 | positive integer; legacy preview setting, no effect on external tools |
+| document_command | `null` | null or nonblank trusted global command prefix without controls; otherwise use nonblank EDITOR, then less |
 | max_output_tokens | 2048 | positive integer |
 | request_timeout_ms | 30000 | integer 1–2147483647 (Node timer range) |
 | pane_poll_interval_ms | 1000 | integer 1–2147483647 (Node timer range) |
@@ -81,7 +82,13 @@ The default `helpers/simple` model needs an existing registered helper profile. 
 
 The Herdr client exports `attachCard(snapshot: CardSnapshot, config)` and `detachCard(target: Pick<CardSnapshot, 'path'>, config)`. Existing snapshot callers remain valid; detach needs only the saved path and does not reread YAML. It targets the caller's workspace, verifies plugin registration and ownership, and serializes cooperating mutations with a workspace lock. It never uses GUI focus as a fallback.
 
-The pane reads YAML independently of Pi and is the sole regular workspace-summary publisher. Tokens hold ownership and display metadata, not durable card data. Document previews are read-only and bounded by `max_document_bytes`; they never invoke a shell editor, `open` or `xdg-open`. HTTP links use OSC 8 and Herdr's local-client handling.
+The pane reads YAML independently of Pi and is the sole regular workspace-summary publisher. Tokens hold ownership and display metadata, not durable card data. The view emits typed exit, document-open or no-action results. Document intents include a freshly read snapshot and require the displayed checkout/path to remain unchanged. Only painted letter shortcuts are active; digits are inert. HTTP links use OSC 8 and Herdr's local-client handling.
+
+`HerdrClient.openDocument(snapshot, relativePath, config)` validates card membership, the configured command and `resolveDocument` before Herdr mutation. Under the existing workspace lock it verifies the exact caller pane, socket, workspace and live owner nonce against the full inventory. It requires the exact local plugin registration with both entrypoints, never replaces a conflict or trusts hooks, and directs stale registrations to explicit relink.
+
+The `document` entrypoint opens a no-focus tab in the caller's exact workspace. Its cwd is the plugin root so `/bin/sh bin/open-document.sh` resolves without an executable-bit requirement. Explicit environment arguments carry the trusted command prefix, canonical checkout and absolute document path. The POSIX launcher changes to the checkout and appends the document as a quoted positional argument, never as shell source. Command selection is global config, then nonblank `$EDITOR`, then `less`; no `$VISUAL`. Card YAML and helper output cannot select an executable. Attachment forwards Pi's `$EDITOR` explicitly, even when empty. A defined caller `$PATH` is forwarded on attachment and document launch, never the whole environment or inherited Herdr identities. An absent injected `$PATH` stays unspecified.
+
+The client validates that the returned plugin, entrypoint and workspace match, and that pane, terminal and tab identities are new. It renames only the returned tab to the displayed path's basename, then focuses that exact tab. Partial failures report the known returned tab ID and require inspection; there are no automatic retries or tab closes. An attempted launch discards buffered card keys to prevent autorepeat launches or blind retries after a partial failure. The card loop stays alive and publishes normally. Editor failures remain visible in their own terminal with a press-Enter-to-close prompt. No Node editor wrapper, `pane.run`, `open`, `xdg-open`, workspace overview or editor-tab persistence is introduced. External tools may edit files and are not capped by the legacy preview budget.
 
 ## Binding and owner recovery
 
@@ -93,14 +100,14 @@ A pure ownership classifier distinguishes empty, live and recoverable-orphan inv
 
 Current-binding detach can clean up after YAML deletion. It derives identity from the canonical existing parent directory and filename. A missing parent, dangling card symlink or ambiguous identity blocks cleanup.
 
-In a document preview, `q` returns to the card. In the main view, it exits the display without detaching the Pi session or stopping updates. Explicit `open` recreates a departed pane, including after cold restart; explicit `detach` clears a validated orphan. Neither action reclaims a surviving or restored owner.
+In the card view, `q` exits the display without detaching the Pi session or stopping updates. `j` and `k` are document letters. Document tabs use the selected editor or pager's native keys. Explicit `open` recreates a departed pane, including after cold restart; explicit `detach` clears a validated orphan. Neither action reclaims a surviving or restored owner.
 
-The package includes compiled entrypoints, docs and `herdr-plugin.toml`. Local consumers build explicitly; there is no prepare or postinstall hook.
+The package includes compiled entrypoints, the POSIX launcher in `bin`, docs and `herdr-plugin.toml`. Local consumers build explicitly; there is no prepare or postinstall hook.
 
 ## Planned document actions
 
-Current document previews are read-only and stay in the card pane.
-The agreed next-iteration direction is to open documents in an editor in a new tab; this is not implemented or approved for coding yet.
+Editor-first document tabs are implemented as described above. The isolated native suite passed all 21 checks, including tab focus, real Vim Ctrl-C/exit and normal document-tab removal. The caller was a shell, not live Pi; see [verification status](../README.md#verification-status) for tested versions, package-content checks and remaining boundaries.
+Annotate integration remains deferred, as does the shared workspace/agent redesign.
 [Herdr Annotate / Plannotator](https://github.com/plannotator/herdr-annotate) is a deferred candidate for future document review.
 Source research indicates its plugin document entrypoint can open existing Markdown.
 Its [feedback delivery](https://github.com/plannotator/plannotator-tui/blob/main/crates/plannotator-tui/src/delivery.rs) targets a Herdr pane through `herdr agent prompt` (terminal input), not a callback pinned to a Pi session.

@@ -4,13 +4,17 @@ import { lstat, open, realpath, unlink } from 'node:fs/promises';
 import { basename, dirname, isAbsolute, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { isDeepStrictEqual } from 'node:util';
-import type { CardSnapshot } from '../card.js';
-import { configPath, type WorkCardsConfig } from '../config.js';
+import { homedir } from 'node:os';
+import { resolveDocument, type CardSnapshot } from '../card.js';
+import { configPath, documentCommand, type WorkCardsConfig } from '../config.js';
 import { classifyExplicitOwner, liveOwner, workspaceKeys, type Attachment, type Pane, type Workspace } from './ownership.js';
 export type { Attachment } from './ownership.js';
 type Run = (argv: string[], timeoutMs: number) => Promise<string>;
 interface ClientOptions { env?: NodeJS.ProcessEnv; run?: Run; pluginRoot?: string }
-const pluginPane = { id: 'card', title: 'Work card', placement: 'split', command: ['node', 'dist/herdr/pane.js'] };
+const pluginPanes = [
+  { id: 'card', title: 'Work card', placement: 'split', command: ['node', 'dist/herdr/pane.js'] },
+  { id: 'document', title: 'Document', placement: 'tab', command: ['/bin/sh', 'bin/open-document.sh'] },
+];
 
 function object(value: unknown, label: string): Record<string, any> {
   if (!value || typeof value !== 'object' || Array.isArray(value)) throw new Error(`Unexpected Herdr ${label}`);
@@ -127,8 +131,8 @@ export class HerdrClient {
       const p = object(value, 'plugin registration');
       if (p.plugin_id !== 'work-cards' || p.enabled !== true || p.plugin_root !== root || p.manifest_path !== join(root, 'herdr-plugin.toml') ||
           p.source?.kind !== 'local' || p.version !== '0.1.0' || p.min_herdr_version !== '0.9.3' ||
-          !isDeepStrictEqual(p.platforms, ['macos', 'linux']) || !isDeepStrictEqual(p.panes, [pluginPane])) {
-        throw new Error('Conflicting or disabled work-cards plugin registration; inspect it explicitly, no registration was replaced');
+          !isDeepStrictEqual(p.platforms, ['macos', 'linux']) || !isDeepStrictEqual(p.panes, pluginPanes)) {
+        throw new Error(`Conflicting or disabled work-cards plugin registration; inspect it and explicitly relink with herdr plugin link ${join(root, 'herdr-plugin.toml')}. No registration was replaced; linked manifests may require explicit relink for new entrypoints.`);
       }
     };
     const plugins = (await this.result(['plugin', 'list', '--plugin', 'work-cards', '--json'], config, 'plugin_list')).plugins;
@@ -152,7 +156,8 @@ export class HerdrClient {
       const opened = await this.result(['plugin', 'pane', 'open', '--plugin', 'work-cards', '--entrypoint', 'card', '--placement', 'split',
         '--target-pane', caller.pane_id, '--direction', 'down', '--cwd', root, '--no-focus',
         '--env', `WORK_CARDS_CARD=${await realpath(snapshot.path)}`, '--env', `WORK_CARDS_CONFIG=${configPath(this.env)}`,
-        '--env', `WORK_CARDS_STATE_DIR=${dirname(await realpath(snapshot.path))}`, '--env', `WORK_CARDS_NONCE=${nonce}`], config, 'plugin_pane_opened');
+        '--env', `WORK_CARDS_STATE_DIR=${dirname(await realpath(snapshot.path))}`, '--env', `WORK_CARDS_NONCE=${nonce}`,
+        '--env', `EDITOR=${this.env.EDITOR ?? ''}`, ...(this.env.PATH === undefined ? [] : ['--env', `PATH=${this.env.PATH}`])], config, 'plugin_pane_opened');
       const info = object(opened.plugin_pane, 'plugin pane'), p = parsePane(info.pane);
       if (info.plugin_id !== 'work-cards' || info.entrypoint !== 'card' || p.workspace_id !== caller.workspace_id || p.tab_id !== caller.tab_id || p.pane_id === caller.pane_id) {
         throw new Error('Herdr opened unexpected plugin pane; opening may be partial, inspect before retrying');
@@ -171,6 +176,49 @@ export class HerdrClient {
         } catch { /* Best-effort geometry must not relaunch a successfully owned pane. */ }
       }
       return { socket, workspaceId: caller.workspace_id, paneId: p.pane_id, terminalId: p.terminal_id, cardIdentity: identity, nonce };
+    });
+  }
+  async openDocument(snapshot: CardSnapshot, relativePath: string, config: WorkCardsConfig): Promise<void> {
+    if (!snapshot.card.documents.some(document => document.path === relativePath)) throw new Error('Document is not listed on this card');
+    const command = documentCommand(config, this.env);
+    const document = await resolveDocument(snapshot.card, relativePath);
+    const cwd = await realpath(snapshot.card.cwd.startsWith('~/') ? join(homedir(), snapshot.card.cwd.slice(2)) : snapshot.card.cwd);
+    const caller = await this.current(config), socket = await this.socket(config), identity = await cardIdentity(snapshot.path);
+    await withWorkspaceLock(socket, caller.workspace_id, async () => {
+      const current = await this.current(config);
+      if (current.pane_id !== caller.pane_id || current.terminal_id !== caller.terminal_id ||
+          current.workspace_id !== caller.workspace_id || current.tab_id !== caller.tab_id || current.pane_id !== this.env.HERDR_PANE_ID) {
+        throw new Error('Work-card caller moved; nothing opened, retry explicitly');
+      }
+      const { workspace, panes } = await this.inventory(caller.workspace_id, config);
+      const ownership = classifyExplicitOwner(socket, identity, workspace, panes, current);
+      if (ownership.kind !== 'live' || ownership.attachment.paneId !== current.pane_id ||
+          ownership.attachment.terminalId !== current.terminal_id || ownership.attachment.nonce !== this.env.WORK_CARDS_NONCE) {
+        throw new Error('Work-card ownership conflict: only the verified live card pane may open documents');
+      }
+      await this.ensurePlugin(config);
+      let tabId: string | undefined;
+      try {
+        const opened = await this.result(['plugin', 'pane', 'open', '--plugin', 'work-cards', '--entrypoint', 'document',
+          '--placement', 'tab', '--workspace', caller.workspace_id, '--cwd', await realpath(this.pluginRoot), '--no-focus',
+          '--env', `WORK_CARDS_DOCUMENT_COMMAND=${command}`, '--env', `WORK_CARDS_DOCUMENT_CWD=${cwd}`,
+          '--env', `WORK_CARDS_DOCUMENT_PATH=${document}`, ...(this.env.PATH === undefined ? [] : ['--env', `PATH=${this.env.PATH}`])], config, 'plugin_pane_opened');
+        const info = object(opened.plugin_pane, 'plugin pane');
+        if (typeof info.pane?.tab_id === 'string') tabId = id(info.pane.tab_id);
+        const p = parsePane(info.pane);
+        if (info.plugin_id !== 'work-cards' || info.entrypoint !== 'document' || p.workspace_id !== caller.workspace_id ||
+            panes.some(existing => existing.pane_id === p.pane_id || existing.terminal_id === p.terminal_id || existing.tab_id === p.tab_id)) {
+          throw new Error('Herdr returned an unexpected or reused document pane/tab/terminal');
+        }
+        const label = basename(relativePath);
+        const tab = object((await this.result(['tab', 'rename', p.tab_id, label], config, 'tab_info')).tab, 'tab');
+        if (tab.tab_id !== p.tab_id || tab.workspace_id !== caller.workspace_id || tab.label !== label) throw new Error('Herdr renamed tab identity/label mismatch');
+        // Focus is documented; do not invent a result type for its response.
+        const focused = object(JSON.parse(await this.run(['tab', 'focus', p.tab_id], config.herdr_timeout_ms)), 'focus response');
+        if (focused.error) throw new Error(`Herdr focus error: ${JSON.stringify(focused.error)}`);
+      } catch (error) {
+        throw new Error(`Document tab opening may be partial${tabId ? ` (returned tab ${tabId})` : ''}. Inspect the workspace/tab before retrying; no tab was closed: ${(error as Error).message}`, { cause: error });
+      }
     });
   }
   async projectCard(snapshot: CardSnapshot, config: WorkCardsConfig, expected: Attachment): Promise<void> {

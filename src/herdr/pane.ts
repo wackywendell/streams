@@ -11,7 +11,7 @@ export async function runPane(env: NodeJS.ProcessEnv = process.env): Promise<voi
   if (!path || !isAbsolute(path)) throw new Error('WORK_CARDS_CARD must identify an absolute YAML card on this machine.');
   if (env.WORK_CARDS_STATE_DIR && dirname(path) !== env.WORK_CARDS_STATE_DIR) throw new Error('Card/state directory mismatch; reopen explicitly.');
   const config = await loadConfig(env.WORK_CARDS_CONFIG || configPath(env));
-  const view = new CardView(path, config), client = new HerdrClient({ env }), parser = new KeyInput();
+  const view = new CardView(path), client = new HerdrClient({ env }), parser = new KeyInput();
   let attachment: Attachment | undefined;
   let stopped = false, wake: (() => void) | undefined;
   let keys: string[] = [];
@@ -37,7 +37,18 @@ export async function runPane(env: NodeJS.ProcessEnv = process.env): Promise<voi
         } catch (error) { view.setNotice('projection', `Herdr projection unavailable: ${(error as Error).message}`); }
       }
       const pending = keys; keys = [];
-      for (const key of pending) { if (await view.key(key)) { stopped = true; break; } }
+      for (const key of pending) {
+        const intent = await view.key(key);
+        if (intent.kind === 'exit') { stopped = true; break; }
+        if (intent.kind === 'open-document') {
+          try {
+            await client.openDocument(intent.snapshot, intent.relativePath, config);
+          } catch (error) { view.setNotice('document', `Cannot open ${intent.relativePath}: ${(error as Error).message}`); }
+          // Discard queued autorepeat after focus or partial failure; retry needs a fresh keypress.
+          keys = [];
+          break;
+        }
+      }
       const columns = output.columns || 80, rows = output.rows || 24;
       const rendered = view.render(columns, rows);
       const frame = `${columns}:${rows}:${rendered}`;

@@ -3,7 +3,7 @@ import assert from 'node:assert/strict';
 import { mkdir, mkdtemp, writeFile, rm } from 'node:fs/promises';
 import { resolve, join } from 'node:path';
 import { homedir } from 'node:os';
-import { DEFAULT_CONFIG, configPath, loadConfig } from '../dist/config.js';
+import { DEFAULT_CONFIG, configPath, loadConfig, documentCommand } from '../dist/config.js';
 
 async function fixture(t) {
   await mkdir(resolve('.test-tmp'), { recursive: true });
@@ -79,4 +79,22 @@ test('malformed config errors include path and never silently use defaults', asy
     await writeFile(path, raw);
     await assert.rejects(loadConfig(path), error => error.message.includes(path));
   }
+});
+
+test('document command is global, validated and resolves config > EDITOR > less', async t => {
+  const path = await fixture(t);
+  assert.equal(DEFAULT_CONFIG.document_command, null);
+  for (const command of [null, 'vim', 'less -R', '"/path with spaces/editor" -f']) {
+    await writeFile(path, JSON.stringify({ document_command: command }));
+    assert.equal((await loadConfig(path)).document_command, command);
+  }
+  for (const command of ['', '   ', 42, false, [], {}, 'vim\n', 'vim\u202e']) {
+    await writeFile(path, JSON.stringify({ document_command: command }));
+    await assert.rejects(loadConfig(path), /document_command/);
+  }
+  assert.equal(documentCommand(DEFAULT_CONFIG, {}), 'less');
+  assert.equal(documentCommand(DEFAULT_CONFIG, { EDITOR: '   ', VISUAL: 'vim' }), 'less');
+  assert.equal(documentCommand(DEFAULT_CONFIG, { EDITOR: 'nano -w' }), 'nano -w');
+  assert.equal(documentCommand({ ...DEFAULT_CONFIG, document_command: 'less -R' }, { EDITOR: 'bad\n' }), 'less -R');
+  assert.throws(() => documentCommand(DEFAULT_CONFIG, { EDITOR: 'vim\n' }), /EDITOR/);
 });
