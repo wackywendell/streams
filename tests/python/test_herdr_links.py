@@ -4,8 +4,10 @@ import dataclasses
 import json
 import os
 import pty
+import re
 import select
 import signal
+import struct
 import subprocess
 import sys
 import tempfile
@@ -22,7 +24,7 @@ sys.path.insert(0, str(SRC))
 from _streams.errors import StreamError
 from _streams.frontmatter import render_frontmatter
 from _streams.herdr_binding import read_binding, write_binding
-from _streams.herdr_links import LinksView, NotesConfig, StreamsRuntime, note_uri, render
+from _streams.herdr_links import LinksView, NotesConfig, ShortcutInput, StreamsRuntime, note_uri, render
 from _streams.models import Link, Stream
 from _streams.store import rename_stream
 
@@ -38,8 +40,13 @@ def example(root: Path = Path("/notes/scratch"), **fields: object) -> Stream:
 class LinksRenderTest(unittest.TestCase):
     def test_stream_without_external_links_still_has_note_action(self) -> None:
         rendered = render(example())
-        for text in ("Example stream · active", "Ready for review.", "[n] Open scratch note", "No linked issues or PRs."):
-            self.assertIn(text, rendered)
+        visible = re.sub(r"\x1b\[[0-9;]*m", "", rendered)
+        self.assertEqual(visible.splitlines(), [
+            "[n] Example stream · active", "Ready for review.", "No linked issues or PRs.",
+        ])
+        self.assertIn("\x1b[1mExample stream\x1b[0m", rendered)
+        self.assertIn("\x1b[3;90mNo linked issues or PRs.\x1b[0m", rendered)
+        self.assertNotIn("Ctrl-click", rendered)
 
     def test_issue_and_pr_labels_are_osc8_http_links(self) -> None:
         stream = example(issues=[{"url": "https://github.com/example/repo/issues/42", "description": "Fix flaky test"}],
@@ -47,6 +54,48 @@ class LinksRenderTest(unittest.TestCase):
         rendered = render(stream)
         for item, kind, number in ((stream.issues[0], "Issue", "42"), (stream.prs[0], "PR", "123")):
             self.assertIn(f"\x1b]8;;{item.url}\x1b\\{kind} #{number}: {item.description}\x1b]8;;\x1b\\", rendered)
+        for index, item in enumerate((*stream.issues, *stream.prs), 1):
+            self.assertIn(f"\n[{index}] \x1b[94;4m\x1b]8;;{item.url}", rendered)
+        self.assertNotIn("Ctrl-click", rendered)
+
+    def test_only_safe_links_get_shortcuts_and_only_single_digit_keys_are_advertised(self) -> None:
+        stream = example(issues=[
+            {"url": f"https://github.com/example/repo/issues/{i}", "description": f"Issue {i}"} for i in range(1, 11)
+        ])
+        stream = dataclasses.replace(stream, issues=(Link("file:///not-web", "Not actionable"), *stream.issues))
+        rendered = render(stream)
+        self.assertNotIn("[0]", rendered)
+        self.assertNotIn("[10]", rendered)
+        self.assertIn("[1] \x1b[94;4m\x1b]8;;https://github.com/example/repo/issues/1", rendered)
+        self.assertIn("[9] \x1b[94;4m\x1b]8;;https://github.com/example/repo/issues/9", rendered)
+        self.assertIn("\x1b]8;;https://github.com/example/repo/issues/10", rendered)
+        self.assertIn("Not actionable", rendered)
+
+    def test_short_pane_keeps_header_note_action_and_explicit_overflow(self) -> None:
+        stream = example(prs=[
+            {"url": f"https://github.com/example/repo/pull/{i}", "description": f"Change {i}"} for i in range(1, 7)
+        ])
+        for rows in (1, 2, 3, 4, 6, 20):
+            with self.subTest(rows=rows):
+                rendered = render(stream, rows=rows)
+                self.assertLessEqual(len(rendered.splitlines()), rows)
+                self.assertTrue(rendered.splitlines()[0].startswith("[n] \x1b[1mExample stream"))
+                self.assertEqual(rendered.count("[n]"), 1)
+        rendered = render(stream, rows=6)
+        self.assertIn("[1]", rendered)
+        self.assertIn("[2]", rendered)
+        self.assertIn("[3]", rendered)
+        self.assertNotIn("[4]", rendered)
+        self.assertIn("3 more links", rendered)
+
+    def test_title_shortcut_leaves_three_link_rows_in_five_row_pane(self) -> None:
+        stream = example(prs=[
+            {"url": f"https://github.com/example/repo/pull/{i}", "description": f"Change {i}"} for i in range(1, 4)
+        ])
+        rendered = render(stream, rows=5)
+        self.assertEqual(len(rendered.splitlines()), 5)
+        self.assertIn("[3]", rendered.splitlines()[-1])
+        self.assertNotIn("more links", rendered)
 
     def test_render_reflects_updated_state(self) -> None:
         self.assertNotEqual(render(example()), render(example(state="Review complete.")))
@@ -69,7 +118,7 @@ class LinksRenderTest(unittest.TestCase):
         stream = example(title="Title\x1b\n\x07", state="State\r\x1b")
         for url in ("obsidian://open?vault=notes", "https://example.com/\x07bad", "https:///missing-host", "not a URL"):
             unsafe = dataclasses.replace(stream, issues=(Link(url, "Description\x1b\x07"),))
-            rendered = render(unsafe)
+            rendered = re.sub(r"\x1b\[[0-9;]*m", "", render(unsafe))
             self.assertNotIn("\x1b", rendered)
             self.assertNotIn("\x07", rendered)
             self.assertNotIn("\r", rendered)
@@ -90,6 +139,21 @@ class LinksRenderTest(unittest.TestCase):
                        {"notes": {"root": "/notes"}, "obsidian": {"vault": None}}):
             with self.subTest(config=config), self.assertRaises(StreamError):
                 NotesConfig.parse(config)
+
+
+class ShortcutInputTest(unittest.TestCase):
+    def test_standalone_shortcuts_are_dispatched(self) -> None:
+        self.assertEqual(ShortcutInput().feed(b"x0n123456789"), list("n123456789"))
+
+    def test_fragmented_terminal_sequences_never_dispatch_shortcuts(self) -> None:
+        for sequence in (b"\x1b[1;5A", b"\x1b[15~", b"\x1bO1;5P", b"\x1b[110;1u",
+                         b"\x1b[<0;15;19M", b"\x1b1", b"\x1bn", b"\x1b]0;title n123\x07",
+                         b"\x1bPpayload n123\x1b\\", b"\x1b[200~n123\x1b[201~"):
+            with self.subTest(sequence=sequence):
+                decoder = ShortcutInput()
+                for byte in sequence:
+                    self.assertEqual(decoder.feed(bytes([byte])), [])
+                self.assertEqual(decoder.feed(b"n"), ["n"])
 
 
 class LinksRuntimeTest(unittest.TestCase):
@@ -163,6 +227,64 @@ class LinksRuntimeTest(unittest.TestCase):
         self.assertEqual(opener.call_args.args[0][0], "open")
         self.assertEqual(parse_qs(urlsplit(uri).query)["vault"], ["New vault"])
 
+    def test_numbered_actions_match_safe_issue_then_pr_order_and_refresh_at_keypress(self) -> None:
+        issue = {"url": "https://github.com/example/repo/issues/1", "description": "Test issue"}
+        pr = {"url": "https://github.com/example/repo/pull/2", "description": "Test PR"}
+        stream = example(issues=[issue], prs=[pr])
+        stream = dataclasses.replace(stream, issues=(Link("file:///unsafe", "Not a web link"), *stream.issues))
+        view = LinksView(self.binding)
+        with patch.object(view.runtime, "stream", return_value=stream) as show, \
+                patch("_streams.herdr_links.subprocess.run") as opener:
+            view.refresh()
+            write_binding(self.binding, "other")
+            view.open_link(1)
+            self.assertEqual(show.call_args.args, ("other",))
+            self.assertEqual(opener.call_args.args[0], ["open", issue["url"]])
+            view.open_link(2)
+            self.assertEqual(opener.call_args.args[0], ["open", pr["url"]])
+            show.return_value = example(prs=[pr])
+            opened_count = opener.call_count
+            with self.assertRaisesRegex(StreamError, "Links changed"):
+                view.open_link(1)
+            self.assertEqual(opener.call_count, opened_count)
+            view.open_link(1)
+            self.assertEqual(opener.call_args.args[0], ["open", pr["url"]])
+
+    def test_hidden_links_have_no_active_shortcuts(self) -> None:
+        stream = example(prs=[
+            {"url": f"https://github.com/example/repo/pull/{i}", "description": f"Change {i}"} for i in range(1, 7)
+        ])
+        view = LinksView(self.binding)
+        view.rows = 6
+        with patch.object(view.runtime, "stream", return_value=stream), \
+                patch("_streams.herdr_links.subprocess.run") as opener:
+            view.refresh()
+            with self.assertRaisesRegex(StreamError, "No link assigned"):
+                view.open_link(4)
+            opener.assert_not_called()
+            view.open_link(3)
+            self.assertEqual(opener.call_args.args[0], ["open", stream.prs[2].url])
+
+    def test_missing_or_unsafe_numbered_links_never_open(self) -> None:
+        stream = dataclasses.replace(example(), issues=(Link("https://example.com/\x07bad", "Unsafe link"),))
+        view = LinksView(self.binding)
+        with patch.object(view.runtime, "stream", return_value=stream), \
+                patch("_streams.herdr_links.subprocess.run") as opener:
+            for index in (0, 1, 9, 10):
+                with self.subTest(index=index), self.assertRaisesRegex(StreamError, "No link assigned"):
+                    view.open_link(index)
+            opener.assert_not_called()
+
+    def test_failed_link_opener_retains_valid_view(self) -> None:
+        view = LinksView(self.binding)
+        stream = example(prs=[{"url": "https://github.com/example/repo/pull/1", "description": "Test PR"}])
+        with patch.object(view.runtime, "stream", return_value=stream), \
+                patch("_streams.herdr_links.subprocess.run", side_effect=subprocess.CalledProcessError(2, ["open"])):
+            view.refresh()
+            with self.assertRaisesRegex(StreamError, "Open link failed"):
+                view.open_link(1)
+            self.assertIsNotNone(view.stream)
+
     def test_failed_binding_or_note_refresh_disables_stale_opener(self) -> None:
         for failure in ("binding", "note"):
             with self.subTest(failure=failure):
@@ -180,6 +302,8 @@ class LinksRuntimeTest(unittest.TestCase):
                     self.assertIsNone(view.stream)
                     with self.assertRaisesRegex(StreamError, "unavailable"):
                         view.open_note()
+                    with self.assertRaisesRegex(StreamError, "unavailable"):
+                        view.open_link(1)
                     opener.assert_not_called()
 
     def test_failed_opener_or_config_does_not_discard_a_valid_view(self) -> None:
@@ -255,12 +379,15 @@ class PackagedViewTest(unittest.TestCase):
             bin.mkdir()
             for name, source in {
                 "streams": "from pathlib import Path\nPath('wrong-streams').touch()\nraise SystemExit(7)\n",
-                "open": "import json,sys\nfrom pathlib import Path\nif Path('fail-open').exists(): raise SystemExit(2)\nPath('opened.json').write_text(json.dumps(sys.argv[1:]))\n",
+                "open": "import json,sys\nfrom pathlib import Path\nif Path('fail-open').exists(): raise SystemExit(2)\nPath('opened.json').write_text(json.dumps(sys.argv[1:]))\nwith Path('opened.jsonl').open('a') as log: log.write(json.dumps(sys.argv[1:]) + '\\n')\n",
             }.items():
                 path = bin / name
                 path.write_text(f"#!{sys.executable}\n" + source)
                 path.chmod(0o755)
             master, slave = pty.openpty()
+            import fcntl
+            import termios
+            fcntl.ioctl(slave, termios.TIOCSWINSZ, struct.pack("HHHH", 6, 80, 0, 0))
             process = subprocess.Popen(
                 ["/bin/sh", str(launcher)], stdin=slave, stdout=slave, stderr=slave, cwd=root,
                 env={"PATH": str(bin), "HOME": str(root), "XDG_CONFIG_HOME": str(root / "config"),
@@ -296,6 +423,34 @@ class PackagedViewTest(unittest.TestCase):
                 self.assertEqual(parse_qs(urlsplit(uri).query), {"vault": ["Notes"], "file": ["scratch/example.md"]})
                 stream.path.write_text(render_frontmatter({**stream.frontmatter, "state": "State changed while pane is open."}, ""))
                 await_condition(lambda: b"State changed while pane is open." in output)
+                issue_url = "https://github.com/example/repo/issues/42"
+                stream.path.write_text(render_frontmatter({**stream.frontmatter, "issues": [
+                    {"url": issue_url, "description": "Test numbered action"},
+                ]}, ""))
+                await_condition(lambda: b"Test numbered action" in output)
+                os.write(master, b"1")
+                await_condition(lambda: json.loads((root / "opened.json").read_text()) == [issue_url])
+                event_log = root / "opened.jsonl"
+                await_condition(lambda: len(event_log.read_text().splitlines()) == 2)
+                os.write(master, b"\x1b[1;5A\x1b[15~\x1bO1;5P\x1b[200~n123\x1b[201~xn")
+                await_condition(lambda: len(event_log.read_text().splitlines()) >= 3)
+                self.assertEqual(len(event_log.read_text().splitlines()), 3)
+                self.assertEqual(json.loads(event_log.read_text().splitlines()[-1]), [uri])
+                prs = [
+                    {"url": f"https://github.com/example/repo/pull/{i}", "description": f"Change {i}"} for i in range(1, 7)
+                ]
+                stream.path.write_text(render_frontmatter({**stream.frontmatter, "prs": prs}, ""))
+                await_condition(lambda: b"3 more links" in output)
+                frame = output.rsplit(b"\x1b[2J\x1b[H", 1)[-1]
+                self.assertLessEqual(len(frame.splitlines()), 6)
+                self.assertIn(b"Example stream", frame)
+                self.assertIn(b"[n]", frame)
+                prs[1] = {"url": "https://github.com/example/repo/pull/99", "description": "Changed target"}
+                stream.path.write_text(render_frontmatter({**stream.frontmatter, "prs": prs}, ""))
+                os.write(master, b"12")
+                await_condition(lambda: b"Links changed; press the key again" in output)
+                self.assertEqual(len(event_log.read_text().splitlines()), 4)
+                self.assertEqual(json.loads(event_log.read_text().splitlines()[-1]), [prs[0]["url"]])
                 (root / "fail-open").touch()
                 os.write(master, b"n")
                 await_condition(lambda: b"Open note failed:" in output)

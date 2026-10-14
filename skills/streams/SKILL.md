@@ -149,7 +149,7 @@ Updates publish the association before native label/status/state display. If tha
 
 `streams herdr open <slug>` creates a working tab at recorded cwd, resumes a recorded supported session or leaves a shell, and adds a small bottom links pane. Opening requires macOS and compatible Herdr 0.9.3 or newer. It may link a missing bundled plugin globally; it does not silently replace a conflicting source or enable a disabled plugin. Ask before setup changes or resuming an active recorded session.
 
-The pane is movable and tab-local. It shows HTTP(S) issue/PR links; `n` rereads the current note and vault for Obsidian. It refuses stale note opening after lookup failure. No checkout management, live-agent migration, workspace-wide dock or restart automation is included. Refresh never opens a workspace or pane.
+The pane is movable and tab-local. It shows blue, underlined HTTP(S) issue/PR links, one per row; `1`–`9` open up to nine visible links, and `n` rereads the current note and vault for Obsidian. All web links remain clickable. Hidden links are counted and have no active shortcuts; enlarge the pane to reveal them. Changed shortcut targets require another keypress after refresh, rather than silently opening a different link. It refuses stale note opening after lookup failure. No checkout management, live-agent migration, workspace-wide dock or restart automation is included. Refresh never opens a workspace or pane.
 
 ## Recaps
 

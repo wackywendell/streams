@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 import os
+import re
 import subprocess
 import sys
 import tempfile
@@ -107,7 +108,7 @@ class ExactIdentityTest(unittest.TestCase):
                 with self.subTest(archived=archived, title=title):
                     bound = self.write("topic")
                     view = LinksView(self.binding)
-                    self.assertIn("Topic · active", view.refresh())
+                    self.assertIn("Topic · active", re.sub(r"\x1b\[[0-9;]*m", "", view.refresh()))
                     if archived:
                         archive_stream(bound, month="2026-01" if title == "Topic" else "2026-02", force=True)
                     else:
