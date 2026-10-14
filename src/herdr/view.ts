@@ -4,7 +4,7 @@ import { basename, dirname, isAbsolute } from 'node:path';
 import { readCard, resolveDocument, type CardSnapshot } from '../card.js';
 import type { WorkCardsConfig } from '../config.js';
 
-const documentKeys = '123456789abcdefghijklmnoprstuvwxyz';
+const documentKeys = 'abcdefghijklmnoprstuvwxyz';
 export function plain(text: string): string { return text.replace(/[\p{Cc}\p{Cf}]/gu, ''); }
 function clipped(text: string, columns: number): string { return Array.from(plain(text)).slice(0, columns).join(''); }
 function webUrl(value: string): string | undefined {
@@ -20,7 +20,7 @@ export function renderCard(snapshot: CardSnapshot, columns: number, rows: number
   const card = snapshot.card;
   const entries: { label: string; url?: string; key?: string; path?: string }[] = [
     { label: `${card.title} · ${card.status}` }, { label: card.state },
-    ...card.documents.map((document, index) => ({ label: `${documentKeys[index] ? `[${documentKeys[index]}] ` : ''}${document.description || document.path}`,
+    ...card.documents.map((document, index) => ({ label: `${documentKeys[index] ? `[${documentKeys[index]}] ` : ''}${document.path}`,
       key: documentKeys[index], path: document.path })),
     ...card.issues.map(link => ({ label: `Issue: ${link.description || link.url}`, url: webUrl(link.url) })),
     ...card.prs.map(link => ({ label: `PR: ${link.description || link.url}`, url: webUrl(link.url) })),

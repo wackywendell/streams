@@ -28,6 +28,8 @@ prs: []
 
 All 7 fields are required. Arrays may be empty. Status is `active`, `waiting`, `blocked`, `parked` or `done`. State may be empty; displayed text and descriptions must be single-line.
 
+Document descriptions remain required in YAML. Keep them brief and describe the whole document's purpose, not its latest edit.
+
 `cwd` is an absolute path, or a `~/...` path expanded on the execution host. Document paths are relative to that checkout. Absolute paths, traversal and symlinks escaping the checkout are rejected. Issue and PR URLs must use HTTP or HTTPS. Unknown fields and duplicate YAML keys fail validation.
 
 Cards are per-host state. They are not automatically synced or backed up. Keep secrets out of cards and linked descriptions.
@@ -62,6 +64,8 @@ The read-only `work_card` tool returns the attached card, source path and docume
 The Herdr server, repository, Pi and plugin run together: either locally on macOS or remotely on Linux. A Mac client can attach to the remote Herdr server. Paths and card storage refer to the server host, not the attaching Mac.
 
 The pane reads YAML as the source of truth and can display a card without Pi running. Herdr tokens hold ownership markers and display metadata, not durable card data. The `$wc_summary` token is limited to 80 characters. The integration does not edit Herdr's internal `session.json`.
+
+The compact pane shows each document's repository-relative path, not its description: `[a] docs/design.md`. Document shortcuts use single letters from `a` to `z`, skipping `q`; later documents have no shortcut. Only fully visible shortcuts are active. Digits do not open documents.
 
 HTTP links use OSC 8 terminal links and Herdr's local-client handling. Press a displayed document shortcut for a bounded, read-only preview in the pane. Use `j` and `k` to scroll and `q` to return to the card. A `byte-capped` label marks truncated previews. No document action runs macOS `open` or remote `xdg-open`.
 
@@ -144,7 +148,7 @@ These are installation instructions, not a record of changes to normal user sett
 
 ## Verification status
 
-On macOS, `npm run check && npm test` passed on Node.js 26.11.1 and 22.23.3: 163 tests on each, with no failures or skips.
+On macOS, `npm run check && npm test` passed on Node.js 26.11.1 and 22.23.3: 168 tests on each, with no failures or skips.
 
 During initial packaging verification, installed Pi 1.2.0 loaded the extracted npm tarball on both Node versions in isolated, sandboxed RPC sessions. This verification was not rerun for the current refactored artifact. The `work-card` command and read-only `work_card` tool registered. Both runs exited successfully with empty stderr and no messages, tokens or model calls. That 28-file tarball included compiled entrypoints, manifest and docs, without `src`, tests or `node_modules`. The runs used supplied read-only host dependencies; they were not clean dependency-install tests.
 

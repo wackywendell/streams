@@ -32,6 +32,7 @@ Only status, state, documents, issues, and prs may change. Never change title, c
 Array patches replace the whole array: retain existing entries unless removal is affirmatively evidenced.
 Status must be active, waiting, blocked, parked, or done; state is a concise single-line string.
 Documents are {path,description} with repo-relative paths; issues/prs are {url,description} with HTTP(S) URLs.
+Document descriptions must briefly describe the whole document's purpose, never the latest change or edit.
 Return ONLY exact JSON: {"action":"no_change"} or {"action":"update","patch":{...}}.
 No explanations, Markdown, or extra fields. An empty patch means no_change.
 Additional update guidance (subject to the restrictions above):

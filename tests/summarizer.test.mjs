@@ -35,6 +35,12 @@ test("context preserves current card and normalized textual evidence", () => {
   assert.match(context.systemPrompt, /affirmative evidence/);
 });
 
+test("document descriptions describe the whole purpose briefly, not the latest edit", () => {
+  const context = buildSummaryContext(card, [], options);
+  assert.match(context.systemPrompt, /Document descriptions must briefly describe the whole document's purpose, never the latest change or edit\./);
+  assert.deepEqual(JSON.parse(text(context)).card.documents, card.documents);
+});
+
 test("actual serialized character budget favors newest evidence including escape-heavy text", () => {
   const base = buildSummaryContext(card, [], options);
   const budget = size(base) + 160;
