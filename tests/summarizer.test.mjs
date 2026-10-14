@@ -16,19 +16,11 @@ const text = (context) => context.messages[0].content[0].text;
 const size = (context) => context.systemPrompt.length + text(context).length;
 const response = (content, stopReason = "stop") => ({ stopReason, content: [{ type: "text", text: content }] });
 
-test("context preserves current card and only projected user/assistant/tool-result text", () => {
+test("context preserves current card and normalized textual evidence", () => {
   const context = buildSummaryContext(card, [
-    { role: "system", content: "SYSTEM_SECRET" },
-    { role: "user", content: "User request" },
-    { role: "assistant", content: [
-      { type: "text", text: "Visible response", textSignature: "SIGNATURE_SECRET" },
-      { type: "thinking", thinking: "THINKING_SECRET" },
-      { type: "toolCall", name: "bash", arguments: { command: "ARG_SECRET" }, thoughtSignature: "TOOL_SIGNATURE" },
-    ] },
-    { role: "toolResult", toolName: "read", details: { secret: "DETAIL_SECRET" }, content: [
-      { type: "text", text: "Result evidence" }, { type: "image", data: "IMAGE_SECRET", mimeType: "image/png" },
-    ] },
-    { role: "custom", content: "CUSTOM_SECRET" },
+    { role: "user", text: "User request" },
+    { role: "assistant", text: "Visible response" },
+    { role: "toolResult", text: "Result evidence" },
   ], options);
   const data = JSON.parse(text(context));
   assert.deepEqual(data.card, card);
@@ -47,8 +39,8 @@ test("actual serialized character budget favors newest evidence including escape
   const base = buildSummaryContext(card, [], options);
   const budget = size(base) + 160;
   const context = buildSummaryContext(card, [
-    { role: "user", content: "OLD_EVIDENCE" },
-    { role: "assistant", content: [{ type: "text", text: "\n\"\\".repeat(400) + "NEWEST_EVIDENCE" }] },
+    { role: "user", text: "OLD_EVIDENCE" },
+    { role: "assistant", text: "\n\"\\".repeat(400) + "NEWEST_EVIDENCE" },
   ], { ...options, max_context_chars: budget });
   assert.ok(size(context) <= budget);
   const data = JSON.parse(text(context));
@@ -59,10 +51,23 @@ test("actual serialized character budget favors newest evidence including escape
   assert.doesNotMatch(text(context), /OLD_EVIDENCE/);
 });
 
+test("prompt truncation copies evidence and leaves frozen queued input unchanged", () => {
+  const messages = Object.freeze([
+    Object.freeze({ role: "user", text: "OLD_EVIDENCE" }),
+    Object.freeze({ role: "assistant", text: "\n\"\\".repeat(400) + "NEWEST_EVIDENCE" }),
+  ]);
+  const before = structuredClone(messages);
+  const budget = size(buildSummaryContext(card, [], options)) + 160;
+  const context = buildSummaryContext(card, messages, { ...options, max_context_chars: budget });
+  assert.ok(size(context) <= budget);
+  assert.match(JSON.parse(text(context)).evidence[0].text, /NEWEST_EVIDENCE$/);
+  assert.deepEqual(messages, before);
+});
+
 test("full current card and instructions are never silently truncated", () => {
   const base = buildSummaryContext(card, [], options);
   assert.throws(() => buildSummaryContext(card, [], { ...options, max_context_chars: size(base) - 1 }), /max_context_chars.*full current card/i);
-  const exact = buildSummaryContext(card, [{ role: "user", content: "omitted" }], { ...options, max_context_chars: size(base) });
+  const exact = buildSummaryContext(card, [{ role: "user", text: "omitted" }], { ...options, max_context_chars: size(base) });
   assert.equal(size(exact), size(base));
   assert.deepEqual(JSON.parse(text(exact)).card, card);
   assert.deepEqual(JSON.parse(text(exact)).evidence, []);

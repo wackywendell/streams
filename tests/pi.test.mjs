@@ -98,6 +98,67 @@ test('only explicit new/open binds; initial card and read-only tool contain sour
   assert.equal(h.attachments.length, 2);
 });
 
+test('binding retains only its target while show, tool and checks read fresh card data', async t => {
+  const h = await host(t);
+  await h.command('new Fresh');
+  const initial = await readCard('fresh', h.directory);
+  await updateCard('fresh', { state: 'Externally edited' }, initial.revision, h.directory);
+  await h.command('show');
+  assert.match(h.notices.at(-1).text, /Externally edited/);
+  assert.equal((await h.current()).details.card.state, 'Externally edited');
+  h.evidence('fresh-evidence');
+  await h.emit('agent_settled', { aborted: false });
+  await until(() => h.calls.length === 1);
+  assert.equal(JSON.parse(h.calls[0].context.messages[0].content[0].text).card.state, 'Externally edited');
+  await h.command('detach');
+  assert.deepEqual(h.detachments, [{ path: initial.path }]);
+});
+
+test('current-binding deleted YAML cleanup uses its saved target without rereading the card', async t => {
+  const h = await host(t);
+  await h.command('new Deleted');
+  const path = join(h.directory, 'deleted.yaml');
+  await rm(path);
+  await assert.rejects(h.current(), /ENOENT/);
+  await h.command('detach');
+  assert.deepEqual(h.detachments, [{ path }]);
+  assert.deepEqual(h.branch().at(-1).data, { slug: null, sessionId: 'session-1' });
+  assert.equal((await h.current()).details, null);
+});
+
+test('missing YAML before restore remains unbound and does not invent cleanup ownership', async t => {
+  const h = await host(t);
+  await h.command('new Gone');
+  await rm(join(h.directory, 'gone.yaml'));
+  await h.emit('session_start', { reason: 'resume' });
+  assert.equal((await h.current()).details, null);
+  await h.command('detach');
+  assert.equal(h.detachments.length, 0);
+  assert.equal(h.attachments.length, 1);
+});
+
+test('a binding change during a read invalidates the returned tool snapshot', async t => {
+  const h = await host(t);
+  await h.command('new Read race');
+  const handle = await open(join(h.directory, 'read-race.yaml'), 'r');
+  const prototype = Object.getPrototypeOf(handle), read = prototype.readFile;
+  await handle.close();
+  let entered = false, release;
+  const suspended = new Promise(resolve => { release = resolve; });
+  t.mock.method(prototype, 'readFile', async function (...args) {
+    entered = true;
+    await suspended;
+    return read.apply(this, args);
+  });
+  const pending = h.current();
+  const rejected = assert.rejects(pending, /binding changed during read/);
+  try {
+    await until(() => entered);
+    await h.command('detach');
+  } finally { release(); }
+  await rejected;
+});
+
 test('outside Herdr creation is refused before writing; show remains available', async t => {
   const h = await host(t);
   delete h.env.HERDR_ENV;

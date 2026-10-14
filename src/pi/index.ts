@@ -1,5 +1,5 @@
 import { createHash } from 'node:crypto';
-import { join, resolve } from 'node:path';
+import { dirname, join, resolve } from 'node:path';
 import type { ExtensionAPI, ExtensionContext } from '@earendil-works/pi-coding-agent';
 import { Type } from 'typebox';
 import { cardDirectory, createCard, readCard, updateCard, type CardSnapshot } from '../card.js';
@@ -7,6 +7,7 @@ import { loadConfig, type WorkCardsConfig } from '../config.js';
 import { attachCard, detachCard } from '../herdr/client.js';
 import { createCheckScheduler, type CheckScheduler } from './scheduler.js';
 import { buildSummaryContext, requestSummary } from './summarizer.js';
+import { recentText, type TextEvidence } from './evidence.js';
 
 const bindingEntry = 'work-cards.binding';
 const usage = 'Usage: /work-card new <title> | open <slug> | show | detach';
@@ -19,9 +20,8 @@ interface Dependencies {
   env: NodeJS.ProcessEnv;
 }
 interface Binding {
-  snapshot: CardSnapshot;
-  sessionId: string;
-  directory: string;
+  readonly target: Readonly<Pick<CardSnapshot, 'slug' | 'path'>>;
+  readonly sessionId: string;
   updates: boolean;
 }
 interface Evidence {
@@ -29,31 +29,13 @@ interface Evidence {
   generation: number;
   sessionId: string;
   path: string;
-  messages: { role: 'user' | 'assistant' | 'toolResult'; content: string }[];
+  messages: readonly TextEvidence[];
 }
 function object(value: unknown): value is Record<string, unknown> {
   return value !== null && typeof value === 'object' && !Array.isArray(value);
 }
 function errorText(error: unknown): string {
   return error instanceof Error ? error.message : String(error);
-}
-
-/** Copy only bounded recent text: never retain host messages, thinking or tool arguments. */
-function recentText(messages: readonly unknown[], budget: number): Evidence['messages'] {
-  const recent: Evidence['messages'] = [];
-  for (let i = messages.length - 1; i >= 0 && budget > 0; i--) {
-    const message = messages[i];
-    if (!object(message) || !['user', 'assistant', 'toolResult'].includes(String(message.role))) continue;
-    const content = message.content;
-    const text = typeof content === 'string' ? content : Array.isArray(content)
-      ? content.filter(block => object(block) && block.type === 'text' && typeof block.text === 'string')
-        .map(block => block.text as string).join('\n') : '';
-    if (!text.trim()) continue;
-    const clipped = text.length > budget ? `[Earlier text omitted]\n${text.slice(-budget)}` : text;
-    recent.unshift({ role: message.role as Evidence['messages'][number]['role'], content: clipped });
-    budget -= clipped.length;
-  }
-  return recent;
 }
 
 /** Dependency seam is limited to local host boundaries; card persistence stays in the core. */
@@ -92,7 +74,7 @@ export function registerWorkCards(pi: ExtensionAPI, overrides: Partial<Dependenc
   }
   function applicable(evidence: Evidence, signal: AbortSignal): boolean {
     return !signal.aborted && generation === evidence.generation && binding?.updates === true &&
-      binding.sessionId === evidence.sessionId && binding.snapshot.path === evidence.path &&
+      binding.sessionId === evidence.sessionId && binding.target.path === evidence.path &&
       runtime?.sessionId === evidence.sessionId;
   }
   async function check(evidence: Evidence, signal: AbortSignal): Promise<void> {
@@ -103,17 +85,15 @@ export function registerWorkCards(pi: ExtensionAPI, overrides: Partial<Dependenc
     requestFinished = new Promise<void>(resolve => { finish = resolve; });
     const registry = runtime.registry;
     const settings = { ...config };
-    const target = { slug: binding.snapshot.slug, directory: binding.directory };
+    const target = binding.target;
     try {
-      const current = await readCard(target.slug, target.directory);
+      const current = await readCard(target.slug, dirname(target.path));
       if (!applicable(evidence, signal)) return;
-      binding!.snapshot = current;
       const context = buildSummaryContext(current.card, evidence.messages, settings);
       const decision = await requestSummary(registry, context, settings, signal);
       if (!applicable(evidence, signal) || decision.action === 'no_change') return;
       // The core also checks cancellation immediately before committing its prepared file.
-      const updated = await updateCard(target.slug, decision.patch, current.revision, target.directory, signal);
-      if (applicable(evidence, signal)) binding!.snapshot = updated;
+      await updateCard(target.slug, decision.patch, current.revision, dirname(target.path), signal);
     } finally {
       finish();
       requestFinished = undefined;
@@ -168,7 +148,7 @@ export function registerWorkCards(pi: ExtensionAPI, overrides: Partial<Dependenc
     try {
       const snapshot = await readCard(data.slug, directory);
       if (generation === token && snapshot.path === data.path) {
-        binding = { snapshot, sessionId, directory, updates: !Object.hasOwn(data, 'updates') || data.updates === true };
+        binding = { target: { slug: snapshot.slug, path: snapshot.path }, sessionId, updates: !Object.hasOwn(data, 'updates') || data.updates === true };
       }
     } catch (error) { if (generation === token) warn(error); }
     // Restoring metadata never attaches or focuses a pane.
@@ -186,7 +166,7 @@ export function registerWorkCards(pi: ExtensionAPI, overrides: Partial<Dependenc
     )).at(-1)?.sourceEntry.id ?? ctx.sessionManager.getBranch().filter(entry => entry.type === 'message').at(-1)?.id ?? null;
     return {
       revision: createHash('sha256').update(JSON.stringify({ leaf, messages })).digest('hex'),
-      generation, sessionId, path: binding.snapshot.path, messages,
+      generation, sessionId, path: binding.target.path, messages,
     };
   }
   function reportPartial(snapshot: CardSnapshot, reason: string): void {
@@ -227,7 +207,7 @@ export function registerWorkCards(pi: ExtensionAPI, overrides: Partial<Dependenc
       const sessionId = runtime!.sessionId;
       if (command === 'detach' && !value && binding?.sessionId === sessionId) {
         binding.updates = false;
-        pi.appendEntry(bindingEntry, { slug: binding.snapshot.slug, sessionId, path: binding.snapshot.path, updates: false });
+        pi.appendEntry(bindingEntry, { slug: binding.target.slug, sessionId, path: binding.target.path, updates: false });
       }
       const cwd = ctx.cwd;
       const directory = resolve(deps.cardDirectory());
@@ -243,9 +223,8 @@ export function registerWorkCards(pi: ExtensionAPI, overrides: Partial<Dependenc
             runtime!.notify('No work card attached. Use /work-card new <title> or open <slug>.', 'info');
             return;
           }
-          const snapshot = await readCard(binding.snapshot.slug, binding.directory);
+          const snapshot = await readCard(binding.target.slug, dirname(binding.target.path));
           if (generation === token) {
-            binding.snapshot = snapshot;
             runtime!.notify(`${snapshot.path}\n${JSON.stringify(snapshot.card, null, 2)}`, 'info');
           }
         } else if (command === 'detach' && !value) {
@@ -253,7 +232,7 @@ export function registerWorkCards(pi: ExtensionAPI, overrides: Partial<Dependenc
             runtime!.notify('No work card attached.', 'info');
             return;
           }
-          await deps.detachCard(binding.snapshot, settings);
+          await deps.detachCard({ path: binding.target.path }, settings);
           if (generation !== token) return;
           binding = undefined;
           pi.appendEntry(bindingEntry, { slug: null, sessionId });
@@ -272,7 +251,7 @@ export function registerWorkCards(pi: ExtensionAPI, overrides: Partial<Dependenc
             reportPartial(snapshot, 'session or binding changed while Herdr was attaching; no session binding was saved');
             return;
           }
-          binding = { snapshot, sessionId, directory, updates: true };
+          binding = { target: { slug: snapshot.slug, path: snapshot.path }, sessionId, updates: true };
           pi.appendEntry(bindingEntry, { slug: snapshot.slug, sessionId, path: snapshot.path, updates: true });
           runtime!.notify(`Attached work card ${snapshot.slug}: ${snapshot.path}`, 'info');
         } else {
@@ -299,14 +278,14 @@ export function registerWorkCards(pi: ExtensionAPI, overrides: Partial<Dependenc
     async execute(_id, _params, signal, _onUpdate, ctx) {
       const token = generation;
       const sessionId = ctx.sessionManager.getSessionId();
-      const target = binding;
-      if (!target || target.sessionId !== sessionId) {
+      const currentBinding = binding;
+      if (!currentBinding || currentBinding.sessionId !== sessionId) {
         return { content: [{ type: 'text', text: 'No work card attached.' }], details: null };
       }
       signal?.throwIfAborted();
-      const snapshot = await readCard(target.snapshot.slug, target.directory);
+      const snapshot = await readCard(currentBinding.target.slug, dirname(currentBinding.target.path));
       signal?.throwIfAborted();
-      if (generation !== token || binding !== target) throw new Error('Work-card binding changed during read; call work_card again.');
+      if (generation !== token || binding !== currentBinding) throw new Error('Work-card binding changed during read; call work_card again.');
       return { content: [{ type: 'text', text: JSON.stringify({ ...snapshot, documents: snapshot.card.documents, guidance: documentGuidance }) }], details: snapshot };
     },
   });
