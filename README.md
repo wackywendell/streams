@@ -134,7 +134,7 @@ There is no periodic PR network polling, Obsidian integration, note registry or 
 
 ## Develop and install locally
 
-Use Node.js 22 or later. The package compiles TypeScript to JavaScript for the standalone pane and uses `yaml` at runtime. Pi and AI host packages are peer dependencies, not bundled copies.
+Use Node.js 22 or later. Pi loads `src/pi/index.ts` through its TypeScript extension loader. The package also includes compiled JavaScript for the standalone Herdr pane and library exports, and uses `yaml` at runtime. Pi and AI host packages are peer dependencies, not bundled copies.
 
 From the package directory:
 
@@ -145,6 +145,8 @@ npm test
 ```
 
 `npm test` builds the package, then runs `tests/*.test.mjs` with Node's test runner. `npm run check` checks TypeScript without emitting files.
+
+After changing Work Cards' Pi source, use `/reload` to refresh the extension and its local TypeScript helpers. Pi 1.2.0's unbundled Node loader retains native ESM imports of a compiled `.js` extension, even after clearing its extension cache. Loading the source graph avoids that stale-helper path. A Pi process that already loaded the former compiled entrypoint needs `/reload` after updating this package's manifest. Herdr still runs `dist/herdr/pane.js`; build after changing its source. This packaging change does not require relinking a correct, enabled Herdr registration.
 
 After `npm install` and `npm run build`, register the package locally on the server host:
 
@@ -159,17 +161,21 @@ These are installation instructions, not a record of changes to normal user sett
 
 ## Verification status
 
-On macOS, `npm run check && npm test` passed on Node.js 26.11.1 and 22.23.3: 206 tests on each, with no failures or skips.
+On macOS, `npm run check && npm test` passed on Node.js 26.11.1 and 22.23.3: 210 tests on each, with no failures or skips.
 
-During initial packaging verification, installed Pi 1.2.0 loaded the extracted npm tarball on both Node versions in isolated, sandboxed RPC sessions. This verification was not rerun for the current refactored artifact. The `work-card` command and read-only `work_card` tool registered. Both runs exited successfully with empty stderr and no messages, tokens or model calls. That 28-file tarball included compiled entrypoints, manifest and docs, without `src`, tests or `node_modules`. The runs used supplied read-only host dependencies; they were not clean dependency-install tests.
+During initial packaging verification, installed Pi 1.2.0 loaded the extracted npm tarball on both Node versions in isolated, sandboxed RPC sessions. Those RPC sessions were not rerun for the current source-entrypoint artifact. The `work-card` command and read-only `work_card` tool registered. Both runs exited successfully with empty stderr and no messages, tokens or model calls. That 28-file tarball included compiled entrypoints, manifest and docs, without `src`, tests or `node_modules`. The runs used supplied read-only host dependencies; they were not clean dependency-install tests.
 
-The current isolated native suite passed all 21 checks on macOS arm64, Node.js 26.11.1 and Herdr 0.9.4 (protocol 22). It verified registration, card startup, OSC 8 output, exact same-workspace basename/title and focus, input coalescing, command precedence, literal filenames and canonical checkout cwd. Card polling continued; caller/card identities, processes and geometry were preserved.
+The historical isolated native suite passed all 21 checks on macOS arm64, Node.js 26.11.1 and Herdr 0.9.4 (protocol 22). It verified registration, card startup, OSC 8 output, exact same-workspace basename/title and focus, input coalescing, command precedence, literal filenames and canonical checkout cwd. Card polling continued; caller/card identities, processes and geometry were preserved.
 
 The suite exercised `less` fallback, missing-command failure with Enter-to-close, and real Vim with Ctrl-C and `:q!`. All 5 document tabs closed normally, leaving the caller and card panes intact. Card-view `q`, detach/reopen and deleted-YAML cleanup safety also passed. The caller was a shell, not a live Pi process; this does not verify real Pi lifecycle behavior.
 
 All 5 isolated workspaces were closed. The disposable server stopped and its PID was absent. On this Herdr 0.9.4 run, the linked document entrypoint was visible before explicit relink and remained valid afterward. Relink explicitly if registration is stale; this observation is not a universal hot-reload guarantee.
 
-Current `npm pack --dry-run` succeeded: 35 files included all 7 required entries, including `bin/open-document.sh`. This verifies package contents, not a clean dependency install or loading the current artifact in Pi. Native and package results are recorded under `/tmp/wc-herdr-editor-fixed1-final-QRS9lz`.
+Current loader regressions use Pi 1.2.0's actual loader, not a mock. On both Node versions, compiled ESM retained helper `v1` after same-process reload; a cold process saw `v2`. TypeScript with `.js` import specifiers refreshed to `v2`. A copied package's declared entrypoint also refreshed its private Herdr helper, with source and compiled clients resolving the same plugin root.
+
+Actual `npm pack` and extraction passed on both Node versions: 45 files include all 10 TypeScript sources, compiled Herdr runtime, library exports and `bin/open-document.sh`. Pi's real loader registered `work-card` and `work_card` from the extracted `src/pi/index.ts`. These checks use supplied read-only host dependencies, not a clean dependency install, and do not start Herdr or make model calls.
+
+Before the source-entrypoint change, `npm pack --dry-run` verified 35 files with all 7 then-required entries. That package check and the historical native results are recorded under `/tmp/wc-herdr-editor-fixed1-final-QRS9lz`. The native suite was not rerun for this packaging-only change.
 
 Native Node.js 22, Linux, SSH, remote hosts, browser-click handling, real Pi lifecycle, live-model requests and visual sidebar rendering remain untested. Sidebar metadata tokens were verified, not the visual sidebar. Linux remains an untested design target. Verification did not activate Work Cards in normal Pi or Herdr settings or edit global settings.
 

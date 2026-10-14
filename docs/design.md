@@ -2,7 +2,7 @@
 
 ## Scope
 
-One ESM TypeScript package provides a Pi extension and compiled JavaScript Herdr terminal plugin. It requires Node.js 22 or later and uses `yaml` at runtime. Pi and AI host packages are peer dependencies, never bundled. Build with `npm run build`; `npm test` imports compiled `dist` with Node's built-in test runner. macOS verification is recorded in the [README](../README.md#verification-status); Linux remains an untested design target.
+One ESM TypeScript package provides a Pi extension and compiled JavaScript Herdr terminal plugin. It requires Node.js 22 or later and uses `yaml` at runtime. Pi and AI host packages are peer dependencies, never bundled. Build with `npm run build`; `npm test` uses Node's built-in test runner for compiled runtime tests and real Pi source-loader/package regressions. macOS verification is recorded in the [README](../README.md#verification-status); Linux remains an untested design target.
 
 Cards outlive sessions and workspaces. Durable YAML lives at `$XDG_STATE_HOME/herdr/cards/<initial-title-slug>.yaml`, defaulting to `~/.local/state/herdr/cards`. There is no central registry or session catalogue. Substantive design documents stay inside the repository. No arbitrary card prose body, required timestamps, Obsidian integration, agent launch, or repository editing by the helper.
 
@@ -74,7 +74,7 @@ There are no automatic retries or cooldowns.
 
 The shared card module validates YAML, resolves document paths and handles revision-checked atomic writes. The configuration module loads package settings independently of Pi's core settings.
 
-The Pi extension (`dist/pi/index.js`) handles explicit commands, restores session bindings and schedules helper checks from Pi evidence. Checks are single-flight per Pi session, not globally across separate bindings. New eligible evidence replaces pending evidence; stale results cannot update a changed card, binding or session. Helper output passes through `validateCardPatch` and `updateCard`, never direct file writes. Patches cannot change title, cwd or repository documents.
+The Pi extension (`src/pi/index.ts`, declared in `pi.extensions`) handles explicit commands, restores session bindings and schedules helper checks from Pi evidence. Checks are single-flight per Pi session, not globally across separate bindings. New eligible evidence replaces pending evidence; stale results cannot update a changed card, binding or session. Helper output passes through `validateCardPatch` and `updateCard`, never direct file writes. Patches cannot change title, cwd or repository documents.
 
 Projected host messages are normalized once into readonly role/text evidence at ingress, excluding thinking, images, tool arguments and custom messages. Queued text retains bounded newest-first excerpts. Prompt construction consumes these typed records and copies entries before clipping them to the separate exact JSON-encoded full-prompt character budget; it never shortens queued evidence.
 
@@ -104,11 +104,15 @@ Current-binding detach can clean up after YAML deletion. It derives identity fro
 
 In the card view, `q` exits the display without detaching the Pi session or stopping updates. `j` and `k` are document letters. Document tabs use the selected editor or pager's native keys. Explicit `open` recreates a departed pane, including after cold restart; it needs no slug in the same bound session. Explicit `detach` clears a validated orphan. Neither action reclaims a surviving or restored owner.
 
-The package includes compiled entrypoints, the POSIX launcher in `bin`, docs and `herdr-plugin.toml`. Local consumers build explicitly; there is no prepare or postinstall hook.
+The package includes the full `src` graph alongside compiled `dist`, the POSIX launcher in `bin`, docs and `herdr-plugin.toml`. Pi loads the TypeScript entrypoint through Jiti; repository-owned `.js` import specifiers resolve to local TypeScript helpers. Pi 1.2.0's unbundled Node loader otherwise takes Jiti's native ESM path for compiled `.js` entrypoints. Clearing Pi's extension cache does not clear Node's ESM cache, so `/reload` can retain old helpers. Source loading refreshes this graph without query strings, global cache changes or a second build format.
+
+Herdr commands and library exports still use compiled JavaScript. Source and compiled Herdr clients both derive the plugin root two directories above their module, so the source entrypoint does not change manifest or launcher paths. Local consumers build explicitly for compiled consumers; there is no prepare or postinstall hook. Use `/reload` after Pi source changes or the manifest update. A correct existing Herdr registration does not need relinking.
+
+Loader regressions call the real Pi 1.2.0 loader/cache functions in isolated fixtures. They prove compiled ESM staleness, cold-process freshness, TypeScript refresh and reload of the declared package entrypoint's private Herdr graph. Tarball tests require every TypeScript source and compiled runtime entry, then load the extracted package using supplied read-only host dependencies. They do not claim a clean install or native Herdr lifecycle verification.
 
 ## Planned document actions
 
-Editor-first document tabs are implemented as described above. The isolated native suite passed all 21 checks, including tab focus, real Vim Ctrl-C/exit and normal document-tab removal. The caller was a shell, not live Pi; see [verification status](../README.md#verification-status) for tested versions, package-content checks and remaining boundaries.
+Editor-first document tabs are implemented as described above. The historical isolated native suite passed all 21 checks, including tab focus, real Vim Ctrl-C/exit and normal document-tab removal. The caller was a shell, not live Pi; see [verification status](../README.md#verification-status) for tested versions, package-content checks and remaining boundaries.
 Annotate integration remains deferred, as does the shared workspace/agent redesign.
 [Herdr Annotate / Plannotator](https://github.com/plannotator/herdr-annotate) is a deferred candidate for future document review.
 Source research indicates its plugin document entrypoint can open existing Markdown.

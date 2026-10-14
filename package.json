@@ -11,6 +11,7 @@
     "pi-package"
   ],
   "files": [
+    "src",
     "dist",
     "bin",
     "docs",
@@ -18,7 +19,7 @@
   ],
   "pi": {
     "extensions": [
-      "dist/pi/index.js"
+      "src/pi/index.ts"
     ]
   },
   "exports": {
