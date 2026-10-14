@@ -33,8 +33,8 @@ export async function runPane(env: NodeJS.ProcessEnv = process.env): Promise<voi
           attachment ??= await client.paneAttachment(saved, config);
           await client.projectCard(saved, config, attachment);
           // Clear only a transient publishing notice, not document/read errors.
-          if (view.notice.startsWith('Herdr projection unavailable:')) view.notice = '';
-        } catch (error) { view.notice = `Herdr projection unavailable: ${(error as Error).message}`; }
+          view.clearNotice('projection');
+        } catch (error) { view.setNotice('projection', `Herdr projection unavailable: ${(error as Error).message}`); }
       }
       const pending = keys; keys = [];
       for (const key of pending) { if (await view.key(key)) { stopped = true; break; } }

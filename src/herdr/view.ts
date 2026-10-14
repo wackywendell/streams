@@ -71,11 +71,17 @@ export class KeyInput {
   }
 }
 
+interface Notice { source: 'card' | 'projection' | 'document'; text: string }
 interface Preview { path: string; text: string; truncated: boolean; bytesRead: number; offset: number }
 export class CardView {
   current?: CardSnapshot;
   preview?: Preview;
-  notice = '';
+  private activeNotice?: Readonly<Notice>;
+  get notice(): Readonly<Notice> | undefined { return this.activeNotice; }
+  setNotice(source: Notice['source'], text: string): void { this.activeNotice = { source, text }; }
+  clearNotice(source?: Notice['source']): void {
+    if (!source || this.activeNotice?.source === source) this.activeNotice = undefined;
+  }
   private documents = new Map<string, DocumentTarget>();
   private columns = 80;
   private rows = 24;
@@ -87,11 +93,11 @@ export class CardView {
       const next = await readCard(basename(this.path, '.yaml'), dirname(this.path));
       if (this.current && next.revision !== this.current.revision) this.preview = undefined;
       this.current = next;
-      if (this.notice.startsWith('Card unavailable (')) this.notice = '';
+      this.clearNotice('card');
       return next;
     } catch (error) {
       this.current = undefined; this.preview = undefined; this.documents.clear();
-      this.notice = `Card unavailable (${this.path}): ${(error as Error).message}. Fix the saved card and retry.`;
+      this.setNotice('card', `Card unavailable (${this.path}): ${(error as Error).message}. Fix the saved card and retry.`);
       return undefined;
     }
   }
@@ -110,14 +116,14 @@ export class CardView {
     } else if (this.current) {
       const rendered = renderCard(this.current, columns, height); this.documents = rendered.documents; text = rendered.text;
     } else { this.documents.clear(); text = ''; }
-    if (this.notice && rows) text += `${text ? '\n' : ''}${clipped(this.notice, columns)}`;
+    if (this.notice && rows) text += `${text ? '\n' : ''}${clipped(this.notice.text, columns)}`;
     return text;
   }
   async key(key: string): Promise<boolean> {
     if (key === '\x03') return true;
     if (key === 'q') {
       if (!this.preview) return true;
-      this.preview = undefined; this.notice = ''; return false;
+      this.preview = undefined; this.clearNotice(); return false;
     }
     if (this.preview) {
       const visibleRows = Math.max(1, this.rows - Number(Boolean(this.notice)) - 1);
@@ -128,12 +134,12 @@ export class CardView {
     }
     const displayed = this.documents.get(key);
     if (!displayed) return false;
-    this.notice = '';
+    this.clearNotice();
     await this.refresh();
     if (!this.current) return false;
     const next = renderCard(this.current, this.columns, this.rows).documents.get(key);
     if (!next || next.cwd !== displayed.cwd || next.path !== displayed.path) {
-      this.notice = 'Document checkout/target changed; redraw and press the displayed shortcut again.';
+      this.setNotice('document', 'Document checkout/target changed; redraw and press the displayed shortcut again.');
       return false;
     }
     try {
@@ -147,7 +153,7 @@ export class CardView {
         this.preview = { path: displayed.path, text: new TextDecoder().decode(bytes.subarray(0, bytesRead)), truncated: info.size > bytesRead, bytesRead, offset: 0 };
         this.documents.clear();
       } finally { await file.close(); }
-    } catch (error) { this.notice = `Cannot preview ${displayed.path}: ${(error as Error).message}`; }
+    } catch (error) { this.setNotice('document', `Cannot preview ${displayed.path}: ${(error as Error).message}`); }
     return false;
   }
 }

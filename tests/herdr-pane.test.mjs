@@ -57,7 +57,7 @@ test('read failures disable stale document actions, and changed shortcut targets
   const bytes = await import('node:fs/promises');
   await writeFile(join(f.repo, 'new.md'), 'new');
   const yaml = (await bytes.readFile(valid.path, 'utf8')).replace('notes.md', 'new.md'); await writeFile(valid.path, yaml);
-  await v.key('1'); assert.equal(v.preview, undefined); assert.match(v.notice, /changed/i);
+  await v.key('1'); assert.equal(v.preview, undefined); assert.equal(v.notice.source, 'document'); assert.match(v.notice.text, /changed/i);
   v.render(80, 10); await v.key('1'); assert.match(v.preview.text, /new/);
 });
 test('a changed checkout cannot reuse a painted document shortcut, even after background refresh', async t => {
@@ -66,7 +66,7 @@ test('a changed checkout cannot reuse a painted document shortcut, even after ba
   const other = join(f.root, 'other-checkout'); await mkdir(other); await writeFile(join(other, 'notes.md'), 'different checkout');
   await writeFile(f.saved.path, (await readFile(f.saved.path, 'utf8')).replace(f.repo, other));
   await view.refresh(); // The pane poll runs before key processing, but has not painted the new target yet.
-  await view.key('1'); assert.equal(view.preview, undefined); assert.match(view.notice, /changed/i);
+  await view.key('1'); assert.equal(view.preview, undefined); assert.equal(view.notice.source, 'document'); assert.match(view.notice.text, /changed/i);
   view.render(80, 10); await view.key('1'); assert.equal(view.preview.text, 'different checkout');
 });
 test('preview scrolls to down/up boundaries and clamps when resized', async t => {
@@ -109,14 +109,55 @@ test('preview rejects checkout-escaping symlinks through core resolver', async t
   const f = await fixture(t); await rm(join(f.repo, 'notes.md')); await writeFile(join(f.root, 'private.md'), 'secret');
   await symlink(join(f.root, 'private.md'), join(f.repo, 'notes.md'));
   const view = new CardView(f.saved.path, DEFAULT_CONFIG); await view.refresh(); view.render(80, 10); await view.key('1');
-  assert.equal(view.preview, undefined); assert.match(view.notice, /outside/);
+  assert.equal(view.preview, undefined); assert.equal(view.notice.source, 'document'); assert.match(view.notice.text, /outside/);
 });
 test('a repaired card clears its read-error notice on the next normal poll', async t => {
   const f = await fixture(t); const view = new CardView(f.saved.path, DEFAULT_CONFIG);
   const { readFile } = await import('node:fs/promises'); const original = await readFile(f.saved.path);
-  await writeFile(f.saved.path, 'bad: schema'); await view.refresh(); assert.match(view.notice, /unavailable/i);
-  await writeFile(f.saved.path, original); await view.refresh(); assert.equal(view.notice, '');
+  await writeFile(f.saved.path, 'bad: schema'); await view.refresh(); assert.equal(view.notice.source, 'card'); assert.match(view.notice.text, /unavailable/i);
+  view.setNotice('card', 'Arbitrary read failure wording');
+  await writeFile(f.saved.path, original); await view.refresh(); assert.equal(view.notice, undefined);
   view.render(80, 10); await view.key('1'); assert.ok(view.preview);
+});
+test('notice clearing uses sources rather than wording and latest notice wins', async t => {
+  const f = await fixture(t); const view = new CardView(f.saved.path, DEFAULT_CONFIG); await view.refresh();
+  view.setNotice('projection', 'Arbitrary publishing failure wording');
+  view.clearNotice('document'); assert.equal(view.notice.source, 'projection');
+  view.clearNotice('projection'); assert.equal(view.notice, undefined);
+  for (const source of ['document', 'projection']) {
+    view.setNotice(source, 'Card unavailable (a document may contain this wording)');
+    await view.refresh(); assert.equal(view.notice.source, source);
+  }
+  view.setNotice('document', 'Herdr projection unavailable: document error');
+  view.clearNotice('projection'); assert.equal(view.notice.source, 'document');
+  view.setNotice('card', 'Herdr projection unavailable: card error');
+  view.clearNotice('projection'); assert.equal(view.notice.source, 'card');
+  await view.refresh(); assert.equal(view.notice, undefined);
+});
+test('only attempted visible document navigation and preview back clear all notices', async t => {
+  const f = await fixture(t); const view = new CardView(f.saved.path, DEFAULT_CONFIG); await view.refresh(); view.render(80, 10);
+  view.setNotice('document', 'Card unavailable (document error)');
+  await view.refresh(); assert.equal(view.notice.source, 'document');
+  await view.key('2'); assert.equal(view.notice.source, 'document');
+  await view.key('1'); assert.ok(view.preview); assert.equal(view.notice, undefined);
+  view.setNotice('projection', 'Publishing failure');
+  assert.equal(await view.key('q'), false); assert.equal(view.preview, undefined); assert.equal(view.notice, undefined);
+  view.setNotice('document', 'Document failure');
+  assert.equal(await view.key('q'), true); assert.equal(view.notice.source, 'document');
+});
+test('structured notices retain card and preview row bounds and hide offscreen shortcuts', async t => {
+  const f = await fixture(t); await writeFile(join(f.repo, 'notes.md'), 'one\ntwo\nthree\nfour\nfive');
+  const view = new CardView(f.saved.path, DEFAULT_CONFIG); await view.refresh();
+  view.setNotice('projection', 'Arbitrary notice\x1b[2J');
+  assert.equal(view.render(20, 3).split('\n').length, 3);
+  assert.doesNotMatch(view.render(20, 3), /\x1b/);
+  await view.key('1'); assert.equal(view.preview, undefined);
+  view.render(80, 10); await view.key('1'); assert.ok(view.preview);
+  view.setNotice('projection', 'Publishing failure');
+  assert.equal(view.render(80, 4).split('\n').length, 4); assert.match(view.render(80, 4), /1-2\/5/);
+  for (let i = 0; i < 10; i++) await view.key('j');
+  assert.equal(view.preview.offset, 3); assert.match(view.render(80, 4), /4-5\/5/);
+  assert.equal(view.render(80, 1), 'Publishing failure'); assert.equal(view.render(80, 0), '');
 });
 test('tiny panes never retain an offscreen document shortcut', async t => {
   const f = await fixture(t); const view = new CardView(f.saved.path, DEFAULT_CONFIG); await view.refresh(); view.render(80, 10);
