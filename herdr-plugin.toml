@@ -1,0 +1,12 @@
+id = "work-cards"
+name = "Work cards"
+version = "0.1.0"
+min_herdr_version = "0.9.3"
+description = "Durable work-card status, links, and repository document previews."
+platforms = ["macos", "linux"]
+
+[[panes]]
+id = "card"
+title = "Work card"
+placement = "split"
+command = ["node", "dist/herdr/pane.js"]
