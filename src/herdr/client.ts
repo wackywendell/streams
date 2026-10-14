@@ -196,8 +196,29 @@ export class HerdrClient {
           ownership.attachment.terminalId !== current.terminal_id || ownership.attachment.nonce !== this.env.WORK_CARDS_NONCE) {
         throw new Error('Work-card ownership conflict: only the verified live card pane may open documents');
       }
+      const documentKey = createHash('sha256').update(JSON.stringify([cwd, document])).digest('hex');
+      const matching = (inventory: Pane[]): Pane | undefined => {
+        const records = inventory.filter(p => p.tokens.wcd_key === documentKey);
+        if (!records.length) return undefined;
+        const p = records[0]!;
+        if (records.length !== 1 || p.tokens.wcd_pane !== p.pane_id || p.tokens.wcd_terminal !== p.terminal_id || p.tokens.wcd_tab !== p.tab_id) {
+          throw new Error('Conflicting or incomplete document tab record; inspect the workspace before retrying. Nothing launched or focused.');
+        }
+        return p;
+      };
+      const focus = async (tab: string): Promise<void> => {
+        // Focus is documented; do not invent a result type for its response.
+        const focused = object(JSON.parse(await this.run(['tab', 'focus', tab], config.herdr_timeout_ms)), 'focus response');
+        if (focused.error) throw new Error(`Herdr focus error: ${JSON.stringify(focused.error)}`);
+      };
+      const existing = matching(panes);
+      if (existing) {
+        try { await focus(existing.tab_id); }
+        catch (error) { throw new Error(`Document tab focus may be partial (pane ${existing.pane_id}, terminal ${existing.terminal_id}, tab ${existing.tab_id}); inspect before retrying: ${(error as Error).message}`, { cause: error }); }
+        return;
+      }
       await this.ensurePlugin(config);
-      let tabId: string | undefined;
+      let tabId: string | undefined, paneId: string | undefined, terminalId: string | undefined;
       try {
         const opened = await this.result(['plugin', 'pane', 'open', '--plugin', 'work-cards', '--entrypoint', 'document',
           '--placement', 'tab', '--workspace', caller.workspace_id, '--cwd', await realpath(this.pluginRoot), '--no-focus',
@@ -206,18 +227,22 @@ export class HerdrClient {
         const info = object(opened.plugin_pane, 'plugin pane');
         if (typeof info.pane?.tab_id === 'string') tabId = id(info.pane.tab_id);
         const p = parsePane(info.pane);
+        paneId = p.pane_id; terminalId = p.terminal_id;
         if (info.plugin_id !== 'work-cards' || info.entrypoint !== 'document' || p.workspace_id !== caller.workspace_id ||
             panes.some(existing => existing.pane_id === p.pane_id || existing.terminal_id === p.terminal_id || existing.tab_id === p.tab_id)) {
           throw new Error('Herdr returned an unexpected or reused document pane/tab/terminal');
         }
+        await this.report('pane', p.pane_id, { wcd_key: documentKey, wcd_pane: p.pane_id, wcd_terminal: p.terminal_id, wcd_tab: p.tab_id }, config);
+        const stamped = matching((await this.inventory(caller.workspace_id, config)).panes);
+        if (!stamped || stamped.pane_id !== p.pane_id || stamped.terminal_id !== p.terminal_id || stamped.tab_id !== p.tab_id) {
+          throw new Error('Document tab metadata did not round-trip to the returned live tuple');
+        }
         const label = basename(relativePath);
         const tab = object((await this.result(['tab', 'rename', p.tab_id, label], config, 'tab_info')).tab, 'tab');
         if (tab.tab_id !== p.tab_id || tab.workspace_id !== caller.workspace_id || tab.label !== label) throw new Error('Herdr renamed tab identity/label mismatch');
-        // Focus is documented; do not invent a result type for its response.
-        const focused = object(JSON.parse(await this.run(['tab', 'focus', p.tab_id], config.herdr_timeout_ms)), 'focus response');
-        if (focused.error) throw new Error(`Herdr focus error: ${JSON.stringify(focused.error)}`);
+        await focus(p.tab_id);
       } catch (error) {
-        throw new Error(`Document tab opening may be partial${tabId ? ` (returned tab ${tabId})` : ''}. Inspect the workspace/tab before retrying; no tab was closed: ${(error as Error).message}`, { cause: error });
+        throw new Error(`Document tab opening may be partial${tabId ? ` (returned pane ${paneId ?? 'unknown'}, terminal ${terminalId ?? 'unknown'}, tab ${tabId})` : ''}. Inspect the workspace/tab before retrying; no tab was closed: ${(error as Error).message}`, { cause: error });
       }
     });
   }

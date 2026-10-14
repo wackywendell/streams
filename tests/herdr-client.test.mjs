@@ -284,8 +284,9 @@ test('document opens a new exact-workspace tab, titles basename safely, then foc
   const f = await documentFixture(t); const before = structuredClone(f.workspace);
   await f.client.openDocument(f.saved, f.relative, DEFAULT_CONFIG);
   const calls = mutations(f.attempts);
-  assert.equal(calls.length, 3);
-  const [open, rename, focus] = calls;
+  assert.equal(calls.length, 4);
+  const [open, stamp, rename, focus] = calls;
+  assert.deepEqual(stamp.slice(0, 3), ['pane', 'report-metadata', 'w1:p3']);
   assert.deepEqual(open.slice(0, 3), ['plugin', 'pane', 'open']);
   assert.equal(open[open.indexOf('--entrypoint') + 1], 'document');
   assert.equal(open[open.indexOf('--placement') + 1], 'tab');
@@ -301,6 +302,87 @@ test('document opens a new exact-workspace tab, titles basename safely, then foc
   assert.deepEqual(f.workspace, before);
   assert.ok(f.panes.includes(f.owner));
 });
+test('document reuses exact stamped tab across clients and card nonces, then launches after close', async t => {
+  const f = await documentFixture(t);
+  await f.client.openDocument(f.saved, f.relative, DEFAULT_CONFIG);
+  const editor = f.panes.at(-1);
+  assert.deepEqual(Object.keys(editor.tokens).sort(), ['wcd_key', 'wcd_pane', 'wcd_tab', 'wcd_terminal']);
+  f.attempts.length = 0; f.client.env.EDITOR = 'different-editor';
+  await f.client.openDocument(f.saved, f.relative, DEFAULT_CONFIG);
+  assert.deepEqual(mutations(f.attempts), [['tab', 'focus', editor.tab_id]]);
+  await f.client.detachCard(f.saved, DEFAULT_CONFIG);
+  const attached = await new HerdrClient({ env: f.env, run: f.run, pluginRoot: f.root }).attachCard(f.saved, DEFAULT_CONFIG);
+  const owner = f.panes.find(p => p.pane_id === attached.paneId);
+  const calls = [];
+  const fresh = new HerdrClient({ env: { ...f.env, HERDR_PANE_ID: owner.pane_id, WORK_CARDS_NONCE: attached.nonce }, pluginRoot: f.root,
+    run: async args => { calls.push(args); return args[0] === 'pane' && args[1] === 'current'
+      ? JSON.stringify({ result: { type: 'pane_current', pane: owner } }) : f.run(args); } });
+  await fresh.openDocument(f.saved, f.relative, DEFAULT_CONFIG);
+  assert.deepEqual(mutations(calls), [['tab', 'focus', editor.tab_id]]);
+  f.panes.splice(f.panes.indexOf(editor), 1); calls.length = 0;
+  await fresh.openDocument(f.saved, f.relative, DEFAULT_CONFIG);
+  assert.equal(mutations(calls)[0].slice(0, 3).join(' '), 'plugin pane open');
+});
+
+test('canonical aliases reuse, but distinct paths/checkouts and unmarked tabs launch separately', async t => {
+  const f = await documentFixture(t);
+  f.panes.push({ ...pane('w1:p90', 'term90'), tab_id: 'w1:t90' });
+  await f.client.openDocument(f.saved, f.relative, DEFAULT_CONFIG);
+  const editor = f.panes.at(-1);
+  // An unmarked split in the document's tab is not a second document record.
+  f.panes.push({ ...pane('w1:p91', 'term91'), tab_id: editor.tab_id });
+  const alias = join(f.root, 'alias'); await symlink(f.root, alias);
+  const pathAlias = 'document-alias.md'; await symlink(join(f.root, f.relative), join(f.root, pathAlias));
+  f.saved.card.cwd = alias; f.saved.card.documents.push({ path: pathAlias, description: '' });
+  f.attempts.length = 0;
+  await f.client.openDocument(f.saved, pathAlias, DEFAULT_CONFIG);
+  assert.deepEqual(mutations(f.attempts), [['tab', 'focus', editor.tab_id]]);
+  await mkdir(join(f.root, 'other')); await writeFile(join(f.root, 'other', f.relative), 'other');
+  f.saved.card.cwd = f.root; f.saved.card.documents.push({ path: 'other/' + f.relative, description: '' });
+  f.attempts.length = 0;
+  await f.client.openDocument(f.saved, 'other/' + f.relative, DEFAULT_CONFIG);
+  assert.equal(mutations(f.attempts)[0].slice(0, 3).join(' '), 'plugin pane open');
+  // Same canonical document but a different canonical checkout is a distinct identity.
+  f.saved.card.cwd = join(f.root, 'other');
+  f.attempts.length = 0;
+  await f.client.openDocument(f.saved, f.relative, DEFAULT_CONFIG);
+  assert.equal(mutations(f.attempts)[0].slice(0, 3).join(' '), 'plugin pane open');
+});
+
+test('document matching partial, stale and duplicate records refuse without mutation', async t => {
+  for (const mode of ['partial', 'pane', 'terminal', 'tab', 'duplicate']) await t.test(mode, async sub => {
+    const f = await documentFixture(sub); await f.client.openDocument(f.saved, f.relative, DEFAULT_CONFIG);
+    const editor = f.panes.at(-1);
+    if (mode === 'partial') delete editor.tokens.wcd_tab;
+    else if (mode === 'duplicate') f.panes.push({ ...pane('w1:p9', 'term9'), tab_id: 'w1:t9', tokens: { ...editor.tokens } });
+    else editor.tokens['wcd_' + mode] = 'wrong';
+    f.attempts.length = 0;
+    await assert.rejects(f.client.openDocument(f.saved, f.relative, DEFAULT_CONFIG), /document.*record|record.*document/i);
+    assert.deepEqual(mutations(f.attempts), []);
+  });
+});
+
+test('document metadata must round-trip before rename/focus; fully stamped partial launches can reuse', async t => {
+  for (const mode of ['empty', 'semantic', 'throw', 'rename']) await t.test(mode, async sub => {
+    let fail = true;
+    const f = await documentFixture(sub, async args => {
+      if (!fail) return;
+      if (args[0] === 'pane' && args[1] === 'report-metadata') {
+        if (mode === 'throw') throw new Error('metadata failed');
+        if (mode !== 'rename') return mode === 'semantic' ? JSON.stringify({ error: 'metadata refused' }) : '';
+      }
+      if (mode === 'rename' && args[1] === 'rename') throw new Error('rename failed');
+    });
+    await assert.rejects(f.client.openDocument(f.saved, f.relative, DEFAULT_CONFIG), /w1:p3.*term3.*w1:t3/);
+    assert.equal(f.attempts.some(a => a[1] === 'focus'), false);
+    if (mode === 'rename') {
+      fail = false; f.attempts.length = 0;
+      await f.client.openDocument(f.saved, f.relative, DEFAULT_CONFIG);
+      assert.deepEqual(mutations(f.attempts), [['tab', 'focus', 'w1:t3']]);
+    }
+  });
+});
+
 test('document validation, FIFO and escaping symlinks fail before any Herdr mutation', async t => {
   const f = await documentFixture(t);
   for (const path of ['../private', 'unlisted.md']) {
@@ -350,10 +432,10 @@ test('document partial failures include known new tab and never close or retry',
       if (mode === 'focus error' && args[1] === 'focus') return JSON.stringify({ error: 'focus failed' });
     });
     await assert.rejects(f.client.openDocument(f.saved, f.relative, DEFAULT_CONFIG), mode === 'open' ? /inspect|partial/i : /w1:t3/);
-    assert.equal(f.attempts.some(a => a[1] === 'run' || a[1] === 'report-metadata' || a.slice(0, 3).join(' ') === 'plugin pane close'), false);
+    assert.equal(f.attempts.some(a => a[1] === 'run' || a.slice(0, 3).join(' ') === 'plugin pane close'), false);
     assert.equal(f.attempts.filter(a => a.slice(0, 3).join(' ') === 'plugin pane open').length, 1);
     const expected = [['plugin', 'pane', 'open']];
-    if (mode !== 'open') expected.push(['tab', 'rename']);
+    if (mode !== 'open') expected.push(['pane', 'report-metadata'], ['tab', 'rename']);
     if (mode.startsWith('focus')) expected.push(['tab', 'focus']);
     assert.deepEqual(mutations(f.attempts).map(a => a.slice(0, a[0] === 'plugin' ? 3 : 2)), expected);
   });
@@ -385,7 +467,7 @@ test('document canonicalizes home checkout aliases, applies command override and
   f.saved.card.cwd = '~/' + relative(homedir(), alias);
   f.saved.card.documents = [{ path: 'docs/-label.md', description: '' }];
   await f.client.openDocument(f.saved, 'docs/-label.md', { ...DEFAULT_CONFIG, document_command: 'less -R' });
-  const [open, rename] = mutations(f.attempts);
+  const [open, , rename] = mutations(f.attempts);
   assert.ok(open.includes('WORK_CARDS_DOCUMENT_CWD=' + f.root));
   assert.ok(open.includes('WORK_CARDS_DOCUMENT_PATH=' + join(f.root, 'docs', '-label.md')));
   assert.ok(open.includes('WORK_CARDS_DOCUMENT_COMMAND=less -R'));

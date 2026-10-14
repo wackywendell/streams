@@ -14,14 +14,53 @@ const snapshot = c => ({ slug: 'work-cards', path: '/cards/work-cards.yaml', rev
 const unstyled = text => text.replace(/\x1b\[[\d;]*m/g, '').replace(/\x1b\]8;;[^\x1b]*\x1b\\/g, '');
 const render = (c, columns, rows) => renderCard(snapshot(c), columns, rows);
 
+test('close hint occupies bottom-right over every last-row kind without reserving a row', () => {
+  for (const [c, rows] of [[{ ...card, state: '', documents: [], issues: [] }, 1],
+    [{ ...card, state: 'long state words repeated here', documents: [], issues: [] }, 2],
+    [{ ...card, state: '', issues: [] }, 2], [{ ...card, state: '', documents: [] }, 2],
+    [{ ...card, state: '', documents: Array(8).fill({ path: 'notes.md' }), issues: [] }, 3]]) {
+    for (const width of [1, 2, 3, 5, 8, 9, 11, 24]) {
+      const rendered = render(c, width, rows), lines = unstyled(rendered.text).split('\n');
+      assert.equal(lines.length, rows);
+      assert.equal(stringWidth(lines.at(-1)), width);
+      if (width >= 3) assert.ok(lines.at(-1).endsWith(width >= 9 ? '[q] close' : '[q]'));
+      if (rows === 2 && c.documents.length && width - (width >= 9 ? 9 : width >= 3 ? 3 : 0) < 3) assert.equal(rendered.documents.size, 0);
+      const last = rendered.text.split('\n').at(-1);
+      if (width >= 3 && last.includes('\x1b]8;;https:')) assert.ok(last.indexOf('\x1b]8;;\x1b\\') < last.indexOf('\x1b[2m[q]'));
+    }
+  }
+});
+
+test('resize and fresh-key layout reject shortcuts covered by the footer', async t => {
+  const root = await mkdtemp(join(tmpdir(), 'work-cards-footer-')); t.after(() => rm(root, { recursive: true, force: true }));
+  const saved = await createCard({ ...card, cwd: root, state: '', issues: [] }, join(root, 'cards'));
+  const view = new CardView(saved.path); await view.refresh();
+  view.render(12, 2); assert.equal((await view.key('a')).kind, 'open-document');
+  view.render(11, 2); assert.equal((await view.key('a')).kind, 'none');
+  view.render(5, 2); assert.equal((await view.key('a')).kind, 'none');
+  view.render(6, 2); assert.equal((await view.key('a')).kind, 'open-document');
+  view.render(12, 2);
+  await writeFile(saved.path, (await readFile(saved.path, 'utf8')).replace('state: ""', 'state: New state'));
+  assert.equal((await view.key('a')).kind, 'none');
+});
+
+test('notice and unavailable frames share bottom-right footer geometry', async () => {
+  const view = new CardView('/missing/card.yaml');
+  view.setNotice('card', 'Unavailable long notice');
+  assert.equal(unstyled(view.render(20, 3)), '\n\nUnavailable[q] close');
+  assert.equal(unstyled(view.render(3, 1)), '[q]');
+  assert.equal(view.render(0, 1), '');
+  assert.deepEqual(await view.key('q'), { kind: 'exit' });
+});
+
 test('quiet wide and narrow layouts wrap sentences and retain useful references', () => {
   assert.equal(unstyled(render(card, 72, 8).text), [
     'Work cards                                                      ● active',
-    card.state, '[a] docs/design.md', '[1] Issue: Workspace design', 'q close',
+    card.state, '[a] docs/design.md', '[1] Issue: Workspace design', '', '', '', ' '.repeat(63) + '[q] close',
   ].join('\n'));
   assert.equal(unstyled(render(card, 24, 8).text), [
     'Work cards      ● active', 'Extension built and', 'installed. Shared', 'workspace remains', 'planned.',
-    '[a] docs/design.md', '[1] Issue: Workspace de…', 'q close',
+    '[a] docs/design.md', '[1] Issue: Workspace de…', ' '.repeat(15) + '[q] close',
   ].join('\n'));
 });
 
@@ -33,7 +72,7 @@ test('trusted palette styling is closed and state stays normal contrast', () => 
   assert.match(text, /\x1b\[36m\[a\]\x1b\[0m/);
   assert.match(text, /\x1b\[2mdocs\/\x1b\[0m\x1b\[1mdesign.md\x1b\[0m/);
   assert.match(text, /\x1b\]8;;https:\/\/example.com\/1\x1b\\\x1b\[36m\[1\] Issue: Workspace design\x1b\[0m\x1b\]8;;\x1b\\/);
-  assert.ok(text.endsWith('\x1b[2mq close\x1b[0m'));
+  assert.ok(text.endsWith('\x1b[2m[q] close\x1b[0m'));
   for (const line of text.split('\n')) {
     const opens = [...line.matchAll(/\x1b\[(?:1|2|31|32|33|36)m/g)].length;
     assert.equal(opens, [...line.matchAll(/\x1b\[0m/g)].length);
@@ -50,7 +89,7 @@ test('all statuses use symbol and word, independent of colour and model activity
 
 test('blank state and empty references produce no empty sections or border', () => {
   const text = render({ ...card, state: '', documents: [], issues: [] }, 24, 8).text;
-  assert.equal(unstyled(text), 'Work cards      ● active\nq close');
+  assert.equal(unstyled(text), 'Work cards      ● active' + '\n'.repeat(7) + ' '.repeat(15) + '[q] close');
   assert.doesNotMatch(text, /[│┌┐└┘]|Documents:|Issues:|State:/);
 });
 
@@ -61,7 +100,7 @@ test('legacy prose is visibly bounded while references and hidden counts remain 
   assert.equal(lines.length, 6);
   assert.ok(lines[3].endsWith('…'));
   assert.equal(lines[4], '[a] docs/0.md');
-  assert.equal(lines[5], '… 8 more; enlarge pane');
+  assert.equal(lines[5], '… 8 more; enlar[q] close');
   assert.deepEqual([...rendered.documents.keys()], ['a']);
 });
 
@@ -69,7 +108,7 @@ test('long words hard-wrap only at grapheme boundaries and never exceed cell wid
   const words = ['界'.repeat(6), 'e\u0301'.repeat(8), '👍🏽'.repeat(6), '🇫🇷'.repeat(6), 'abcdefghi'];
   for (const state of words) {
     const text = unstyled(render({ ...card, title: 'T', state, documents: [], issues: [] }, 5, 20).text);
-    const lines = text.split('\n').slice(1);
+    const lines = text.split('\n').slice(1, -1);
     assert.equal(lines.join(''), state);
     assert.ok(lines.every(line => stringWidth(line) <= 5));
     assert.ok(lines.every(line => !/^\p{M}/u.test(line)));
@@ -133,7 +172,7 @@ test('escaped YAML surrogate titles and state remain bounded after terminal UTF-
       const terminal = Buffer.from(rendered).toString('utf8');
       assert.ok(terminal.split('\n').every(line => stringWidth(line) <= columns));
       assert.equal(rendered, terminal);
-      assert.equal(unstyled(terminal).split('\n').slice(1).filter(line => line !== 'q close').join(''), columns === 1 && unit === '😀' ? '…'.repeat(8) : state.toWellFormed());
+      assert.equal(unstyled(terminal).split('\n').slice(1, -1).join(''), columns === 1 && unit === '😀' ? '…'.repeat(8) : state.toWellFormed());
     }
   }
 });

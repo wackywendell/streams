@@ -47,55 +47,68 @@ function webUrl(value: string): string | undefined {
 }
 interface DocumentTarget { cwd: string; path: string }
 export interface RenderedCard { text: string; documents: Map<string, DocumentTarget> }
-export function renderCard(snapshot: CardSnapshot, columns: number, rows: number): RenderedCard {
-  const card = snapshot.card;
+export function renderCard(snapshot: CardSnapshot | undefined, columns: number, rows: number, notice?: string): RenderedCard {
   const height = Math.max(0, Math.floor(rows)), width = Math.max(0, Math.floor(columns));
   const documents = new Map<string, DocumentTarget>();
   if (!height || !width) return { text: '', documents };
-  const statuses = { active: ['●', 36], waiting: ['○', 33], blocked: ['!', 31], parked: ['○', 2], done: ['✓', 32] } as const;
-  const [symbol, colour] = statuses[card.status];
-  const status = `${symbol} ${card.status}`, statusWidth = stringWidth(status);
-  const title = plain(card.title);
-  let header = style(fit(title, width), 1);
-  if (width >= statusWidth + 3) {
-    const label = fit(title, width - statusWidth - 2);
-    header = style(label, 1) + ' '.repeat(width - stringWidth(label) - statusWidth) + style(status, colour);
-  }
-  const references = [
-    ...card.documents.map((document, index) => ({ path: document.path, key: documentKeys[index], label: '', url: undefined as string | undefined })),
-    ...card.issues.map((link, index) => ({ label: plain(`[${index + 1}] Issue: ${link.description || link.url}`), url: webUrl(link.url), path: undefined, key: undefined })),
-    ...card.prs.map((link, index) => ({ label: plain(`[${card.issues.length + index + 1}] PR: ${link.description || link.url}`), url: webUrl(link.url), path: undefined, key: undefined })),
-  ];
-  const available = height - 1;
-  // Reserve reference space so legacy prose cannot consume the entire pane.
-  const stateLimit = references.length ? (available < 2 ? available : Math.min(Math.ceil(available / 2), Math.max(1, available - Math.min(2, references.length)))) : available;
-  const state = wrap(plain(card.state), width);
-  const visibleState = state.slice(0, stateLimit);
-  if (state.length > visibleState.length && visibleState.length) {
-    const last = visibleState.length - 1;
-    visibleState[last] = prefix(visibleState[last], width - 1).trimEnd() + '…';
-  }
-  const lines = [header, ...visibleState];
-  const slots = height - lines.length;
-  const visibleCount = Math.max(0, slots - Number(references.length > slots));
-  const visible = references.slice(0, visibleCount);
-  for (const entry of visible) {
-    if (entry.path !== undefined) {
-      const keyLabel = entry.key ? prefix(`[${entry.key}]`, width) : '';
-      const space = keyLabel && width > stringWidth(keyLabel) ? ' ' : '';
-      const path = fit(plain(entry.path), width - stringWidth(keyLabel + space));
-      const slash = path.lastIndexOf('/') + 1;
-      lines.push(style(keyLabel, 36) + space + style(path.slice(0, slash), 2) + style(path.slice(slash), 1));
-      // Only a fully painted shortcut is actionable, not its clipped prefix.
-      if (entry.key && keyLabel === `[${entry.key}]`) documents.set(entry.key, { cwd: card.cwd, path: entry.path });
-    } else {
-      const label = style(fit(entry.label, width), 36);
-      lines.push(entry.url ? `\x1b]8;;${entry.url}\x1b\\${label}\x1b]8;;\x1b\\` : label);
+  const footer = width >= 9 ? '[q] close' : width >= 3 ? '[q]' : '';
+  const contentHeight = height - Number(notice !== undefined);
+  type Span = { text: string; code?: number; url?: string };
+  type Row = { spans: (width: number) => Span[]; key?: string; path?: string };
+  const lines: Row[] = [];
+  const textRow = (text: string, code?: number): Row => ({ spans: w => [{ text: clipped(text, w), code }] });
+  if (snapshot && contentHeight) {
+    const card = snapshot.card;
+    const statuses = { active: ['●', 36], waiting: ['○', 33], blocked: ['!', 31], parked: ['○', 2], done: ['✓', 32] } as const;
+    const [symbol, colour] = statuses[card.status];
+    const status = `${symbol} ${card.status}`, statusWidth = stringWidth(status), title = plain(card.title);
+    lines.push({ spans: w => {
+      if (w < statusWidth + 3) return [{ text: fit(title, w), code: 1 }];
+      const label = fit(title, w - statusWidth - 2);
+      return [{ text: label, code: 1 }, { text: ' '.repeat(w - stringWidth(label) - statusWidth) }, { text: status, code: colour }];
+    } });
+    const references = [
+      ...card.documents.map((document, index) => ({ path: document.path, key: documentKeys[index], label: '', url: undefined as string | undefined })),
+      ...card.issues.map((link, index) => ({ label: plain(`[${index + 1}] Issue: ${link.description || link.url}`), url: webUrl(link.url), path: undefined, key: undefined })),
+      ...card.prs.map((link, index) => ({ label: plain(`[${card.issues.length + index + 1}] PR: ${link.description || link.url}`), url: webUrl(link.url), path: undefined, key: undefined })),
+    ];
+    const available = contentHeight - 1;
+    const stateLimit = references.length ? (available < 2 ? available : Math.min(Math.ceil(available / 2), Math.max(1, available - Math.min(2, references.length)))) : available;
+    const state = wrap(plain(card.state), width), visibleState = state.slice(0, stateLimit);
+    if (state.length > visibleState.length && visibleState.length) {
+      const last = visibleState.length - 1;
+      visibleState[last] = prefix(visibleState[last], width - 1).trimEnd() + '…';
     }
+    lines.push(...visibleState.map(line => textRow(line)));
+    const slots = contentHeight - lines.length;
+    const visible = references.slice(0, Math.max(0, slots - Number(references.length > slots)));
+    for (const entry of visible) {
+      if (entry.path !== undefined) {
+        lines.push({ key: entry.key, path: entry.path, spans: w => {
+          const keyLabel = entry.key ? prefix(`[${entry.key}]`, w) : '';
+          const space = keyLabel && w > stringWidth(keyLabel) ? ' ' : '';
+          const path = fit(plain(entry.path!), w - stringWidth(keyLabel + space));
+          const slash = path.lastIndexOf('/') + 1;
+          return [{ text: keyLabel, code: 36 }, { text: space }, { text: path.slice(0, slash), code: 2 }, { text: path.slice(slash), code: 1 }];
+        } });
+      } else lines.push({ spans: w => [{ text: fit(entry.label, w), code: 36, url: entry.url }] });
+    }
+    if (references.length > visible.length && lines.length < contentHeight) lines.push(textRow(`… ${references.length - visible.length} more; enlarge pane`, 2));
   }
-  if (references.length > visible.length && lines.length < height) lines.push(style(clipped(`… ${references.length - visible.length} more; enlarge pane`, width), 2));
-  if (lines.length < height && width >= 7) lines.push(style('q close', 2));
-  return { text: lines.join('\n'), documents };
+  while (lines.length < contentHeight) lines.push(textRow(''));
+  if (notice !== undefined) lines.push(textRow(notice));
+  const painted = lines.map((line, index) => {
+    const hint = index === height - 1 ? footer : '';
+    const room = width - stringWidth(hint), spans = line.spans(room);
+    if (line.key && spans[0]?.text === `[${line.key}]` && snapshot) documents.set(line.key, { cwd: snapshot.card.cwd, path: line.path! });
+    // Geometry and action visibility are settled on plain spans before adding trusted sequences.
+    if (hint) spans.push({ text: ' '.repeat(room - spans.reduce((n, span) => n + stringWidth(span.text), 0)) }, { text: hint, code: 2 });
+    return spans.map(span => {
+      const text = span.code === undefined ? span.text : style(span.text, span.code);
+      return span.url && text ? `\x1b]8;;${span.url}\x1b\\${text}\x1b]8;;\x1b\\` : text;
+    }).join('');
+  });
+  return { text: painted.join('\n'), documents };
 }
 
 // Recognize standalone keys only, never keys embedded in terminal strings or paste payloads.
@@ -143,7 +156,8 @@ export class CardView {
   }
   private documents = new Map<string, DocumentTarget>();
   private columns = 80;
-  private availableRows = 0;
+  private rows = 0;
+  private paintedNotice?: string;
   constructor(readonly path: string) {
     if (!isAbsolute(path) || !path.endsWith('.yaml')) throw new Error('WORK_CARDS_CARD must be an absolute card YAML path');
   }
@@ -161,25 +175,22 @@ export class CardView {
   }
   render(columns: number, rows: number): string {
     this.columns = columns;
-    const height = Math.max(0, rows - Number(Boolean(this.notice)));
-    this.availableRows = height;
-    let text: string;
-    if (this.current) {
-      const rendered = renderCard(this.current, columns, height); this.documents = rendered.documents; text = rendered.text;
-    } else { this.documents.clear(); text = ''; }
-    if (this.notice && rows) text += `${text ? '\n' : ''}${clipped(this.notice.text, columns)}`;
-    return text;
+    this.rows = rows;
+    this.paintedNotice = this.notice?.text;
+    const rendered = renderCard(this.current, columns, rows, this.paintedNotice);
+    this.documents = rendered.documents;
+    return rendered.text;
   }
   async key(key: string): Promise<KeyResult> {
     if (key === '\x03' || key === 'q') return { kind: 'exit' };
     const displayed = this.documents.get(key);
     if (!displayed) return { kind: 'none' };
     // Validate against the layout actually painted, including its reserved notice row.
-    const availableRows = this.availableRows;
+    const rows = this.rows, notice = this.paintedNotice;
     this.clearNotice();
     await this.refresh();
     if (!this.current) return { kind: 'none' };
-    const next = renderCard(this.current, this.columns, availableRows).documents.get(key);
+    const next = renderCard(this.current, this.columns, rows, notice).documents.get(key);
     if (!next || next.cwd !== displayed.cwd || next.path !== displayed.path) {
       this.setNotice('document', 'Document checkout/target changed; redraw and press the displayed shortcut again.');
       return { kind: 'none' };
