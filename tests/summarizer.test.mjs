@@ -41,6 +41,25 @@ test("document descriptions describe the whole purpose briefly, not the latest e
   assert.deepEqual(JSON.parse(text(context)).card.documents, card.documents);
 });
 
+test("summary brief requires durable milestones and unfinished work rather than activity", () => {
+  const prompt = buildSummaryContext(card, [], options).systemPrompt;
+  assert.match(prompt, /returning a month later/);
+  assert.match(prompt, /durable milestone.*important unfinished work/);
+  assert.match(prompt, /1–2 short sentences.*20–30 words/);
+  assert.match(prompt, /commit IDs, test counts\/versions, reviewer names/);
+  assert.match(prompt, /ordinary tool activity, test passes, and commits.*no_change/);
+  assert.match(prompt, /single-line string/);
+});
+
+test("legacy state repair is allowed without new progress despite preserve-wording guidance", () => {
+  const legacy = { ...card, state: 'Ran tests; reviewed commit abc123; 210 tests passed.' };
+  const context = buildSummaryContext(legacy, [], { ...options, update_guidance: 'Preserve wording; never rewrite without new progress.' });
+  assert.match(context.systemPrompt, /Condense verbose or activity-log-like existing state even without new progress/);
+  assert.match(context.systemPrompt, /Preserve relevant facts, not every historical detail/);
+  assert.match(context.systemPrompt, /preserve-wording guidance must not prevent this repair/);
+  assert.deepEqual(JSON.parse(text(context)), { card: legacy, evidence: [] });
+});
+
 test("actual serialized character budget favors newest evidence including escape-heavy text", () => {
   const base = buildSummaryContext(card, [], options);
   const budget = size(base) + 160;

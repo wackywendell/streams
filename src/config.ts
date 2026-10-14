@@ -33,7 +33,7 @@ export const DEFAULT_CONFIG: Readonly<WorkCardsConfig> = Object.freeze({
   pane_poll_interval_ms: 1000,
   herdr_timeout_ms: 3000,
   pane_height_fraction: 0.2,
-  update_guidance: 'Update only for significant, evidenced changes. Preserve stable facts. Do not infer progress, invent links or documents, or rewrite wording without a substantive change. Return no_change when nothing important changed.',
+  update_guidance: 'Preserve stable facts and summarize durable milestones and important unfinished work. Condense verbose or activity-log-like state even without new progress. Otherwise update only for significant, evidenced changes; return no_change for routine activity. Do not infer progress or invent plans, links or documents.',
 });
 
 function validateDocumentCommand(value: unknown, label: string): asserts value is string {

@@ -6,7 +6,7 @@ The package provides explicit card attachment, background updates from Pi eviden
 
 ## Keep the card small
 
-A card records the current status, a short state summary, the checkout directory, and links to documents, issues and pull requests. Plans and architecture decision records belong in the actual project, such as `adrs/foo-bar.md`. The card links to them; it is not a scratch document or a central notes repository.
+A card records the current status, a short state summary, the checkout directory, and links to documents, issues and pull requests. State should help you return a month later: describe the broad durable milestone and important unfinished work in 1 to 2 short sentences, about 20 to 30 words. Keep relevant facts, not an activity log, commit IDs or test counts. Plans and architecture decision records belong in the actual project, such as `adrs/foo-bar.md`. The card links to them; it is not a scratch document or a central notes repository.
 
 Cards live at `$XDG_STATE_HOME/herdr/cards/<slug>.yaml`, or `~/.local/state/herdr/cards/<slug>.yaml` by default. They survive workspace deletion. The initial title determines the stable filename slug. Later title edits do not rename it, and creating a colliding slug fails rather than overwriting a card.
 
@@ -15,7 +15,7 @@ For example:
 ```yaml
 title: Improve queue recovery
 status: active
-state: Compare retry behaviour before choosing an approach
+state: Recovery failure reproduced and retry options documented. Choosing an approach and implementing the fix remain unfinished.
 cwd: /home/developer/code/queue-service
 documents:
   - path: adrs/queue-recovery.md
@@ -67,7 +67,9 @@ The Herdr server, repository, Pi and plugin run together: either locally on macO
 
 The pane reads YAML as the source of truth and can display a card without Pi running. Herdr tokens hold ownership markers and display metadata, not durable card data. The `$wc_summary` token is limited to 80 characters. The integration does not edit Herdr's internal `session.json`.
 
-The compact pane shows each document's repository-relative path, not its description: `[a] docs/design.md`. Document shortcuts use single letters from `a` to `z`, skipping `q`; later documents have no shortcut. Only fully visible shortcuts are active. Digits do not open documents.
+The borderless pane uses a bold title and, when width permits, a right-aligned status symbol and word: cyan `● active`, yellow `○ waiting`, red `! blocked`, dim `○ parked`, or green `✓ done`. Status describes the work, not whether Pi is running. State wraps at word boundaries in normal contrast; long words break at grapheme boundaries. Height-limited state ends with `…`, leaving reference space where possible. Hidden references retain a compact count. Empty sections are omitted; a dim `q close` footer appears only with spare space.
+
+Document letters and HTTP labels use the terminal accent colour. Directory prefixes are dim and filenames bold. The pane measures display cells, not ANSI bytes. Display text converts lone UTF-16 surrogates to replacement characters before measuring, then removes untrusted controls before adding trusted styling and links. Saved card values and document targets are unchanged. It shows each document's repository-relative path, not its description: `[a] docs/design.md`. Document shortcuts use single letters from `a` to `z`, skipping `q`; later documents have no shortcut. Only fully visible shortcuts are active. Digits do not open documents.
 
 Issues and PRs share consecutive numbered labels, with issues first: `[1] Issue: …`, `[2] PR: …`. Numbering is independent of document letters and continues beyond 9. These HTTP labels are Ctrl-click-only, using OSC 8 terminal links and Herdr's local-client handling. Number-key opening is deferred; digits do nothing.
 
@@ -91,6 +93,8 @@ Automatic checks run in the background at 2 boundaries:
 A cycle is not a streamed chunk or an individual parallel tool result. The cycle count resets for each overall response. Setting either interval to `0` independently disables that trigger. Set both to `0` to disable automatic checks.
 
 Only one check runs at a time per Pi session, not globally across intentionally separate bindings. While it runs, newer eligible evidence replaces the pending evidence. The same evidence revision is not checked twice. Continuing cycles must not cancel an in-flight check or require an idle session before applying an update.
+
+The helper may condense verbose or activity-log-like state without new progress, preserving its relevant facts. Once state is useful, ordinary tool activity, passing tests and commits should return `no_change` unless the overall state changes. Additional guidance cannot prevent legacy-state repair or override truthfulness and security restrictions.
 
 The helper returns either `no_change` or a validated patch to `status`, `state`, `documents`, `issues` and `prs`. It cannot change `title`, `cwd`, or repository document contents. Checks reject stale results after card edits, binding changes or session changes.
 
@@ -120,7 +124,7 @@ Configuration lives at `<PI_CODING_AGENT_DIR>/work-cards.json`, defaulting to `~
 
 The default `update_guidance` is:
 
-> Update only for significant, evidenced changes. Preserve stable facts. Do not infer progress, invent links or documents, or rewrite wording without a substantive change. Return no_change when nothing important changed.
+> Preserve stable facts and summarize durable milestones and important unfinished work. Condense verbose or activity-log-like state even without new progress. Otherwise update only for significant, evidenced changes; return no_change for routine activity. Do not infer progress or invent plans, links or documents.
 
 `document_command` accepts `null` or a nonblank string without control characters. Examples are `vim`, `nano`, `less -R` or a quoted executable path with arguments. Malformed nonblank `$EDITOR` values fail visibly instead of falling back.
 
@@ -134,7 +138,7 @@ There is no periodic PR network polling, Obsidian integration, note registry or 
 
 ## Develop and install locally
 
-Use Node.js 22 or later. Pi loads `src/pi/index.ts` through its TypeScript extension loader. The package also includes compiled JavaScript for the standalone Herdr pane and library exports, and uses `yaml` at runtime. Pi and AI host packages are peer dependencies, not bundled copies.
+Use Node.js 22 or later. Pi loads `src/pi/index.ts` through its TypeScript extension loader. The package also includes compiled JavaScript for the standalone Herdr pane and library exports, and uses `yaml` and `string-width` at runtime. Pi and AI host packages are peer dependencies, not bundled copies.
 
 From the package directory:
 
@@ -161,7 +165,9 @@ These are installation instructions, not a record of changes to normal user sett
 
 ## Verification status
 
-On macOS, `npm run check && npm test` passed on Node.js 26.11.1 and 22.23.3: 210 tests on each, with no failures or skips.
+On macOS, `npm run check && npm test` passed on Node.js 26.11.1 and 22.23.3: 225 tests on each, with no failures or skips.
+
+Current quiet-layout checks cover wide and narrow text snapshots, all status styles, wrapping, grapheme/cell widths, control sanitization, closed SGR/OSC 8 sequences, tiny panes, notice-row reservation and fresh document-key validation. Escaped YAML surrogate regressions check title, state, path and notice widths after UTF-8 encoding, while retaining original document targets and paired emoji. Prompt tests verify the summary contract and legacy-repair instructions, not live-model quality. The native Herdr suite was not rerun for the quiet layout; terminal appearance and live summarization still need user verification.
 
 During initial packaging verification, installed Pi 1.2.0 loaded the extracted npm tarball on both Node versions in isolated, sandboxed RPC sessions. Those RPC sessions were not rerun for the current source-entrypoint artifact. The `work-card` command and read-only `work_card` tool registered. Both runs exited successfully with empty stderr and no messages, tokens or model calls. That 28-file tarball included compiled entrypoints, manifest and docs, without `src`, tests or `node_modules`. The runs used supplied read-only host dependencies; they were not clean dependency-install tests.
 
@@ -175,7 +181,7 @@ Current loader regressions use Pi 1.2.0's actual loader, not a mock. On both Nod
 
 Actual `npm pack` and extraction passed on both Node versions: 45 files include all 10 TypeScript sources, compiled Herdr runtime, library exports and `bin/open-document.sh`. Pi's real loader registered `work-card` and `work_card` from the extracted `src/pi/index.ts`. These checks use supplied read-only host dependencies, not a clean dependency install, and do not start Herdr or make model calls.
 
-Before the source-entrypoint change, `npm pack --dry-run` verified 35 files with all 7 then-required entries. That package check and the historical native results are recorded under `/tmp/wc-herdr-editor-fixed1-final-QRS9lz`. The native suite was not rerun for this packaging-only change.
+Before the source-entrypoint change, `npm pack --dry-run` verified 35 files with all 7 then-required entries. That package check and the historical native results are recorded under `/tmp/wc-herdr-editor-fixed1-final-QRS9lz`. The native suite was not rerun for the source-entrypoint or quiet-layout changes.
 
 Native Node.js 22, Linux, SSH, remote hosts, browser-click handling, real Pi lifecycle, live-model requests and visual sidebar rendering remain untested. Sidebar metadata tokens were verified, not the visual sidebar. Linux remains an untested design target. Verification did not activate Work Cards in normal Pi or Herdr settings or edit global settings.
 

@@ -8,6 +8,8 @@ import { renderCard, plain, KeyInput, CardView } from '../dist/herdr/view.js';
 
 const card = { title: 'Title', status: 'active', state: 'State', cwd: '/repo', documents: [], issues: [], prs: [] };
 const snapshot = c => ({ slug: 'title', path: '/cards/title.yaml', revision: 'r', card: c });
+// Strip only renderer-owned SGR and OSC8, not the security sanitizer.
+const unstyled = text => text.replace(/\x1b\[[\d;]*m/g, '').replace(/\x1b\]8;;[^\x1b]*\x1b\\/g, '');
 async function fixture(t) {
   const root = await mkdtemp(join(tmpdir(), 'work-cards-view-')); t.after(() => rm(root, { recursive: true, force: true }));
   const repo = join(root, 'repo'); await mkdir(repo); const cards = join(root, 'cards');
@@ -29,7 +31,7 @@ test('document labels use alphabetic keys and full relative paths, never descrip
     { path: 'adrs/design.md', description: '' },
   ] };
   const rendered = renderCard(snapshot(c), 100, 10);
-  assert.equal(rendered.text, 'Title · active\nState\n[a] docs/design.md\n[b] adrs/design.md');
+  assert.deepEqual(unstyled(rendered.text).split('\n').slice(1), ['State', '[a] docs/design.md', '[b] adrs/design.md', 'q close']);
   assert.deepEqual([...rendered.documents], [
     ['a', { cwd: '/repo', path: 'docs/design.md' }],
     ['b', { cwd: '/repo', path: 'adrs/design.md' }],
@@ -42,24 +44,21 @@ test('issue and PR labels share consecutive numbers independently of document le
     prs: [{ url: 'https://example.com/pulls/3', description: 'A PR' },
       { url: 'https://example.com/pulls/4', description: '' }] };
   const rendered = renderCard(snapshot(c), 100, 10);
-  const linked = (url, label) => `\x1b]8;;${url}\x1b\\${label}\x1b]8;;\x1b\\`;
-  assert.equal(rendered.text, ['Title · active', 'State', '[a] docs/design.md',
-    linked(c.issues[0].url, '[1] Issue: An issue'),
-    linked(c.issues[1].url, '[2] Issue: https://example.com/issues/2'),
-    linked(c.prs[0].url, '[3] PR: A PR'),
-    linked(c.prs[1].url, '[4] PR: https://example.com/pulls/4')].join('\n'));
+  assert.deepEqual(unstyled(rendered.text).split('\n').slice(1), ['State', '[a] docs/design.md',
+    '[1] Issue: An issue', '[2] Issue: https://example.com/issues/2',
+    '[3] PR: A PR', '[4] PR: https://example.com/pulls/4', 'q close']);
+  for (const link of [...c.issues, ...c.prs]) assert.ok(rendered.text.includes(`\x1b]8;;${link.url}\x1b\\`));
   assert.deepEqual([...rendered.documents], [['a', { cwd: '/repo', path: 'docs/design.md' }]]);
 });
 test('PR-only labels start at one', () => {
   const c = { ...card, prs: [{ url: 'https://example.com/pulls/1', description: 'A PR' }] };
-  assert.equal(renderCard(snapshot(c), 80, 3).text,
-    'Title · active\nState\n\x1b]8;;https://example.com/pulls/1\x1b\\[1] PR: A PR\x1b]8;;\x1b\\');
+  assert.deepEqual(unstyled(renderCard(snapshot(c), 80, 3).text).split('\n').slice(1), ['State', '[1] PR: A PR']);
 });
 test('numeric labels continue beyond nine across issues and PRs without document actions', () => {
   const c = { ...card, issues: Array.from({ length: 9 }, (_, i) => ({ url: `https://example.com/issues/${i + 1}`, description: `Issue ${i + 1}` })),
     prs: [{ url: 'https://example.com/pulls/10', description: 'Ten' }, { url: 'https://example.com/pulls/11', description: 'Eleven' }] };
   const rendered = renderCard(snapshot(c), 80, 20);
-  assert.deepEqual(rendered.text.replace(/\x1b\]8;;[^\x1b]*\x1b\\/g, '').split('\n').slice(2),
+  assert.deepEqual(unstyled(rendered.text).split('\n').slice(2, -1),
     [...Array.from({ length: 9 }, (_, i) => `[${i + 1}] Issue: Issue ${i + 1}`), '[10] PR: Ten', '[11] PR: Eleven']);
   assert.equal(rendered.documents.size, 0);
 });
@@ -70,9 +69,12 @@ test('numbered HTTP labels retain sanitization, clipping, OSC8 targets and overf
       { url: 'https://example.com/pulls/3', description: 'Also hidden' }] };
   for (const width of [0, 1, 2, 3, 4, 8, 12, 80]) {
     const rendered = renderCard(snapshot(c), width, 4);
-    const label = '[1] Issue: Abcd'.slice(0, width);
-    assert.equal(rendered.text.split('\n')[2], label ? `\x1b]8;;${url}\x1b\\${label}\x1b]8;;\x1b\\` : '');
-    assert.equal(rendered.text.split('\n')[3], '… 2 more; enlarge pane'.slice(0, width));
+    if (width) {
+      const lines = unstyled(rendered.text).split('\n');
+      assert.ok(lines.every(line => line.length <= width));
+      assert.ok(rendered.text.includes(`\x1b]8;;${url}\x1b\\`));
+      assert.equal(lines[3], '… 2 more; enlarge pane'.slice(0, width));
+    } else assert.equal(rendered.text, '');
     assert.equal(rendered.documents.size, 0);
     assert.doesNotMatch(rendered.text, /\x07|\u202e|Hidden|pulls\/2/);
   }
@@ -81,19 +83,19 @@ test('document keys skip q and stop safely after z without numeric shortcuts', (
   const c = { ...card, documents: Array.from({ length: 28 }, (_, i) => ({ path: 'docs/' + i + '.md', description: '' })) };
   const rendered = renderCard(snapshot(c), 80, 40);
   assert.deepEqual([...rendered.documents.keys()], [...'abcdefghijklmnoprstuvwxyz']);
-  assert.match(rendered.text, /\[p\] docs\/15.md\n\[r\] docs\/16.md/);
-  assert.match(rendered.text, /\[z\] docs\/24.md\ndocs\/25.md\ndocs\/26.md\ndocs\/27.md$/);
+  assert.match(unstyled(rendered.text), /\[p\] docs\/15.md\n\[r\] docs\/16.md/);
+  assert.match(unstyled(rendered.text), /\[z\] docs\/24.md\ndocs\/25.md\ndocs\/26.md\ndocs\/27.md\nq close$/);
   assert.doesNotMatch(rendered.text, /\[q\]|\[\d\]|undefined/);
 });
 test('long paths remain clipped and sanitized with only fully painted shortcuts active', () => {
   const c = { ...card, documents: [{ path: 'docs/very-long-design\x1b\u202e.md', description: 'Do not show this' }] };
   for (const width of [0, 1, 2, 3, 4, 8]) {
     const rendered = renderCard(snapshot(c), width, 3);
-    assert.ok(rendered.text.split('\n').every(line => Array.from(line).length <= width));
-    assert.doesNotMatch(rendered.text, /\x1b|\u202e|Do not show this/);
+    assert.ok(unstyled(rendered.text).split('\n').every(line => Array.from(line).length <= width));
+    assert.doesNotMatch(rendered.text, /\x1b\[2J|\u202e|Do not show this/);
     assert.equal(rendered.documents.has('a'), width >= 3);
   }
-  assert.match(renderCard(snapshot(c), 80, 3).text, /\[a\] docs\/very-long-design.md/);
+  assert.match(unstyled(renderCard(snapshot(c), 80, 3).text), /\[a\] docs\/very-long-design.md/);
 });
 test('digits are inert and j/k are normal document intents, q exits display only', async t => {
   const f = await fixture(t);
@@ -205,7 +207,7 @@ test('structured notices retain row bounds and hide offscreen shortcuts', async 
   const f = await fixture(t); const view = new CardView(f.saved.path); await view.refresh();
   view.setNotice('projection', 'Arbitrary notice\x1b[2J');
   assert.equal(view.render(20, 3).split('\n').length, 3);
-  assert.doesNotMatch(view.render(20, 3), /\x1b/);
+  assert.doesNotMatch(view.render(20, 3), /\x1b\[2J/);
   assert.deepEqual(await view.key('a'), { kind: 'none' });
   view.render(80, 10); assert.equal((await view.key('a')).kind, 'open-document');
   view.setNotice('projection', 'Publishing failure');

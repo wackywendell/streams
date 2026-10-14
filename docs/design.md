@@ -2,7 +2,7 @@
 
 ## Scope
 
-One ESM TypeScript package provides a Pi extension and compiled JavaScript Herdr terminal plugin. It requires Node.js 22 or later and uses `yaml` at runtime. Pi and AI host packages are peer dependencies, never bundled. Build with `npm run build`; `npm test` uses Node's built-in test runner for compiled runtime tests and real Pi source-loader/package regressions. macOS verification is recorded in the [README](../README.md#verification-status); Linux remains an untested design target.
+One ESM TypeScript package provides a Pi extension and compiled JavaScript Herdr terminal plugin. It requires Node.js 22 or later and uses `yaml` and `string-width` at runtime. Pi and AI host packages are peer dependencies, never bundled. Build with `npm run build`; `npm test` uses Node's built-in test runner for compiled runtime tests and real Pi source-loader/package regressions. macOS verification is recorded in the [README](../README.md#verification-status); Linux remains an untested design target.
 
 Cards outlive sessions and workspaces. Durable YAML lives at `$XDG_STATE_HOME/herdr/cards/<initial-title-slug>.yaml`, defaulting to `~/.local/state/herdr/cards`. There is no central registry or session catalogue. Substantive design documents stay inside the repository. No arbitrary card prose body, required timestamps, Obsidian integration, agent launch, or repository editing by the helper.
 
@@ -12,7 +12,7 @@ All seven fields are required; arrays may be empty. Unknown keys and YAML duplic
 
 - `title`: non-empty single-line string.
 - `status`: `active | waiting | blocked | parked | done`.
-- `state`: short single-line summary (empty permitted).
+- `state`: short single-line summary of the broad durable milestone and important unfinished work (empty permitted). Aim for 1 to 2 short sentences, about 20 to 30 words; rendering wraps independently of this scalar format.
 - `cwd`: absolute POSIX path or `~/...`, expanded on the execution host.
 - `documents`: `{ path: string, description: string }[]`, using repository-relative POSIX paths, no absolute paths, backslashes, empty segments, `.` or `..` segments.
 - `issues` and `prs`: `{ url: string, description: string }[]`, valid absolute HTTP(S) URLs; whitespace, control characters, encoded controls and backslashes rejected.
@@ -66,7 +66,7 @@ Exports: `WorkCardsConfig`, immutable `DEFAULT_CONFIG`, `configPath(env?: NodeJS
 
 The default `update_guidance` is:
 
-> Update only for significant, evidenced changes. Preserve stable facts. Do not infer progress, invent links or documents, or rewrite wording without a substantive change. Return no_change when nothing important changed.
+> Preserve stable facts and summarize durable milestones and important unfinished work. Condense verbose or activity-log-like state even without new progress. Otherwise update only for significant, evidenced changes; return no_change for routine activity. Do not infer progress or invent plans, links or documents.
 
 There are no automatic retries or cooldowns.
 
@@ -78,11 +78,17 @@ The Pi extension (`src/pi/index.ts`, declared in `pi.extensions`) handles explic
 
 Projected host messages are normalized once into readonly role/text evidence at ingress, excluding thinking, images, tool arguments and custom messages. Queued text retains bounded newest-first excerpts. Prompt construction consumes these typed records and copies entries before clipping them to the separate exact JSON-encoded full-prompt character budget; it never shortens queued evidence.
 
+The summary brief is for someone returning a month later, not an activity log. It allows condensing verbose legacy state without new progress, even with older preserve-wording guidance. It preserves relevant facts without inventing completion or plans. Once state meets this contract, routine tool activity, tests and commits should produce `no_change` unless the overall state changes. Context inputs and budgets are unchanged; prompt regressions do not prove live-model quality.
+
 The default `helpers/simple` model needs an existing registered helper profile. Users may configure a physical provider/model instead. Calls cost tokens even for `no_change`. Pi exposes no public API to add standalone helper usage to its usage totals. The local timeout stops waiting and requests cancellation, but cannot guarantee an upstream request stops.
 
 The Herdr client exports `attachCard(snapshot: CardSnapshot, config)` and `detachCard(target: Pick<CardSnapshot, 'path'>, config)`. Existing snapshot callers remain valid; detach needs only the saved path and does not reread YAML. It targets the caller's workspace, verifies plugin registration and ownership, and serializes cooperating mutations with a workspace lock. It never uses GUI focus as a fallback.
 
 The pane reads YAML independently of Pi and is the sole regular workspace-summary publisher. Tokens hold ownership and display metadata, not durable card data. The view emits typed exit, document-open or no-action results. Document intents include a freshly read snapshot and require the displayed checkout/path to remain unchanged. Only painted letter shortcuts are active; digits are inert. HTTP links use OSC 8 and Herdr's local-client handling.
+
+The borderless view uses a bold title, right-aligned symbol-and-word status when space permits, normal-contrast word-wrapped state, accented document shortcuts and HTTP labels, dim directory prefixes and bold filenames. Colours come from the terminal palette; no theme settings or animation are introduced. Empty state and reference sections are omitted. State gets a bounded share of height when references exist, with visible ellipsis on truncation and a compact hidden-reference count. A dim `q close` footer uses spare space only.
+
+`string-width` 8.3.0 (MIT, Node >=20) measures sanitized display cells; `Intl.Segmenter` keeps graphemes intact. `plain()` first uses native `String.toWellFormed()` to normalize lone surrogates before measurement, matching terminal UTF-8 replacement behavior without changing saved values or document targets. TypeScript enables `ES2024.String` declarations while retaining ES2022 output and the Node 22 runtime baseline. Control/format sanitization is unchanged, so format characters such as ZWJ are still removed. No arbitrary card ANSI is interpreted as styling. Trusted SGR and OSC 8 are added after clipping and always closed. Fresh document-key validation reuses the dimensions actually painted, including the reserved notice row; clipped or hidden shortcuts remain inert. Terminal fonts can differ in ambiguous/emoji widths; the utility's default narrow ambiguous-width convention is used.
 
 `HerdrClient.openDocument(snapshot, relativePath, config)` validates card membership, the configured command and `resolveDocument` before Herdr mutation. Under the existing workspace lock it verifies the exact caller pane, socket, workspace and live owner nonce against the full inventory. It requires the exact local plugin registration with both entrypoints, never replaces a conflict or trusts hooks, and directs stale registrations to explicit relink.
 

@@ -33,7 +33,8 @@ test('missing config uses frozen defaults without shared mutable results', async
 });
 
 test('default guidance matches the no_change summarizer decision', () => {
-  assert.ok(DEFAULT_CONFIG.update_guidance.includes('Return no_change when nothing important changed.'));
+  assert.ok(DEFAULT_CONFIG.update_guidance.includes('return no_change for routine activity.'));
+  assert.ok(DEFAULT_CONFIG.update_guidance.includes('even without new progress.'));
   assert.ok(!DEFAULT_CONFIG.update_guidance.includes('empty patch'));
 });
 
