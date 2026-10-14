@@ -36,6 +36,48 @@ test('document labels use alphabetic keys and full relative paths, never descrip
     ['b', { cwd: '/repo', path: 'adrs/design.md' }],
   ]);
 });
+test('issue and PR labels share consecutive numbers independently of document letters', () => {
+  const c = { ...card, documents: [{ path: 'docs/design.md', description: 'Hidden description' }],
+    issues: [{ url: 'https://example.com/issues/1', description: 'An issue' },
+      { url: 'https://example.com/issues/2', description: '' }],
+    prs: [{ url: 'https://example.com/pulls/3', description: 'A PR' },
+      { url: 'https://example.com/pulls/4', description: '' }] };
+  const rendered = renderCard(snapshot(c), 100, 10);
+  const linked = (url, label) => `\x1b]8;;${url}\x1b\\${label}\x1b]8;;\x1b\\`;
+  assert.equal(rendered.text, ['Title · active', 'State', '[a] docs/design.md',
+    linked(c.issues[0].url, '[1] Issue: An issue'),
+    linked(c.issues[1].url, '[2] Issue: https://example.com/issues/2'),
+    linked(c.prs[0].url, '[3] PR: A PR'),
+    linked(c.prs[1].url, '[4] PR: https://example.com/pulls/4')].join('\n'));
+  assert.deepEqual([...rendered.documents], [['a', { cwd: '/repo', path: 'docs/design.md' }]]);
+});
+test('PR-only labels start at one', () => {
+  const c = { ...card, prs: [{ url: 'https://example.com/pulls/1', description: 'A PR' }] };
+  assert.equal(renderCard(snapshot(c), 80, 3).text,
+    'Title · active\nState\n\x1b]8;;https://example.com/pulls/1\x1b\\[1] PR: A PR\x1b]8;;\x1b\\');
+});
+test('numeric labels continue beyond nine across issues and PRs without document actions', () => {
+  const c = { ...card, issues: Array.from({ length: 9 }, (_, i) => ({ url: `https://example.com/issues/${i + 1}`, description: `Issue ${i + 1}` })),
+    prs: [{ url: 'https://example.com/pulls/10', description: 'Ten' }, { url: 'https://example.com/pulls/11', description: 'Eleven' }] };
+  const rendered = renderCard(snapshot(c), 80, 20);
+  assert.deepEqual(rendered.text.replace(/\x1b\]8;;[^\x1b]*\x1b\\/g, '').split('\n').slice(2),
+    [...Array.from({ length: 9 }, (_, i) => `[${i + 1}] Issue: Issue ${i + 1}`), '[10] PR: Ten', '[11] PR: Eleven']);
+  assert.equal(rendered.documents.size, 0);
+});
+test('numbered HTTP labels retain sanitization, clipping, OSC8 targets and overflow', () => {
+  const url = 'https://example.com/issues/1';
+  const c = { ...card, issues: [{ url, description: 'Ab\x07\u202ecd' }],
+    prs: [{ url: 'https://example.com/pulls/2', description: 'Hidden' },
+      { url: 'https://example.com/pulls/3', description: 'Also hidden' }] };
+  for (const width of [0, 1, 2, 3, 4, 8, 12, 80]) {
+    const rendered = renderCard(snapshot(c), width, 4);
+    const label = '[1] Issue: Abcd'.slice(0, width);
+    assert.equal(rendered.text.split('\n')[2], label ? `\x1b]8;;${url}\x1b\\${label}\x1b]8;;\x1b\\` : '');
+    assert.equal(rendered.text.split('\n')[3], '… 2 more; enlarge pane'.slice(0, width));
+    assert.equal(rendered.documents.size, 0);
+    assert.doesNotMatch(rendered.text, /\x07|\u202e|Hidden|pulls\/2/);
+  }
+});
 test('document keys skip q and stop safely after z without numeric shortcuts', () => {
   const c = { ...card, documents: Array.from({ length: 28 }, (_, i) => ({ path: 'docs/' + i + '.md', description: '' })) };
   const rendered = renderCard(snapshot(c), 80, 40);
@@ -58,7 +100,9 @@ test('digits never open documents and j/k select documents only outside a previe
   const f = await fixture(t);
   const documents = Array.from({ length: 11 }, (_, i) => ({ path: 'doc-' + i + '.md', description: '' }));
   for (const document of documents) await writeFile(join(f.repo, document.path), 'one\ntwo\nthree\nfour\nfive');
-  const saved = await createCard({ ...card, title: 'Many documents', cwd: f.repo, documents }, f.cards);
+  const saved = await createCard({ ...card, title: 'Many documents', cwd: f.repo, documents,
+    issues: [{ url: 'https://example.com/issues/1', description: 'An issue' }],
+    prs: [{ url: 'https://example.com/pulls/2', description: 'A PR' }] }, f.cards);
   const view = new CardView(saved.path, DEFAULT_CONFIG); await view.refresh(); view.render(80, 20);
   for (const digit of '0123456789') {
     assert.equal(await view.key(digit), false);
@@ -81,6 +125,7 @@ test('HTTP links use OSC8, sanitize display controls, and never offer scheme act
 });
 test('raw input ignores escape strings, arrows, split paste sequences and pasted shortcuts', () => {
   const input = new KeyInput();
+  assert.deepEqual(input.feed(Buffer.from('01234567891011')), []);
   assert.deepEqual(input.feed(Buffer.from('\x1b[A\x1b]8;;q1\x1b\\')), []);
   assert.deepEqual(input.feed(Buffer.from('\x1b[20')), []);
   assert.deepEqual(input.feed(Buffer.from('0~qa123\x1b[201~aq')), ['a', 'q']);

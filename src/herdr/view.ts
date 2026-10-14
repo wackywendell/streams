@@ -22,8 +22,8 @@ export function renderCard(snapshot: CardSnapshot, columns: number, rows: number
     { label: `${card.title} · ${card.status}` }, { label: card.state },
     ...card.documents.map((document, index) => ({ label: `${documentKeys[index] ? `[${documentKeys[index]}] ` : ''}${document.path}`,
       key: documentKeys[index], path: document.path })),
-    ...card.issues.map(link => ({ label: `Issue: ${link.description || link.url}`, url: webUrl(link.url) })),
-    ...card.prs.map(link => ({ label: `PR: ${link.description || link.url}`, url: webUrl(link.url) })),
+    ...card.issues.map((link, index) => ({ label: `[${index + 1}] Issue: ${link.description || link.url}`, url: webUrl(link.url) })),
+    ...card.prs.map((link, index) => ({ label: `[${card.issues.length + index + 1}] PR: ${link.description || link.url}`, url: webUrl(link.url) })),
   ];
   const height = Math.max(0, rows), width = Math.max(0, columns);
   const visible = entries.slice(0, Math.max(0, height - Number(entries.length > height)));
