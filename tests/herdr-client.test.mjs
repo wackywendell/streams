@@ -107,7 +107,7 @@ test('pane publisher validates live ownership, updates summary, and refuses a re
 test('detach closes only matching pane and clears only its own tokens', async t => {
   const f = await fixture(t); await f.client.attachCard(snapshot(f.path), DEFAULT_CONFIG);
   f.workspace.tokens.unrelated = 'preserved';
-  await f.client.detachCard(snapshot(f.path), DEFAULT_CONFIG);
+  await f.client.detachCard({ path: f.path }, DEFAULT_CONFIG);
   assert.equal(f.panes.length, 1); assert.deepEqual(f.workspace.tokens, { unrelated: 'preserved' });
 });
 test('restored terminal identity cannot be detached or reused', async t => {

@@ -6,21 +6,10 @@ import { fileURLToPath } from 'node:url';
 import { isDeepStrictEqual } from 'node:util';
 import type { CardSnapshot } from '../card.js';
 import { configPath, type WorkCardsConfig } from '../config.js';
-
-export interface Attachment {
-  socket: string;
-  workspaceId: string;
-  paneId: string;
-  terminalId: string;
-  cardIdentity: string;
-  nonce: string;
-}
-interface Pane { pane_id: string; terminal_id: string; workspace_id: string; tab_id: string; tokens: Record<string, string> }
-interface Workspace { workspace_id: string; tokens: Record<string, string> }
+import { classifyExplicitOwner, liveOwner, workspaceKeys, type Attachment, type Pane, type Workspace } from './ownership.js';
+export type { Attachment } from './ownership.js';
 type Run = (argv: string[], timeoutMs: number) => Promise<string>;
 interface ClientOptions { env?: NodeJS.ProcessEnv; run?: Run; pluginRoot?: string }
-const markerKeys = ['wc_card', 'wc_nonce', 'wc_pane', 'wc_terminal'];
-const workspaceKeys = [...markerKeys, 'wc_summary', 'wc_status'];
 const pluginPane = { id: 'card', title: 'Work card', placement: 'split', command: ['node', 'dist/herdr/pane.js'] };
 
 function object(value: unknown, label: string): Record<string, any> {
@@ -119,48 +108,13 @@ export class HerdrClient {
     if (w.workspace_id !== workspaceId) throw new Error('Herdr workspace identity mismatch');
     return { workspace_id: workspaceId, tokens: tokens(w.tokens) };
   }
-  private async inventory(workspaceId: string, config: WorkCardsConfig, caller: Pane): Promise<{ workspace: Workspace; panes: Pane[] }> {
+  private async inventory(workspaceId: string, config: WorkCardsConfig): Promise<{ workspace: Workspace; panes: Pane[] }> {
     const workspace = await this.workspace(workspaceId, config);
     const list = (await this.result(['pane', 'list', '--workspace', workspaceId], config, 'pane_list')).panes;
     if (!Array.isArray(list)) throw new Error('Unexpected Herdr pane list');
     const panes = list.map(parsePane);
     if (panes.some(p => p.workspace_id !== workspaceId)) throw new Error('Herdr pane workspace mismatch');
-    if (new Set(panes.map(p => p.pane_id)).size !== panes.length || new Set(panes.map(p => p.terminal_id)).size !== panes.length ||
-        !panes.some(p => p.pane_id === caller.pane_id && p.terminal_id === caller.terminal_id && p.tab_id === caller.tab_id)) {
-      throw new Error('Ambiguous Herdr inventory: duplicate identities or missing live caller; nothing was recovered');
-    }
     return { workspace, panes };
-  }
-  private async recoverAbsentOwner(identity: string, workspace: Workspace, panes: Pane[], config: WorkCardsConfig): Promise<void> {
-    const w = workspace.tokens;
-    if (!workspaceKeys.some(key => Object.hasOwn(w, key))) return;
-    if (panes.some(p => markerKeys.some(key => Object.hasOwn(p.tokens, key)) || p.tokens.wc_role === 'card')) return;
-    const panePrefix = `${workspace.workspace_id}:p`;
-    if (!markerKeys.every(key => Object.hasOwn(w, key)) || w.wc_card !== identity ||
-        !/^[0-9a-f]{64}$/.test(w.wc_card) || !/^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/.test(w.wc_nonce) ||
-        !w.wc_pane.startsWith(panePrefix) || w.wc_pane.length > 80 || !/^[A-Za-z0-9]+$/.test(w.wc_pane.slice(panePrefix.length)) ||
-        !/^[A-Za-z0-9_.:-]{1,80}$/.test(w.wc_terminal)) {
-      throw new Error('Work-card ownership conflict: absent-owner markers are incomplete, malformed or belong to a different card');
-    }
-    if (panes.some(p => p.pane_id === w.wc_pane || p.terminal_id === w.wc_terminal)) {
-      throw new Error('Work-card ownership conflict: the referenced pane or terminal is still live; restored shells are never reclaimed');
-    }
-    // Only explicit attach/detach call this, under the workspace lock after a complete live inventory.
-    await this.report('workspace', workspace.workspace_id, Object.fromEntries(workspaceKeys.map(key => [key, null])), config);
-    for (const key of workspaceKeys) delete w[key];
-  }
-  private owned(socket: string, identity: string, workspace: Workspace, panes: Pane[]): Attachment | undefined {
-    const candidates = panes.filter(p => markerKeys.some(key => Object.hasOwn(p.tokens, key)) || p.tokens.wc_role === 'card');
-    const marked = workspaceKeys.some(key => Object.hasOwn(workspace.tokens, key));
-    if (!marked && !candidates.length) return undefined;
-    if (candidates.length !== 1) throw new Error('Work-card ownership conflict: missing or multiple marked panes; inspect before explicit detach/open');
-    const p = candidates[0], w = workspace.tokens;
-    if (w.wc_card !== identity || p.tokens.wc_card !== identity || !w.wc_nonce || w.wc_nonce !== p.tokens.wc_nonce ||
-        p.tokens.wc_role !== 'card' || w.wc_pane !== p.pane_id || w.wc_terminal !== p.terminal_id ||
-        p.tokens.wc_pane !== p.pane_id || p.tokens.wc_terminal !== p.terminal_id) {
-      throw new Error('Work-card ownership conflict: different card or inconsistent live pane/terminal markers; nothing was replaced');
-    }
-    return { socket, workspaceId: workspace.workspace_id, paneId: p.pane_id, terminalId: p.terminal_id, cardIdentity: identity, nonce: w.wc_nonce };
   }
   private async report(kind: 'pane' | 'workspace', target: string, values: Record<string, string | null>, config: WorkCardsConfig): Promise<void> {
     const argv = [kind, 'report-metadata', target, '--source', 'work-cards'];
@@ -187,10 +141,12 @@ export class HerdrClient {
     return withWorkspaceLock(socket, caller.workspace_id, async () => {
       const current = await this.current(config);
       if (current.workspace_id !== caller.workspace_id || current.terminal_id !== caller.terminal_id || current.pane_id !== caller.pane_id) throw new Error('Caller moved while attaching; retry explicitly');
-      const { workspace, panes } = await this.inventory(caller.workspace_id, config, current);
-      await this.recoverAbsentOwner(identity, workspace, panes, config);
-      const existing = this.owned(socket, identity, workspace, panes);
-      if (existing) return existing;
+      const { workspace, panes } = await this.inventory(caller.workspace_id, config);
+      const ownership = classifyExplicitOwner(socket, identity, workspace, panes, current);
+      if (ownership.kind === 'live') return ownership.attachment;
+      if (ownership.kind === 'recoverable-orphan') {
+        await this.report('workspace', workspace.workspace_id, Object.fromEntries(workspaceKeys.map(key => [key, null])), config);
+      }
       await this.ensurePlugin(config);
       const nonce = randomUUID(), root = await realpath(this.pluginRoot);
       const opened = await this.result(['plugin', 'pane', 'open', '--plugin', 'work-cards', '--entrypoint', 'card', '--placement', 'split',
@@ -227,7 +183,7 @@ export class HerdrClient {
       }
       // Attach/detach scan all panes under this same lock. Polling needs only the live owner and workspace markers.
       const workspace = await this.workspace(expected.workspaceId, config);
-      const live = this.owned(expected.socket, identity, workspace, [current]);
+      const live = liveOwner(expected.socket, identity, workspace, [current]);
       if (!live || !isDeepStrictEqual(live, expected)) throw new Error('Work-card ownership conflict: publisher is no longer the live owner');
       const summary = Array.from(`${snapshot.card.status} · ${snapshot.card.state}`.trim()).slice(0, 80).join('');
       if (workspace.tokens.wc_status === snapshot.card.status && workspace.tokens.wc_summary === summary) return;
@@ -239,15 +195,19 @@ export class HerdrClient {
     return { socket, workspaceId: p.workspace_id, paneId: p.pane_id, terminalId: p.terminal_id,
       cardIdentity: await cardIdentity(snapshot.path), nonce: id(this.env.WORK_CARDS_NONCE) };
   }
-  async detachCard(snapshot: CardSnapshot, config: WorkCardsConfig): Promise<void> {
+  async detachCard(snapshot: Pick<CardSnapshot, 'path'>, config: WorkCardsConfig): Promise<void> {
     const caller = await this.current(config), socket = await this.socket(config), identity = await cleanupIdentity(snapshot.path);
     await withWorkspaceLock(socket, caller.workspace_id, async () => {
       const current = await this.current(config);
       if (current.workspace_id !== caller.workspace_id || current.terminal_id !== caller.terminal_id) throw new Error('Caller moved while detaching; retry explicitly');
-      const { workspace, panes } = await this.inventory(caller.workspace_id, config, current);
-      await this.recoverAbsentOwner(identity, workspace, panes, config);
-      const owned = this.owned(socket, identity, workspace, panes);
-      if (!owned) return;
+      const { workspace, panes } = await this.inventory(caller.workspace_id, config);
+      const ownership = classifyExplicitOwner(socket, identity, workspace, panes, current);
+      if (ownership.kind === 'empty') return;
+      if (ownership.kind === 'recoverable-orphan') {
+        await this.report('workspace', workspace.workspace_id, Object.fromEntries(workspaceKeys.map(key => [key, null])), config);
+        return;
+      }
+      const owned = ownership.attachment;
       const closed = await this.result(['plugin', 'pane', 'close', owned.paneId], config, 'plugin_pane_closed');
       if (closed.pane_id !== owned.paneId) throw new Error('Herdr closed pane identity mismatch');
       await this.report('workspace', caller.workspace_id, Object.fromEntries(workspaceKeys.map(key => [key, null])), config);
@@ -258,6 +218,6 @@ export class HerdrClient {
 export function attachCard(snapshot: CardSnapshot, config: WorkCardsConfig): Promise<Attachment> {
   return new HerdrClient().attachCard(snapshot, config);
 }
-export function detachCard(snapshot: CardSnapshot, config: WorkCardsConfig): Promise<void> {
+export function detachCard(snapshot: Pick<CardSnapshot, 'path'>, config: WorkCardsConfig): Promise<void> {
   return new HerdrClient().detachCard(snapshot, config);
 }
