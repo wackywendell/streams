@@ -130,7 +130,7 @@ class HerdrAssociationTest(unittest.TestCase):
         client = self.client()
         client.replies.update({("workspace", "rename", "w2", "Beta"): workspace(label="Beta"),
                                ("workspace", "report-metadata", "w2", "--source", "streams", "--token", "stream_slug=beta",
-                                "--token", "stream_status=active", "--token", "stream_state=Ready"): ""})
+                                "--token", "stream_status=🟩", "--token", "stream_state=Ready", "--token", "stream_summary=🟩 Ready"): ""})
         run = client.run
         def check_association(args):
             if args[:1] == ["workspace"]:
@@ -167,7 +167,7 @@ class HerdrAssociationTest(unittest.TestCase):
         client = self.client()
         client.replies.update({("workspace", "rename", "w2", "Beta"): workspace(label="Beta"),
                                ("workspace", "report-metadata", "w2", "--source", "streams", "--token", "stream_slug=beta",
-                                "--token", "stream_status=active", "--token", "stream_state=Ready"): ""})
+                                "--token", "stream_status=🟩", "--token", "stream_state=Ready", "--token", "stream_summary=🟩 Ready"): ""})
         with patch("_streams.cli.HerdrClient", return_value=client), patch("sys.stdout", io.StringIO()):
             self.assertEqual(main(["herdr", "update", "beta", "-w", "w2"]), 0)
         self.assertEqual(read_binding(self.binding), "beta")

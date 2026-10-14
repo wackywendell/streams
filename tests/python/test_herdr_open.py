@@ -61,7 +61,7 @@ class HerdrOpenTest(unittest.TestCase):
                                           tab={"workspace_id": "w9", "tab_id": "w9:t4"}, root_pane=pane("w9:p2")),
             ("workspace", "rename", "w9", "Example"): workspace("w9"),
             ("workspace", "report-metadata", "w9", "--source", "streams", "--token", "stream_slug=example",
-             "--token", "stream_status=active", "--token", "stream_state=Ready"): "",
+             "--token", "stream_status=🟩", "--token", "stream_state=Ready", "--token", "stream_summary=🟩 Ready"): "",
             self.links_command: response("plugin_pane_opened", plugin_pane={"plugin_id": "streams.links", "entrypoint": "links", "pane": pane("w9:p8")}),
             self.resize_command: response("pane_resize", resize={"pane_id": "w9:p2", "focused_pane_id": "w9:p2", "changed": True}),
         }

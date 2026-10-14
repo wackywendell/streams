@@ -22,6 +22,14 @@ from .projection import stream_cwd, stream_for_hints
 from .resolve import resolve_stream_ref
 from .store import list_streams
 
+STATUS_SYMBOLS = {
+    "active": "🟩",
+    "waiting": "◷",
+    "blocked": "!",
+    "parked": "Ⅱ",
+    "done": "✓",
+}
+
 
 @dataclass(frozen=True)
 class HerdrWorkspace:
@@ -198,11 +206,12 @@ def _project_workspace(stream: Stream, workspace: HerdrWorkspace, herdr: HerdrCl
         if renamed.id != workspace.id:
             raise StreamError("Herdr renamed workspace ID mismatch in native response")
         completed.append("label")
+        status_symbol = STATUS_SYMBOLS[stream.status]
         # report-metadata deliberately exits silently on success.
         herdr.run([
             "workspace", "report-metadata", workspace.id, "--source", "streams",
-            "--token", f"stream_slug={stream.slug}", "--token", f"stream_status={stream.status}",
-            "--token", f"stream_state={stream.state}",
+            "--token", f"stream_slug={stream.slug}", "--token", f"stream_status={status_symbol}",
+            "--token", f"stream_state={stream.state}", "--token", f"stream_summary={status_symbol} {stream.state.strip()}",
         ])
         completed.append("metadata")
     except StreamError as exc:

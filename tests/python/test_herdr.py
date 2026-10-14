@@ -14,6 +14,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "src"))
 
 from _streams.cli import main
 from _streams.cmux import CmuxClient
+from _streams.config import VALID_STATUSES
 from _streams.errors import StreamError
 from _streams.herdr import HerdrClient, HerdrWorkspace, load_stream_for_update, update_workspace
 from _streams.herdr_binding import HerdrEndpoint, binding_path, write_binding
@@ -239,12 +240,31 @@ class HerdrTest(unittest.TestCase):
             update_workspace(stream, HerdrWorkspace("w2", "Old"), HerdrClient())
         self.assertEqual(run.call_count, 2)
 
+    def test_status_metadata_uses_symbols_and_compact_summary_without_changing_note(self) -> None:
+        symbols = {"active": "🟩", "waiting": "◷", "blocked": "!", "parked": "Ⅱ", "done": "✓"}
+        self.assertEqual(set(symbols), VALID_STATUSES)
+        for stream_status, symbol in symbols.items():
+            with self.subTest(status=stream_status):
+                stream = stream_at(self.root, status=stream_status, state=" Ready ")
+                original_note = stream.path.read_text()
+                metadata = ("workspace", "report-metadata", "w2", "--source", "streams",
+                            "--token", "stream_slug=example", "--token", f"stream_status={symbol}",
+                            "--token", "stream_state= Ready ", "--token", f"stream_summary={symbol} Ready")
+                client = FakeHerdr({("status", "--json"): status(),
+                                    ("workspace", "rename", "w2", "Example"): workspace(),
+                                    metadata: ""})
+                update_workspace(stream, HerdrWorkspace("w2", "Old"), client)
+                self.assertEqual(client.calls[-1], list(metadata))
+                self.assertEqual(stream.as_json()["status"], stream_status)
+                self.assertEqual(stream.as_json()["state"], " Ready ")
+                self.assertEqual(stream.path.read_text(), original_note)
+
     def test_metadata_update_preserves_focus_layout_and_agent_state(self) -> None:
         stream = stream_at(self.root, state="Waiting for review", status="waiting")
         target = HerdrWorkspace("w2", "Old", "/repo/topic")
         metadata = ["workspace", "report-metadata", "w2", "--source", "streams",
-                    "--token", "stream_slug=example", "--token", "stream_status=waiting",
-                    "--token", "stream_state=Waiting for review"]
+                    "--token", "stream_slug=example", "--token", "stream_status=◷",
+                    "--token", "stream_state=Waiting for review", "--token", "stream_summary=◷ Waiting for review"]
         client = FakeHerdr({("status", "--json"): status(),
                             ("workspace", "rename", "w2", "Example"): workspace(),
                             tuple(metadata): ""})
@@ -261,7 +281,7 @@ class HerdrTest(unittest.TestCase):
         client = FakeHerdr({("status", "--json"): status(),
                             ("workspace", "rename", "w2", "Example"): workspace(),
                             ("workspace", "report-metadata", "w2", "--source", "streams", "--token", "stream_slug=example",
-                             "--token", "stream_status=active", "--token", "stream_state=Ready"):
+                             "--token", "stream_status=🟩", "--token", "stream_state=Ready", "--token", "stream_summary=🟩 Ready"):
                                 StreamError("metadata unavailable")})
         with self.assertRaisesRegex(StreamError, "partial.*w2.*label.*metadata unavailable"):
             update_workspace(stream, HerdrWorkspace("w2", "Old"), client)
@@ -273,7 +293,7 @@ class HerdrTest(unittest.TestCase):
         client = FakeHerdr({("status", "--json"): status(),
                             ("workspace", "rename", "w2", "Example"): workspace(),
                             ("workspace", "report-metadata", "w2", "--source", "streams", "--token", "stream_slug=example",
-                             "--token", "stream_status=active", "--token", "stream_state=Ready"): ""})
+                             "--token", "stream_status=🟩", "--token", "stream_state=Ready", "--token", "stream_summary=🟩 Ready"): ""})
         with patch("_streams.herdr.write_binding", side_effect=StreamError("disk unavailable")), \
                 self.assertRaisesRegex(StreamError, "not changed.*no native display update.*disk unavailable"):
             update_workspace(stream, HerdrWorkspace("w2", "Old"), client)
