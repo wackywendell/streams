@@ -7,7 +7,7 @@ import { loadConfig, type WorkCardsConfig } from '../config.js';
 import { attachCard, detachCard } from '../herdr/client.js';
 import { createCheckScheduler, type CheckScheduler } from './scheduler.js';
 import { buildSummaryContext, requestSummary } from './summarizer.js';
-import { recentText, type TextEvidence } from './evidence.js';
+import { normalizeEvidence, type ProjectedEvidence } from './evidence.js';
 
 const bindingEntry = 'work-cards.binding';
 const usage = 'Usage: /work-card new <title> | open [slug] | show | detach';
@@ -29,7 +29,7 @@ interface Evidence {
   generation: number;
   sessionId: string;
   path: string;
-  messages: readonly TextEvidence[];
+  input: ProjectedEvidence;
 }
 function object(value: unknown): value is Record<string, unknown> {
   return value !== null && typeof value === 'object' && !Array.isArray(value);
@@ -89,7 +89,7 @@ export function registerWorkCards(pi: ExtensionAPI, overrides: Partial<Dependenc
     try {
       const current = await readCard(target.slug, dirname(target.path));
       if (!applicable(evidence, signal)) return;
-      const context = buildSummaryContext(current.card, evidence.messages, settings);
+      const context = buildSummaryContext(current.card, evidence.input, settings);
       const decision = await requestSummary(registry, context, settings, signal);
       if (!applicable(evidence, signal) || decision.action === 'no_change') return;
       // The core also checks cancellation immediately before committing its prepared file.
@@ -159,14 +159,14 @@ export function registerWorkCards(pi: ExtensionAPI, overrides: Partial<Dependenc
     if (sessionId !== binding.sessionId) return;
     adopt(ctx);
     const projection = ctx.sessionManager.buildSessionProjection();
-    const messages = recentText(projection.messages, config.max_context_chars);
+    const input = normalizeEvidence(projection.messages);
     // State-only custom entries can advance the branch leaf at turn_end without new evidence.
     const leaf = projection.entries.filter(entry => entry.messages.some(message =>
       message.role === 'user' || message.role === 'assistant' || message.role === 'toolResult',
     )).at(-1)?.sourceEntry.id ?? ctx.sessionManager.getBranch().filter(entry => entry.type === 'message').at(-1)?.id ?? null;
     return {
-      revision: createHash('sha256').update(JSON.stringify({ leaf, messages })).digest('hex'),
-      generation, sessionId, path: binding.target.path, messages,
+      revision: createHash('sha256').update(JSON.stringify({ leaf, input })).digest('hex'),
+      generation, sessionId, path: binding.target.path, input,
     };
   }
   function reportPartial(snapshot: CardSnapshot, reason: string): void {

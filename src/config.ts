@@ -9,6 +9,7 @@ export interface WorkCardsConfig {
   thinking_level: null | 'off' | 'minimal' | 'low' | 'medium' | 'high' | 'xhigh' | 'max';
   check_every_n_responses: number;
   check_every_n_cycles: number;
+  /** @deprecated Accepted and validated for compatibility; ignored by summary context construction. */
   max_context_chars: number;
   max_document_bytes: number;
   document_command: string | null;

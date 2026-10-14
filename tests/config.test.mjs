@@ -47,6 +47,16 @@ test('partial config overlays defaults and allows independent disabled checks', 
   assert.equal((await loadConfig(path)).check_every_n_responses, 1);
 });
 
+test('deprecated context budget remains accepted and validated for strict config compatibility', async t => {
+  const path = await fixture(t);
+  for (const max_context_chars of [1, 24000, 1000000]) {
+    await writeFile(path, JSON.stringify({ max_context_chars }));
+    assert.equal((await loadConfig(path)).max_context_chars, max_context_chars);
+  }
+  await writeFile(path, JSON.stringify({ max_context_chars: 0 }));
+  await assert.rejects(loadConfig(path), /max_context_chars.*integer >= 1/);
+});
+
 test('thinking level accepts explicit overrides and null for profile inheritance', async t => {
   const path = await fixture(t);
   for (const thinking_level of [null, 'off', 'minimal', 'low', 'medium', 'high', 'xhigh', 'max']) {

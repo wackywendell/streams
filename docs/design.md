@@ -54,7 +54,7 @@ Exports: `WorkCardsConfig`, immutable `DEFAULT_CONFIG`, `configPath(env?: NodeJS
 | thinking_level | `null` | `null` or `off`, `minimal`, `low`, `medium`, `high`, `xhigh`, `max`; null inherits selected helpers/* profile thinkingLevel, otherwise off; explicit overrides tune physical models too |
 | check_every_n_responses | 1 | integer >=0; zero independently disables response checks |
 | check_every_n_cycles | 10 | integer >=0; zero independently disables cycle checks |
-| max_context_chars | 24000 | positive integer, actual characters, not a token estimate |
+| max_context_chars | 24000 | positive integer; deprecated, accepted and validated but ignored |
 | max_document_bytes | 262144 | positive integer; legacy preview setting, no effect on external tools |
 | document_command | `null` | null or nonblank trusted global command prefix without controls; otherwise use nonblank EDITOR, then less |
 | max_output_tokens | 2048 | positive integer |
@@ -76,9 +76,11 @@ The shared card module validates YAML, resolves document paths and handles revis
 
 The Pi extension (`src/pi/index.ts`, declared in `pi.extensions`) handles explicit commands, restores session bindings and schedules helper checks from Pi evidence. Checks are single-flight per Pi session, not globally across separate bindings. New eligible evidence replaces pending evidence; stale results cannot update a changed card, binding or session. Helper output passes through `validateCardPatch` and `updateCard`, never direct file writes. Patches cannot change title, cwd or repository documents.
 
-Projected host messages are normalized once into readonly role/text evidence at ingress, excluding thinking, images, tool arguments and custom messages. Queued text retains bounded newest-first excerpts. Prompt construction consumes these typed records and copies entries before clipping them to the separate exact JSON-encoded full-prompt character budget; it never shortens queued evidence.
+The extension normalizes only `buildSessionProjection().messages` at ingress, copying the latest `compactionSummary.summary` (or `null`) and all retained nonblank user/assistant text chronologically. It joins every text block with a newline and excludes thinking, images, tool calls, arguments, results, custom/system messages and branch summaries. It never reconstructs raw precompaction history. Summaries rely on assistant text for outcomes rather than tool output.
 
-The summary brief is for someone returning a month later, not an activity log. It allows condensing verbose legacy state without new progress, even with older preserve-wording guidance. It preserves relevant facts without inventing completion or plans. Once state meets this contract, routine tool activity, tests and commits should produce `no_change` unless the overall state changes. Context inputs and budgets are unchanged; prompt regressions do not prove live-model quality.
+Queued input is typed and does not alias host objects. Revisions hash both summary and transcript alongside the existing evidence leaf. Prompt construction leaves the snapshot unchanged and sends one JSON user message ordered `{compactionSummary, transcript, card}`, with the full current card last. There is no application context cap, clipping or fallback summary; `max_context_chars` remains validated only for configuration compatibility. Provider context-window errors surface through existing warnings, without silent trimming or automatic retry. Card-last ordering may permit prefix reuse when only the card changes, but provider caching is not guaranteed.
+
+The summary brief is for someone returning a month later, not an activity log. It allows condensing verbose legacy state without new progress, even with older preserve-wording guidance. It preserves relevant facts without inventing completion or plans. Once state meets this contract, routine tool activity, tests and commits should produce `no_change` unless the overall state changes. An isolated comparison used 4 real replay calls at 2 historical snapshots; the compaction-plus-dialogue candidate produced useful outputs. This is not a broad benchmark, and prompt regressions alone do not prove live-model quality.
 
 The default `helpers/simple` model needs an existing registered helper profile. Users may configure a physical provider/model instead. Calls cost tokens even for `no_change`. Pi exposes no public API to add standalone helper usage to its usage totals. The local timeout stops waiting and requests cancellation, but cannot guarantee an upstream request stops.
 

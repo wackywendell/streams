@@ -6,6 +6,7 @@ import { join } from 'node:path';
 import { registerWorkCards } from '../dist/pi/index.js';
 import { createCard, readCard, updateCard } from '../dist/card.js';
 import { DEFAULT_CONFIG } from '../dist/config.js';
+import { buildSessionProjection } from '@earendil-works/pi-coding-agent';
 
 const tick = () => new Promise(resolve => setImmediate(resolve));
 async function until(predicate) {
@@ -593,21 +594,109 @@ test('tree navigation and explicit binding replacement cancel a stale helper', a
   assert.equal((await readCard('second', h.directory)).card.state, '');
 });
 
-test('projection redactions and recent text budget are respected; tool results count as evidence, not arguments', async t => {
-  const h = await host(t, { max_context_chars: 4000 });
-  await h.command('new Bounded');
-  h.evidence('e1');
-  h.setMessages([
-    { role: 'user', content: 'OLD SECRET'.repeat(1000) },
-    { role: 'assistant', content: [{ type: 'thinking', thinking: 'PRIVATE THINKING' }, { type: 'toolCall', arguments: { password: 'PRIVATE ARGS' } }] },
-    { role: 'toolResult', content: [{ type: 'text', text: 'Confirmed new ADR docs/cache.md' }, { type: 'image', data: 'PRIVATE IMAGE' }] },
-  ]);
+test('projected summary and uncapped dialogue exclude tools and respect host redactions', async t => {
+  const h = await host(t, { max_context_chars: 1 });
+  await h.command('new Dialogue');
+  h.evidence('e1', 'RAW_SECRET');
+  const userText = 'EARLIEST_REQUEST'.repeat(4000);
+  const projected = [
+    { role: 'compactionSummary', summary: 'Earlier milestone' },
+    { role: 'user', content: userText },
+    { role: 'assistant', content: [
+      { type: 'text', text: 'Confirmed new ADR docs/cache.md' },
+      { type: 'text', text: 'Implementation remains unfinished' },
+      { type: 'thinking', thinking: 'PRIVATE THINKING' },
+      { type: 'toolCall', arguments: { password: 'PRIVATE ARGS' } },
+    ] },
+    { role: 'toolResult', content: [
+      { type: 'text', text: 'PRIVATE TOOL'.repeat(24000) },
+      { type: 'image', data: 'PRIVATE IMAGE' },
+    ] },
+  ];
+  const before = structuredClone(projected);
+  h.setMessages(projected);
+  h.ctx.sessionManager.getEntries = () => { throw new Error('Raw history is forbidden'); };
   await h.emit('agent_settled', { aborted: false });
   await until(() => h.calls.length === 1);
   const context = h.calls[0].context;
-  assert.ok(context.systemPrompt.length + context.messages[0].content[0].text.length <= 4000);
-  assert.doesNotMatch(JSON.stringify(context), /PRIVATE THINKING|PRIVATE ARGS|PRIVATE IMAGE/);
-  assert.match(JSON.stringify(context), /Confirmed new ADR/);
+  const data = JSON.parse(context.messages[0].content[0].text);
+  assert.deepEqual(data, {
+    compactionSummary: 'Earlier milestone',
+    transcript: [
+      { role: 'user', text: userText },
+      { role: 'assistant', text: 'Confirmed new ADR docs/cache.md\nImplementation remains unfinished' },
+    ],
+    card: card('Dialogue'),
+  });
+  assert.doesNotMatch(JSON.stringify(context), /RAW_SECRET|PRIVATE/);
+  assert.deepEqual(projected, before);
+});
+
+test('summary-only changes participate in revision hashing at the same dialogue leaf', async t => {
+  const h = await host(t);
+  await h.command('new Summary revision');
+  h.evidence('same-leaf');
+  const dialogue = [{ role: 'user', content: 'Same dialogue' }];
+  h.setMessages([{ role: 'compactionSummary', summary: 'First milestone' }, ...dialogue]);
+  await h.emit('agent_settled', { aborted: false });
+  await until(() => h.calls.length === 1);
+  h.setMessages([{ role: 'compactionSummary', summary: 'Changed milestone' }, ...dialogue]);
+  await h.emit('agent_settled', { aborted: false });
+  await until(() => h.calls.length === 2);
+  assert.equal(JSON.parse(h.calls[1].context.messages[0].content[0].text).compactionSummary, 'Changed milestone');
+  await h.emit('agent_settled', { aborted: false });
+  for (let i = 0; i < 10; i++) await readCard('summary-revision', h.directory);
+  assert.equal(h.calls.length, 2);
+});
+
+test('actual SDK historical projection excludes precompaction, future and other branches and applies edits', async t => {
+  const h = await host(t);
+  await h.command('new Historical');
+  const timestamp = '2026-01-01T00:00:00.000Z';
+  const message = (id, parentId, role, content) => ({ type: 'message', id, parentId, timestamp, message: { role, content, timestamp: 0 } });
+  const entries = [
+    message('pre', null, 'user', 'PRECOMPACTION_SECRET'),
+    { type: 'compaction', id: 'old-compaction', parentId: 'pre', timestamp, firstKeptEntryId: 'pre', summary: 'OLD_SUMMARY_SECRET', tokensBefore: 100 },
+    message('kept', 'old-compaction', 'user', 'REDACTED_SECRET'),
+    message('deleted', 'kept', 'assistant', [{ type: 'text', text: 'DELETED_SECRET' }]),
+    { type: 'compaction', id: 'compaction', parentId: 'deleted', timestamp, firstKeptEntryId: 'kept', summary: 'Actual projected checkpoint', tokensBefore: 200 },
+    message('outcome', 'compaction', 'assistant', [{ type: 'text', text: 'Retained outcome' }]),
+    { type: 'context_edit', id: 'edit', parentId: 'outcome', timestamp, targetId: 'kept', replacement: { content: 'Redacted request' } },
+    { type: 'context_edit', id: 'historical-leaf', parentId: 'edit', timestamp, targetId: 'deleted', replacement: null },
+    message('future', 'historical-leaf', 'user', 'FUTURE_SECRET'),
+    message('other-branch', 'compaction', 'user', 'OTHER_BRANCH_SECRET'),
+  ];
+  const before = structuredClone(entries);
+  h.ctx.sessionManager.buildSessionProjection = () => buildSessionProjection(entries, 'historical-leaf');
+  h.ctx.sessionManager.getBranch = () => { throw new Error('Do not reconstruct raw history'); };
+  h.ctx.sessionManager.getEntries = () => { throw new Error('Do not read raw history'); };
+  await h.emit('agent_settled', { aborted: false });
+  await until(() => h.calls.length === 1);
+  assert.deepEqual(JSON.parse(h.calls[0].context.messages[0].content[0].text), {
+    compactionSummary: 'Actual projected checkpoint',
+    transcript: [
+      { role: 'user', text: 'Redacted request' },
+      { role: 'assistant', text: 'Retained outcome' },
+    ],
+    card: card('Historical'),
+  });
+  assert.doesNotMatch(JSON.stringify(h.calls[0].context), /SECRET/);
+  assert.deepEqual(entries, before);
+});
+
+test('provider context-window errors warn without silently trimming or retrying', async t => {
+  const h = await host(t);
+  await h.command('new Provider limit');
+  const before = await readCard('provider-limit', h.directory);
+  h.evidence('e1', 'Outcome '.repeat(6000));
+  h.setResult(async () => { throw new Error('Provider context window exceeded'); });
+  await h.emit('agent_settled', { aborted: false });
+  await until(() => h.notices.some(n => n.level === 'warning' && /context window exceeded/.test(n.text)));
+  assert.ok(h.calls[0].context.messages[0].content[0].text.length > 24000);
+  await h.emit('agent_settled', { aborted: false });
+  for (let i = 0; i < 10; i++) await readCard('provider-limit', h.directory);
+  assert.equal(h.calls.length, 1);
+  assert.deepEqual(await readCard('provider-limit', h.directory), before);
 });
 
 test('configuration and missing-model failures are visible without fallback; tool read failures throw', async t => {
