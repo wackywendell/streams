@@ -155,11 +155,11 @@ Foreground reference removal executes directly. Deletion is metadata-only. Refus
 
 ## One-off local cutover
 
-The local inventory contains one saved card and one session with a saved card binding. Convert these directly after the workspace-only runtime passes review and isolated tests. Do not add a runtime migration framework.
+A Herdr and Pi restart during implementation loaded the replacement entrypoint. It created a workspace record, an agent record and a verified native pair for the current session. Do not create another workspace or replace newer agent progress with the old saved state.
 
-Back up source card bytes and native metadata. Record the intended destination IDs in the cutover evidence before writing records. Preserve the title, checkout, references and supported own-agent state; leave session history untouched. Keep the goal unknown until selected plan sources establish it. Verify source revisions before switching bindings, and retain backups for recovery rather than overwriting source data.
+The original card still contains its title and 3 document references. A second, empty card points to a temporary test checkout; do not import it as project context. After review and verification, back up both old files, the current records and native metadata. Merge the original title and references into the existing workspace through checked core operations. Leave session history untouched and keep Goal unknown until selected plans establish it. Retain source backups for recovery; do not add a runtime importer.
 
-The current failed display is absent. Clear only its positively verified stale markers when binding the new records; leave other panes, editor tabs and unrelated metadata alone. Refuse unexpected live ownership or changed source records. Use one launcher environment and one pane runtime. Test the exact environment produced by the launcher against the pane, rather than testing each side with separate fixtures.
+No native rebinding or stale-marker cleanup is currently needed. Reverify the live pair before merging data; refuse changed identity or ownership. Leave other panes, editor tabs and unrelated metadata alone. Use one launcher environment and one pane runtime. Test the exact environment produced by the launcher against the pane, rather than testing each side with separate fixtures.
 
 ## Implementation slices
 
@@ -172,16 +172,11 @@ Use Sol for implementation and Astra for substantive review. Inspect actual diff
 
 ## Pi integration status
 
-The following components are implemented but not registered by `src/pi/index.ts`:
+`src/pi/index.ts` now registers the workspace lifecycle, helper coordinator, commands and read-only tool. Startup captures the SDK projection; idle polling reconciles membership without scheduling model calls. Explicit refresh carries forced plan-selection intent through coalescing. Old session binding entries are not imported.
 
-- `WorkspaceLifecycle` serializes membership reconciliation, resets evidence, preserves `q` suppression and verifies native ownership before authorizing helper work
-- `WorkspaceRefresher` applies own-agent summaries, merges suffix-only shared additions, then refreshes the plan-derived goal
+The recovered implementation passes 503 tests on Node 22 and Node 26, including the actual launcher environment consumed by the pane. Astra found 4 missing cases: competing selections of one durable workspace, detach persistence before reads, outstanding cancelled provider requests, and same-UUID resume through another file. Those corrections and their regression tests are in progress; the runtime slice is not yet approved.
 
-The existing scheduler now forwards explicit-refresh intent separately from the queued snapshot. A newer automatic observation cannot cancel forced plan selection and inference.
-
-Astra approved both slices after the lifecycle recovery fixes. All 524 tests and type checks pass on Node 22 and Node 26. The lifecycle tests use temporary records and native transport doubles; they do not establish live SDK integration.
-
-The installed entrypoint still uses the old format at this checkpoint. A pane startup regression exposed an untested mismatch between that launcher and the dual-mode pane. The user chose to remove compatibility rather than repair the old launch path. Replace SDK wiring and commands, remove the old runtime, complete management and naming, then perform the backed-up local conversion and isolated rollout checks. No live cutover has happened yet.
+The restart activated the new source entrypoint before review finished. Complete the corrections, remove the old runtime modules and pane branch, then merge the saved references with backups. Foreground management and native/session naming remain separate unfinished slices. The installed naming extension has not been disabled.
 
 ## Native integration evidence
 
@@ -195,7 +190,11 @@ Artifacts: `/private/tmp/wc-workspace-native.b5jTSR/`, including `investigation.
 
 The corrected adapter and pane passed all 5 groups in `/private/tmp/wc-workspace-native.Q0pnzu/` in one run. Both checkouts opened their documents on the first keypress under the original 250 ms polling contention. Exact editor targets, reuse, manual labels, close-without-respawn, explicit reopening, agent-only move cleanup and paired recovery after 2 sequential pane moves all passed. The other agent pair and a separate sentinel pair stayed intact. The harness closed its 3 private workspaces; server PID 29938 exited with code 0. See `result.json`, `checks.jsonl` and `evidence-1.json` through `evidence-5.json`.
 
-Astra approved the contention fix; all 439 tests passed on Node 22 and Node 26. The native smoke exercised real card panes and dummy agent shells, not Pi lifecycle, automatic naming, legacy import or removal. Those integration checks remain outstanding.
+Astra approved the contention fix; all 439 tests passed on Node 22 and Node 26. That smoke exercised real card panes and dummy agent shells, not Pi lifecycle, automatic naming, local conversion or removal.
+
+The recovered Pi host later passed 5 isolated native checks on Herdr 0.9.5 and Node 26.11.1: fresh-input attachment, exact document opening, close/refresh/reload suppression and explicit reopen, two independent agents, and own-only shutdown cleanup. Artifacts are in `/private/tmp/wc-runtime-cutover.kTWk8m/`. The harness used injected SDK callbacks and 5 local fake helper calls, not a complete Pi session. Its private workspace closed, server exited with code 0, socket disappeared and all captured fixture processes stopped.
+
+This run preceded the review corrections for competing workspace selection, durable detach, late provider settlement and same-UUID resume through another file. It does not establish those edge cases or complete the naming and management rollout.
 
 ## Verification gates
 
