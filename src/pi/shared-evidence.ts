@@ -34,7 +34,7 @@ export function captureReferenceBoundary(evidence: ProjectedEvidence): Readonly<
   });
 }
 
-/** Tree navigation and unproven resume must pass reset, even when the prefix matches. */
+/** Check continuity and identify fresh startup input, not reference eligibility. Tree/resume still require reset. */
 export function projectSharedEvidence(
   evidence: ProjectedEvidence,
   boundary: Readonly<ReferenceBoundary>,

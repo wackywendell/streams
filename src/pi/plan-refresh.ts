@@ -7,6 +7,11 @@ import { capturePlanSources, isMarkdownDocument, recheckPlanSources, validatePla
 import type { SummaryRegistry, SummaryRequestOptions } from './summarizer.js';
 import { requestPlanSelection, requestWorkspaceGoal } from './workspace-summary.js';
 
+export type RefreshDiagnostic =
+  | { stage: 'own' | 'shared' | 'goal'; outcome: 'applied' | 'unchanged' | 'no_sources' | 'skipped' }
+  | { stage: 'selection'; outcome: 'selected' | 'no_sources'; selectedCount: number; cacheHit: boolean }
+  | { stage: 'own' | 'shared' | 'selection' | 'goal'; outcome: 'failed'; cancelled: boolean };
+
 export interface PlanRefreshInput {
   authority: Authority;
   signal: AbortSignal;
@@ -15,6 +20,8 @@ export interface PlanRefreshInput {
   /** Reselect metadata and regenerate the goal even when captured provenance is unchanged. */
   force?: boolean;
   onRequest?: () => (() => void);
+  /** Read-only observer; callbacks must not throw. Contains no source or dialogue contents. */
+  onDiagnostic?: (event: RefreshDiagnostic) => void;
 }
 
 /** A single host-owned refresher, not a scheduler. Discard on host invalidation. */
@@ -32,7 +39,7 @@ export class PlanRefresher<TModel extends { api?: string }> {
     const { store, registry, options, loadHelperProfiles } = this.config;
     // Caller-owned authority cannot change under an in-flight refresh.
     const authority = { ...input.authority };
-    const { signal, assertCurrent, onRequest } = input;
+    const { signal, assertCurrent, onRequest, onDiagnostic } = input;
     const current = async (expectedRevision?: string): Promise<Snapshot<WorkspaceRecord>> => {
       signal.throwIfAborted();
       const agent = await store.readAgent(authority.sessionId);
@@ -46,38 +53,55 @@ export class PlanRefresher<TModel extends { api?: string }> {
       return workspace;
     };
 
-    const original = await current();
-    const workspace = original.record;
-    const candidates = workspace.documents.filter(isMarkdownDocument);
-    const metadata = JSON.stringify(candidates.map(d => [d.checkout, d.path, d.description]).sort());
-    const cached = this.selection;
-    let sources: DocumentIdentity[];
-    if (!candidates.length) sources = [];
-    else if (!input.force && cached?.workspaceId === workspace.id && cached.creationToken === workspace.creationToken && cached.metadata === metadata) {
-      sources = validatePlanSelection(workspace, cached.sources);
-    } else {
-      const decision = await requestPlanSelection(registry, workspace, options, signal, loadHelperProfiles, onRequest);
+    let stage: 'selection' | 'goal' = 'selection';
+    try {
+      const original = await current();
+      const workspace = original.record;
+      const candidates = workspace.documents.filter(isMarkdownDocument);
+      const metadata = JSON.stringify(candidates.map(d => [d.checkout, d.path, d.description]).sort());
+      const cached = this.selection;
+      let sources: DocumentIdentity[];
+      let cacheHit = false;
+      if (!candidates.length) sources = [];
+      else if (!input.force && cached?.workspaceId === workspace.id && cached.creationToken === workspace.creationToken && cached.metadata === metadata) {
+        sources = validatePlanSelection(workspace, cached.sources);
+        cacheHit = true;
+      } else {
+        const decision = await requestPlanSelection(registry, workspace, options, signal, loadHelperProfiles, onRequest);
+        await current(original.revision);
+        sources = decision.sources;
+      }
+      // Cache verified metadata choice, not source-read success or an applied goal.
+      this.selection = { workspaceId: workspace.id, creationToken: workspace.creationToken, metadata, sources: structuredClone(sources) };
+      onDiagnostic?.({ stage: 'selection', outcome: sources.length ? 'selected' : 'no_sources', selectedCount: sources.length, cacheHit });
+      stage = 'goal';
+      const captured = await capturePlanSources(workspace, sources);
       await current(original.revision);
-      sources = decision.sources;
-    }
-    // Cache verified metadata choice, not source-read success or an applied goal.
-    this.selection = { workspaceId: workspace.id, creationToken: workspace.creationToken, metadata, sources: structuredClone(sources) };
-    const captured = await capturePlanSources(workspace, sources);
-    await current(original.revision);
-    const unchanged = sources.length
-      ? !input.force && isDeepStrictEqual(sources, workspace.planSources) && captured.fingerprint === workspace.sourceFingerprint
-      : workspace.goal === '' && workspace.planSources.length === 0 && workspace.sourceFingerprint === null;
-    const goal = unchanged || !sources.length ? null
-      : await requestWorkspaceGoal(registry, captured, options, signal, loadHelperProfiles, onRequest);
+      const unchanged = sources.length
+        ? !input.force && (!workspace.goal.trim() || !!workspace.goalShort?.trim()) && isDeepStrictEqual(sources, workspace.planSources) && captured.fingerprint === workspace.sourceFingerprint
+        : workspace.goal === '' && workspace.planSources.length === 0 && workspace.sourceFingerprint === null;
+      const goal = unchanged || !sources.length ? null
+        : await requestWorkspaceGoal(registry, captured, options, signal, loadHelperProfiles, onRequest);
 
-    const latest = await current(original.revision);
-    await recheckPlanSources(latest.record, sources, captured);
-    // Filesystem preparation must finish before the final host guard and CAS effect.
-    const checked = await current(original.revision);
-    if (unchanged) return checked;
-    return store.applyPlan(authority, {
-      goal: goal?.goal ?? '', sources, fingerprint: sources.length ? captured.fingerprint : null,
-      ...(goal?.title !== undefined ? { title: goal.title } : {}),
-    }, original.revision, signal);
+      const latest = await current(original.revision);
+      await recheckPlanSources(latest.record, sources, captured);
+      // Filesystem preparation must finish before the final host guard and CAS effect.
+      const checked = await current(original.revision);
+      if (unchanged) {
+        onDiagnostic?.({ stage: 'goal', outcome: sources.length ? 'unchanged' : 'no_sources' });
+        return checked;
+      }
+      const result = await store.applyPlan(authority, {
+        goal: goal?.goal ?? '', sources, fingerprint: sources.length ? captured.fingerprint : null,
+        ...(goal?.title !== undefined ? { title: goal.title } : {}),
+        ...(goal?.goalShort !== undefined ? { goalShort: goal.goalShort } : {}),
+      }, original.revision, signal);
+      onDiagnostic?.({ stage: 'goal', outcome: !sources.length ? 'no_sources' : result.revision === checked.revision ? 'unchanged' : 'applied' });
+      return result;
+    } catch (error) {
+      onDiagnostic?.({ stage, outcome: 'failed', cancelled: signal.aborted });
+      if (stage === 'selection') onDiagnostic?.({ stage: 'goal', outcome: 'skipped' });
+      throw error;
+    }
   }
 }

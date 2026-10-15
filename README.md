@@ -13,7 +13,11 @@ Records live under `$XDG_STATE_HOME/herdr/cards`, defaulting to `~/.local/state/
 
 These are strict, versioned records. Unknown fields, duplicate YAML keys, invalid membership and unsafe paths fail visibly. Writes use locks, revision checks and atomic publication. Cooperating writers cannot silently overwrite stale revisions. External editors do not honour these locks.
 
-Goal, Now and Remaining are separate fields, not an encoded prose string. Goal comes from selected known Markdown plan documents. Plans establish intent, never proof of completed work. With no suitable known plan, Goal remains unknown. Own summaries use the agent's dialogue and compaction checkpoint. Shared reference proposals use only fresh dialogue from the current membership.
+Goal, Now and Remaining are separate fields, not an encoded prose string. Goal comes from selected registered Markdown documents: purpose-bearing designs, ADRs, relevant README files and plans. Documents establish intent, never proof of completed work. With no suitable registered source, Goal remains unknown. Own summaries use the agent's dialogue and compaction checkpoint. Shared reference proposals use only fresh dialogue from the current membership.
+
+Documents form a small current reading list, not a history of useful files. Helpers should prefer a few complementary documents explaining the purpose, governing current work or providing an active plan. Usually 3 to 5 is guidance, not a quota or hard cap. Reading or editing a file does not qualify it. Explicitly requested pins remain possible. There is no automatic pruning or separate cleanup job.
+
+Issues must be published issues or tickets, not CI runs, logs or informal problems. PRs must be actively worked on or explicitly tracked for the session's assignment, not merely mentioned. These are helper admission rules, not proof of remote artifact type or status. Existing references require explicit cleanup.
 
 Document identities combine a checkout key and relative path. Absolute document paths, traversal and symlinks escaping the registered checkout are rejected. Issue and PR URLs must use HTTP or HTTPS. Descriptions should describe the whole artifact, not its latest edit. Plans and ADRs belong in the project; records only reference them.
 
@@ -26,9 +30,11 @@ Records are local host state, with no automatic backup or synchronisation. Keep 
 | `/work-card new <title>` | Attach to workspace context and set this agent's assignment title without replacing shared context |
 | `/work-card open [workspace-id]` | Open or join verified workspace context, optionally selecting an existing durable workspace |
 | `/work-card refresh` | Request a summary check and force plan selection without reopening a closed display |
-| `/work-card show` | Show the current workspace, own agent and resolved references |
+| `/work-card show` | Show the current workspace, own agent, resolved references and latest refresh diagnostics |
 | `/work-card detach` | Pause updates durably and close only the owned display; retain records |
 | `/work-card remove <substring>` | Remove a uniquely matching document path or URL from shared references |
+
+To let the summarizer name a new assignment, use `/work-card open` without a title. If no title is available yet, it starts as `Untitled task` and remains eligible for automatic renaming. `/work-card new <title>` sets a manual title instead. Opening an existing assignment preserves its title mode.
 
 Removal matches literal path or URL text, not descriptions. Ambiguous matches fail rather than opening a picker. Removal changes metadata, not source files, and records an exclusion against automatic re-addition.
 
@@ -40,7 +46,7 @@ Each display attempt and nonce is persisted before launch. Closing with `q` stop
 
 Detach persists its paused state before configuration reads or native cleanup. If cleanup fails, inspect Herdr and retry detach. Use open to resume updates. Committed new-session and fork departures, or resume to a different session UUID, retire only the agent's owned display. Reload, quit and same-UUID resume retain it. Native ownership uses terminal identity, membership and nonces rather than labels or restored pane IDs.
 
-The `work_card` tool is read-only. It returns the current workspace and own agent records, source paths and resolved references. It never creates, selects, joins or edits. Foreground management-tool CRUD and complete automatic workspace/tab/Pi naming remain future slices.
+The `work_card` tool is read-only. It returns the current workspace and own agent records, source paths, resolved references and latest in-memory refresh diagnostics. It never creates, selects, joins or edits. Foreground management-tool CRUD and complete automatic workspace/tab/Pi naming remain future slices.
 
 ## Terminal display and documents
 
@@ -48,11 +54,18 @@ A new display opens below its owning agent without changing focus. Once ownershi
 
 The pane border follows the workspace title. Inside, the shared Goal appears as muted, normal-weight text without a label. The agent title and `Remaining:` label are bold; their bodies use normal text. Blank lines separate these groups and the references only when spare rows permit, without displacing content or crowding the footer. The exact title `--clear` cannot be projected because Herdr reserves it as a flag; Work Cards reports the failure without clearing the caption or changing the record.
 
-Status is active, waiting, blocked, parked or done. It describes the assignment, not whether Pi is running. Shared and own native metadata projections are separate; agents do not publish their own Now as the workspace summary. Projection currently runs in the display loop: closing the card stops native metadata updates, although Pi continues updating the durable records. Herdr sidebar configuration must explicitly select these metadata fields to display them.
+Status is active, waiting, blocked, parked or done. It describes the assignment, not whether Pi is running. Pi publishes shared purpose and own progress separately during membership polling and after successful refreshes. Closing the card with `q` does not stop these updates. Publishing requires verified agent ownership; an unmarked restored pane needs explicit open to establish it. The display process only projects its own card caption.
+
+| Record field | Native token | Display-cell limit |
+| --- | --- | --- |
+| Workspace `goalShort` | `wcw_goal_short` | 25 |
+| Agent `statusShort` | `wca_status_short` | 23, reserving 2 for a marker and space |
+
+Helpers generate these fields alongside the full text, aiming for about 20 cells. They never derive them by truncation. Missing fields mean unknown. Full Goal, Now and Remaining stay in the card; existing `wcw_goal`, `wca_status` and `wca_now` tokens remain available. Agents do not publish their own progress as shared purpose. Herdr sidebar configuration must explicitly select the desired tokens.
 
 Sections wrap at word boundaries, with long words split at grapheme boundaries. Clipped sections end with an ellipsis while retaining reference space where possible. The pane sanitises controls and measures Unicode display cells before adding trusted colours and OSC 8 links. A bottom-right `[q] close` hint overlays the last row; narrow panes show `[q]` or omit the hint.
 
-Documents form a responsive grid, read left-to-right then top-to-bottom. Narrow panes use fewer columns. Filenames have normal weight, directories are dim and shortcut letters are cyan. Letters run from `a` to `z`, skipping `q`; only fully painted shortcuts are active. Additional documents have no key. Digits are inert. Issues and PRs stay on separate rows and share consecutive numbered HTTP link labels. Use your terminal's link gesture to open them. `j` and `k` are document letters, not scrolling controls.
+Documents form a responsive grid, read left-to-right then top-to-bottom. Narrow panes use fewer columns. Filenames have normal weight, directories are dim and shortcut letters are cyan. Letters run from `a` to `z`, skipping `q`; only fully painted shortcuts are active. Additional documents have no key. Digits are inert. Issues and PRs stay on separate rows and share consecutive numbered HTTP link labels. Short artifact names preserve the full stored descriptions and exact URLs. Recognized repository URL paths supply the separate artifact number, such as `[1] PR #19: Go port`; other paths do not get invented numbers. Until a short name exists, the description remains visible. Use your terminal's link gesture to open them. `j` and `k` are document letters, not scrolling controls.
 
 A document key rechecks the displayed identity, membership, checkout and native owner before any effect. It opens an exact document in the same workspace or focuses its verified existing editor tab. Canonical checkout and document identities govern reuse, not titles. Duplicate relative paths across checkouts receive distinguishing labels. Reuse preserves manual names and editor state. Stale or ambiguous identities fail visibly; possibly used editor tabs are never closed automatically.
 
@@ -64,11 +77,13 @@ Document failures remain visible. Partial native failures report known tab ident
 
 `check_every_n_responses` counts distinct changes in normalised user and assistant text, including projected compaction changes. It does not count tool calls or raw event notifications. Zero disables automatic checks, not explicit refresh. Idle membership polling makes no helper calls.
 
-Only one check runs at a time per session. New eligible input replaces pending input; busy refreshes coalesce. Invalidated membership, session changes and cancellation prevent stale updates. Own-agent input retains all allowed dialogue without an application text cap. Shared additions receive only the validated current-membership suffix, never inherited compaction history.
+Only one check runs at a time per session. New eligible input replaces pending input; busy refreshes coalesce. Invalidated membership, session changes and cancellation prevent stale updates. Own-agent summaries and shared-reference collection receive the latest projected compaction summary and all available dialogue, without an application text cap. The reference collector judges relevance against the workspace's current title, Goal and known references. Attachment boundaries still guard continuity and fresh-input startup; they do not limit reference evidence. Explicit removal exclusions remain authoritative.
 
-Helpers have no executable tools. Own updates, additive shared proposals, plan selection and goal inference have separate validated protocols. Helpers cannot change runtime identities, arbitrary checkout roots or source files. Selected Markdown plans are read through the checked checkout resolver, up to 256 KiB each. Oversized or unreadable selected sources fail visibly rather than becoming silently truncated plans. Sources are rechecked before publication.
+Helpers have no executable tools. Own updates, shared proposals, source selection and Goal inference have separate validated protocols. Shared proposals can add references and label exact existing issue/PR URLs; they cannot replace lists, URLs or descriptions. Label updates skip references removed or described differently since the request. Helpers cannot change runtime identities, arbitrary checkout roots or source files. Selected Markdown documents are read through the checked checkout resolver, up to 256 KiB each. Oversized or unreadable selected sources fail visibly rather than becoming silently truncated plans. Sources are rechecked before publication.
 
-Summary brevity, maturity assessment and plan interpretation remain model behaviour, not validator guarantees. No-change decisions leave record bytes and modification times untouched. Provider context errors are visible, without silent input trimming or automatic retries.
+Refresh diagnostics distinguish own updates, shared proposals, source selection and Goal inference, including failures, skipped Goal inference and successful selection with no sources. Explicit refresh reports its result. Diagnostics contain no dialogue or document contents and are not persisted; inspection makes no helper requests. Sidebar publication failures are reported separately from successful record updates.
+
+Short fields have validated display-cell limits. Full-summary brevity, maturity assessment, source interpretation and semantic reference admission remain model behaviour, not validator guarantees. No-change decisions leave record bytes and modification times untouched. Provider context errors are visible, without silent input trimming or automatic retries.
 
 Calls cost tokens even when nothing changes. They are not included in Pi's usage totals. Timeout bounds local waiting and requests best-effort provider cancellation; it cannot guarantee an upstream request stops. An optional Pi-only request spinner is off by default.
 
@@ -110,7 +125,7 @@ herdr plugin link /absolute/path/to/work-cards/herdr-plugin.toml
 
 Keep commits logically atomic and fold minor corrections into their owning change. Use Astra review for significant implementation or design changes, not every small edit. Product or authority changes require user agreement.
 
-`npm test` builds with TypeScript and runs `tests/*.test.mjs`. `npm run build` refreshes compiled Herdr code. Build after changing the pane. Once changes are complete, `/reload` refreshes Pi's local TypeScript graph. Compiled native ESM extensions can retain stale helpers across same-process reloads; the declared Pi entrypoint remains `src/pi/index.ts`.
+`npm test` builds with TypeScript and runs `tests/*.test.mjs`. `npm run build` refreshes compiled Herdr code. Build after changing the pane. Once changes are complete, `/reload` refreshes Pi's local TypeScript graph. Reload all participating Pi clients and reopen old card processes before generating newly added record fields; old strict readers cannot read unknown fields. A read alone does not rewrite existing records. Compiled native ESM extensions can retain stale helpers across same-process reloads; the declared Pi entrypoint remains `src/pi/index.ts`.
 
 The plugin requires a compatible Herdr server version 0.9.3 or later. Explicit open registers a missing exact plugin registration, but does not replace a conflicting or disabled registration. Relink explicitly if the linked manifest lacks the card or document entrypoint. Work Cards never restarts or updates Herdr or approves hooks.
 
@@ -118,13 +133,13 @@ Run Pi, the plugin, repository and Herdr server on the same host. macOS local an
 
 ## Verification status
 
-The current runtime passes `npm run check` and all 442 tests on macOS with Node.js 22.23.3 and 26.11.1, without skips. The suite retains filesystem, concurrency, cancellation, ownership, document, terminal and packaging checks, including nested split sizing. Old-format-only expectations are retired. Package tests use Pi 1.2.0's real loader, verify same-process source reload and source/compiled plugin roots, and extract an actual npm tarball. Supplied read-only host dependencies are not a clean dependency-install test.
+The current runtime passes `npm run check` and all 491 tests on macOS with Node.js 26.11.1, without skips. The earlier 442-test runtime also passed on Node.js 22.23.3. The suite retains filesystem, concurrency, cancellation, ownership, document, terminal and packaging checks, including nested split sizing. Old-format-only expectations are retired. Package tests use Pi 1.2.0's real loader, verify same-process source reload and source/compiled plugin roots, and extract an actual npm tarball. Supplied read-only host dependencies are not a clean dependency-install test.
 
 The latest isolated runtime run passed 7 checks on Herdr 0.9.5: attachment, exact document opening, close/refresh/reload suppression, explicit reopen, independent pairs, own-only cleanup and nested sizing. Both 20% and 75% card fractions preserved the outer split, unrelated pane geometry and focus. It used real card/editor processes with injected SDK callbacks and local fake helpers, not a complete live Pi session. Earlier native checks also verified multiple checkouts, editor reuse, manual labels and movement.
 
 A separate isolated Herdr 0.9.5 display check verified the grouped body, three-column document grid and automatic card-caption updates, including leading-dash Unicode titles. Other labels and focus were unchanged. It used the real pane with a synthetic shell owner, no Pi SDK or helper calls, and did not launch documents. Its private server and captured fixture processes were cleaned up.
 
-These checks made no changes to normal Herdr resources and used no paid model calls. Full automatic naming and foreground management remain unfinished. Linux, SSH and remote operation, browser-click handling, visual sidebar rendering and complete live Pi summarisation remain unverified. The existing naming extension is not disabled by this package change.
+These checks made no changes to normal Herdr resources and used no paid model calls. The compact fields, reference rules, stage diagnostics and Pi-owned sidebar publishing pass deterministic tests; they have not yet had a live model/sidebar rollout. Full automatic naming and foreground management remain unfinished. Linux, SSH and remote operation, browser-click handling, visual sidebar rendering and complete live Pi summarisation remain unverified. The existing naming extension is not disabled by this package change.
 
 ## Architecture decisions
 

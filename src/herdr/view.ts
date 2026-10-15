@@ -52,12 +52,22 @@ function webUrl(value: string): string | undefined {
     return ['http:', 'https:'].includes(url.protocol) && url.hostname ? url.href : undefined;
   } catch { return undefined; }
 }
+function artifactNumber(value: string, kind: 'Issue' | 'PR'): string | undefined {
+  const safe = webUrl(value);
+  if (!safe) return undefined;
+  const path = new URL(safe).pathname;
+  // Repository issue/PR paths only: CI run IDs and query/fragment numbers are not artifact numbers.
+  const pattern = kind === 'PR'
+    ? /^(?:\/[^/]+\/[^/]+\/pulls?|\/.+\/-\/merge_requests)\/([1-9]\d*)(?:\/|$)/
+    : /^(?:\/[^/]+\/[^/]+\/issues|\/.+\/-\/issues)\/([1-9]\d*)(?:\/|$)/;
+  return pattern.exec(path)?.[1];
+}
 export interface DisplayCard<T> {
   title: string; status: CardStatus;
   goal: string; now: string; remaining: string;
   documents: { label: string; target: T }[];
-  issues: { url: string; description: string }[];
-  prs: { url: string; description: string }[];
+  issues: { url: string; description: string; label?: string }[];
+  prs: { url: string; description: string; label?: string }[];
 }
 export interface RenderedCard<T> { text: string; documents: Map<string, T> }
 export function renderDisplayCard<T>(card: DisplayCard<T> | undefined, columns: number, rows: number, notice?: string): RenderedCard<T> {
@@ -107,9 +117,13 @@ export function renderDisplayCard<T>(card: DisplayCard<T> | undefined, columns: 
         return spans;
       } });
     }
+    const linkRow = (link: DisplayCard<T>['issues'][number], index: number, kind: 'Issue' | 'PR') => {
+      const number = artifactNumber(link.url, kind);
+      return { label: plain(`[${index + 1}] ${kind}${number ? ` #${number}` : ''}: ${link.label || link.description || link.url}`), url: webUrl(link.url) };
+    };
     const links = [
-      ...card.issues.map((link, index) => ({ label: plain(`[${index + 1}] Issue: ${link.description || link.url}`), url: webUrl(link.url) })),
-      ...card.prs.map((link, index) => ({ label: plain(`[${card.issues.length + index + 1}] PR: ${link.description || link.url}`), url: webUrl(link.url) })),
+      ...card.issues.map((link, index) => linkRow(link, index, 'Issue')),
+      ...card.prs.map((link, index) => linkRow(link, card.issues.length + index, 'PR')),
     ];
     for (const link of links) references.push({ items: 1, spans: w => [{ text: fit(link.label, w), code: 36, url: link.url }] });
     const available = contentHeight - lines.length;

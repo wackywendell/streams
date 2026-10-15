@@ -21,7 +21,7 @@ async function fixture(t, withReference = true) {
   const authority = { sessionId: 's', workspaceId: 'w', membershipToken: 'member', evidenceGeneration: agent.record.evidenceGeneration };
   const identity = { checkout: agent.record.checkout, path: 'plan.md' };
   if (withReference) await store.addReferences(authority, { documents: [{ ...identity, description: 'Implementation plan' }, { ...identity, path: 'code.ts', description: 'Not Markdown' }] });
-  const calls = []; let select = () => ({ sources: [identity] }); let goal = () => ({ goal: 'Deliver library', title: 'Automatic' });
+  const calls = []; let select = () => ({ sources: [identity] }); let goal = () => ({ goal: 'Deliver library', goalShort: 'Deliver library', title: 'Automatic' });
   const registry = {
     find(provider, id) { assert.equal(provider, 'helpers'); assert.equal(id, 'simple'); return { api: 'pi-virtual' }; },
     streamSimple(_model, context, config) {
@@ -58,7 +58,7 @@ test('initial selection is metadata-only, stable checks skip inference and force
   assert.deepEqual(f.calls[1].data, { sources: [{ identity: f.identity, content: 'Deliver a library and client' }] });
   assert.equal(activity, 2); assert.equal(stopped, 2);
   assert.equal((await f.refresh()).revision, first.revision);
-  f.goal(() => ({ goal: 'Corrected goal' }));
+  f.goal(() => ({ goal: 'Corrected goal', goalShort: 'Corrected goal' }));
   const corrected = await f.refresh({ force: true });
   assert.equal(corrected.record.goal, 'Corrected goal');
   assert.deepEqual(f.calls.map(c => c.kind), ['select', 'goal', 'select', 'goal']);
@@ -94,7 +94,7 @@ test('selection cache survives source errors but failed goal is never treated as
   await writeFile(f.path, 'Restored'); f.goal(() => { throw new Error('inference failed'); });
   await assert.rejects(f.refresh(), /inference failed/);
   assert.equal((await f.workspace()).record.sourceFingerprint, null);
-  f.goal(() => ({ goal: 'Recovered' })); await f.refresh();
+  f.goal(() => ({ goal: 'Recovered', goalShort: 'Recovered' })); await f.refresh();
   assert.deepEqual(f.calls.map(c => c.kind), ['select', 'goal', 'goal']);
   assert.equal((await f.workspace()).record.goal, 'Recovered');
 });
@@ -131,7 +131,7 @@ for (const mutation of ['bytes', 'remove', 'description', 'root', 'shared', 'pla
       if (mutation === 'reset') { const a = await f.store.readAgent('s'); await f.store.resetEvidence(f.authority, boundary, a.revision); }
       if (mutation === 'cancel') f.controller.abort(new Error('cancelled'));
       if (mutation === 'host') f.host(async () => { throw new Error('host invalidated'); });
-      return { goal: 'Must not apply' };
+      return { goal: 'Must not apply', goalShort: 'Must not apply' };
     });
     await assert.rejects(f.refresh({ force: true }));
     assert.notEqual((await f.workspace()).record.goal, 'Must not apply');
@@ -145,7 +145,7 @@ test('manual title stays protected and concurrent own-status update is allowed',
   f.goal(async () => {
     const a = await f.store.readAgent('s');
     await f.store.updateOwn(f.authority, { status: 'waiting', now: 'SECRET own status' }, a.revision);
-    return { goal: 'Valid plan goal', title: 'Model title' };
+    return { goal: 'Valid plan goal', goalShort: 'Valid plan goal', title: 'Model title' };
   });
   const result = await f.refresh(); assert.equal(result.record.title, 'My title'); assert.equal(result.record.goal, 'Valid plan goal');
   assert.equal((await f.store.readAgent('s')).record.status, 'waiting');
@@ -193,7 +193,7 @@ test('explicit force can replace a cached choice and infer from the new source',
 
 test('final CAS rejects a concurrent plan written after filesystem recheck', async t => {
   const f = await fixture(t); let afterInference = false; let guards = 0;
-  f.goal(() => { afterInference = true; return { goal: 'Stale result' }; });
+  f.goal(() => { afterInference = true; return { goal: 'Stale result', goalShort: 'Stale result' }; });
   f.host(async () => {
     if (afterInference && ++guards === 2) {
       const w = await f.workspace();
@@ -207,7 +207,7 @@ test('final CAS rejects a concurrent plan written after filesystem recheck', asy
 
 test('host guard after filesystem recheck rejects effects even after valid inference', async t => {
   const f = await fixture(t); let afterInference = false; let guards = 0;
-  f.goal(() => { afterInference = true; return { goal: 'Stale result' }; });
+  f.goal(() => { afterInference = true; return { goal: 'Stale result', goalShort: 'Stale result' }; });
   f.host(async () => { if (afterInference && ++guards === 2) throw new Error('host invalidated after recheck'); });
   await assert.rejects(f.refresh(), /after recheck/);
   assert.equal((await f.workspace()).record.goal, '');
@@ -230,3 +230,86 @@ test('workspace recreation does not reuse prior selection cache', async t => {
   f.select(() => ({ sources: [f.identity] })); await f.refresh({ authority });
   assert.deepEqual(f.calls.map(c => c.kind), ['select', 'goal', 'select', 'goal']);
 });
+
+
+for (const short of [undefined, '']) test(`${short === undefined ? 'missing' : 'empty'} derived goal short is regenerated without reselecting unchanged source metadata`, async t => {
+  const f = await fixture(t); await f.refresh(); const before = await f.workspace();
+  if (short === undefined) delete before.record.goalShort; else before.record.goalShort = short;
+  await writeFile(before.path, stringify(before.record));
+  f.calls.length = 0; const result = await f.refresh();
+  assert.deepEqual(f.calls.map(c => c.kind), ['goal']);
+  assert.equal(result.record.goalShort, 'Deliver library');
+});
+
+test('oversized Goal short preserves the full Goal, title and provenance, then regenerates on an ordinary check', async t => {
+  const f = await fixture(t); await f.refresh();
+  await writeFile(f.path, 'A changed intended workspace purpose');
+  const goal = 'Deliver the complete library and client capability with a stable public integration surface';
+  f.goal(() => ({ goal, goalShort: '界'.repeat(13), title: 'Library integration' }));
+  f.calls.length = 0;
+  const events = [];
+  const degraded = await f.refresh({ onDiagnostic: event => events.push(event) });
+  assert.equal(degraded.record.goal, goal); assert.equal(degraded.record.title, 'Library integration');
+  assert.equal(degraded.record.goalShort, undefined);
+  assert.deepEqual(degraded.record.planSources, [f.identity]);
+  const capture = await capturePlanSources(degraded.record, [f.identity]);
+  assert.equal(degraded.record.sourceFingerprint, capture.fingerprint);
+  assert.deepEqual(f.calls.map(c => c.kind), ['goal']);
+  assert.deepEqual(events.at(-1), { stage: 'goal', outcome: 'applied' });
+  f.goal(() => ({ goal, goalShort: 'Library integration' }));
+  const recovered = await f.refresh();
+  assert.equal(recovered.record.goalShort, 'Library integration');
+  assert.deepEqual(f.calls.map(c => c.kind), ['goal', 'goal']);
+  assert.equal((await f.refresh()).revision, recovered.revision);
+  assert.deepEqual(f.calls.map(c => c.kind), ['goal', 'goal']);
+});
+
+test('oversized Goal short leaves an unchanged valid short intact rather than overwriting it', async t => {
+  const f = await fixture(t); const first = await f.refresh();
+  f.goal(() => ({ goal: first.record.goal, goalShort: 'x'.repeat(26) }));
+  const result = await f.refresh({ force: true });
+  assert.equal(result.record.goalShort, first.record.goalShort);
+  assert.equal(result.revision, first.revision);
+  assert.deepEqual(f.calls.map(c => c.kind), ['select', 'goal', 'select', 'goal']);
+});
+
+test('diagnostics distinguish selection, cache, no sources and successful goal writes', async t => {
+  const f = await fixture(t); const events = [];
+  const onDiagnostic = event => events.push(event);
+  await f.refresh({ onDiagnostic });
+  assert.deepEqual(events, [
+    { stage: 'selection', outcome: 'selected', selectedCount: 1, cacheHit: false },
+    { stage: 'goal', outcome: 'applied' },
+  ]);
+  events.length = 0; await f.refresh({ onDiagnostic });
+  assert.deepEqual(events, [
+    { stage: 'selection', outcome: 'selected', selectedCount: 1, cacheHit: true },
+    { stage: 'goal', outcome: 'unchanged' },
+  ]);
+  events.length = 0; f.select(() => ({ sources: [] })); await f.refresh({ force: true, onDiagnostic });
+  assert.deepEqual(events, [
+    { stage: 'selection', outcome: 'no_sources', selectedCount: 0, cacheHit: false },
+    { stage: 'goal', outcome: 'no_sources' },
+  ]);
+  assert.equal((await f.workspace()).record.goalShort, undefined);
+  assert.doesNotMatch(JSON.stringify(events), /plan.md|Deliver|file|https/);
+});
+
+for (const stage of ['selection', 'goal', 'source', 'cas', 'abort']) {
+  test(`diagnostics preserve original ${stage} failure without claiming applied`, async t => {
+    const f = await fixture(t); const events = []; const error = new Error('original failure');
+    if (stage === 'selection') f.select(() => { throw error; });
+    if (stage === 'goal') f.goal(() => { throw error; });
+    if (stage === 'source') await rm(f.path);
+    if (stage === 'cas') t.mock.method(f.store, 'applyPlan', async () => { throw error; });
+    if (stage === 'abort') f.goal(() => { f.controller.abort(error); return { goal: 'Must not apply', goalShort: 'Not applied' }; });
+    const result = f.refresh({ onDiagnostic: event => events.push(event) });
+    if (stage === 'source') await assert.rejects(result, /Cannot read/); else await assert.rejects(result, e => e === error);
+    assert.equal(events.some(e => e.outcome === 'applied'), false);
+    if (stage === 'selection') assert.deepEqual(events, [
+      { stage: 'selection', outcome: 'failed', cancelled: false },
+      { stage: 'goal', outcome: 'skipped' },
+    ]);
+    else assert.deepEqual(events.at(-1), { stage: 'goal', outcome: 'failed', cancelled: stage === 'abort' });
+  });
+}

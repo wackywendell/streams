@@ -169,7 +169,9 @@ export class WorkspaceLifecycle {
       }
       const fresh = shared.kind === 'suffix' ? shared.evidence.transcript.find(m => m.role === 'user' && excerpt(m.text)) : undefined;
       const selected = explicit?.targetWorkspaceId === undefined ? undefined : await store.readWorkspace(explicit.targetWorkspaceId); this.check(t);
-      const title = explicit?.title === undefined ? (agent?.record.title ?? (fresh ? excerpt(fresh.text) : selected?.record.title ?? '')) : excerpt(explicit.title);
+      // Explicit open can bootstrap before the own-summary helper chooses an automatic title.
+      const seed = fresh ? excerpt(fresh.text) : selected?.record.title ?? (explicit ? 'Untitled task' : '');
+      const title = explicit?.title === undefined ? agent?.record.title ?? seed : excerpt(explicit.title);
       if (!agent && !explicit && (policy === 'manual' || !fresh)) return this.value;
       if (!title) throw new Error('A nonblank title or fresh user dialogue is required');
       const previous = this.context;

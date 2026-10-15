@@ -70,11 +70,11 @@ test('concurrent joins and shared additions merge; removal exclusions persist un
 
 test('moving preserves own work, never copies refs; stale membership and ABA evidence are refused', async t => {
   const { store, workspace, cwd } = await fixture(t); let a = await store.join(joinInput(workspace, cwd)); const old = authority(a);
-  a = await store.updateOwn(old, { now: 'Current work', remaining: 'Next' }, a.revision);
+  a = await store.updateOwn(old, { now: 'Current work', remaining: 'Next', statusShort: 'Work in progress' }, a.revision);
   await store.addReferences(old, { issues: [{ url: 'https://example.com/source', description: '' }] });
   const destination = await store.createWorkspace({ id: randomUUID(), creationToken: randomUUID(), title: 'Destination' });
   a = await store.join({ ...joinInput(destination, cwd), expected: old });
-  assert.equal(a.record.now, 'Current work'); assert.equal((await store.readWorkspace(destination.record.id)).record.issues.length, 0);
+  assert.equal(a.record.now, 'Current work'); assert.equal(a.record.statusShort, 'Work in progress'); assert.equal((await store.readWorkspace(destination.record.id)).record.issues.length, 0);
   await assert.rejects(store.addReferences(old, {}), /membership|workspace|stale/i);
   const current = authority(a); a = await store.resetEvidence(current, boundary, a.revision);
   await assert.rejects(store.addReferences(current, {}), /generation|stale/i);
@@ -391,4 +391,56 @@ test('join uses one canonical cwd even when its input alias switches during disc
     assert.equal(w.record.checkouts[persisted.record.checkout].directory, cwd);
     assert.doesNotThrow(() => composeView(w, persisted));
   } finally { mock.mock.restore(); syncBuiltinESMExports(); }
+});
+
+
+test('derived sidebar fields preserve absence and enforce display width and Unicode', async t => {
+  const { store, workspace, cwd } = await fixture(t); const a = await store.join(joinInput(workspace, cwd));
+  assert.equal(Object.hasOwn(a.record, 'statusShort'), false);
+  assert.equal(Object.hasOwn((await store.readWorkspace(workspace.record.id)).record, 'goalShort'), false);
+  const short = applyOwnUpdate(a.record, { statusShort: '界'.repeat(11) + 'x' });
+  assert.equal(short.statusShort, '界'.repeat(11) + 'x');
+  assert.equal(applyOwnUpdate(short, { now: 'Different' }).statusShort, undefined);
+  assert.equal(applyOwnUpdate(short, { now: short.now }).statusShort, short.statusShort);
+  assert.equal(applyOwnUpdate(short, { status: 'done', statusShort: 'Ready' }).statusShort, 'Ready');
+  for (const value of ['界'.repeat(12), 'x'.repeat(24), 'bad\ntext', '\ud800', 'bad\u2028line', '\u001b[31mx']) assert.throws(() => applyOwnUpdate(a.record, { statusShort: value }));
+  for (const value of ['e\u0301'.repeat(23), '😀'.repeat(11), '']) assert.equal(applyOwnUpdate(a.record, { statusShort: value }).statusShort, value);
+  assert.throws(() => validateWorkspace({ ...workspace.record, goalShort: 'No provenance' }));
+});
+
+test('plan changes invalidate derived purpose; old records and no-ops keep bytes', async t => {
+  const { store, workspace, cwd } = await fixture(t); const a = await store.join(joinInput(workspace, cwd)); const auth = authority(a);
+  const source = { checkout: a.record.checkout, path: 'README.md', description: 'Purpose' };
+  let w = await store.addReferences(auth, { documents: [source] });
+  const input = { goal: 'Deliver usable cards', goalShort: 'Usable cards', sources: [{ checkout: source.checkout, path: source.path }], fingerprint: 'bytes' };
+  w = await store.applyPlan(auth, input, w.revision); assert.equal(w.record.goalShort, 'Usable cards');
+  assert.throws(() => validateWorkspace({ ...w.record, goalShort: '界'.repeat(13) }));
+  w = await store.applyPlan(auth, { ...input, goalShort: '界'.repeat(12) + 'x' }, w.revision);
+  const { goalShort, ...trusted } = input;
+  w = await store.applyPlan(auth, { ...trusted, goal: 'Changed purpose' }, w.revision); assert.equal(w.record.goalShort, undefined);
+  w = await store.applyPlan(auth, input, w.revision);
+  w = await store.removeReference(auth, { workspaceId: w.record.id, revision: w.revision, identity: referenceIdentity(source) });
+  assert.equal(w.record.goalShort, undefined);
+});
+
+test('shared proposal labels use snapshot descriptions and kinds while additions merge', async t => {
+  const { store, workspace, cwd } = await fixture(t); const a = await store.join(joinInput(workspace, cwd)); const auth = authority(a);
+  const link = { url: 'https://example.com/issue', description: 'Full issue description', label: 'Issue purpose' };
+  let w = await store.addReferences(auth, { issues: [link] }); const baseline = w;
+  assert.throws(() => applySharedAdditions(w.record, { prs: [{ ...link, url: 'https://example.com/new', label: ' ' }] }));
+  assert.throws(() => applySharedAdditions(w.record, { prs: [{ ...link, url: 'https://example.com/new', label: '界'.repeat(31) }] }));
+  const proposal = { additions: { prs: [{ ...link, label: 'Smuggled', description: 'Overwrite' }, { url: 'https://example.com/pr', description: 'New PR', label: 'New capability' }] }, labels: [{ url: link.url, label: 'Short purpose' }] };
+  w = await store.updateSharedReferences(auth, baseline, proposal);
+  assert.deepEqual(w.record.issues, [{ ...link, label: 'Short purpose' }]); assert.equal(w.record.prs.length, 1);
+  const bytes = await readFile(w.path); const mtime = (await stat(w.path, { bigint: true })).mtimeNs;
+  w = await store.updateSharedReferences(auth, baseline, proposal);
+  assert.deepEqual(await readFile(w.path), bytes); assert.equal((await stat(w.path, { bigint: true })).mtimeNs, mtime);
+  w = await store.describeReference(auth, { url: link.url }, 'Edited full description', w.revision); assert.equal(w.record.issues[0].label, undefined);
+  w = await store.updateSharedReferences(auth, baseline, { labels: [{ url: link.url, label: 'Stale' }] });
+  assert.equal(w.record.issues[0].label, undefined);
+  w = await store.removeReference(auth, { workspaceId: w.record.id, revision: w.revision, identity: referenceIdentity(link) });
+  w = await store.updateSharedReferences(auth, baseline, proposal); assert.deepEqual(w.record.issues, []);
+  w = await store.addReferences(auth, { prs: [link] }, { explicit: true });
+  w = await store.updateSharedReferences(auth, baseline, { labels: [{ url: link.url, label: 'Wrong kind' }] }); assert.equal(w.record.prs.at(-1).label, 'Issue purpose');
+  await assert.rejects(store.updateSharedReferences(auth, baseline, { labels: [{ url: 'https://example.com/unknown', label: 'Unknown' }] }));
 });

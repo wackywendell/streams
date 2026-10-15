@@ -7,9 +7,9 @@ import { homedir } from 'node:os';
 import { parseDocument, stringify } from 'yaml';
 import {
   absolute, applyOwnUpdate, applyReferenceRemoval, applySharedAdditions, documentIdentity, object, opaque, referenceIdentity,
-  text, validateAgent, validateBoundary, validateMembership, validateReferenceIdentity, validateWorkspace,
+  text, validateAgent, validateBoundary, validateMembership, validateReferenceIdentity, validateSharedReferenceUpdate, validateWorkspace,
   type AgentRecord, type Authority, type DocumentIdentity, type OwnUpdate, type ReferenceBoundary,
-  type ReferenceIdentity, type ReferenceSelection, type Snapshot, type WorkspaceRecord,
+  type ReferenceIdentity, type ReferenceSelection, type SharedReferenceUpdate, type Snapshot, type WorkspaceRecord,
 } from './records/schema.js';
 export * from './records/schema.js';
 
@@ -194,7 +194,7 @@ export class RecordStore {
       const registered = this.register(workspace.record, directory);
       // Safe partial progress: publish destination checkout before the agent points at it.
       await this.publishWorkspace(registered.record, workspace, signal);
-      const next = validateAgent({ ...initial, ...(previous ? { title: previous.record.title, titleMode: previous.record.titleMode, status: previous.record.status, now: previous.record.now, remaining: previous.record.remaining, ...(previous.record.displayAttempt ? { displayAttempt: previous.record.displayAttempt } : {}) } : {}), cwd: actual, checkout: registered.checkout });
+      const next = validateAgent({ ...initial, ...(previous ? { title: previous.record.title, titleMode: previous.record.titleMode, status: previous.record.status, now: previous.record.now, remaining: previous.record.remaining, ...(previous.record.statusShort !== undefined ? { statusShort: previous.record.statusShort } : {}), ...(previous.record.displayAttempt ? { displayAttempt: previous.record.displayAttempt } : {}) } : {}), cwd: actual, checkout: registered.checkout });
       validateMembership(registered.record, next);
       return this.publish(this.agentPath(initial.sessionId), next, previous, signal);
     }), signal);
@@ -211,6 +211,25 @@ export class RecordStore {
       return applySharedAdditions(w.record, additions, options.explicit);
     }, options.signal);
   }
+  async updateSharedReferences(authority: Authority, baseline: Snapshot<WorkspaceRecord>, proposal: SharedReferenceUpdate, signal?: AbortSignal): Promise<Snapshot<WorkspaceRecord> & { changed: boolean }> {
+    const captured = validateWorkspace(baseline.record);
+    if (captured.id !== authority.workspaceId) throw new Error('Workspace selection mismatch');
+    const update = validateSharedReferenceUpdate(proposal, captured);
+    let changed = false;
+    const result = await this.shared(authority, w => {
+      if (w.record.creationToken !== captured.creationToken) throw new Error('Stale workspace creation');
+      const next = applySharedAdditions(w.record, update.additions ?? {});
+      for (const key of ['issues', 'prs'] as const) for (const label of update.labels ?? []) {
+        const before = captured[key].find(ref => ref.url === label.url);
+        const current = next[key].find(ref => ref.url === label.url);
+        if (before && current && current.description === before.description) current.label = label.label;
+      }
+      const validated = validateWorkspace(next);
+      changed = !isDeepStrictEqual(validated, w.record);
+      return validated;
+    }, signal);
+    return { ...result, changed };
+  }
   async removeReference(authority: Authority, selection: ReferenceSelection, signal?: AbortSignal): Promise<Snapshot<WorkspaceRecord>> {
     return this.shared(authority, w => applyReferenceRemoval(w, selection), signal);
   }
@@ -219,7 +238,9 @@ export class RecordStore {
     return this.shared(authority, w => {
       revision(w, expected); const next = structuredClone(w.record);
       const ref = [...next.documents, ...next.issues, ...next.prs].find(r => referenceIdentity(r) === referenceIdentity(validated));
-      if (!ref) throw new Error('Reference not found'); ref.description = description; return next;
+      if (!ref) throw new Error('Reference not found');
+      if (ref.description !== description && 'url' in ref) delete ref.label;
+      ref.description = description; return next;
     }, signal);
   }
   async registerCheckout(authority: Authority, cwd: string, expected: string, signal?: AbortSignal): Promise<Snapshot<WorkspaceRecord>> {
@@ -253,12 +274,15 @@ export class RecordStore {
   async setWorkspaceTitle(authority: Authority, title: string, expected: string, signal?: AbortSignal): Promise<Snapshot<WorkspaceRecord>> {
     return this.shared(authority, w => { revision(w, expected); return { ...w.record, title, titleMode: 'manual' }; }, signal);
   }
-  async applyPlan(authority: Authority, input: { goal: string; sources: DocumentIdentity[]; fingerprint: string | null; title?: string }, expected: string, signal?: AbortSignal): Promise<Snapshot<WorkspaceRecord>> {
-    object(input, ['goal', 'sources', 'fingerprint', 'title'], ['goal', 'sources', 'fingerprint']);
+  async applyPlan(authority: Authority, input: { goal: string; goalShort?: string; sources: DocumentIdentity[]; fingerprint: string | null; title?: string }, expected: string, signal?: AbortSignal): Promise<Snapshot<WorkspaceRecord>> {
+    object(input, ['goal', 'goalShort', 'sources', 'fingerprint', 'title'], ['goal', 'sources', 'fingerprint']);
     if (input.title !== undefined) text(input.title, true);
     return this.shared(authority, w => {
       revision(w, expected);
-      return { ...w.record, goal: input.goal, planSources: input.sources, sourceFingerprint: input.fingerprint, title: w.record.titleMode === 'auto' ? (input.title ?? w.record.title) : w.record.title };
+      const next = { ...w.record, goal: input.goal, planSources: input.sources, sourceFingerprint: input.fingerprint, title: w.record.titleMode === 'auto' ? (input.title ?? w.record.title) : w.record.title };
+      if (Object.hasOwn(input, 'goalShort')) next.goalShort = input.goalShort;
+      else if (input.goal !== w.record.goal || !input.goal.trim() || !input.sources.length) delete next.goalShort;
+      return next;
     }, signal);
   }
   async resetEvidence(authority: Authority, boundary: ReferenceBoundary, expected: string, signal?: AbortSignal): Promise<Snapshot<AgentRecord>> {

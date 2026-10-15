@@ -44,7 +44,7 @@ The application does not clip this dialogue or silently trim it to fit. Provider
 
 This choice followed a narrow replay comparison. Both bounded, tool-inclusive baseline windows held only tool results: 2 or 3 messages, with no direct dialogue. Compaction-plus-dialogue inputs captured relevant remaining work with fewer input tokens. The comparison covered 4 requests at 2 historical snapshots, both containing user wording guidance. It is not a broad benchmark or proof of unguided summary quality.
 
-Workspace Goal and shared-reference additions have different evidence boundaries. [ADR 2](workspace-context.md#separate-evidence-by-purpose) defines them; full own-agent history is not permission to rewrite shared intent or repopulate links after a move.
+Shared-reference collection receives the same projected session context, together with the workspace title, Goal and known references to judge relevance. This permits finding useful documents discussed before attachment without blindly importing every mention. Workspace Goal remains document-derived, and explicit removal exclusions remain authoritative. [ADR 2](workspace-context.md#separate-evidence-by-purpose) defines these distinct purposes.
 
 ### Bound execution without starving updates
 

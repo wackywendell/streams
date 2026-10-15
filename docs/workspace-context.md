@@ -23,6 +23,8 @@ Each card pane combines the workspace Goal and references with its own agent's a
 
 Goal describes shared intent, not aggregate progress. Status, Now and Remaining describe the agent's assignment, not the whole project's backlog. One agent's Now must not become the workspace summary.
 
+Keep optional compact purpose and progress fields alongside the full text. Generate them in the existing helper requests, not by truncation or separate inference calls. Validate their display-cell limits, clear stale derivatives when their source text changes without a replacement, and leave unknown values absent. Compact progress remains per agent.
+
 The Pi session UUID identifies the agent. Resuming that UUID retains its record; a fork with a new UUID gets another record. A session-file path is only a locator. Titles are presentation, never identity. Runtime code supplies identities, membership and directories; helpers cannot change them.
 
 Records remain authoritative and local. Native metadata binds a live workspace to a durable workspace record and projects display information. It does not become a repository registry or durable project database.
@@ -50,20 +52,28 @@ On a verified move, retain the agent identity, assignment and status. Join the d
 | Purpose | Permitted source |
 | --- | --- |
 | Own-agent title, status, Now and Remaining | Projected compaction plus retained human-readable dialogue, with shared context |
-| Shared-reference additions | Fresh dialogue evidence since joining the workspace |
-| Workspace Goal | Selected registered Markdown plans only |
+| Shared-reference additions | Latest projected compaction plus available dialogue, judged against the workspace title, Goal and known references |
+| Workspace Goal | Selected registered purpose-bearing Markdown documents only |
 
-Full own-agent history does not authorise shared additions after a move. Track a membership-specific evidence boundary. Inherited fork history, old compaction and pre-move dialogue cannot repopulate source links in the destination. If continuity cannot be proved after resume, tree navigation or compaction, reset the boundary and wait for fresh messages. Conservative omission is preferable to copying old context.
+Reference collection considers the full projected session context for new and existing workspaces, whether attachment is explicit or automatic. It does not read raw precompaction logs. The helper judges each candidate against the current workspace title, Goal and known references, rather than copying every mention. When shared purpose is unknown, session context can identify useful starting documents; Goal still comes only from their contents.
 
-Select plans automatically from known document references, not through a recursive repository crawler. No suitable plan means no invented Goal. Runtime code reads sources within registered checkouts, with a 256 KiB limit per file. Oversized or unreadable selected sources fail visibly rather than being silently truncated.
+Attachment boundaries detect discontinuities and distinguish fresh task input for automatic startup. They do not limit reference eligibility. Resume, tree navigation, compaction and moves still invalidate stale requests through evidence generations and membership checks. Relevance is a model judgment; explicit removal exclusions prevent historical context from restoring removed references.
+
+Select purpose-bearing designs, ADRs, relevant README files and plans from known document references, not through a recursive repository crawler. No suitable source means no invented Goal. Runtime code reads sources within registered checkouts, with a 256 KiB limit per file. Oversized or unreadable selected sources fail visibly rather than being silently truncated.
 
 Retain selected-source provenance with the Goal. Changes to candidate references trigger reselection. Scheduled checks reread selected sources and reuse unchanged Goal results; explicit refresh reruns selection and inference. Revalidate source identities and bytes before accepting results so an inference cannot silently use changed files. Ordinary dialogue is not a reason to rewrite shared Goal. A plan establishes intent, never completed work.
 
-The model still interprets whether a document is a plan and what it means. Authority checks and provenance do not guarantee correct selection or a useful Goal.
+The model still interprets whether a document establishes purpose and what it means. Authority checks and provenance do not guarantee correct selection or a useful Goal.
 
 ### Make shared additions additive and removals explicit
 
-Session-evidence helpers may update only their own agent and propose shared additions. Plan-derived updates use the separate source policy above. Neither path may remove references, delete records, register arbitrary roots or write project documents. Separate request contracts enforce these limits rather than trusting a prompt to preserve arrays.
+Session-evidence helpers may update only their own agent, propose shared additions and generate derived labels for exact existing issue/PR URLs. Source-derived updates use the separate source policy above. Neither path may remove references, delete records, register arbitrary roots or write project documents. Separate request contracts enforce these limits rather than trusting a prompt to preserve arrays.
+
+Documents are a small current reading list, not a history of useful files. Admission favours complementary purpose documents, current governing guidance and active plans. Reading or editing a file is insufficient. A soft count guides restraint but does not authorise dropping another agent's reference or a Goal source. No separate cleanup job or automatic pruning is introduced.
+
+Issues mean published issues or tickets, not CI runs or informal problems. PRs must concern work the contributing session actively undertakes or tracks. Prompt guidance governs this semantic admission; URL validation does not prove artifact type or importance.
+
+Derived link labels preserve full descriptions and exact URLs. Label proposals target only links in the request snapshot. Under the shared write lock, skip deleted references or those whose kind or description changed. Description edits invalidate old labels. This narrow annotation permission does not authorise changing reference membership.
 
 Shared additions merge against current references without dropping another agent's additions. Explicit removal records an exclusion in the same workspace write. Old or stale helper evidence cannot resurrect the removed reference. Only an explicit foreground re-add clears its exclusion.
 
@@ -89,6 +99,8 @@ Each pair has verified agent, terminal, store and ownership identities. No agent
 
 Persist a display-open attempt before launch. Reload can recover an exactly verified existing pair, but absence after an attempt does not permit automatic respawn. `q` closes only the display; summaries continue. Explicit open can create a new attempt. Replacing a display after an agent-only move requires positive evidence of a live owned old display, not its absence.
 
+Pi publishes native purpose and own progress during membership polling and after summary updates, independently of the display loop. Normal `q` closure retains verified agent ownership and does not stop publication. An unmarked native pane cannot prove ownership; publishing fails closed until explicit open establishes it. The card process projects only its caption.
+
 Detach pauses updates before fallible cleanup and preserves enough identity for recovery. Closing panes or native workspaces does not delete records. Cancelled session transitions do not retire a still-live display; successful transitions invalidate stale callbacks. Reload retains a valid pair.
 
 ### Group context quietly and navigate exact targets
@@ -97,7 +109,7 @@ Put the workspace title in the native card-pane border. Show an unlabelled, mute
 
 Optional blank lines separate Goal, work and references only when rows are spare. They must not displace content or the close hint. Documents form a responsive row-major grid. Prefer fewer columns with full paths before truncating a single column. Directories are dim, filenames normal and shortcut letters cyan. Issues and PRs occupy their own rows.
 
-Use positional document letters `a` to `z`, excluding `q`. Assignment remains stable across column layouts, but reference changes can renumber it. Only fully painted shortcuts are active. After a fresh read, check the exact opaque target again before opening; truncation must never change it. HTTP links use the terminal client's link gesture; displayed numbers are inert.
+Use positional document letters `a` to `z`, excluding `q`. Assignment remains stable across column layouts, but reference changes can renumber it. Only fully painted shortcuts are active. After a fresh read, check the exact opaque target again before opening; truncation must never change it. HTTP links use the terminal client's link gesture; displayed numbers are inert. Show concise artifact labels and a separate issue or PR number derived from recognized URL paths. Keep full descriptions and exact destinations in the record.
 
 With one checkout, show the relative path. With several, prefix the shortest distinguishing checkout-directory suffix. Compute labels across the workspace, including basename collisions. Labels may change as checkouts are added; identities do not.
 
@@ -139,7 +151,7 @@ These choices accept repeated shared context in each pane, conservative recovery
 
 ## Consequences
 
-Each agent can update its progress without claiming the whole project. Shared Goal is anchored to registered intent, while own-agent progress remains evidence-based. Fresh-membership additions and persistent exclusions prevent historical dialogue from silently reversing moves or removals.
+Each agent can update its progress without claiming the whole project. Shared Goal is anchored to registered intent, while own-agent progress remains evidence-based. Workspace-aware relevance guides historical reference proposals, while membership checks and persistent exclusions prevent stale writes and undoing explicit removals.
 
 The system deliberately leaves some recovery and management explicit. Records can survive their native bindings. Native operations and filesystem writes cannot be made one transaction; uncertainty must remain visible rather than trigger destructive cleanup or guessed adoption.
 
@@ -151,7 +163,7 @@ Implemented behavior includes membership reconciliation, separate evidence paths
 
 Earlier isolated native checks covered independent pairs, exact document targets and reuse, manual editor labels, close-without-respawn, explicit reopening, agent-only moves, sequential pair moves and nested sizing. Host checks used injected SDK callbacks and fake helpers, not complete Pi sessions. They do not establish full Pi-session move/reconnect behavior, model quality or an atomic cross-workspace whole-tab move.
 
-Native metadata projection currently runs in the card display loop. Closing the card stops that projection, although Pi continues updating durable summaries. Sidebar configuration and other integrations do not automatically migrate to the new fields.
+Compact fields, narrow link relabeling, purpose-document selection, reference admission guidance, stage diagnostics and Pi-owned native summary publishing have deterministic coverage. Their live helper/sidebar rollout remains unverified. Sidebar configuration and other integrations do not automatically migrate to the new fields. Diagnostics are read-only, in-memory observations, not source evidence or durable project state.
 
 General foreground CRUD management and complete automatic workspace/tab/Pi naming remain unfinished. The separate `herdr-naming.ts` extension is still enabled. First-pane naming, protected manual names and safe replacement of that extension remain rollout requirements, not claims of completed behavior.
 

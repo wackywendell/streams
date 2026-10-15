@@ -87,10 +87,20 @@ test('explicit durable selection binds only an unbound native group and reuses n
   assert.equal(a.record.boundary.transcriptLength, 1);
 });
 
-test('blank explicit open requires a nonblank title; automatic startup is idempotent',async t=>{
-  const f=await fixture(t); await f.lifecycle.restore(); await assert.rejects(f.lifecycle.open(),/title|dialogue/i);
-  await f.lifecycle.open('Explicit blank-session task'); await f.lifecycle.reconcile(); await f.lifecycle.reconcile();
+test('blank explicit open seeds an automatic title; reconciliation stays idempotent',async t=>{
+  const f=await fixture(t); await f.lifecycle.restore(); await f.lifecycle.open();
+  const agent=await f.store.readAgent('session');
+  assert.equal(agent.record.title,'Untitled task'); assert.equal(agent.record.titleMode,'auto');
+  await f.lifecycle.reconcile(); await f.lifecycle.reconcile();
   assert.equal(f.launches(),1); assert.equal((await f.store.listAgents()).length,1);
+  await assert.rejects(f.lifecycle.open(' \t '),/title|dialogue/i);
+});
+test('explicit unnamed open preserves the startup boundary for continuity checks',async t=>{
+  const f=await fixture(t); f.session={...f.session,evidence:evidence('Inherited task with old references')};
+  await f.lifecycle.restore(); await f.lifecycle.open();
+  const agent=await f.store.readAgent('session');
+  assert.equal(agent.record.titleMode,'auto'); assert.equal(agent.record.boundary.transcriptLength,1);
+  assert.deepEqual(projectSharedEvidence(f.session.evidence,agent.record.boundary,'continue'),{kind:'suffix',evidence:{transcript:[]}});
 });
 test('manual startup waits for explicit open; restore can summarize and observed moves remain suspended',async t=>{
   const f=await fixture(t,'manual'); await f.lifecycle.restore(); f.fresh(); await f.lifecycle.reconcile(); assert.equal(f.calls.length,0);

@@ -1,15 +1,18 @@
 import { isAbsolute, normalize, relative, sep } from 'node:path';
+import stringWidth from 'string-width';
 export type CardStatus = 'active' | 'waiting' | 'blocked' | 'parked' | 'done';
 
 export type TitleMode = 'auto' | 'manual';
 export interface DocumentIdentity { checkout: string; path: string }
 export interface WorkspaceDocument extends DocumentIdentity { description: string }
-export interface WorkspaceLink { url: string; description: string }
+export interface WorkspaceLink { url: string; description: string; label?: string }
+export interface LinkLabelUpdate { url: string; label: string }
+export interface SharedReferenceUpdate { additions?: ReferenceAdditions; labels?: LinkLabelUpdate[] }
 export type ReferenceIdentity = DocumentIdentity | { url: string };
 export interface ReferenceAdditions { documents?: WorkspaceDocument[]; issues?: WorkspaceLink[]; prs?: WorkspaceLink[] }
 export interface WorkspaceRecord {
   version: 1; id: string; creationToken: string; mutationToken: string; title: string; titleMode: TitleMode;
-  goal: string; planSources: DocumentIdentity[]; sourceFingerprint: string | null;
+  goal: string; goalShort?: string; planSources: DocumentIdentity[]; sourceFingerprint: string | null;
   checkouts: Record<string, { directory: string }>;
   documents: WorkspaceDocument[]; issues: WorkspaceLink[]; prs: WorkspaceLink[];
   exclusions: ReferenceIdentity[];
@@ -19,12 +22,12 @@ export interface AgentRecord {
   version: 1; workspaceId: string; sessionId: string; sessionFile?: string;
   membershipToken: string; boundary: ReferenceBoundary; evidenceGeneration: string;
   displayAttempt?: { attempt: string; nonce: string };
-  checkout: string; cwd: string; title: string; titleMode: TitleMode; status: CardStatus; now: string; remaining: string;
+  checkout: string; cwd: string; title: string; titleMode: TitleMode; status: CardStatus; statusShort?: string; now: string; remaining: string;
 }
 export interface Snapshot<T> { path: string; record: T; revision: string }
 export interface ReferenceSelection { workspaceId: string; revision: string; identity: string }
 export interface Authority { sessionId: string; workspaceId: string; membershipToken: string; evidenceGeneration: string }
-export type OwnUpdate = Partial<Pick<AgentRecord, 'title' | 'status' | 'now' | 'remaining'>>;
+export type OwnUpdate = Partial<Pick<AgentRecord, 'title' | 'status' | 'statusShort' | 'now' | 'remaining'>>;
 
 export function object(value: unknown, keys: string[], required = keys): Record<string, unknown> {
   if (!value || typeof value !== 'object' || Array.isArray(value) || ![Object.prototype, null].includes(Object.getPrototypeOf(value))) throw new Error('Expected plain object');
@@ -34,8 +37,13 @@ export function object(value: unknown, keys: string[], required = keys): Record<
   return input;
 }
 export function text(value: unknown, nonempty = false): string {
-  if (typeof value !== 'string' || /[\p{Cc}\p{Cf}]/u.test(value) || (nonempty && !value.trim())) throw new Error('Expected safe single-line text');
+  if (typeof value !== 'string' || !value.isWellFormed() || /[\p{Cc}\p{Cf}\p{Zl}\p{Zp}]/u.test(value) || (nonempty && !value.trim())) throw new Error('Expected safe single-line text');
   return value;
+}
+export function displayText(value: unknown, cells: number, nonempty = false): string {
+  const s = text(value, nonempty);
+  if (stringWidth(s) > cells) throw new Error(`Display text exceeds ${cells} cells`);
+  return s;
 }
 export function opaque(value: unknown): string {
   const s = text(value, true);
@@ -80,7 +88,8 @@ function document(value: unknown): WorkspaceDocument {
   return { ...documentIdentity({ checkout: v.checkout, path: v.path }), description: text(v.description) };
 }
 function link(value: unknown): WorkspaceLink {
-  const v = object(value, ['url', 'description']); return { url: url(v.url), description: text(v.description) };
+  const v = object(value, ['url', 'description', 'label'], ['url', 'description']);
+  return { url: url(v.url), description: text(v.description), ...(Object.hasOwn(v, 'label') ? { label: displayText(v.label, 60, true) } : {}) };
 }
 export function referenceIdentity(value: ReferenceIdentity): string {
   return 'url' in value ? JSON.stringify(['url', value.url]) : JSON.stringify(['document', value.checkout, value.path]);
@@ -95,7 +104,8 @@ export function validateBoundary(value: unknown): ReferenceBoundary {
   return { compactionDigest: text(v.compactionDigest, true), transcriptLength: v.transcriptLength as number, prefixDigest: text(v.prefixDigest, true) };
 }
 export function validateWorkspace(value: unknown): WorkspaceRecord {
-  const v = object(value, ['version', 'id', 'creationToken', 'mutationToken', 'title', 'titleMode', 'goal', 'planSources', 'sourceFingerprint', 'checkouts', 'documents', 'issues', 'prs', 'exclusions']);
+  const required = ['version', 'id', 'creationToken', 'mutationToken', 'title', 'titleMode', 'goal', 'planSources', 'sourceFingerprint', 'checkouts', 'documents', 'issues', 'prs', 'exclusions'];
+  const v = object(value, [...required, 'goalShort'], required);
   if (v.version !== 1) throw new Error('Unsupported workspace version');
   if (!v.checkouts || typeof v.checkouts !== 'object' || Array.isArray(v.checkouts) || ![Object.prototype, null].includes(Object.getPrototypeOf(v.checkouts))) throw new Error('Invalid checkouts');
   const checkouts = Object.fromEntries(Object.entries(v.checkouts).map(([key, value]) => [opaque(key), { directory: absolute(object(value, ['directory']).directory) }]));
@@ -109,22 +119,27 @@ export function validateWorkspace(value: unknown): WorkspaceRecord {
   for (const ref of planSources) if (!documents.some(d => referenceIdentity(d) === referenceIdentity(ref))) throw new Error('Plan source must be a visible document');
   const goal = text(v.goal); const sourceFingerprint = v.sourceFingerprint === null ? null : text(v.sourceFingerprint, true);
   if ((goal || planSources.length || sourceFingerprint) && (!planSources.length || !sourceFingerprint)) throw new Error('Goal requires plan provenance');
-  return { version: 1, id: opaque(v.id), creationToken: text(v.creationToken, true), mutationToken: text(v.mutationToken, true), title: text(v.title, true), titleMode: mode(v.titleMode), goal, planSources, sourceFingerprint, checkouts, documents, issues, prs, exclusions };
+  const short = Object.hasOwn(v, 'goalShort') ? { goalShort: displayText(v.goalShort, 25) } : {};
+  if (short.goalShort?.trim() && !goal.trim()) throw new Error('Short goal requires nonempty goal');
+  return { ...short, version: 1, id: opaque(v.id), creationToken: text(v.creationToken, true), mutationToken: text(v.mutationToken, true), title: text(v.title, true), titleMode: mode(v.titleMode), goal, planSources, sourceFingerprint, checkouts, documents, issues, prs, exclusions };
 }
 export function validateAgent(value: unknown): AgentRecord {
   const required = ['version', 'workspaceId', 'sessionId', 'membershipToken', 'boundary', 'evidenceGeneration', 'checkout', 'cwd', 'title', 'titleMode', 'status', 'now', 'remaining'];
-  const v = object(value, [...required, 'sessionFile', 'displayAttempt'], required);
+  const v = object(value, [...required, 'sessionFile', 'displayAttempt', 'statusShort'], required);
   if (v.version !== 1) throw new Error('Unsupported agent version');
-  const optional: Pick<AgentRecord, 'sessionFile' | 'displayAttempt'> = {};
+  const optional: Pick<AgentRecord, 'sessionFile' | 'displayAttempt' | 'statusShort'> = {};
+  if (Object.hasOwn(v, 'statusShort')) optional.statusShort = displayText(v.statusShort, 23);
   if (Object.hasOwn(v, 'sessionFile')) optional.sessionFile = absolute(v.sessionFile);
   if (Object.hasOwn(v, 'displayAttempt')) { const d = object(v.displayAttempt, ['attempt', 'nonce']); optional.displayAttempt = { attempt: text(d.attempt, true), nonce: text(d.nonce, true) }; }
   return { version: 1, workspaceId: opaque(v.workspaceId), sessionId: text(v.sessionId, true), membershipToken: text(v.membershipToken, true), boundary: validateBoundary(v.boundary), evidenceGeneration: text(v.evidenceGeneration, true), checkout: opaque(v.checkout), cwd: absolute(v.cwd), title: text(v.title, true), titleMode: mode(v.titleMode), status: status(v.status), now: text(v.now), remaining: text(v.remaining), ...optional };
 }
 export function applyOwnUpdate(agent: AgentRecord, value: unknown): AgentRecord {
-  const v = object(value, ['title', 'status', 'now', 'remaining'], []);
+  const v = object(value, ['title', 'status', 'statusShort', 'now', 'remaining'], []);
   // Validate even an ignored automatic title.
   if (Object.hasOwn(v, 'title')) text(v.title, true);
-  return validateAgent({ ...agent, ...v, title: agent.titleMode === 'manual' ? agent.title : (v.title ?? agent.title) });
+  const next = { ...agent, ...v, title: agent.titleMode === 'manual' ? agent.title : (v.title ?? agent.title) };
+  if (!Object.hasOwn(v, 'statusShort') && (['status', 'now', 'remaining'] as const).some(key => Object.hasOwn(v, key) && v[key] !== agent[key])) delete next.statusShort;
+  return validateAgent(next);
 }
 export function validateAdditions(value: unknown): ReferenceAdditions {
   const v = object(value, ['documents', 'issues', 'prs'], []);
@@ -147,6 +162,23 @@ export function applySharedAdditions(workspace: WorkspaceRecord, value: unknown,
   return validateWorkspace(next);
 }
 
+export function validateSharedReferenceUpdate(value: unknown, baseline: WorkspaceRecord): SharedReferenceUpdate {
+  const v = object(value, ['additions', 'labels'], []);
+  const additions = Object.hasOwn(v, 'additions') ? validateAdditions(v.additions) : undefined;
+  if (additions) {
+    for (const ref of additions.documents ?? []) if (!Object.hasOwn(baseline.checkouts, ref.checkout)) throw new Error('Unknown checkout');
+    applySharedAdditions(baseline, additions);
+  }
+  const labels = Object.hasOwn(v, 'labels') ? array(v.labels, item => {
+    const l = object(item, ['url', 'label']);
+    const target = url(l.url);
+    if (![...baseline.issues, ...baseline.prs].some(ref => ref.url === target)) throw new Error('Label target must be an existing request link');
+    return { url: target, label: displayText(l.label, 60, true) };
+  }) : undefined;
+  if (labels && new Set(labels.map(l => l.url)).size !== labels.length) throw new Error('Duplicate label target');
+  return { ...(additions ? { additions } : {}), ...(labels ? { labels } : {}) };
+}
+
 export function applyReferenceRemoval(snapshot: Snapshot<WorkspaceRecord>, selection: ReferenceSelection): WorkspaceRecord {
   object(selection, ['workspaceId', 'revision', 'identity']);
   if (selection.workspaceId !== snapshot.record.id) throw new Error('Workspace selection mismatch');
@@ -158,7 +190,7 @@ export function applyReferenceRemoval(snapshot: Snapshot<WorkspaceRecord>, selec
   next.issues = next.issues.filter(r => referenceIdentity(r) !== selection.identity);
   next.prs = next.prs.filter(r => referenceIdentity(r) !== selection.identity);
   next.exclusions.push('url' in ref ? { url: ref.url } : { checkout: ref.checkout, path: ref.path });
-  if (next.planSources.some(r => referenceIdentity(r) === selection.identity)) { next.goal = ''; next.planSources = []; next.sourceFingerprint = null; }
+  if (next.planSources.some(r => referenceIdentity(r) === selection.identity)) { next.goal = ''; delete next.goalShort; next.planSources = []; next.sourceFingerprint = null; }
   return validateWorkspace(next);
 }
 

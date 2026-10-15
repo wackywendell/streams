@@ -5,7 +5,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { spawnSync } from 'node:child_process';
 import { registerWorkCards } from '../dist/pi/index.js';
-import { RecordStore } from '../dist/records.js';
+import { RecordStore, referenceIdentity } from '../dist/records.js';
 import { DEFAULT_CONFIG } from '../dist/config.js';
 import { WorkspaceClient, agentAuthority } from '../dist/herdr/workspace-client.js';
 import { AgentSession, SessionManager, SettingsManager } from '@earendil-works/pi-coding-agent';
@@ -170,12 +170,14 @@ test('real SDK historical projection, compaction and context edits determine hel
   manager.appendMessage({ role: 'toolResult', toolCallId: 'call', toolName: 'bash', content: [{ type: 'text', text: 'Private output' }] });
   h.ctx.sessionManager = manager;
   await h.emit('session_start'); await h.command('new Projected task');
-  await until(() => h.calls.some(c => c.kind === 'own'));
-  const data = h.calls.find(c => c.kind === 'own').data;
-  assert.equal(data.compactionSummary, 'Verified checkpoint');
-  assert.deepEqual(data.transcript, [{ role: 'user', text: 'Projected user text' }, { role: 'assistant', text: 'Projected answer' }]);
+  await until(() => h.calls.some(c => c.kind === 'shared'));
+  for (const kind of ['own', 'shared']) {
+    const data = h.calls.find(c => c.kind === kind).data;
+    assert.equal(data.compactionSummary, 'Verified checkpoint');
+    assert.deepEqual(data.transcript, [{ role: 'user', text: 'Projected user text' }, { role: 'assistant', text: 'Projected answer' }]);
+    assert.doesNotMatch(JSON.stringify(data), /Summarized private history|Unredacted user secret|Abandoned branch secret|Private thinking|Private arguments|Private output/);
+  }
   assert.match(JSON.stringify(manager.getEntries()), /Unredacted user secret|Abandoned branch secret/);
-  assert.doesNotMatch(JSON.stringify(data), /Summarized private history|Unredacted user secret|Abandoned branch secret|Private thinking|Private arguments|Private output/);
 });
 
 test('helper requests are single-flight across cancellation and configuration replacement, with spinner cleanup', async t => {
@@ -227,6 +229,76 @@ test('detach persists pause before fallible own cleanup and survives tree/reload
   await h.emit('session_tree'); await h.emit('session_start', { reason: 'reload' }); h.setMessages([user('Not resumed')]); await h.emit('context'); await tick(); assert.equal(h.calls.length, before);
   h.setHook(async () => {}); await h.command('detach'); assert.equal(h.panes.some(p => p.tokens.wca_role === 'card'), false);
   await h.command('open'); assert.equal(h.branch().at(-1).data.updates, true); assert.equal(h.launches().length, 2);
+});
+
+test('unnamed open after reset recovers documents and workspace naming from retained dialogue', async t => {
+  for (const workspace_startup of ['automatic', 'manual']) await t.test(workspace_startup, async t => {
+    const messages = [user('Implement query parsing using docs/design.md')];
+    const h = await host(t, { workspace_startup, check_every_n_responses: 0 }, { messages });
+    await mkdir(join(h.cwd, 'docs'));
+    await writeFile(join(h.cwd, 'docs/design.md'), 'Provide reusable query parsing');
+    h.setResult(async kind => kind === 'select' ? { sources: [] } : { action: 'no_change' });
+    await h.command('new Old manual title');
+    await until(async () => (await h.current()).details?.refresh?.state === 'complete');
+    await h.command('detach');
+    await rm(h.directory, { recursive: true, force: true });
+    for (const workspace of h.workspaces) workspace.tokens = {};
+    const before = h.calls.length;
+    await h.emit('session_start', { reason: 'reload' });
+    assert.equal(h.branch().at(-1).data.updates, false);
+    assert.deepEqual(await h.store.listAgents(), []); assert.equal(h.calls.length, before);
+    h.setResult(async kind => {
+      const identity = { checkout: (await h.read()).record.checkout, path: 'docs/design.md' };
+      if (kind === 'own') return { action: 'update', patch: { title: 'Query parsing' } };
+      if (kind === 'shared') return { action: 'update', additions: { documents: [{ ...identity, description: 'Query parsing design' }] } };
+      if (kind === 'select') return { sources: [identity] };
+      return { goal: 'Provide reusable query parsing', goalShort: 'Query parsing', title: 'Query parsing workspace' };
+    });
+    await h.command('open');
+    assert.equal((await h.current()).details?.updates, true, JSON.stringify(h.notices));
+    await until(async () => (await h.current()).details?.refresh?.state === 'complete');
+    const agent = await h.read(), workspace = await h.store.readWorkspace(agent.record.workspaceId);
+    assert.equal(agent.record.title, 'Query parsing'); assert.equal(agent.record.titleMode, 'auto');
+    assert.equal(agent.record.boundary.transcriptLength, 1);
+    assert.equal(workspace.record.titleMode, 'auto'); assert.equal(workspace.record.title, 'Query parsing workspace');
+    assert.equal(workspace.record.goal, 'Provide reusable query parsing');
+    assert.deepEqual(workspace.record.documents.map(d => d.path), ['docs/design.md']);
+    const calls = h.calls.slice(before);
+    assert.deepEqual(calls.map(c => c.kind), ['own', 'shared', 'select', 'goal']);
+    assert.deepEqual(calls[0].data.transcript, [{ role: 'user', text: messages[0].content }]);
+    assert.deepEqual(calls[1].data.transcript, calls[0].data.transcript);
+    assert.equal(h.launches().length, 2); assert.equal(h.notices.some(n => n.level === 'warning'), false);
+  });
+});
+
+test('implicit creation and existing-workspace joining both consider retained session references', async t => {
+  for (const existing of [false, true]) await t.test(existing ? 'join existing' : 'implicit creation', async t => {
+    const messages = [user('The query parsing design is in plan.md')];
+    const h = await host(t, {}, { messages });
+    await writeFile(join(h.cwd, 'plan.md'), 'Provide reusable query parsing');
+    if (existing) await h.store.createWorkspace({ id: 'known', creationToken: 'known-token', title: 'Parser project' });
+    h.setResult(async kind => {
+      const identity = { checkout: (await h.read()).record.checkout, path: 'plan.md' };
+      if (kind === 'own') return { action: 'no_change' };
+      if (kind === 'shared') return { action: 'update', additions: { documents: [{ ...identity, description: 'Query parsing design' }] } };
+      if (kind === 'select') return { sources: [identity] };
+      return { goal: 'Provide reusable query parsing', goalShort: 'Query parsing', title: 'Parser project' };
+    });
+    if (existing) await h.command('open known');
+    else {
+      h.setMessages([...messages, user('Continue query parsing')]);
+      await h.emit('context'); await h.emit('agent_settled', { aborted: false });
+    }
+    await until(async () => (await h.current()).details?.refresh?.state === 'complete');
+    const shared = h.calls.find(c => c.kind === 'shared').data;
+    assert.deepEqual(shared.transcript[0], { role: 'user', text: messages[0].content });
+    assert.equal(shared.workspace.title, existing ? 'Parser project' : 'Continue query parsing');
+    const agent = await h.read(), workspace = await h.store.readWorkspace(agent.record.workspaceId);
+    if (existing) assert.equal(workspace.record.id, 'known');
+    assert.deepEqual(workspace.record.documents.map(d => d.path), ['plan.md']);
+    assert.equal(workspace.record.goal, 'Provide reusable query parsing');
+    assert.equal(h.launches().length, 1);
+  });
 });
 
 test('detach persists pause without reading even an unattached or missing agent record', async t => {
@@ -519,6 +591,111 @@ test('unreadable or malformed resume identity does not guess departure from loca
     assert.equal(h.closes().length, 0);
     if (malformed) assert.equal(await readFile(path, 'utf8'), 'not a header\n');
   });
+});
+
+test('refresh diagnostics distinguish no purpose sources and read-only inspection makes no requests', async t => {
+  const h = await attach(t, { check_every_n_responses: 0, pane_poll_interval_ms: 60_000 });
+  await until(async () => (await h.current()).details.refresh?.state === 'complete');
+  const report = (await h.current()).details.refresh;
+  assert.equal(report.forced, true);
+  assert.deepEqual(report.stages.map(({ stage, outcome }) => ({ stage, outcome })), [
+    { stage: 'own', outcome: 'unchanged' },
+    { stage: 'selection', outcome: 'no_sources' }, { stage: 'goal', outcome: 'no_sources' },
+  ]);
+  await until(() => h.notices.some(n => /Goal unknown.*purpose documents/.test(n.text)));
+  const requests = h.calls.length, native = h.native.length, revision = (await h.read()).revision;
+  await h.current(); await h.command('show');
+  assert.equal(h.calls.length, requests); assert.equal(h.native.length, native);
+  assert.equal((await h.read()).revision, revision);
+});
+
+test('refresh diagnostics distinguish pre-goal failure and do not claim source selection ran', async t => {
+  const h = await attach(t, { check_every_n_responses: 0, pane_poll_interval_ms: 60_000 });
+  await until(async () => (await h.current()).details.refresh?.state === 'complete');
+  h.setResult(async () => { throw new Error('provider unavailable'); });
+  await h.command('refresh');
+  await until(async () => (await h.current()).details.refresh?.state === 'failed');
+  const report = (await h.current()).details.refresh;
+  assert.deepEqual(report.stages, [
+    { stage: 'own', outcome: 'failed', cancelled: false }, { stage: 'goal', outcome: 'skipped' },
+  ]);
+  await until(() => h.notices.some(n => /own stage.*provider unavailable/.test(n.text)));
+  assert.equal((await h.current()).details.workspace.record.goal, '');
+});
+
+test('Pi publishes separate purpose and own progress after q, including invalidation without helper calls', async t => {
+  const h = await attach(t, { check_every_n_responses: 0, pane_poll_interval_ms: 15 });
+  await until(async () => (await h.current()).details.refresh?.state === 'complete');
+  const a = await h.read(), authority = agentAuthority(a.record), source = { checkout: a.record.checkout, path: 'purpose.md' };
+  await writeFile(join(h.cwd, source.path), '# Go port\nPreserve tracing behavior across Rust and Go.');
+  await h.store.addReferences(authority, { documents: [{ ...source, description: 'Go port design and purpose' }] });
+  h.setMessages([user('Use purpose.md for the shared Go port purpose.')]);
+  h.setResult(async kind => kind === 'own' ? { action: 'update', patch: { now: 'Waiting for Go port review.', status: 'waiting', statusShort: 'Review pending' } }
+    : kind === 'shared' ? { action: 'no_change' }
+    : kind === 'select' ? { sources: [source] }
+    : { goal: 'Preserve tracing behavior across Rust and Go.', goalShort: 'Port tracing to Go', title: 'Tracing Go port' });
+  await h.command('refresh');
+  await until(() => h.workspaces[0].tokens.wcw_goal_short === 'Port tracing to Go' && h.panes[0].tokens.wca_status_short === 'Review pending');
+  assert.equal(h.workspaces[0].tokens.wcw_goal, 'Preserve tracing behavior across Rust and Go.');
+  assert.equal(h.panes[0].tokens.wca_status, 'waiting');
+  assert.equal(h.workspaces[0].tokens.wca_status_short, undefined);
+  h.q(); const launches = h.launches().length, requests = h.calls.length;
+  let current = await h.read();
+  await h.store.updateOwn(agentAuthority(current.record), { status: 'blocked', now: 'Missing review access.', statusShort: 'Review access blocked' }, current.revision);
+  await until(() => h.panes[0].tokens.wca_status_short === 'Review access blocked');
+  current = await h.read();
+  await h.store.updateOwn(agentAuthority(current.record), { now: 'Access restored.' }, current.revision);
+  const workspace = await h.store.readWorkspace(current.record.workspaceId);
+  await h.store.removeReference(agentAuthority(current.record), { workspaceId: workspace.record.id, revision: workspace.revision, identity: referenceIdentity(source) });
+  await until(() => !h.panes[0].tokens.wca_status_short && !h.workspaces[0].tokens.wcw_goal_short);
+  assert.equal(h.calls.length, requests); assert.equal(h.launches().length, launches);
+  assert.equal(h.native.some(args => args.includes('focus')), false);
+});
+
+test('post-refresh publication and reconciliation share the host queue, including after q', async t => {
+  for (const closed of [false, true]) await t.test(closed ? 'card closed' : 'card open', async t => {
+    const h = await attach(t, { check_every_n_responses: 0, pane_poll_interval_ms: 60_000 });
+    const completions = () => h.notices.filter(n => n.text.startsWith('Work-card refresh:')).length;
+    await until(() => completions() === 1);
+    if (closed) h.q();
+    const before = await h.read(), launched = h.launches().length;
+    const entered = deferred(), release = deferred(); let held = false;
+    h.setHook(async args => {
+      if (!held && args.includes('wca_status_short=Review ready')) {
+        held = true; entered.resolve(); await release.promise;
+      }
+    });
+    h.setResult(async kind => kind === 'own' ? { action: 'update', patch: { now: 'Review package prepared.', statusShort: 'Review ready' } } : { action: 'no_change' });
+    await h.command('refresh'); await entered.promise;
+    const nativeAtGate = h.native.length; let nativeWhileHeld;
+    try {
+      await h.emit('context');
+      await new Promise(resolve => setTimeout(resolve, 100));
+      nativeWhileHeld = h.native.length;
+    } finally { release.resolve(); }
+    await h.command('show');
+    assert.equal(nativeWhileHeld, nativeAtGate, 'Reconciliation must not compete for the projection lock');
+    await until(() => completions() === 2);
+    const after = await h.read(), report = (await h.current()).details.refresh;
+    assert.equal(after.record.membershipToken, before.record.membershipToken);
+    assert.equal(after.record.evidenceGeneration, before.record.evidenceGeneration);
+    assert.equal(report.state, 'complete');
+    assert.equal(h.panes[0].tokens.wca_status_short, 'Review ready');
+    assert.equal(h.launches().length, launched);
+    assert.equal(h.notices.some(n => n.level === 'warning'), false);
+  });
+});
+
+test('sidebar publication failure does not undo successful record refresh or hide its diagnostics', async t => {
+  const h = await attach(t, { check_every_n_responses: 0, pane_poll_interval_ms: 60_000 });
+  await until(async () => (await h.current()).details.refresh?.state === 'complete');
+  h.setHook(async args => { if (args.includes('wca_status_short=Tests passed')) throw new Error('native metadata unavailable'); });
+  h.setResult(async kind => kind === 'own' ? { action: 'update', patch: { now: 'Local tests passed.', statusShort: 'Tests passed' } } : { action: 'no_change' });
+  await h.command('refresh');
+  await until(() => h.notices.some(n => /Sidebar projection.*native metadata unavailable/.test(n.text)));
+  assert.equal((await h.read()).record.statusShort, 'Tests passed');
+  assert.equal((await h.current()).details.refresh.state, 'complete');
+  assert.ok((await h.current()).details.refresh.stages.some(s => s.stage === 'own' && s.outcome === 'applied'));
 });
 
 test('actual WorkspaceClient launch environment is accepted and rendered by runPane', async t => {

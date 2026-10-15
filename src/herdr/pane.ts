@@ -53,7 +53,7 @@ export async function runPane(env: NodeJS.ProcessEnv = process.env): Promise<voi
         if (saved) {
           await verifyOwner(context, saved.agent);
           readyContext = context;
-          await client.project(store, context, saved.agent, config, controller.signal);
+          await client.projectCaption(store, context, saved.agent, config, controller.signal);
           if (stopped) break;
           view.clearNotice('projection');
         }

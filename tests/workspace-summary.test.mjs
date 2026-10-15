@@ -1,7 +1,6 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
 import { applyOwnUpdate, applySharedAdditions, validateAgent, validateWorkspace } from '../dist/records.js';
-import { captureReferenceBoundary, projectSharedEvidence } from '../dist/pi/shared-evidence.js';
 import {
   buildOwnSummaryContext, parseOwnSummaryDecision, requestOwnSummary,
   buildSharedAdditionsContext, parseSharedAdditionsDecision, requestSharedAdditions,
@@ -30,6 +29,7 @@ test('own protocol retains the entire projection and limits shared context to ti
   assert.match(context.systemPrompt, /done.*affirmative evidence/i);
   assert.match(context.systemPrompt, /not.*activity log/i);
   assert.match(context.systemPrompt, /not.*whole project/i);
+  assert.match(context.systemPrompt, /automatic.*Untitled task.*provisional.*replace.*assignment.*dialogue/i);
   assert.doesNotMatch(context.systemPrompt, /Goal:.*\| Now:/);
 });
 
@@ -38,30 +38,71 @@ test('own decisions use exact core title/status validation and preserve manual t
   assert.equal(applyOwnUpdate(agent, decision.patch).title, 'Manual title');
   assert.equal(applyOwnUpdate({ ...agent, titleMode: 'auto' }, decision.patch).title, 'Automatic');
   assert.deepEqual(own({ action: 'update', patch: {} }), { action: 'no_change' });
-  for (const patch of [{ title: '' }, { title: 'bad\nname' }, { status: 'finished' }, { now: 'bad\u200b' }, { goal: 'wrong scope' }, { documents: [] }, { cwd: '/elsewhere' }, { membershipToken: 'x' }, { state: 'pipe carrier' }]) assert.throws(() => own({ action: 'update', patch }));
+  for (const patch of [{ title: '' }, { title: 'bad\nname' }, { status: 'finished' }, { now: 'bad\u200b' }, { goal: 'wrong scope', goalShort: 'wrong scope' }, { documents: [] }, { cwd: '/elsewhere' }, { membershipToken: 'x' }, { state: 'pipe carrier' }]) assert.throws(() => own({ action: 'update', patch }));
   for (const value of [null, [], { action: 'no_change', patch: {} }, { action: 'update' }, { action: 'update', patch: {}, extra: true }]) assert.throws(() => own(value));
 });
 
-test('shared context has only suffix evidence, checkout table/current references and own checkout', () => {
-  const inherited = { compactionSummary: 'SECRET checkpoint', transcript: [{ role: 'user', text: 'SECRET inherited' }] };
-  const boundary = captureReferenceBoundary(inherited);
-  const projection = { ...inherited, transcript: [...inherited.transcript, { role: 'assistant', text: 'New plan.md' }] };
-  const suffix = projectSharedEvidence(projection, boundary, 'continue').evidence;
-  const context = buildSharedAdditionsContext(workspace, agent.checkout, suffix);
-  assert.deepEqual(data(context), { transcript: suffix.transcript, checkouts: workspace.checkouts, references: { documents: workspace.documents, issues: [], prs: [] }, ownCheckout: 'repo' });
-  assert.doesNotMatch(JSON.stringify(context), /SECRET|membershipToken|planSources|compactionSummary/);
-  assert.throws(() => buildSharedAdditionsContext(workspace, 'repo', { transcript: [], compactionSummary: null }));
-  assert.throws(() => buildSharedAdditionsContext(workspace, 'missing', suffix));
+test('shared context includes the full projection and workspace purpose without runtime authority', () => {
+  const projection = { compactionSummary: 'Earlier plan.md', transcript: [{ role: 'user', text: 'Retained dialogue' }, { role: 'assistant', text: 'New plan.md' }] };
+  const context = buildSharedAdditionsContext(workspace, agent.checkout, projection);
+  assert.deepEqual(data(context), { ...projection, workspace: { title: workspace.title, goal: workspace.goal }, checkouts: workspace.checkouts, references: { documents: workspace.documents, issues: [], prs: [] }, ownCheckout: 'repo' });
+  assert.doesNotMatch(JSON.stringify(data(context)), /membershipToken|planSources|evidenceGeneration|creationToken/);
+  assert.throws(() => buildSharedAdditionsContext(workspace, 'missing', projection));
   assert.match(context.systemPrompt, /additions.*not replacements/i);
+  assert.match(context.systemPrompt, /latest.*compaction.*all.*dialogue/i);
+  assert.match(context.systemPrompt, /workspace.*title.*Goal.*known references/i);
+  assert.match(context.systemPrompt, /not.*every.*mention/i);
+  assert.match(context.systemPrompt, /purpose.*unknown.*session.*context/i);
+  assert.doesNotMatch(context.systemPrompt, /ONLY.*current-membership dialogue suffix|Never copy.*compaction/i);
+});
+
+test('documents are a small current reading list without a hard cap or cleanup authority', () => {
+  const prompt = buildSharedAdditionsContext(workspace, 'repo', { compactionSummary: null, transcript: [] }).systemPrompt;
+  assert.match(prompt, /small current reading list, not.*history/i);
+  assert.match(prompt, /explains the workspace purpose, governs current work, or is an active plan/i);
+  assert.match(prompt, /Usually 3–5.*soft guide, not a quota or hard cap/i);
+  assert.match(prompt, /complementary documents.*overlapping/i);
+  assert.match(prompt, /read or edited.*does not qualify/i);
+  assert.match(prompt, /another agent may still need/i);
+  assert.match(prompt, /These are additions, not replacements or removals/i);
+  const many = Array.from({ length: 6 }, (_, i) => ({ ...doc, path: `reference-${i}.md` }));
+  const decision = shared({ action: 'update', additions: { documents: many } });
+  assert.equal(decision.additions.documents.length, 6);
+});
+
+test('shared issue admission means actual published tickets, not CI or informal problems', () => {
+  const prompt = buildSharedAdditionsContext(workspace, 'repo', { compactionSummary: null, transcript: [] }).systemPrompt;
+  assert.match(prompt, /Issues are actual published issues or tickets/i);
+  assert.match(prompt, /GitHub Issues.*Jira tickets/i);
+  assert.match(prompt, /Never classify CI job\/run links, change-request links or log links as issues/i);
+  assert.match(prompt, /informal problems without a published ticket are not issues/i);
+  assert.match(prompt, /semantic admission rules, not an exhaustive provider allowlist/i);
+});
+
+test('shared PR admission requires this session assignment focus rather than mere mention', () => {
+  const prompt = buildSharedAdditionsContext(workspace, 'repo', { compactionSummary: null, transcript: [] }).systemPrompt;
+  assert.match(prompt, /PRs must be actively worked on or focused on in THIS session/i);
+  assert.match(prompt, /created, authored, reviewed, debugged or explicitly tracked for this assignment/i);
+  assert.match(prompt, /Merely mentioned PRs, interesting examples and background links do not qualify/i);
+});
+
+test('semantic admission adds no other-links authority and never silently removes stored references', () => {
+  const existing = { ...workspace, issues: [{ url: 'https://example.com/ci/run/1', description: 'Previously stored run' }] };
+  const context = buildSharedAdditionsContext(existing, 'repo', { compactionSummary: null, transcript: [] });
+  assert.deepEqual(data(context).references.issues, existing.issues);
+  assert.match(context.systemPrompt, /Do not silently delete or reclassify existing stored references/i);
+  assert.match(context.systemPrompt, /Do not introduce an other-links bucket/i);
+  assert.throws(() => parseSharedAdditionsDecision(JSON.stringify({ action: 'update', additions: { links: [{ url: 'https://example.com/log', description: 'Log' }] } }), existing));
+  assert.deepEqual(parseSharedAdditionsDecision('{"action":"no_change"}', existing), { action: 'no_change' });
 });
 
 test('shared proposals are additive, validate known roots and leave exclusions authoritative', () => {
-  const decision = shared({ action: 'add', additions: { documents: [{ ...doc, path: 'new.md' }], issues: [{ url: 'https://example.com/removed', description: 'Old' }] } });
+  const decision = shared({ action: 'update', additions: { documents: [{ ...doc, path: 'new.md' }], issues: [{ url: 'https://example.com/removed', description: 'Old' }] } });
   const applied = applySharedAdditions(workspace, decision.additions);
   assert.equal(applied.documents.length, 3);
   assert.deepEqual(applied.issues, []);
-  for (const additions of [{ remove: [doc] }, { documents: [{ ...doc, checkout: 'unknown' }] }, { documents: [{ ...doc, path: '../escape.md' }] }, { issues: [{ url: 'file:///secret', description: '' }] }, { goal: 'invented' }]) assert.throws(() => shared({ action: 'add', additions }));
-  assert.throws(() => shared({ action: 'update', additions: {} }));
+  for (const additions of [{ remove: [doc] }, { documents: [{ ...doc, checkout: 'unknown' }] }, { documents: [{ ...doc, path: '../escape.md' }] }, { issues: [{ url: 'file:///secret', description: '' }] }, { goal: 'invented', goalShort: 'invented' }]) assert.throws(() => shared({ action: 'update', additions }));
+  assert.throws(() => shared({ action: 'add', additions: {} }));
   assert.deepEqual(shared({ action: 'no_change' }), { action: 'no_change' });
 });
 
@@ -78,8 +119,8 @@ const capture = { sources: [{ identity: { checkout: 'repo', path: 'plan.md' }, d
 test('goal protocol sees only fixed selected source identities and contents', () => {
   assert.deepEqual(data(buildWorkspaceGoalContext(capture)), { sources: [{ identity: capture.sources[0].identity, content: capture.sources[0].content }] });
   assert.equal(buildWorkspaceGoalContext({ sources: [], fingerprint: 'empty' }), null);
-  assert.deepEqual(parseWorkspaceGoalDecision('{"goal":"Integrate library","title":"Integration"}'), { goal: 'Integrate library', title: 'Integration' });
-  for (const value of [{ goal: 'x', sources: [] }, { goal: 'x', status: 'done' }, { goal: 'x', title: '' }, { goal: 'bad\ntext' }, { title: 'Missing goal' }]) assert.throws(() => parseWorkspaceGoalDecision(JSON.stringify(value)));
+  assert.deepEqual(parseWorkspaceGoalDecision('{"goal":"Integrate library","goalShort":"Library integration","title":"Integration"}'), { goal: 'Integrate library', goalShort: 'Library integration', title: 'Integration' });
+  for (const value of [{ goal: 'x', goalShort: 'x', sources: [] }, { goal: 'x', goalShort: 'x', status: 'done' }, { goal: 'x', goalShort: 'x', title: '' }, { goal: 'bad\ntext', goalShort: 'bad\ntext' }, { title: 'Missing goal' }]) assert.throws(() => parseWorkspaceGoalDecision(JSON.stringify(value)));
 });
 
 test('all request helpers use the existing virtual route, literal reasoning and no tools', async () => {
@@ -90,10 +131,10 @@ test('all request helpers use the existing virtual route, literal reasoning and 
   } };
   reply = { action: 'no_change' };
   assert.deepEqual(await requestOwnSummary(registry, agent, { compactionSummary: null, transcript: [] }, workspace, options, undefined, profiles), reply);
-  assert.deepEqual(await requestSharedAdditions(registry, workspace, 'repo', { transcript: [] }, options, undefined, profiles), reply);
+  assert.deepEqual(await requestSharedAdditions(registry, workspace, 'repo', { compactionSummary: null, transcript: [] }, options, undefined, profiles), reply);
   reply = { sources: [] };
   assert.deepEqual(await requestPlanSelection(registry, workspace, options, undefined, profiles), reply);
-  reply = { goal: 'Integrate' };
+  reply = { goal: 'Integrate', goalShort: 'Integrate' };
   assert.deepEqual(await requestWorkspaceGoal(registry, capture, options, undefined, profiles), reply);
   assert.equal(await requestWorkspaceGoal(registry, { sources: [], fingerprint: 'empty' }, options, undefined, profiles), null);
   assert.equal(calls, 4);
@@ -110,4 +151,72 @@ test('new requests retain transport timeout, cancellation and incomplete/tool-ca
   for (const response of [{ stopReason: 'length', content: [] }, { stopReason: 'stop', content: [{ type: 'toolCall', name: 'read', arguments: {} }] }, { stopReason: 'stop', content: [{ type: 'text', text: 'not JSON' }] }]) {
     await assert.rejects(request({ find: pending.find, streamSimple: () => ({ result: async () => response }) }));
   }
+});
+
+
+test('oversized helper shorts are omitted without truncating valid full text', () => {
+  const now = 'The full assignment summary remains intact even when the sidebar summary is too wide';
+  assert.deepEqual(own({ action: 'update', patch: { statusShort: 'Adapter usable' } }).patch, { statusShort: 'Adapter usable' });
+  assert.deepEqual(own({ action: 'update', patch: { now, statusShort: 'x'.repeat(24) } }), { action: 'update', patch: { now } });
+  assert.deepEqual(own({ action: 'update', patch: { statusShort: 'x'.repeat(24) } }), { action: 'no_change' });
+  assert.deepEqual(own({ action: 'update', patch: { now } }), { action: 'update', patch: { now } });
+  assert.deepEqual(parseWorkspaceGoalDecision(JSON.stringify({ goal: now, goalShort: '界'.repeat(13), title: 'Workspace subject' })), { goal: now, title: 'Workspace subject' });
+  assert.deepEqual(parseWorkspaceGoalDecision('{"goal":"","goalShort":""}'), { goal: '', goalShort: '' });
+  assert.deepEqual(parseWorkspaceGoalDecision('{"goal":""}'), { goal: '' });
+  assert.match(buildOwnSummaryContext(agent, { compactionSummary: null, transcript: [] }, workspace).systemPrompt, /statusShort is absent or empty/);
+  assert.match(buildPlanSelectionContext(workspace).systemPrompt, /design.*ADR.*README/i);
+  assert.match(buildSharedAdditionsContext(workspace, 'repo', { compactionSummary: null, transcript: [] }).systemPrompt, /durable.*orientation/i);
+});
+
+for (const [name, statusShort, goalShort] of [
+  ['ASCII', 'x'.repeat(23), 'x'.repeat(25)],
+  ['CJK', '界'.repeat(11) + 'x', '界'.repeat(12) + 'x'],
+  ['combining', 'e\u0301'.repeat(23), 'e\u0301'.repeat(25)],
+  ['emoji', '😀'.repeat(11) + 'x', '😀'.repeat(12) + 'x'],
+]) test(`${name} short boundaries use display cells and never truncate raw text`, () => {
+  assert.deepEqual(own({ action: 'update', patch: { statusShort } }), { action: 'update', patch: { statusShort } });
+  assert.deepEqual(own({ action: 'update', patch: { statusShort: statusShort + 'x' } }), { action: 'no_change' });
+  assert.deepEqual(parseWorkspaceGoalDecision(JSON.stringify({ goal: 'Purpose', goalShort })), { goal: 'Purpose', goalShort });
+  assert.deepEqual(parseWorkspaceGoalDecision(JSON.stringify({ goal: 'Purpose', goalShort: goalShort + 'x' })), { goal: 'Purpose' });
+});
+
+test('omitting oversized own shorts leaves core source-change invalidation authoritative', () => {
+  const previous = { ...agent, statusShort: 'Old stage' };
+  for (const patch of [{ status: 'waiting' }, { now: 'New useful stage' }, { remaining: 'New scope' }]) {
+    const decision = parseOwnSummaryDecision(JSON.stringify({ action: 'update', patch: { ...patch, statusShort: 'x'.repeat(24) } }), previous);
+    assert.equal(applyOwnUpdate(previous, decision.patch).statusShort, undefined);
+  }
+  const unchanged = parseOwnSummaryDecision(JSON.stringify({ action: 'update', patch: { now: previous.now, statusShort: 'x'.repeat(24) } }), previous);
+  assert.equal(applyOwnUpdate(previous, unchanged.patch).statusShort, 'Old stage');
+});
+
+test('short overflow does not excuse unsafe text, malformed required fields or unknown fields', () => {
+  for (const short of [null, 42, {}, [], 'x'.repeat(30) + '\n', 'x'.repeat(30) + '\u200b', 'x'.repeat(30) + '\ud800', '\udc00']) {
+    assert.throws(() => own({ action: 'update', patch: { now: 'Valid full text', statusShort: short } }));
+    assert.throws(() => parseWorkspaceGoalDecision(JSON.stringify({ goal: 'Purpose', goalShort: short })));
+  }
+  for (const value of [
+    { goal: 'Purpose' }, { goal: 'Purpose', goalShort: '' }, { goal: 'Purpose', goalShort: '   ' },
+    { goal: '', goalShort: 'x'.repeat(30) }, { goal: 'bad\ntext', goalShort: 'x'.repeat(30) },
+    { goal: 42, goalShort: 'x'.repeat(30) }, { goalShort: 'x'.repeat(30) },
+    { goal: 'Purpose', goalShort: 'x'.repeat(30), extra: true },
+    { goal: 'Purpose', goalShort: 'x'.repeat(30), title: '' },
+  ]) assert.throws(() => parseWorkspaceGoalDecision(JSON.stringify(value)));
+  for (const patch of [{ now: 'bad\ntext' }, { status: 'finished' }, { extra: true }]) {
+    assert.throws(() => own({ action: 'update', patch: { ...patch, statusShort: 'x'.repeat(30) } }));
+  }
+});
+
+test('shared labels target only exact snapshot links and cannot carry replacement authority', () => {
+  const snapshot = { ...workspace, issues: [{ url: 'https://example.com/issue', description: 'Full text' }] };
+  const parse = value => parseSharedAdditionsDecision(JSON.stringify(value), snapshot);
+  assert.deepEqual(parse({ action: 'update', labels: [{ url: snapshot.issues[0].url, label: 'Issue purpose' }] }), { action: 'update', labels: [{ url: snapshot.issues[0].url, label: 'Issue purpose' }] });
+  for (const labels of [
+    [{ url: 'https://example.com/unknown', label: 'Unknown' }],
+    [{ url: snapshot.issues[0].url + '/', label: 'Not exact' }],
+    [{ url: snapshot.issues[0].url, label: 'New', description: 'Replaced' }],
+    [{ url: snapshot.issues[0].url, label: '' }],
+  ]) assert.throws(() => parse({ action: 'update', labels }));
+  assert.throws(() => parse({ action: 'update', issues: [] }));
+  assert.throws(() => parse({ action: 'update', labels: [{ checkout: 'repo', path: 'plan.md', label: 'Doc' }] }));
 });

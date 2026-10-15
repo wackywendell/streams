@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { mkdtemp, readdir, rm } from 'node:fs/promises';
+import { mkdtemp, readdir, readFile, stat, rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { setTimeout as delay } from 'node:timers/promises';
@@ -26,8 +26,14 @@ test('default lock contention fails immediately without entering or releasing an
 
 test('bounded lock wait times out and leaves the holder untouched', async t => {
   const f = await fixture(t); let calls = 0;
+  const names = await readdir(f.root), path = join(f.root, names[0]);
+  const owner = await readFile(path, 'utf8'), identity = await stat(path), started = performance.now();
   await assert.rejects(withWorkspaceLock(f.socket, 'w', async () => { calls++; }, { waitMs: 30 }), /lock.*timed out/i);
-  assert.equal(calls, 0); assert.equal((await readdir(f.root)).length, 1);
+  assert.ok(performance.now() - started >= 25);
+  assert.ok(performance.now() - started < 500);
+  assert.equal(calls, 0); assert.deepEqual(await readdir(f.root), names);
+  assert.equal(await readFile(path, 'utf8'), owner);
+  assert.equal((await stat(path)).ino, identity.ino);
 });
 
 test('cancellation while waiting and before acquisition never invokes callback', async t => {

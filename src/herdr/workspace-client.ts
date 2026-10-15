@@ -111,9 +111,16 @@ export class WorkspaceClient extends HerdrTransport {
     const target = input.targetWorkspaceId ?? bindingOf(initial.snapshot.workspaces.find(w => w.workspace_id === context.workspaceId)!, key)?.id;
     // Existing durable targets serialize across native groups, always outside the group lock.
     const join = () => this.joinWorkspaceLocked(store, context, input, config, key, target, signal);
-    return target === undefined ? join() : withWorkspaceLock(context.socket, `durable-workspace\0${key}\0${target}`, join, { waitMs: config.herdr_timeout_ms, signal });
+    const result = await (target === undefined ? join() : withWorkspaceLock(context.socket, `durable-workspace\0${key}\0${target}`, join, { waitMs: config.herdr_timeout_ms, signal }));
+    if (!('coordinate' in result)) return result;
+    // Discovery has no effects: release native before taking the newly discovered durable target.
+    const binding = result.coordinate, coordinatedContext = { ...context, bindingNonce: binding.nonce };
+    const coordinated = await withWorkspaceLock(context.socket, `durable-workspace\0${key}\0${binding.id}`,
+      () => this.joinWorkspaceLocked(store, coordinatedContext, input, config, key, binding.id, signal, binding), { waitMs: config.herdr_timeout_ms, signal });
+    if ('coordinate' in coordinated) throw new Error('Workspace binding changed again during target coordination');
+    return coordinated;
   }
-  private async joinWorkspaceLocked(store: RecordStore, context: NativeContext, input: WorkspaceJoinInput, config: WorkCardsConfig, key: string, target: string | undefined, signal?: AbortSignal): Promise<Membership> {
+  private async joinWorkspaceLocked(store: RecordStore, context: NativeContext, input: WorkspaceJoinInput, config: WorkCardsConfig, key: string, target: string | undefined, signal?: AbortSignal, expectedBinding?: WorkspaceBinding): Promise<Membership | { coordinate: WorkspaceBinding }> {
     return withWorkspaceLock(context.socket, context.workspaceId, async () => {
       let mutated = false;
       try {
@@ -122,6 +129,8 @@ export class WorkspaceClient extends HerdrTransport {
         if (live.snapshot.panes.some(p => p.workspace_id === context.workspaceId && Object.keys(p.tokens).some(k => k.startsWith('wc_')))) throw new Error('Legacy live publisher conflict');
         const w = live.snapshot.workspaces.find(w => w.workspace_id === context.workspaceId)!;
         let binding = bindingOf(w, key);
+        if (expectedBinding && !isDeepStrictEqual(binding, expectedBinding)) throw new Error('Workspace binding changed again during target coordination');
+        if (target === undefined && binding) return { coordinate: binding };
         if (binding && binding.id !== target) throw new Error('Workspace binding changed before durable target coordination; retry explicitly');
         const unique = (snapshot: NativeSnapshot) => {
           if (target && snapshot.workspaces.some(other => other.workspace_id !== context.workspaceId && other.tokens.wcw_id === target)) throw new Error('Durable workspace already has another live native binding');
@@ -173,7 +182,7 @@ export class WorkspaceClient extends HerdrTransport {
         if (!mutated) throw error;
         throw new Error(`Workspace join may be partial; reservation and records are retained for verified retry: ${(error as Error).message}`, { cause: error });
       }
-    });
+    }, { waitMs: config.herdr_timeout_ms, signal });
   }
   async ownership(store: RecordStore, context: NativeContext, painted: Snapshot<AgentRecord>, config: WorkCardsConfig, signal?: AbortSignal): Promise<PairState> {
     const { agent } = await this.currentRecords(store, painted), identity = await this.identity(store, agent);
@@ -206,7 +215,7 @@ export class WorkspaceClient extends HerdrTransport {
   }
   async openDisplay(store: RecordStore, context: NativeContext, painted: Snapshot<AgentRecord>, mode: 'automatic' | 'explicit', config: WorkCardsConfig, signal?: AbortSignal): Promise<DisplayResult> {
     signal?.throwIfAborted();
-    return withWorkspaceLock(context.socket, context.workspaceId, () => this.openDisplayLocked(store, context, painted, mode, config, signal));
+    return withWorkspaceLock(context.socket, context.workspaceId, () => this.openDisplayLocked(store, context, painted, mode, config, signal), { waitMs: config.herdr_timeout_ms, signal });
   }
   private async openDisplayLocked(store: RecordStore, context: NativeContext, painted: Snapshot<AgentRecord>, mode: 'automatic' | 'explicit', config: WorkCardsConfig, signal?: AbortSignal): Promise<DisplayResult> {
     let { agent, workspace } = await this.currentRecords(store, painted);
@@ -292,7 +301,7 @@ export class WorkspaceClient extends HerdrTransport {
       await this.cleanupDisplayLocked(store, verified.context, verified.agent, true, config, signal);
       // No durable suppression is cleared. Any partial launch retains its new attempt.
       return this.openDisplayLocked(store, verified.context, verified.agent, 'explicit', config, signal);
-    });
+    }, { waitMs: config.herdr_timeout_ms, signal });
   }
   /** Retire only this known session's own markers; absence never launches a card. */
   async releaseDisplay(store: RecordStore, context: NativeContext, painted: Snapshot<AgentRecord>, config: WorkCardsConfig, signal?: AbortSignal): Promise<void> {
@@ -311,8 +320,8 @@ export class WorkspaceClient extends HerdrTransport {
           if (!isDeepStrictEqual(classifyPair(snapshot, state.identity, context.terminalId), state)) throw new Error('Absent pair changed before release');
         };
       };
-      await this.stamp('pane', state.agent, Object.fromEntries([...pairKeys, 'wca_status', 'wca_now'].map(k => [k, null])), context, config, signal, prepare);
-    });
+      await this.stamp('pane', state.agent, Object.fromEntries([...pairKeys, 'wca_status', 'wca_now', 'wca_status_short'].map(k => [k, null])), context, config, signal, prepare);
+    }, { waitMs: config.herdr_timeout_ms, signal });
   }
   /** Closes only an exact live owned display. q/absence never authorizes replacement. Shared binding survives. */
   async closeDisplay(store: RecordStore, context: NativeContext, painted: Snapshot<AgentRecord>, config: WorkCardsConfig, signal?: AbortSignal): Promise<void> {
@@ -323,7 +332,7 @@ export class WorkspaceClient extends HerdrTransport {
   }
   private async cleanupDisplay(store: RecordStore, context: NativeContext, painted: Snapshot<AgentRecord>, separated: boolean, config: WorkCardsConfig, signal?: AbortSignal): Promise<void> {
     signal?.throwIfAborted();
-    await withWorkspaceLock(context.socket, context.workspaceId, () => this.cleanupDisplayLocked(store, context, painted, separated, config, signal));
+    await withWorkspaceLock(context.socket, context.workspaceId, () => this.cleanupDisplayLocked(store, context, painted, separated, config, signal), { waitMs: config.herdr_timeout_ms, signal });
   }
   private async cleanupDisplayLocked(store: RecordStore, context: NativeContext, painted: Snapshot<AgentRecord>, separated: boolean, config: WorkCardsConfig, signal?: AbortSignal): Promise<void> {
     const state = await this.ownership(store, context, painted, config, signal);
@@ -344,34 +353,24 @@ export class WorkspaceClient extends HerdrTransport {
       const after = await this.guard(cleanupContext, config, signal);
       const agent = locateTerminal(after.snapshot, state.agent.terminal_id);
       if (!pairKeys.every(k => agent.tokens[k] === state.agent.tokens[k]) || after.snapshot.panes.some(p => p.terminal_id === state.card.terminal_id)) throw new Error('Pair changed during close');
-      await this.stamp('pane', agent, Object.fromEntries([...pairKeys, 'wca_status', 'wca_now'].map(k => [k, null])), cleanupContext, config, signal, async () => {
+      await this.stamp('pane', agent, Object.fromEntries([...pairKeys, 'wca_status', 'wca_now', 'wca_status_short'].map(k => [k, null])), cleanupContext, config, signal, async () => {
         await this.currentRecords(store, painted);
         return () => {};
       });
     } catch (error) { throw new Error(`Display close may be partial; no shared binding was cleared: ${(error as Error).message}`, { cause: error }); }
   }
-  async project(store: RecordStore, context: NativeContext, painted: Snapshot<AgentRecord>, config: WorkCardsConfig, signal?: AbortSignal): Promise<void> {
+  /** Card-only caption projection; summary publication belongs to the owning Pi lifetime. */
+  async projectCaption(store: RecordStore, context: NativeContext, painted: Snapshot<AgentRecord>, config: WorkCardsConfig, signal?: AbortSignal): Promise<void> {
     signal?.throwIfAborted();
-    const changes = (current: Awaited<ReturnType<typeof this.pairedCard>>) => {
-      const values = { wca_status: current.agent.record.status, wca_now: cap(current.agent.record.now) };
-      const own = Object.fromEntries(Object.entries(values).filter(([key, value]) => (current.pair.agent.tokens[key] ?? '') !== value));
-      const workspace = current.live.snapshot.workspaces.find(w => w.workspace_id === context.workspaceId)!;
-      const goal = cap(current.workspace.record.goal);
+    const captionOf = (current: Awaited<ReturnType<typeof this.pairedCard>>) => {
       const title = current.workspace.record.title.trim().toWellFormed();
-      // Native Herdr omits empty text tokens; absent and empty represent the same projection.
-      return { own, workspace, goal: (workspace.tokens.wcw_goal ?? '') === goal ? undefined : { wcw_goal: goal }, caption: current.pair.card.label === title ? undefined : title };
+      return current.pair.card.label === title ? undefined : title;
     };
-    const preflight = changes(await this.pairedCard(store, context, painted, config, signal));
-    if (!Object.keys(preflight.own).length && !preflight.goal && preflight.caption === undefined) return;
+    if (captionOf(await this.pairedCard(store, context, painted, config, signal)) === undefined) return;
     await withWorkspaceLock(context.socket, context.workspaceId, async () => {
-      // The readonly preflight is never write authority: reread records and native ownership under lock.
-      const current = await this.pairedCard(store, context, painted, config, signal), patch = changes(current);
+      await this.pairedCard(store, context, painted, config, signal);
       try {
-        if (Object.keys(patch.own).length) await this.stamp('pane', current.pair.agent, patch.own, context, config, signal);
-        const latest = changes(await this.pairedCard(store, context, painted, config, signal));
-        if (latest.goal) await this.stamp('workspace', latest.workspace, latest.goal, context, config, signal);
-        // Caption is another projection, but only the freshly verified current card is a rename target.
-        const fresh = await this.pairedCard(store, context, painted, config, signal), caption = changes(fresh).caption;
+        const fresh = await this.pairedCard(store, context, painted, config, signal), caption = captionOf(fresh);
         if (caption !== undefined) {
           signal?.throwIfAborted();
           if (caption === '--clear') throw new Error('Unsupported native CLI caption "--clear": Herdr treats it as a clear flag');
@@ -379,8 +378,47 @@ export class WorkspaceClient extends HerdrTransport {
           const renamed = nativePane((await this.result(['pane', 'rename', card.pane_id, caption], config, 'pane_info')).pane);
           if (renamed.pane_id !== card.pane_id || renamed.terminal_id !== card.terminal_id || renamed.workspace_id !== card.workspace_id || renamed.tab_id !== card.tab_id || renamed.label !== caption) throw new Error('Renamed card identity/caption mismatch');
         }
-      } catch (error) { throw new Error(`Projection may be partial; matching metadata already published is retained: ${(error as Error).message}`, { cause: error }); }
-    });
+      } catch (error) { throw new Error(`Projection may be partial; card caption acknowledgement failed: ${(error as Error).message}`, { cause: error }); }
+    }, { waitMs: config.herdr_timeout_ms, signal });
+  }
+  /** q leaves agent markers intact. Never-paired/restored empty membership needs explicit open. */
+  async projectSummaries(store: RecordStore, context: NativeContext, painted: Snapshot<AgentRecord>, config: WorkCardsConfig, signal?: AbortSignal): Promise<void> {
+    signal?.throwIfAborted();
+    const read = async () => {
+      const verified = await this.verifyMembership(store, context, painted, config, signal);
+      if (verified.ownership.kind === 'empty') throw new Error('Explicit open establishes projection ownership; unmarked membership cannot publish summaries');
+      const key = await this.storeKey(store);
+      const live = await this.guard(verified.context, config, signal);
+      this.bound(key, verified.workspace, live.snapshot, verified.context);
+      const ownership = classifyPair(live.snapshot, verified.ownership.identity, context.terminalId);
+      if (!isDeepStrictEqual(ownership, verified.ownership)) throw new Error('Summary ownership changed during verification');
+      const pane = locateTerminal(live.snapshot, context.terminalId);
+      const workspace = live.snapshot.workspaces.find(w => w.workspace_id === context.workspaceId)!;
+      const changed = (tokens: Readonly<Record<string, string>>, values: Record<string, string>) =>
+        Object.fromEntries(Object.entries(values).filter(([name, value]) => (tokens[name] ?? '') !== value));
+      return { ...verified, key, pane, nativeWorkspace: workspace,
+        own: changed(pane.tokens, { wca_status: verified.agent.record.status, wca_now: cap(verified.agent.record.now), wca_status_short: verified.agent.record.statusShort ?? '' }),
+        shared: changed(workspace.tokens, { wcw_goal: cap(verified.workspace.record.goal), wcw_goal_short: verified.workspace.record.goalShort ?? '' }) };
+    };
+    const preflight = await read();
+    if (!Object.keys(preflight.own).length && !Object.keys(preflight.shared).length) return;
+    await withWorkspaceLock(context.socket, context.workspaceId, async () => {
+      try {
+        for (const kind of ['pane', 'workspace'] as const) {
+          const current = await read(), patch = kind === 'pane' ? current.own : current.shared;
+          if (!Object.keys(patch).length) continue;
+          await this.stamp(kind, kind === 'pane' ? current.pane : current.nativeWorkspace, patch, current.context, config, signal, async () => {
+            const fresh = await read();
+            if (fresh.agent.revision !== current.agent.revision || fresh.workspace.revision !== current.workspace.revision ||
+                !isDeepStrictEqual(fresh.ownership, current.ownership)) throw new Error('Summary records or ownership changed before publication; retry from fresh records');
+            return snapshot => {
+              this.bound(fresh.key, fresh.workspace, snapshot, fresh.context);
+              if (fresh.ownership.kind === 'empty' || !isDeepStrictEqual(classifyPair(snapshot, fresh.ownership.identity, context.terminalId), fresh.ownership)) throw new Error('Summary ownership changed before publication');
+            };
+          });
+        }
+      } catch (error) { throw new Error(`Summary projection may be partial; already published fields are retained: ${(error as Error).message}`, { cause: error }); }
+    }, { waitMs: config.herdr_timeout_ms, signal });
   }
   async openDocument(store: RecordStore, context: NativeContext, paintedWorkspace: Snapshot<WorkspaceRecord>, paintedAgent: Snapshot<AgentRecord>, target: DocumentIdentity, config: WorkCardsConfig, signal?: AbortSignal): Promise<void> {
     signal?.throwIfAborted();
@@ -475,7 +513,7 @@ export class WorkspaceClient extends HerdrTransport {
         if (tab.label === latest.label || !firstPane(current.live.snapshot, pane)) continue;
         await this.renameEditor(pane, tab.label, latest.label, current.live.snapshot, context, config, signal);
       }
-    });
+    }, { waitMs: config.herdr_timeout_ms, signal });
   }
   private async renameEditor(pane: Pane, previous: string, label: string, snapshot: NativeSnapshot, context: NativeContext, config: WorkCardsConfig, signal?: AbortSignal): Promise<void> {
     const live = await this.guard(context, config, signal), p = locateTerminal(live.snapshot, pane.terminal_id);

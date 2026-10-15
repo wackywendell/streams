@@ -32,7 +32,7 @@ export class WorkspaceRefresher<TModel extends { api?: string }> {
     const { store, registry, options, loadHelperProfiles } = this.config;
     const authority = { ...input.authority };
     const evidence = structuredClone(input.evidence);
-    const { signal, assertCurrent, force, onRequest } = input;
+    const { signal, assertCurrent, force, onRequest, onDiagnostic } = input;
     const current = async (): Promise<WorkspaceRefreshResult> => {
       signal.throwIfAborted();
       const agent = await store.readAgent(authority.sessionId);
@@ -45,27 +45,45 @@ export class WorkspaceRefresher<TModel extends { api?: string }> {
       return { agent, workspace };
     };
 
-    const original = await current();
-    const shared = projectSharedEvidence(evidence, original.agent.record.boundary, 'continue');
-    if (shared.kind === 'reset-needed') throw new Error('Shared evidence boundary needs reset by host');
-    const own = await requestOwnSummary(registry, original.agent.record, evidence, original.workspace.record, options, signal, loadHelperProfiles, onRequest);
-    await current();
-    if (own.action === 'update') {
-      // Never replace the original whole-agent CAS revision with a later read.
-      await store.updateOwn(authority, own.patch, original.agent.revision, signal);
-    }
-
-    if (shared.evidence.transcript.length) {
-      const latest = await current();
-      const additions = await requestSharedAdditions(registry, latest.workspace.record, latest.agent.record.checkout, shared.evidence, options, signal, loadHelperProfiles, onRequest);
+    let stage: 'own' | 'shared' = 'own';
+    try {
+      const original = await current();
+      if (projectSharedEvidence(evidence, original.agent.record.boundary, 'continue').kind === 'reset-needed') throw new Error('Evidence boundary needs reset by host');
+      const own = await requestOwnSummary(registry, original.agent.record, evidence, original.workspace.record, options, signal, loadHelperProfiles, onRequest);
       await current();
-      if (additions.action === 'add') {
-        // Merge against current references; foreground exclusions remain authoritative.
-        await store.addReferences(authority, additions.additions, { signal });
+      let ownChanged = false;
+      if (own.action === 'update') {
+        // Never replace the original whole-agent CAS revision with a later read.
+        const result = await store.updateOwn(authority, own.patch, original.agent.revision, signal);
+        ownChanged = result.revision !== original.agent.revision;
       }
+      onDiagnostic?.({ stage: 'own', outcome: ownChanged ? 'applied' : 'unchanged' });
+
+      if (evidence.compactionSummary?.trim() || evidence.transcript.length) {
+        stage = 'shared';
+        const latest = await current();
+        const additions = await requestSharedAdditions(registry, latest.workspace.record, latest.agent.record.checkout, evidence, options, signal, loadHelperProfiles, onRequest);
+        await current();
+        let changed = false;
+        if (additions.action === 'update') {
+          // Merge against current references; foreground exclusions remain authoritative.
+          const { action: _, ...proposal } = additions;
+          const result = await store.updateSharedReferences(authority, latest.workspace, proposal, signal);
+          changed = result.changed;
+        }
+        onDiagnostic?.({ stage: 'shared', outcome: changed ? 'applied' : 'unchanged' });
+      }
+    } catch (error) {
+      onDiagnostic?.({ stage, outcome: 'failed', cancelled: signal.aborted });
+      onDiagnostic?.({ stage: 'goal', outcome: 'skipped' });
+      throw error;
     }
 
-    await this.plans.refresh({ authority, signal, assertCurrent, force, onRequest });
-    return current();
+    await this.plans.refresh({ authority, signal, assertCurrent, force, onRequest, onDiagnostic });
+    try { return await current(); }
+    catch (error) {
+      onDiagnostic?.({ stage: 'goal', outcome: 'failed', cancelled: signal.aborted });
+      throw error;
+    }
   }
 }

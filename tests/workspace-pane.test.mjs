@@ -48,7 +48,7 @@ function launch(root, sessionId = 'one', options = {}) {
     for (const name of ['createWorkspace', 'join', 'updateOwn', 'setDisplayAttempt', 'deleteOwn', 'deleteWorkspace', 'addReferences']) {
       RecordStore.prototype[name] = async () => { result.forbidden.push(name); throw new Error('Forbidden store mutation'); };
     }
-    for (const name of ['joinWorkspace', 'openDisplay', 'closeDisplay', 'cleanupSeparatedPair', 'refreshDocumentNames']) {
+    for (const name of ['joinWorkspace', 'openDisplay', 'closeDisplay', 'cleanupSeparatedPair', 'refreshDocumentNames', 'projectSummaries']) {
       WorkspaceClient.prototype[name] = async () => { result.forbidden.push(name); throw new Error('Forbidden native operation'); };
     }
     const initial = { socket: '/fake.sock', terminalId: 'card', workspaceId: 'source', tabId: 'tab-source', bindingNonce: 'binding-source' };
@@ -70,7 +70,7 @@ function launch(root, sessionId = 'one', options = {}) {
       if (options.stale) throw new Error('Stale or foreign ready workspace binding');
       return { kind: options.separated ? 'separated' : 'paired', agent: { terminal_id: options.wrongOwner ? 'foreign' : 'owner' }, card: { terminal_id: 'card' }, nonce: 'nonce', identity: 'identity' };
     };
-    WorkspaceClient.prototype.project = async (store, context, agent, config, passedSignal) => {
+    WorkspaceClient.prototype.projectCaption = async (store, context, agent, config, passedSignal) => {
       signal = passedSignal;
       result.projects.push({ iteration, context, sessionId: agent.record.sessionId });
       if (options.contention) throw new Error('Work-cards lock exists');

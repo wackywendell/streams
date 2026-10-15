@@ -11,6 +11,7 @@ import { createCheckScheduler, type CheckScheduler } from './scheduler.js';
 import { normalizeEvidence } from './evidence.js';
 import { WorkspaceLifecycle, type WorkspaceScope, type WorkspaceSession } from './workspace-lifecycle.js';
 import { WorkspaceRefresher } from './workspace-refresh.js';
+import type { RefreshDiagnostic } from './plan-refresh.js';
 import type { SummaryRegistry } from './summarizer.js';
 
 const stateEntry = 'work-cards.workspace';
@@ -21,6 +22,12 @@ interface Dependencies {
   loadConfig: typeof loadConfig;
   client: WorkspaceClient;
   env: NodeJS.ProcessEnv;
+}
+interface RefreshReport {
+  workspaceId: string;
+  forced: boolean;
+  state: 'running' | 'complete' | 'failed';
+  stages: RefreshDiagnostic[];
 }
 interface Evidence {
   revision: string;
@@ -61,13 +68,14 @@ export function registerWorkCards(pi: ExtensionAPI, overrides: Partial<Dependenc
   let tail: Promise<unknown> = Promise.resolve();
   let requestFinished: Promise<void> | undefined;
   let providerFinished: Promise<void> = Promise.resolve();
+  let diagnostics: RefreshReport | undefined;
   const warnings = new Set<string>();
   const inHerdr = () => deps.env.HERDR_ENV === '1';
   const stopPoll = () => { if (poll) clearTimeout(poll); poll = undefined; };
   function cancel(): void {
     generation++;
     cancellation.abort(); cancellation = new AbortController();
-    scheduler?.reset(); refresher = undefined;
+    scheduler?.reset(); refresher = undefined; diagnostics = undefined;
     stopActivity?.(); stopPoll();
   }
   function warn(error: unknown): void {
@@ -116,12 +124,25 @@ export function registerWorkCards(pi: ExtensionAPI, overrides: Partial<Dependenc
     }
     signal.throwIfAborted(); live(evidence.generation);
   }
+  async function projectSummaries(): Promise<void> {
+    if (!updates || !config || !inHerdr()) return;
+    const scope = lifecycle?.captureScope(), agent = lifecycle?.state.agent;
+    if (!scope || !agent) return;
+    const token = generation;
+    try {
+      await deps.client.projectSummaries(store, scope.context, agent, config, scope.signal);
+    } catch (error) {
+      if (!disposed && token === generation && !scope.signal.aborted) warn(`Sidebar projection failed: ${errorText(error)}`);
+    }
+  }
   async function check(evidence: Evidence, signal: AbortSignal, forced: boolean): Promise<void> {
     // Keep this gate across scheduler replacement: an aborted provider may settle late.
     if (requestFinished) await requestFinished;
     if (signal.aborted || disposed || evidence.generation !== generation || !config || !updates) return;
     let finish!: () => void;
     const gate = requestFinished = new Promise<void>(resolve => { finish = resolve; });
+    const report: RefreshReport = { workspaceId: evidence.authority.workspaceId, forced, state: 'running', stages: [] };
+    diagnostics = report;
     try {
       await assertCurrent(evidence, signal);
       if (!refresher) {
@@ -138,7 +159,27 @@ export function registerWorkCards(pi: ExtensionAPI, overrides: Partial<Dependenc
         refresher = new WorkspaceRefresher({ store, registry, options: { ...config } });
       }
       await refresher.refresh({ authority: evidence.authority, evidence: evidence.session.evidence, signal,
-        assertCurrent: () => assertCurrent(evidence, signal), force: forced, onRequest: activity });
+        assertCurrent: () => assertCurrent(evidence, signal), force: forced, onRequest: activity,
+        onDiagnostic: event => { if (diagnostics === report) report.stages.push(event); } });
+      report.state = 'complete';
+      // Projection shares a native lock with reconciliation; serialize both host effects.
+      await enqueue(async () => {
+        signal.throwIfAborted(); live(evidence.generation);
+        await projectSummaries();
+      });
+      if (forced && diagnostics === report && !signal.aborted && !disposed) {
+        const goal = report.stages.find(event => event.stage === 'goal');
+        const summary = goal?.outcome === 'no_sources'
+          ? 'Goal unknown: no suitable registered Markdown purpose documents.'
+          : report.stages.map(event => event.stage === 'selection' && 'selectedCount' in event
+            ? `selection ${event.selectedCount} document(s)` : `${event.stage} ${event.outcome}`).join('; ');
+        ctx.ui.notify(`Work-card refresh: ${summary}`, 'info');
+      }
+    } catch (error) {
+      report.state = 'failed';
+      const failed = report.stages.find(event => event.outcome === 'failed');
+      if (failed) throw new Error(`${failed.stage} stage failed: ${errorText(error)}`, { cause: error });
+      throw error;
     } finally {
       void providerFinished.then(() => { finish(); if (requestFinished === gate) requestFinished = undefined; });
       schedulePoll();
@@ -173,7 +214,7 @@ export function registerWorkCards(pi: ExtensionAPI, overrides: Partial<Dependenc
         if (disposed || recovering || !updates || !config) return;
         try {
           if (!accept(ctx)) return;
-          await lifecycle!.reconcile();
+          await reconcile();
         } catch (error) { if (!disposed) warn(error); }
         finally { schedulePoll(); }
       });
@@ -182,7 +223,10 @@ export function registerWorkCards(pi: ExtensionAPI, overrides: Partial<Dependenc
   }
   async function reconcile(): Promise<void> {
     if (recovering) { await lifecycle!.restore(); live(); recovering = false; }
-    if (updates && inHerdr()) await lifecycle!.reconcile();
+    if (updates && inHerdr()) {
+      await lifecycle!.reconcile();
+      await projectSummaries();
+    }
   }
   async function snapshot(): Promise<Evidence | undefined> {
     if (!updates || !config || !scheduler) return;
@@ -230,7 +274,7 @@ export function registerWorkCards(pi: ExtensionAPI, overrides: Partial<Dependenc
       session = latest;
       await restored; live();
       if (data && data.store !== directory) warn('Saved workspace state belongs to another state root; updates paused. Use /work-card open explicitly.');
-      if (updates && inHerdr()) await lifecycle.reconcile();
+      await reconcile();
       schedulePoll();
     });
   }
@@ -280,7 +324,8 @@ export function registerWorkCards(pi: ExtensionAPI, overrides: Partial<Dependenc
     if (!started || disposed || context.sessionManager.getSessionId() !== session.sessionId) return null;
     const token = generation, agent = await readOwn(); live(token); if (!agent) return null;
     const workspace = await store.readWorkspace(agent.record.workspaceId); live(token); validateMembership(workspace.record, agent.record);
-    return { workspace, agent, references: resolvedReferences(workspace.record), view: composeView(workspace, agent), updates };
+    return { workspace, agent, references: resolvedReferences(workspace.record), view: composeView(workspace, agent), updates,
+      refresh: diagnostics?.workspaceId === workspace.record.id ? structuredClone(diagnostics) : null };
   }
   pi.registerCommand('work-card', {
     description: 'Open workspace context, set own title, refresh, show, detach, or remove a reference',
@@ -325,6 +370,7 @@ export function registerWorkCards(pi: ExtensionAPI, overrides: Partial<Dependenc
             }
             updates = true; savedCleanup = lifecycle!.cleanupContext();
             const agent = await readOwn(); live(); if (agent) save(agent.record.workspaceId);
+            await projectSummaries();
             const evidence = await snapshot(); if (evidence) scheduler!.refresh(evidence);
             schedulePoll(); return;
           }
@@ -342,7 +388,7 @@ export function registerWorkCards(pi: ExtensionAPI, overrides: Partial<Dependenc
     },
   });
   pi.registerTool({
-    name: 'work_card', label: 'Work card', description: `Read-only: return the current workspace and own agent records, source paths and resolved references. Never creates, selects, opens or joins. ${documentGuidance}`,
+    name: 'work_card', label: 'Work card', description: `Read-only: return the current workspace and own agent records, source paths, resolved references and latest in-memory refresh diagnostics. Never creates, selects, opens or joins. ${documentGuidance}`,
     parameters: Type.Object({}),
     async execute(_id, _params, _signal, _onUpdate, context) {
       const details = await current(context);
