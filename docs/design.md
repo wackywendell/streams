@@ -45,7 +45,9 @@ These guarantees prevent stale helper writes; they do not make YAML an editor tr
 
 State should use 1 to 2 short sentences, about 20 to 30 words. It preserves the broad durable milestone and important unfinished work, not the latest tool action. Verbose legacy state can be condensed without new progress, but repair must not invent completion or plans. Once state is useful, routine tests and commits should normally yield `no_change`.
 
-The brief asks for project-level orientation across agents, reconciles older blockers with explicit successful outcomes, and avoids promoting unrelated working-copy hygiene into required work without relevance or blocking evidence. These remain prompt instructions, not enforced summary-quality guarantees.
+The brief asks the helper to derive project maturity against its goal and major intended capabilities from dialogue and the compaction checkpoint first. It then compares that result with the previous card, an editable draft rather than a prose template or proof of progress. A sound project-level summary should stay stable through routine work, but change when affirmative evidence changes a major capability or remaining scope. Plans establish intent, not completion; any supplied goal or scope excerpts serve only to explain intended scope. The helper does not load documents.
+
+The brief also reconciles older blockers with explicit successful outcomes and avoids promoting unrelated working-copy hygiene into required work without relevance or blocking evidence. These remain prompt instructions, not enforced summary-quality guarantees.
 
 Each request starts with a stable system brief. One user JSON message follows, ordered `{compactionSummary, transcript, card}`, with the current card last. The input uses Pi's actual latest projected compaction summary and all retained nonblank user and assistant text chronologically. It respects projected redactions and never reconstructs raw precompaction history.
 
