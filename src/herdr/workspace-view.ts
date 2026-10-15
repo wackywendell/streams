@@ -13,7 +13,7 @@ export function renderWorkspaceCard(snapshot: WorkspaceCardSnapshot | undefined,
   if (!snapshot) return renderDisplayCard<WorkspaceDocumentTarget>(undefined, columns, rows, notice);
   const view = composeView(snapshot.workspace, snapshot.agent);
   return renderDisplayCard({
-    workspaceTitle: view.workspaceTitle, title: view.title, status: view.status,
+    title: view.title, status: view.status,
     goal: view.goal, now: view.now, remaining: view.remaining,
     documents: view.documents.map(document => ({ label: document.label, target: {
       workspaceId: snapshot.workspace.record.id, membershipToken: snapshot.agent.record.membershipToken,

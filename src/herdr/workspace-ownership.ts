@@ -1,4 +1,4 @@
-export interface Pane { pane_id: string; terminal_id: string; workspace_id: string; tab_id: string; tokens: Readonly<Record<string, string>> }
+export interface Pane { pane_id: string; terminal_id: string; workspace_id: string; tab_id: string; label?: string; tokens: Readonly<Record<string, string>> }
 export interface Workspace { workspace_id: string; tokens: Readonly<Record<string, string>> }
 export interface NativeTab { tab_id: string; workspace_id: string; label: string; number: number }
 export interface NativeLayout { tab_id: string; workspace_id: string; panes: { pane_id: string }[] }
@@ -19,7 +19,8 @@ export function nativeTokens(value: unknown): Record<string, string> {
 }
 export function nativePane(value: unknown): Pane {
   const p = nativeObject(value);
-  return { pane_id: nativeId(p.pane_id), terminal_id: nativeId(p.terminal_id), workspace_id: nativeId(p.workspace_id), tab_id: nativeId(p.tab_id), tokens: nativeTokens(p.tokens) };
+  if (p.label !== undefined && p.label !== null && typeof p.label !== 'string') throw new Error('Invalid Herdr pane label');
+  return { pane_id: nativeId(p.pane_id), terminal_id: nativeId(p.terminal_id), workspace_id: nativeId(p.workspace_id), tab_id: nativeId(p.tab_id), tokens: nativeTokens(p.tokens), ...(typeof p.label === 'string' ? { label: p.label } : {}) };
 }
 export function parseNativeSnapshot(value: unknown): NativeSnapshot {
   const s = nativeObject(value);

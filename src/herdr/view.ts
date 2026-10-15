@@ -53,7 +53,7 @@ function webUrl(value: string): string | undefined {
   } catch { return undefined; }
 }
 export interface DisplayCard<T> {
-  title: string; workspaceTitle: string; status: CardStatus;
+  title: string; status: CardStatus;
   goal: string; now: string; remaining: string;
   documents: { label: string; target: T }[];
   issues: { url: string; description: string }[];
@@ -66,33 +66,66 @@ export function renderDisplayCard<T>(card: DisplayCard<T> | undefined, columns: 
   if (!height || !width) return { text: '', documents };
   const footer = width >= 9 ? '[q] close' : width >= 3 ? '[q]' : '';
   const contentHeight = height - Number(notice !== undefined);
-  type Span = { text: string; code?: number; url?: string };
-  type Row = { spans: (width: number) => Span[]; key?: string; target?: T };
+  type Span = { text: string; code?: number; url?: string; key?: string; target?: T };
+  type Row = { spans: (width: number) => Span[]; items?: number };
   const lines: Row[] = [];
   const textRow = (text: string, code?: number): Row => ({ spans: w => [{ text: clipped(text, w), code }] });
   if (card && contentHeight) {
     const statuses = { active: ['●', 36], waiting: ['○', 33], blocked: ['!', 31], parked: ['○', 2], done: ['✓', 32] } as const;
     const [symbol, colour] = statuses[card.status];
     const status = `${symbol} ${card.status}`, statusWidth = stringWidth(status);
-    const references = [
-      ...card.documents.map((document, index) => ({ path: document.label, target: document.target, key: documentKeys[index], label: '', url: undefined as string | undefined })),
-      ...card.issues.map((link, index) => ({ label: plain(`[${index + 1}] Issue: ${link.description || link.url}`), url: webUrl(link.url), path: undefined, target: undefined, key: undefined })),
-      ...card.prs.map((link, index) => ({ label: plain(`[${card.issues.length + index + 1}] PR: ${link.description || link.url}`), url: webUrl(link.url), path: undefined, target: undefined, key: undefined })),
+    const entries = card.documents.map((document, index) => ({ path: plain(document.label), target: document.target, key: documentKeys[index] }));
+    const lengths = entries.map(entry => stringWidth((entry.key ? `[${entry.key}] ` : '') + entry.path));
+    let gridColumns = 1, columnWidths = [width];
+    // Try complete labels first; only the one-column fallback needs truncation.
+    for (let count = Math.min(entries.length, Math.floor((width + 2) / 2)); count >= 2; count--) {
+      const widths = Array<number>(count).fill(0);
+      lengths.forEach((length, index) => { widths[index % count] = Math.max(widths[index % count]!, length); });
+      if (widths.reduce((sum, cells) => sum + cells, 0) + 2 * (count - 1) <= width) {
+        gridColumns = count; columnWidths = widths; break;
+      }
+    }
+    const references: Row[] = [];
+    for (let index = 0; index < entries.length; index += gridColumns) {
+      const cells = entries.slice(index, index + gridColumns);
+      references.push({ items: cells.length, spans: w => {
+        const spans: Span[] = [];
+        let offset = 0, paintedWidth = 0;
+        for (const [column, entry] of cells.entries()) {
+          if (offset >= w) break;
+          if (offset > paintedWidth) spans.push({ text: ' '.repeat(offset - paintedWidth) });
+          const room = Math.min(columnWidths[column]!, w - offset);
+          const keyLabel = entry.key ? prefix(`[${entry.key}]`, room) : '';
+          const space = keyLabel && room > stringWidth(keyLabel) ? ' ' : '';
+          const path = fit(entry.path, room - stringWidth(keyLabel + space));
+          const slash = graphemeBoundary(path, path.lastIndexOf('/') + 1);
+          spans.push({ text: keyLabel, code: 36, key: entry.key, target: entry.target }, { text: space },
+            { text: path.slice(0, slash), code: 2 }, { text: path.slice(slash) });
+          paintedWidth = offset + stringWidth(keyLabel + space + path);
+          offset += columnWidths[column]! + 2;
+        }
+        return spans;
+      } });
+    }
+    const links = [
+      ...card.issues.map((link, index) => ({ label: plain(`[${index + 1}] Issue: ${link.description || link.url}`), url: webUrl(link.url) })),
+      ...card.prs.map((link, index) => ({ label: plain(`[${card.issues.length + index + 1}] PR: ${link.description || link.url}`), url: webUrl(link.url) })),
     ];
+    for (const link of links) references.push({ items: 1, spans: w => [{ text: fit(link.label, w), code: 36, url: link.url }] });
     const available = contentHeight - lines.length;
     let stateLimit = references.length ? (available < 2 ? available : Math.min(Math.ceil(available / 2), Math.max(1, available - Math.min(2, references.length)))) : available;
     const states = [
-      { label: card.workspaceTitle, body: card.goal, italic: 'title', ownStatus: false },
-      { label: card.title, body: card.now, italic: 'title', ownStatus: true },
-      { label: '', body: card.remaining, italic: 'all', ownStatus: false },
+      { label: '', body: card.goal, ownStatus: false, goal: true },
+      { label: card.title, body: card.now, ownStatus: true, goal: false },
+      { label: plain(card.remaining).trim() ? 'Remaining' : '', body: card.remaining, ownStatus: false, goal: false },
     ].map(section => ({ ...section, label: plain(section.label).trim(), body: plain(section.body).trim() }))
       .filter(section => section.label || section.body || section.ownStatus);
     // Keep each nonempty section visible without taking the reserved reference slots.
     stateLimit = Math.max(stateLimit, Math.min(states.length, available - Math.min(2, references.length)));
-    let budget = stateLimit;
+    let budget = stateLimit, goalEnd = 0, workEnd = 0;
     for (const [index, section] of states.entries()) {
       if (!budget) break;
-      const { label, body, italic, ownStatus } = section;
+      const { label, body, ownStatus } = section;
       const sectionWidth = ownStatus && width >= statusWidth + 3 ? width - statusWidth - 2 : width;
       const heading = label + (label && body ? ':' : '');
       const state = wrap(heading + (heading && body ? ' ' : '') + body, sectionWidth);
@@ -108,35 +141,34 @@ export function renderDisplayCard<T>(card: DisplayCard<T> | undefined, columns: 
         const showStatus = ownStatus && row === 0 && w >= statusWidth + 3;
         const text = clipped(line, showStatus ? w - statusWidth - 2 : w);
         const headingText = headings[row] ?? '';
-        const titleLength = headingText.length - Number(Boolean(label && body) && row === headings.length - 1);
-        const emphasized = italic === 'all' ? text.length : italic === 'title' ? graphemeBoundary(text, titleLength) : 0;
-        const spans: Span[] = [{ text: text.slice(0, emphasized), code: 3 }, { text: text.slice(emphasized) }];
+        const emphasized = graphemeBoundary(text, headingText.length);
+        const spans: Span[] = section.goal ? [{ text, code: 2 }]
+          : [{ text: text.slice(0, emphasized), code: 1 }, { text: text.slice(emphasized) }];
         if (showStatus) spans.push({ text: ' '.repeat(w - stringWidth(text) - statusWidth) }, { text: status, code: colour });
         return spans;
       } })));
       budget -= visibleState.length;
+      if (section.goal) goalEnd = lines.length;
+      else workEnd = lines.length;
     }
     const slots = contentHeight - lines.length;
     const visible = references.slice(0, Math.max(0, slots - Number(references.length > slots)));
-    for (const entry of visible) {
-      if (entry.path !== undefined) {
-        lines.push({ key: entry.key, target: entry.target, spans: w => {
-          const keyLabel = entry.key ? prefix(`[${entry.key}]`, w) : '';
-          const space = keyLabel && w > stringWidth(keyLabel) ? ' ' : '';
-          const path = fit(plain(entry.path!), w - stringWidth(keyLabel + space));
-          const slash = path.lastIndexOf('/') + 1;
-          return [{ text: keyLabel, code: 36 }, { text: space }, { text: path.slice(0, slash), code: 2 }, { text: path.slice(slash), code: 1 }];
-        } });
-      } else lines.push({ spans: w => [{ text: fit(entry.label, w), code: 36, url: entry.url }] });
-    }
-    if (references.length > visible.length && lines.length < contentHeight) lines.push(textRow(`… ${references.length - visible.length} more; enlarge pane`, 2));
+    lines.push(...visible);
+    const hidden = references.slice(visible.length).reduce((sum, row) => sum + row.items!, 0);
+    if (hidden && lines.length < contentHeight) lines.push(textRow(`… ${hidden} more; enlarge pane`, 2));
+    // Separators consume only surplus padding, never visible content or an empty footer row.
+    const boundaries = [];
+    if (goalEnd && workEnd > goalEnd) boundaries.push(goalEnd);
+    if (workEnd > goalEnd && lines.length > workEnd) boundaries.push(workEnd);
+    const spare = contentHeight - lines.length - Number(notice === undefined && !!footer && lines.length < contentHeight);
+    for (const boundary of boundaries.slice(0, Math.max(0, spare)).reverse()) lines.splice(boundary, 0, textRow(''));
   }
   while (lines.length < contentHeight) lines.push(textRow(''));
   if (notice !== undefined) lines.push(textRow(notice));
   const painted = lines.map((line, index) => {
     const hint = index === height - 1 ? footer : '';
     const room = width - stringWidth(hint), spans = line.spans(room);
-    if (line.key && spans[0]?.text === `[${line.key}]`) documents.set(line.key, line.target!);
+    for (const span of spans) if (span.key && span.text === `[${span.key}]`) documents.set(span.key, span.target!);
     // Geometry and action visibility are settled on plain spans before adding trusted sequences.
     if (hint) spans.push({ text: ' '.repeat(room - spans.reduce((n, span) => n + stringWidth(span.text), 0)) }, { text: hint, code: 2 });
     return spans.map(span => {

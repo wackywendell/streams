@@ -40,11 +40,12 @@ async function fixture() {
       const arg = name => args[args.indexOf(name)+1];
       const entrypoint = arg('--entrypoint'); const owner = panes.find(p => p.pane_id === arg('--target-pane'));
       const n = next++; const tab_id = entrypoint === 'card' ? owner.tab_id : `w:t${n}`;
-      const p = { pane_id: `w:p${n}`, terminal_id: `term${n}`, tab_id, workspace_id: owner?.workspace_id ?? arg('--workspace'), tokens:{} };
+      const p = { pane_id: `w:p${n}`, terminal_id: `term${n}`, tab_id, workspace_id: owner?.workspace_id ?? arg('--workspace'), tokens:{}, ...(entrypoint === 'card' ? { label: 'Work card' } : {}) };
       if (entrypoint !== 'card') tabs.push({tab_id,workspace_id:p.workspace_id,label:String(n),number:n});
       panes.push(p); return result('plugin_pane_opened', { plugin_pane: {plugin_id:'work-cards',entrypoint,pane:p} });
     }
     if (args[0] === 'plugin' && args[2] === 'close') { const i=panes.findIndex(p => p.pane_id === args[3]); panes.splice(i,1); return result('plugin_pane_closed',{pane_id:args[3]}); }
+    if (args[0] === 'pane' && args[1] === 'rename') { const p = panes.find(p=>p.pane_id===args[2]); if (args.length === 4 && args[3] === '--clear') delete p.label; else p.label=args.slice(3).join(' '); return result('pane_info',{pane:p}); }
     if (args[0] === 'tab' && args[1] === 'rename') { const t = tabs.find(t=>t.tab_id===args[2]); t.label=args[3]; return result('tab_info',{tab:t}); }
     if (args[0] === 'tab' && args[1] === 'focus') return JSON.stringify({result:{}});
     throw new Error(`Unexpected call ${args.join(' ')}`);
@@ -291,11 +292,12 @@ async function heldLock(f, operation) {
   try { return await operation(async () => { release(); await holder; }); }
   finally { release(); await holder; }
 }
-const effects = calls => calls.filter(a => a[1] === 'report-metadata' || a[0] === 'plugin' && (a[1] === 'link' || a[2] === 'open') || a[0] === 'tab');
+const effects = calls => calls.filter(a => a[0] === 'pane' && a[1] === 'rename' || a[1] === 'report-metadata' || a[0] === 'plugin' && (a[1] === 'link' || a[2] === 'open') || a[0] === 'tab');
 
 test('unchanged verified projections bypass a held lock and publish nothing, including absent empty tokens', async () => {
   for (const empty of [false, true]) {
     const f = await documentFixture(), agent = f.panes[0];
+    f.panes.find(p => p.terminal_id === f.context.terminalId).label = f.workspace.record.title;
     if (!empty) {
       const a = await f.store.readAgent('term1');
       await f.store.updateOwn(agentAuthority(a.record), { now: 'Current work' }, a.revision);
@@ -314,6 +316,7 @@ test('unchanged verified projections bypass a held lock and publish nothing, inc
 
 test('projection rechecks records under lock and publishes only changed owned fields', async () => {
   const f = await documentFixture(); f.panes[0].tokens.wca_status = 'active';
+  f.panes.find(p => p.terminal_id === f.context.terminalId).label = f.workspace.record.title;
   const a = await f.store.readAgent('term1');
   await f.store.updateOwn(agentAuthority(a.record), { now: 'Preflight work' }, a.revision);
   const paired = f.card.pairedCard.bind(f.card); let reads = 0;
@@ -336,6 +339,7 @@ test('projection rechecks records under lock and publishes only changed owned fi
 
 test('Goal-only changes preserve pair, lifecycle and unrelated native metadata', async () => {
   const f = await documentFixture(); f.panes[0].tokens.wca_status = 'active';
+  f.panes.find(p => p.terminal_id === f.context.terminalId).label = f.workspace.record.title;
   f.panes[0].tokens.unrelated = 'agent'; f.workspaces[0].tokens.unrelated = 'workspace';
   const workspace = await f.store.readWorkspace(f.workspace.record.id);
   await f.store.applyPlan(agentAuthority(f.opened.agent.record), { goal: 'New goal', sources: [f.target('plan.md')], fingerprint: 'goal' }, workspace.revision);
@@ -347,6 +351,141 @@ test('Goal-only changes preserve pair, lifecycle and unrelated native metadata',
   assert.deepEqual(f.panes[0], previous);
   assert.equal(f.workspaces[0].tokens.wcw_phase, 'ready');
   assert.equal(f.workspaces[0].tokens.unrelated, 'workspace');
+});
+
+test('card captions project the shared title independently without renaming other surfaces', async () => {
+  const f = await fixture(), a = await f.joinAgent('term1'), b = await f.joinAgent('term2');
+  const displays = [];
+  for (const owner of [a, b]) {
+    const opened = await owner.c.openDisplay(f.store, owner.context, owner.agent, 'automatic', DEFAULT_CONFIG);
+    const card = f.client(opened.pair.card.terminal_id); card.env.WORK_CARDS_NONCE = opened.pair.nonce;
+    displays.push({ opened, card, context: await card.bootstrap(DEFAULT_CONFIG) });
+  }
+  const others = structuredClone({ panes: f.panes.slice(0, 2), tabs: f.tabs });
+  for (const d of displays) await d.card.project(f.store, d.context, d.opened.agent, DEFAULT_CONFIG);
+  const cards = displays.map(d => f.panes.find(p => p.terminal_id === d.context.terminalId));
+  assert.deepEqual(cards.map(p => p.label), [a.workspace.record.title, a.workspace.record.title]);
+  const current = await f.store.readWorkspace(a.workspace.record.id);
+  await f.store.setWorkspaceTitle(agentAuthority(a.agent.record), 'Changed shared title', current.revision);
+  const [first, second] = displays;
+  await first.card.project(f.store, first.context, first.opened.agent, DEFAULT_CONFIG);
+  assert.deepEqual(cards.map(p => p.label), ['Changed shared title', a.workspace.record.title]);
+  await second.card.project(f.store, second.context, second.opened.agent, DEFAULT_CONFIG);
+  assert.deepEqual(cards.map(p => p.label), ['Changed shared title', 'Changed shared title']);
+  for (let i = 0; i < 2; i++) assert.deepEqual({ ...f.panes[i], tokens: others.panes[i].tokens }, others.panes[i]);
+  assert.deepEqual(f.tabs, others.tabs);
+  assert.equal(f.calls.some(args => args[0] === 'workspace' && args[1] === 'rename' || args.includes('focus') || args[2] === 'close'), false);
+});
+
+test('caption rereads a title changed after preflight and after metadata publication', async () => {
+  const f = await documentFixture(), paired = f.card.pairedCard.bind(f.card); let reads = 0;
+  f.card.pairedCard = async (...args) => {
+    if (++reads === 2 || reads === 4) {
+      const current = await f.store.readWorkspace(f.workspace.record.id);
+      await f.store.setWorkspaceTitle(agentAuthority(f.opened.agent.record), reads === 2 ? 'Under lock' : 'Before caption', current.revision);
+    }
+    return paired(...args);
+  };
+  await f.card.project(f.store, f.context, f.opened.agent, DEFAULT_CONFIG);
+  assert.equal(f.panes.find(p => p.terminal_id === f.context.terminalId).label, 'Before caption');
+  assert.deepEqual(f.calls.filter(a => a[0] === 'pane' && a[1] === 'rename').map(a => a[3]), ['Before caption']);
+});
+
+test('caption uses one literal argv value with normalized Unicode and no invented length cap', async () => {
+  const f = await documentFixture(), current = await f.store.readWorkspace(f.workspace.record.id);
+  const title = '  --clear; $(not-a-command) café 🐕 ' + 'x'.repeat(300) + '\ud800  ';
+  await f.store.setWorkspaceTitle(agentAuthority(f.opened.agent.record), title, current.revision);
+  await f.card.project(f.store, f.context, f.opened.agent, DEFAULT_CONFIG);
+  const expected = title.trim().toWellFormed();
+  assert.deepEqual(f.calls.filter(a => a[0] === 'pane' && a[1] === 'rename'), [['pane', 'rename', f.opened.pair.card.pane_id, expected]]);
+  const before = f.calls.length;
+  await heldLock(f, () => f.card.project(f.store, f.context, f.opened.agent, DEFAULT_CONFIG));
+  assert.deepEqual(effects(f.calls.slice(before)), []);
+});
+
+test('leading-dash Unicode caption is passed literally without a delimiter', async () => {
+  const f = await documentFixture(), current = await f.store.readWorkspace(f.workspace.record.id);
+  const title = '- Δ workspace 界';
+  await f.store.setWorkspaceTitle(agentAuthority(f.opened.agent.record), title, current.revision);
+  await f.card.project(f.store, f.context, f.opened.agent, DEFAULT_CONFIG);
+  assert.deepEqual(f.calls.filter(a => a[0] === 'pane' && a[1] === 'rename'), [['pane', 'rename', f.opened.pair.card.pane_id, title]]);
+  assert.equal(f.panes.find(p => p.terminal_id === f.context.terminalId).label, title);
+});
+
+test('reserved --clear captions reject visibly without renaming or changing records', async t => {
+  for (const title of ['--clear', '  --clear  ']) await t.test(JSON.stringify(title), async () => {
+    const f = await documentFixture(), current = await f.store.readWorkspace(f.workspace.record.id);
+    await f.store.setWorkspaceTitle(agentAuthority(f.opened.agent.record), title, current.revision);
+    const records = [await f.store.readAgent('term1'), await f.store.readWorkspace(f.workspace.record.id)];
+    const card = f.panes.find(p => p.terminal_id === f.context.terminalId), label = card.label, before = f.calls.length;
+    await assert.rejects(f.card.project(f.store, f.context, f.opened.agent, DEFAULT_CONFIG), /Projection may be partial.*Unsupported native CLI caption.*--clear/);
+    assert.deepEqual(f.calls.slice(before).filter(a => a[0] === 'pane' && a[1] === 'rename'), []);
+    assert.equal(card.label, label);
+    assert.deepEqual([await f.store.readAgent('term1'), await f.store.readWorkspace(f.workspace.record.id)], records);
+  });
+});
+
+test('already-matching reserved caption stays a no-op', async () => {
+  const f = await documentFixture(), current = await f.store.readWorkspace(f.workspace.record.id);
+  await f.store.setWorkspaceTitle(agentAuthority(f.opened.agent.record), '  --clear  ', current.revision);
+  f.panes.find(p => p.terminal_id === f.context.terminalId).label = '--clear';
+  f.panes[0].tokens.wca_status = 'active';
+  const records = [await f.store.readAgent('term1'), await f.store.readWorkspace(f.workspace.record.id)], before = f.calls.length;
+  await heldLock(f, () => f.card.project(f.store, f.context, f.opened.agent, DEFAULT_CONFIG));
+  assert.deepEqual(effects(f.calls.slice(before)), []);
+  assert.equal(f.panes.find(p => p.terminal_id === f.context.terminalId).label, '--clear');
+  assert.deepEqual([await f.store.readAgent('term1'), await f.store.readWorkspace(f.workspace.record.id)], records);
+});
+
+test('fresh authority loss before caption prevents rename after retaining published metadata', async t => {
+  for (const invalid of ['binding', 'pair', 'nonce', 'membership', 'attempt', 'cancel']) await t.test(invalid, async () => {
+    const f = await documentFixture(), controller = new AbortController(), run = f.card.run;
+    f.card.run = async args => {
+      const response = await run(args);
+      if (args[1] === 'report-metadata') {
+        if (invalid === 'binding') f.workspaces[0].tokens.wcw_phase = 'reserved';
+        if (invalid === 'pair') f.panes[0].tab_id = 'w:t2';
+        if (invalid === 'nonce') f.card.env.WORK_CARDS_NONCE = 'foreign';
+        if (invalid === 'cancel') controller.abort();
+        const agent = await f.store.readAgent('term1');
+        if (invalid === 'membership') await f.store.resetEvidence(agentAuthority(agent.record), boundary, agent.revision);
+        if (invalid === 'attempt') await f.store.setDisplayAttempt(agentAuthority(agent.record), { attempt: 'other', nonce: 'other' }, agent.revision);
+      }
+      return response;
+    };
+    await assert.rejects(f.card.project(f.store, f.context, f.opened.agent, DEFAULT_CONFIG, controller.signal), /Projection may be partial/);
+    assert.equal(f.calls.some(a => a[0] === 'pane' && a[1] === 'rename'), false);
+    assert.equal(f.panes[0].tokens.wca_status, 'active');
+    assert.equal((await f.store.readWorkspace(f.workspace.record.id)).record.title, f.workspace.record.title);
+  });
+});
+
+test('caption errors and mismatched acknowledgements preserve records, metadata and other panes', async t => {
+  for (const failure of ['command', 'json', 'type', 'missing', 'pane_id', 'terminal_id', 'workspace_id', 'tab_id', 'label', 'label-type']) await t.test(failure, async () => {
+    const f = await documentFixture(), run = f.card.run;
+    const workspace = await f.store.readWorkspace(f.workspace.record.id);
+    await f.store.applyPlan(agentAuthority(f.opened.agent.record), { goal: 'Published goal', sources: [f.target('plan.md')], fingerprint: 'goal' }, workspace.revision);
+    const records = [await f.store.readAgent('term1'), await f.store.readWorkspace(f.workspace.record.id)];
+    const others = structuredClone(f.panes.filter(p => p.terminal_id !== f.context.terminalId));
+    f.card.run = async args => {
+      if (args[0] !== 'pane' || args[1] !== 'rename') return run(args);
+      if (failure === 'command') throw new Error('rename unavailable');
+      if (failure === 'json') return '{';
+      if (failure === 'type') return JSON.stringify({ result: { type: 'other' } });
+      if (failure === 'missing') return JSON.stringify({ result: { type: 'pane_info' } });
+      const pane = { ...f.opened.pair.card, label: records[1].record.title };
+      pane[failure === 'label-type' ? 'label' : failure] = failure === 'label-type' ? 7 : 'foreign';
+      return JSON.stringify({ result: { type: 'pane_info', pane } });
+    };
+    await assert.rejects(f.card.project(f.store, f.context, f.opened.agent, DEFAULT_CONFIG), /Projection may be partial/);
+    assert.deepEqual([await f.store.readAgent('term1'), await f.store.readWorkspace(f.workspace.record.id)], records);
+    assert.equal(f.panes[0].tokens.wca_status, 'active');
+    assert.equal(f.workspaces[0].tokens.wcw_goal, 'Published goal');
+    assert.deepEqual(f.panes.filter(p => p.terminal_id !== f.context.terminalId).map(p => ({ ...p, tokens: others.find(o => o.terminal_id === p.terminal_id).tokens })), others);
+    f.card.run = run;
+    await f.card.project(f.store, f.context, f.opened.agent, DEFAULT_CONFIG);
+    assert.equal(f.panes.find(p => p.terminal_id === f.context.terminalId).label, records[1].record.title);
+  });
 });
 
 test('authority lost after projection preflight blocks all writes under the lock', async () => {

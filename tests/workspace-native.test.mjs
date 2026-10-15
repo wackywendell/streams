@@ -14,6 +14,11 @@ test('two independent pairs coexist in one workspace and track terminals after p
   assert.equal(locateTerminal(s, 'term1').pane_id, 'w:p9');
   assert.equal(classifyPair(s, 'b'.repeat(64), 'term3').kind, 'paired');
 });
+test('native pane labels preserve strings, accept unlabeled panes and reject malformed labels', () => {
+  for (const label of ['Work card', '', '日本語 🐕']) assert.equal(snapshot([{ ...pane(1), label }]).panes[0].label, label);
+  for (const value of [pane(1), { ...pane(1), label: null }]) assert.equal(snapshot([value]).panes[0].label, undefined);
+  for (const label of [7, false, {}, []]) assert.throws(() => snapshot([{ ...pane(1), label }]), /label/i);
+});
 test('duplicate terminals and contradictory partial ownership fail closed', () => {
   assert.throws(() => snapshot([pane(1), { ...pane(2), terminal_id: 'term1' }]), /duplicate/i);
   assert.throws(() => classifyPair(snapshot([pane(1, { wca_agent: 'a'.repeat(64) })]), 'a'.repeat(64), 'term1'), /incomplete/i);

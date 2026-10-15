@@ -35,18 +35,23 @@ test('two agents share Goal and references while retaining own title, status, No
   const first = unstyled(view.render(100, 10));
   const second = unstyled(renderWorkspaceCard({ workspace, agent: other }, 100, 10).text);
   for (const text of [first, second]) {
-    assert.equal(text.split('\n')[0], 'Shared workspace: Ship library | client');
+    assert.equal(text.split('\n')[0], 'Ship library | client');
     assert.match(text, /\[a\] docs\/design.md/);
-    assert.doesNotMatch(text, /Goal:|Now:|Remaining:/);
-    assert.equal(text.match(/Shared workspace/g).length, 1);
+    assert.doesNotMatch(text, /Goal:|Now:/);
+    assert.equal((text.match(/Remaining:/g) ?? []).length, 1);
+    assert.doesNotMatch(text, /Shared workspace/);
   }
-  assert.match(first.split('\n')[1], /^Own assignment: Implement \| verify +● active$/);
-  assert.equal(first.split('\n')[2], '界😀é | release');
-  assert.match(second.split('\n')[1], /^Other assignment: Other stage +! blocked$/);
+  assert.equal(first.split('\n')[1], '');
+  assert.match(first.split('\n')[2], /^Own assignment: Implement \| verify +● active$/);
+  assert.equal(first.split('\n')[3], 'Remaining: 界😀é | release');
+  assert.equal(first.split('\n')[4], '');
+  assert.match(second.split('\n')[2], /^Other assignment: Other stage +! blocked$/);
   const styled = view.render(100, 10);
-  assert.ok(styled.includes('\x1b[3mShared workspace\x1b[0m: Ship library | client'));
-  assert.ok(styled.includes('\x1b[3mOwn assignment\x1b[0m: Implement | verify'));
-  assert.ok(styled.includes('\x1b[3m界😀é | release\x1b[0m'));
+  assert.ok(styled.startsWith('\x1b[2mShip library | client\x1b[0m\n'));
+  assert.ok(styled.includes('\x1b[1mOwn assignment:\x1b[0m Implement | verify'));
+  assert.ok(styled.includes('\x1b[1mRemaining:\x1b[0m 界😀é | release'));
+  assert.ok(styled.includes('\x1b[36m[a]\x1b[0m \x1b[2mdocs/\x1b[0mdesign.md'));
+  assert.doesNotMatch(styled, /\x1b\[3m|\x1b\[1mdesign\.md/);
   assert.doesNotMatch(styled, /\*/);
   assert.doesNotMatch(second, /Implement|release/);
 });
@@ -56,8 +61,8 @@ test('empty shared sections omit bodies and dangling colons without losing own s
   workspace.record.goal = ''; agent.record.now = ''; agent.record.remaining = '';
   const rendered = renderWorkspaceCard({ workspace, agent }, 100, 8);
   const lines = unstyled(rendered.text).split('\n');
-  assert.equal(lines[0], 'Shared workspace');
-  assert.match(lines[1], /^Own assignment +● active$/);
+  assert.match(lines[0], /^Own assignment +● active$/);
+  assert.equal(lines[1], '');
   assert.equal(lines[2], '[a] docs/design.md');
   assert.doesNotMatch(rendered.text, /Remaining|Goal:|Now:|assignment:|workspace:/);
 });
@@ -74,6 +79,38 @@ test('multirepo same relative paths retain exact opaque identities and checkout 
   assert.deepEqual(opened.workspace, view.current.workspace); assert.deepEqual(opened.agent, view.current.agent);
   const target = renderWorkspaceCard(view.current, 100, 10).documents.get('b');
   assert.deepEqual(target, { workspaceId: 'shared', membershipToken: 'membership', checkout: 'client', path: 'docs/design.md', directory: '/code/client' });
+});
+
+test('later grid shortcuts open exact opaque targets and fail closed after resize, notice and fresh edits', async () => {
+  const { workspace, agent, view } = fixture();
+  workspace.record.goal = ''; workspace.record.issues = []; workspace.record.planSources = []; workspace.record.sourceFingerprint = null;
+  agent.record.title = 'Own'; agent.record.now = ''; agent.record.remaining = '';
+  workspace.record.documents = ['a.md', 'b.md', 'c.md'].map(path => ({ checkout: 'lib', path, description: '' }));
+  await view.refresh();
+  const wide = unstyled(view.render(150, 4));
+  assert.ok(wide.split('\n').some(line => line.includes('[a]') && line.includes('[b]') && line.includes('[c]')));
+  for (const key of 'bc') assert.deepEqual((await view.key(key)).identity, { checkout: 'lib', path: key + '.md' });
+  view.render(28, 2);
+  assert.deepEqual(await view.key('c'), { kind: 'none' });
+  assert.deepEqual((await view.key('b')).identity, { checkout: 'lib', path: 'b.md' });
+  view.setNotice('projection', 'Notice'); view.render(28, 2);
+  assert.deepEqual(await view.key('b'), { kind: 'none' });
+  assert.equal(view.notice.source, 'projection');
+  view.clearNotice(); view.render(150, 4);
+  workspace.record.documents[1].path = 'replacement.md';
+  assert.deepEqual(await view.key('b'), { kind: 'none' });
+  assert.match(view.notice.text, /changed|redraw/i);
+});
+
+test('a fresh grid reflow hiding a previously painted later-column key fails closed', async () => {
+  const { workspace, agent, view } = fixture();
+  workspace.record.goal = ''; workspace.record.issues = []; workspace.record.planSources = []; workspace.record.sourceFingerprint = null;
+  agent.record.title = 'Own'; agent.record.now = ''; agent.record.remaining = '';
+  workspace.record.documents = ['a.md', 'b.md', 'c.md'].map(path => ({ checkout: 'lib', path, description: '' }));
+  await view.refresh(); view.render(30, 3);
+  workspace.record.documents[0].path = 'a-name-too-long-to-share-a-row.md';
+  assert.deepEqual(await view.key('c'), { kind: 'none' });
+  assert.match(view.notice.text, /changed|redraw/i);
 });
 
 test('basename, ancestor and root collisions use workspace-wide distinguishing labels', () => {
@@ -96,7 +133,7 @@ test('structured literal pipes and Unicode remain bounded in tiny panes with not
       const text = unstyled(rendered.text), lines = text.split('\n');
       assert.equal(rendered.text, Buffer.from(rendered.text).toString('utf8'));
       assert.ok(!text || lines.length <= rows); assert.ok(lines.every(line => stringWidth(line) <= columns));
-      const painted = lines.some(line => line.startsWith('[a]'));
+      const painted = lines.some(line => line.includes('[a]'));
       assert.equal(rendered.documents.has('a'), painted);
       if (painted) assert.deepEqual(rendered.documents.get('a'), {
         workspaceId: 'shared', membershipToken: 'membership', checkout: 'lib', path: 'docs/design.md', directory: '/code/library',
@@ -210,14 +247,16 @@ test('broken files stay visible and actionable without file checks', async () =>
 });
 
 test('footer-covered and notice-reduced shortcut layouts fail closed on resize and fresh reads', async () => {
-  const { view, workspace } = fixture(); workspace.record.issues = []; await view.refresh();
-  assert.ok(!unstyled(view.render(11, 4)).split('\n').some(line => line.startsWith('[a]')));
+  const { view, workspace, agent } = fixture(); workspace.record.issues = [];
+  workspace.record.goal = ''; agent.record.now = ''; agent.record.remaining = ''; agent.record.title = 'Own';
+  await view.refresh();
+  assert.ok(!unstyled(view.render(11, 2)).includes('[a]'));
   assert.deepEqual(await view.key('a'), { kind: 'none' });
-  assert.ok(unstyled(view.render(12, 4)).split('\n').some(line => line.startsWith('[a]')));
+  assert.ok(unstyled(view.render(12, 2)).includes('[a]'));
   assert.deepEqual((await view.key('a')).identity, { checkout: 'lib', path: 'docs/design.md' });
   view.setNotice('projection', 'Notice'); assert.match(unstyled(view.render(30, 3)), /\[a\]/);
-  workspace.record.documents.push({ checkout: 'lib', path: 'other.md', description: '' });
+  workspace.record.documents.push({ checkout: 'lib', path: 'another-long-document.md', description: '' });
   assert.deepEqual(await view.key('a'), { kind: 'none' });
-  assert.ok(!unstyled(view.render(30, 3)).split('\n').some(line => line.startsWith('[a]')));
+  assert.ok(!unstyled(view.render(30, 3)).includes('[a]'));
   assert.deepEqual(await view.key('a'), { kind: 'none' });
 });

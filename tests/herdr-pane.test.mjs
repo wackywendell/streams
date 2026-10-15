@@ -2,7 +2,7 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import { renderDisplayCard, plain, KeyInput } from '../dist/herdr/view.js';
 
-const card = { workspaceTitle: 'Workspace', title: 'Assignment', status: 'active', goal: 'Purpose', now: 'Stage', remaining: '', documents: [], issues: [], prs: [] };
+const card = { title: 'Assignment', status: 'active', goal: 'Purpose', now: 'Stage', remaining: '', documents: [], issues: [], prs: [] };
 const document = path => ({ label: path, target: { checkout: 'repo', path } });
 const unstyled = text => text.replace(/\x1b\[[\d;]*m/g, '').replace(/\x1b\]8;;[^\x1b]*\x1b\\/g, '');
 
@@ -10,8 +10,9 @@ test('compact rendering bounds rows and exposes shortcuts only for displayed doc
   const c = { ...card, documents: Array.from({ length: 5 }, (_, i) => document(`${i}.md`)) };
   const rendered = renderDisplayCard(c, 25, 4);
   assert.equal(rendered.text.split('\n').length, 4);
-  assert.deepEqual([...rendered.documents.values()], [{ checkout: 'repo', path: '0.md' }]);
-  assert.match(rendered.text, /more/);
+  assert.deepEqual([...rendered.documents.values()], [{ checkout: 'repo', path: '0.md' }, { checkout: 'repo', path: '1.md' }]);
+  assert.match(unstyled(rendered.text), /… 3 more/);
+  for (const key of rendered.documents.keys()) assert.ok(unstyled(rendered.text).includes(`[${key}]`));
   assert.equal(renderDisplayCard(c, 10, 1).documents.size, 0);
 });
 
@@ -20,7 +21,7 @@ test('document labels are full paths; issue/PR numbers are independent and conse
     issues: Array.from({ length: 9 }, (_, i) => ({ url: `https://example.com/issues/${i + 1}`, description: `Issue ${i + 1}` })),
     prs: [{ url: 'https://example.com/pulls/10', description: 'Ten' }, { url: 'https://example.com/pulls/11', description: '' }] };
   const rendered = renderDisplayCard(c, 100, 20), text = unstyled(rendered.text);
-  assert.match(text, /\[a\] docs\/design.md\n\[b\] adrs\/design.md/);
+  assert.match(text, /\[a\] docs\/design.md  \[b\] adrs\/design.md/);
   assert.match(text, /\[9\] Issue: Issue 9\n\[10\] PR: Ten\n\[11\] PR: https:\/\/example.com\/pulls\/11/);
   assert.deepEqual([...rendered.documents.values()], c.documents.map(d => d.target));
   for (const link of [...c.issues, ...c.prs]) assert.ok(rendered.text.includes(`\x1b]8;;${link.url}\x1b\\`));
@@ -32,8 +33,8 @@ test('document keys skip q and stop after z without numeric shortcuts', () => {
   const c = { ...card, documents: Array.from({ length: 28 }, (_, i) => document(`docs/${i}.md`)) };
   const rendered = renderDisplayCard(c, 80, 40);
   assert.deepEqual([...rendered.documents.keys()], [...'abcdefghijklmnoprstuvwxyz']);
-  assert.match(unstyled(rendered.text), /\[p\] docs\/15.md\n\[r\] docs\/16.md/);
-  assert.match(unstyled(rendered.text), /\[z\] docs\/24.md\ndocs\/25.md\ndocs\/26.md\ndocs\/27.md/);
+  assert.match(unstyled(rendered.text), /\[p\] docs\/15.md +\[r\] docs\/16.md/);
+  assert.match(unstyled(rendered.text), /\[z\] docs\/24.md\s+docs\/25.md\s+docs\/26.md\s+docs\/27.md/);
   assert.doesNotMatch(rendered.text, /\[\d\]|undefined/);
 });
 
@@ -43,7 +44,7 @@ test('clipped and sanitized document labels activate only fully painted keys', (
     const rendered = renderDisplayCard(c, width, 3);
     const lines = unstyled(rendered.text).split('\n');
     assert.ok(lines.every(line => line.length <= width));
-    assert.equal(rendered.documents.has('a'), lines.some(line => line.startsWith('[a]')));
+    assert.equal(rendered.documents.has('a'), lines.some(line => line.includes('[a]')));
     assert.doesNotMatch(rendered.text, /\u202e/);
   }
 });

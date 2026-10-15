@@ -357,11 +357,12 @@ export class WorkspaceClient extends HerdrTransport {
       const own = Object.fromEntries(Object.entries(values).filter(([key, value]) => (current.pair.agent.tokens[key] ?? '') !== value));
       const workspace = current.live.snapshot.workspaces.find(w => w.workspace_id === context.workspaceId)!;
       const goal = cap(current.workspace.record.goal);
+      const title = current.workspace.record.title.trim().toWellFormed();
       // Native Herdr omits empty text tokens; absent and empty represent the same projection.
-      return { own, workspace, goal: (workspace.tokens.wcw_goal ?? '') === goal ? undefined : { wcw_goal: goal } };
+      return { own, workspace, goal: (workspace.tokens.wcw_goal ?? '') === goal ? undefined : { wcw_goal: goal }, caption: current.pair.card.label === title ? undefined : title };
     };
     const preflight = changes(await this.pairedCard(store, context, painted, config, signal));
-    if (!Object.keys(preflight.own).length && !preflight.goal) return;
+    if (!Object.keys(preflight.own).length && !preflight.goal && preflight.caption === undefined) return;
     await withWorkspaceLock(context.socket, context.workspaceId, async () => {
       // The readonly preflight is never write authority: reread records and native ownership under lock.
       const current = await this.pairedCard(store, context, painted, config, signal), patch = changes(current);
@@ -369,6 +370,15 @@ export class WorkspaceClient extends HerdrTransport {
         if (Object.keys(patch.own).length) await this.stamp('pane', current.pair.agent, patch.own, context, config, signal);
         const latest = changes(await this.pairedCard(store, context, painted, config, signal));
         if (latest.goal) await this.stamp('workspace', latest.workspace, latest.goal, context, config, signal);
+        // Caption is another projection, but only the freshly verified current card is a rename target.
+        const fresh = await this.pairedCard(store, context, painted, config, signal), caption = changes(fresh).caption;
+        if (caption !== undefined) {
+          signal?.throwIfAborted();
+          if (caption === '--clear') throw new Error('Unsupported native CLI caption "--clear": Herdr treats it as a clear flag');
+          const card = fresh.pair.card;
+          const renamed = nativePane((await this.result(['pane', 'rename', card.pane_id, caption], config, 'pane_info')).pane);
+          if (renamed.pane_id !== card.pane_id || renamed.terminal_id !== card.terminal_id || renamed.workspace_id !== card.workspace_id || renamed.tab_id !== card.tab_id || renamed.label !== caption) throw new Error('Renamed card identity/caption mismatch');
+        }
       } catch (error) { throw new Error(`Projection may be partial; matching metadata already published is retained: ${(error as Error).message}`, { cause: error }); }
     });
   }
