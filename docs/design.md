@@ -1,125 +1,94 @@
-# Work Cards architecture
+# ADR 1 Durable, evidence-grounded orientation
 
-## Goal and scope
+Status: accepted and implemented. [ADR 2](workspace-context.md) records the shared workspace and per-session model, including its unfinished naming and management work. The [README](../README.md) owns commands, configuration and verification instructions.
 
-Work Cards provide a high-level summary of a project, its current state, and relevant artifacts and links, to provide guidance for a user navigating multiple agents. It provides navigation to plans, issues and pull requests without requiring them to read agent logs or maintain parallel prose.
+## Context and problem
 
-The card is durable orientation, not an activity feed, task runner or full project manager. Substantive plans and architecture decision records belong in the project checkout. The card points to them rather than becoming another plan store.
+People navigating several agents need to know the purpose of the work, its current state and where to find its plans and artifacts. Reading agent logs is too expensive. Maintaining a second account of the plan creates another source of truth.
 
-This document describes the implemented architecture and its reasons. [Agreed direction not yet implemented](#agreed-direction-not-yet-implemented) separates future constraints from current guarantees. The [README](../README.md) owns commands, configuration defaults and verification details.
+An agent's activity is not necessarily project progress. Tests, commits and routine edits can leave the usable capability unchanged. A short summary must distinguish intended scope from demonstrated outcomes and leave uncertainty visible.
 
-## One durable record with independent consumers
+## Decision
 
-A small ESM TypeScript package contains a shared validated data core, a Pi updater and an independent Herdr display. YAML is authoritative. The display reads it without Pi running and publishes workspace-summary metadata. Herdr tokens carry ownership and display information, not another durable copy of the card.
+### Keep orientation separate from substantive documents
 
-Cards live in `$XDG_STATE_HOME/herdr/cards/<slug>.yaml` and outlast sessions, panes and workspaces. There is no central registry, session catalogue or central plan store. Storage is per host, without automatic synchronisation or backup.
+Work Cards stores small, durable summaries and references. It is not an activity log, task runner, task manager or parallel plan store. Plans and architecture decision records belong in the project checkout. Work Cards points to them.
 
-The seven-field schema keeps the record small:
+Summaries describe intended scope, evidenced progress and remaining work, not a list of recent commands. Routine activity alone should not change them. Existing summaries are editable drafts, not evidence of progress.
 
-| Fields | Meaning |
+### Make local records authoritative
+
+Validated local records outlast Pi sessions, panes and native workspaces. Pi updates them; an independent Herdr display reads them without requiring Pi to run. Herdr metadata carries transient bindings and projections, not another authoritative copy.
+
+Storage is per host. There is no global repository registry, cloud synchronisation or automatic backup. Registered checkout directories define document boundaries. Opening a document requires a canonical regular file inside its registered checkout; traversal and escaping symlinks are rejected.
+
+Writes use strict validation, revision checks, cooperating-writer locks and atomic replacement. Stale edits fail; additive reference proposals merge without dropping concurrent additions. Unchanged updates preserve bytes and modification time. Atomic visibility is not crash durability. External editors do not obey package locks, and path validation cannot eliminate a later malicious filesystem race.
+
+The original single-card record combined project purpose, agent progress and references in one place. Its pipe-delimited summary was a presentation carrier, not a lasting domain model. [ADR 2](workspace-context.md) replaces both with structured workspace and agent records; neither is a current compatibility interface.
+
+### Give helpers evidence, not executable authority
+
+Helpers have no executable tools. Trusted runtime code chooses their inputs, validates their proposals and applies only permitted changes. Helpers cannot write project documents, choose executables, invent runtime identities or alter membership and directories.
+
+Trusted global configuration selects the helper route and executable used for document opening. Repository text and record content cannot override it. Separate request contracts restrict own-agent updates, shared additions, plan selection and Goal inference. Structural restrictions enforce authority, not the truth or quality of model interpretation.
+
+Human-readable evidence remains untrusted content. Prompts tell helpers not to follow embedded instructions, but validation cannot guarantee compliance with that instruction. Unsupported facts should remain unknown rather than become invented goals, completion claims or blockers.
+
+### Use projected dialogue for own-agent summaries
+
+Own-agent evidence contains Pi's latest projected compaction summary and all retained nonblank user and assistant text, in chronological order. It respects projected redactions and does not reconstruct raw precompaction history.
+
+Thinking, tools and their arguments or results, images, custom messages, system messages and branch summaries are excluded. This relies on assistant text to report outcomes: an unreported tool outcome is absent. Plans establish intent, not completion.
+
+The application does not clip this dialogue or silently trim it to fit. Provider context-limit failures remain visible. There is no guarantee that every session will fit or that a model will produce a useful summary.
+
+This choice followed a narrow replay comparison. Both bounded, tool-inclusive baseline windows held only tool results: 2 or 3 messages, with no direct dialogue. Compaction-plus-dialogue inputs captured relevant remaining work with fewer input tokens. The comparison covered 4 requests at 2 historical snapshots, both containing user wording guidance. It is not a broad benchmark or proof of unguided summary quality.
+
+Workspace Goal and shared-reference additions have different evidence boundaries. [ADR 2](workspace-context.md#separate-evidence-by-purpose) defines them; full own-agent history is not permission to rewrite shared intent or repopulate links after a move.
+
+### Bound execution without starving updates
+
+Scheduling follows distinct normalised dialogue changes, not tool cycles. Checks are single-flight per session. New input replaces pending input without repeatedly cancelling an active check; busy refresh requests coalesce. Session and membership changes invalidate stale results.
+
+There are no automatic helper retries. Timeout ends local waiting and requests cancellation, but cannot guarantee that an upstream request stops. Helper usage is outside Pi's usage totals because Pi has no public API to add it.
+
+Own summaries, shared additions, plan selection and Goal inference use separate requests through the same configured model route. The current coordinator runs them sequentially, so Goal can arrive after the own-agent summary. These stages keep evidence and write permissions separate; they need not appear as one simultaneous update.
+
+### Keep display and navigation outside helper authority
+
+The display is read-only. Layout and truncation do not change stored meaning or document targets. Document opening uses a trusted editor or pager on the execution host, with the validated filename as a literal argument. That editor may write files; the display and helpers cannot.
+
+Native effects require exact caller and ownership verification, never GUI focus. Ambiguity suspends effects rather than authorising adoption, cleanup or a guessed target. [ADR 2](workspace-context.md) defines grouping, lifecycle and navigation.
+
+## Alternatives and tradeoffs
+
+| Alternative | Reason for this decision |
 | --- | --- |
-| `title` | Human-readable name |
-| `status` | `active`, `waiting`, `blocked`, `parked` or `done` |
-| `state` | Single-line Goal, Now and Remaining summary |
-| `cwd` | Checkout boundary on the execution host |
-| `documents` | Checkout-relative paths with descriptions |
-| `issues`, `prs` | HTTP(S) links with descriptions |
+| Read logs or show an activity feed | Activity does not establish capability, and logs make orientation costly |
+| Store plans in cards | A second plan store competes with documents in the checkout |
+| Treat Herdr metadata as durable state | Native surfaces can disappear; independent consumers need records that survive them |
+| Include bounded tool history | The observed windows displaced direct dialogue; excluding tools instead loses unreported outcomes |
+| Give helpers filesystem or native tools | Runtime-selected evidence and narrow proposals keep authority outside the model |
+| Silently trim oversized evidence | A visible failure is preferable to presenting incomplete evidence as complete |
+| Add a global registry or cloud service | The chosen boundary is local host state, accepting no automatic cross-host continuity |
 
-All fields are required; arrays and state may be empty. Unknown fields, duplicate YAML keys and unsafe displayed text fail validation. The initial title determines a stable filename slug. Later title changes do not rename the card; creation collisions cannot overwrite it.
+These are design tradeoffs, not evidence that every alternative received a runtime evaluation.
 
-When opening a document, the client resolves `cwd` and the target to canonical filesystem paths. The target must be a regular file inside that checkout. Traversal and escaping symlinks are rejected. This makes the checkout an explicit boundary rather than relying on repository discovery. Resolution does not eliminate a malicious filesystem race during a later open. Exact validation and library contracts live in [the shared core](../src/card.ts).
+Editor-first navigation also defers Herdr Annotate and Plannotator. [Herdr Annotate](https://github.com/plannotator/herdr-annotate) and [Plannotator feedback delivery](https://github.com/plannotator/plannotator-tui/blob/main/crates/plannotator-tui/src/delivery.rs) were considered as sources. The latter targets terminal input at a pane, not a session-pinned callback, so a replacement agent could receive feedback. Neither integration was installed or runtime-tested.
 
-## Limited model authority and guarded writes
+## Consequences and boundaries
 
-The helper has no executable tools. It returns `no_change` or a patch limited to `status`, `state`, `documents`, `issues` and `prs`. It cannot rename or move cards, change the checkout or write repository documents. The prompt asks the helper to retain existing references unless removal has affirmative evidence. This depends on model compliance: structural validation permits a valid replacement array to remove references.
+The record can remain useful when the summarizer or display is unavailable. Users retain responsibility for substantive documents, backups and explicit management actions. Short summaries can be stale or wrong; validation is not a semantic quality guarantee.
 
-Trusted global configuration stays separate from repository content and model-controlled card data. There are no project overrides. The default `helpers/simple` alias uses an externally registered profile and inherits its thinking level unless overridden. Physical models are also configurable. Luna with low thinking was the replay profile, not a hard-coded product default. See [configuration](../README.md#configure-the-package) and [the summarizer](../src/pi/summarizer.ts).
+The package keeps one shared data core with separate Pi and Herdr consumers. Reloading Pi must not leave stale helper code active; changing the display must not require Pi to own its process.
 
-The core validates every proposed patch. Raw-byte revisions detect intervening edits, including formatting changes. Cooperating writers use exclusive locks and atomic replacement. Stale revisions and held locks fail visibly rather than retrying, stealing locks or overwriting newer work. Creation also prevents overwrite.
+All components and paths refer to the execution host. macOS has verified paths; Linux and SSH remain unverified design targets. Isolated native checks and injected SDK tests do not establish every full Pi-session lifecycle. See the [verification status](../README.md#verification-status) and [ADR 2 status](workspace-context.md#status-and-boundaries).
 
-`no_change`, including a semantically unchanged patch, preserves bytes and modification time. Cancellation is checked immediately before dispatching rename, without an intervening asynchronous step. Once rename is dispatched, cancellation cannot roll it back.
+## Historical evidence boundary
 
-These guarantees prevent stale helper writes; they do not make YAML an editor transaction system. Arbitrary external editors ignore package locks and can race the locked read-to-replacement interval. Atomic visibility also does not guarantee survival of every filesystem or power-loss failure.
+The appendix preserves the earlier replay and accounting data. It is supporting historical evidence, not an invoice, a current workload prediction, a warm-cache measurement or a quality benchmark. The later workspace runtime makes several separate helper requests, so the earlier single-card workload must not be presented as its usage estimate.
 
-## Summaries from human-readable evidence
-
-State remains a single-line string encoded as `Goal: ... | Now: ... | Remaining: ...`. Goal describes the project purpose; Now describes its broad usable capability or stage; Remaining describes major unfinished scope or blockers. The helper targets 20 to 30 words total, excluding labels. This is a soft prompt target, not a validator rule or summary-quality guarantee.
-
-Legacy prose may be converted or condensed without new progress, preserving supported facts without inventing a goal, completion or plans. Once correctly formatted and useful, routine work, tests and commits should normally yield `no_change`. The schema and write guards are unchanged; no migration or document-reading tools are introduced.
-
-The brief asks the helper to derive project maturity against its goal and major intended capabilities from dialogue and the compaction checkpoint first. It then compares that result with the previous card, an editable draft rather than a prose template or proof of progress. A sound project-level summary should stay stable through routine work, but change when affirmative evidence changes a major capability or remaining scope. Plans establish intent, not completion; any supplied goal or scope excerpts serve only to explain intended scope. The helper does not load documents.
-
-The brief also reconciles older blockers with explicit successful outcomes and avoids promoting unrelated working-copy hygiene into required work without relevance or blocking evidence. These remain prompt instructions, not enforced summary-quality guarantees.
-
-Each request starts with a stable system brief. One user JSON message follows, ordered `{compactionSummary, transcript, card}`, with the current card last. The input uses Pi's actual latest projected compaction summary and all retained nonblank user and assistant text chronologically. It respects projected redactions and never reconstructs raw precompaction history.
-
-Thinking, tool calls, arguments, results, images, custom messages, system messages and branch summaries are excluded. The prompt labels conversation content as untrusted evidence and tells the model not to follow embedded instructions. Compliance is not enforced by the patch validator. This choice relies on assistant text to report outcomes; unreported tool outcomes are absent.
-
-The evidence policy addresses a concrete failure: both bounded, tool-inclusive replay baselines contained only tool results in their evidence windows, 2 or 3 messages and no direct dialogue. Compaction-plus-dialogue inputs captured relevant remaining work with fewer input tokens. The comparison comprised 4 requests at 2 historical snapshots, both containing user wording guidance. It is neither a broad benchmark nor proof of unguided summary quality.
-
-There is no application cap, clipping or fallback trimming. Provider context-limit failures surface visibly. `max_context_chars` remains accepted and validated but is ignored for compatibility. Putting the card last may permit stable-prefix cache reuse; measured cache-hit benefits have not been established. [Evidence normalisation](../src/pi/evidence.ts) defines the input boundary.
-
-## Scheduling without starving updates
-
-By default, Pi checks each distinct normalized summary-input change, including both user and assistant text. `check_every_n_responses` controls this interval; zero disables automatic checks but not explicit refresh. The former tool-cycle setting has been removed.
-
-Pi observes the persisted SDK projection at request-time `context`, after user messages are delivered, and completed `turn_end`, after assistant text and its tool batch are persisted. `turn_start` precedes user persistence; `message_end` precedes persistence and later handlers can replace text. Work Cards does not append raw event text or transform the main request. Settlement remains a deduplicated fallback.
-
-Revisions hash only normalized compaction summary and dialogue, not branch leaves. Repeated hooks with unchanged input do not advance the interval. Excluded tool activity cannot create new input; compaction and projected redaction changes can qualify. Empty initial input does not start automation.
-
-Checks are single-flight per session. New eligible input replaces pending input, while continuing dialogue neither cancels the active check nor requires an idle session before application. Repeated busy refresh requests coalesce into at most one followup, retaining explicit retry intent with the latest eligible input. Generation cancellation clears queued work; card, binding and session checks reject stale results.
-
-The Pi helper-request spinner is off by default. With `show_refresh_spinner: true`, only actual helper requests show an animated `<spinner> work-card` terminal status. Queued work and waits for retired checks do not. Completion, errors, timeout, invalidations and disabling the option clear the status and timer. Disabled, RPC and headless modes create no animation timer. Activity does not change YAML, Herdr IPC, tabs or Pi's main working indicator.
-
-There are no automatic retries or cooldowns. A timeout stops local waiting and requests cancellation, but cannot guarantee the upstream request stops. Helper usage, including `no_change` calls, remains outside Pi's usage totals because Pi has no public API to add it. [The scheduler](../src/pi/scheduler.ts) and [Pi integration](../src/pi/index.ts) define these lifecycle rules.
-
-## Explicit ownership instead of GUI focus
-
-Herdr operations target the exact caller, socket and workspace identity, never whichever workspace has GUI focus. Workspace locks serialise cooperating ownership changes. Unrelated, surviving or restored live panes are never claimed as card owners.
-
-Recovery happens only during explicit open or detach. It requires a complete matching departed-owner tuple: canonical card identity, nonce, pane and terminal. Both referenced pane and terminal identities must be absent, with no conflicting marked panes and an unambiguous live inventory. Ambiguity fails closed. Polling and passive session restore do not recover owners.
-
-Pi keeps a session-specific target and update permission, not a cached card. Restore validates existing YAML but never reconstructs missing cards or opens panes. Forks require explicit open. Slugless open uses the same originating session's binding, not cwd search or automatic adoption.
-
-Successful open saves its binding, then requests a background summary check without delaying attachment on the helper. Failed or stale opens do not request checks. New does not start an immediate check. `/work-card refresh` accepts no arguments and requires an enabled same-session binding. It works outside Herdr, bypasses automatic cadence and permits unchanged-input retries without opening a pane, rebinding or cancelling active work. A paused binding requires explicit open to resume.
-
-Detach records paused update permission before fallible configuration loading or Herdr cleanup. Failed cleanup therefore leaves automation paused for recovery. Successful detach forgets the binding without deleting YAML. Custom session entries reach disk only after host user or assistant activity; `--no-session` does not persist them. The pause is recorded first, not guaranteed flushed immediately.
-
-In contrast, `q` closes only the display. Pi updates continue until explicit detach. Closing a pane is not interpreted as withdrawing permission to maintain the durable record. [Ownership classification](../src/herdr/ownership.ts) and [the Herdr client](../src/herdr/client.ts) enforce these boundaries.
-
-## Quiet display and editor-first navigation
-
-The read-only card view separates semantic state from wrapping and layout. It shows title, status, state and relative document paths. A shared strict recognizer accepts only complete, ordered, nonempty Goal, Now and Remaining fields with exact labels and no surrounding whitespace. The exact ` | ` separator and repeated field headers are reserved; other literal pipes remain content. Legacy prose, malformed or ambiguous carriers, and extra fields fall back to the entire prose state, without partial extraction.
-
-Recognized state combines the italic card title with Goal on the first row. Now and status follow, then italic remaining-work text without a label. Each section wraps independently without carrier pipes. When the state budget permits, layout reserves a row for each later section so a long Goal cannot hide Remaining. Smaller budgets truncate in section order. Reference reservations, notice geometry and prose layout remain intact. The shared-workspace renderer uses the workspace title beside Goal and the agent title beside Now. The sidebar uses status plus Now for recognized fields, otherwise status plus the full state, retaining its 80-code-point cap.
-
-Terminal-cell measurement and sanitisation keep untrusted text separate from trusted styling. Layout can truncate content without changing the stored summary.
-
-Visible document letters open documents; `q` is reserved. Only shortcuts actually visible remain active. Issues and PRs have numbered OSC 8 links, handled by client Ctrl-click. Digits are inert because there is no verified remote-safe URL opener. The bottom-right close hint can cover trailing content rather than reserving another row.
-
-Documents open in a full tab using the existing editor or pager on the execution host. Command precedence is trusted global `document_command`, then `EDITOR`, then `less`. The validated filename is a separate literal argument, never shell source. Card data cannot select an executable. External editors can write documents; the display and helper cannot.
-
-The same canonical checkout and document reuse a verified existing tab through focus only. Reuse preserves editor state, unsaved work and renamed tab titles. Ambiguous identity records refuse; unmarked panes are not adopted or closed. Partial launches report known identities for inspection rather than risking an automatic close or duplicate launch. See [navigation behaviour](../README.md#run-on-the-server-host) and [the view](../src/herdr/view.ts).
-
-## Packaging and verification boundary
-
-Pi receives the complete TypeScript source graph for Jiti reload correctness. Compiled ESM helpers remained cached after Pi cleared its extension cache; source loading refreshes local helpers without global cache changes. Herdr and library consumers still receive compiled JavaScript.
-
-The package requires Node.js 22 or later. It bundles neither host dependencies nor install hooks. Build and installation remain explicit. macOS has verified paths; Linux and SSH are unverified design targets, not demonstrated support. The [verification record](../README.md#verification-status) distinguishes unit, loader, packaging and isolated native checks from unverified live Pi lifecycle and summarisation.
-
-## Agreed direction not yet implemented
-
-The [shared workspace specification](workspace-context.md) records the agreed product rules. The [reviewed implementation plan](workspace-implementation.md) defines the persistence and runtime contracts. Implementation is in progress; these features are not active.
-
-Separate workspace and agent records will share a plan-derived Goal and references while retaining each agent's own status, Now and Remaining. Workspace-local checkout entries support documents across repositories and worktrees. Agent records identify their Pi session and working directory. Shared context repeats in each agent card pane; there is no workspace-overview tab.
-
-The live Herdr workspace defines membership, including moves and resumes. Startup and joining default to automatic, with manual operation configurable. Work Cards will replace the naming extension: workspace titles name workspaces, agent titles name Pi sessions, and only the first pane can name its tab. Manual names remain protected.
-
-Background helpers may add shared references but cannot remove them. Foreground management actions may remove references directly. `/work-card remove <substring>` must uniquely match a stored document path or issue/PR URL, without a picker. The implementation plan specifies persistence, migration, plan selection and coordination. Each implementation slice requires tests and independent review.
-
-[Herdr Annotate](https://github.com/plannotator/herdr-annotate) and Plannotator remain deferred in favour of the existing editor. [Source research on feedback delivery](https://github.com/plannotator/plannotator-tui/blob/main/crates/plannotator-tui/src/delivery.rs) indicates terminal input targets a pane, not a session-pinned callback. A replacement agent could receive feedback. The integration has not been installed or runtime-tested.
-
-## Appendix A Cost analysis
+## Supporting evidence from historical cost analysis
 
 ### Prices and accounting
 

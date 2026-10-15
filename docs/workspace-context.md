@@ -1,240 +1,158 @@
-# Shared workspace context and agent cards
+# ADR 2 Shared workspace context and per-session agent state
 
-Status: the workspace runtime is active, the legacy runtime is removed and the local records have been merged with backups. Automatic naming and foreground management remain unfinished. [The implementation plan](workspace-implementation.md) records the reviewed contracts and verification evidence. [The architecture document](design.md) provides design rationale and earlier context.
+Status: accepted; the workspace and agent runtime is active. General foreground management and the complete automatic naming rollout remain unfinished. See [status and boundaries](#status-and-boundaries). [ADR 1](design.md) defines the product purpose, evidence policy and authority limits.
 
-## Objective
+## Context and problem
 
-Show the shared purpose and references of a Herdr workspace alongside each Pi session's own assignment and progress. Support agents working in different repositories or worktrees without changing which file a shared reference opens.
+One card cannot cleanly represent both shared project intent and several agents' independent assignments. One agent's progress must not replace another's status or rewrite the group's references.
 
-A workspace can contain a library checkout and a client checkout. Each agent has its own status and summary. Both card panes show the same workspace goal and references. There is no separate workspace-overview tab.
+Agents in one Herdr workspace can work in different repositories or worktrees. A shared document must open the same file for each agent, regardless of its working directory. Moving a session to another workspace must change its shared context without copying the source workspace's links.
 
-## Agreed ownership
+## Decision
 
-| Record or surface | Authority |
+### Separate shared intent from own-agent progress
+
+Use two durable record types:
+
+| Record | Owns |
 | --- | --- |
-| Workspace record | Shared title, plan-derived goal, checkout table, documents, issues and PRs |
-| Agent record | Its Pi session identity, workspace membership, checkout, working directory, title, status, Now and Remaining |
-| Workspace name | Workspace title, independent of any agent's assignment |
-| Pi session name | That agent's title |
-| Herdr tab name | Agent title, but only the first pane in the current tab layout has naming rights |
-| Document editor tab | Document identity, qualified by checkout and path when needed; preserve manual renames |
+| Workspace | Shared title, plan-derived Goal, checkout registrations, documents, issues, PRs and removal exclusions |
+| Agent | Pi session identity, workspace membership, checkout, actual working directory, title, status, Now and Remaining |
 
-Work Cards will replace the separate `herdr-naming.ts` extension. Do not run competing automatic namers. Disable the old extension only when the replacement is ready.
+Each card pane combines the workspace Goal and references with its own agent's assignment and progress. Several agent/card pairs can share a native workspace. There is no workspace-overview tab.
 
-The summarizer generates automatic titles. Explicit manual names remain protected. Titles and display labels are not record identities.
+Goal describes shared intent, not aggregate progress. Status, Now and Remaining describe the agent's assignment, not the whole project's backlog. One agent's Now must not become the workspace summary.
 
-## Records and checkout identity
+The Pi session UUID identifies the agent. Resuming that UUID retains its record; a fork with a new UUID gets another record. A session-file path is only a locator. Titles are presentation, never identity. Runtime code supplies identities, membership and directories; helpers cannot change them.
 
-Store shared workspace data separately from agent data. An agent changing its status must not rewrite another agent's status or replace the shared reference collection.
+Records remain authoritative and local. Native metadata binds a live workspace to a durable workspace record and projects display information. It does not become a repository registry or durable project database.
 
-Each workspace has a local checkout table. A checkout means a concrete directory on the execution host, not a Git remote or repository name. Two worktrees of one repository can hold different versions of a document and remain distinct checkouts. Do not introduce a global repository registry.
+### Give documents explicit checkout identities
 
-Documents reference a checkout key and a relative path. Agents identify their checkout and actual working directory, which may be a subdirectory. A document's location never depends on the viewing agent's working directory.
+A checkout is a canonical directory on the execution host, not a remote URL or repository name. A workspace-local table assigns stable keys to those directories. Two worktrees remain distinct even when they belong to the same repository. Directory aliases reuse the same canonical entry.
 
-These examples show domain fields, not the serialized schema. The implementation plan specifies storage versioning, title provenance and summary-source metadata.
+A document reference identifies a checkout key and relative path. An agent separately records its checkout and actual working directory, which may be a subdirectory. Neither viewing-agent cwd nor display labels determine document targets.
 
-Workspace example:
+Do not silently relocate a registered checkout or recycle its key. References, exclusions and agent records retain their checkout identities. Missing files remain removable references; opening reports failure rather than guessing another checkout. Canonical path checks enforce the document boundary described in [ADR 1](design.md#make-local-records-authoritative).
 
-```yaml
-id: workspace-id
-title: Library and client integration
-goal: Introduce the new library API and update its client
-checkouts:
-  library:
-    directory: /code/library
-  client:
-    directory: /code/client
-documents:
-  - checkout: library
-    path: docs/design.md
-    description: Library API change plan
-  - checkout: client
-    path: docs/integration.md
-    description: Client integration plan
-issues: []
-prs: []
-```
+### Follow verified native membership
 
-Agent example:
+The live Herdr workspace defines the group, not a shared repository directory or GUI focus. Reconciliation follows verified terminal identity through authoritative native inventories. Public pane IDs can change during moves while terminal identity survives.
 
-```yaml
-workspace_id: workspace-id
-session:
-  id: pi-session-uuid
-  file: /host/path/to/session.jsonl
-checkout: client
-cwd: /code/client/packages/sdk
-title: Client integration
-status: active
-now: Client adapter implemented
-remaining: Verify compatibility with the new library API
-```
+Use serialised polling, including while Pi is idle. Pi has no native workspace-movement event. Polling avoids a separate raw-socket subscription client and a higher minimum Herdr version solely for events. Detection is eventual, not instantaneous. Missing or ambiguous identity suspends effects.
 
-The Pi session UUID identifies the agent record. Resuming the same session retains that identity; a fork with a different UUID gets a new record. The session file is a locator, not an identity, and is null when unavailable. The runtime supplies these fields; the summarizer cannot invent or alter them.
+Automatic startup and joining wait for meaningful task context. Configurable manual operation waits for explicit open or join; attached summaries still continue. In manual mode, observing a move suspends source-workspace effects until explicit destination joining.
 
-Checkout keys stay stable when display labels change. Resolve directory aliases deliberately so one checkout is not registered twice under different spellings. Document access must still reject traversal, escaping symlinks and non-regular files. A missing document remains a removable reference; opening it reports the failure rather than guessing another checkout.
+On a verified move, retain the agent identity, assignment and status. Join the destination context and register or reuse the checkout there. Leave source documents, issues and PRs in the source. Invalidate old-membership work before it can affect the destination or continue changing the source. An unbound destination gets fresh context; selecting an existing durable workspace is explicit, not a guessed copy.
 
-## Display and navigation
+### Separate evidence by purpose
 
-Each card combines the workspace Goal with the agent's Now and Remaining. The latter describe that agent's assignment, not the entire project's backlog.
+| Purpose | Permitted source |
+| --- | --- |
+| Own-agent title, status, Now and Remaining | Projected compaction plus retained human-readable dialogue, with shared context |
+| Shared-reference additions | Fresh dialogue evidence since joining the workspace |
+| Workspace Goal | Selected registered Markdown plans only |
 
-Use the workspace title as the Goal label and the agent title as the Now label:
+Full own-agent history does not authorise shared additions after a move. Track a membership-specific evidence boundary. Inherited fork history, old compaction and pre-move dialogue cannot repopulate source links in the destination. If continuity cannot be proved after resume, tree navigation or compaction, reset the boundary and wait for fresh messages. Conservative omission is preferable to copying old context.
 
-```text
-Workspace title: shared goal
-Agent title: current progress                    ● active
-Remaining work
-```
+Select plans automatically from known document references, not through a recursive repository crawler. No suitable plan means no invented Goal. Runtime code reads sources within registered checkouts, with a 256 KiB limit per file. Oversized or unreadable selected sources fail visibly rather than being silently truncated.
 
-Italicize both titles and the remaining-work text. Keep Goal and Now text plain, without separate `Goal:` or `Now:` labels. Place the agent's status beside its progress when space permits. Omit empty remaining-work text; a title can stand alone when its corresponding text is empty. Wrap long text within the existing height and reference-space limits. Preserve reference shortcuts and the close hint.
+Retain selected-source provenance with the Goal. Changes to candidate references trigger reselection. Scheduled checks reread selected sources and reuse unchanged Goal results; explicit refresh reruns selection and inference. Revalidate source identities and bytes before accepting results so an inference cannot silently use changed files. Ordinary dialogue is not a reason to rewrite shared Goal. A plan establishes intent, never completed work.
 
-For one checkout, retain the current short document path:
+The model still interprets whether a document is a plan and what it means. Authority checks and provenance do not guarantee correct selection or a useful Goal.
 
-```text
-[a] docs/design.md
-```
+### Make shared additions additive and removals explicit
 
-For multiple checkouts, qualify document paths:
+Session-evidence helpers may update only their own agent and propose shared additions. Plan-derived updates use the separate source policy above. Neither path may remove references, delete records, register arbitrary roots or write project documents. Separate request contracts enforce these limits rather than trusting a prompt to preserve arrays.
 
-```text
-[a] library/docs/design.md
-[b] client/docs/integration.md
-```
+Shared additions merge against current references without dropping another agent's additions. Explicit removal records an exclusion in the same workspace write. Old or stale helper evidence cannot resurrect the removed reference. Only an explicit foreground re-add clears its exclusion.
 
-Start checkout labels with the directory basename. If basenames collide, include more parent components until they distinguish the checkouts, such as `backend/common` and `frontend/common`. Compute labels consistently across the workspace, not separately for each agent. Labels may change as checkouts are added; stored identities must not.
+Document reference identity is checkout key plus relative path. Link identity is the exact stored URL. Broken document references remain removable without resolving an existing file. Display letters and link numbers are never removal identities.
 
-Apply the same qualification to automatic editor-tab names when needed. Preserve manually renamed tabs and unsaved editors. Reuse uses verified canonical checkout and file identity, never the displayed label. Collision-driven title refresh requires surface ownership and a current name matching the last automatic name, as specified in the implementation plan.
+Keep `work_card` read-only. The accepted foreground-management design scopes mutations to the current workspace and calling agent. Runtime identities and plan-derived Goal are not arbitrary patch fields. Reference removal is direct and metadata-only: no file deletion, remote issue/PR closure or confirmation dialog.
 
-Document letters and link numbers remain positional and may renumber. Removal does not use these shortcuts as identifiers. HTTP links keep their existing client-handled opening behavior.
+`/work-card remove <substring>` uses a nonempty literal, case-sensitive substring of a resolved stored document path or stored URL. Exactly one match is required. Missing or ambiguous matches change nothing; ambiguity reports qualified candidates, not a picker. A fresh revision check prevents removing a different target after concurrent edits.
 
-## Startup and workspace membership
+Whole-record deletion is separate. Refuse workspace deletion while any agent refers to it, including the caller. Explicit own-agent deletion may precede workspace deletion. Neither operation closes the native workspace or deletes project files.
 
-Startup and joining are automatic by default, with configurable manual operation. Manual operation waits for explicit open or join; it does not disable summaries after attachment. Start naming from meaningful task context rather than an empty session.
+### Preserve authority through partial transitions
 
-The live Herdr workspace defines the group. Do not infer membership merely because two sessions use the same checkout.
+Use validated records, revisions, cooperating-writer locks and atomic replacement, not a new database. Inference runs outside write locks. Reference additions merge; other edits reject stale whole-record revisions rather than introducing general field-by-field merging.
 
-When an agent moves or resumes in another Herdr workspace:
+Membership changes and shared mutations share store-level coordination. Bind shared writes to the current agent membership, not merely a workspace filename. Multiple record replacements and native publications are not one atomic transaction.
 
-1. Resolve the destination from verified live caller identity, not inherited environment IDs or GUI focus.
-2. Join the destination's shared context and register or reuse the agent's checkout there.
-3. Retain the agent's session identity, assignment and status.
-4. Leave shared documents, issues and PRs in the source workspace. Do not copy them as part of the move.
-5. Invalidate requests tied to the previous membership so their results cannot be applied after the transition is observed.
+Joining reserves one destination identity before creating records, then publishes a ready binding only after membership is committed. Interrupted work can recover its matching reservation rather than allocate competing workspaces. Recovery may leave unused records, but must not leave dangling agent references. If reliable binding evidence is lost, recovery is explicit; labels and cwd are not substitutes for identity.
 
-The destination may need a different local checkout key. That must not redirect a document or change the actual directory in which Pi runs.
+### Keep lifecycle independent of display presence
 
-Membership changes are not evidence to import references from old conversation history. The design must distinguish new-workspace contributions from inherited evidence, rather than allowing the first post-move summary to repopulate the source workspace's links.
+Each pair has verified agent, terminal, store and ownership identities. No agent may adopt or close another agent's card. Movement may refresh public pane IDs for the same owned terminals; it does not authorise taking over a restored or unrelated process.
 
-Keep records after a pane or workspace closes. Closing a card with `q` remains a display action, not a detach or deletion. Automatic startup must be idempotent and must not keep reopening a deliberately closed card.
+Persist a display-open attempt before launch. Reload can recover an exactly verified existing pair, but absence after an attempt does not permit automatic respawn. `q` closes only the display; summaries continue. Explicit open can create a new attempt. Replacing a display after an agent-only move requires positive evidence of a live owned old display, not its absence.
 
-The exact behavior during unavailable Herdr identity, idle tab moves and restored sessions needs native API verification. Do not claim an event or instantaneous move detection without evidence.
+Detach pauses updates before fallible cleanup and preserves enough identity for recovery. Closing panes or native workspaces does not delete records. Cancelled session transitions do not retire a still-live display; successful transitions invalidate stale callbacks. Reload retains a valid pair.
 
-## Summary inputs and write permissions
+### Group context quietly and navigate exact targets
 
-The workspace goal comes only from selected plan documents. Linked files are not automatically authoritative plans. Select plan documents automatically at first; do not invent a goal from agent dialogue when no suitable plan exists.
+Put the workspace title in the native card-pane border. Show an unlabelled, muted, full-width Goal above the agent's work. Render the own-agent title in bold with normal-weight Now text, followed by a bold `Remaining:` label and normal body. Status sits beside progress when space permits. Omit empty Goal and Remaining sections.
 
-Agent summaries use session evidence and shared context, while retaining the current truthfulness and no-activity-log guidance. A plan proves intended scope, not completed work.
+Optional blank lines separate Goal, work and references only when rows are spare. They must not displace content or the close hint. Documents form a responsive row-major grid. Prefer fewer columns with full paths before truncating a single column. Directories are dim, filenames normal and shortcut letters cyan. Issues and PRs occupy their own rows.
 
-Background summaries may:
+Use positional document letters `a` to `z`, excluding `q`. Assignment remains stable across column layouts, but reference changes can renumber it. Only fully painted shortcuts are active. After a fresh read, check the exact opaque target again before opening; truncation must never change it. HTTP links use the terminal client's link gesture; displayed numbers are inert.
 
-- update the calling agent's automatic title, status, Now and Remaining
-- derive the workspace's automatic title and goal from their approved inputs
-- propose additions to shared documents, issues and PRs
+With one checkout, show the relative path. With several, prefix the shortest distinguishing checkout-directory suffix. Compute labels across the workspace, including basename collisions. Labels may change as checkouts are added; identities do not.
 
-They may not:
+Open the exact canonical file in a full editor tab on the execution host. Reuse only a verified matching tab, preserving unsaved state and manual names. Unmarked or ambiguous tabs are not adopted. A metadata-projection failure must not disable independently verified navigation. Partial launch uncertainty reports known identities rather than blindly retrying and creating duplicates.
 
-- remove references or delete records
-- modify another agent's fields
-- change runtime identity, membership or working directories
-- register arbitrary filesystem roots
-- rename manually named surfaces or write project documents
+### Protect manual names on every surface
 
-The final request and patch contracts must enforce field ownership and additive reference updates. Prompt instructions alone are not a substitute for these restrictions. Source interpretation and summary quality still depend on the model.
+The accepted complete naming model is:
 
-Shared additions merge without dropping another agent's additions. Stale shared results cannot resurrect a removed reference. Explicit removal must also survive later summarization of old evidence. A workspace-level exclusion set preserves removals. Only an explicit foreground re-add clears an exclusion; excluded document identities also retain their checkout keys.
+| Surface | Automatic source |
+| --- | --- |
+| Native workspace | Workspace title |
+| Pi session | Own-agent title |
+| Agent tab | Own-agent title, only when its pane is the actual first layout pane |
+| Editor tab | Document identity, qualified by checkout and path when needed |
 
-Plan loading must use known checkout boundaries and current selected references. Choose a bounded source-reading policy and a refresh trigger before implementation. Do not add an unrestricted model filesystem tool or silently truncate input while claiming a complete plan view.
+Only the actual first layout pane has tab naming rights. Do not skip an ineligible first pane to find a later agent or editor. Session naming remains per-agent even for non-first panes.
 
-## Foreground management and removal
+Automatic record titles do not grant permission to overwrite manual native labels. Track naming provenance with the surface, including its last applied automatic name, rather than with whichever agent currently comes first. Transfer of naming authority must retain that history. A changed external label becomes a protected manual override. Without provenance, preserve existing nondefault names. Malformed provenance suspends naming.
 
-Keep `work_card` read-only. Add scoped management actions for creating, reading, updating and deleting records and references. Start with the current workspace and calling agent, not a global manager for arbitrary agents' cards.
+Use local surface-scoped provenance where native metadata is insufficient, notably tabs. Scope it to the verified binding lifetime so recreated surfaces cannot inherit unrelated naming rights. This is a transient cache, not project state or a global registry. If a rename succeeds but provenance cannot be saved, preserve the now-unproven label rather than overwrite it on retry. A manual tab label must not be forced onto a separately named Pi session.
 
-Foreground agent reference removals execute directly, without a confirmation dialog. The management API identifies a document by an exact checkout/path identity, or a link by its exact URL. It does not depend on display numbering.
+The card-pane caption is a separate app-owned projection of workspace title. Its implementation does not establish complete workspace, tab or Pi naming. Do not run competing automatic namers; replace the old naming extension only after the new path is verified.
 
-The command is:
+## Alternatives and tradeoffs
 
-```text
-/work-card remove <substring>
-```
+| Alternative | Reason for this decision |
+| --- | --- |
+| One shared card for all agents | Conflates group intent with individual progress and ownership |
+| Duplicate all context per session | References diverge and moves can copy unrelated context |
+| Group by cwd or repository | Cannot represent a multi-repository native workspace or distinguish worktrees reliably |
+| Derive Goal from dialogue | Lets one agent's task or inherited history redefine shared intent |
+| Let helpers replace reference arrays | Can drop concurrent additions or undo explicit removals |
+| Add a global checkout registry | Extends authority beyond the local workspace without a demonstrated need |
+| Use native focus or labels for recovery | Presentation and focus do not prove identity or ownership |
+| Keep a legacy importer and runtime | A small local inventory allowed a backed-up one-off conversion instead |
 
-It performs a literal, case-sensitive substring match against resolved stored document paths and stored issue/PR URLs. Require a non-empty argument matching exactly one reference across all groups. A relative suffix still works because it occurs in the resolved path.
+These choices accept repeated shared context in each pane, conservative recovery and sometimes rejected stale edits. Polling introduces detection delay. Separate requests can delay Goal display. Explicit checkout and naming provenance add local state, but prevent ambiguous file opening and unwanted renaming.
 
-For no matches, report not found. For multiple matches, report qualified candidates and change nothing. Do not open a picker. Resolve against a checked snapshot and reject stale removal rather than silently selecting another target.
+## Consequences
 
-Removal unlinks metadata only. It does not delete a file or close an issue or PR. Whole-record deletion is a separate operation and must not silently cascade into other agents, project files or remote artifacts. Refuse workspace deletion while any agent record refers to it, including the caller. Explicit own-agent deletion may precede workspace deletion.
+Each agent can update its progress without claiming the whole project. Shared Goal is anchored to registered intent, while own-agent progress remains evidence-based. Fresh-membership additions and persistent exclusions prevent historical dialogue from silently reversing moves or removals.
 
-## Persistence and migration requirements
+The system deliberately leaves some recovery and management explicit. Records can survive their native bindings. Native operations and filesystem writes cannot be made one transaction; uncertainty must remain visible rather than trigger destructive cleanup or guessed adoption.
 
-Retain strict validation, optimistic revision checks, exclusive cooperating-writer locks and atomic file replacement. Keep the existing distinction between atomic visibility and crash durability. Herdr metadata remains a transient binding or projection, not the durable source of truth.
+## Status and boundaries
 
-Splitting records introduces multi-file transitions. Specify write ordering and recovery for partial creation, membership changes and migration; do not describe several independent renames as one atomic transaction.
+The workspace/agent runtime is active. The old single-card runtime, launch mode and compatibility paths are removed. A backed-up one-off local merge preserved references, manual title and valid plan provenance without importing obsolete progress or modifying session history. There is no runtime importer to rerun.
 
-Use only workspace and agent records after cutover. Do not retain the old launch environment, compatibility branches or a runtime importer. The user approved a one-off conversion of the small local inventory instead.
+Implemented behavior includes membership reconciliation, separate evidence paths, removal exclusions, per-agent pairs, exact editor navigation and the card-pane caption. The grouped display, responsive document grid and caption updates passed isolated native verification with a real card process and synthetic shell owner.
 
-Back up the existing card files and native binding metadata before conversion. Preserve references, supported own-agent state and manual names. Leave session history untouched. Do not treat an old conversation-derived Goal as plan provenance. Verify the replacement before switching live bindings or disabling the separate naming extension.
+Earlier isolated native checks covered independent pairs, exact document targets and reuse, manual editor labels, close-without-respawn, explicit reopening, agent-only moves, sequential pair moves and nested sizing. Host checks used injected SDK callbacks and fake helpers, not complete Pi sessions. They do not establish full Pi-session move/reconnect behavior, model quality or an atomic cross-workspace whole-tab move.
 
-## Implementation sequence for review
+Native metadata projection currently runs in the card display loop. Closing the card stops that projection, although Pi continues updating durable summaries. Sidebar configuration and other integrations do not automatically migrate to the new fields.
 
-- [x] Specify and test the workspace, checkout, agent and reference contracts, including forbidden mutations.
-- [x] Implement record persistence and guarded shared-reference operations, including removal exclusions and recovery from partial operations.
-- [x] Adapt the combined card view and document opener to explicit checkout identities and qualified names.
-- [x] Replace workspace-wide single-card ownership with verified per-agent pane ownership; test multiple tabs in one workspace.
-- [x] Add session-backed startup, restore and membership transitions, including movement and `q` behavior.
-- [x] Separate agent summarization from shared plan-derived updates, with provenance and stale-input checks.
-- [ ] Add automatic naming and manual-name protection; prove first-pane-only tab naming.
-- [x] Add command entrypoints, convert the local records once and remove the old runtime.
-- [ ] Add scoped foreground management entrypoints.
-- [ ] Verify the replacement before disabling the old naming extension and updating installed-session instructions.
+General foreground CRUD management and complete automatic workspace/tab/Pi naming remain unfinished. The separate `herdr-naming.ts` extension is still enabled. First-pane naming, protected manual names and safe replacement of that extension remain rollout requirements, not claims of completed behavior.
 
-This order may change after the native integration investigation. Each implementation slice needs failing tests first, relevant verification, review and a focused local commit. No pushes are authorized.
-
-## Project conventions and verification
-
-Use the existing ESM TypeScript package and dependencies. Runtime sources live in `src/`; Node test-runner tests live in `tests/`; design documents live in `docs/`. Pi loads the source TypeScript graph; Herdr loads compiled JavaScript. Do not introduce a second package or a central registry.
-
-Match the current style: single quotes, 2-space indentation, small typed functions and explicit host-boundary dependencies. For example:
-
-```ts
-export interface CardDocument { path: string; description: string }
-```
-
-Use the commands defined in `package.json`:
-
-```sh
-npm run check
-npm run build
-npm test
-```
-
-`npm test` builds first and then runs `node --test tests/*.test.mjs`. Verify supported Node 22 and the current Node 26 environment. Use the real Pi loader/package tests, deterministic host doubles for lifecycle cases, and isolated native Herdr checks for movement and multi-tab ownership. Do not call test doubles live UI verification.
-
-Required regression cases include:
-
-- independent status updates from two agents sharing one workspace
-- same relative document path in distinct checkouts and basename collisions
-- canonical aliases, worktrees, missing files, escaping symlinks and Unicode display bounds
-- shared additions racing with additions and explicit removals
-- old evidence not undoing removal or copying references after a workspace move
-- UUID-preserving resume, fresh-UUID forks and ephemeral sessions
-- reload, tab moves, stale callbacks, partial creation and closed card panes
-- first-pane naming rights and preserved manual session, workspace and editor names
-- unique, missing and ambiguous removal matches across documents and URLs
-- one-off local conversion, exact launcher-to-pane environment, package contents and read-only tool behavior
-
-Always preserve user edits and unrelated `.pi/subagents.json`. Ask before adding dependencies, changing the approved ownership model or performing destructive live migration. Never overwrite another agent's state, guess ownership from GUI focus, run competing naming extensions, remove failing tests or bypass signing.
-
-## Technical review and remaining verification
-
-Astra approved the corrected contract and the implemented runtime slices. Native adapter checks cover movement, independent pairs, documents and sizing. Full Pi-session move/reconnect behavior and automatic naming still need runtime verification. Foreground management remains to be implemented. Keep persistence recovery, reference exclusions, evidence boundaries and source freshness in the review gates.
-
-Product changes discovered during implementation return to the user rather than becoming undocumented defaults.
+Operational rollout chronology, temporary harness paths and test counts are not part of this decision record. Code, tests and version history retain implementation detail. The [README verification status](../README.md#verification-status) distinguishes demonstrated support from remaining verification.

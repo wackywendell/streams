@@ -108,6 +108,8 @@ pi install /absolute/path/to/work-cards
 herdr plugin link /absolute/path/to/work-cards/herdr-plugin.toml
 ```
 
+Keep commits logically atomic and fold minor corrections into their owning change. Use Astra review for significant implementation or design changes, not every small edit. Product or authority changes require user agreement.
+
 `npm test` builds with TypeScript and runs `tests/*.test.mjs`. `npm run build` refreshes compiled Herdr code. Build after changing the pane. Once changes are complete, `/reload` refreshes Pi's local TypeScript graph. Compiled native ESM extensions can retain stale helpers across same-process reloads; the declared Pi entrypoint remains `src/pi/index.ts`.
 
 The plugin requires a compatible Herdr server version 0.9.3 or later. Explicit open registers a missing exact plugin registration, but does not replace a conflicting or disabled registration. Relink explicitly if the linked manifest lacks the card or document entrypoint. Work Cards never restarts or updates Herdr or approves hooks.
@@ -124,4 +126,9 @@ A separate isolated Herdr 0.9.5 display check verified the grouped body, three-c
 
 These checks made no changes to normal Herdr resources and used no paid model calls. Full automatic naming and foreground management remain unfinished. Linux, SSH and remote operation, browser-click handling, visual sidebar rendering and complete live Pi summarisation remain unverified. The existing naming extension is not disabled by this package change.
 
-See the approved [workspace contract](docs/workspace-context.md) and [implementation plan](docs/workspace-implementation.md) for scope and rollout boundaries.
+## Architecture decisions
+
+- [ADR 1 Durable, evidence-grounded orientation](docs/design.md) explains the product purpose, local authority, helper evidence and tradeoffs, with the historical cost analysis
+- [ADR 2 Shared workspace context and per-session agent state](docs/workspace-context.md) explains ownership, checkout identity, membership, naming and the combined interface
+
+The former implementation plan is retired. These ADRs record decisions and boundaries; commands, configuration and verification status remain here.
