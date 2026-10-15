@@ -7,6 +7,7 @@ import { isDeepStrictEqual } from 'node:util';
 import { homedir } from 'node:os';
 import { resolveDocument, type CardSnapshot } from '../card.js';
 import { configPath, documentCommand, type WorkCardsConfig } from '../config.js';
+import { parseStateSections } from '../state.js';
 import { classifyExplicitOwner, liveOwner, workspaceKeys, type Attachment, type Pane, type Workspace } from './ownership.js';
 export type { Attachment } from './ownership.js';
 type Run = (argv: string[], timeoutMs: number) => Promise<string>;
@@ -258,7 +259,8 @@ export class HerdrClient {
       const workspace = await this.workspace(expected.workspaceId, config);
       const live = liveOwner(expected.socket, identity, workspace, [current]);
       if (!live || !isDeepStrictEqual(live, expected)) throw new Error('Work-card ownership conflict: publisher is no longer the live owner');
-      const summary = Array.from(`${snapshot.card.status} · ${snapshot.card.state}`.trim()).slice(0, 80).join('');
+      const state = parseStateSections(snapshot.card.state)?.now ?? snapshot.card.state;
+      const summary = Array.from(`${snapshot.card.status} · ${state}`.trim()).slice(0, 80).join('');
       if (workspace.tokens.wc_status === snapshot.card.status && workspace.tokens.wc_summary === summary) return;
       await this.report('workspace', expected.workspaceId, { wc_status: snapshot.card.status, wc_summary: summary }, config);
     });

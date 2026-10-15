@@ -77,7 +77,7 @@ test('actual npm tarball includes the source graph and compiled Herdr, and loads
   const files = new Set(packed.files.map(file => file.path));
   const sourceFiles = (await readdir(join(root, 'src'), { recursive: true })).filter(path => path.endsWith('.ts'));
   for (const path of sourceFiles) assert.ok(files.has(`src/${path}`), `Missing packed source: ${path}`);
-  for (const path of ['package.json', 'dist/pi/index.js', 'dist/herdr/client.js', 'dist/herdr/pane.js', 'dist/card.js', 'dist/config.js', 'bin/open-document.sh', 'herdr-plugin.toml']) {
+  for (const path of ['package.json', 'dist/pi/index.js', 'dist/herdr/client.js', 'dist/herdr/pane.js', 'dist/card.js', 'dist/config.js', 'dist/state.js', 'src/state.ts', 'bin/open-document.sh', 'herdr-plugin.toml']) {
     assert.ok(files.has(path), `Missing packed runtime: ${path}`);
   }
   assert.ok([...files].every(path => !path.startsWith('tests/') && !path.startsWith('node_modules/')));
@@ -90,6 +90,8 @@ test('actual npm tarball includes the source graph and compiled Herdr, and loads
   const extension = await loadPackage(packageRoot);
   assert.equal(extension.resolvedPath, join(packageRoot, manifest.pi.extensions[0]));
   assert.deepEqual(manifest.exports, { './card': './dist/card.js', './config': './dist/config.js' });
+  const { parseStateSections } = await import(pathToFileURL(join(packageRoot, 'dist/state.js')));
+  assert.deepEqual(parseStateSections('Goal: Purpose | Now: Ready | Remaining: Scope'), { goal: 'Purpose', now: 'Ready', remaining: 'Scope' });
   const { HerdrClient } = await import(pathToFileURL(join(packageRoot, 'dist/herdr/client.js')));
   assert.equal(resolve(new HerdrClient({ env: {} }).pluginRoot), packageRoot);
   t.diagnostic(`packed ${files.size} files (${sourceFiles.length} TypeScript sources); extracted ${manifest.pi.extensions[0]} registered work-card/work_card with supplied host dependencies`);

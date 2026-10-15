@@ -64,6 +64,71 @@ test('quiet wide and narrow layouts wrap sentences and retain useful references'
   ].join('\n'));
 });
 
+test('canonical short state paints separate ordered sections without carrier pipes', () => {
+  const c = { ...card, state: 'Goal: Reliable recovery | Now: Failure reproduced | Remaining: Choose retry' };
+  assert.deepEqual(unstyled(render(c, 72, 8).text).split('\n').slice(1, 6), [
+    'Goal: Reliable recovery', 'Now: Failure reproduced', 'Remaining: Choose retry',
+    '[a] docs/design.md', '[1] Issue: Workspace design',
+  ]);
+  assert.deepEqual(unstyled(render(c, 24, 8).text).split('\n').slice(1, 6), [
+    'Goal: Reliable recovery', 'Now: Failure reproduced', 'Remaining: Choose retry',
+    '[a] docs/design.md', '[1] Issue: Workspace de…',
+  ]);
+});
+
+test('section wrapping reserves later headings and ellipsizes within the state budget', () => {
+  const c = { ...card, state: 'Goal: Very long purpose that would otherwise consume all the available rows | Now: Usable stage | Remaining: Major unfinished scope' };
+  assert.deepEqual(unstyled(render(c, 24, 8).text).split('\n').slice(1, 7), [
+    'Goal: Very long purpose', 'that would otherwise…', 'Now: Usable stage', 'Remaining: Major…',
+    '[a] docs/design.md', '[1] Issue: Workspace de…',
+  ]);
+  assert.deepEqual(unstyled(render(c, 24, 6).text).split('\n').slice(1, 5), [
+    'Goal: Very long purpose…', 'Now: Usable stage', 'Remaining: Major…', '[a] docs/design.md',
+  ]);
+  const noRefs = { ...c, documents: [], issues: [] };
+  assert.deepEqual(unstyled(render(noRefs, 40, 3).text).split('\n').slice(1), [
+    'Goal: Very long purpose that would…', 'Now: Usable stage…' + ' '.repeat(13) + '[q] close',
+  ]);
+});
+
+test('each section wraps independently when there is enough height', () => {
+  const c = { ...card, documents: [], issues: [], state: 'Goal: Reliable queue recovery | Now: Failure reproduced | Remaining: Choose retry policy' };
+  assert.deepEqual(unstyled(render(c, 20, 12).text).split('\n').slice(1, 7), [
+    'Goal: Reliable queue', 'recovery', 'Now: Failure', 'reproduced', 'Remaining: Choose', 'retry policy',
+  ]);
+  assert.deepEqual(unstyled(render({ ...c, state: 'Goal: Purpose | Now: Stage | Remaining: Work' }, 30, 2).text).split('\n'), [
+    'Work cards            ● active', 'Goal: Purpose…' + ' '.repeat(7) + '[q] close',
+  ]);
+});
+
+test('malformed section carriers stay whole in the legacy prose layout', () => {
+  for (const state of ['Goal: Purpose | Now: Stage', 'Goal: Purpose | Now: Stage | Remaining: Work | Other: Extra',
+    'Goal: Purpose | Now: Stage Remaining: Ambiguous | Remaining: Work']) {
+    const text = unstyled(render({ ...card, state, documents: [], issues: [] }, 200, 8).text);
+    assert.equal(text.split('\n')[1], state);
+  }
+});
+
+test('section content is sanitized and UTF-8/cell bounded with tiny panes, references, notices and footer', () => {
+  const c = { ...card, state: 'Goal: 界😀e\u0301\ud800\x1b[31m\u202e | Now: ' + '界'.repeat(30) + ' | Remaining: Scope\udc00' };
+  const wide = render(c, 200, 8).text;
+  assert.ok(unstyled(wide).includes('Goal: 界😀e\u0301�[31m'));
+  assert.ok(unstyled(wide).includes('Remaining: Scope�'));
+  assert.doesNotMatch(wide, /\x1b\[31m|\u202e/);
+  for (let rows = 0; rows <= 10; rows++) for (let columns = 0; columns <= 40; columns++) {
+    for (const notice of [undefined, 'Notice\ud800\x1b[2J']) {
+      const rendered = renderCard(snapshot(c), columns, rows, notice);
+      const text = unstyled(rendered.text), lines = text.split('\n');
+      assert.equal(rendered.text, Buffer.from(rendered.text).toString('utf8'));
+      assert.ok(!text || lines.length <= rows);
+      assert.ok(lines.every(line => stringWidth(line) <= columns));
+      assert.doesNotMatch(rendered.text, /\x1b\[2J|\x1b\[31m|\u202e/);
+      if (rows && columns >= 3) assert.ok(lines.at(-1).endsWith(columns >= 9 ? '[q] close' : '[q]'));
+      for (const key of rendered.documents.keys()) assert.ok(lines.some(line => line.startsWith(`[${key}]`)));
+    }
+  }
+});
+
 test('trusted palette styling is closed and state stays normal contrast', () => {
   const text = render(card, 72, 8).text;
   assert.match(text, /\x1b\[1mWork cards\x1b\[0m/);

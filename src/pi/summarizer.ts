@@ -30,11 +30,12 @@ Routine task completion must not replace a broad project status. Keep a sound pr
 If goal/scope excerpts are supplied, use them only to understand intended scope. Do not infer completion from a design or plan document.
 State helps someone returning a month later see the broad durable milestone and important unfinished work, not the last action or an activity log.
 Summarize project-level progress and remaining work for a user navigating multiple agents, not the latest micro-task.
-Aim for 1–2 short sentences, about 20–30 words. Avoid routine commit IDs, test counts/versions, reviewer names, and implementation minutiae.
+Use three sections: Goal is the project purpose; Now is the current broad usable capability or stage, not the latest completed tasks; Remaining is major unfinished scope or blockers. Encode state as exactly one line: "Goal: ... | Now: ... | Remaining: ...". Aim for about 20–30 words TOTAL, excluding labels. Avoid routine commit IDs, test counts/versions, reviewer names, and implementation minutiae.
 Preserve relevant facts, not every historical detail. Do not invent completion or plans.
 Reconcile older blockers with the latest explicit outcomes; do not retain a resolved blocker after affirmative evidence of success.
 Do not promote unrelated working-copy hygiene into required work without evidence that it is relevant to or blocks the project.
 Condense verbose or activity-log-like existing state even without new progress; preserve-wording guidance must not prevent this repair.
+A legacy prose state may be converted to the requested format without new progress, preserving supported facts. Do not invent a goal or completion when unknown. Once correctly formatted and useful, routine work should not trigger rewrites.
 Once state meets this contract, ordinary tool activity, test passes, and commits should return no_change unless the overall state changes.
 Prefer no_change for other stylistic rewrites or uncertain conclusions.
 Do not invent completion, URLs, document paths, or progress. Mark done only with affirmative evidence.

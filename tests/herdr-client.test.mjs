@@ -113,6 +113,32 @@ test('pane publisher validates live ownership, updates summary, and refuses a re
   await assert.rejects(publisher.projectCard(snapshot(f.path), DEFAULT_CONFIG, attached), /conflict/i);
   assert.equal(f.workspace.tokens.wc_nonce, 'rebound');
 });
+test('sidebar projects only canonical Now, preserving cap, dedupe and prose fallback', async t => {
+  const f = await fixture(t); const attached = await f.client.attachCard(snapshot(f.path), DEFAULT_CONFIG);
+  const publisher = new HerdrClient({ env: { ...f.env, HERDR_PANE_ID: attached.paneId, WORK_CARDS_NONCE: attached.nonce }, pluginRoot: f.root,
+    run: async a => a[0] === 'pane' && a[1] === 'current'
+      ? JSON.stringify({ result: { type: 'pane_current', pane: f.panes[1] } }) : f.run(a) });
+  const saved = snapshot(f.path);
+  saved.card.state = 'Goal: Recovery | Now: Retry options documented | Remaining: Implement retry';
+  await publisher.projectCard(saved, DEFAULT_CONFIG, attached);
+  assert.equal(f.workspace.tokens.wc_summary, 'active · Retry options documented');
+  const writes = f.calls.filter(a => a[1] === 'report-metadata').length;
+  saved.card.state = 'Goal: Reliable recovery | Now: Retry options documented | Remaining: Decide first';
+  await publisher.projectCard(saved, DEFAULT_CONFIG, attached);
+  assert.equal(f.calls.filter(a => a[1] === 'report-metadata').length, writes);
+  saved.card.state = 'Goal: Recovery | Now: ' + '😀'.repeat(100) + ' | Remaining: Retry';
+  await publisher.projectCard(saved, DEFAULT_CONFIG, attached);
+  assert.equal(f.workspace.tokens.wc_summary, 'active · ' + '😀'.repeat(71));
+  assert.equal(Array.from(f.workspace.tokens.wc_summary).length, 80);
+  for (const state of ['Legacy progress', 'Goal: Recovery | Now: Ready',
+    'Goal: Recovery | Now: Ready | Remaining: Retry | Other: Extra',
+    'Goal: Recovery | Now: Ready Remaining: Hidden | Remaining: Retry']) {
+    saved.card.state = state;
+    await publisher.projectCard(saved, DEFAULT_CONFIG, attached);
+    assert.equal(f.workspace.tokens.wc_summary, Array.from('active · ' + state).slice(0, 80).join(''));
+  }
+});
+
 test('detach closes only matching pane and clears only its own tokens', async t => {
   const f = await fixture(t); await f.client.attachCard(snapshot(f.path), DEFAULT_CONFIG);
   f.workspace.tokens.unrelated = 'preserved';

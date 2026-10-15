@@ -63,7 +63,7 @@ test("summary brief requires durable milestones and unfinished work rather than 
   const prompt = buildSummaryContext(card, emptyInput, options).systemPrompt;
   assert.match(prompt, /returning a month later/);
   assert.match(prompt, /durable milestone.*important unfinished work/);
-  assert.match(prompt, /1–2 short sentences.*20–30 words/);
+  assert.ok(prompt.includes('Use three sections: Goal is the project purpose; Now is the current broad usable capability or stage, not the latest completed tasks; Remaining is major unfinished scope or blockers. Encode state as exactly one line: "Goal: ... | Now: ... | Remaining: ...". Aim for about 20–30 words TOTAL, excluding labels. Avoid routine commit IDs, test counts/versions, reviewer names, and implementation minutiae.'));
   assert.match(prompt, /commit IDs, test counts\/versions, reviewer names/);
   assert.match(prompt, /ordinary tool activity, test passes, and commits.*no_change/);
   assert.match(prompt, /single-line string/);
@@ -106,6 +106,10 @@ test("legacy state repair is allowed without new progress despite preserve-wordi
   assert.match(context.systemPrompt, /Condense verbose or activity-log-like existing state even without new progress/);
   assert.match(context.systemPrompt, /Preserve relevant facts, not every historical detail/);
   assert.match(context.systemPrompt, /preserve-wording guidance must not prevent this repair/);
+  assert.match(context.systemPrompt, /legacy prose state may be converted.*without new progress.*preserving supported facts/);
+  assert.match(context.systemPrompt, /Do not invent a goal or completion when unknown/);
+  assert.match(context.systemPrompt, /Once correctly formatted and useful, routine work should not trigger rewrites/);
+  assert.deepEqual(context.tools, []);
   assert.deepEqual(JSON.parse(text(context)), { ...emptyInput, card: legacy });
 });
 

@@ -1,6 +1,7 @@
 import { basename, dirname, isAbsolute } from 'node:path';
 import stringWidth from 'string-width';
 import { readCard, type CardSnapshot } from '../card.js';
+import { parseStateSections } from '../state.js';
 
 const documentKeys = 'abcdefghijklmnoprstuvwxyz';
 export function plain(text: string): string { return text.toWellFormed().replace(/[\p{Cc}\p{Cf}]/gu, ''); }
@@ -73,13 +74,35 @@ export function renderCard(snapshot: CardSnapshot | undefined, columns: number, 
       ...card.prs.map((link, index) => ({ label: plain(`[${card.issues.length + index + 1}] PR: ${link.description || link.url}`), url: webUrl(link.url), path: undefined, key: undefined })),
     ];
     const available = contentHeight - 1;
-    const stateLimit = references.length ? (available < 2 ? available : Math.min(Math.ceil(available / 2), Math.max(1, available - Math.min(2, references.length)))) : available;
-    const state = wrap(plain(card.state), width), visibleState = state.slice(0, stateLimit);
-    if (state.length > visibleState.length && visibleState.length) {
-      const last = visibleState.length - 1;
-      visibleState[last] = prefix(visibleState[last], width - 1).trimEnd() + '…';
+    let stateLimit = references.length ? (available < 2 ? available : Math.min(Math.ceil(available / 2), Math.max(1, available - Math.min(2, references.length)))) : available;
+    const sections = parseStateSections(card.state);
+    if (sections) {
+      // Make room for three headings without taking the existing reserved reference slots.
+      stateLimit = Math.max(stateLimit, Math.min(3, available - Math.min(2, references.length)));
+      const states = [
+        `Goal: ${sections.goal}`, `Now: ${sections.now}`, `Remaining: ${sections.remaining}`,
+      ];
+      let budget = stateLimit;
+      for (const [index, text] of states.entries()) {
+        if (!budget) break;
+        const state = wrap(plain(text), width);
+        const reserved = Math.min(states.length - index - 1, budget - 1);
+        const visibleState = state.slice(0, budget - reserved);
+        if (state.length > visibleState.length || (budget === visibleState.length && index < states.length - 1)) {
+          const last = visibleState.length - 1;
+          visibleState[last] = prefix(visibleState[last]!, width - 1).trimEnd() + '…';
+        }
+        lines.push(...visibleState.map(line => textRow(line)));
+        budget -= visibleState.length;
+      }
+    } else {
+      const state = wrap(plain(card.state), width), visibleState = state.slice(0, stateLimit);
+      if (state.length > visibleState.length && visibleState.length) {
+        const last = visibleState.length - 1;
+        visibleState[last] = prefix(visibleState[last], width - 1).trimEnd() + '…';
+      }
+      lines.push(...visibleState.map(line => textRow(line)));
     }
-    lines.push(...visibleState.map(line => textRow(line)));
     const slots = contentHeight - lines.length;
     const visible = references.slice(0, Math.max(0, slots - Number(references.length > slots)));
     for (const entry of visible) {

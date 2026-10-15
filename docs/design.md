@@ -20,7 +20,7 @@ The seven-field schema keeps the record small:
 | --- | --- |
 | `title` | Human-readable name |
 | `status` | `active`, `waiting`, `blocked`, `parked` or `done` |
-| `state` | Short milestone and unfinished-work summary |
+| `state` | Single-line Goal, Now and Remaining summary |
 | `cwd` | Checkout boundary on the execution host |
 | `documents` | Checkout-relative paths with descriptions |
 | `issues`, `prs` | HTTP(S) links with descriptions |
@@ -43,7 +43,9 @@ These guarantees prevent stale helper writes; they do not make YAML an editor tr
 
 ## Summaries from human-readable evidence
 
-State should use 1 to 2 short sentences, about 20 to 30 words. It preserves the broad durable milestone and important unfinished work, not the latest tool action. Verbose legacy state can be condensed without new progress, but repair must not invent completion or plans. Once state is useful, routine tests and commits should normally yield `no_change`.
+State remains a single-line string encoded as `Goal: ... | Now: ... | Remaining: ...`. Goal describes the project purpose; Now describes its broad usable capability or stage; Remaining describes major unfinished scope or blockers. The helper targets 20 to 30 words total, excluding labels. This is a soft prompt target, not a validator rule or summary-quality guarantee.
+
+Legacy prose may be converted or condensed without new progress, preserving supported facts without inventing a goal, completion or plans. Once correctly formatted and useful, routine work, tests and commits should normally yield `no_change`. The schema and write guards are unchanged; no migration or document-reading tools are introduced.
 
 The brief asks the helper to derive project maturity against its goal and major intended capabilities from dialogue and the compaction checkpoint first. It then compares that result with the previous card, an editable draft rather than a prose template or proof of progress. A sound project-level summary should stay stable through routine work, but change when affirmative evidence changes a major capability or remaining scope. Plans establish intent, not completion; any supplied goal or scope excerpts serve only to explain intended scope. The helper does not load documents.
 
@@ -87,7 +89,11 @@ In contrast, `q` closes only the display. Pi updates continue until explicit det
 
 ## Quiet display and editor-first navigation
 
-The read-only card view separates semantic state from wrapping and layout. It shows title, status, state and relative document paths. Terminal-cell measurement and sanitisation keep untrusted text separate from trusted styling. Layout can truncate content without changing the stored summary.
+The read-only card view separates semantic state from wrapping and layout. It shows title, status, state and relative document paths. A shared strict recognizer accepts only complete, ordered, nonempty Goal, Now and Remaining fields with exact labels and no surrounding whitespace. The exact ` | ` separator and repeated field headers are reserved; other literal pipes remain content. Legacy prose, malformed or ambiguous carriers, and extra fields fall back to the entire prose state, without partial extraction.
+
+Recognized fields start on separate rows and wrap independently without carrier pipes. When the state budget permits, layout reserves a row for each later section so a long Goal cannot hide Remaining. Smaller budgets truncate in section order. Existing reference reservations, notice geometry and prose layout remain unchanged. The sidebar uses status plus Now for recognized fields, otherwise status plus the full state, retaining its 80-code-point cap.
+
+Terminal-cell measurement and sanitisation keep untrusted text separate from trusted styling. Layout can truncate content without changing the stored summary.
 
 Visible document letters open documents; `q` is reserved. Only shortcuts actually visible remain active. Issues and PRs have numbered OSC 8 links, handled by client Ctrl-click. Digits are inert because there is no verified remote-safe URL opener. The bottom-right close hint can cover trailing content rather than reserving another row.
 

@@ -6,7 +6,7 @@ The package provides explicit card attachment, background updates from Pi eviden
 
 ## Keep the card small
 
-A card records the current status, a short state summary, the checkout directory, and links to documents, issues and pull requests. State should help you return a month later: describe the broad durable milestone and important unfinished work in 1 to 2 short sentences, about 20 to 30 words. Keep relevant facts, not an activity log, commit IDs or test counts. Plans and architecture decision records belong in the actual project, such as `adrs/foo-bar.md`. The card links to them; it is not a scratch document or a central notes repository.
+A card records the current status, a short state summary, the checkout directory, and links to documents, issues and pull requests. State should help you return a month later. Use `Goal` for the project purpose, `Now` for its broad usable capability or stage, and `Remaining` for major unfinished scope or blockers. Aim for 20 to 30 words total, excluding labels. This is a soft prompt target, not an enforced length or quality guarantee. Keep relevant facts, not an activity log, commit IDs or test counts. Plans and architecture decision records belong in the actual project, such as `adrs/foo-bar.md`. The card links to them; it is not a scratch document or a central notes repository.
 
 Cards live at `$XDG_STATE_HOME/herdr/cards/<slug>.yaml`, or `~/.local/state/herdr/cards/<slug>.yaml` by default. They survive workspace deletion. The initial title determines the stable filename slug. Later title edits do not rename it, and creating a colliding slug fails rather than overwriting a card.
 
@@ -15,7 +15,7 @@ For example:
 ```yaml
 title: Improve queue recovery
 status: active
-state: Recovery failure reproduced and retry options documented. Choosing an approach and implementing the fix remain unfinished.
+state: "Goal: Make queue recovery reliable | Now: Recovery failure reproduced and retry options documented | Remaining: Choose an approach and implement the fix"
 cwd: /home/developer/code/queue-service
 documents:
   - path: adrs/queue-recovery.md
@@ -26,7 +26,9 @@ issues:
 prs: []
 ```
 
-All 7 fields are required. Arrays may be empty. Status is `active`, `waiting`, `blocked`, `parked` or `done`. State may be empty; displayed text and descriptions must be single-line.
+All 7 fields are required. Arrays may be empty. Status is `active`, `waiting`, `blocked`, `parked` or `done`. State remains a single-line string: `Goal: ... | Now: ... | Remaining: ...`. Quote it in YAML because the labels contain colons. State may be empty; displayed text and descriptions must be single-line.
+
+Section recognition requires these exact labels in order, with nonempty content and no surrounding whitespace. The exact ` | ` separator and repeated field headers are reserved; other literal pipes remain content. Legacy prose, incomplete or ambiguous sections, and extra fields stay readable as prose. No card migration is required.
 
 Document descriptions remain required in YAML. Keep them brief and describe the whole document's purpose, not its latest edit.
 
@@ -70,9 +72,9 @@ The read-only `work_card` tool returns the attached card, source path and docume
 
 The Herdr server, repository, Pi and plugin run together: either locally on macOS or remotely on Linux. A Mac client can attach to the remote Herdr server. Paths and card storage refer to the server host, not the attaching Mac.
 
-The pane reads YAML as the source of truth and can display a card without Pi running. Herdr tokens hold ownership markers and display metadata, not durable card data. The `$wc_summary` token is limited to 80 characters. The integration does not edit Herdr's internal `session.json`.
+The pane reads YAML as the source of truth and can display a card without Pi running. Herdr tokens hold ownership markers and display metadata, not durable card data. The `$wc_summary` token uses the status and `Now` for recognized sections, or the full state for legacy or malformed text, capped at 80 code points. The integration does not edit Herdr's internal `session.json`.
 
-The borderless pane uses a bold title and, when width permits, a right-aligned status symbol and word: cyan `● active`, yellow `○ waiting`, red `! blocked`, dim `○ parked`, or green `✓ done`. Status describes the work, not whether Pi is running. State wraps at word boundaries in normal contrast; long words break at grapheme boundaries. Height-limited state ends with `…`, leaving reference space where possible. Hidden references retain a compact count. Empty sections are omitted. A dim `[q] close` hint sits at the bottom-right without reserving a row, covering trailing content if necessary. Widths from 3 to 8 cells show `[q]`; narrower panes omit the hint. `q` still exits at every width.
+The borderless pane uses a bold title and, when width permits, a right-aligned status symbol and word: cyan `● active`, yellow `○ waiting`, red `! blocked`, dim `○ parked`, or green `✓ done`. Status describes the work, not whether Pi is running. Recognized state shows `Goal`, `Now` and `Remaining` on separate rows without the carrier pipes. Each section wraps independently at word boundaries in normal contrast; long words break at grapheme boundaries. Height-limited sections end with `…`, reserving a row for each later section when the state budget allows all 3. Smaller budgets show sections in order. Legacy prose keeps its existing wrapping and truncation. Reference space is retained where possible. Hidden references retain a compact count. Empty state and empty reference groups are omitted. A dim `[q] close` hint sits at the bottom-right without reserving a row, covering trailing content if necessary. Widths from 3 to 8 cells show `[q]`; narrower panes omit the hint. `q` still exits at every width.
 
 Document letters and HTTP labels use the terminal accent colour. Directory prefixes are dim and filenames bold. The pane measures display cells, not ANSI bytes. Display text converts lone UTF-16 surrogates to replacement characters before measuring, then removes untrusted controls before adding trusted styling and links. Saved card values and document targets are unchanged. It shows each document's repository-relative path, not its description: `[a] docs/design.md`. Document shortcuts use single letters from `a` to `z`, skipping `q`; later documents have no shortcut. Only fully visible shortcuts are active. Digits do not open documents.
 
@@ -104,7 +106,7 @@ Each check uses Pi's current session projection: the latest compaction summary (
 
 The helper receives one JSON message ordered `{compactionSummary, transcript, card}`, with the full current card last. There is no application context cap, clipping or fallback summary. Provider context-window errors appear through existing warnings, without silent trimming or automatic retry. Card-last ordering may allow prefix reuse when only the card changes; it does not guarantee provider caching.
 
-The helper may condense verbose or activity-log-like state without new progress, preserving its relevant facts. Once state is useful, ordinary tool activity, passing tests and commits should return `no_change` unless the overall state changes. The brief asks for project-level orientation across agents, reconciles older blockers with explicit successful outcomes, and avoids treating unrelated working-copy hygiene as required work without relevance or blocking evidence. These are prompt instructions, not enforced summary-quality guarantees. Additional guidance cannot prevent legacy-state repair or override truthfulness and security restrictions.
+The helper may condense verbose or activity-log-like state, or convert legacy prose to the short section format, without new progress. It must preserve supported facts, not invent a goal or completion when unknown. Once state is correctly formatted and useful, ordinary tool activity, passing tests and commits should return `no_change` unless the overall state changes. The brief asks for project-level orientation across agents, reconciles older blockers with explicit successful outcomes, and avoids treating unrelated working-copy hygiene as required work without relevance or blocking evidence. These are prompt instructions, not enforced summary-quality guarantees. Additional guidance cannot prevent legacy-state repair or override truthfulness and security restrictions.
 
 The helper returns either `no_change` or a validated patch to `status`, `state`, `documents`, `issues` and `prs`. It cannot change `title`, `cwd`, or repository document contents. Checks reject stale results after card edits, binding changes or session changes.
 
@@ -174,11 +176,13 @@ These are installation instructions, not a record of changes to normal user sett
 
 ## Verification status
 
-For this refresh and dialogue-cadence change, `npm run check && npm test` passed on macOS with Node.js 26.11.1 and 22.23.3: 258 tests on each, no failures or skips. Regressions cover manual retry at automatic interval zero, coalescing, nonblocking open, paused bindings, projected-input deduplication, request-only status and cleanup. An in-memory Pi 1.2.0 SDK test uses real message persistence, later `message_end` replacement, request-time context dispatch and projection, without provider calls. This is not a live Pi/Herdr or visual spinner check.
+For short-section rendering, `npm run check && npm test` passed on macOS with Node.js 26.11.1 and 22.23.3: 270 tests on each, no failures or skips. Added coverage includes strict section recognition, prose fallback, independent wrapping, sidebar selection and the packaged module. Offline renders cover 45 and 80 columns at 8 and 12 rows; these are not live UI or model-quality checks.
+
+For the refresh and dialogue-cadence change, `npm run check && npm test` passed on macOS with Node.js 26.11.1 and 22.23.3: 258 tests on each, no failures or skips. Regressions cover manual retry at automatic interval zero, coalescing, nonblocking open, paused bindings, projected-input deduplication, request-only status and cleanup. An in-memory Pi 1.2.0 SDK test uses real message persistence, later `message_end` replacement, request-time context dispatch and projection, without provider calls. This is not a live Pi/Herdr or visual spinner check.
 
 Before this change, macOS verification passed `npm run check && npm test` on Node.js 26.11.1 and 22.23.3: 245 tests on each, with no failures or skips.
 
-Current quiet-layout checks cover wide and narrow text snapshots, all status styles, wrapping, grapheme/cell widths, control sanitization, closed SGR/OSC 8 sequences, tiny panes, notice-row reservation and fresh document-key validation. Footer regressions cover last-row header, state, document, HTTP link, overflow and notice content, including unavailable cards and covered shortcuts. Client regressions cover verified metadata, focus-only reuse across card nonces, canonical aliases, distinct identities, unmarked tabs, record conflicts and partial failures. Escaped YAML surrogate regressions check title, state, path and notice widths after UTF-8 encoding, while retaining original document targets and paired emoji. Prompt tests verify the summary contract and legacy-repair instructions, not live-model quality. The full native Herdr suite was not rerun for these followups. The user confirmed wrapping and the bottom-right close hint; live Pi summarization still needs verification.
+Current quiet-layout checks cover wide and narrow text snapshots, all status styles, wrapping, grapheme/cell widths, control sanitization, closed SGR/OSC 8 sequences, tiny panes, notice-row reservation and fresh document-key validation. Footer regressions cover last-row header, state, document, HTTP link, overflow and notice content, including unavailable cards and covered shortcuts. Client regressions cover verified metadata, focus-only reuse across card nonces, canonical aliases, distinct identities, unmarked tabs, record conflicts and partial failures. Escaped YAML surrogate regressions check title, state, path and notice widths after UTF-8 encoding, while retaining original document targets and paired emoji. Prompt tests verify the summary contract and legacy-repair instructions, not live-model quality. The full native Herdr suite was not rerun for these followups. The user confirmed wrapping, the bottom-right close hint and manual refresh; the short-section layout still needs a live check.
 
 A targeted isolated Herdr smoke passed 5 checks on both Node.js 26.11.1 and 22.23.3. It verified the visible footer, metadata round-trip, focus-only reuse preserving a renamed tab, reuse after card reopen, and fresh launch after document close. Evidence and terminal previews are under `/tmp/wc-followups-native-sVSPE7` (Node 26) and `/tmp/wc-followups-native-tLhbWy` (Node 22). Both workspaces closed and servers stopped; normal Herdr and user settings were untouched. These checks do not cover the full native suite or live Pi lifecycle.
 
