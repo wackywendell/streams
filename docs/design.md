@@ -1,131 +1,158 @@
-# Work cards design
+# Work Cards architecture
 
-## Scope
+## Goal and scope
 
-One ESM TypeScript package provides a Pi extension and compiled JavaScript Herdr terminal plugin. It requires Node.js 22 or later and uses `yaml` and `string-width` at runtime. Pi and AI host packages are peer dependencies, never bundled. Build with `npm run build`; `npm test` uses Node's built-in test runner for compiled runtime tests and real Pi source-loader/package regressions. macOS verification is recorded in the [README](../README.md#verification-status); Linux remains an untested design target.
+Work Cards helps someone returning after time away understand the broad milestone and important unfinished work. It provides navigation to plans, issues and pull requests without requiring them to read agent logs or maintain parallel prose.
 
-Cards outlive sessions and workspaces. Durable YAML lives at `$XDG_STATE_HOME/herdr/cards/<initial-title-slug>.yaml`, defaulting to `~/.local/state/herdr/cards`. There is no central registry or session catalogue. Substantive design documents stay inside the repository. No arbitrary card prose body, required timestamps, Obsidian integration, agent launch, or repository editing by the helper.
+The card is durable orientation, not an activity feed, task runner or full project manager. Substantive plans and architecture decision records belong in the project checkout. The card points to them rather than becoming another plan store.
 
-## Card schema
+This document describes the implemented architecture and its reasons. [Agreed direction not yet implemented](#agreed-direction-not-yet-implemented) separates future constraints from current guarantees. The [README](../README.md) owns commands, configuration defaults and verification details.
 
-All seven fields are required; arrays may be empty. Unknown keys and YAML duplicate keys fail validation.
+## One durable record with independent consumers
 
-- `title`: non-empty single-line string.
-- `status`: `active | waiting | blocked | parked | done`.
-- `state`: short single-line summary of the broad durable milestone and important unfinished work (empty permitted). Aim for 1 to 2 short sentences, about 20 to 30 words; rendering wraps independently of this scalar format.
-- `cwd`: absolute POSIX path or `~/...`, expanded on the execution host.
-- `documents`: `{ path: string, description: string }[]`, using repository-relative POSIX paths, no absolute paths, backslashes, empty segments, `.` or `..` segments.
-- `issues` and `prs`: `{ url: string, description: string }[]`, valid absolute HTTP(S) URLs; whitespace, control characters, encoded controls and backslashes rejected.
+A small ESM TypeScript package contains a shared validated data core, a Pi updater and an independent Herdr display. YAML is authoritative. The display reads it without Pi running and publishes workspace-summary metadata. Herdr tokens carry ownership and display information, not another durable copy of the card.
 
-Card identity is the filename slug, independent of later manual title edits. Automatic updates cannot change title or cwd. Descriptions are single-line strings. Unicode control/format characters are rejected in displayed text. Slugs are lowercase ASCII words separated by single hyphens, at most 120 characters. Slug generation normalizes accents, replaces punctuation with hyphens, and fails for titles with no ASCII letters/digits. Collisions fail without overwriting.
+Cards live in `$XDG_STATE_HOME/herdr/cards/<slug>.yaml` and outlast sessions, panes and workspaces. There is no central registry, session catalogue or central plan store. Storage is per host, without automatic synchronisation or backup.
 
-## Shared API (`src/card.ts` / `dist/card.js`)
+The seven-field schema keeps the record small:
 
-Exported types: `CardStatus`, `CardDocument`, `CardLink`, `Card`, `CardPatch`, `CardSnapshot`.
+| Fields | Meaning |
+| --- | --- |
+| `title` | Human-readable name |
+| `status` | `active`, `waiting`, `blocked`, `parked` or `done` |
+| `state` | Short milestone and unfinished-work summary |
+| `cwd` | Checkout boundary on the execution host |
+| `documents` | Checkout-relative paths with descriptions |
+| `issues`, `prs` | HTTP(S) links with descriptions |
 
-```ts
-type CardPatch = Partial<Pick<Card, 'status' | 'state' | 'documents' | 'issues' | 'prs'>>;
-interface CardSnapshot { slug: string; path: string; card: Card; revision: string }
-cardDirectory(env?: NodeJS.ProcessEnv): string;
-slugify(title: string): string;
-validateCardPatch(value: unknown): CardPatch;
-createCard(card: Card, directory?: string): Promise<CardSnapshot>;
-readCard(slug: string, directory?: string): Promise<CardSnapshot>;
-listCards(directory?: string): Promise<CardSnapshot[]>;
-updateCard(slug: string, patch: CardPatch, expectedRevision: string, directory?: string, signal?: AbortSignal): Promise<CardSnapshot>;
-resolveDocument(card: Card, path: string): Promise<string>;
-```
+All fields are required; arrays and state may be empty. Unknown fields, duplicate YAML keys and unsafe displayed text fail validation. The initial title determines a stable filename slug. Later title changes do not rename the card; creation collisions cannot overwrite it.
 
-Revision is the SHA-256 hex digest of raw bytes. Reads return validated snapshots; listing returns slug-sorted snapshots, returns `[]` for an absent directory, and fails visibly on malformed cards rather than hiding them. Card files must be regular files, not symlinks.
+When opening a document, the client resolves `cwd` and the target to canonical filesystem paths. The target must be a regular file inside that checkout. Traversal and escaping symlinks are rejected. This makes the checkout an explicit boundary rather than relying on repository discovery. Resolution does not eliminate a malicious filesystem race during a later open. Exact validation and library contracts live in [the shared core](../src/card.ts).
 
-Creation writes and syncs a same-directory exclusive temporary file, then atomically hard-links it into place without overwrite. Updates acquire `<slug>.yaml.lock` with exclusive creation, compare the revision inside the lock, validate the patch and sync a temporary file. They check the optional abort signal synchronously at the commit boundary, with no intervening await before atomic rename. An aborted prepared update removes its temporary file and releases its lock without replacing the card. Cancellation after rename is dispatched cannot roll back the write. A stale revision throws an actionable conflict error asking callers to reread. A held lock fails immediately with its path and manual-recovery guidance; locks are never stolen, retried, or timed out. Successful or failed updates release only their own lock. An unchanged semantic card returns the existing snapshot without changing bytes or mtime, including YAML formatting/comments. Locking protects cooperating package writers; arbitrary editors do not honor locks, so external edits during the locked read/rename interval cannot be guaranteed safe. Atomic visibility is not a guarantee against every filesystem or power-loss failure.
+## Limited model authority and guarded writes
 
-`resolveDocument` validates the path, resolves cwd and target via filesystem realpaths, requires an existing regular file, and rejects symlinks escaping cwd. It does not read or write document contents. The caller should use the returned realpath directly; an adversarial filesystem can still race a later open. cwd denotes the checkout boundary; there is no repository discovery or registry.
+The helper has no executable tools. It returns `no_change` or a patch limited to `status`, `state`, `documents`, `issues` and `prs`. It cannot rename or move cards, change the checkout or write repository documents. The prompt asks the helper to retain existing references unless removal has affirmative evidence. This depends on model compliance: structural validation permits a valid replacement array to remove references.
 
-## Global configuration (`src/config.ts` / `dist/config.js`)
+Trusted global configuration stays separate from repository content and model-controlled card data. There are no project overrides. The default `helpers/simple` alias uses an externally registered profile and inherits its thinking level unless overridden. Physical models are also configurable. Luna with low thinking was the replay profile, not a hard-coded product default. See [configuration](../README.md#configure-the-package) and [the summarizer](../src/pi/summarizer.ts).
 
-Explicit standalone loader, not Pi core settings. Path: `<PI_CODING_AGENT_DIR or ~/.pi/agent>/work-cards.json`. Missing file uses defaults; malformed JSON, unknown fields or invalid values throw with the config path. Partial configuration overlays defaults. No repository-level config.
+The core validates every proposed patch. Raw-byte revisions detect intervening edits, including formatting changes. Cooperating writers use exclusive locks and atomic replacement. Stale revisions and held locks fail visibly rather than retrying, stealing locks or overwriting newer work. Creation also prevents overwrite.
 
-Exports: `WorkCardsConfig`, immutable `DEFAULT_CONFIG`, `configPath(env?: NodeJS.ProcessEnv): string`, `loadConfig(path?: string): Promise<WorkCardsConfig>`. Re-exports all shared card data types for clients.
+`no_change`, including a semantically unchanged patch, preserves bytes and modification time. Cancellation is checked immediately before dispatching rename, without an intervening asynchronous step. Once rename is dispatched, cancellation cannot roll it back.
 
-| Field | Default | Validation / tradeoff |
-| --- | --- | --- |
-| model | `helpers/simple` | non-empty provider/id or configured helpers alias |
-| thinking_level | `null` | `null` or `off`, `minimal`, `low`, `medium`, `high`, `xhigh`, `max`; null inherits selected helpers/* profile thinkingLevel, otherwise off; explicit overrides tune physical models too |
-| check_every_n_responses | 1 | integer >=0; zero independently disables response checks |
-| check_every_n_cycles | 10 | integer >=0; zero independently disables cycle checks |
-| max_context_chars | 24000 | positive integer; deprecated, accepted and validated but ignored |
-| max_document_bytes | 262144 | positive integer; legacy preview setting, no effect on external tools |
-| document_command | `null` | null or nonblank trusted global command prefix without controls; otherwise use nonblank EDITOR, then less |
-| max_output_tokens | 2048 | positive integer |
-| request_timeout_ms | 30000 | integer 1–2147483647 (Node timer range) |
-| pane_poll_interval_ms | 1000 | integer 1–2147483647 (Node timer range) |
-| herdr_timeout_ms | 3000 | integer 1–2147483647 (Node timer range) |
-| pane_height_fraction | 0.2 | finite number strictly between 0 and 1 |
-| update_guidance | See default text below | non-empty string; preserve stable facts and avoid speculative progress |
+These guarantees prevent stale helper writes; they do not make YAML an editor transaction system. Arbitrary external editors ignore package locks and can race the locked read-to-replacement interval. Atomic visibility also does not guarantee survival of every filesystem or power-loss failure.
 
-The default `update_guidance` is:
+## Summaries from human-readable evidence
 
-> Preserve stable facts and summarize durable milestones and important unfinished work. Condense verbose or activity-log-like state even without new progress. Otherwise update only for significant, evidenced changes; return no_change for routine activity. Do not infer progress or invent plans, links or documents.
+State should use 1 to 2 short sentences, about 20 to 30 words. It preserves the broad durable milestone and important unfinished work, not the latest tool action. Verbose legacy state can be condensed without new progress, but repair must not invent completion or plans. Once state is useful, routine tests and commits should normally yield `no_change`.
 
-There are no automatic retries or cooldowns.
+Each request starts with a stable system brief. One user JSON message follows, ordered `{compactionSummary, transcript, card}`, with the current card last. The input uses Pi's actual latest projected compaction summary and all retained nonblank user and assistant text chronologically. It respects projected redactions and never reconstructs raw precompaction history.
 
-## Runtime components
+Thinking, tool calls, arguments, results, images, custom messages, system messages and branch summaries are excluded. The prompt labels conversation content as untrusted evidence and tells the model not to follow embedded instructions. Compliance is not enforced by the patch validator. This choice relies on assistant text to report outcomes; unreported tool outcomes are absent.
 
-The shared card module validates YAML, resolves document paths and handles revision-checked atomic writes. The configuration module loads package settings independently of Pi's core settings.
+The evidence policy addresses a concrete failure: both bounded, tool-inclusive replay baselines contained only tool results in their evidence windows, 2 or 3 messages and no direct dialogue. Compaction-plus-dialogue inputs captured relevant remaining work with fewer input tokens. The comparison comprised 4 requests at 2 historical snapshots, both containing user wording guidance. It is neither a broad benchmark nor proof of unguided summary quality.
 
-The Pi extension (`src/pi/index.ts`, declared in `pi.extensions`) handles explicit commands, restores session bindings and schedules helper checks from Pi evidence. Checks are single-flight per Pi session, not globally across separate bindings. New eligible evidence replaces pending evidence; stale results cannot update a changed card, binding or session. Helper output passes through `validateCardPatch` and `updateCard`, never direct file writes. Patches cannot change title, cwd or repository documents.
+There is no application cap, clipping or fallback trimming. Provider context-limit failures surface visibly. `max_context_chars` remains accepted and validated but is ignored for compatibility. Putting the card last may permit stable-prefix cache reuse; measured cache-hit benefits have not been established. [Evidence normalisation](../src/pi/evidence.ts) defines the input boundary.
 
-The extension normalizes only `buildSessionProjection().messages` at ingress, copying the latest `compactionSummary.summary` (or `null`) and all retained nonblank user/assistant text chronologically. It joins every text block with a newline and excludes thinking, images, tool calls, arguments, results, custom/system messages and branch summaries. It never reconstructs raw precompaction history. Summaries rely on assistant text for outcomes rather than tool output.
+## Scheduling without starving updates
 
-Queued input is typed and does not alias host objects. Revisions hash both summary and transcript alongside the existing evidence leaf. Prompt construction leaves the snapshot unchanged and sends one JSON user message ordered `{compactionSummary, transcript, card}`, with the full current card last. There is no application context cap, clipping or fallback summary; `max_context_chars` remains validated only for configuration compatibility. Provider context-window errors surface through existing warnings, without silent trimming or automatic retry. Card-last ordering may permit prefix reuse when only the card changes, but provider caching is not guaranteed.
+By default, Pi checks after every overall response and every 10 completed model-response and tool-results cycles within a response. The cycle count resets at response completion. Zero independently disables either trigger.
 
-The summary brief is for someone returning a month later, not an activity log. It allows condensing verbose legacy state without new progress, even with older preserve-wording guidance. It preserves relevant facts without inventing completion or plans. Once state meets this contract, routine tool activity, tests and commits should produce `no_change` unless the overall state changes. An isolated comparison used 4 real replay calls at 2 historical snapshots; the compaction-plus-dialogue candidate produced useful outputs. This is not a broad benchmark, and prompt regressions alone do not prove live-model quality.
+Checks are single-flight per session. New eligible evidence replaces pending evidence, while continuing activity neither cancels the active check nor requires an idle session before application. This avoids starving summaries during long responses without running overlapping checks. Generation cancellation and card, binding and session checks reject stale results.
 
-The default `helpers/simple` model needs an existing registered helper profile. Users may configure a physical provider/model instead. Calls cost tokens even for `no_change`. Pi exposes no public API to add standalone helper usage to its usage totals. The local timeout stops waiting and requests cancellation, but cannot guarantee an upstream request stops.
+There are no automatic retries or cooldowns. A timeout stops local waiting and requests cancellation, but cannot guarantee the upstream request stops. Helper usage, including `no_change` calls, remains outside Pi's usage totals because Pi has no public API to add it. [The scheduler](../src/pi/scheduler.ts) and [Pi integration](../src/pi/index.ts) define these lifecycle rules.
 
-The Herdr client exports `attachCard(snapshot: CardSnapshot, config)` and `detachCard(target: Pick<CardSnapshot, 'path'>, config)`. Existing snapshot callers remain valid; detach needs only the saved path and does not reread YAML. It targets the caller's workspace, verifies plugin registration and ownership, and serializes cooperating mutations with a workspace lock. It never uses GUI focus as a fallback.
+## Explicit ownership instead of GUI focus
 
-The pane reads YAML independently of Pi and is the sole regular workspace-summary publisher. Tokens hold ownership and display metadata, not durable card data. The view emits typed exit, document-open or no-action results. Document intents include a freshly read snapshot and require the displayed checkout/path to remain unchanged. Only painted letter shortcuts are active; digits are inert. HTTP links use OSC 8 and Herdr's local-client handling.
+Herdr operations target the exact caller, socket and workspace identity, never whichever workspace has GUI focus. Workspace locks serialise cooperating ownership changes. Unrelated, surviving or restored live panes are never claimed as card owners.
 
-The borderless view uses a bold title, right-aligned symbol-and-word status when space permits, normal-contrast word-wrapped state, accented document shortcuts and HTTP labels, dim directory prefixes and bold filenames. Colours come from the terminal palette; no theme settings or animation are introduced. Empty state and reference sections are omitted. State gets a bounded share of height when references exist, with visible ellipsis on truncation and a compact hidden-reference count. A dim `[q] close` hint occupies the bottom-right without reserving a row. It covers trailing content, using `[q]` at widths from 3 to 8 cells and no hint below 3 cells. Exit input remains active.
+Recovery happens only during explicit open or detach. It requires a complete matching departed-owner tuple: canonical card identity, nonce, pane and terminal. Both referenced pane and terminal identities must be absent, with no conflicting marked panes and an unambiguous live inventory. Ambiguity fails closed. Polling and passive session restore do not recover owners.
 
-`string-width` 8.3.0 (MIT, Node >=20) measures sanitized display cells; `Intl.Segmenter` keeps graphemes intact. `plain()` first uses native `String.toWellFormed()` to normalize lone surrogates before measurement, matching terminal UTF-8 replacement behavior without changing saved values or document targets. TypeScript enables `ES2024.String` declarations while retaining ES2022 output and the Node 22 runtime baseline. Control/format sanitization is unchanged, so format characters such as ZWJ are still removed. No arbitrary card ANSI is interpreted as styling. Rows retain plain spans until final-row footer geometry and document-key visibility are settled. Trusted SGR and OSC 8 are added after clipping and always closed, so footer padding and the hint cannot inherit a covered URL. Fresh document-key validation reuses the dimensions actually painted, including the reserved notice row; clipped or hidden shortcuts remain inert. Terminal fonts can differ in ambiguous/emoji widths; the utility's default narrow ambiguous-width convention is used.
+Pi keeps a session-specific target and update permission, not a cached card. Restore validates existing YAML but never reconstructs missing cards or opens panes. Forks require explicit open. Slugless open uses the same originating session's binding, not cwd search or automatic adoption.
 
-`HerdrClient.openDocument(snapshot, relativePath, config)` validates card membership, the configured command and `resolveDocument` before Herdr mutation. Under the existing workspace lock it verifies the exact caller pane, socket, workspace and live owner nonce against the full inventory. For a fresh launch it requires the exact local plugin registration with both entrypoints, never replaces a conflict or trusts hooks, and directs stale registrations to explicit relink.
+Detach records paused update permission before fallible configuration loading or Herdr cleanup. Failed cleanup therefore leaves automation paused for recovery. Successful detach forgets the binding without deleting YAML. Custom session entries reach disk only after host user or assistant activity; `--no-session` does not persist them. The pause is recorded first, not guaranteed flushed immediately.
 
-After validating live card ownership, the client looks for pane tokens in that workspace under the same lock. `wcd_key` is SHA-256 of `JSON.stringify([canonicalCwd, canonicalDocumentPath])`; `wcd_pane`, `wcd_terminal` and `wcd_tab` must match that live pane's exact tuple. These keys are separate from card ownership's `wc_*` markers. One complete matching record focuses only its tab, without renaming, relaunching or updating metadata. Identity is independent of the card nonce, so reopening or changing the card retains reuse. Canonical aliases match; distinct paths or checkouts do not. Unmarked tabs are ignored, never adopted or closed. Incomplete, mismatched or duplicate matching records refuse visibly without mutation. If the previous pane has disappeared, a new tab can launch normally.
+In contrast, `q` closes only the display. Pi updates continue until explicit detach. Closing a pane is not interpreted as withdrawing permission to maintain the durable record. [Ownership classification](../src/herdr/ownership.ts) and [the Herdr client](../src/herdr/client.ts) enforce these boundaries.
 
-The `document` entrypoint opens a no-focus tab in the caller's exact workspace. Its cwd is the plugin root so `/bin/sh bin/open-document.sh` resolves without an executable-bit requirement. Explicit environment arguments carry the trusted command prefix, canonical checkout and absolute document path. The POSIX launcher changes to the checkout and appends the document as a quoted positional argument, never as shell source. Command selection is global config, then nonblank `$EDITOR`, then `less`; no `$VISUAL`. Card YAML and helper output cannot select an executable. Attachment forwards Pi's `$EDITOR` explicitly, even when empty. A defined caller `$PATH` is forwarded on attachment and document launch, never the whole environment or inherited Herdr identities. An absent injected `$PATH` stays unspecified.
+## Quiet display and editor-first navigation
 
-The client validates that the returned plugin, entrypoint and workspace match, and that pane, terminal and tab identities are new. It stamps the separate document record only after validating those identities, then rereads the workspace inventory to verify the metadata against the live tuple. Only then does it rename the returned tab to the displayed path's basename and focus that exact tab. Partial failures report known pane, terminal and tab IDs and require inspection; there are no automatic retries or tab closes. An attempted document navigation, including reuse, discards buffered card keys to prevent autorepeat launches or blind retries after a partial failure. The card loop stays alive and publishes normally. Editor failures remain visible in their own terminal with a press-Enter-to-close prompt. A later explicit request can reuse a completely stamped tab after a rename or focus failure. An unmarked pane after an indeterminate launch cannot be adopted; inspect it before retrying. No Node editor wrapper, `pane.run`, `open`, `xdg-open`, workspace overview, central registry or editor introspection is introduced. External tools may edit files and are not capped by the legacy preview budget.
+The read-only card view separates semantic state from wrapping and layout. It shows title, status, state and relative document paths. Terminal-cell measurement and sanitisation keep untrusted text separate from trusted styling. Layout can truncate content without changing the stored summary.
 
-## Binding and owner recovery
+Visible document letters open documents; `q` is reserved. Only shortcuts actually visible remain active. Issues and PRs have numbered OSC 8 links, handled by client Ctrl-click. Digits are inert because there is no verified remote-safe URL opener. The bottom-right close hint can cover trailing content rather than reserving another row.
 
-Pi retains only an immutable slug/path target, originating session ID and update permission, not a cached card snapshot or separate directory. Reads and checks use fresh local snapshots, deriving the directory from the validated target path. Pi saves bindings in custom session entries. The host flushes these only after user or assistant activity; `--no-session` does not persist them. Restore accepts only the originating session and a valid existing YAML card. It does not reconstruct missing YAML or open a pane. Forks and cloned sessions need explicit `open <slug>`.
+Documents open in a full tab using the existing editor or pager on the execution host. Command precedence is trusted global `document_command`, then `EDITOR`, then `less`. The validated filename is a separate literal argument, never shell source. Card data cannot select an executable. External editors can write documents; the display and helper cannot.
 
-`/work-card open [slug]` attaches an existing card. Without a slug, it requires a binding whose originating session ID matches the current session. It reads fresh YAML using the saved slug and the parent of the saved path. An explicit slug still reads from the configured card directory. There is no cwd-based selection, card search or reverse index. An absent or other-session binding produces recovery commands without creating a card or mutating Herdr. Restore remains passive; the user runs bare `open` after closing the display or reloading Pi.
+The same canonical checkout and document reuse a verified existing tab through focus only. Reuse preserves editor state, unsaved work and renamed tab titles. Ambiguous identity records refuse; unmarked panes are not adopted or closed. Partial launches report known identities for inspection rather than risking an automatic close or duplicate launch. See [navigation behaviour](../README.md#run-on-the-server-host) and [the view](../src/herdr/view.ts).
 
-Detach records `updates: false` before configuration loading or Herdr cleanup. Invalid configuration or failed cleanup retains a durable paused binding for retry, subject to the host's flush caveat. Restore preserves that pause until explicit `open` succeeds, including bare `open`. Failed opens leave the existing target and update permission unchanged. Successful detach saves a tombstone and forgets the binding; bare `open` cannot reopen it. Legacy entries without the flag enable updates; malformed flags remain paused.
+## Packaging and verification boundary
 
-A pure ownership classifier distinguishes empty, live and recoverable-orphan inventories for explicit operations; attach/detach execute its decision without mutating the read inventory. Publication uses only live-owner matching against the current pane and workspace, never orphan recovery or a full inventory scan. Explicit attach or detach can recover a departed owner only under the workspace lock, after an unambiguous live inventory. The workspace must hold a complete, valid tuple for the same card: canonical card identity, nonce, pane ID and terminal ID. Both the referenced pane and terminal must be absent, with no conflicting marked panes. Recovery clears only Work Cards' `wc_*` workspace tokens. Surviving or restored owners, mismatched cards and ambiguous markers are never reclaimed. Polling and session restore never recover owners.
+Pi receives the complete TypeScript source graph for Jiti reload correctness. Compiled ESM helpers remained cached after Pi cleared its extension cache; source loading refreshes local helpers without global cache changes. Herdr and library consumers still receive compiled JavaScript.
 
-Current-binding detach can clean up after YAML deletion. It derives identity from the canonical existing parent directory and filename. A missing parent, dangling card symlink or ambiguous identity blocks cleanup.
+The package requires Node.js 22 or later. It bundles neither host dependencies nor install hooks. Build and installation remain explicit. macOS has verified paths; Linux and SSH are unverified design targets, not demonstrated support. The [verification record](../README.md#verification-status) distinguishes unit, loader, packaging and isolated native checks from unverified live Pi lifecycle and summarisation.
 
-In the card view, `q` exits the display without detaching the Pi session or stopping updates. `j` and `k` are document letters. Document tabs use the selected editor or pager's native keys. Explicit `open` recreates a departed pane, including after cold restart; it needs no slug in the same bound session. Explicit `detach` clears a validated orphan. Neither action reclaims a surviving or restored owner.
+## Agreed direction not yet implemented
 
-The package includes the full `src` graph alongside compiled `dist`, the POSIX launcher in `bin`, docs and `herdr-plugin.toml`. Pi loads the TypeScript entrypoint through Jiti; repository-owned `.js` import specifiers resolve to local TypeScript helpers. Pi 1.2.0's unbundled Node loader otherwise takes Jiti's native ESM path for compiled `.js` entrypoints. Clearing Pi's extension cache does not clear Node's ESM cache, so `/reload` can retain old helpers. Source loading refreshes this graph without query strings, global cache changes or a second build format.
+New sessions should default to automatic startup, with manual mode configurable. Naming should coordinate with the existing naming extension after meaningful initial task context. Startup and naming are not implemented; their precise mechanism and adoption rules remain unsettled.
 
-Herdr commands and library exports still use compiled JavaScript. Source and compiled Herdr clients both derive the plugin root two directories above their module, so the source entrypoint does not change manifest or launcher paths. Local consumers build explicitly for compiled consumers; there is no prepare or postinstall hook. Use `/reload` after Pi source changes or the manifest update. A correct existing Herdr registration does not need relinking.
+The requested multi-agent direction keeps independent per-agent status while sharing workspace plan documents, issues and PRs. The overall workspace goal must come only from plan documents. Shared context repeats in each agent card pane; there is no workspace-overview tab. Initial plan-document selection should be automatic, with manual intervention possibly later.
 
-Loader regressions call the real Pi 1.2.0 loader/cache functions in isolated fixtures. They prove compiled ESM staleness, cold-process freshness, TypeScript refresh and reload of the declared package entrypoint's private Herdr graph. Tarball tests require every TypeScript source and compiled runtime entry, then load the extracted package using supplied read-only host dependencies. They do not claim a clean install or native Herdr lifecycle verification.
+These are constraints, not a finished persistence design. Separate workspace and per-agent records, extraction rules and merge policies were proposals, not agreed schemas.
 
-## Planned document actions
+[Herdr Annotate](https://github.com/plannotator/herdr-annotate) and Plannotator remain deferred in favour of the existing editor. [Source research on feedback delivery](https://github.com/plannotator/plannotator-tui/blob/main/crates/plannotator-tui/src/delivery.rs) indicates terminal input targets a pane, not a session-pinned callback. A replacement agent could receive feedback. The integration has not been installed or runtime-tested.
 
-Editor-first document tabs are implemented as described above. The historical isolated native suite passed all 21 checks, including tab focus, real Vim Ctrl-C/exit and normal document-tab removal. The caller was a shell, not live Pi; see [verification status](../README.md#verification-status) for tested versions, package-content checks and remaining boundaries.
-Annotate integration remains deferred, as does the shared workspace/agent redesign.
-[Herdr Annotate / Plannotator](https://github.com/plannotator/herdr-annotate) is a deferred candidate for future document review.
-Source research indicates its plugin document entrypoint can open existing Markdown.
-Its [feedback delivery](https://github.com/plannotator/plannotator-tui/blob/main/crates/plannotator-tui/src/delivery.rs) targets a Herdr pane through `herdr agent prompt` (terminal input), not a callback pinned to a Pi session.
-A replacement agent in that same pane could receive the feedback.
-These findings are source research only; the integration has not been installed or runtime-tested.
+## Appendix A Cost analysis
+
+### Prices and accounting
+
+Prices were retrieved on 15 October 2026 from the published model pages for [Luna](https://developers.openai.com/api/docs/models/gpt-6-luna), [Sol](https://developers.openai.com/api/docs/models/gpt-6.1-sol) and [Astra](https://developers.openai.com/api/docs/models/gpt-6-astra). Rates are Standard USD per million tokens, not invoices or negotiated gateway prices.
+
+| Model | Ordinary input | Cache reads | Cache writes | Output |
+| --- | ---: | ---: | ---: | ---: |
+| GPT-6 Luna | 0.10 | 0.01 | 0.125 | 0.50 |
+| GPT-6.1 Sol | 2.00 | 0.10 | 2.50 | 10.00 |
+| GPT-6 Astra | 10.00 | 1.00 | 12.50 | 50.00 |
+
+Cost is `(ordinary input × input rate + cache reads × read rate + cache writes × write rate + output × output rate) / 1,000,000`. Reasoning is already included in output, not charged again. None of the recorded requests crossed the 272,000-input-token premium threshold.
+
+### Measured replay usage
+
+The bounded, tool-inclusive baseline is an older comparison arm, not current production input. All 4 Luna replay requests had 3 ordinary input tokens and zero cache reads. Total input equals ordinary input plus cache writes.
+
+| Snapshot and arm | Total input | Cache writes | Output including reasoning | USD |
+| --- | ---: | ---: | ---: | ---: |
+| 1 baseline | 5,738 | 5,735 | 214 | 0.000824175 |
+| 1 compaction and dialogue | 4,715 | 4,712 | 190 | 0.000684300 |
+| 2 baseline | 6,488 | 6,485 | 326 | 0.000973925 |
+| 2 compaction and dialogue | 4,608 | 4,605 | 267 | 0.000709425 |
+
+The 2 candidate calls cost $0.001393725; all 4 cost $0.003191825. These are measured token footprints priced at published rates. They do not establish warm-cache performance.
+
+### Estimated automatic workload
+
+The accounting window runs from 19:28:39 UTC on 14 October 2026 to 00:09:56 UTC on 15 October. It excludes inherited earlier history and work after the cost question.
+
+Default cadence suggests 43 opportunities: 39 response endings and 4 ten-cycle boundaries. This is not an observed request count. Missing lifecycle records, aborts, reloads and pending-evidence coalescing can change it.
+
+Historical Pi projections estimate 245,251 input tokens, averaging 5,704 and ranging from 4,207 to 7,753. Assumptions are an 886-character card allowance, 4.3608 serialized characters per token calibrated from 2 candidate replays, and 228.5 output tokens per request including reasoning.
+
+With all input charged as new cache writes, the estimate is $0.03557. Assuming 90% cache reads lowers it to $0.01019; that is an unmeasured sensitivity scenario. Tokenisation, card size and future output length remain estimates. No further model requests were made for this calculation.
+
+### Counterfactual main-agent prices
+
+The window contains 195 recorded main-agent Astra calls: 585 ordinary input, 23,468,482 cache reads, 1,106,629 cache writes and 221,559 output tokens. Output includes 174,499 reasoning tokens.
+
+The same 24 child agents made 529 calls. Their aggregate footprints allow the retained mixed-model child cost to be audited:
+
+| Child model | Calls | Ordinary input | Cache reads | Cache writes | Output |
+| --- | ---: | ---: | ---: | ---: | ---: |
+| Luna | 132 | 4,980 | 8,267,097 | 779,472 | 78,931 |
+| Sol | 319 | 954 | 18,881,396 | 1,065,706 | 138,243 |
+| Astra | 78 | 234 | 3,745,201 | 419,171 | 22,381 |
+
+Repricing only the main-agent footprint gives:
+
+| Main-agent rate | Main conversation USD | Same children USD | Combined USD |
+| --- | ---: | ---: | ---: |
+| Sol | 7.33018 | 16.26304 | 23.59322 |
+| Astra | 48.38514 | 16.26304 | 64.64818 |
+
+This holds tokens, caching and delegation fixed; it does not predict identical behaviour from different models. Totals exclude unrecorded background helper or compaction usage and external service fees. Replay requests and the proposed watcher workload are separate from Pi's main usage ledger. Low watcher cost alone establishes neither summary quality nor a latency guarantee.

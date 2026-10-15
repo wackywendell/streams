@@ -193,4 +193,4 @@ An isolated comparison used 4 real replay calls at 2 historical snapshots. The c
 
 The full native suite has not run on Node.js 22. Linux, SSH, remote hosts, browser-click handling, real Pi lifecycle, live Pi summarization and visual sidebar rendering remain untested. Sidebar metadata tokens were verified, not the visual sidebar. Linux remains an untested design target. Verification did not activate Work Cards in normal Pi or Herdr settings or edit global settings.
 
-See [the design document](docs/design.md) for the schema, shared APIs and file-write guarantees.
+See [the design document](docs/design.md) for the architecture decisions, principles and cost analysis.
