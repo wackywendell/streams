@@ -248,7 +248,7 @@ export class RecordStore {
   async setWorkspaceTitle(authority: Authority, title: string, expected: string, signal?: AbortSignal): Promise<Snapshot<WorkspaceRecord>> {
     return this.shared(authority, w => { revision(w, expected); return { ...w.record, title, titleMode: 'manual' }; }, signal);
   }
-  async applyPlan(authority: Authority, input: { goal: string; sources: DocumentIdentity[]; fingerprint: string; title?: string }, expected: string, signal?: AbortSignal): Promise<Snapshot<WorkspaceRecord>> {
+  async applyPlan(authority: Authority, input: { goal: string; sources: DocumentIdentity[]; fingerprint: string | null; title?: string }, expected: string, signal?: AbortSignal): Promise<Snapshot<WorkspaceRecord>> {
     object(input, ['goal', 'sources', 'fingerprint', 'title'], ['goal', 'sources', 'fingerprint']);
     if (input.title !== undefined) text(input.title, true);
     return this.shared(authority, w => {

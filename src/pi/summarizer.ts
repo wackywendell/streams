@@ -109,14 +109,15 @@ function awaitWithAbort<T>(promise: Promise<T>, signal: AbortSignal): Promise<T>
 }
 
 /** Direct registry calls stay outside the agent loop and offer no executable tools. */
-export async function requestSummary<TModel extends { api?: string }>(
+export async function requestHelperDecision<T, TModel extends { api?: string }>(
   registry: SummaryRegistry<TModel>,
   context: Context,
   options: SummaryRequestOptions,
+  parseDecision: (text: string) => T,
   signal?: AbortSignal,
   loadHelperProfiles: () => Promise<unknown> = readHelperProfiles,
   onRequest?: () => (() => void),
-): Promise<SummaryDecision> {
+): Promise<T> {
   const requestSignal = AbortSignal.any([
     ...(signal ? [signal] : []), AbortSignal.timeout(options.request_timeout_ms),
   ]);
@@ -147,6 +148,14 @@ export async function requestSummary<TModel extends { api?: string }>(
     if (result.stopReason !== 'stop' || result.content.some((block) => block.type === 'toolCall')) {
       throw new Error(`Summary model did not return a complete text decision (${result.stopReason}).`);
     }
-    return parseSummaryDecision(result.content.filter((block) => block.type === 'text').map((block) => block.text).join(''));
+    return parseDecision(result.content.filter((block) => block.type === 'text').map((block) => block.text).join(''));
   } finally { stopActivity?.(); }
+}
+
+export type HelperRequestTail = [signal?: AbortSignal, loadHelperProfiles?: () => Promise<unknown>, onRequest?: () => (() => void)];
+
+export function requestSummary<TModel extends { api?: string }>(
+  registry: SummaryRegistry<TModel>, context: Context, options: SummaryRequestOptions, ...tail: HelperRequestTail
+): Promise<SummaryDecision> {
+  return requestHelperDecision(registry, context, options, parseSummaryDecision, ...tail);
 }

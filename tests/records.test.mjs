@@ -7,6 +7,8 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { randomUUID, createHash } from 'node:crypto';
 import { spawn, spawnSync } from 'node:child_process';
+import ts from 'typescript';
+import { fileURLToPath } from 'node:url';
 import { RecordStore, validateWorkspace, validateAgent, applyOwnUpdate, applySharedAdditions, discoverCheckout, referenceIdentity, resolveWorkspaceDocument, applyReferenceRemoval } from '../dist/records.js';
 import { composeView, checkoutLabels, selectReference } from '../dist/presentation.js';
 
@@ -242,6 +244,52 @@ test('foreground titles/descriptions and plan provenance obey CAS and helper per
   assert.equal(w.record.title, 'Manual shared'); assert.equal(composeView(w, a).goal, 'Plan goal');
   await assert.rejects(store.applyPlan(auth, { goal: 'No provenance', sources: [], fingerprint: 'x' }, w.revision), /provenance/);
   w = await store.removeReference(auth, selectReference(w, 'plan.md').selection); assert.equal(w.record.goal, ''); assert.equal(w.record.sourceFingerprint, null);
+});
+
+test('applyPlan accepts an empty plan with a null fingerprint in its TypeScript API', () => {
+  const filename = fileURLToPath(new URL('../src/apply-plan-typecheck.ts', import.meta.url));
+  const source = `import { RecordStore, type Authority } from './records.js';
+    declare const store: RecordStore, authority: Authority, revision: string;
+    store.applyPlan(authority, { goal: '', sources: [], fingerprint: null }, revision);`;
+  const configPath = fileURLToPath(new URL('../tsconfig.json', import.meta.url));
+  const config = ts.readConfigFile(configPath, ts.sys.readFile);
+  const { options } = ts.parseJsonConfigFileContent(config.config, ts.sys, fileURLToPath(new URL('..', import.meta.url)));
+  const host = ts.createCompilerHost(options);
+  const getSourceFile = host.getSourceFile.bind(host);
+  host.getSourceFile = (path, ...args) => path === filename ? ts.createSourceFile(path, source, options.target, true) : getSourceFile(path, ...args);
+  const program = ts.createProgram([filename], { ...options, noEmit: true }, host);
+  const diagnostics = ts.getPreEmitDiagnostics(program);
+  assert.equal(diagnostics.length, 0, diagnostics.map(d => ts.flattenDiagnosticMessageText(d.messageText, '\n')).join('\n'));
+});
+
+test('empty plan clears provenance without removing references or changing manual titles', async t => {
+  const { store, workspace, cwd } = await fixture(t); let a = await store.join(joinInput(workspace, cwd)); const auth = authority(a);
+  const source = { checkout: a.record.checkout, path: 'plan.md' };
+  let w = await store.addReferences(auth, {
+    documents: [{ ...source, description: 'plan' }],
+    issues: [{ url: 'https://example.com/issue', description: 'issue' }],
+    prs: [{ url: 'https://example.com/pr', description: 'PR' }],
+  });
+  w = await store.setWorkspaceTitle(auth, 'Manual shared', w.revision);
+  w = await store.applyPlan(auth, { goal: 'Plan goal', sources: [source], fingerprint: 'plan-bytes' }, w.revision);
+  w = await store.describeReference(auth, source, 'not a plan', w.revision);
+  const planned = w;
+  for (const input of [
+    { goal: 'Still a goal', sources: [], fingerprint: null },
+    { goal: '', sources: [source], fingerprint: null },
+    { goal: '', sources: [], fingerprint: 'orphaned' },
+  ]) await assert.rejects(store.applyPlan(auth, input, w.revision), /provenance/);
+  const empty = { goal: '', sources: [], fingerprint: null, title: 'Ignored automatic title' };
+  await assert.rejects(store.applyPlan(auth, empty, workspace.revision), /revision|stale/i);
+  await assert.rejects(store.applyPlan({ ...auth, membershipToken: 'stale' }, empty, w.revision), /membership|stale/i);
+  a = await store.resetEvidence(auth, boundary, a.revision);
+  await assert.rejects(store.applyPlan(auth, empty, w.revision), /generation|stale/i);
+  assert.deepEqual(await store.readWorkspace(workspace.record.id), planned);
+  w = await store.applyPlan(authority(a), empty, w.revision);
+  assert.deepEqual(w.record, { ...planned.record, mutationToken: w.record.mutationToken, goal: '', planSources: [], sourceFingerprint: null });
+  assert.notEqual(w.revision, planned.revision);
+  assert.equal(composeView(w, a).goal, '');
+  assert.deepEqual(await store.readWorkspace(workspace.record.id), w);
 });
 
 test('malformed YAML, record identity mismatches, parent symlinks and held locks fail closed', async t => {
