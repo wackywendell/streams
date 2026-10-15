@@ -109,11 +109,13 @@ The package requires Node.js 22 or later. It bundles neither host dependencies n
 
 ## Agreed direction not yet implemented
 
-New sessions should default to automatic startup, with manual mode configurable. Naming should coordinate with the existing naming extension after meaningful initial task context. Startup and naming are not implemented; their precise mechanism and adoption rules remain unsettled.
+The [shared workspace specification](workspace-context.md) records the agreed product rules. The [reviewed implementation plan](workspace-implementation.md) defines the persistence and runtime contracts. Implementation is in progress; these features are not active.
 
-The requested multi-agent direction keeps independent per-agent status while sharing workspace plan documents, issues and PRs. The overall workspace goal must come only from plan documents. Shared context repeats in each agent card pane; there is no workspace-overview tab. Initial plan-document selection should be automatic, with manual intervention possibly later.
+Separate workspace and agent records will share a plan-derived Goal and references while retaining each agent's own status, Now and Remaining. Workspace-local checkout entries support documents across repositories and worktrees. Agent records identify their Pi session and working directory. Shared context repeats in each agent card pane; there is no workspace-overview tab.
 
-These are constraints, not a finished persistence design. Separate workspace and per-agent records, extraction rules and merge policies were proposals, not agreed schemas.
+The live Herdr workspace defines membership, including moves and resumes. Startup and joining default to automatic, with manual operation configurable. Work Cards will replace the naming extension: workspace titles name workspaces, agent titles name Pi sessions, and only the first pane can name its tab. Manual names remain protected.
+
+Background helpers may add shared references but cannot remove them. Foreground management actions may remove references directly. `/work-card remove <substring>` must uniquely match a stored document path or issue/PR URL, without a picker. The implementation plan specifies persistence, migration, plan selection and coordination. Each implementation slice requires tests and independent review.
 
 [Herdr Annotate](https://github.com/plannotator/herdr-annotate) and Plannotator remain deferred in favour of the existing editor. [Source research on feedback delivery](https://github.com/plannotator/plannotator-tui/blob/main/crates/plannotator-tui/src/delivery.rs) indicates terminal input targets a pane, not a session-pinned callback. A replacement agent could receive feedback. The integration has not been installed or runtime-tested.
 
