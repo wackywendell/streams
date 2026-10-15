@@ -88,8 +88,6 @@ Remaining work
 
 Italicize both titles and the remaining-work text. Keep Goal and Now text plain, without separate `Goal:` or `Now:` labels. Place the agent's status beside its progress when space permits. Omit empty remaining-work text; a title can stand alone when its corresponding text is empty. Wrap long text within the existing height and reference-space limits. Preserve reference shortcuts and the close hint.
 
-Legacy structured cards use the same combined title and Goal, but retain `Now:` because they have no separate agent title. Unstructured legacy prose remains intact.
-
 For one checkout, retain the current short document path:
 
 ```text
@@ -181,9 +179,9 @@ Retain strict validation, optimistic revision checks, exclusive cooperating-writ
 
 Splitting records introduces multi-file transitions. Specify write ordering and recovery for partial creation, membership changes and migration; do not describe several independent renames as one atomic transaction.
 
-Existing seven-field cards and saved Pi bindings must have an explicit compatibility or conversion path. The proposed rollout leaves legacy files intact while creating new records, then switches verified bindings. Do not reinterpret an old conversation-derived Goal as a newly plan-derived workspace goal. Preserve references and manual naming intent.
+Use only workspace and agent records after cutover. Do not retain the old launch environment, compatibility branches or a runtime importer. The user approved a one-off conversion of the small local inventory instead.
 
-Do not migrate live cards or disable the installed naming extension while this specification is under review. Decide import idempotency, conflict behavior and rollback before the implementation switches formats.
+Back up the existing card files and native binding metadata before conversion. Preserve references, supported own-agent state and manual names. Leave session history untouched. Do not treat an old conversation-derived Goal as plan provenance. Verify the replacement before switching live bindings or disabling the separate naming extension.
 
 ## Implementation sequence for review
 
@@ -194,7 +192,7 @@ Do not migrate live cards or disable the installed naming extension while this s
 - [ ] Add session-backed startup, restore and membership transitions, including movement and `q` behavior.
 - [ ] Separate agent summarization from shared plan-derived updates, with provenance and stale-input checks.
 - [ ] Add automatic naming and manual-name protection; prove first-pane-only tab naming.
-- [ ] Add command and foreground management entrypoints, then implement the reviewed legacy conversion path.
+- [ ] Add command and foreground management entrypoints, then convert the local records once and remove the old runtime.
 - [ ] Verify the replacement before disabling the old naming extension and updating installed-session instructions.
 
 This order may change after the native integration investigation. Each implementation slice needs failing tests first, relevant verification, review and a focused local commit. No pushes are authorized.
@@ -230,7 +228,7 @@ Required regression cases include:
 - reload, tab moves, stale callbacks, partial creation and closed card panes
 - first-pane naming rights and preserved manual session, workspace and editor names
 - unique, missing and ambiguous removal matches across documents and URLs
-- legacy import, package contents and unchanged read-only tool behavior
+- one-off local conversion, exact launcher-to-pane environment, package contents and read-only tool behavior
 
 Always preserve user edits and unrelated `.pi/subagents.json`. Ask before adding dependencies, changing the approved ownership model or performing destructive live migration. Never overwrite another agent's state, guess ownership from GUI focus, run competing naming extensions, remove failing tests or bypass signing.
 

@@ -4,7 +4,7 @@ Status: technical contract reviewed and approved by Astra; staged implementation
 
 ## Architecture choices
 
-Use the existing package, storage directory and host dependencies. Add workspace/agent records without treating the legacy seven-field card as the new shared model. Keep legacy data readable and provide an explicit import path; do not silently overwrite legacy YAML.
+Use the existing package, storage directory and host dependencies. Replace the seven-field card runtime with workspace and agent records. The user approved a one-off local conversion with backups: do not retain a legacy launch mode, compatibility runtime or permanent importer.
 
 Use polling to reconcile live Herdr identity, including while Pi is idle. Reuse `pane_poll_interval_ms` and serialize reconciliation so slow native calls cannot overlap. This avoids adding a raw-socket subscription client and changing the minimum Herdr version solely for events. Polling also handles reconnects through authoritative reads. Move detection is eventual, not instantaneous.
 
@@ -43,7 +43,7 @@ Agent fields:
 - title and automatic/manual title mode
 - status, Now and Remaining
 
-Runtime identity, membership and directories are not helper-editable. Automatic title changes respect manual mode. Keep the current status enum and text/control safety rules. The new structured records no longer need a pipe-delimited state carrier; retain that recognizer for legacy import/display only.
+Runtime identity, membership and directories are not helper-editable. Automatic title changes respect manual mode. Keep the current status enum and text/control safety rules. The new structured records do not use a pipe-delimited state carrier. Parse existing state only in the one-off conversion, not in the installed runtime.
 
 Checkout registration canonicalizes existing directories and reuses an existing entry for the same directory. Discover the nearest `.git` file/directory or `.jj` directory above the session cwd; outside a repository, use the cwd itself. Preserve the actual session cwd separately. Distinct worktrees remain distinct. Do not run global VCS configuration commands.
 
@@ -51,7 +51,7 @@ Checkout keys are stable once assigned. Generate fresh opaque keys rather than r
 
 ## Persistence operations
 
-Retain no-follow regular-file reads, strict schemas, raw-byte revisions, exclusive cooperating-writer locks and atomic replacement. Reuse existing primitives where doing so does not weaken legacy guards. Do not build a generic database or transaction framework.
+Retain no-follow regular-file reads, strict schemas, raw-byte revisions, exclusive cooperating-writer locks and atomic replacement. Reuse existing primitives where doing so preserves these guards. Do not build a generic database or transaction framework.
 
 Keep the current hybrid concurrency policy: model reads and inference run outside write locks; proposals name specific fields or reference additions. Reference additions merge against current data. Other edits retain whole-record revision checks. Do not add general field-by-field conflict merging without evidence that rejected independent edits are a problem. The extension serializes the final read, check and write; rewriting YAML internally does not grant a helper whole-record editing authority.
 
@@ -99,7 +99,7 @@ Retain the existing single-flight scheduler, normalized projected evidence, unca
 
 Pi's before-switch, before-fork and before-tree events are cancellable. They may invalidate requests, but must not retire a display before the transition succeeds. A successful replacement emits shutdown before disposing the old session; reload must retain the live pair. Stop idle timers on shutdown and bind subsequent work to fresh SDK context. Cancellation can leave the old session active without a completion event; recover only from a fresh confirmed context, never by reviving a disposed one.
 
-Automatic startup runs after meaningful task context and is idempotent. Preserve valid legacy bindings until explicit conversion. Persist a display-open attempt and nonce before launching. Reload may recover an exactly verified existing pair, but absence after an attempt never permits another automatic launch. Explicit open starts a new attempt. Move replacement requires a positively verified live old display. Use a guarded separated-display replacement operation that holds the native lock through verification, cleanup and one replacement attempt. Ordinary automatic open remains suppressed by a persisted attempt, including after standalone cleanup. Cleanup or launch uncertainty never authorizes an automatic retry. A closed display does not stop summaries. This does not require the standalone card to edit Pi session history.
+Automatic startup runs after meaningful task context and is idempotent. After the one-off cutover, restore only workspace and agent records; ignore old session binding entries. Persist a display-open attempt and nonce before launching. Reload may recover an exactly verified existing pair, but absence after an attempt never permits another automatic launch. Explicit open starts a new attempt. Move replacement requires a positively verified live old display. Use a guarded separated-display replacement operation that holds the native lock through verification, cleanup and one replacement attempt. Ordinary automatic open remains suppressed by a persisted attempt, including after standalone cleanup. Cleanup or launch uncertainty never authorizes an automatic retry. A closed display does not stop summaries. This does not require the standalone card to edit Pi session history.
 
 A move changes membership, cancels old-generation work and clears pending shared contributions. The agent's own summary remains until new evidence changes it. A resumed UUID finds its own record; a new fork UUID cannot claim the parent's record.
 
@@ -113,7 +113,7 @@ Default automatic versus manual startup/joining is one global configuration choi
 
 Keep models without executable tools. Produce separately validated own-agent updates and shared proposals, with narrower evidence for shared additions. Avoid shared-goal rewrites on ordinary agent activity.
 
-Initial plan selection is automatic among the workspace's known document references; do not add a recursive repository crawler. Foreground agents can add a plan explicitly, and legacy import seeds existing references. No known plan means no invented workspace goal.
+Initial plan selection is automatic among the workspace's known document references; do not add a recursive repository crawler. Foreground agents can add a plan explicitly, and the one-off conversion preserves existing references. No known plan means no invented workspace goal.
 
 Read candidate Markdown plan text through the validated checkout resolver, at most 256 KiB per file. Fail visibly for oversized or unreadable selected sources rather than silently presenting a partial plan as complete. Reselect plans when candidate reference metadata changes. Scheduled checks reread selected sources and reuse unchanged goal results. Explicit refresh reruns selection and goal inference, allowing recovery from a poor inference without editing the sources. No new filesystem watcher is needed.
 
@@ -147,24 +147,26 @@ Disable the installed `herdr-naming.ts` only after the new path is verified. Use
 
 ## Commands and management
 
-Retain new/open/show/refresh/detach behavior where compatible, with workspace selection and legacy import made explicit. Add `/work-card remove <substring>` with the specified unique path-or-URL match, no picker and conflict checking.
+Retain new/open/show/refresh/detach behavior where compatible. Open selects workspace records, not old card slugs. New attaches the calling agent and names its assignment; it must not erase an existing shared group. Add `/work-card remove <substring>` with the specified unique path-or-URL match, no picker and conflict checking.
 
 Keep `work_card` read-only and return both records plus resolved shared references. Add a narrowly scoped management tool for workspace creation/title updates, own-agent updates, checkout registration and shared-reference CRUD. Runtime identity fields and plan-derived goal are not arbitrary editable patch fields.
 
 Foreground reference removal executes directly. Deletion is metadata-only. Refuse workspace deletion while any agent record references it, including the caller; explicit own-agent deletion can precede workspace deletion. Retain the selected workspace binding so that second action remains possible after deleting the own-agent record. Pause updates before fallible cleanup and preserve cleanup identity for retry. Never close the native Herdr workspace or source files as a side effect.
 
-## Legacy conversion
+## One-off local cutover
 
-An explicit open of a legacy card imports it without overwriting the source. Preserve title, checkout and references. Keep the current session as the owning agent and copy supported agent state conservatively. Recompute the shared goal from plan sources instead of trusting old prose as plan provenance.
+The local inventory contains one saved card and one session with a saved card binding. Convert these directly after the workspace-only runtime passes review and isolated tests. Do not add a runtime migration framework.
 
-Record import source identity/revision and destination identity before fallible multi-record work so retries recover the same destination. Refuse conflicting imports rather than overwriting changed records. Keep a native workspace in legacy mode while its verified legacy owner remains active: no new shared publisher may compete with its workspace-summary writes. Validate imported records and complete verified legacy cleanup before switching bindings. A foreign live legacy owner requires explicit resolution, not automatic takeover. Keep new automatic naming inactive until the old-extension switchover.
+Back up source card bytes and native metadata. Record the intended destination IDs in the cutover evidence before writing records. Preserve the title, checkout, references and supported own-agent state; leave session history untouched. Keep the goal unknown until selected plan sources establish it. Verify source revisions before switching bindings, and retain backups for recovery rather than overwriting source data.
+
+The current failed display is absent. Clear only its positively verified stale markers when binding the new records; leave other panes, editor tabs and unrelated metadata alone. Refuse unexpected live ownership or changed source records. Use one launcher environment and one pane runtime. Test the exact environment produced by the launcher against the pane, rather than testing each side with separate fixtures.
 
 ## Implementation slices
 
 1. Records and pure presentation: new workspace/agent storage, checkout identities, additive references, removal exclusions, labels and view composition. Tests prove authority and filesystem safety before wiring live behavior.
-2. Herdr adapter and pane: per-agent ownership, resolved document targets, editor names, native reconciliation and independent sidebar projections. Retain verified legacy cleanup for import.
+2. Herdr adapter and pane: per-agent ownership, resolved document targets, editor names, native reconciliation and independent sidebar projections. Remove the single-card launcher and pane branch at cutover.
 3. Pi integration: session records, automatic/manual startup, moves, evidence boundaries, shared sources, title updates, commands and management tools.
-4. Migration and rollout: explicit import, partial-operation recovery, real package loader tests, isolated native multi-agent/move checks and reversible naming-extension switchover.
+4. Cutover and rollout: backed-up local conversion, real package loader tests, isolated native multi-agent/move checks and reversible naming-extension switchover.
 
 Use Sol for implementation and Astra for substantive review. Inspect actual diffs, fix findings, rerun checks and make focused local commits. A review finding that changes product behavior returns to the user; implementation details can be corrected within this contract.
 
@@ -179,7 +181,7 @@ The existing scheduler now forwards explicit-refresh intent separately from the 
 
 Astra approved both slices after the lifecycle recovery fixes. All 524 tests and type checks pass on Node 22 and Node 26. The lifecycle tests use temporary records and native transport doubles; they do not establish live SDK integration.
 
-The installed entrypoint remains legacy. SDK event wiring, commands, management tools, naming, import and isolated rollout checks remain outstanding. No normal workspace resources, naming settings or legacy cards changed during these slices.
+The installed entrypoint still uses the old format at this checkpoint. A pane startup regression exposed an untested mismatch between that launcher and the dual-mode pane. The user chose to remove compatibility rather than repair the old launch path. Replace SDK wiring and commands, remove the old runtime, complete management and naming, then perform the backed-up local conversion and isolated rollout checks. No live cutover has happened yet.
 
 ## Native integration evidence
 
@@ -197,7 +199,7 @@ Astra approved the contention fix; all 439 tests passed on Node 22 and Node 26. 
 
 ## Verification gates
 
-Run `npm run check` and `npm test` after each atomic implementation slice. Keep legacy core safety coverage and update lifecycle tests for intentional contract changes rather than leaving a test-only legacy runtime. Final verification runs on Node 22 and Node 26.
+Run `npm run check` and `npm test` after each atomic implementation slice. Port applicable filesystem, cancellation, rendering and lifecycle safety coverage to the sole workspace/agent runtime. Retire old-format-only expectations explicitly rather than leaving a test-only compatibility runtime. Final verification runs on Node 22 and Node 26.
 
 Gate native rollout on isolated checks for two agents in one workspace, cross-workspace tab moves, first-pane naming, manual-name preservation, duplicate-basename documents, close-without-respawn, explicit removals and package entrypoints. Do not change normal Herdr resources to run these checks.
 
