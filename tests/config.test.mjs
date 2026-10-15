@@ -48,6 +48,19 @@ test('partial config overlays defaults and zero disables automatic input checks'
   await assert.rejects(loadConfig(path), /unknown field check_every_n_cycles/);
 });
 
+test('workspace startup is one global automatic/manual policy', async t => {
+  const path = await fixture(t);
+  assert.equal(DEFAULT_CONFIG.workspace_startup, 'automatic');
+  for (const workspace_startup of ['automatic', 'manual']) {
+    await writeFile(path, JSON.stringify({ workspace_startup }));
+    assert.equal((await loadConfig(path)).workspace_startup, workspace_startup);
+  }
+  for (const workspace_startup of [null, true, 'legacy', 'Automatic', 0]) {
+    await writeFile(path, JSON.stringify({ workspace_startup }));
+    await assert.rejects(loadConfig(path), /workspace_startup/);
+  }
+});
+
 test('refresh spinner accepts only booleans', async t => {
   const path = await fixture(t);
   for (const show_refresh_spinner of [true, false]) {

@@ -5,6 +5,7 @@ import { join } from 'node:path';
 export type { CardStatus, CardDocument, CardLink, Card, CardPatch, CardSnapshot } from './card.js';
 
 export interface WorkCardsConfig {
+  workspace_startup: 'automatic' | 'manual';
   model: string;
   thinking_level: null | 'off' | 'minimal' | 'low' | 'medium' | 'high' | 'xhigh' | 'max';
   show_refresh_spinner: boolean;
@@ -23,6 +24,7 @@ export interface WorkCardsConfig {
 }
 
 export const DEFAULT_CONFIG: Readonly<WorkCardsConfig> = Object.freeze({
+  workspace_startup: 'automatic',
   model: 'helpers/simple',
   thinking_level: null,
   show_refresh_spinner: false,
@@ -70,6 +72,8 @@ export async function loadConfig(path = configPath()): Promise<WorkCardsConfig> 
         if (typeof value !== 'string' || !/^[^\s/\p{Cc}\p{Cf}]+\/[^\s\p{Cc}\p{Cf}]+$/u.test(value)) {
           throw new Error('model must be provider/model or a configured helpers/alias');
         }
+      } else if (key === 'workspace_startup') {
+        if (value !== 'automatic' && value !== 'manual') throw new Error('workspace_startup must be automatic or manual');
       } else if (key === 'show_refresh_spinner') {
         if (typeof value !== 'boolean') throw new Error('show_refresh_spinner must be a boolean');
       } else if (key === 'document_command') {

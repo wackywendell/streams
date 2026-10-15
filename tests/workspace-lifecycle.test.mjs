@@ -55,7 +55,7 @@ async function fixture(t, policy='automatic') {
 }
 async function attached(t,policy='automatic') { const f=await fixture(t,policy); await f.lifecycle.restore(); f.fresh(); if(policy==='manual') await f.lifecycle.open('Library task'); else await f.lifecycle.reconcile(); return f; }
 
-test('blank, inherited, assistant-only and legacy sessions allocate nothing; fresh input retains START boundary', async t=>{
+test('blank, inherited and assistant-only sessions allocate nothing; fresh input retains START boundary', async t=>{
   const f=await fixture(t); f.session={...f.session,evidence:evidence('inherited task')};
   await f.lifecycle.restore(); await f.lifecycle.reconcile();
   f.session={...f.session,evidence:{...f.session.evidence,transcript:[...f.session.evidence.transcript,{role:'assistant',text:'tool result paraphrase'}]}};
@@ -65,9 +65,27 @@ test('blank, inherited, assistant-only and legacy sessions allocate nothing; fre
   assert.equal(a.record.boundary.transcriptLength,1); assert.equal(a.record.title,'Fresh task please');
   const shared=projectSharedEvidence(f.session.evidence,a.record.boundary,'continue');
   assert.equal(shared.kind,'suffix'); assert.ok(shared.evidence.transcript.some(m=>m.text.includes('Fresh task')));
-  const legacy=await fixture(t); await legacy.lifecycle.restore('legacy'); legacy.fresh(); await legacy.lifecycle.reconcile(); await legacy.lifecycle.open('No import');
-  assert.equal(legacy.calls.length,0); assert.deepEqual(await legacy.store.listAgents(),[]);
 });
+test('explicit durable selection binds only an unbound native group and reuses no historical suffix', async t => {
+  const f = await fixture(t); await f.lifecycle.restore(); f.fresh();
+  await f.store.createWorkspace({ id: 'chosen', creationToken: 'chosen-token', title: 'Chosen workspace' });
+  await f.lifecycle.open(undefined, 'chosen');
+  assert.equal((await f.store.readAgent('session')).record.workspaceId, 'chosen');
+  assert.equal(f.workspaces[0].tokens.wcw_id, 'chosen');
+  const nonce = f.workspaces[0].tokens.wcw_nonce;
+  await f.lifecycle.open(undefined, 'chosen'); assert.equal(f.launches(), 1);
+  await f.store.createWorkspace({ id: 'other', creationToken: 'other-token', title: 'Other' });
+  await assert.rejects(f.lifecycle.open(undefined, 'other'), /bound|replace|conflict/i);
+  assert.equal(f.workspaces[0].tokens.wcw_id, 'chosen');
+  f.move(true);
+  await assert.rejects(f.lifecycle.open(undefined, 'chosen'), /already|duplicate|live/i);
+  for (const key of Object.keys(f.workspaces[0].tokens)) delete f.workspaces[0].tokens[key];
+  await f.lifecycle.open(undefined, 'chosen');
+  const a = await f.store.readAgent('session');
+  assert.notEqual(f.workspaces[1].tokens.wcw_nonce, nonce);
+  assert.equal(a.record.boundary.transcriptLength, 1);
+});
+
 test('blank explicit open requires a nonblank title; automatic startup is idempotent',async t=>{
   const f=await fixture(t); await f.lifecycle.restore(); await assert.rejects(f.lifecycle.open(),/title|dialogue/i);
   await f.lifecycle.open('Explicit blank-session task'); await f.lifecycle.reconcile(); await f.lifecycle.reconcile();

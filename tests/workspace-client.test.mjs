@@ -56,6 +56,43 @@ async function fixture() {
   };
   return {root,cwd,store,panes,workspaces,tabs,calls,client,joinAgent,setFail:f=>{fail=f;},run};
 }
+test('selected workspace rechecks cross-group bindings after record I/O', async () => {
+  const f = await fixture();
+  await f.store.createWorkspace({ id: 'selected', creationToken: 'token', title: 'Selected' });
+  f.workspaces.push({ workspace_id: 'other', tokens: {} });
+  const c = f.client('term1'), context = await c.bootstrap(DEFAULT_CONFIG);
+  const read = f.store.readWorkspace.bind(f.store); let once = true;
+  f.store.readWorkspace = async id => {
+    const result = await read(id);
+    if (once) { once = false; f.workspaces[1].tokens = { wcw_id: 'selected' }; }
+    return result;
+  };
+  await assert.rejects(c.joinWorkspace(f.store, context, { sessionId: 'term1', cwd: f.cwd, title: 'Task', boundary, targetWorkspaceId: 'selected' }, DEFAULT_CONFIG), /another live native binding/);
+  assert.deepEqual(f.workspaces[0].tokens, {});
+});
+
+test('concurrent selections serialize the same durable target across native groups and store aliases', async () => {
+  const f = await fixture();
+  await f.store.createWorkspace({ id: 'selected', creationToken: 'token', title: 'Selected' });
+  f.workspaces.push({ workspace_id: 'other', tokens: {} });
+  f.tabs[1].workspace_id = 'other'; f.panes[1].workspace_id = 'other';
+  await symlink(f.store.directory, join(f.root, 'alias'));
+  const stores = [f.store, new RecordStore(join(f.root, 'alias'))];
+  let release, entered;
+  const held = new Promise(r => { release = r; }), ready = new Promise(r => { entered = r; });
+  const read = f.store.readWorkspace.bind(f.store); let once = true;
+  f.store.readWorkspace = async id => { const result = await read(id); if (once) { once = false; entered(); await held; } return result; };
+  const clients = [f.client('term1'), f.client('term2')];
+  const contexts = await Promise.all(clients.map(c => c.bootstrap(DEFAULT_CONFIG)));
+  const select = n => clients[n].joinWorkspace(stores[n], contexts[n], { sessionId: `term${n + 1}`, cwd: f.cwd, title: 'Task', boundary, targetWorkspaceId: 'selected' }, DEFAULT_CONFIG);
+  const first = select(0); await ready;
+  const second = select(1); const result = Promise.allSettled([first, second]);
+  await delay(80); release();
+  const outcomes = await result;
+  assert.equal(outcomes.filter(r => r.status === 'fulfilled').length, 1);
+  assert.equal(f.workspaces.filter(w => w.tokens.wcw_id === 'selected').length, 1);
+});
+
 test('display preparation revalidates authority, attempt and ready binding before every later effect', async () => {
   for (const change of ['evidence','attempt','binding','status']) {
     const f=await fixture(), a=await f.joinAgent('term1'); const base=f.run('term1');

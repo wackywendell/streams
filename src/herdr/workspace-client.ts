@@ -14,7 +14,7 @@ export interface NativeContext { socket: string; terminalId: string; workspaceId
 export interface WorkspaceBinding { id: string; store: string; token: string; nonce: string; phase: 'reserved' | 'ready' }
 export interface Membership { workspace: Snapshot<WorkspaceRecord>; agent: Snapshot<AgentRecord>; binding: WorkspaceBinding; context: NativeContext }
 export type DisplayResult = { kind: 'paired'; pair: LivePair; agent: Snapshot<AgentRecord> } | { kind: 'suppressed'; ownership: PairState; agent: Snapshot<AgentRecord> };
-export type WorkspaceJoinInput = Omit<JoinInput, 'workspaceId' | 'membershipToken'>;
+export type WorkspaceJoinInput = Omit<JoinInput, 'workspaceId' | 'membershipToken'> & { targetWorkspaceId?: string };
 const bindingKeys = ['wcw_id', 'wcw_store', 'wcw_token', 'wcw_nonce', 'wcw_phase'];
 const digest = (text: string): string => createHash('sha256').update(text).digest('hex');
 const cap = (text: string): string => Array.from(text).slice(0, 80).join('');
@@ -105,19 +105,36 @@ export class WorkspaceClient extends HerdrTransport {
   }
   async joinWorkspace(store: RecordStore, context: NativeContext, input: WorkspaceJoinInput, config: WorkCardsConfig, signal?: AbortSignal): Promise<Membership> {
     signal?.throwIfAborted();
+    await mkdir(store.directory, { recursive: true, mode: 0o700 });
+    const key = await this.storeKey(store);
+    const initial = await this.guard(context, config, signal);
+    const target = input.targetWorkspaceId ?? bindingOf(initial.snapshot.workspaces.find(w => w.workspace_id === context.workspaceId)!, key)?.id;
+    // Existing durable targets serialize across native groups, always outside the group lock.
+    const join = () => this.joinWorkspaceLocked(store, context, input, config, key, target, signal);
+    return target === undefined ? join() : withWorkspaceLock(context.socket, `durable-workspace\0${key}\0${target}`, join, { waitMs: config.herdr_timeout_ms, signal });
+  }
+  private async joinWorkspaceLocked(store: RecordStore, context: NativeContext, input: WorkspaceJoinInput, config: WorkCardsConfig, key: string, target: string | undefined, signal?: AbortSignal): Promise<Membership> {
     return withWorkspaceLock(context.socket, context.workspaceId, async () => {
       let mutated = false;
       try {
+        const selected = input.targetWorkspaceId === undefined ? undefined : await store.readWorkspace(input.targetWorkspaceId);
         const live = await this.guard(context, config, signal);
-        await mkdir(store.directory, { recursive: true, mode: 0o700 });
-        const key = await this.storeKey(store);
         if (live.snapshot.panes.some(p => p.workspace_id === context.workspaceId && Object.keys(p.tokens).some(k => k.startsWith('wc_')))) throw new Error('Legacy live publisher conflict');
         const w = live.snapshot.workspaces.find(w => w.workspace_id === context.workspaceId)!;
         let binding = bindingOf(w, key);
+        if (binding && binding.id !== target) throw new Error('Workspace binding changed before durable target coordination; retry explicitly');
+        const unique = (snapshot: NativeSnapshot) => {
+          if (target && snapshot.workspaces.some(other => other.workspace_id !== context.workspaceId && other.tokens.wcw_id === target)) throw new Error('Durable workspace already has another live native binding');
+        };
+        unique(live.snapshot);
+        if (selected) {
+          if (binding && binding.id !== selected.record.id) throw new Error('Native workspace already bound; refusing replacement');
+        }
+        const newLifetime = !binding;
         if (!binding) {
-          binding = { id: randomUUID(), store: key, token: randomUUID(), nonce: randomUUID(), phase: 'reserved' };
+          binding = { id: selected?.record.id ?? randomUUID(), store: key, token: selected?.record.creationToken ?? randomUUID(), nonce: randomUUID(), phase: 'reserved' };
           mutated = true;
-          await this.stamp('workspace', w, { wcw_id: binding.id, wcw_store: binding.store, wcw_token: binding.token, wcw_nonce: binding.nonce, wcw_phase: 'reserved' }, context, config, signal);
+          await this.stamp('workspace', w, { wcw_id: binding.id, wcw_store: binding.store, wcw_token: binding.token, wcw_nonce: binding.nonce, wcw_phase: 'reserved' }, context, config, signal, async () => unique);
           const reserved = await this.guard(context, config, signal);
           if (!isDeepStrictEqual(bindingOf(reserved.snapshot.workspaces.find(w => w.workspace_id === context.workspaceId)!, key), binding)) throw new Error('Reservation did not round-trip');
         }
@@ -130,9 +147,14 @@ export class WorkspaceClient extends HerdrTransport {
         if (agent?.record.workspaceId === binding.id) {
           if (agent.record.cwd !== await realpath(input.cwd)) throw new Error('Conflicting membership cwd');
           validateMembership(workspace.record, agent.record);
+          if (selected && (newLifetime || binding.phase === 'reserved')) {
+            mutated = true;
+            agent = await store.resetEvidence(agentAuthority(agent.record), input.boundary, agent.revision, signal);
+          }
         } else {
           mutated = true;
-          agent = await store.join({ ...input, workspaceId: binding.id, membershipToken: randomUUID() }, signal);
+          const { targetWorkspaceId: _target, ...join } = input;
+          agent = await store.join({ ...join, workspaceId: binding.id, membershipToken: randomUUID() }, signal);
         }
         workspace = await store.readWorkspace(binding.id);
         validateMembership(workspace.record, agent.record);
@@ -140,10 +162,11 @@ export class WorkspaceClient extends HerdrTransport {
         if (!isDeepStrictEqual(bindingOf(again.snapshot.workspaces.find(w => w.workspace_id === context.workspaceId)!, key), binding)) throw new Error('Workspace reservation changed');
         if (binding.phase === 'reserved') {
           mutated = true;
-          await this.stamp('workspace', again.snapshot.workspaces.find(w => w.workspace_id === context.workspaceId)!, { wcw_phase: 'ready' }, context, config, signal);
+          await this.stamp('workspace', again.snapshot.workspaces.find(w => w.workspace_id === context.workspaceId)!, { wcw_phase: 'ready' }, context, config, signal, async () => unique);
           binding = { ...binding, phase: 'ready' };
         }
         const final = await this.guard(context, config, signal);
+        unique(final.snapshot);
         this.bound(key, workspace, final.snapshot, context);
         return { workspace, agent, binding, context: { ...context, bindingNonce: binding.nonce } };
       } catch (error) {

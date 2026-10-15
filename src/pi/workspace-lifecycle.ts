@@ -22,7 +22,7 @@ export interface WorkspaceScope {
   readonly context: Readonly<NativeContext>;
 }
 export interface WorkspaceLifecycleState {
-  readonly kind: 'unattached' | 'restored' | 'active' | 'suspended' | 'legacy' | 'disposed';
+  readonly kind: 'unattached' | 'restored' | 'active' | 'suspended' | 'disposed';
   readonly agent?: Snapshot<AgentRecord>;
 }
 interface Ticket { generation: number; signal: AbortSignal; sessionId: string }
@@ -43,7 +43,6 @@ export class WorkspaceLifecycle {
   private membership?: Membership;
   private owned?: CleanupTarget;
   private retiring?: CleanupTarget;
-  private legacy = false;
   private retired = false;
   private pendingReset = false;
   private disposed = false;
@@ -57,7 +56,7 @@ export class WorkspaceLifecycle {
     this.abort = new AbortController();
     this.generation++;
     this.membership = undefined;
-    if (!this.disposed && !this.legacy) this.value = { kind: this.value.agent ? 'suspended' : 'unattached', agent: this.value.agent };
+    if (!this.disposed) this.value = { kind: this.value.agent ? 'suspended' : 'unattached', agent: this.value.agent };
     this.host.onInvalidate?.();
   }
   dispose(): void {
@@ -105,26 +104,35 @@ export class WorkspaceLifecycle {
     if (this.owned === target) this.owned = undefined;
   }
   /** Successful-switch cleanup only. Reload/cancellable before-events use invalidate/dispose instead. */
-  retire(): Promise<void> {
+  cleanupContext(): NativeContext | undefined {
+    const context = (this.retiring ?? this.owned)?.context;
+    return context ? { ...context } : undefined;
+  }
+  retire(savedContext?: NativeContext): Promise<void> {
     this.retired = true;
     this.retiring ??= this.owned;
     this.invalidate();
-    return this.enqueue(t => this.release(t));
+    return this.enqueue(async t => {
+      // Saved detach state is only a cleanup locator, never membership authority.
+      if (!this.retiring && savedContext) {
+        const agent = await this.readAgent(t.sessionId); this.check(t);
+        if (agent) this.retiring = { context: { ...savedContext }, agent };
+      }
+      await this.release(t);
+    });
   }
   /** Call only for a committed transition, or reactivation after a cancelled before-event. */
-  restore(mode: 'records' | 'legacy' = 'records'): Promise<WorkspaceLifecycleState> {
+  restore(): Promise<WorkspaceLifecycleState> {
     const current = this.host.current();
     const boundary = captureReferenceBoundary(current.evidence);
     if (this.sessionId !== undefined && this.sessionId !== current.sessionId) this.retiring ??= this.owned;
     this.invalidate();
     this.sessionId = current.sessionId;
     this.baseline = boundary;
-    this.legacy = mode === 'legacy';
     this.retired = false;
     this.pendingReset = true;
-    this.value = { kind: this.legacy ? 'legacy' : 'unattached' };
+    this.value = { kind: 'unattached' };
     return this.enqueue(async t => {
-      if (this.legacy) return this.value;
       await this.release(t); this.check(t);
       let agent = await this.readAgent(t.sessionId); this.check(t);
       if (agent) agent = await this.resetAgent(t, agent, boundary);
@@ -133,14 +141,15 @@ export class WorkspaceLifecycle {
       return this.value;
     });
   }
-  reset(): Promise<WorkspaceLifecycleState> { return this.restore(this.legacy ? 'legacy' : 'records'); }
+  reset(): Promise<WorkspaceLifecycleState> { return this.restore(); }
 
   reconcile(): Promise<WorkspaceLifecycleState> { return this.enqueue(t => this.reconcileCurrent(t)); }
-  open(title?: string): Promise<WorkspaceLifecycleState> { return this.enqueue(t => this.reconcileCurrent(t, { title })); }
+  open(title?: string, targetWorkspaceId?: string): Promise<WorkspaceLifecycleState> {
+    return this.enqueue(t => this.reconcileCurrent(t, { title, targetWorkspaceId }));
+  }
 
-  private async reconcileCurrent(t: Ticket, explicit?: { title?: string }): Promise<WorkspaceLifecycleState> {
+  private async reconcileCurrent(t: Ticket, explicit?: { title?: string; targetWorkspaceId?: string }): Promise<WorkspaceLifecycleState> {
     const { store, client, config, policy } = this.host;
-    if (this.legacy) return this.value;
     if (this.sessionId !== t.sessionId) this.invalidate();
     if (this.retired || this.sessionId !== t.sessionId || !this.baseline) throw new Error('Restore required before reconciliation');
     try {
@@ -159,7 +168,8 @@ export class WorkspaceLifecycle {
         if (agent) agent = await this.resetAgent(t, agent, shared.boundary);
       }
       const fresh = shared.kind === 'suffix' ? shared.evidence.transcript.find(m => m.role === 'user' && excerpt(m.text)) : undefined;
-      const title = explicit?.title === undefined ? (agent?.record.title ?? (fresh ? excerpt(fresh.text) : '')) : excerpt(explicit.title);
+      const selected = explicit?.targetWorkspaceId === undefined ? undefined : await store.readWorkspace(explicit.targetWorkspaceId); this.check(t);
+      const title = explicit?.title === undefined ? (agent?.record.title ?? (fresh ? excerpt(fresh.text) : selected?.record.title ?? '')) : excerpt(explicit.title);
       if (!agent && !explicit && (policy === 'manual' || !fresh)) return this.value;
       if (!title) throw new Error('A nonblank title or fresh user dialogue is required');
       const previous = this.context;
@@ -169,6 +179,10 @@ export class WorkspaceLifecycle {
       if (!explicit && this.context.workspaceId === context.workspaceId && this.context.bindingNonce && this.context.bindingNonce !== context.bindingNonce) throw new Error('Native binding lifetime changed; explicit recovery required');
       const changed = previous && !isDeepStrictEqual(previous, context);
       const binding = observed.snapshot.workspaces.find(w => w.workspace_id === context.workspaceId)?.tokens;
+      if (selected) {
+        if (binding?.wcw_id && binding.wcw_id !== selected.record.id) throw new Error('Native workspace already bound; refusing replacement');
+        if (observed.snapshot.workspaces.some(w => w.workspace_id !== context.workspaceId && w.tokens.wcw_id === selected.record.id)) throw new Error('Durable workspace already has another live native binding');
+      }
       const needsJoin = !agent || binding?.wcw_id !== agent.record.workspaceId;
       const finishReservation = !needsJoin && binding?.wcw_phase === 'reserved';
       if (changed || (agent && needsJoin)) this.renew(t);
@@ -191,6 +205,7 @@ export class WorkspaceLifecycle {
           sessionId: t.sessionId, ...(projection.sessionFile === undefined ? {} : { sessionFile: projection.sessionFile }),
           cwd: projection.cwd, title, boundary: agent ? captureReferenceBoundary(projection.evidence) : this.baseline,
           ...(agent ? { expected: agentAuthority(agent.record) } : {}),
+          ...(selected ? { targetWorkspaceId: selected.record.id } : {}),
         }, config, t.signal); this.check(t);
         agent = joined.agent;
         this.value = { kind: 'restored', agent };

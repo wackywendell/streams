@@ -3,6 +3,7 @@ import { constants } from 'node:fs';
 import { link, lstat, mkdir, open, readdir, realpath, rename, stat, unlink } from 'node:fs/promises';
 import { dirname, isAbsolute, join, relative, resolve, sep } from 'node:path';
 import { isDeepStrictEqual } from 'node:util';
+import { homedir } from 'node:os';
 import { parseDocument, stringify } from 'yaml';
 import {
   absolute, applyOwnUpdate, applyReferenceRemoval, applySharedAdditions, documentIdentity, object, opaque, referenceIdentity,
@@ -11,6 +12,10 @@ import {
   type ReferenceIdentity, type ReferenceSelection, type Snapshot, type WorkspaceRecord,
 } from './records/schema.js';
 export * from './records/schema.js';
+
+export function recordDirectory(env: NodeJS.ProcessEnv = process.env): string {
+  return join(env.XDG_STATE_HOME || join(env.HOME || homedir(), '.local', 'state'), 'herdr', 'cards');
+}
 
 export interface JoinInput {
   workspaceId: string; sessionId: string; sessionFile?: string; cwd: string;
