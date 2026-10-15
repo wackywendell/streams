@@ -109,7 +109,9 @@ Keep models without executable tools. Produce separately validated own-agent upd
 
 Initial plan selection is automatic among the workspace's known document references; do not add a recursive repository crawler. Foreground agents can add a plan explicitly, and legacy import seeds existing references. No known plan means no invented workspace goal.
 
-Read candidate Markdown plan text through the validated checkout resolver, at most 256 KiB per file. Fail visibly for oversized or unreadable selected sources rather than silently presenting a partial plan as complete. Refresh on explicit refresh, changed document references, and source checks during normal scheduled work; no new filesystem watcher is needed. Source fingerprints include identities and bytes. Re-read the selected identities and bytes before committing a result. An unchanged previously captured fingerprint does not prove that files stayed unchanged during inference.
+Read candidate Markdown plan text through the validated checkout resolver, at most 256 KiB per file. Fail visibly for oversized or unreadable selected sources rather than silently presenting a partial plan as complete. Reselect plans when candidate reference metadata changes. Scheduled checks reread selected sources and reuse unchanged goal results. Explicit refresh reruns selection and goal inference, allowing recovery from a poor inference without editing the sources. No new filesystem watcher is needed.
+
+Source fingerprints include identities and bytes. Re-read the selected identities and bytes before committing a result. An unchanged previously captured fingerprint does not prove that files stayed unchanged during inference.
 
 Workspace-goal inference must not use arbitrary agent dialogue as completion evidence. Keep selected sources and provenance with the result. A plan can supply intended scope, never proof of completed agent work. Summarizer field validation enforces authority; semantic source interpretation remains model behavior and must not be advertised as a validator guarantee.
 
@@ -165,6 +167,10 @@ Use Sol for implementation and Astra for substantive review. Inspect actual diff
 An isolated Herdr 0.9.4 server passed 7 checks. Cross-workspace pane moves changed public pane IDs but preserved terminal IDs and pane metadata. Workspace metadata stayed in the source. Moving the agent pane alone left its old display identifiable. Moving both terminals into the destination restored a paired layout. Pane swaps changed the first layout pane, and inherited caller context resolved the moved terminal without GUI focus.
 
 Artifacts: `/private/tmp/wc-move-contract.xqm49W/{probe.mjs,evidence.json,calls.json,result.json}`. The harness used private HOME, XDG directories, configuration and socket; it closed only its own workspaces and stopped its server cleanly. This proves native primitives, not automatic Work Cards reconciliation, naming preservation or restart recovery. The public schema exposes cross-workspace pane movement; its `tab.move` operation only reorders tabs, so no atomic cross-workspace whole-tab operation was tested.
+
+A later adapter and standalone-pane smoke test passed shared context, distinct agent projections, and checkout A document opening, reuse and manual-title preservation. It failed when checkout B's document shortcut was dropped during projection-lock contention. The pane discards document keys if projection fails in that iteration, even after observing and verifying the pair. No wrong-file opening or ownership corruption was observed.
+
+Artifacts: `/private/tmp/wc-workspace-native.b5jTSR/`, including `investigation.md` and `result.json`. All private workspaces were closed and the server exited with code 0. The run did not reach close/reopen or movement checks. Native integration remains incomplete; further native retries are paused after 3 harness correction retries.
 
 ## Verification gates
 
