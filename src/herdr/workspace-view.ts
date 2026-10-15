@@ -14,7 +14,7 @@ export function renderWorkspaceCard(snapshot: WorkspaceCardSnapshot | undefined,
   const view = composeView(snapshot.workspace, snapshot.agent);
   return renderDisplayCard({
     workspaceTitle: view.workspaceTitle, title: view.title, status: view.status,
-    state: { sections: { goal: view.goal, now: view.now, remaining: view.remaining } },
+    goal: view.goal, now: view.now, remaining: view.remaining,
     documents: view.documents.map(document => ({ label: document.label, target: {
       workspaceId: snapshot.workspace.record.id, membershipToken: snapshot.agent.record.membershipToken,
       checkout: document.checkout, path: document.path, directory: snapshot.workspace.record.checkouts[document.checkout].directory,

@@ -1,5 +1,5 @@
 import { isAbsolute, normalize, relative, sep } from 'node:path';
-import type { CardStatus } from '../card.js';
+export type CardStatus = 'active' | 'waiting' | 'blocked' | 'parked' | 'done';
 
 export type TitleMode = 'auto' | 'manual';
 export interface DocumentIdentity { checkout: string; path: string }

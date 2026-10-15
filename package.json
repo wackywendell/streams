@@ -23,7 +23,7 @@
     ]
   },
   "exports": {
-    "./card": "./dist/card.js",
+    "./records": "./dist/records.js",
     "./config": "./dist/config.js"
   },
   "scripts": {

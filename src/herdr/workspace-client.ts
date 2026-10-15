@@ -4,8 +4,8 @@ import { isDeepStrictEqual } from 'node:util';
 import { configPath, documentCommand, type WorkCardsConfig } from '../config.js';
 import { resolvedReferences } from '../presentation.js';
 import { RecordStore, resolveWorkspaceDocument, documentIdentity, referenceIdentity, validateMembership, type AgentRecord, type Authority, type DocumentIdentity, type JoinInput, type Snapshot, type WorkspaceRecord } from '../records.js';
-import { withWorkspaceLock } from './client.js';
-import type { Pane, Workspace } from './ownership.js';
+import { withWorkspaceLock } from './workspace-lock.js';
+import type { Pane, Workspace } from './workspace-ownership.js';
 import { HerdrTransport, type ClientOptions } from './transport.js';
 import { classifyPair, firstPane, locateTerminal, nativeObject, nativePane, pairKeys, pairMarkers, parseNativeSnapshot, type LivePair, type NativeSnapshot, type PairState } from './workspace-ownership.js';
 

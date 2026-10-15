@@ -42,11 +42,11 @@ test('declared Pi package entry refreshes its real private Herdr helper graph on
     const entry = join(directory, tree, 'pi', `index.${extension}`);
     const source = await readFile(entry, 'utf8');
     assert.ok(source.includes('registerWorkCards(pi);'));
-    await writeFile(entry, "import { HerdrClient, loaderVersion } from '../herdr/client.js';\n" + source.replace('registerWorkCards(pi);', `registerWorkCards(pi);
+    await writeFile(entry, "import { WorkspaceClient as ProbeClient } from '../herdr/workspace-client.js';\nimport { loaderVersion } from '../herdr/transport.js';\n" + source.replace('registerWorkCards(pi);', `registerWorkCards(pi);
       pi.registerCommand('loader-probe', { handler: async () => ({
-        version: loaderVersion, pluginRoot: new HerdrClient({ env: {} }).pluginRoot,
+        version: loaderVersion, pluginRoot: new ProbeClient({ env: {} }).pluginRoot,
       }) });`));
-    const helper = join(directory, tree, 'herdr', `client.${extension}`);
+    const helper = join(directory, tree, 'herdr', `transport.${extension}`);
     originals.set(helper, await readFile(helper, 'utf8'));
   }
   const writeVersion = async value => {
@@ -77,8 +77,13 @@ test('actual npm tarball includes the source graph and compiled Herdr, and loads
   const files = new Set(packed.files.map(file => file.path));
   const sourceFiles = (await readdir(join(root, 'src'), { recursive: true })).filter(path => path.endsWith('.ts'));
   for (const path of sourceFiles) assert.ok(files.has(`src/${path}`), `Missing packed source: ${path}`);
-  for (const path of ['package.json', 'dist/pi/index.js', 'dist/herdr/client.js', 'dist/herdr/pane.js', 'dist/card.js', 'dist/config.js', 'dist/state.js', 'src/state.ts', 'bin/open-document.sh', 'herdr-plugin.toml']) {
+  for (const path of ['package.json', 'dist/pi/index.js', 'dist/herdr/workspace-client.js', 'dist/herdr/workspace-lock.js', 'dist/herdr/workspace-ownership.js', 'dist/herdr/workspace-view.js', 'dist/herdr/transport.js', 'dist/herdr/pane.js', 'dist/records.js', 'dist/records/schema.js', 'dist/config.js', 'bin/open-document.sh', 'herdr-plugin.toml']) {
     assert.ok(files.has(path), `Missing packed runtime: ${path}`);
+  }
+  for (const module of ['card', 'state', 'herdr/client', 'herdr/ownership']) {
+    for (const path of [`src/${module}.ts`, ...['js', 'd.ts', 'js.map'].map(extension => `dist/${module}.${extension}`)]) {
+      assert.ok(!files.has(path), `Obsolete runtime packed: ${path}`);
+    }
   }
   assert.ok([...files].every(path => !path.startsWith('tests/') && !path.startsWith('node_modules/')));
   const extracted = join(directory, 'extracted');
@@ -89,10 +94,8 @@ test('actual npm tarball includes the source graph and compiled Herdr, and loads
   const manifest = JSON.parse(await readFile(join(packageRoot, 'package.json'), 'utf8'));
   const extension = await loadPackage(packageRoot);
   assert.equal(extension.resolvedPath, join(packageRoot, manifest.pi.extensions[0]));
-  assert.deepEqual(manifest.exports, { './card': './dist/card.js', './config': './dist/config.js' });
-  const { parseStateSections } = await import(pathToFileURL(join(packageRoot, 'dist/state.js')));
-  assert.deepEqual(parseStateSections('Goal: Purpose | Now: Ready | Remaining: Scope'), { goal: 'Purpose', now: 'Ready', remaining: 'Scope' });
-  const { HerdrClient } = await import(pathToFileURL(join(packageRoot, 'dist/herdr/client.js')));
-  assert.equal(resolve(new HerdrClient({ env: {} }).pluginRoot), packageRoot);
+  assert.deepEqual(manifest.exports, { './records': './dist/records.js', './config': './dist/config.js' });
+  const { WorkspaceClient } = await import(pathToFileURL(join(packageRoot, 'dist/herdr/workspace-client.js')));
+  assert.equal(resolve(new WorkspaceClient({ env: {} }).pluginRoot), packageRoot);
   t.diagnostic(`packed ${files.size} files (${sourceFiles.length} TypeScript sources); extracted ${manifest.pi.extensions[0]} registered work-card/work_card with supplied host dependencies`);
 });

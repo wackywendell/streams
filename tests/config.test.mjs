@@ -27,16 +27,8 @@ test('missing config uses frozen defaults without shared mutable results', async
   assert.equal((await loadConfig(path)).model, 'helpers/simple');
   assert.equal(DEFAULT_CONFIG.thinking_level, null);
   assert.equal(DEFAULT_CONFIG.show_refresh_spinner, false);
-  assert.equal(DEFAULT_CONFIG.max_document_bytes, 262144);
-  assert.equal(DEFAULT_CONFIG.max_context_chars, 24000);
   assert.equal(DEFAULT_CONFIG.max_output_tokens, 2048);
   assert.equal(DEFAULT_CONFIG.request_timeout_ms, 30000);
-});
-
-test('default guidance matches the no_change summarizer decision', () => {
-  assert.ok(DEFAULT_CONFIG.update_guidance.includes('return no_change for routine activity.'));
-  assert.ok(DEFAULT_CONFIG.update_guidance.includes('even without new progress.'));
-  assert.ok(!DEFAULT_CONFIG.update_guidance.includes('empty patch'));
 });
 
 test('partial config overlays defaults and zero disables automatic input checks', async t => {
@@ -73,14 +65,12 @@ test('refresh spinner accepts only booleans', async t => {
   }
 });
 
-test('deprecated context budget remains accepted and validated for strict config compatibility', async t => {
+test('removed legacy options are rejected rather than silently ignored', async t => {
   const path = await fixture(t);
-  for (const max_context_chars of [1, 24000, 1000000]) {
-    await writeFile(path, JSON.stringify({ max_context_chars }));
-    assert.equal((await loadConfig(path)).max_context_chars, max_context_chars);
+  for (const key of ['max_context_chars', 'max_document_bytes', 'update_guidance']) {
+    await writeFile(path, JSON.stringify({ [key]: 1 }));
+    await assert.rejects(loadConfig(path), /unknown field/);
   }
-  await writeFile(path, JSON.stringify({ max_context_chars: 0 }));
-  await assert.rejects(loadConfig(path), /max_context_chars.*integer >= 1/);
 });
 
 test('thinking level accepts explicit overrides and null for profile inheritance', async t => {
@@ -107,7 +97,7 @@ test('malformed config errors include path and never silently use defaults', asy
   for (const field of ['check_every_n_responses', 'check_every_n_cycles']) {
     for (const value of [-1, 0.5, '1', null]) invalid.push(JSON.stringify({ [field]: value }));
   }
-  for (const field of ['max_context_chars', 'max_document_bytes', 'max_output_tokens', 'request_timeout_ms', 'pane_poll_interval_ms', 'herdr_timeout_ms']) {
+  for (const field of ['max_output_tokens', 'request_timeout_ms', 'pane_poll_interval_ms', 'herdr_timeout_ms']) {
     for (const value of [0, -1, 0.5, '100']) invalid.push(JSON.stringify({ [field]: value }));
   }
   for (const value of [0, 1, -0.1, '0.2']) invalid.push(JSON.stringify({ pane_height_fraction: value }));

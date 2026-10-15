@@ -164,6 +164,46 @@ test('missing agent/workspace reads never create records or directories', async 
   assert.deepEqual(await readdir(root), []);
 });
 
+test('notices clear by source, survive unrelated polls, and clear only on visible document attempts', async () => {
+  const { view } = fixture(); await view.refresh(); view.render(80, 10);
+  view.setNotice('projection', 'Arbitrary wording');
+  view.clearNotice('document'); assert.equal(view.notice.source, 'projection');
+  view.clearNotice('projection'); assert.equal(view.notice, undefined);
+  for (const source of ['document', 'projection']) {
+    view.setNotice(source, 'Card unavailable (not a read error)');
+    await view.refresh(); assert.equal(view.notice.source, source);
+  }
+  view.setNotice('document', 'Herdr projection unavailable: document error');
+  view.clearNotice('projection'); assert.equal(view.notice.source, 'document');
+  await view.key('z'); assert.equal(view.notice.source, 'document');
+  await view.key('q'); assert.equal(view.notice.source, 'document');
+  assert.equal((await view.key('a')).kind, 'open-document'); assert.equal(view.notice, undefined);
+});
+
+test('read failure disables stale actions and a repaired record clears only its read notice', async () => {
+  const { view, store, agent } = fixture(); await view.refresh(); view.render(80, 10);
+  store.readAgent = async () => { throw new Error('Malformed record'); };
+  assert.deepEqual(await view.key('a'), { kind: 'none' });
+  assert.equal(view.current, undefined); assert.equal(view.notice.source, 'card');
+  assert.match(unstyled(view.render(80, 10)), /unavailable/i);
+  store.readAgent = async () => structuredClone(agent);
+  await view.refresh(); assert.equal(view.notice, undefined);
+  view.render(80, 10); assert.equal((await view.key('a')).kind, 'open-document');
+});
+
+test('j/k are document intents, digits inert, and q or Ctrl-C exit only the view', async () => {
+  const { view, workspace } = fixture();
+  workspace.record.documents = Array.from({ length: 11 }, (_, i) => ({ checkout: 'lib', path: `doc-${i}.md`, description: '' }));
+  workspace.record.goal = ''; workspace.record.planSources = []; workspace.record.sourceFingerprint = null;
+  await view.refresh(); view.render(80, 20);
+  for (const digit of '0123456789') assert.deepEqual(await view.key(digit), { kind: 'none' });
+  for (const [key, path] of [['j', 'doc-9.md'], ['k', 'doc-10.md']]) {
+    assert.deepEqual((await view.key(key)).identity, { checkout: 'lib', path });
+  }
+  assert.deepEqual(await view.key('q'), { kind: 'exit' });
+  assert.deepEqual(await view.key('\x03'), { kind: 'exit' });
+});
+
 test('broken files stay visible and actionable without file checks', async () => {
   const { view } = fixture(); await view.refresh(); assert.match(unstyled(view.render(100, 10)), /docs\/design.md/);
   assert.equal((await view.key('a')).kind, 'open-document');

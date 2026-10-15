@@ -4,7 +4,7 @@ import { mkdtemp, readdir, rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { setTimeout as delay } from 'node:timers/promises';
-import { withWorkspaceLock } from '../dist/herdr/client.js';
+import { withWorkspaceLock } from '../dist/herdr/workspace-lock.js';
 
 async function fixture(t) {
   const root = await mkdtemp(join(tmpdir(), 'wc-lock-'));

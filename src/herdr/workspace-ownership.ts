@@ -1,4 +1,5 @@
-import type { Pane, Workspace } from './ownership.js';
+export interface Pane { pane_id: string; terminal_id: string; workspace_id: string; tab_id: string; tokens: Readonly<Record<string, string>> }
+export interface Workspace { workspace_id: string; tokens: Readonly<Record<string, string>> }
 export interface NativeTab { tab_id: string; workspace_id: string; label: string; number: number }
 export interface NativeLayout { tab_id: string; workspace_id: string; panes: { pane_id: string }[] }
 export interface NativeSnapshot { workspaces: Workspace[]; tabs: NativeTab[]; panes: Pane[]; layouts: NativeLayout[] }

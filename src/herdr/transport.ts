@@ -4,7 +4,7 @@ import { isAbsolute, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { isDeepStrictEqual } from 'node:util';
 import type { WorkCardsConfig } from '../config.js';
-import type { Pane } from './ownership.js';
+import type { Pane } from './workspace-ownership.js';
 export type Run = (argv: string[], timeoutMs: number) => Promise<string>;
 export interface ClientOptions { env?: NodeJS.ProcessEnv; run?: Run; pluginRoot?: string }
 const pluginPanes = [

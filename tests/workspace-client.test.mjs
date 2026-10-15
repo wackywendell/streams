@@ -4,7 +4,7 @@ import { mkdtemp, mkdir, writeFile, realpath, symlink, unlink } from 'node:fs/pr
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { WorkspaceClient, agentAuthority } from '../dist/herdr/workspace-client.js';
-import { withWorkspaceLock } from '../dist/herdr/client.js';
+import { withWorkspaceLock } from '../dist/herdr/workspace-lock.js';
 import { setTimeout as delay } from 'node:timers/promises';
 import { RecordStore } from '../dist/records.js';
 import { DEFAULT_CONFIG } from '../dist/config.js';
@@ -571,4 +571,92 @@ test('document opens exact painted identity, reuses verified editor and preserve
   await assert.rejects(a.c.openDocument(f.store,a.context,workspace,opened.agent,identity,DEFAULT_CONFIG),/card/i);
   const painted=structuredClone(workspace); painted.record.checkouts[r.checkout].directory=f.root;
   await assert.rejects(card.openDocument(f.store,context,painted,opened.agent,identity,DEFAULT_CONFIG),/checkout|stale/i);
+});
+
+async function guardedDocumentFixture(t) {
+  const f = await documentFixture();
+  const { rm } = await import('node:fs/promises');
+  t.after(() => rm(f.root, { recursive: true, force: true }));
+  return { ...f, client: f.card, open: () => f.card.openDocument(f.store, f.context, f.workspace, f.opened.agent, f.target('plan.md'), DEFAULT_CONFIG) };
+}
+const documentMutations = calls => calls.filter(a => ['report-metadata', 'rename', 'focus'].includes(a[1]) || a.slice(0, 3).join(' ') === 'plugin pane open');
+
+test('document matching partial, stale and duplicate editor tuples refuse without effects', async t => {
+  for (const mode of ['partial', 'pane', 'terminal', 'tab', 'duplicate']) await t.test(mode, async t => {
+    const f = await guardedDocumentFixture(t); await f.open();
+    const editor = f.panes.find(p => p.tokens.wcd_key);
+    if (mode === 'partial') delete editor.tokens.wcd_tab;
+    else if (mode === 'duplicate') {
+      f.tabs.push({ tab_id: 'w:t90', workspace_id: 'w', label: '90', number: 90 });
+      f.panes.push({ ...editor, pane_id: 'w:p90', terminal_id: 'term90', tab_id: 'w:t90' });
+    } else editor.tokens['wcd_' + mode] = 'wrong';
+    f.calls.length = 0;
+    await assert.rejects(f.open(), /document.*tuple/i);
+    assert.deepEqual(documentMutations(f.calls), []);
+  });
+});
+
+test('document partial launch, metadata, rename and focus failures never close or retry editors', async t => {
+  for (const mode of ['open', 'metadata', 'rename', 'focus']) await t.test(mode, async t => {
+    const f = await guardedDocumentFixture(t); f.calls.length = 0;
+    f.setFail(args => mode === 'open' ? args.slice(0, 3).join(' ') === 'plugin pane open'
+      : args[1] === ({ metadata: 'report-metadata', rename: 'rename', focus: 'focus' })[mode]);
+    await assert.rejects(f.open(), /partial.*inspect/i);
+    assert.equal(f.calls.filter(a => a.slice(0, 3).join(' ') === 'plugin pane open').length, 1);
+    assert.equal(f.calls.some(a => a.slice(0, 3).join(' ') === 'plugin pane close'), false);
+    if (mode !== 'focus') assert.equal(f.calls.some(a => a[1] === 'focus'), false);
+  });
+});
+
+test('successful editor metadata acknowledgement without persistence blocks rename and focus', async t => {
+  const f = await guardedDocumentFixture(t), run = f.client.run; f.calls.length = 0;
+  f.client.run = async args => {
+    if (args[0] === 'pane' && args[1] === 'report-metadata' && args.some(value => value.startsWith('wcd_key='))) {
+      f.calls.push(args);
+      return ''; // Normal report success, but the new editor markers were not persisted.
+    }
+    return run(args);
+  };
+  await assert.rejects(f.open(), error => {
+    const editor = f.panes.at(-1);
+    assert.match(error.message, /Document metadata did not round-trip/);
+    for (const identity of [editor.pane_id, editor.terminal_id, editor.tab_id]) assert.ok(error.message.includes(identity), error.message);
+    assert.deepEqual(editor.tokens, {});
+    return true;
+  });
+  assert.equal(f.calls.filter(a => a.slice(0, 3).join(' ') === 'plugin pane open').length, 1);
+  assert.equal(f.calls.filter(a => a[1] === 'report-metadata').length, 1);
+  assert.equal(f.calls.some(a => a[0] === 'tab' && ['rename', 'focus'].includes(a[1])), false);
+  assert.equal(f.calls.some(a => a.slice(0, 3).join(' ') === 'plugin pane close'), false);
+});
+
+test('document launch rejects returned plugin, entrypoint and reused native identities before stamping', async t => {
+  for (const mode of ['plugin', 'entrypoint', 'workspace', 'pane', 'terminal', 'tab']) await t.test(mode, async t => {
+    const f = await guardedDocumentFixture(t), run = f.client.run; f.calls.length = 0;
+    f.client.run = async args => {
+      const raw = await run(args);
+      if (args.slice(0, 3).join(' ') !== 'plugin pane open') return raw;
+      const response = JSON.parse(raw), info = response.result.plugin_pane;
+      if (mode === 'plugin') info.plugin_id = 'other';
+      else if (mode === 'entrypoint') info.entrypoint = 'card';
+      else info.pane[mode === 'workspace' ? 'workspace_id' : mode === 'pane' ? 'pane_id' : mode === 'terminal' ? 'terminal_id' : 'tab_id']
+        = mode === 'workspace' ? 'other' : f.panes[0][mode === 'pane' ? 'pane_id' : mode === 'terminal' ? 'terminal_id' : 'tab_id'];
+      return JSON.stringify(response);
+    };
+    await assert.rejects(f.open(), /partial.*inspect/i);
+    const mutations = documentMutations(f.calls);
+    assert.equal(mutations.length, 1); assert.deepEqual(mutations[0].slice(0, 3), ['plugin', 'pane', 'open']);
+  });
+});
+
+test('document environment forwards only required target, command and explicit caller PATH', async t => {
+  const f = await guardedDocumentFixture(t); f.calls.length = 0;
+  f.client.env.PATH = '/caller bin:/usr/bin:/bin'; f.client.env.SECRET_TEST_VALUE = 'not forwarded'; f.client.env.EDITOR = 'nano -w';
+  await f.open();
+  const open = f.calls.find(a => a.slice(0, 3).join(' ') === 'plugin pane open');
+  const values = open.flatMap((value, index) => value === '--env' ? [open[index + 1]] : []);
+  assert.deepEqual(values.map(v => v.split('=')[0]).sort(), ['PATH', 'WORK_CARDS_DOCUMENT_COMMAND', 'WORK_CARDS_DOCUMENT_CWD', 'WORK_CARDS_DOCUMENT_PATH']);
+  assert.ok(values.includes('PATH=/caller bin:/usr/bin:/bin'));
+  assert.ok(values.includes('WORK_CARDS_DOCUMENT_COMMAND=nano -w'));
+  assert.ok(values.includes('WORK_CARDS_DOCUMENT_PATH=' + join(f.cwd, 'plan.md')));
 });

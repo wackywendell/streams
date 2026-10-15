@@ -2,8 +2,6 @@ import { readFile } from 'node:fs/promises';
 import { homedir } from 'node:os';
 import { join } from 'node:path';
 
-export type { CardStatus, CardDocument, CardLink, Card, CardPatch, CardSnapshot } from './card.js';
-
 export interface WorkCardsConfig {
   workspace_startup: 'automatic' | 'manual';
   model: string;
@@ -11,16 +9,12 @@ export interface WorkCardsConfig {
   show_refresh_spinner: boolean;
   /** Interval of distinct projected input changes, including user and assistant text; 0 disables automatic checks. */
   check_every_n_responses: number;
-  /** @deprecated Accepted and validated for compatibility; ignored by summary context construction. */
-  max_context_chars: number;
-  max_document_bytes: number;
   document_command: string | null;
   max_output_tokens: number;
   request_timeout_ms: number;
   pane_poll_interval_ms: number;
   herdr_timeout_ms: number;
   pane_height_fraction: number;
-  update_guidance: string;
 }
 
 export const DEFAULT_CONFIG: Readonly<WorkCardsConfig> = Object.freeze({
@@ -29,15 +23,12 @@ export const DEFAULT_CONFIG: Readonly<WorkCardsConfig> = Object.freeze({
   thinking_level: null,
   show_refresh_spinner: false,
   check_every_n_responses: 1,
-  max_context_chars: 24000,
-  max_document_bytes: 262144,
   document_command: null,
   max_output_tokens: 2048,
   request_timeout_ms: 30000,
   pane_poll_interval_ms: 1000,
   herdr_timeout_ms: 3000,
   pane_height_fraction: 0.2,
-  update_guidance: 'Preserve stable facts and summarize durable milestones and important unfinished work. Condense verbose or activity-log-like state even without new progress. Otherwise update only for significant, evidenced changes; return no_change for routine activity. Do not infer progress or invent plans, links or documents.',
 });
 
 function validateDocumentCommand(value: unknown, label: string): asserts value is string {
@@ -81,10 +72,6 @@ export async function loadConfig(path = configPath()): Promise<WorkCardsConfig> 
       } else if (key === 'thinking_level') {
         if (value !== null && (typeof value !== 'string' || !['off', 'minimal', 'low', 'medium', 'high', 'xhigh', 'max'].includes(value))) {
           throw new Error('thinking_level must be null or off, minimal, low, medium, high, xhigh, max');
-        }
-      } else if (key === 'update_guidance') {
-        if (typeof value !== 'string' || !value.trim() || /[\p{Cc}\p{Cf}]/u.test(value.replace(/\n/g, ''))) {
-          throw new Error('update_guidance must be a non-empty string without controls (newlines allowed)');
         }
       } else if (key === 'pane_height_fraction') {
         if (typeof value !== 'number' || !Number.isFinite(value) || value <= 0 || value >= 1) {

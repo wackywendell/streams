@@ -35,7 +35,6 @@ function launch(root, sessionId = 'one', options = {}) {
     import { RecordStore } from ${moduleURL('records')};
     import { WorkspaceClient } from ${moduleURL('herdr/workspace-client')};
     import { WorkspaceCardView } from ${moduleURL('herdr/workspace-view')};
-    import { HerdrClient } from ${moduleURL('herdr/client')};
     const options = ${JSON.stringify(options)};
     const originalOutput = process.stdout, input = new PassThrough();
     input.isTTY = true; input.isRaw = false;
@@ -52,7 +51,6 @@ function launch(root, sessionId = 'one', options = {}) {
     for (const name of ['joinWorkspace', 'openDisplay', 'closeDisplay', 'cleanupSeparatedPair', 'refreshDocumentNames']) {
       WorkspaceClient.prototype[name] = async () => { result.forbidden.push(name); throw new Error('Forbidden native operation'); };
     }
-    for (const name of ['paneAttachment', 'projectCard', 'openDocument']) HerdrClient.prototype[name] = async () => { throw new Error('Unexpected legacy operation'); };
     const initial = { socket: '/fake.sock', terminalId: 'card', workspaceId: 'source', tabId: 'tab-source', bindingNonce: 'binding-source' };
     WorkspaceClient.prototype.bootstrap = async () => {
       if (options.stopAt === 'bootstrap') process.emit('SIGTERM');
@@ -131,6 +129,16 @@ test('explicit full workspace environment renders shared Goal and only each own 
     assert.equal(result.signalAborted, true); restored(result);
   }
   assert.deepEqual(await Promise.all([store.readAgent('one'), store.readAgent('two'), store.readWorkspace('shared')]), before);
+});
+
+test('legacy-only launch input is unsupported before terminal or native effects', async t => {
+  const { root } = await fixture(t);
+  const result = launch(root, 'one', { env: {
+    WORK_CARDS_CARD: join(root, 'legacy.yaml'), WORK_CARDS_AGENT: undefined, WORK_CARDS_SESSION_ID: undefined,
+    WORK_CARDS_OWNER_TERMINAL: undefined, WORK_CARDS_NONCE: undefined,
+  } });
+  assert.match(result.error, /WORK_CARDS_CARD is unsupported/);
+  assert.deepEqual(result.raw, []); assert.deepEqual(result.projects, []); assert.deepEqual(result.effects, []);
 });
 
 test('rejects mixed, missing, malformed and foreign launch identities before native effects', async t => {

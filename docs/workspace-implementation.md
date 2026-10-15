@@ -159,7 +159,7 @@ A Herdr and Pi restart during implementation loaded the replacement entrypoint. 
 
 The original card still contains its title and 3 document references. A second, empty card points to a temporary test checkout; do not import it as project context. After review and verification, back up both old files, the current records and native metadata. Merge the original title and references into the existing workspace through checked core operations. Leave session history untouched and keep Goal unknown until selected plans establish it. Retain source backups for recovery; do not add a runtime importer.
 
-No native rebinding or stale-marker cleanup is currently needed. Reverify the live pair before merging data; refuse changed identity or ownership. Leave other panes, editor tabs and unrelated metadata alone. Use one launcher environment and one pane runtime. Test the exact environment produced by the launcher against the pane, rather than testing each side with separate fixtures.
+No native rebinding or stale-marker cleanup is currently needed. The display is now absent; do not reopen it during conversion. Reverify the owning session, workspace binding and pair markers before merging data. Refuse changed identity or ownership. Leave other panes, editor tabs and unrelated metadata alone. Use one launcher environment and one pane runtime. Test the exact environment produced by the launcher against the pane, rather than testing each side with separate fixtures.
 
 ## Implementation slices
 
@@ -174,9 +174,22 @@ Use Sol for implementation and Astra for substantive review. Inspect actual diff
 
 `src/pi/index.ts` now registers the workspace lifecycle, helper coordinator, commands and read-only tool. Startup captures the SDK projection; idle polling reconciles membership without scheduling model calls. Explicit refresh carries forced plan-selection intent through coalescing. Old session binding entries are not imported.
 
-The recovered implementation passes 503 tests on Node 22 and Node 26, including the actual launcher environment consumed by the pane. Astra found 4 missing cases: competing selections of one durable workspace, detach persistence before reads, outstanding cancelled provider requests, and same-UUID resume through another file. Those corrections and their regression tests are in progress; the runtime slice is not yet approved.
+Astra approved the runtime slice, committed as `b2530f0d`, with 526 tests passing on Node 22 and Node 26, including the exact launcher environment consumed by the pane. Review corrections cover:
 
-The restart activated the new source entrypoint before review finished. Complete the corrections, remove the old runtime modules and pane branch, then merge the saved references with backups. Foreground management and native/session naming remain separate unfinished slices. The installed naming extension has not been disabled.
+- competing native groups selecting one durable workspace
+- detach persistence before fallible reads or cleanup
+- cancelled providers that settle late, without overlapping requests
+- same-UUID resume through a copied or symlinked session file
+- detach superseding older queued open/new commands, including cleanup failure and disk-backed reload
+- failed initial configuration, tested through awaited SDK startup and public command dispatch
+
+If initial configuration prevents startup, fix the configuration and run `/reload` before retrying commands. Read-only access remains available, and detach still persists its pause immediately. Configuration changes after successful startup retain the existing recovery path.
+
+The legacy runtime is removed: old card/state modules, native client/ownership, pane fallback, prose renderer, summary protocol and obsolete configuration fields. The shared lock and transport remain. `work-cards/records` replaces the old public card API. Astra approved the removal; 377 tests pass on Node 22.23.3 and 26.11.1. The lower count retires old-format and duplicate cases while retaining current safety coverage, including successful-looking editor metadata acknowledgements that do not persist. An actual tarball excludes the removed source and generated modules.
+
+The restart activated the new source entrypoint before review finished. The active Pi instance still needs reloading after the source tree is ready. Port the existing `pane_height_fraction` behavior as a separate fix, rerun the isolated native check, then merge the saved references with backups.
+
+Foreground management and native/session naming remain unfinished. The installed naming extension has not been disabled.
 
 ## Native integration evidence
 
