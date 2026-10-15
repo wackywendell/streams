@@ -2,7 +2,7 @@
 
 ## Goal and scope
 
-Work Cards helps someone returning after time away understand the broad milestone and important unfinished work. It provides navigation to plans, issues and pull requests without requiring them to read agent logs or maintain parallel prose.
+Work Cards provide a high-level summary of a project, its current state, and relevant artifacts and links, to provide guidance for a user navigating multiple agents. It provides navigation to plans, issues and pull requests without requiring them to read agent logs or maintain parallel prose.
 
 The card is durable orientation, not an activity feed, task runner or full project manager. Substantive plans and architecture decision records belong in the project checkout. The card points to them rather than becoming another plan store.
 
@@ -45,6 +45,8 @@ These guarantees prevent stale helper writes; they do not make YAML an editor tr
 
 State should use 1 to 2 short sentences, about 20 to 30 words. It preserves the broad durable milestone and important unfinished work, not the latest tool action. Verbose legacy state can be condensed without new progress, but repair must not invent completion or plans. Once state is useful, routine tests and commits should normally yield `no_change`.
 
+The brief asks for project-level orientation across agents, reconciles older blockers with explicit successful outcomes, and avoids promoting unrelated working-copy hygiene into required work without relevance or blocking evidence. These remain prompt instructions, not enforced summary-quality guarantees.
+
 Each request starts with a stable system brief. One user JSON message follows, ordered `{compactionSummary, transcript, card}`, with the current card last. The input uses Pi's actual latest projected compaction summary and all retained nonblank user and assistant text chronologically. It respects projected redactions and never reconstructs raw precompaction history.
 
 Thinking, tool calls, arguments, results, images, custom messages, system messages and branch summaries are excluded. The prompt labels conversation content as untrusted evidence and tells the model not to follow embedded instructions. Compliance is not enforced by the patch validator. This choice relies on assistant text to report outcomes; unreported tool outcomes are absent.
@@ -55,9 +57,15 @@ There is no application cap, clipping or fallback trimming. Provider context-lim
 
 ## Scheduling without starving updates
 
-By default, Pi checks after every overall response and every 10 completed model-response and tool-results cycles within a response. The cycle count resets at response completion. Zero independently disables either trigger.
+By default, Pi checks each distinct normalized summary-input change, including both user and assistant text. `check_every_n_responses` controls this interval; zero disables automatic checks but not explicit refresh. The former tool-cycle setting has been removed.
 
-Checks are single-flight per session. New eligible evidence replaces pending evidence, while continuing activity neither cancels the active check nor requires an idle session before application. This avoids starving summaries during long responses without running overlapping checks. Generation cancellation and card, binding and session checks reject stale results.
+Pi observes the persisted SDK projection at request-time `context`, after user messages are delivered, and completed `turn_end`, after assistant text and its tool batch are persisted. `turn_start` precedes user persistence; `message_end` precedes persistence and later handlers can replace text. Work Cards does not append raw event text or transform the main request. Settlement remains a deduplicated fallback.
+
+Revisions hash only normalized compaction summary and dialogue, not branch leaves. Repeated hooks with unchanged input do not advance the interval. Excluded tool activity cannot create new input; compaction and projected redaction changes can qualify. Empty initial input does not start automation.
+
+Checks are single-flight per session. New eligible input replaces pending input, while continuing dialogue neither cancels the active check nor requires an idle session before application. Repeated busy refresh requests coalesce into at most one followup, retaining explicit retry intent with the latest eligible input. Generation cancellation clears queued work; card, binding and session checks reject stale results.
+
+Only actual helper requests show an animated Pi terminal status. Queued work and waits for retired checks do not. Completion, errors, timeout and invalidations clear the status and timer. RPC and headless modes create no animation timer. Activity does not change YAML, Herdr IPC, tabs or Pi's main working indicator.
 
 There are no automatic retries or cooldowns. A timeout stops local waiting and requests cancellation, but cannot guarantee the upstream request stops. Helper usage, including `no_change` calls, remains outside Pi's usage totals because Pi has no public API to add it. [The scheduler](../src/pi/scheduler.ts) and [Pi integration](../src/pi/index.ts) define these lifecycle rules.
 
@@ -68,6 +76,8 @@ Herdr operations target the exact caller, socket and workspace identity, never w
 Recovery happens only during explicit open or detach. It requires a complete matching departed-owner tuple: canonical card identity, nonce, pane and terminal. Both referenced pane and terminal identities must be absent, with no conflicting marked panes and an unambiguous live inventory. Ambiguity fails closed. Polling and passive session restore do not recover owners.
 
 Pi keeps a session-specific target and update permission, not a cached card. Restore validates existing YAML but never reconstructs missing cards or opens panes. Forks require explicit open. Slugless open uses the same originating session's binding, not cwd search or automatic adoption.
+
+Successful open saves its binding, then requests a background summary check without delaying attachment on the helper. Failed or stale opens do not request checks. New does not start an immediate check. `/work-card refresh` accepts no arguments and requires an enabled same-session binding. It works outside Herdr, bypasses automatic cadence and permits unchanged-input retries without opening a pane, rebinding or cancelling active work. A paused binding requires explicit open to resume.
 
 Detach records paused update permission before fallible configuration loading or Herdr cleanup. Failed cleanup therefore leaves automation paused for recovery. Successful detach forgets the binding without deleting YAML. Custom session entries reach disk only after host user or assistant activity; `--no-session` does not persist them. The pause is recorded first, not guaranteed flushed immediately.
 
@@ -126,11 +136,11 @@ The bounded, tool-inclusive baseline is an older comparison arm, not current pro
 
 The 2 candidate calls cost $0.001393725; all 4 cost $0.003191825. These are measured token footprints priced at published rates. They do not establish warm-cache performance.
 
-### Estimated automatic workload
+### Historical estimated automatic workload
 
 The accounting window runs from 19:28:39 UTC on 14 October 2026 to 00:09:56 UTC on 15 October. It excludes inherited earlier history and work after the cost question.
 
-Default cadence suggests 43 opportunities: 39 response endings and 4 ten-cycle boundaries. This is not an observed request count. Missing lifecycle records, aborts, reloads and pending-evidence coalescing can change it.
+The previous response-ending and ten-cycle cadence suggests 43 opportunities: 39 response endings and 4 ten-cycle boundaries. This historical estimate does not describe the current dialogue-input cadence and is not an observed request count. Missing lifecycle records, aborts, reloads and pending-evidence coalescing can change it.
 
 Historical Pi projections estimate 245,251 input tokens, averaging 5,704 and ranging from 4,207 to 7,753. Assumptions are an 886-character card allowance, 4.3608 serialized characters per token calibrated from 2 candidate replays, and 228.5 output tokens per request including reasoning.
 

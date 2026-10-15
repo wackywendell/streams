@@ -1,12 +1,14 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { mkdtemp, open, readFile, readdir, rm } from 'node:fs/promises';
+import { mkdtemp, open, readFile, readdir, rm, stat } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { registerWorkCards } from '../dist/pi/index.js';
 import { createCard, readCard, updateCard } from '../dist/card.js';
 import { DEFAULT_CONFIG } from '../dist/config.js';
-import { buildSessionProjection } from '@earendil-works/pi-coding-agent';
+import { AgentSession, SessionManager, SettingsManager, buildSessionProjection } from '@earendil-works/pi-coding-agent';
+import { Agent } from '@earendil-works/pi-agent-core';
+const { createExtensionRuntime, loadExtensionFromFactory } = await import(new URL('./core/extensions/loader.js', import.meta.resolve('@earendil-works/pi-coding-agent')));
 
 const tick = () => new Promise(resolve => setImmediate(resolve));
 async function until(predicate) {
@@ -23,7 +25,7 @@ async function host(t, config = {}) {
   const directory = await mkdtemp(join(tmpdir(), 'work-cards-pi-'));
   t.after(() => rm(directory, { recursive: true, force: true }));
   const handlers = new Map(), commands = new Map(), tools = new Map();
-  const notices = [], attachments = [], detachments = [], calls = [];
+  const notices = [], attachments = [], detachments = [], calls = [], statuses = [];
   let branch = [], messages = [], sessionId = 'session-1', leaf = 'root';
   let modelResult = async () => answer({ action: 'no_change' });
   let attachError, detachError, configError, attachWait;
@@ -31,8 +33,8 @@ async function host(t, config = {}) {
   const env = { HERDR_ENV: '1', HERDR_PANE_ID: 'pane-1', HERDR_SOCKET_PATH: '/socket' };
   const settings = { ...DEFAULT_CONFIG, model: 'fake/simple', ...config };
   const ctx = {
-    cwd: '/repo', hasUI: true,
-    ui: { notify: (text, level) => notices.push({ text, level }) },
+    cwd: '/repo', mode: 'tui', hasUI: true,
+    ui: { notify: (text, level) => notices.push({ text, level }), setStatus: (key, text) => statuses.push({ key, text }) },
     sessionManager: {
       getSessionId: () => sessionId, getBranch: () => structuredClone(branch),
       getLeafId: () => leaf, getSessionFile: () => '/session.jsonl',
@@ -62,13 +64,13 @@ async function host(t, config = {}) {
   });
   const emit = async (name, event = {}) => { await handlers.get(name)?.({ type: name, ...event }, ctx); await tick(); };
   const command = async args => { await commands.get('work-card').handler(args, ctx); await tick(); };
-  const evidence = (id, text = 'Implemented the requested fix') => {
+  const evidence = (id, text = `Implemented the requested fix ${id}`) => {
     leaf = id;
     messages = [{ role: 'user', content: 'Fix this' }, { role: 'assistant', content: [{ type: 'text', text }, { type: 'thinking', thinking: 'SECRET' }, { type: 'toolCall', arguments: { secret: 'ARGS' } }] }];
     branch.push({ type: 'message', id, message: messages.at(-1) });
   };
   await emit('session_start');
-  return { directory, notices, attachments, detachments, calls, settings, env, ctx, tools, command, emit, evidence,
+  return { directory, notices, attachments, detachments, calls, statuses, handlers, settings, env, ctx, tools, command, emit, evidence,
     branch: () => structuredClone(branch), setBranch: value => { branch = structuredClone(value); leaf = branch.at(-1)?.id ?? null; },
     setSession: value => { sessionId = value; }, setMessages: value => { messages = value; },
     setResult: value => { modelResult = value; }, setAttachError: value => { attachError = value; },
@@ -348,8 +350,8 @@ test('detach cannot persist a pause for a different originating session', async 
   assert.equal(h.attachments.length, 1);
 });
 
-test('completed cycles and response boundaries deduplicate evidence and apply helper patch without transcript entries', async t => {
-  const h = await host(t, { check_every_n_cycles: 1, check_every_n_responses: 1 });
+test('completed turns and settlement boundaries deduplicate evidence and apply helper patch without transcript entries', async t => {
+  const h = await host(t, { check_every_n_responses: 1 });
   await h.command('new Summarize');
   h.setResult(async () => answer({ action: 'update', patch: { state: 'Fixed cache invalidation' } }));
   h.evidence('e1');
@@ -367,7 +369,7 @@ test('completed cycles and response boundaries deduplicate evidence and apply he
 });
 
 test('no_change preserves revision; zero triggers never call even an unavailable helper', async t => {
-  const h = await host(t, { check_every_n_cycles: 0, check_every_n_responses: 0, model: 'missing/helper' });
+  const h = await host(t, { check_every_n_responses: 0, model: 'missing/helper' });
   await h.command('new Disabled');
   const before = await readCard('disabled', h.directory);
   h.evidence('e1');
@@ -481,8 +483,8 @@ test('optimistic conflicts preserve external edits and errors warn once without 
   assert.equal(h.notices.filter(n => n.level === 'warning').length, warnings);
 });
 
-test('aborted settlement resets cycle counts without counting a successful response', async t => {
-  const h = await host(t, { check_every_n_cycles: 2, check_every_n_responses: 2 });
+test('aborted settlement does not count input; completed boundaries count distinct dialogue', async t => {
+  const h = await host(t, { check_every_n_responses: 2 });
   await h.command('new Boundaries');
   h.evidence('e1');
   await h.emit('turn_end', { outcome: 'completed' });
@@ -492,10 +494,11 @@ test('aborted settlement resets cycle counts without counting a successful respo
   await h.emit('turn_end', { outcome: 'aborted' });
   await h.emit('turn_end', { outcome: 'completed' });
   await h.emit('agent_settled', { aborted: false });
-  assert.equal(h.calls.length, 0);
+  await until(() => h.calls.length === 1);
   h.evidence('e3');
   await h.emit('agent_settled', { aborted: false });
-  await until(() => h.calls.length === 1);
+  for (let i = 0; i < 5; i++) await tick();
+  assert.equal(h.calls.length, 1);
 });
 
 test('show does not cancel accepted work; config changes cancel and reapply without overlap', async t => {
@@ -572,6 +575,7 @@ test('bare open cannot save a binding after lifecycle changes during read or att
     assert.equal((await h.current()).details, null);
     assert.deepEqual(h.branch(), saved);
     assert.equal(h.attachments.length, stage === 'read' ? 1 : 2);
+    assert.equal(h.calls.length, 0);
   }
 });
 
@@ -747,8 +751,8 @@ test('new preserves supplied title spacing and rejects multiline titles instead 
   assert.equal((await h.current()).details.slug, 'keep-spacing');
 });
 
-test('non-evidence session entries cannot duplicate a cycle-final helper check', async t => {
-  const h = await host(t, { check_every_n_cycles: 1 });
+test('non-evidence session entries cannot duplicate a turn-final helper check', async t => {
+  const h = await host(t, { check_every_n_responses: 1 });
   await h.command('new Dedupe');
   h.evidence('e1');
   await h.emit('turn_end', { outcome: 'completed' });
@@ -779,4 +783,270 @@ test('detach stops updates even when configuration loading fails and keeps clean
   assert.equal(h.calls.length, 0);
   await h.command('detach');
   assert.equal((await h.current()).details, null);
+});
+
+test('real SDK persists after message_end redaction, then context and turn_end observe current projection', async t => {
+  const h = await host(t);
+  const manager = SessionManager.inMemory('/repo');
+  h.ctx.sessionManager = manager;
+  const runtime = createExtensionRuntime();
+  const loaded = await loadExtensionFromFactory(pi => {
+    for (const [name, handler] of h.handlers) pi.on(name, handler);
+    // Later handlers can replace finalized text before the SDK persists it.
+    pi.on('message_end', event => ({ message: { ...event.message, content: event.message.role === 'user' ? 'Redacted user request' : [{ type: 'text', text: 'Redacted assistant outcome' }] } }));
+  }, '/repo', undefined, runtime);
+  const resourceLoader = {
+    getExtensions: () => ({ extensions: [loaded], runtime }),
+    getSystemPrompt: () => undefined, getAppendSystemPrompt: () => [],
+    getSkills: () => ({ skills: [] }), getAgentsFiles: () => ({ agentsFiles: [] }),
+  };
+  const agent = new Agent();
+  const session = new AgentSession({ agent, sessionManager: manager, settingsManager: SettingsManager.inMemory(), resourceLoader, cwd: '/repo', baseToolsOverride: {}, initialActiveToolNames: [] });
+  t.after(() => session.dispose());
+  session._extensionRunner.createContext = () => h.ctx;
+  await h.command('new SDK boundaries');
+  const user = { role: 'user', content: 'USER_SECRET', timestamp: 0 };
+  await session._handleAgentEvent({ type: 'turn_start' });
+  await session._handleAgentEvent({ type: 'message_end', message: user });
+  assert.equal(h.calls.length, 0);
+  await session._extensionRunner.emitContext(manager.buildSessionProjection().messages);
+  await until(() => h.calls.length === 1);
+  assert.deepEqual(JSON.parse(h.calls[0].context.messages[0].content[0].text).transcript, [{ role: 'user', text: 'Redacted user request' }]);
+  const assistant = { role: 'assistant', content: [{ type: 'text', text: 'ASSISTANT_SECRET' }], stopReason: 'stop', timestamp: 0 };
+  await session._handleAgentEvent({ type: 'message_end', message: assistant });
+  assert.equal(h.calls.length, 1);
+  await session._handleAgentEvent({ type: 'turn_end', message: assistant, toolResults: [] });
+  await until(() => h.calls.length === 2);
+  assert.deepEqual(JSON.parse(h.calls[1].context.messages[0].content[0].text).transcript, [{ role: 'user', text: 'Redacted user request' }, { role: 'assistant', text: 'Redacted assistant outcome' }]);
+  assert.doesNotMatch(JSON.stringify(h.calls), /SECRET/);
+});
+
+test('blank dialogue and tool-only initial projection never start an automatic check', async t => {
+  const h = await host(t);
+  await h.command('new Empty input');
+  h.setMessages([{ role: 'user', content: '  ' }, { role: 'assistant', content: [{ type: 'text', text: '\n' }, { type: 'thinking', thinking: 'SECRET' }, { type: 'toolCall', id: 'tool' }] }, { role: 'toolResult', content: 'SECRET' }]);
+  await h.emit('context');
+  await h.emit('turn_end', { outcome: 'completed' });
+  await h.emit('agent_settled', { aborted: false });
+  for (let i = 0; i < 5; i++) await tick();
+  assert.equal(h.calls.length, 0);
+  await h.command('refresh');
+  await until(() => h.calls.length === 1);
+});
+
+test('redaction to an empty projection changes previously observed summary input', async t => {
+  const h = await host(t);
+  await h.command('new Empty redaction');
+  h.setMessages([{ role: 'user', content: 'Previously retained text' }]);
+  await h.emit('context');
+  await until(() => h.calls.length === 1);
+  h.setMessages([]);
+  await h.emit('context');
+  await until(() => h.calls.length === 2);
+  assert.deepEqual(JSON.parse(h.calls[1].context.messages[0].content[0].text).transcript, []);
+});
+
+test('user context checks fresh projected text; tool-only leaves never advance the threshold', async t => {
+  const h = await host(t, { check_every_n_responses: 2 });
+  await h.command('new Text boundaries');
+  h.setMessages([{ role: 'user', content: 'Fresh user request' }]);
+  await h.emit('context');
+  await h.emit('agent_settled', { aborted: false });
+  for (let n = 0; n < 4; n++) {
+    h.setBranch([...h.branch(), { type: 'message', id: `tool-${n}`, message: { role: 'toolResult', content: 'SECRET' } }]);
+    h.setMessages([{ role: 'user', content: 'Fresh user request' }, { role: 'assistant', content: [{ type: 'thinking', thinking: 'SECRET' }, { type: 'text', text: '  ' }, { type: 'toolCall', id: 'tool' }] }, { role: 'toolResult', content: 'SECRET' }]);
+    await h.emit('turn_end', { outcome: 'completed' });
+    await h.emit('context');
+    await h.emit('agent_settled', { aborted: false });
+  }
+  assert.equal(h.calls.length, 0);
+  h.setMessages([{ role: 'user', content: 'Fresh user request' }, { role: 'assistant', content: 'Completed assistant outcome' }]);
+  await h.emit('turn_end', { outcome: 'completed' });
+  await until(() => h.calls.length === 1);
+  assert.deepEqual(JSON.parse(h.calls[0].context.messages[0].content[0].text).transcript, [{ role: 'user', text: 'Fresh user request' }, { role: 'assistant', text: 'Completed assistant outcome' }]);
+});
+
+test('refresh retries unchanged input with automatic zero, outside Herdr, without binding mutation', async t => {
+  const h = await host(t, { check_every_n_responses: 0 });
+  await h.command('new Manual');
+  const before = await readCard('manual', h.directory), bytes = await readFile(before.path), modified = (await stat(before.path)).mtimeMs;
+  const saved = h.branch();
+  delete h.env.HERDR_ENV;
+  await h.command('refresh');
+  await until(() => h.calls.length === 1);
+  await h.command('refresh');
+  await until(() => h.calls.length === 2);
+  assert.deepEqual(h.branch(), saved);
+  assert.equal(h.attachments.length, 1);
+  assert.equal(h.detachments.length, 0);
+  assert.deepEqual(await readFile(before.path), bytes);
+  assert.equal((await stat(before.path)).mtimeMs, modified);
+  assert.equal((await readCard('manual', h.directory)).revision, before.revision);
+});
+
+test('refresh refuses missing, wrong-session, paused bindings and arguments', async t => {
+  const h = await host(t);
+  await h.command('refresh');
+  assert.match(h.notices.at(-1).text, /No work card/);
+  await h.command('new Paused manual');
+  await h.command('refresh other');
+  assert.match(h.notices.at(-1).text, /Usage/);
+  h.setSession('wrong');
+  await h.command('refresh');
+  assert.match(h.notices.at(-1).text, /No work card/);
+  h.setSession('session-1');
+  h.setDetachError('close failed');
+  await h.command('detach');
+  const saved = h.branch();
+  await h.command('refresh');
+  assert.match(h.notices.at(-1).text, /paused.*open/i);
+  assert.deepEqual(h.branch(), saved);
+  assert.equal(h.calls.length, 0);
+});
+
+test('successful open starts asynchronous refresh; failed or stale open never starts helper', async t => {
+  const h = await host(t, { check_every_n_responses: 0 });
+  await h.command('new Open refresh');
+  assert.equal(h.calls.length, 0);
+  let release;
+  h.setResult(() => new Promise(resolve => { release = resolve; }));
+  await h.command('open');
+  await until(() => h.calls.length === 1);
+  assert.equal(h.branch().at(-1).data.updates, true);
+  release(answer({ action: 'no_change' }));
+  await until(() => h.statuses.at(-1)?.text === undefined);
+  h.setAttachError('failed');
+  await h.command('open');
+  assert.equal(h.calls.length, 1);
+});
+
+test('manual retry keeps errors visible and clears spinner on error, timeout, no_change and update', async t => {
+  const h = await host(t, { check_every_n_responses: 0, request_timeout_ms: 20 });
+  await h.command('new Results');
+  h.setResult(async () => { throw new Error('offline'); });
+  for (let attempt = 1; attempt <= 2; attempt++) {
+    await h.command('refresh');
+    await until(() => h.notices.filter(n => /offline/.test(n.text)).length === attempt);
+    assert.equal(h.statuses.at(-1).text, undefined);
+  }
+  h.setResult(() => new Promise(() => {}));
+  await h.command('refresh');
+  await until(() => h.notices.some(n => /timeout/i.test(n.text)));
+  assert.equal(h.statuses.at(-1).text, undefined);
+  h.setResult(async () => answer({ action: 'no_change' }));
+  await h.command('refresh');
+  await until(() => h.calls.length === 4 && h.statuses.at(-1).text === undefined);
+  h.setResult(async () => answer({ action: 'update', patch: { state: 'Project milestone reached' } }));
+  await h.command('refresh');
+  await until(async () => (await readCard('results', h.directory)).card.state === 'Project milestone reached');
+  assert.equal(h.statuses.at(-1).text, undefined);
+});
+
+test('all invalidations clear animation; an old provider result cannot clear new activity', async t => {
+  for (const boundary of ['session_start', 'session_tree', 'session_before_switch', 'session_before_tree', 'session_before_fork', 'session_shutdown', 'detach']) {
+    const h = await host(t);
+    await h.command(`new Cleanup ${boundary}`);
+    let release;
+    h.setResult(() => new Promise(resolve => { release = resolve; }));
+    await h.command('refresh');
+    await until(() => h.calls.length === 1);
+    assert.match(h.statuses.at(-1).text, /refreshing/);
+    if (boundary === 'detach') await h.command('detach');
+    else await h.emit(boundary);
+    assert.equal(h.statuses.at(-1).text, undefined);
+    assert.equal(h.calls[0].options.signal.aborted, true);
+    release(answer({ action: 'no_change' }));
+  }
+  const h = await host(t);
+  await h.command('new Old cleanup');
+  const releases = [];
+  h.setResult(() => new Promise(resolve => { releases.push(resolve); }));
+  await h.command('refresh');
+  await until(() => h.calls.length === 1);
+  await h.emit('session_start');
+  await h.command('refresh');
+  await until(() => h.calls.length === 2);
+  const count = h.statuses.length;
+  releases[0](answer({ action: 'no_change' }));
+  for (let n = 0; n < 5; n++) await tick();
+  assert.equal(h.statuses.length, count);
+  assert.match(h.statuses.at(-1).text, /refreshing/);
+  releases[1](answer({ action: 'no_change' }));
+  await until(() => h.statuses.at(-1).text === undefined);
+});
+
+test('spinner animates an unreferenced timer and clears it idempotently', async t => {
+  const h = await host(t);
+  await h.command('new Animated');
+  let animate, unreferenced = 0, cleared = 0, release;
+  const timer = { unref: () => { unreferenced++; } };
+  t.mock.method(globalThis, 'setInterval', callback => { animate = callback; return timer; });
+  t.mock.method(globalThis, 'clearInterval', value => { assert.equal(value, timer); cleared++; });
+  h.setResult(() => new Promise(resolve => { release = resolve; }));
+  await h.command('refresh');
+  await until(() => h.calls.length === 1);
+  const first = h.statuses.at(-1).text;
+  animate();
+  assert.notEqual(h.statuses.at(-1).text, first);
+  assert.equal(unreferenced, 1);
+  await h.emit('session_shutdown');
+  await h.emit('session_shutdown');
+  release(answer({ action: 'no_change' }));
+  for (let n = 0; n < 5; n++) await tick();
+  assert.equal(cleared, 1);
+});
+
+test('retired scheduler wait never shows fresh activity or overlaps requests', async t => {
+  const h = await host(t);
+  await h.command('new Retired activity');
+  const handle = await open(join(h.directory, 'retired-activity.yaml'), 'r');
+  const prototype = Object.getPrototypeOf(handle), sync = prototype.sync;
+  await handle.close();
+  let entered = false, release;
+  const suspended = new Promise(resolve => { release = resolve; });
+  const mocked = t.mock.method(prototype, 'sync', async function () { entered = true; await suspended; return sync.call(this); });
+  h.setResult(async () => answer({ action: 'update', patch: { state: 'Cancelled milestone' } }));
+  try {
+    await h.command('refresh');
+    await until(() => entered);
+    assert.equal(h.statuses.at(-1).text, undefined);
+    h.settings.max_output_tokens = 99;
+    await h.command('show');
+    await h.command('refresh');
+    for (let n = 0; n < 5; n++) await tick();
+    assert.equal(h.calls.length, 1);
+    assert.equal(h.statuses.at(-1).text, undefined);
+    h.setResult(async () => answer({ action: 'no_change' }));
+  } finally { mocked.mock.restore(); release(); }
+  await until(() => h.calls.length === 2);
+  assert.equal((await readCard('retired-activity', h.directory)).card.state, '');
+});
+
+test('spinner is request-only, cleans up on completion and lifecycle; no timers outside TUI', async t => {
+  const h = await host(t);
+  await h.command('new Activity');
+  let release;
+  h.setResult(() => new Promise(resolve => { release = resolve; }));
+  await h.command('refresh');
+  await until(() => h.calls.length === 1);
+  assert.match(h.statuses.at(-1).text, /Work card: refreshing/);
+  assert.equal(h.statuses.at(-1).key, 'work-cards.refresh');
+  await h.command('refresh');
+  assert.equal(h.calls[0].options.signal.aborted, false);
+  await h.emit('session_before_switch');
+  assert.equal(h.statuses.at(-1).text, undefined);
+  release(answer({ action: 'no_change' }));
+  await h.emit('session_start');
+  const count = h.statuses.length;
+  const interval = t.mock.method(globalThis, 'setInterval', () => { assert.fail('Non-TUI timer'); });
+  h.setResult(async () => answer({ action: 'no_change' }));
+  for (const [mode, hasUI] of [['rpc', true], ['print', false], ['json', false], ['tui', false]]) {
+    h.ctx.mode = mode; h.ctx.hasUI = hasUI;
+    const requests = h.calls.length;
+    await h.command('refresh');
+    await until(() => h.calls.length === requests + 1);
+    for (let i = 0; i < 5; i++) await tick();
+    assert.equal(h.statuses.length, count);
+  }
+  interval.mock.restore();
 });

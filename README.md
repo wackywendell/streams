@@ -42,6 +42,7 @@ Use these Pi commands:
 | --- | --- |
 | `/work-card new <title>` | Create a card for Pi's current directory and attach it in the caller's Herdr workspace |
 | `/work-card open [slug]` | Reopen this session's bound card, or attach an existing card by slug, in the caller's Herdr workspace |
+| `/work-card refresh` | Request a background summary check of this session's attached card without opening a pane |
 | `/work-card show` | Show the attached card and its source path |
 | `/work-card detach` | Stop updates, close the owned card pane and clear the binding without deleting the YAML |
 
@@ -55,7 +56,11 @@ Pi records the binding in custom session entries. Those entries reach disk only 
 
 After closing the card pane or reloading Pi in the same session, run `/work-card open` to reopen its bound card. It reads fresh YAML from the saved slug and path, not Pi's current directory. An explicit slug reads from the configured card directory. Without a same-session binding, bare `open` asks you to use `/work-card open <slug>` or `/work-card new <title>`; it does not search or create cards. Successful `detach` forgets the binding, so reopening then requires a slug.
 
-Detach records `updates: false` before loading configuration or cleaning up Herdr. Failed cleanup or invalid configuration retains this durable paused binding so you can inspect Herdr and retry. It stays paused after restore until explicit `open` succeeds, with or without a slug. A failed `open` preserves the binding and its update permission. Legacy entries without an updates flag enable updates; malformed flags leave them paused. The custom-entry disk-flush caveat above still applies.
+Successful `open` also requests a background summary check after saving the binding. Attachment does not wait for the helper. Failed or stale opens do not request checks. `new` does not start a check until textual evidence changes.
+
+`refresh` accepts no slug or other arguments. It requires an enabled same-session binding and works outside Herdr because it only updates YAML. It bypasses automatic cadence and can retry unchanged input after `no_change` or failure, without cancelling a running check or changing the binding.
+
+Detach records `updates: false` before loading configuration or cleaning up Herdr. Failed cleanup or invalid configuration retains this durable paused binding so you can inspect Herdr and retry. It stays paused after restore until explicit `open` succeeds, with or without a slug. A failed `open` preserves the binding and its update permission. Legacy entries without an updates flag enable updates; malformed flags leave them paused. `refresh` cannot resume a paused binding; use explicit `open`. The custom-entry disk-flush caveat above still applies.
 
 The current binding can detach after its YAML is deleted, using the canonical existing parent directory and filename to prove identity. A missing parent or ambiguous identity still blocks cleanup.
 
@@ -85,20 +90,21 @@ Exiting Pi leaves the card pane running independently. Disconnecting the client 
 
 ## Update from Pi evidence
 
-Automatic checks run in the background at 2 boundaries:
+`check_every_n_responses` counts distinct changes to the normalized summary input, including both new user text and completed assistant text; default `1`. Setting it to `0` disables automatic checks, not explicit `refresh` or successful `open` checks. The former `check_every_n_cycles` setting has been removed and is rejected as an unknown configuration field.
 
-- `check_every_n_responses`: every N overall responses, at `agent_settled`; default `1`
-- `check_every_n_cycles`: every N completed model-response and tool-results cycles, at `turn_end`; default `10`
+Pi observes its persisted projection at `context`, before the main request, and at completed `turn_end`, after the assistant and its tool batch are persisted. `turn_start` is too early for user persistence; `message_end` precedes persistence and later handlers can replace text. Work Cards neither copies raw event text nor transforms the main request. Settlement is a deduplicated fallback for later projection changes.
 
-A cycle is not a streamed chunk or an individual parallel tool result. The cycle count resets for each overall response. Setting either interval to `0` independently disables that trigger. Set both to `0` to disable automatic checks.
+Revisions hash only normalized compaction summary and dialogue. The same input at multiple hooks does not advance the interval or repeat a check. Tool-only, thinking-only and blank-text activity cannot create new input. Compaction or projected redaction changes can qualify; empty initial input does not trigger automation.
 
-Only one check runs at a time per Pi session, not globally across intentionally separate bindings. While it runs, newer eligible evidence replaces the pending evidence. The same evidence revision is not checked twice. Continuing cycles must not cancel an in-flight check or require an idle session before applying an update.
+Only one check runs at a time per Pi session, not globally across intentionally separate bindings. While it runs, newer eligible input replaces the pending input. Repeated busy refresh requests coalesce into at most one followup, retaining explicit retry intent with the latest eligible input. Ordinary dialogue does not cancel the active check or require an idle session before applying an update. Invalidations cancel queued work and stale requests.
+
+During an actual helper request, Pi's terminal UI shows an animated `Work card: refreshing` status. Queued requests and waits for retired checks show no activity. Completion, errors, timeout and invalidations clear it. RPC and headless modes create no animation timer. This Pi-only status does not replace Pi's main working indicator, rename tabs, or add YAML activity fields.
 
 Each check uses Pi's current session projection: the latest compaction summary (or `null`) and all retained nonblank user and assistant text, in chronological order. It respects projected redactions and never reads raw precompaction history. Thinking, tool calls, arguments, results, images, custom/system messages and branch summaries are excluded. Summaries therefore rely on assistant text for outcomes, not tool output.
 
 The helper receives one JSON message ordered `{compactionSummary, transcript, card}`, with the full current card last. There is no application context cap, clipping or fallback summary. Provider context-window errors appear through existing warnings, without silent trimming or automatic retry. Card-last ordering may allow prefix reuse when only the card changes; it does not guarantee provider caching.
 
-The helper may condense verbose or activity-log-like state without new progress, preserving its relevant facts. Once state is useful, ordinary tool activity, passing tests and commits should return `no_change` unless the overall state changes. Additional guidance cannot prevent legacy-state repair or override truthfulness and security restrictions.
+The helper may condense verbose or activity-log-like state without new progress, preserving its relevant facts. Once state is useful, ordinary tool activity, passing tests and commits should return `no_change` unless the overall state changes. The brief asks for project-level orientation across agents, reconciles older blockers with explicit successful outcomes, and avoids treating unrelated working-copy hygiene as required work without relevance or blocking evidence. These are prompt instructions, not enforced summary-quality guarantees. Additional guidance cannot prevent legacy-state repair or override truthfulness and security restrictions.
 
 The helper returns either `no_change` or a validated patch to `status`, `state`, `documents`, `issues` and `prs`. It cannot change `title`, `cwd`, or repository document contents. Checks reject stale results after card edits, binding changes or session changes.
 
@@ -114,8 +120,7 @@ Configuration lives at `<PI_CODING_AGENT_DIR>/work-cards.json`, defaulting to `~
 | --- | --- | --- |
 | `model` | `helpers/simple` | Helper provider and model |
 | `thinking_level` | `null` | Inherit the helper profile; otherwise disable thinking for a physical model |
-| `check_every_n_responses` | `1` | Overall-response check interval |
-| `check_every_n_cycles` | `10` | Within-response cycle check interval |
+| `check_every_n_responses` | `1` | Distinct normalized-input change interval, including user and assistant text; `0` disables automatic checks |
 | `max_context_chars` | `24000` | Deprecated; accepted and validated as a positive integer, but ignored |
 | `max_document_bytes` | `262144` | Legacy preview setting; accepted but has no effect on external tools |
 | `document_command` | `null` | Global command prefix; otherwise use `$EDITOR`, then `less` |
@@ -169,7 +174,9 @@ These are installation instructions, not a record of changes to normal user sett
 
 ## Verification status
 
-On macOS, `npm run check && npm test` passed on Node.js 26.11.1 and 22.23.3: 245 tests on each, with no failures or skips.
+For this refresh and dialogue-cadence change, `npm run check && npm test` passed on macOS with Node.js 26.11.1 and 22.23.3: 258 tests on each, no failures or skips. Regressions cover manual retry at automatic interval zero, coalescing, nonblocking open, paused bindings, projected-input deduplication, request-only status and cleanup. An in-memory Pi 1.2.0 SDK test uses real message persistence, later `message_end` replacement, request-time context dispatch and projection, without provider calls. This is not a live Pi/Herdr or visual spinner check.
+
+Before this change, macOS verification passed `npm run check && npm test` on Node.js 26.11.1 and 22.23.3: 245 tests on each, with no failures or skips.
 
 Current quiet-layout checks cover wide and narrow text snapshots, all status styles, wrapping, grapheme/cell widths, control sanitization, closed SGR/OSC 8 sequences, tiny panes, notice-row reservation and fresh document-key validation. Footer regressions cover last-row header, state, document, HTTP link, overflow and notice content, including unavailable cards and covered shortcuts. Client regressions cover verified metadata, focus-only reuse across card nonces, canonical aliases, distinct identities, unmarked tabs, record conflicts and partial failures. Escaped YAML surrogate regressions check title, state, path and notice widths after UTF-8 encoding, while retaining original document targets and paired emoji. Prompt tests verify the summary contract and legacy-repair instructions, not live-model quality. The full native Herdr suite was not rerun for these followups. The user confirmed wrapping and the bottom-right close hint; live Pi summarization still needs verification.
 

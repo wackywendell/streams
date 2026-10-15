@@ -6,31 +6,28 @@ export interface EvidenceSnapshot {
 
 export interface CheckSchedulerOptions<T extends EvidenceSnapshot> {
   check_every_n_responses?: number;
-  check_every_n_cycles?: number;
   check: (snapshot: T, signal: AbortSignal) => Promise<void>;
   onError?: (error: unknown, snapshot: T) => void;
 }
 
 export interface CheckScheduler<T extends EvidenceSnapshot> {
-  onCycle(snapshot: T): void;
+  observe(snapshot: T): void;
   onSettled(snapshot: T, aborted?: boolean): void;
+  refresh(snapshot: T): void;
   reset(): void;
 }
 
-/** Only main-agent boundaries feed this scheduler; helper calls are not events. */
+/** Count changes to the actual summary input, not model/tool event counts. */
 export function createCheckScheduler<T extends EvidenceSnapshot>(options: CheckSchedulerOptions<T>): CheckScheduler<T> {
   const responsesEvery = options.check_every_n_responses ?? DEFAULT_CONFIG.check_every_n_responses;
-  const cyclesEvery = options.check_every_n_cycles ?? DEFAULT_CONFIG.check_every_n_cycles;
-  for (const value of [responsesEvery, cyclesEvery]) {
-    if (!Number.isSafeInteger(value) || value < 0) {
-      throw new Error("Check intervals must be a non-negative safe integer.");
-    }
+  if (!Number.isSafeInteger(responsesEvery) || responsesEvery < 0) {
+    throw new Error('Check intervals must be a non-negative safe integer.');
   }
   let generation = 0;
   let responses = 0;
-  let cycles = 0;
-  let lastAttempted: T["revision"] | undefined;
-  let pending: T | undefined;
+  let lastObserved: T['revision'] | undefined;
+  let lastAttempted: T['revision'] | undefined;
+  let pending: { snapshot: T; forced: boolean } | undefined;
   let running: AbortController | undefined;
 
   async function run(snapshot: T, controller: AbortController, startedGeneration: number): Promise<void> {
@@ -42,38 +39,45 @@ export function createCheckScheduler<T extends EvidenceSnapshot>(options: CheckS
       running = undefined;
       const next = pending;
       pending = undefined;
-      if (next) request(next);
+      if (next) request(next.snapshot, next.forced);
     }
   }
 
-  function request(snapshot: T): void {
-    if (snapshot.revision === lastAttempted) return;
+  function request(snapshot: T, forced = false): void {
     if (running) {
-      pending = snapshot;
+      // A newer eligible input replaces queued input, not an explicit retry's intent.
+      if (forced || pending || snapshot.revision !== lastAttempted) {
+        pending = { snapshot, forced: forced || pending?.forced === true };
+      }
       return;
     }
+    if (!forced && snapshot.revision === lastAttempted) return;
     lastAttempted = snapshot.revision;
     const controller = new AbortController();
     running = controller;
-    // Later cycles queue newer evidence, never cancel this check or require idle.
     void run(snapshot, controller, generation);
   }
 
+  function observe(snapshot: T): void {
+    if (snapshot.revision === lastObserved) return;
+    lastObserved = snapshot.revision;
+    responses++;
+    if (responsesEvery > 0 && responses % responsesEvery === 0) request(snapshot);
+  }
+
   return {
-    onCycle(snapshot) {
-      cycles++;
-      if (cyclesEvery > 0 && cycles % cyclesEvery === 0) request(snapshot);
-    },
+    observe,
     onSettled(snapshot, aborted = false) {
-      cycles = 0;
-      if (aborted) return;
-      responses++;
-      if (responsesEvery > 0 && responses % responsesEvery === 0) request(snapshot);
+      if (!aborted) observe(snapshot);
+    },
+    refresh(snapshot) {
+      lastObserved = snapshot.revision;
+      request(snapshot, true);
     },
     reset() {
       generation++;
       responses = 0;
-      cycles = 0;
+      lastObserved = undefined;
       lastAttempted = undefined;
       pending = undefined;
       // Keep the occupied slot until cancellation finishes: never overlap calls.

@@ -10,7 +10,7 @@ import { buildSummaryContext, requestSummary } from './summarizer.js';
 import { normalizeEvidence, type ProjectedEvidence } from './evidence.js';
 
 const bindingEntry = 'work-cards.binding';
-const usage = 'Usage: /work-card new <title> | open [slug] | show | detach';
+const usage = 'Usage: /work-card new <title> | open [slug] | refresh | show | detach';
 const documentGuidance = "Substantive plans and ADRs belong in the attached card's project checkout (cwd); card metadata only references them. This tool does not create documents.";
 interface Dependencies {
   cardDirectory: typeof cardDirectory;
@@ -45,17 +45,43 @@ export function registerWorkCards(pi: ExtensionAPI, overrides: Partial<Dependenc
   let binding: Binding | undefined;
   let config: WorkCardsConfig | undefined;
   let scheduler: CheckScheduler<Evidence> | undefined;
+  let hasTextualEvidence = false;
   let runtime: {
     sessionId: string;
     registry: ExtensionContext['modelRegistry'];
     notify: ExtensionContext['ui']['notify'];
+    mode: ExtensionContext['mode'];
+    hasUI: boolean;
+    ui: ExtensionContext['ui'];
   } | undefined;
   let requestFinished: Promise<void> | undefined;
   const warnings = new Set<string>();
+  let stopActivity: (() => void) | undefined;
+
+  function startActivity(): () => void {
+    if (runtime?.mode !== 'tui' || !runtime.hasUI) return () => {};
+    const ui = runtime.ui;
+    const frames = ['⠋', '⠙', '⠹', '⠸', '⠼', '⠴', '⠦', '⠧', '⠇', '⠏'];
+    let frame = 0;
+    const render = () => ui.setStatus('work-cards.refresh', `${frames[frame++ % frames.length]} Work card: refreshing`);
+    render();
+    const timer = setInterval(render, 80);
+    timer.unref();
+    const stop = () => {
+      if (stopActivity !== stop) return;
+      clearInterval(timer);
+      ui.setStatus('work-cards.refresh', undefined);
+      stopActivity = undefined;
+    };
+    stopActivity = stop;
+    return stop;
+  }
 
   function invalidate(): number {
     generation++;
+    hasTextualEvidence = false;
     scheduler?.reset();
+    stopActivity?.();
     runtime = undefined;
     return generation;
   }
@@ -64,6 +90,7 @@ export function registerWorkCards(pi: ExtensionAPI, overrides: Partial<Dependenc
       sessionId: ctx.sessionManager.getSessionId(),
       registry: ctx.modelRegistry,
       notify: ctx.ui.notify.bind(ctx.ui),
+      mode: ctx.mode, hasUI: ctx.hasUI, ui: ctx.ui,
     };
   }
   function warn(error: unknown): void {
@@ -90,7 +117,7 @@ export function registerWorkCards(pi: ExtensionAPI, overrides: Partial<Dependenc
       const current = await readCard(target.slug, dirname(target.path));
       if (!applicable(evidence, signal)) return;
       const context = buildSummaryContext(current.card, evidence.input, settings);
-      const decision = await requestSummary(registry, context, settings, signal);
+      const decision = await requestSummary(registry, context, settings, signal, undefined, startActivity);
       if (!applicable(evidence, signal) || decision.action === 'no_change') return;
       // The core also checks cancellation immediately before committing its prepared file.
       await updateCard(target.slug, decision.patch, current.revision, dirname(target.path), signal);
@@ -107,10 +134,12 @@ export function registerWorkCards(pi: ExtensionAPI, overrides: Partial<Dependenc
       if (changed && config) {
         // Configuration changes invalidate old requests without replacing the live host context.
         generation++;
+        stopActivity?.();
         token = generation;
       }
       config = next;
       if (changed || !scheduler) {
+        hasTextualEvidence = false;
         scheduler?.reset();
         scheduler = createCheckScheduler<Evidence>({ ...next, check, onError: (error, evidence) => {
           if (generation === evidence.generation) warn(error);
@@ -120,6 +149,7 @@ export function registerWorkCards(pi: ExtensionAPI, overrides: Partial<Dependenc
     } catch (error) {
       if (generation === token) {
         config = undefined;
+        stopActivity?.();
         scheduler?.reset();
         scheduler = undefined;
         warn(error);
@@ -153,19 +183,19 @@ export function registerWorkCards(pi: ExtensionAPI, overrides: Partial<Dependenc
     } catch (error) { if (generation === token) warn(error); }
     // Restoring metadata never attaches or focuses a pane.
   }
-  function evidence(ctx: ExtensionContext): Evidence | undefined {
+  function evidence(ctx: ExtensionContext, allowEmpty = false): Evidence | undefined {
     if (!binding?.updates || !config || !scheduler) return;
     const sessionId = ctx.sessionManager.getSessionId();
     if (sessionId !== binding.sessionId) return;
     adopt(ctx);
     const projection = ctx.sessionManager.buildSessionProjection();
     const input = normalizeEvidence(projection.messages);
-    // State-only custom entries can advance the branch leaf at turn_end without new evidence.
-    const leaf = projection.entries.filter(entry => entry.messages.some(message =>
-      message.role === 'user' || message.role === 'assistant' || message.role === 'toolResult',
-    )).at(-1)?.sourceEntry.id ?? ctx.sessionManager.getBranch().filter(entry => entry.type === 'message').at(-1)?.id ?? null;
+    const nonempty = input.compactionSummary !== null || input.transcript.length > 0;
+    // Empty initial input is not dialogue; later redaction to empty is an input change.
+    if (!allowEmpty && !nonempty && !hasTextualEvidence) return;
+    hasTextualEvidence ||= nonempty;
     return {
-      revision: createHash('sha256').update(JSON.stringify({ leaf, input })).digest('hex'),
+      revision: createHash('sha256').update(JSON.stringify(input)).digest('hex'),
       generation, sessionId, path: binding.target.path, input,
     };
   }
@@ -186,10 +216,16 @@ export function registerWorkCards(pi: ExtensionAPI, overrides: Partial<Dependenc
   pi.on('session_before_switch', () => { invalidate(); });
   pi.on('session_before_fork', () => { invalidate(); });
   pi.on('session_shutdown', () => { invalidate(); });
+  // context runs after delivered user messages are persisted; turn_start/message_end do not.
+  // Read the SDK projection, never append raw event text (later handlers may redact it).
+  pi.on('context', (_event, ctx) => {
+    const snapshot = evidence(ctx);
+    if (snapshot) scheduler!.observe(snapshot);
+  });
   pi.on('turn_end', (event, ctx) => {
     if (event.outcome !== 'completed') return;
     const snapshot = evidence(ctx);
-    if (snapshot) scheduler!.onCycle(snapshot);
+    if (snapshot) scheduler!.observe(snapshot);
   });
   pi.on('agent_settled', (event, ctx) => {
     const snapshot = evidence(ctx);
@@ -197,12 +233,12 @@ export function registerWorkCards(pi: ExtensionAPI, overrides: Partial<Dependenc
   });
 
   pi.registerCommand('work-card', {
-    description: 'Explicitly create/open, show, or detach a durable work card',
+    description: 'Explicitly create/open, refresh, show, or detach a durable work card',
     async handler(args, ctx) {
       const parsed = /^(\S+)(?:[ \t]+([\s\S]*))?$/.exec(args.trim());
       const command = parsed?.[1];
       const value = parsed?.[2] ?? '';
-      let token = command === 'show' ? generation : invalidate();
+      let token = command === 'show' || command === 'refresh' ? generation : invalidate();
       adopt(ctx);
       const sessionId = runtime!.sessionId;
       if (command === 'detach' && !value && binding?.sessionId === sessionId) {
@@ -218,7 +254,19 @@ export function registerWorkCards(pi: ExtensionAPI, overrides: Partial<Dependenc
       const settings = { ...config! };
       let created: CardSnapshot | undefined;
       try {
-        if (command === 'show' && !value) {
+        if (command === 'refresh' && !value) {
+          if (!binding || binding.sessionId !== sessionId) {
+            runtime!.notify('No work card attached. Use /work-card open <slug> explicitly.', 'info');
+            return;
+          }
+          if (!binding.updates) {
+            runtime!.notify('Work card updates are paused. Use /work-card open explicitly to resume.', 'info');
+            return;
+          }
+          warnings.clear();
+          const snapshot = evidence(ctx, true);
+          if (snapshot) scheduler!.refresh(snapshot);
+        } else if (command === 'show' && !value) {
           if (!binding || binding.sessionId !== sessionId) {
             runtime!.notify('No work card attached. Use /work-card new <title> or open <slug>.', 'info');
             return;
@@ -259,6 +307,11 @@ export function registerWorkCards(pi: ExtensionAPI, overrides: Partial<Dependenc
           binding = { target: { slug: snapshot.slug, path: snapshot.path }, sessionId, updates: true };
           pi.appendEntry(bindingEntry, { slug: snapshot.slug, sessionId, path: snapshot.path, updates: true });
           runtime!.notify(`Attached work card ${snapshot.slug}: ${snapshot.path}`, 'info');
+          if (command === 'open') {
+            warnings.clear();
+            const snapshot = evidence(ctx, true);
+            if (snapshot) scheduler!.refresh(snapshot);
+          }
         } else {
           runtime!.notify(usage, 'error');
         }

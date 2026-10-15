@@ -35,6 +35,24 @@ test("context preserves normalized summary, dialogue and full current card in ca
   assert.doesNotMatch(context.systemPrompt, /Earlier text omitted/);
 });
 
+test('request activity starts only after helper-profile preparation, around the real request', async () => {
+  let release, started = 0, stopped = 0;
+  const profiles = new Promise(resolve => { release = resolve; });
+  const registry = {
+    find: () => ({ api: 'pi-virtual' }),
+    streamSimple: () => {
+      assert.equal(started, 1); assert.equal(stopped, 0);
+      return { result: async () => response('{"action":"no_change"}') };
+    },
+  };
+  const requested = requestSummary(registry, buildSummaryContext(card, emptyInput, options), config, undefined, () => profiles, () => { started++; return () => { stopped++; }; });
+  await new Promise(resolve => setImmediate(resolve));
+  assert.equal(started, 0);
+  release({ simple: { thinkingLevel: 'low' } });
+  assert.deepEqual(await requested, { action: 'no_change' });
+  assert.equal(stopped, 1);
+});
+
 test("document descriptions describe the whole purpose briefly, not the latest edit", () => {
   const context = buildSummaryContext(card, emptyInput, options);
   assert.match(context.systemPrompt, /Document descriptions must briefly describe the whole document's purpose, never the latest change or edit\./);
@@ -49,6 +67,10 @@ test("summary brief requires durable milestones and unfinished work rather than 
   assert.match(prompt, /commit IDs, test counts\/versions, reviewer names/);
   assert.match(prompt, /ordinary tool activity, test passes, and commits.*no_change/);
   assert.match(prompt, /single-line string/);
+  assert.match(prompt, /project-level progress.*user navigating multiple agents/);
+  assert.match(prompt, /Reconcile older blockers with the latest explicit outcomes/);
+  assert.match(prompt, /do not retain a resolved blocker after affirmative evidence of success/);
+  assert.match(prompt, /unrelated working-copy hygiene.*evidence.*blocks the project/);
 });
 
 test("legacy state repair is allowed without new progress despite preserve-wording guidance", () => {

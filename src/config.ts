@@ -7,8 +7,8 @@ export type { CardStatus, CardDocument, CardLink, Card, CardPatch, CardSnapshot 
 export interface WorkCardsConfig {
   model: string;
   thinking_level: null | 'off' | 'minimal' | 'low' | 'medium' | 'high' | 'xhigh' | 'max';
+  /** Interval of distinct projected input changes, including user and assistant text; 0 disables automatic checks. */
   check_every_n_responses: number;
-  check_every_n_cycles: number;
   /** @deprecated Accepted and validated for compatibility; ignored by summary context construction. */
   max_context_chars: number;
   max_document_bytes: number;
@@ -25,7 +25,6 @@ export const DEFAULT_CONFIG: Readonly<WorkCardsConfig> = Object.freeze({
   model: 'helpers/simple',
   thinking_level: null,
   check_every_n_responses: 1,
-  check_every_n_cycles: 10,
   max_context_chars: 24000,
   max_document_bytes: 262144,
   document_command: null,
@@ -84,7 +83,7 @@ export async function loadConfig(path = configPath()): Promise<WorkCardsConfig> 
           throw new Error('pane_height_fraction must be a finite number strictly between 0 and 1');
         }
       } else {
-        const minimum = key === 'check_every_n_responses' || key === 'check_every_n_cycles' ? 0 : 1;
+        const minimum = key === 'check_every_n_responses' ? 0 : 1;
         if (typeof value !== 'number' || !Number.isSafeInteger(value) || value < minimum) {
           throw new Error(`${key} must be an integer >= ${minimum}`);
         }

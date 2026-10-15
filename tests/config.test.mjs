@@ -38,13 +38,12 @@ test('default guidance matches the no_change summarizer decision', () => {
   assert.ok(!DEFAULT_CONFIG.update_guidance.includes('empty patch'));
 });
 
-test('partial config overlays defaults and allows independent disabled checks', async t => {
+test('partial config overlays defaults and zero disables automatic input checks', async t => {
   const path = await fixture(t);
-  await writeFile(path, JSON.stringify({ check_every_n_responses: 0, check_every_n_cycles: 3, model: 'provider/model', pane_height_fraction: 0.35 }));
-  const config = await loadConfig(path);
-  assert.deepEqual(config, { ...DEFAULT_CONFIG, check_every_n_responses: 0, check_every_n_cycles: 3, model: 'provider/model', pane_height_fraction: 0.35 });
+  await writeFile(path, JSON.stringify({ check_every_n_responses: 0, model: 'provider/model', pane_height_fraction: 0.35 }));
+  assert.deepEqual(await loadConfig(path), { ...DEFAULT_CONFIG, check_every_n_responses: 0, model: 'provider/model', pane_height_fraction: 0.35 });
   await writeFile(path, JSON.stringify({ check_every_n_cycles: 0 }));
-  assert.equal((await loadConfig(path)).check_every_n_responses, 1);
+  await assert.rejects(loadConfig(path), /unknown field check_every_n_cycles/);
 });
 
 test('deprecated context budget remains accepted and validated for strict config compatibility', async t => {
