@@ -69,7 +69,7 @@ Revisions hash only normalized compaction summary and dialogue, not branch leave
 
 Checks are single-flight per session. New eligible input replaces pending input, while continuing dialogue neither cancels the active check nor requires an idle session before application. Repeated busy refresh requests coalesce into at most one followup, retaining explicit retry intent with the latest eligible input. Generation cancellation clears queued work; card, binding and session checks reject stale results.
 
-Only actual helper requests show an animated Pi terminal status. Queued work and waits for retired checks do not. Completion, errors, timeout and invalidations clear the status and timer. RPC and headless modes create no animation timer. Activity does not change YAML, Herdr IPC, tabs or Pi's main working indicator.
+The Pi helper-request spinner is off by default. With `show_refresh_spinner: true`, only actual helper requests show an animated `<spinner> work-card` terminal status. Queued work and waits for retired checks do not. Completion, errors, timeout, invalidations and disabling the option clear the status and timer. Disabled, RPC and headless modes create no animation timer. Activity does not change YAML, Herdr IPC, tabs or Pi's main working indicator.
 
 There are no automatic retries or cooldowns. A timeout stops local waiting and requests cancellation, but cannot guarantee the upstream request stops. Helper usage, including `no_change` calls, remains outside Pi's usage totals because Pi has no public API to add it. [The scheduler](../src/pi/scheduler.ts) and [Pi integration](../src/pi/index.ts) define these lifecycle rules.
 

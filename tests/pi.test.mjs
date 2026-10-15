@@ -913,15 +913,62 @@ test('successful open starts asynchronous refresh; failed or stale open never st
   await h.command('open');
   await until(() => h.calls.length === 1);
   assert.equal(h.branch().at(-1).data.updates, true);
-  release(answer({ action: 'no_change' }));
-  await until(() => h.statuses.at(-1)?.text === undefined);
+  release(answer({ action: 'update', patch: { state: 'Open refresh completed' } }));
+  await until(async () => (await readCard('open-refresh', h.directory)).card.state === 'Open refresh completed');
   h.setAttachError('failed');
   await h.command('open');
   assert.equal(h.calls.length, 1);
 });
 
+for (const [name, config] of [['default', {}], ['explicit false', { show_refresh_spinner: false }]]) {
+  test(`${name} spinner setting leaves requests, updates and warnings working without status or animation`, async t => {
+    const h = await host(t, config);
+    await h.command('new Silent');
+    const interval = t.mock.method(globalThis, 'setInterval');
+    let release;
+    h.setResult(() => new Promise(resolve => { release = resolve; }));
+    await h.command('refresh');
+    await until(() => h.calls.length === 1);
+    assert.deepEqual(h.statuses, []);
+    release(answer({ action: 'update', patch: { state: 'Silent milestone' } }));
+    await until(async () => (await readCard('silent', h.directory)).card.state === 'Silent milestone');
+    h.setResult(async () => { throw new Error('silent offline'); });
+    await h.command('refresh');
+    await until(() => h.notices.some(n => n.level === 'warning' && /silent offline/.test(n.text)));
+    assert.equal(h.calls.length, 2);
+    await h.emit('session_shutdown');
+    assert.deepEqual(h.statuses, []);
+    assert.equal(interval.mock.callCount(), 0);
+  });
+}
+
+test('disabling spinner clears live activity and leaves subsequent requests silent', async t => {
+  const h = await host(t, { show_refresh_spinner: true });
+  await h.command('new Toggle');
+  let release;
+  h.setResult(() => new Promise(resolve => { release = resolve; }));
+  await h.command('refresh');
+  await until(() => h.calls.length === 1);
+  assert.equal(h.statuses.at(-1).text, '⠋ work-card');
+  h.settings.show_refresh_spinner = false;
+  await h.command('show');
+  assert.equal(h.calls[0].options.signal.aborted, true);
+  assert.equal(h.statuses.at(-1).text, undefined);
+  const count = h.statuses.length;
+  const interval = t.mock.method(globalThis, 'setInterval');
+  h.setResult(async () => answer({ action: 'update', patch: { state: 'Silent after toggle' } }));
+  await h.command('refresh');
+  await until(async () => (await readCard('toggle', h.directory)).card.state === 'Silent after toggle');
+  release(answer({ action: 'update', patch: { state: 'Stale enabled result' } }));
+  for (let i = 0; i < 5; i++) await tick();
+  assert.equal(h.calls.length, 2);
+  assert.equal(h.statuses.length, count);
+  assert.equal(interval.mock.callCount(), 0);
+  assert.equal((await readCard('toggle', h.directory)).card.state, 'Silent after toggle');
+});
+
 test('manual retry keeps errors visible and clears spinner on error, timeout, no_change and update', async t => {
-  const h = await host(t, { check_every_n_responses: 0, request_timeout_ms: 20 });
+  const h = await host(t, { check_every_n_responses: 0, request_timeout_ms: 20, show_refresh_spinner: true });
   await h.command('new Results');
   h.setResult(async () => { throw new Error('offline'); });
   for (let attempt = 1; attempt <= 2; attempt++) {
@@ -944,20 +991,20 @@ test('manual retry keeps errors visible and clears spinner on error, timeout, no
 
 test('all invalidations clear animation; an old provider result cannot clear new activity', async t => {
   for (const boundary of ['session_start', 'session_tree', 'session_before_switch', 'session_before_tree', 'session_before_fork', 'session_shutdown', 'detach']) {
-    const h = await host(t);
+    const h = await host(t, { show_refresh_spinner: true });
     await h.command(`new Cleanup ${boundary}`);
     let release;
     h.setResult(() => new Promise(resolve => { release = resolve; }));
     await h.command('refresh');
     await until(() => h.calls.length === 1);
-    assert.match(h.statuses.at(-1).text, /refreshing/);
+    assert.match(h.statuses.at(-1).text, /^[⠋⠙⠹⠸⠼⠴⠦⠧⠇⠏] work-card$/);
     if (boundary === 'detach') await h.command('detach');
     else await h.emit(boundary);
     assert.equal(h.statuses.at(-1).text, undefined);
     assert.equal(h.calls[0].options.signal.aborted, true);
     release(answer({ action: 'no_change' }));
   }
-  const h = await host(t);
+  const h = await host(t, { show_refresh_spinner: true });
   await h.command('new Old cleanup');
   const releases = [];
   h.setResult(() => new Promise(resolve => { releases.push(resolve); }));
@@ -970,13 +1017,13 @@ test('all invalidations clear animation; an old provider result cannot clear new
   releases[0](answer({ action: 'no_change' }));
   for (let n = 0; n < 5; n++) await tick();
   assert.equal(h.statuses.length, count);
-  assert.match(h.statuses.at(-1).text, /refreshing/);
+  assert.match(h.statuses.at(-1).text, /^[⠋⠙⠹⠸⠼⠴⠦⠧⠇⠏] work-card$/);
   releases[1](answer({ action: 'no_change' }));
   await until(() => h.statuses.at(-1).text === undefined);
 });
 
 test('spinner animates an unreferenced timer and clears it idempotently', async t => {
-  const h = await host(t);
+  const h = await host(t, { show_refresh_spinner: true });
   await h.command('new Animated');
   let animate, unreferenced = 0, cleared = 0, release;
   const timer = { unref: () => { unreferenced++; } };
@@ -985,9 +1032,9 @@ test('spinner animates an unreferenced timer and clears it idempotently', async 
   h.setResult(() => new Promise(resolve => { release = resolve; }));
   await h.command('refresh');
   await until(() => h.calls.length === 1);
-  const first = h.statuses.at(-1).text;
+  assert.equal(h.statuses.at(-1).text, '⠋ work-card');
   animate();
-  assert.notEqual(h.statuses.at(-1).text, first);
+  assert.equal(h.statuses.at(-1).text, '⠙ work-card');
   assert.equal(unreferenced, 1);
   await h.emit('session_shutdown');
   await h.emit('session_shutdown');
@@ -997,7 +1044,7 @@ test('spinner animates an unreferenced timer and clears it idempotently', async 
 });
 
 test('retired scheduler wait never shows fresh activity or overlaps requests', async t => {
-  const h = await host(t);
+  const h = await host(t, { show_refresh_spinner: true });
   await h.command('new Retired activity');
   const handle = await open(join(h.directory, 'retired-activity.yaml'), 'r');
   const prototype = Object.getPrototypeOf(handle), sync = prototype.sync;
@@ -1023,13 +1070,13 @@ test('retired scheduler wait never shows fresh activity or overlaps requests', a
 });
 
 test('spinner is request-only, cleans up on completion and lifecycle; no timers outside TUI', async t => {
-  const h = await host(t);
+  const h = await host(t, { show_refresh_spinner: true });
   await h.command('new Activity');
   let release;
   h.setResult(() => new Promise(resolve => { release = resolve; }));
   await h.command('refresh');
   await until(() => h.calls.length === 1);
-  assert.match(h.statuses.at(-1).text, /Work card: refreshing/);
+  assert.match(h.statuses.at(-1).text, /^[⠋⠙⠹⠸⠼⠴⠦⠧⠇⠏] work-card$/);
   assert.equal(h.statuses.at(-1).key, 'work-cards.refresh');
   await h.command('refresh');
   assert.equal(h.calls[0].options.signal.aborted, false);

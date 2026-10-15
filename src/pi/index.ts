@@ -59,11 +59,11 @@ export function registerWorkCards(pi: ExtensionAPI, overrides: Partial<Dependenc
   let stopActivity: (() => void) | undefined;
 
   function startActivity(): () => void {
-    if (runtime?.mode !== 'tui' || !runtime.hasUI) return () => {};
+    if (!config?.show_refresh_spinner || runtime?.mode !== 'tui' || !runtime.hasUI) return () => {};
     const ui = runtime.ui;
     const frames = ['⠋', '⠙', '⠹', '⠸', '⠼', '⠴', '⠦', '⠧', '⠇', '⠏'];
     let frame = 0;
-    const render = () => ui.setStatus('work-cards.refresh', `${frames[frame++ % frames.length]} Work card: refreshing`);
+    const render = () => ui.setStatus('work-cards.refresh', `${frames[frame++ % frames.length]} work-card`);
     render();
     const timer = setInterval(render, 80);
     timer.unref();

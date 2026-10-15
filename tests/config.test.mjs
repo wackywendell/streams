@@ -26,6 +26,7 @@ test('missing config uses frozen defaults without shared mutable results', async
   first.model = 'provider/changed';
   assert.equal((await loadConfig(path)).model, 'helpers/simple');
   assert.equal(DEFAULT_CONFIG.thinking_level, null);
+  assert.equal(DEFAULT_CONFIG.show_refresh_spinner, false);
   assert.equal(DEFAULT_CONFIG.max_document_bytes, 262144);
   assert.equal(DEFAULT_CONFIG.max_context_chars, 24000);
   assert.equal(DEFAULT_CONFIG.max_output_tokens, 2048);
@@ -42,8 +43,21 @@ test('partial config overlays defaults and zero disables automatic input checks'
   const path = await fixture(t);
   await writeFile(path, JSON.stringify({ check_every_n_responses: 0, model: 'provider/model', pane_height_fraction: 0.35 }));
   assert.deepEqual(await loadConfig(path), { ...DEFAULT_CONFIG, check_every_n_responses: 0, model: 'provider/model', pane_height_fraction: 0.35 });
+  assert.equal((await loadConfig(path)).show_refresh_spinner, false);
   await writeFile(path, JSON.stringify({ check_every_n_cycles: 0 }));
   await assert.rejects(loadConfig(path), /unknown field check_every_n_cycles/);
+});
+
+test('refresh spinner accepts only booleans', async t => {
+  const path = await fixture(t);
+  for (const show_refresh_spinner of [true, false]) {
+    await writeFile(path, JSON.stringify({ show_refresh_spinner }));
+    assert.equal((await loadConfig(path)).show_refresh_spinner, show_refresh_spinner);
+  }
+  for (const show_refresh_spinner of ['true', 'false', 0, 1, null, [], {}]) {
+    await writeFile(path, JSON.stringify({ show_refresh_spinner }));
+    await assert.rejects(loadConfig(path), /show_refresh_spinner/);
+  }
 });
 
 test('deprecated context budget remains accepted and validated for strict config compatibility', async t => {

@@ -100,7 +100,7 @@ Revisions hash only normalized compaction summary and dialogue. The same input a
 
 Only one check runs at a time per Pi session, not globally across intentionally separate bindings. While it runs, newer eligible input replaces the pending input. Repeated busy refresh requests coalesce into at most one followup, retaining explicit retry intent with the latest eligible input. Ordinary dialogue does not cancel the active check or require an idle session before applying an update. Invalidations cancel queued work and stale requests.
 
-During an actual helper request, Pi's terminal UI shows an animated `Work card: refreshing` status. Queued requests and waits for retired checks show no activity. Completion, errors, timeout and invalidations clear it. RPC and headless modes create no animation timer. This Pi-only status does not replace Pi's main working indicator, rename tabs, or add YAML activity fields.
+The helper-request spinner is off by default. Set `show_refresh_spinner` to `true` to show an animated `<spinner> work-card` status in Pi's terminal UI during actual helper requests. Queued requests and waits for retired checks show no activity. Completion, errors, timeout and invalidations clear it. Disabling the option clears any live spinner. Disabled, RPC and headless modes create no animation timer. This Pi-only status does not replace Pi's main working indicator, rename tabs, or add YAML activity fields.
 
 Each check uses Pi's current session projection: the latest compaction summary (or `null`) and all retained nonblank user and assistant text, in chronological order. It respects projected redactions and never reads raw precompaction history. Thinking, tool calls, arguments, results, images, custom/system messages and branch summaries are excluded. Summaries therefore rely on assistant text for outcomes, not tool output.
 
@@ -122,6 +122,7 @@ Configuration lives at `<PI_CODING_AGENT_DIR>/work-cards.json`, defaulting to `~
 | --- | --- | --- |
 | `model` | `helpers/simple` | Helper provider and model |
 | `thinking_level` | `null` | Inherit the helper profile; otherwise disable thinking for a physical model |
+| `show_refresh_spinner` | `false` | Opt into the Pi terminal helper-request spinner; accepts only `true` or `false` |
 | `check_every_n_responses` | `1` | Distinct normalized-input change interval, including user and assistant text; `0` disables automatic checks |
 | `max_context_chars` | `24000` | Deprecated; accepted and validated as a positive integer, but ignored |
 | `max_document_bytes` | `262144` | Legacy preview setting; accepted but has no effect on external tools |

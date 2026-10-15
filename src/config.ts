@@ -7,6 +7,7 @@ export type { CardStatus, CardDocument, CardLink, Card, CardPatch, CardSnapshot 
 export interface WorkCardsConfig {
   model: string;
   thinking_level: null | 'off' | 'minimal' | 'low' | 'medium' | 'high' | 'xhigh' | 'max';
+  show_refresh_spinner: boolean;
   /** Interval of distinct projected input changes, including user and assistant text; 0 disables automatic checks. */
   check_every_n_responses: number;
   /** @deprecated Accepted and validated for compatibility; ignored by summary context construction. */
@@ -24,6 +25,7 @@ export interface WorkCardsConfig {
 export const DEFAULT_CONFIG: Readonly<WorkCardsConfig> = Object.freeze({
   model: 'helpers/simple',
   thinking_level: null,
+  show_refresh_spinner: false,
   check_every_n_responses: 1,
   max_context_chars: 24000,
   max_document_bytes: 262144,
@@ -68,6 +70,8 @@ export async function loadConfig(path = configPath()): Promise<WorkCardsConfig> 
         if (typeof value !== 'string' || !/^[^\s/\p{Cc}\p{Cf}]+\/[^\s\p{Cc}\p{Cf}]+$/u.test(value)) {
           throw new Error('model must be provider/model or a configured helpers/alias');
         }
+      } else if (key === 'show_refresh_spinner') {
+        if (typeof value !== 'boolean') throw new Error('show_refresh_spinner must be a boolean');
       } else if (key === 'document_command') {
         if (value !== null) validateDocumentCommand(value, key);
       } else if (key === 'thinking_level') {
