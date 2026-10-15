@@ -168,6 +168,19 @@ Record import source identity/revision and destination identity before fallible 
 
 Use Sol for implementation and Astra for substantive review. Inspect actual diffs, fix findings, rerun checks and make focused local commits. A review finding that changes product behavior returns to the user; implementation details can be corrected within this contract.
 
+## Pi integration status
+
+The following components are implemented but not registered by `src/pi/index.ts`:
+
+- `WorkspaceLifecycle` serializes membership reconciliation, resets evidence, preserves `q` suppression and verifies native ownership before authorizing helper work
+- `WorkspaceRefresher` applies own-agent summaries, merges suffix-only shared additions, then refreshes the plan-derived goal
+
+The existing scheduler now forwards explicit-refresh intent separately from the queued snapshot. A newer automatic observation cannot cancel forced plan selection and inference.
+
+Astra approved both slices after the lifecycle recovery fixes. All 524 tests and type checks pass on Node 22 and Node 26. The lifecycle tests use temporary records and native transport doubles; they do not establish live SDK integration.
+
+The installed entrypoint remains legacy. SDK event wiring, commands, management tools, naming, import and isolated rollout checks remain outstanding. No normal workspace resources, naming settings or legacy cards changed during these slices.
+
 ## Native integration evidence
 
 An isolated Herdr 0.9.4 server passed 7 checks. Cross-workspace pane moves changed public pane IDs but preserved terminal IDs and pane metadata. Workspace metadata stayed in the source. Moving the agent pane alone left its old display identifiable. Moving both terminals into the destination restored a paired layout. Pane swaps changed the first layout pane, and inherited caller context resolved the moved terminal without GUI focus.

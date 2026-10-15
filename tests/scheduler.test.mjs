@@ -114,6 +114,38 @@ test('reset cancels queued forced work, clears counters and keeps retired call o
   assert.deepEqual(errors, []);
 });
 
+test('passes explicit force separately from snapshots, including newest automatic queued input', async () => {
+  const first = deferred(), checked = [], signals = [];
+  let active = 0, maximum = 0;
+  const scheduler = createCheckScheduler({ check: async (s, signal, forced) => {
+    checked.push([s.revision, forced]); signals.push(signal); maximum = Math.max(maximum, ++active);
+    if (checked.length === 2) await first.promise;
+    active--;
+  } });
+  scheduler.refresh(snapshot(1)); await flush();
+  scheduler.observe(snapshot(2));
+  scheduler.refresh(snapshot(2)); scheduler.observe(snapshot(3)); scheduler.observe(snapshot(4));
+  assert.equal(signals[1].aborted, false);
+  first.resolve(); await flush();
+  assert.deepEqual(checked, [[1, true], [2, false], [4, true]]);
+  assert.equal(maximum, 1);
+  scheduler.observe(snapshot(5)); await flush();
+  assert.deepEqual(checked.at(-1), [5, false]);
+});
+
+test('reset discards queued force while keeping cancelled work single-flight', async () => {
+  const first = deferred(), checked = [], signals = [];
+  const scheduler = createCheckScheduler({ check: async (s, signal, forced) => {
+    checked.push([s.revision, forced]); signals.push(signal);
+    if (checked.length === 1) await first.promise;
+  } });
+  scheduler.refresh(snapshot(1)); scheduler.refresh(snapshot(2)); scheduler.reset();
+  scheduler.observe(snapshot(3));
+  assert.equal(signals[0].aborted, true); assert.equal(checked.length, 1);
+  first.resolve(); await flush();
+  assert.deepEqual(checked, [[1, true], [3, false]]);
+});
+
 test('rejects invalid threshold', () => {
   for (const key of ['check_every_n_responses']) for (const value of [-1, 1.5, NaN, Infinity]) {
     assert.throws(() => createCheckScheduler({ [key]: value, check: async () => {} }), /non-negative safe integer/);

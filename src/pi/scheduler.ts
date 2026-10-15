@@ -6,7 +6,7 @@ export interface EvidenceSnapshot {
 
 export interface CheckSchedulerOptions<T extends EvidenceSnapshot> {
   check_every_n_responses?: number;
-  check: (snapshot: T, signal: AbortSignal) => Promise<void>;
+  check: (snapshot: T, signal: AbortSignal, forced: boolean) => Promise<void>;
   onError?: (error: unknown, snapshot: T) => void;
 }
 
@@ -30,9 +30,9 @@ export function createCheckScheduler<T extends EvidenceSnapshot>(options: CheckS
   let pending: { snapshot: T; forced: boolean } | undefined;
   let running: AbortController | undefined;
 
-  async function run(snapshot: T, controller: AbortController, startedGeneration: number): Promise<void> {
+  async function run(snapshot: T, controller: AbortController, startedGeneration: number, forced: boolean): Promise<void> {
     try {
-      await options.check(snapshot, controller.signal);
+      await options.check(snapshot, controller.signal, forced);
     } catch (error) {
       if (!controller.signal.aborted && generation === startedGeneration) options.onError?.(error, snapshot);
     } finally {
@@ -55,7 +55,7 @@ export function createCheckScheduler<T extends EvidenceSnapshot>(options: CheckS
     lastAttempted = snapshot.revision;
     const controller = new AbortController();
     running = controller;
-    void run(snapshot, controller, generation);
+    void run(snapshot, controller, generation, forced);
   }
 
   function observe(snapshot: T): void {
