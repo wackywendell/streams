@@ -4,7 +4,7 @@ import { mkdtemp, mkdir, writeFile, rm, realpath, readFile, stat } from 'node:fs
 import { join } from 'node:path';
 import { tmpdir } from 'node:os';
 import { stringify } from 'yaml';
-import { RecordStore, referenceIdentity } from '../dist/records.js';
+import { evaluatedGoal, goalText, RecordStore, referenceIdentity } from '../dist/records.js';
 import { captureReferenceBoundary } from '../dist/pi/shared-evidence.js';
 import { capturePlanSources } from '../dist/pi/plan-sources.js';
 import { WorkspaceRefresher } from '../dist/pi/workspace-refresh.js';
@@ -98,7 +98,7 @@ test('reset replaces derived own fields but preserves identities, manual titles,
   for (const key of ['id', 'creationToken', 'checkouts', 'documents', 'prs', 'exclusions']) assert.deepEqual(result.workspace.record[key], beforeWorkspace[key]);
   assert.deepEqual(result.workspace.record.issues, [issue('keep'), issue('new')]);
   assert.equal((await f.store.readAgent('other')).revision, other.revision);
-  assert.equal(result.workspace.record.goal, 'Deliver library');
+  assert.equal(goalText(result.workspace.record.goal), 'Deliver library');
 });
 
 for (const proposal of [noChange(), { action: 'update', patch: { now: '' } }, { action: 'update', patch: { ...freshOwn().patch, statusShort: 'x'.repeat(24) } }]) {
@@ -158,7 +158,7 @@ test('own and shared helpers get full uncapped evidence and the current workspac
   await f.store.addReferences(f.authority, { documents: [{ ...f.identity, description: 'Plan' }] });
   const w = await f.workspace();
   const captured = await capturePlanSources(w.record, [f.identity]);
-  await f.store.applyPlan(f.authority, { goal: 'Existing shared scope', goalShort: 'Shared scope', sources: [f.identity], fingerprint: captured.fingerprint }, w.revision);
+  await f.store.applyPlan(f.authority, { goal: evaluatedGoal('Existing shared scope', [f.identity], captured.fingerprint, 'Shared scope') }, w.revision);
   f.handlers.own = () => ({ action: 'update', patch: { now: 'Library usable', remaining: 'Client integration', status: 'waiting' } });
   f.handlers.shared = () => ({ action: 'update', additions: { issues: [issue('task')] } });
   let started = 0, stopped = 0;
@@ -174,7 +174,7 @@ test('own and shared helpers get full uncapped evidence and the current workspac
   assert.equal(result.agent.record.now, 'Library usable');
   assert.equal(result.agent.record.status, 'waiting');
   assert.deepEqual(result.workspace.record.issues, [issue('task')]);
-  assert.equal(result.workspace.record.goal, 'Existing shared scope');
+  assert.equal(goalText(result.workspace.record.goal), 'Existing shared scope');
   assert.equal(started, 3); assert.equal(stopped, 3);
 });
 
@@ -204,8 +204,8 @@ for (const source of ['checkpoint', 'dialogue']) {
     };
     const first = await f.refresh({ evidence });
     assert.deepEqual(kinds(f), ['own', 'shared', 'select', 'goal']);
-    assert.deepEqual(first.workspace.record.planSources, [f.identity]);
-    assert.equal(first.workspace.record.goal, 'Deliver library');
+    assert.deepEqual(first.workspace.record.goal.sources, [f.identity]);
+    assert.equal(goalText(first.workspace.record.goal), 'Deliver library');
     assert.equal(first.workspace.record.title, 'Automatic workspace');
     assert.equal(f.calls.at(-1).data.sources[0].content, 'Deliver a library and client');
     await f.store.removeReference(f.authority, { workspaceId: 'w', revision: first.workspace.revision, identity: referenceIdentity(f.identity) });
@@ -213,7 +213,7 @@ for (const source of ['checkpoint', 'dialogue']) {
     const removed = await f.refresh({ evidence });
     assert.deepEqual(removed.workspace.record.documents, []);
     assert.deepEqual(removed.workspace.record.exclusions, [f.identity]);
-    assert.equal(removed.workspace.record.goal, '');
+    assert.equal(goalText(removed.workspace.record.goal), '');
   });
 }
 
@@ -334,8 +334,8 @@ test('newly added plans participate immediately; retained plan cache skips stabl
   f.handlers.shared = () => ({ action: 'update', additions: { documents: [{ ...f.identity, description: 'Implementation plan' }] } });
   const first = await f.refresh();
   assert.deepEqual(kinds(f), ['own', 'shared', 'select', 'goal']);
-  assert.deepEqual(first.workspace.record.planSources, [f.identity]);
-  assert.equal(first.workspace.record.goal, 'Deliver library');
+  assert.deepEqual(first.workspace.record.goal.sources, [f.identity]);
+  assert.equal(goalText(first.workspace.record.goal), 'Deliver library');
   assert.equal(first.agent.record.title, 'Manual agent'); assert.equal(first.workspace.record.title, 'Manual workspace');
   const before = [await fileState(first.agent.path), await fileState(first.workspace.path)];
   await f.refresh();
@@ -359,7 +359,7 @@ for (const stage of ['own', 'shared', 'select', 'goal']) {
     assert.equal((await f.agent()).record.now, stage === 'own' ? '' : 'Durable progress');
     const w = (await f.workspace()).record;
     assert.equal(w.documents.length, ['select', 'goal'].includes(stage) ? 1 : 0);
-    assert.equal(w.goal, ''); assert.equal(w.sourceFingerprint, null);
+    assert.deepEqual(w.goal, { kind: 'unevaluated' });
   });
 }
 
@@ -375,8 +375,8 @@ test('oversized own short preserves full updates and lets shared, selection and 
   assert.equal(first.agent.record.now, now); assert.equal(first.agent.record.remaining, remaining);
   assert.equal(first.agent.record.status, 'waiting'); assert.equal(first.agent.record.statusShort, undefined);
   assert.deepEqual(first.workspace.record.issues, [issue('task')]);
-  assert.deepEqual(first.workspace.record.planSources, [f.identity]);
-  assert.equal(first.workspace.record.goal, 'Deliver library'); assert.ok(first.workspace.record.sourceFingerprint);
+  assert.deepEqual(first.workspace.record.goal.sources, [f.identity]);
+  assert.equal(goalText(first.workspace.record.goal), 'Deliver library'); assert.ok(first.workspace.record.goal.fingerprint);
   assert.deepEqual(kinds(f), ['own', 'shared', 'select', 'goal']);
   assert.equal(events.some(event => event.outcome === 'failed'), false);
   f.handlers.own = data => {

@@ -4,7 +4,7 @@ import { spawnSync } from 'node:child_process';
 import { mkdtemp, readdir, rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { RecordStore } from '../dist/records.js';
+import { evaluatedGoal, RecordStore } from '../dist/records.js';
 import { agentAuthority } from '../dist/records.js';
 
 const moduleURL = name => JSON.stringify(new URL(`../dist/${name}.js`, import.meta.url).href);
@@ -22,7 +22,7 @@ async function fixture(t) {
   const agent = await store.readAgent('one');
   await store.addReferences(agentAuthority(agent.record), { documents: [{ checkout: agent.record.checkout, path: 'notes.md', description: '' }] });
   const workspace = await store.readWorkspace('shared');
-  await store.applyPlan(agentAuthority(agent.record), { goal: 'Shared goal', sources: [{ checkout: agent.record.checkout, path: 'notes.md' }], fingerprint: 'plan-fingerprint' }, workspace.revision);
+  await store.applyPlan(agentAuthority(agent.record), { goal: evaluatedGoal('Shared goal', [{ checkout: agent.record.checkout, path: 'notes.md' }], 'plan-fingerprint') }, workspace.revision);
   return { root, store };
 }
 function launch(root, sessionId = 'one', options = {}) {

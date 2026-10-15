@@ -1,7 +1,7 @@
 import { isDeepStrictEqual } from 'node:util';
 import {
   type Authority, type DocumentIdentity, type RecordStore,
-  type Snapshot, type WorkspaceRecord,
+  type Snapshot, type WorkspaceRecord, evaluatedGoal, unevaluatedGoal,
 } from '../records.js';
 import { capturePlanSources, isMarkdownDocument, recheckPlanSources, validatePlanSelection } from './plan-sources.js';
 import type { SummaryRegistry, SummaryRequestOptions } from './summarizer.js';
@@ -75,9 +75,11 @@ export class PlanRefresher<TModel extends { api?: string }> {
       stage = 'goal';
       const captured = await capturePlanSources(workspace, sources);
       await current(original.revision);
+      const previous = workspace.goal;
       const unchanged = sources.length
-        ? !forced && (!workspace.goal.trim() || !!workspace.goalShort?.trim()) && isDeepStrictEqual(sources, workspace.planSources) && captured.fingerprint === workspace.sourceFingerprint
-        : workspace.goal === '' && workspace.planSources.length === 0 && workspace.sourceFingerprint === null;
+        ? !forced && previous.kind !== 'unevaluated' && (previous.kind === 'unknown' || !!previous.short?.trim())
+          && isDeepStrictEqual(sources, previous.sources) && captured.fingerprint === previous.fingerprint
+        : previous.kind === 'unevaluated';
       const goal = unchanged || !sources.length ? null
         : await requestWorkspaceGoal(registry, captured, { ...options, intent }, signal, loadHelperProfiles, onRequest);
 
@@ -90,9 +92,8 @@ export class PlanRefresher<TModel extends { api?: string }> {
         return checked;
       }
       const result = await store.applyPlan(authority, {
-        goal: goal?.goal ?? '', sources, fingerprint: sources.length ? captured.fingerprint : null,
+        goal: sources.length ? evaluatedGoal(goal!.goal, sources, captured.fingerprint, goal!.goalShort) : unevaluatedGoal(),
         ...(goal?.title !== undefined ? { title: goal.title } : {}),
-        ...(goal?.goalShort !== undefined ? { goalShort: goal.goalShort } : {}),
       }, original.revision, signal);
       onDiagnostic?.({ stage: 'goal', outcome: !sources.length ? 'no_sources' : result.revision === checked.revision ? 'unchanged' : 'applied' });
       return result;

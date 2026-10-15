@@ -67,7 +67,11 @@ Attachment boundaries detect discontinuities and distinguish fresh task input fo
 
 Select purpose-bearing designs, ADRs, relevant README files and plans from known document references, not through a recursive repository crawler. No suitable source means no invented Goal. Runtime code reads sources within registered checkouts, with a 256 KiB limit per file. Oversized or unreadable selected sources fail visibly rather than being silently truncated.
 
-Retain selected-source provenance with the Goal. Changes to candidate references trigger reselection. Scheduled checks reread selected sources and reuse unchanged Goal results; explicit refresh reruns selection and inference. Revalidate source identities and bytes before accepting results so an inference cannot silently use changed files. Ordinary dialogue is not a reason to rewrite shared Goal. A plan establishes intent, never completed work.
+Represent Goal as one readonly in-memory value: unevaluated with no provenance, evaluated unknown with nonempty sources and a fingerprint, or known with nonblank full text, optional short and the same required provenance. Constructors enforce text and provenance constraints; one pure transition owns evaluation replacement and invalidation when a selected source is removed. Unchanged full text can retain an omitted short; changed text cannot inherit it. Keep manual title application separate.
+
+Parse the existing flat version-1 YAML into this domain shape at the storage boundary and serialize it back only on a genuine mutation. The persisted fields and public tool/show record shape remain unchanged. Validate wire constraints before normalizing blank purpose or short values. Reads and semantic no-ops preserve original bytes, modification time and revision; there is no eager migration. Domain validation and wire parsing accept only their respective shapes.
+
+Retain selected-source provenance with the Goal, including an evaluated result that establishes no purpose. Changes to candidate references trigger reselection. Scheduled checks reread selected sources and reuse unchanged Goal results; explicit refresh reruns selection and inference. Revalidate source identities and bytes before accepting results so an inference cannot silently use changed files. Ordinary dialogue is not a reason to rewrite shared Goal. A plan establishes intent, never completed work.
 
 The model still interprets whether a document establishes purpose and what it means. Authority checks and provenance do not guarantee correct selection or a useful Goal.
 

@@ -9,7 +9,7 @@ import { randomUUID, createHash } from 'node:crypto';
 import { spawn, spawnSync } from 'node:child_process';
 import ts from 'typescript';
 import { fileURLToPath } from 'node:url';
-import { RecordStore, validateWorkspace, validateAgent, applyOwnUpdate, applySharedAdditions, discoverCheckout, referenceIdentity, resolveWorkspaceDocument, applyReferenceRemoval } from '../dist/records.js';
+import { evaluatedGoal, unevaluatedGoal, serializeWorkspaceV1, goalText, RecordStore, validateWorkspace, validateAgent, applyOwnUpdate, applySharedAdditions, discoverCheckout, referenceIdentity, resolveWorkspaceDocument, applyReferenceRemoval } from '../dist/records.js';
 import { composeView, checkoutLabels, selectReference } from '../dist/presentation.js';
 
 const boundary = { compactionDigest: 'compact', transcriptLength: 2, prefixDigest: 'prefix' };
@@ -72,7 +72,7 @@ test('checked membership rejects stale initial authority and malformed or mismat
   }
   await writeFile(agent.path, JSON.stringify(agent.record));
   const current = await store.readWorkspace(workspace.record.id);
-  await writeFile(current.path, JSON.stringify({ ...current.record, id: 'other' }));
+  await writeFile(current.path, JSON.stringify({ ...serializeWorkspaceV1(current.record), id: 'other' }));
   await assert.rejects(store.readMembership(agent.record.sessionId), /identity/i);
 });
 
@@ -289,17 +289,17 @@ test('foreground titles/descriptions and plan provenance obey CAS and helper per
   w = await store.describeReference(auth, { checkout: doc.checkout, path: doc.path }, 'foreground', w.revision);
   w = await store.addReferences(auth, { documents: [{ ...doc, description: 'ignored helper' }] }); assert.equal(w.record.documents[0].description, 'foreground');
   const source = { checkout: doc.checkout, path: doc.path };
-  w = await store.applyPlan(auth, { goal: 'Plan goal', sources: [source], fingerprint: 'bytes-and-identities', title: 'Ignored auto' }, w.revision);
+  w = await store.applyPlan(auth, { goal: evaluatedGoal('Plan goal', [source], 'bytes-and-identities'), title: 'Ignored auto' }, w.revision);
   assert.equal(w.record.title, 'Manual shared'); assert.equal(composeView(w, a).goal, 'Plan goal');
-  await assert.rejects(store.applyPlan(auth, { goal: 'No provenance', sources: [], fingerprint: 'x' }, w.revision), /provenance/);
-  w = await store.removeReference(auth, selectReference(w, 'plan.md').selection); assert.equal(w.record.goal, ''); assert.equal(w.record.sourceFingerprint, null);
+  await assert.rejects(store.applyPlan(auth, { goal: { kind: 'known', text: 'No provenance', sources: [], fingerprint: 'x' } }, w.revision), /provenance/);
+  w = await store.removeReference(auth, selectReference(w, 'plan.md').selection); assert.equal(goalText(w.record.goal), ''); assert.equal(w.record.goal.kind, 'unevaluated');
 });
 
-test('applyPlan accepts an empty plan with a null fingerprint in its TypeScript API', () => {
+test('applyPlan accepts an unevaluated Goal in its TypeScript API', () => {
   const filename = fileURLToPath(new URL('../src/apply-plan-typecheck.ts', import.meta.url));
   const source = `import { RecordStore, type Authority } from './records.js';
     declare const store: RecordStore, authority: Authority, revision: string;
-    store.applyPlan(authority, { goal: '', sources: [], fingerprint: null }, revision);`;
+    store.applyPlan(authority, { goal: { kind: 'unevaluated' } }, revision);`;
   const configPath = fileURLToPath(new URL('../tsconfig.json', import.meta.url));
   const config = ts.readConfigFile(configPath, ts.sys.readFile);
   const { options } = ts.parseJsonConfigFileContent(config.config, ts.sys, fileURLToPath(new URL('..', import.meta.url)));
@@ -320,22 +320,22 @@ test('empty plan clears provenance without removing references or changing manua
     prs: [{ url: 'https://example.com/pr', description: 'PR' }],
   });
   w = await store.setWorkspaceTitle(auth, 'Manual shared', w.revision);
-  w = await store.applyPlan(auth, { goal: 'Plan goal', sources: [source], fingerprint: 'plan-bytes' }, w.revision);
+  w = await store.applyPlan(auth, { goal: evaluatedGoal('Plan goal', [source], 'plan-bytes') }, w.revision);
   w = await store.describeReference(auth, source, 'not a plan', w.revision);
   const planned = w;
   for (const input of [
-    { goal: 'Still a goal', sources: [], fingerprint: null },
-    { goal: '', sources: [source], fingerprint: null },
-    { goal: '', sources: [], fingerprint: 'orphaned' },
-  ]) await assert.rejects(store.applyPlan(auth, input, w.revision), /provenance/);
-  const empty = { goal: '', sources: [], fingerprint: null, title: 'Ignored automatic title' };
+    { goal: { kind: 'known', text: 'Still a goal', sources: [], fingerprint: 'bytes' } },
+    { goal: { kind: 'unknown', sources: [source], fingerprint: null } },
+    { goal: { kind: 'unknown', sources: [], fingerprint: 'orphaned' } },
+  ]) await assert.rejects(store.applyPlan(auth, input, w.revision));
+  const empty = { goal: unevaluatedGoal(), title: 'Ignored automatic title' };
   await assert.rejects(store.applyPlan(auth, empty, workspace.revision), /revision|stale/i);
   await assert.rejects(store.applyPlan({ ...auth, membershipToken: 'stale' }, empty, w.revision), /membership|stale/i);
   a = await store.resetEvidence(auth, boundary, a.revision);
   await assert.rejects(store.applyPlan(auth, empty, w.revision), /generation|stale/i);
   assert.deepEqual(await store.readWorkspace(workspace.record.id), planned);
   w = await store.applyPlan(authority(a), empty, w.revision);
-  assert.deepEqual(w.record, { ...planned.record, mutationToken: w.record.mutationToken, goal: '', planSources: [], sourceFingerprint: null });
+  assert.deepEqual(w.record, { ...planned.record, mutationToken: w.record.mutationToken, goal: unevaluatedGoal() });
   assert.notEqual(w.revision, planned.revision);
   assert.equal(composeView(w, a).goal, '');
   assert.deepEqual(await store.readWorkspace(workspace.record.id), w);
@@ -388,7 +388,7 @@ test('separate cooperating processes merge additions without losing another writ
 
 test('new record publication never clobbers a file appearing after the absence check', async t => {
   const { store, workspace } = await fixture(t); const id = randomUUID(); const path = store.workspacePath(id);
-  const competingBytes = JSON.stringify({ ...workspace.record, id, creationToken: 'different-reservation' });
+  const competingBytes = JSON.stringify({ ...serializeWorkspaceV1(workspace.record), id, creationToken: 'different-reservation' });
   const handle = await open(workspace.path, 'r'); const proto = Object.getPrototypeOf(handle); const sync = proto.sync; await handle.close();
   t.mock.method(proto, 'sync', async function () { await sync.call(this); await writeFile(path, competingBytes); });
   await assert.rejects(store.createWorkspace({ id, creationToken: 'mine', title: 'Do not overwrite' }), /EEXIST|conflict/);
@@ -446,7 +446,7 @@ test('join uses one canonical cwd even when its input alias switches during disc
 test('derived sidebar fields preserve absence and enforce display width and Unicode', async t => {
   const { store, workspace, cwd } = await fixture(t); const a = await store.join(joinInput(workspace, cwd));
   assert.equal(Object.hasOwn(a.record, 'statusShort'), false);
-  assert.equal(Object.hasOwn((await store.readWorkspace(workspace.record.id)).record, 'goalShort'), false);
+  assert.equal(Object.hasOwn((await store.readWorkspace(workspace.record.id)).record.goal, 'short'), false);
   const short = applyOwnUpdate(a.record, { statusShort: '界'.repeat(11) + 'x' });
   assert.equal(short.statusShort, '界'.repeat(11) + 'x');
   assert.equal(applyOwnUpdate(short, { now: 'Different' }).statusShort, undefined);
@@ -454,22 +454,22 @@ test('derived sidebar fields preserve absence and enforce display width and Unic
   assert.equal(applyOwnUpdate(short, { status: 'done', statusShort: 'Ready' }).statusShort, 'Ready');
   for (const value of ['界'.repeat(12), 'x'.repeat(24), 'bad\ntext', '\ud800', 'bad\u2028line', '\u001b[31mx']) assert.throws(() => applyOwnUpdate(a.record, { statusShort: value }));
   for (const value of ['e\u0301'.repeat(23), '😀'.repeat(11), '']) assert.equal(applyOwnUpdate(a.record, { statusShort: value }).statusShort, value);
-  assert.throws(() => validateWorkspace({ ...workspace.record, goalShort: 'No provenance' }));
+  assert.throws(() => validateWorkspace({ ...workspace.record, goal: { kind: 'unevaluated', short: 'No provenance' } }));
 });
 
 test('plan changes invalidate derived purpose; old records and no-ops keep bytes', async t => {
   const { store, workspace, cwd } = await fixture(t); const a = await store.join(joinInput(workspace, cwd)); const auth = authority(a);
   const source = { checkout: a.record.checkout, path: 'README.md', description: 'Purpose' };
   let w = await store.addReferences(auth, { documents: [source] });
-  const input = { goal: 'Deliver usable cards', goalShort: 'Usable cards', sources: [{ checkout: source.checkout, path: source.path }], fingerprint: 'bytes' };
-  w = await store.applyPlan(auth, input, w.revision); assert.equal(w.record.goalShort, 'Usable cards');
-  assert.throws(() => validateWorkspace({ ...w.record, goalShort: '界'.repeat(13) }));
-  w = await store.applyPlan(auth, { ...input, goalShort: '界'.repeat(12) + 'x' }, w.revision);
-  const { goalShort, ...trusted } = input;
-  w = await store.applyPlan(auth, { ...trusted, goal: 'Changed purpose' }, w.revision); assert.equal(w.record.goalShort, undefined);
+  const sources = [{ checkout: source.checkout, path: source.path }];
+  const input = { goal: evaluatedGoal('Deliver usable cards', sources, 'bytes', 'Usable cards') };
+  w = await store.applyPlan(auth, input, w.revision); assert.equal(w.record.goal.short, 'Usable cards');
+  assert.throws(() => validateWorkspace({ ...w.record, goal: { ...w.record.goal, short: '界'.repeat(13) } }));
+  w = await store.applyPlan(auth, { goal: evaluatedGoal(input.goal.text, sources, 'bytes', '界'.repeat(12) + 'x') }, w.revision);
+  w = await store.applyPlan(auth, { goal: evaluatedGoal('Changed purpose', sources, 'bytes') }, w.revision); assert.equal(w.record.goal.short, undefined);
   w = await store.applyPlan(auth, input, w.revision);
   w = await store.removeReference(auth, { workspaceId: w.record.id, revision: w.revision, identity: referenceIdentity(source) });
-  assert.equal(w.record.goalShort, undefined);
+  assert.equal(w.record.goal.short, undefined);
 });
 
 test('shared proposal labels use snapshot descriptions and kinds while additions merge', async t => {

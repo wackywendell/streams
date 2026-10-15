@@ -1,5 +1,5 @@
 import { resolve } from 'node:path';
-import { referenceIdentity, validateAgent, validateMembership, validateWorkspace, type AgentRecord, type Snapshot, type WorkspaceRecord, type ReferenceSelection } from './records/schema.js';
+import { goalText, referenceIdentity, validateAgent, validateMembership, validateWorkspace, type AgentRecord, type Snapshot, type WorkspaceRecord, type ReferenceSelection } from './records/schema.js';
 
 /** Labels are presentation only; callers retain checkout keys and absolute targets. */
 export function checkoutLabels(checkouts: WorkspaceRecord['checkouts']): Record<string, string> {
@@ -31,7 +31,7 @@ export function composeView(workspace: Snapshot<WorkspaceRecord>, agent: Snapsho
   validateMembership(w, a);
   return {
     workspaceId: w.id, sessionId: a.sessionId, workspaceTitle: w.title, title: a.title,
-    goal: w.goal, status: a.status, now: a.now, remaining: a.remaining,
+    goal: goalText(w.goal), status: a.status, now: a.now, remaining: a.remaining,
     ...resolvedReferences(w),
   };
 }

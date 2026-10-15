@@ -4,14 +4,14 @@ import stringWidth from 'string-width';
 import { mkdtemp, readdir, rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { RecordStore, validateAgent, validateWorkspace } from '../dist/records.js';
+import { RecordStore, validateAgent, validateWorkspace, evaluatedGoal, unevaluatedGoal } from '../dist/records.js';
 import { WorkspaceCardView, renderWorkspaceCard } from '../dist/herdr/workspace-view.js';
 
 const unstyled = text => text.replace(/\x1b\[[\d;]*m/g, '').replace(/\x1b\]8;;[^\x1b]*\x1b\\/g, '');
 function fixture() {
   const workspace = { path: '/state/workspace.yaml', revision: 'w1', record: {
     version: 1, id: 'shared', creationToken: 'creation', mutationToken: 'mutation', title: 'Shared workspace', titleMode: 'auto',
-    goal: 'Ship library | client', planSources: [{ checkout: 'lib', path: 'docs/design.md' }], sourceFingerprint: 'plan',
+    goal: evaluatedGoal('Ship library | client', [{ checkout: 'lib', path: 'docs/design.md' }], 'plan'),
     checkouts: { lib: { directory: '/code/library' } },
     documents: [{ checkout: 'lib', path: 'docs/design.md', description: 'Design' }],
     issues: [{ url: 'https://example.com/1', description: 'Issue' }], prs: [], exclusions: [],
@@ -59,7 +59,7 @@ test('two agents share Goal and references while retaining own title, status, No
 
 test('empty shared sections omit bodies and dangling colons without losing own status', () => {
   const { workspace, agent } = fixture();
-  workspace.record.goal = ''; agent.record.now = ''; agent.record.remaining = '';
+  workspace.record.goal = unevaluatedGoal(); agent.record.now = ''; agent.record.remaining = '';
   const rendered = renderWorkspaceCard({ workspace, agent }, 100, 8);
   const lines = unstyled(rendered.text).split('\n');
   assert.match(lines[0], /^Own assignment +● active$/);
@@ -84,7 +84,7 @@ test('multirepo same relative paths retain exact opaque identities and checkout 
 
 test('later grid shortcuts open exact opaque targets and fail closed after resize, notice and fresh edits', async () => {
   const { workspace, agent, view } = fixture();
-  workspace.record.goal = ''; workspace.record.issues = []; workspace.record.planSources = []; workspace.record.sourceFingerprint = null;
+  workspace.record.goal = unevaluatedGoal(); workspace.record.issues = [];
   agent.record.title = 'Own'; agent.record.now = ''; agent.record.remaining = '';
   workspace.record.documents = ['a.md', 'b.md', 'c.md'].map(path => ({ checkout: 'lib', path, description: '' }));
   await view.refresh();
@@ -105,7 +105,7 @@ test('later grid shortcuts open exact opaque targets and fail closed after resiz
 
 test('a fresh grid reflow hiding a previously painted later-column key fails closed', async () => {
   const { workspace, agent, view } = fixture();
-  workspace.record.goal = ''; workspace.record.issues = []; workspace.record.planSources = []; workspace.record.sourceFingerprint = null;
+  workspace.record.goal = unevaluatedGoal(); workspace.record.issues = [];
   agent.record.title = 'Own'; agent.record.now = ''; agent.record.remaining = '';
   workspace.record.documents = ['a.md', 'b.md', 'c.md'].map(path => ({ checkout: 'lib', path, description: '' }));
   await view.refresh(); view.render(30, 3);
@@ -146,10 +146,10 @@ test('structured literal pipes and Unicode remain bounded in tiny panes with not
 
 for (const [name, change] of [
   ['renumbered key', ({ workspace }) => { workspace.record.documents.unshift({ checkout: 'lib', path: 'new.md', description: '' }); }],
-  ['path change', ({ workspace }) => { workspace.record.documents[0].path = 'new.md'; workspace.record.planSources[0].path = 'new.md'; }],
+  ['path change', ({ workspace }) => { workspace.record.documents[0].path = 'new.md'; workspace.record.goal = evaluatedGoal(workspace.record.goal.text, [{ checkout: 'lib', path: 'new.md' }], 'plan'); }],
   ['root change', ({ workspace, agent }) => { workspace.record.checkouts.lib.directory = '/new-root'; agent.record.cwd = '/new-root'; }],
   ['membership token change', ({ agent }) => { agent.record.membershipToken = 'new-membership'; }],
-  ['checkout key change', ({ workspace }) => { workspace.record.checkouts.other = { directory: '/other' }; workspace.record.documents[0].checkout = 'other'; workspace.record.planSources[0].checkout = 'other'; }],
+  ['checkout key change', ({ workspace }) => { workspace.record.checkouts.other = { directory: '/other' }; workspace.record.documents[0].checkout = 'other'; workspace.record.goal = evaluatedGoal(workspace.record.goal.text, [{ checkout: 'other', path: 'docs/design.md' }], 'plan'); }],
   ['workspace switch', ({ workspace, agent }) => { workspace.record.id = 'destination'; agent.record.workspaceId = 'destination'; }],
 ]) test(`fresh key rejects ${name} without opening another target`, async () => {
   const f = fixture(); await f.view.refresh(); f.view.render(100, 10); change(f);
@@ -245,7 +245,7 @@ test('read failure disables stale actions and a repaired record clears only its 
 test('j/k are document intents, digits inert, and q or Ctrl-C exit only the view', async () => {
   const { view, workspace } = fixture();
   workspace.record.documents = Array.from({ length: 11 }, (_, i) => ({ checkout: 'lib', path: `doc-${i}.md`, description: '' }));
-  workspace.record.goal = ''; workspace.record.planSources = []; workspace.record.sourceFingerprint = null;
+  workspace.record.goal = unevaluatedGoal();
   await view.refresh(); view.render(80, 20);
   for (const digit of '0123456789') assert.deepEqual(await view.key(digit), { kind: 'none' });
   for (const [key, path] of [['j', 'doc-9.md'], ['k', 'doc-10.md']]) {
@@ -262,7 +262,7 @@ test('broken files stay visible and actionable without file checks', async () =>
 
 test('footer-covered and notice-reduced shortcut layouts fail closed on resize and fresh reads', async () => {
   const { view, workspace, agent } = fixture(); workspace.record.issues = [];
-  workspace.record.goal = ''; agent.record.now = ''; agent.record.remaining = ''; agent.record.title = 'Own';
+  workspace.record.goal = unevaluatedGoal(); agent.record.now = ''; agent.record.remaining = ''; agent.record.title = 'Own';
   await view.refresh();
   assert.ok(!unstyled(view.render(11, 2)).includes('[a]'));
   assert.deepEqual(await view.key('a'), { kind: 'none' });

@@ -1,7 +1,7 @@
 import type { Context } from '@earendil-works/pi-ai';
 import stringWidth from 'string-width';
 import {
-  applyOwnUpdate, object, text, validateAgent, validateMembership, validateSharedReferenceUpdate, validateWorkspace,
+  applyOwnUpdate, object, text, goalText, validateAgent, validateMembership, validateSharedReferenceUpdate, validateWorkspace,
   type AgentRecord, type DocumentIdentity, type OwnUpdate, type SharedReferenceUpdate, type WorkspaceRecord,
 } from '../records.js';
 import type { ProjectedEvidence, ReferenceEvidence } from './evidence.js';
@@ -42,7 +42,7 @@ Title must be nonempty safe single-line text; now and remaining are safe single-
 ${intent === 'reset' ? 'Return {"action":"update","patch":{"title":"Assignment name","status":"active","statusShort":"","now":"","remaining":""}} with ALL five fields required, even when empty. No partial patch or no_change is accepted.' : 'Return {"action":"no_change"} or {"action":"update","patch":{...}}; an empty patch means no_change.'}`, {
     compactionSummary: evidence.compactionSummary, transcript: evidence.transcript,
     ...(intent === 'reset' ? { agent: { checkout: own.checkout, cwd: own.cwd } }
-      : { agent: own, workspace: { title: shared.title, goal: shared.goal } }),
+      : { agent: own, workspace: { title: shared.title, goal: goalText(shared.goal) } }),
   });
 }
 
@@ -79,7 +79,7 @@ Documents are {checkout,path,description}, with a known checkout key and a relat
 ${intent === 'reset' ? 'Existing references are preserved outside this proposal. Removal exclusions remain core authority.\nReturn {"action":"no_change"} or {"action":"update","additions":{"documents":[...],"issues":[...],"prs":[...]}}. Each additions field is optional. No labels array or other fields.' : 'Current references are context, not an instruction to replace arrays. Removal exclusions remain core authority.\nReturn {"action":"no_change"} or {"action":"update","additions":{"documents":[...],"issues":[...],"prs":[...]},"labels":[{"url":"exact stored URL","label":"Short artifact purpose"}]}. Both additions and labels are optional; each additions field is optional. Labels only change derived display text, not kind, URL, description or reference membership. No other fields.'}`, {
     compactionSummary: evidence.compactionSummary, transcript: evidence.transcript,
     checkouts: shared.checkouts, ownCheckout,
-    ...(intent === 'reset' ? {} : { workspace: { title: shared.title, goal: shared.goal },
+    ...(intent === 'reset' ? {} : { workspace: { title: shared.title, goal: goalText(shared.goal) },
       references: { documents: shared.documents, issues: shared.issues, prs: shared.prs } }),
   });
 }

@@ -404,8 +404,15 @@ test('unnamed open after reset recovers documents and workspace naming from reta
     assert.equal(agent.record.title, 'Query parsing'); assert.equal(agent.record.titleMode, 'auto');
     assert.equal(agent.record.boundary.transcriptLength, 1);
     assert.equal(workspace.record.titleMode, 'auto'); assert.equal(workspace.record.title, 'Query parsing workspace');
-    assert.equal(workspace.record.goal, 'Provide reusable query parsing');
+    assert.equal(workspace.record.goal.text, 'Provide reusable query parsing');
     assert.deepEqual(workspace.record.documents.map(d => d.path), ['docs/design.md']);
+    const publicRecord = (await h.current()).details.workspace.record;
+    assert.equal(publicRecord.goal, 'Provide reusable query parsing');
+    assert.equal(publicRecord.goalShort, 'Query parsing');
+    assert.deepEqual(publicRecord.planSources, workspace.record.goal.sources);
+    assert.equal(publicRecord.sourceFingerprint, workspace.record.goal.fingerprint);
+    await h.command('show');
+    assert.equal(JSON.parse(h.notices.at(-1).text).workspace.record.goal, publicRecord.goal);
     const calls = h.calls.slice(before);
     assert.deepEqual(calls.map(c => c.kind), ['own', 'shared', 'select', 'goal']);
     assert.deepEqual(calls[0].data.transcript, [{ role: 'user', text: messages[0].content }]);
@@ -439,7 +446,7 @@ test('implicit creation and existing-workspace joining both consider retained se
     const agent = await h.read(), workspace = await h.store.readWorkspace(agent.record.workspaceId);
     if (existing) assert.equal(workspace.record.id, 'known');
     assert.deepEqual(workspace.record.documents.map(d => d.path), ['plan.md']);
-    assert.equal(workspace.record.goal, 'Provide reusable query parsing');
+    assert.equal(workspace.record.goal.text, 'Provide reusable query parsing');
     assert.equal(h.launches().length, 1);
   });
 });

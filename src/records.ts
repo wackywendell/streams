@@ -7,8 +7,8 @@ import { homedir } from 'node:os';
 import { parseDocument, stringify } from 'yaml';
 import {
   absolute, applyOwnUpdate, applyReferenceRemoval, applySharedAdditions, assertAgentAuthority, documentIdentity, object, opaque, referenceIdentity, sameAgentMembership,
-  text, validateAgent, validateBoundary, validateMembership, validateReferenceIdentity, validateSharedReferenceUpdate, validateWorkspace,
-  type AgentRecord, type Authority, type DocumentIdentity, type OwnUpdate, type ReferenceBoundary,
+  text, validateAgent, validateBoundary, validateMembership, validateReferenceIdentity, validateSharedReferenceUpdate, validateWorkspace, parseWorkspaceV1, serializeWorkspaceV1, unevaluatedGoal, transitionGoal,
+  type AgentRecord, type Authority, type DocumentIdentity, type Goal, type OwnUpdate, type ReferenceBoundary,
   type ReferenceIdentity, type ReferenceSelection, type SharedReferenceUpdate, type Snapshot, type WorkspaceRecord,
 } from './records/schema.js';
 export * from './records/schema.js';
@@ -75,7 +75,7 @@ export class RecordStore {
   workspacePath(id: string): string { return join(this.directory, 'workspaces', `${opaque(id)}.yaml`); }
   agentPath(sessionId: string): string { return join(this.directory, 'agents', `${hash(text(sessionId, true))}.yaml`); }
   async readWorkspace(id: string): Promise<Snapshot<WorkspaceRecord>> {
-    const result = await readRecord(this.workspacePath(id), validateWorkspace);
+    const result = await readRecord(this.workspacePath(id), parseWorkspaceV1);
     if (result.record.id !== id) throw new Error('Workspace identity mismatch');
     return result;
   }
@@ -137,10 +137,10 @@ export class RecordStore {
     const acquire = (i: number): Promise<T> => i === sorted.length ? operation() : this.lock(`${sorted[i]}.lock`, () => acquire(i + 1));
     return acquire(0);
   }
-  private async publish<T>(path: string, record: T, current?: Snapshot<T>, signal?: AbortSignal): Promise<Snapshot<T>> {
+  private async publish<T>(path: string, record: T, current?: Snapshot<T>, signal?: AbortSignal, serialize: (record: T) => unknown = record => record): Promise<Snapshot<T>> {
     signal?.throwIfAborted();
     if (current && isDeepStrictEqual(current.record, record)) return current;
-    const bytes = Buffer.from(stringify(record));
+    const bytes = Buffer.from(stringify(serialize(record)));
     const temporary = `${path}.${randomUUID()}.tmp`;
     const handle = await open(temporary, 'wx', 0o600);
     try {
@@ -155,9 +155,9 @@ export class RecordStore {
   }
   private async publishWorkspace(record: WorkspaceRecord, current?: Snapshot<WorkspaceRecord>, signal?: AbortSignal): Promise<Snapshot<WorkspaceRecord>> {
     const validated = validateWorkspace(record);
-    if (current && isDeepStrictEqual(current.record, validated)) return this.publish(current.path, validated, current, signal);
+    if (current && isDeepStrictEqual(current.record, validated)) return this.publish(current.path, validated, current, signal, serializeWorkspaceV1);
     // A genuine mutation must not restore an old raw revision after remove/re-add (ABA).
-    return this.publish(this.workspacePath(validated.id), { ...validated, mutationToken: randomUUID() }, current, signal);
+    return this.publish(this.workspacePath(validated.id), { ...validated, mutationToken: randomUUID() }, current, signal, serializeWorkspaceV1);
   }
   private async caller(authority: Authority): Promise<Snapshot<AgentRecord>> {
     const a = await this.readAgent(authority.sessionId);
@@ -166,7 +166,7 @@ export class RecordStore {
   }
   async createWorkspace(input: { id: string; creationToken: string; title: string }, signal?: AbortSignal): Promise<Snapshot<WorkspaceRecord>> {
     object(input, ['id', 'creationToken', 'title']);
-    const record = validateWorkspace({ version: 1, ...input, mutationToken: randomUUID(), titleMode: 'auto', goal: '', planSources: [], sourceFingerprint: null, checkouts: {}, documents: [], issues: [], prs: [], exclusions: [] });
+    const record = validateWorkspace({ version: 1, ...input, mutationToken: randomUUID(), titleMode: 'auto', goal: unevaluatedGoal(), checkouts: {}, documents: [], issues: [], prs: [], exclusions: [] });
     const path = this.workspacePath(record.id);
     return this.topology(() => this.records([path], async () => {
       const current = await optional(() => this.readWorkspace(record.id));
@@ -283,15 +283,13 @@ export class RecordStore {
   async setWorkspaceTitle(authority: Authority, title: string, expected: string, signal?: AbortSignal): Promise<Snapshot<WorkspaceRecord>> {
     return this.shared(authority, w => { revision(w, expected); return { ...w.record, title, titleMode: 'manual' }; }, signal);
   }
-  async applyPlan(authority: Authority, input: { goal: string; goalShort?: string; sources: DocumentIdentity[]; fingerprint: string | null; title?: string }, expected: string, signal?: AbortSignal): Promise<Snapshot<WorkspaceRecord>> {
-    object(input, ['goal', 'goalShort', 'sources', 'fingerprint', 'title'], ['goal', 'sources', 'fingerprint']);
+  async applyPlan(authority: Authority, input: { goal: Goal; title?: string }, expected: string, signal?: AbortSignal): Promise<Snapshot<WorkspaceRecord>> {
+    object(input, ['goal', 'title'], ['goal']);
     if (input.title !== undefined) text(input.title, true);
     return this.shared(authority, w => {
       revision(w, expected);
-      const next = { ...w.record, goal: input.goal, planSources: input.sources, sourceFingerprint: input.fingerprint, title: w.record.titleMode === 'auto' ? (input.title ?? w.record.title) : w.record.title };
-      if (Object.hasOwn(input, 'goalShort')) next.goalShort = input.goalShort;
-      else if (input.goal !== w.record.goal || !input.goal.trim() || !input.sources.length) delete next.goalShort;
-      return next;
+      return { ...w.record, goal: transitionGoal(w.record.goal, { kind: 'evaluate', goal: input.goal }),
+        title: w.record.titleMode === 'auto' ? (input.title ?? w.record.title) : w.record.title };
     }, signal);
   }
   async resetEvidence(authority: Authority, boundary: ReferenceBoundary, expected: string, signal?: AbortSignal): Promise<Snapshot<AgentRecord>> {

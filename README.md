@@ -53,6 +53,8 @@ Each display attempt and nonce is persisted before launch. Closing with `q` stop
 
 Detach persists its paused state before configuration reads or native cleanup. If cleanup fails, inspect Herdr and retry detach. Use open to resume updates. Committed new-session and fork departures, or resume to a different session UUID, retire only the agent's owned display. Reload, quit and same-UUID resume retain it. Native ownership uses terminal identity, membership and nonces rather than labels or restored pane IDs.
 
+Workspace records use one in-memory Goal value: unevaluated, evaluated with unknown purpose, or known purpose with source provenance and an optional short. The version-1 YAML format and public tool/show records remain flat (`goal`, `goalShort`, `planSources`, `sourceFingerprint`); no migration runs on read. Evaluated unknown purpose retains provenance so unchanged documents do not trigger repeated inference.
+
 The `work_card` tool is read-only. It returns the current workspace and own agent records, source paths, resolved references and latest in-memory refresh diagnostics. It never creates, selects, joins or edits. Foreground management-tool CRUD and complete automatic workspace/tab/Pi naming remain future slices.
 
 ## Terminal display and documents

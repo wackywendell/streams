@@ -3,7 +3,7 @@ import test from 'node:test';
 import { mkdtemp, mkdir, writeFile, appendFile, rm, symlink, rename, open, realpath } from 'node:fs/promises';
 import { join } from 'node:path';
 import { tmpdir } from 'node:os';
-import { validateWorkspace } from '../dist/records.js';
+import { parseWorkspaceV1 } from '../dist/records.js';
 import { capturePlanSources, recheckPlanSources, MAX_PLAN_SOURCE_BYTES } from '../dist/pi/plan-sources.js';
 
 async function fixture(t) {
@@ -11,7 +11,7 @@ async function fixture(t) {
   t.after(() => rm(base, { recursive: true, force: true }));
   const root = join(base, 'repo'); await mkdir(root);
   const identity = { checkout: 'repo', path: 'plan.md' };
-  const workspace = validateWorkspace({ version: 1, id: 'w', creationToken: 'c', mutationToken: 'm', title: 'Workspace', titleMode: 'auto', goal: '', planSources: [], sourceFingerprint: null, checkouts: { repo: { directory: root } }, documents: [{ ...identity, description: 'Plan' }], issues: [], prs: [], exclusions: [] });
+  const workspace = parseWorkspaceV1({ version: 1, id: 'w', creationToken: 'c', mutationToken: 'm', title: 'Workspace', titleMode: 'auto', goal: '', planSources: [], sourceFingerprint: null, checkouts: { repo: { directory: root } }, documents: [{ ...identity, description: 'Plan' }], issues: [], prs: [], exclusions: [] });
   return { base, root, path: join(root, 'plan.md'), identity, workspace };
 }
 

@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
-import { applyOwnUpdate, applySharedAdditions, validateAgent, validateWorkspace } from '../dist/records.js';
+import { applyOwnUpdate, applySharedAdditions, validateAgent, parseWorkspaceV1 } from '../dist/records.js';
 import {
   buildOwnSummaryContext, parseOwnSummaryDecision, requestOwnSummary,
   buildSharedAdditionsContext, parseSharedAdditionsDecision, requestSharedAdditions,
@@ -9,7 +9,7 @@ import {
 } from '../dist/pi/workspace-summary.js';
 
 const doc = { checkout: 'repo', path: 'plan.md', description: 'Implementation plan' };
-const workspace = validateWorkspace({ version: 1, id: 'w', creationToken: 'c', mutationToken: 'm', title: 'Workspace', titleMode: 'manual', goal: '', planSources: [], sourceFingerprint: null, checkouts: { repo: { directory: '/repo' } }, documents: [doc, { ...doc, path: 'code.ts' }], issues: [], prs: [], exclusions: [{ url: 'https://example.com/removed' }] });
+const workspace = parseWorkspaceV1({ version: 1, id: 'w', creationToken: 'c', mutationToken: 'm', title: 'Workspace', titleMode: 'manual', goal: '', planSources: [], sourceFingerprint: null, checkouts: { repo: { directory: '/repo' } }, documents: [doc, { ...doc, path: 'code.ts' }], issues: [], prs: [], exclusions: [{ url: 'https://example.com/removed' }] });
 const agent = validateAgent({ version: 1, workspaceId: 'w', sessionId: 's', membershipToken: 'm', boundary: { compactionDigest: 'd', transcriptLength: 0, prefixDigest: 'p' }, evidenceGeneration: 'g', checkout: 'repo', cwd: '/repo', title: 'Manual title', titleMode: 'manual', status: 'active', now: '', remaining: '' });
 const options = { model: 'helpers/simple', thinking_level: null, max_output_tokens: 512, request_timeout_ms: 1000 };
 const profiles = async () => ({ simple: { thinkingLevel: 'low' } });
@@ -88,7 +88,7 @@ test('own decisions use exact core title/status validation and preserve manual t
 test('shared context includes the full projection and workspace purpose without runtime authority', () => {
   const projection = { compactionSummary: 'Earlier plan.md', transcript: [{ role: 'user', text: 'Retained dialogue' }, { role: 'assistant', text: 'New plan.md' }] };
   const context = buildSharedAdditionsContext(workspace, agent.checkout, projection);
-  assert.deepEqual(data(context), { ...projection, workspace: { title: workspace.title, goal: workspace.goal }, checkouts: workspace.checkouts, references: { documents: workspace.documents, issues: [], prs: [] }, ownCheckout: 'repo' });
+  assert.deepEqual(data(context), { ...projection, workspace: { title: workspace.title, goal: '' }, checkouts: workspace.checkouts, references: { documents: workspace.documents, issues: [], prs: [] }, ownCheckout: 'repo' });
   assert.doesNotMatch(JSON.stringify(data(context)), /membershipToken|planSources|evidenceGeneration|creationToken/);
   assert.throws(() => buildSharedAdditionsContext(workspace, 'missing', projection));
   assert.match(context.systemPrompt, /additions.*not replacements/i);

@@ -5,7 +5,7 @@ import { mkdtemp, mkdir, writeFile, realpath, symlink, unlink } from 'node:fs/pr
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { WorkspaceClient } from '../dist/herdr/workspace-client.js';
-import { agentAuthority } from '../dist/records.js';
+import { evaluatedGoal, serializeWorkspaceV1, agentAuthority } from '../dist/records.js';
 import { withWorkspaceLock } from '../dist/herdr/workspace-lock.js';
 import { setTimeout as delay } from 'node:timers/promises';
 import { RecordStore } from '../dist/records.js';
@@ -304,7 +304,7 @@ test('unchanged verified projections bypass a held lock and publish nothing, inc
       const a = await f.store.readAgent('term1');
       await f.store.updateOwn(agentAuthority(a.record), { now: 'Current work' }, a.revision);
       const workspace = await f.store.readWorkspace(a.record.workspaceId);
-      await f.store.applyPlan(agentAuthority(a.record), { goal: 'Current goal', sources: [f.target('plan.md')], fingerprint: 'goal' }, workspace.revision);
+      await f.store.applyPlan(agentAuthority(a.record), { goal: evaluatedGoal('Current goal', [f.target('plan.md')], 'goal') }, workspace.revision);
       f.workspaces[0].tokens.wcw_goal = 'Current goal';
     }
     agent.tokens.wca_status = 'active';
@@ -344,7 +344,7 @@ test('Goal-only changes preserve pair, lifecycle and unrelated native metadata',
   f.panes.find(p => p.terminal_id === f.context.terminalId).label = f.workspace.record.title;
   f.panes[0].tokens.unrelated = 'agent'; f.workspaces[0].tokens.unrelated = 'workspace';
   const workspace = await f.store.readWorkspace(f.workspace.record.id);
-  await f.store.applyPlan(agentAuthority(f.opened.agent.record), { goal: 'New goal', sources: [f.target('plan.md')], fingerprint: 'goal' }, workspace.revision);
+  await f.store.applyPlan(agentAuthority(f.opened.agent.record), { goal: evaluatedGoal('New goal', [f.target('plan.md')], 'goal') }, workspace.revision);
   const before = f.calls.length, previous = structuredClone(f.panes[0]);
   await f.a.c.projectSummaries(f.store, f.a.context, f.opened.agent, DEFAULT_CONFIG);
   const writes = effects(f.calls.slice(before));
@@ -466,7 +466,7 @@ test('caption errors and mismatched acknowledgements preserve records, metadata 
   for (const failure of ['command', 'json', 'type', 'missing', 'pane_id', 'terminal_id', 'workspace_id', 'tab_id', 'label', 'label-type']) await t.test(failure, async () => {
     const f = await documentFixture(), run = f.card.run;
     const workspace = await f.store.readWorkspace(f.workspace.record.id);
-    await f.store.applyPlan(agentAuthority(f.opened.agent.record), { goal: 'Published goal', sources: [f.target('plan.md')], fingerprint: 'goal' }, workspace.revision);
+    await f.store.applyPlan(agentAuthority(f.opened.agent.record), { goal: evaluatedGoal('Published goal', [f.target('plan.md')], 'goal') }, workspace.revision);
     const records = [await f.store.readAgent('term1'), await f.store.readWorkspace(f.workspace.record.id)];
     const others = structuredClone(f.panes.filter(p => p.terminal_id !== f.context.terminalId));
     f.card.run = async args => {
@@ -621,7 +621,7 @@ test('two agents share one binding but own independent card pairs and isolated p
   const q=await b.c.openDisplay(f.store,b.context,b.agent,'automatic',DEFAULT_CONFIG);
   assert.equal(p.kind,'paired'); assert.equal(q.kind,'paired'); assert.notEqual(p.pair.card.terminal_id,q.pair.card.terminal_id);
   const shared = await f.store.addReferences(agentAuthority(p.agent.record), { documents: [{ checkout:p.agent.record.checkout, path:'plan.md', description:'' }] });
-  await f.store.applyPlan(agentAuthority(p.agent.record), { goal: 'One shared purpose', goalShort: 'Shared purpose', sources: [{checkout:p.agent.record.checkout,path:'plan.md'}], fingerprint:'purpose' }, shared.revision);
+  await f.store.applyPlan(agentAuthority(p.agent.record), { goal: evaluatedGoal('One shared purpose', [{checkout:p.agent.record.checkout,path:'plan.md'}], 'purpose', 'Shared purpose') }, shared.revision);
   await a.c.projectSummaries(f.store,a.context,p.agent,DEFAULT_CONFIG);
   assert.equal(f.panes[0].tokens.wca_status,'active'); assert.equal(f.panes[1].tokens.wca_status,undefined);
   const r=p.agent.record; await f.store.updateOwn({sessionId:r.sessionId,workspaceId:r.workspaceId,membershipToken:r.membershipToken,evidenceGeneration:r.evidenceGeneration},{now:'Only agent one'},p.agent.revision);
@@ -1040,12 +1040,12 @@ test('short summaries publish independently and cleared fields remove stale text
   const f = await documentFixture(), { stringify } = await import('yaml');
   const agent = await f.store.readAgent('term1'), workspace = await f.store.readWorkspace(agent.record.workspaceId);
   await writeFile(agent.path, stringify({ ...agent.record, statusShort: 'Testing界' }));
-  await f.store.applyPlan(agentAuthority(agent.record), { goal:'Shared purpose in full', goalShort:'Shared purpose', sources:[f.target('plan.md')], fingerprint:'short-purpose' }, workspace.revision);
+  await f.store.applyPlan(agentAuthority(agent.record), { goal: evaluatedGoal('Shared purpose in full', [f.target('plan.md')], 'short-purpose', 'Shared purpose') }, workspace.revision);
   await f.a.c.projectSummaries(f.store, f.a.context, agent, DEFAULT_CONFIG);
   assert.equal(f.panes[0].tokens.wca_status_short, 'Testing界');
   assert.equal(f.workspaces[0].tokens.wcw_goal_short, 'Shared purpose');
   await writeFile(agent.path, stringify(agent.record));
-  await writeFile(workspace.path, stringify(workspace.record));
+  await writeFile(workspace.path, stringify(serializeWorkspaceV1(workspace.record)));
   await f.a.c.projectSummaries(f.store, f.a.context, agent, DEFAULT_CONFIG);
   assert.equal(f.panes[0].tokens.wca_status_short ?? '', '');
   assert.equal(f.workspaces[0].tokens.wcw_goal_short ?? '', '');
@@ -1183,7 +1183,7 @@ for (const operation of ['caption', 'summary']) test(`${operation} waits and pub
       const workspace = await f.store.readWorkspace(f.workspace.record.id);
       if (operation === 'caption') await f.store.setWorkspaceTitle(agentAuthority(f.opened.agent.record), 'Title after waiting', workspace.revision);
       else {
-        await f.store.applyPlan(agentAuthority(f.opened.agent.record), { goal: 'Goal after waiting', sources: [f.target('plan.md')], fingerprint: 'waited' }, workspace.revision);
+        await f.store.applyPlan(agentAuthority(f.opened.agent.record), { goal: evaluatedGoal('Goal after waiting', [f.target('plan.md')], 'waited') }, workspace.revision);
         const agent = await f.store.readAgent('term1');
         await f.store.updateOwn(agentAuthority(agent.record), { now: 'Progress after waiting' }, agent.revision);
       }
@@ -1215,7 +1215,7 @@ test('summary stamp rereads records before effects and rejects changes during fi
 
 test('summary workspace failure retains published agent progress without rollback', async () => {
   const f = await documentFixture(), workspace = await f.store.readWorkspace(f.workspace.record.id);
-  await f.store.applyPlan(agentAuthority(f.opened.agent.record), { goal: 'Shared purpose', sources: [f.target('plan.md')], fingerprint: 'goal' }, workspace.revision);
+  await f.store.applyPlan(agentAuthority(f.opened.agent.record), { goal: evaluatedGoal('Shared purpose', [f.target('plan.md')], 'goal') }, workspace.revision);
   f.setFail(a => a[0] === 'workspace' && a[1] === 'report-metadata');
   await assert.rejects(f.a.c.projectSummaries(f.store, f.a.context, f.opened.agent, DEFAULT_CONFIG), /partial/i);
   assert.equal(f.panes[0].tokens.wca_status, 'active');
@@ -1226,7 +1226,7 @@ test('summary workspace failure retains published agent progress without rollbac
 for (const invalid of ['abort', 'move', 'binding', 'evidence', 'attempt']) test(`summary authority rechecked before workspace publication: ${invalid}`, async () => {
   const f = await documentFixture(), controller = new AbortController(), run = f.a.c.run;
   const workspace = await f.store.readWorkspace(f.workspace.record.id);
-  await f.store.applyPlan(agentAuthority(f.opened.agent.record), { goal: 'Shared purpose', sources: [f.target('plan.md')], fingerprint: 'goal' }, workspace.revision);
+  await f.store.applyPlan(agentAuthority(f.opened.agent.record), { goal: evaluatedGoal('Shared purpose', [f.target('plan.md')], 'goal') }, workspace.revision);
   f.a.c.run = async args => {
     const result = await run(args);
     if (args[0] === 'pane' && args[1] === 'report-metadata') {

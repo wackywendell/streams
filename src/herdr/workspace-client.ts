@@ -3,7 +3,7 @@ import { mkdir, realpath } from 'node:fs/promises';
 import { isDeepStrictEqual } from 'node:util';
 import { configPath, documentCommand, type WorkCardsConfig } from '../config.js';
 import { resolvedReferences } from '../presentation.js';
-import { RecordStore, agentAuthority, sameAgentMembership, resolveWorkspaceDocument, documentIdentity, referenceIdentity, validateMembership, type AgentRecord, type DocumentIdentity, type JoinInput, type Snapshot, type WorkspaceRecord } from '../records.js';
+import { RecordStore, agentAuthority, goalText, goalShort, sameAgentMembership, resolveWorkspaceDocument, documentIdentity, referenceIdentity, validateMembership, type AgentRecord, type DocumentIdentity, type JoinInput, type Snapshot, type WorkspaceRecord } from '../records.js';
 import { withWorkspaceLock } from './workspace-lock.js';
 import type { Pane, Workspace } from './workspace-ownership.js';
 import { HerdrTransport, type ClientOptions } from './transport.js';
@@ -398,7 +398,7 @@ export class WorkspaceClient extends HerdrTransport {
         Object.fromEntries(Object.entries(values).filter(([name, value]) => (tokens[name] ?? '') !== value));
       return { ...verified, key, pane, nativeWorkspace: workspace,
         own: changed(pane.tokens, { wca_status: verified.agent.record.status, wca_now: cap(verified.agent.record.now), wca_status_short: verified.agent.record.statusShort ?? '' }),
-        shared: changed(workspace.tokens, { wcw_goal: cap(verified.workspace.record.goal), wcw_goal_short: verified.workspace.record.goalShort ?? '' }) };
+        shared: changed(workspace.tokens, { wcw_goal: cap(goalText(verified.workspace.record.goal)), wcw_goal_short: goalShort(verified.workspace.record.goal) }) };
     };
     const preflight = await read();
     if (!Object.keys(preflight.own).length && !Object.keys(preflight.shared).length) return;

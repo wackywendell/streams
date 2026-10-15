@@ -4,7 +4,7 @@ import { resolve } from 'node:path';
 import { parseSessionEntries, type ExtensionAPI, type ExtensionContext } from '@earendil-works/pi-coding-agent';
 import { Type } from 'typebox';
 import { loadConfig, type WorkCardsConfig } from '../config.js';
-import { RecordStore, recordDirectory, validateMembership, agentAuthority, type Authority } from '../records.js';
+import { RecordStore, recordDirectory, validateMembership, agentAuthority, serializeWorkspaceV1, type Authority } from '../records.js';
 import { composeView, resolvedReferences, selectReference } from '../presentation.js';
 import { WorkspaceClient, type NativeContext } from '../herdr/workspace-client.js';
 import { createCheckScheduler, type CheckIntent, type CheckScheduler } from './scheduler.js';
@@ -327,7 +327,7 @@ export function registerWorkCards(pi: ExtensionAPI, overrides: Partial<Dependenc
     if (!started || disposed || context.sessionManager.getSessionId() !== session.sessionId) return null;
     const token = generation, agent = await readOwn(); live(token); if (!agent) return null;
     const workspace = await store.readWorkspace(agent.record.workspaceId); live(token); validateMembership(workspace.record, agent.record);
-    return { workspace, agent, references: resolvedReferences(workspace.record), view: composeView(workspace, agent), updates,
+    return { workspace: { ...workspace, record: serializeWorkspaceV1(workspace.record) }, agent, references: resolvedReferences(workspace.record), view: composeView(workspace, agent), updates,
       refresh: diagnostics?.workspaceId === workspace.record.id ? structuredClone(diagnostics) : null };
   }
   pi.registerCommand('work-card', {
