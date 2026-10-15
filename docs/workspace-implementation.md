@@ -123,6 +123,18 @@ Only the current first layout pane may rename its tab. Recheck this at effect ti
 
 Preserve existing explicit names on adoption. Apply the surface-scoped provenance rule above to workspace, tab and editor names; automatic record title mode alone does not grant permission to overwrite a native label. Provenance stays with the surface when another pane becomes first. A manual tab name is a surface override; do not force it onto a separately manually named Pi session. Pi session-info entries identify Pi-name ownership. Preserve unproven existing nondefault names across reload and movement.
 
+### Surface naming provenance
+
+Herdr has pane and workspace metadata, but no tab metadata. Keep surface naming provenance in `.native-names/<hash>.json` under the store directory, separate from workspace and agent records. This is a local cache, not a registry or a source of project state.
+
+Key each entry by canonical store identity, socket, native workspace ID, ready-binding lifetime nonce, surface kind and surface ID. Do not key it by the current first pane. Store the exact scope, last writer's owner/nonce, automatic/manual mode and last successfully applied name. Pi and editor namers share the same tab entry.
+
+The actual first layout pane has tab rights only if it is an eligible Pi or editor pane. Do not skip an ineligible first pane. Ownership can transfer without the previous owner remaining alive, provided current authority is verified and the label still matches the last automatic name. Keep the binding nonce stable across reload and first-pane changes; change it for a new binding lifetime.
+
+Hold the native workspace lock across the provenance check, rename and atomic cache write. Recheck context, binding, layout and current label before renaming. Use strict no-follow cache reads. Missing provenance never authorizes replacing a nondefault label; malformed provenance suspends naming. An observed label mismatch persists manual mode. If a rename succeeds but saving provenance fails, report partial progress and preserve the unproven label on retry. The lock coordinates cooperating writers, not concurrent native user actions.
+
+Astra approved this storage approach; implementation still requires tests for owner disappearance, Pi/editor transfer, sticky manual mode and partial failures.
+
 Disable the installed `herdr-naming.ts` only after the new path is verified. Use a reversible supported exclusion/disable mechanism; do not delete its source or alter unrelated user settings. Report when `/reload` is safe, after workers are finished.
 
 ## Commands and management
