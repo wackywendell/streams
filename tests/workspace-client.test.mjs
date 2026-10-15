@@ -3,7 +3,9 @@ import assert from 'node:assert/strict';
 import { mkdtemp, mkdir, writeFile, realpath, symlink, unlink } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { WorkspaceClient } from '../dist/herdr/workspace-client.js';
+import { WorkspaceClient, agentAuthority } from '../dist/herdr/workspace-client.js';
+import { withWorkspaceLock } from '../dist/herdr/client.js';
+import { setTimeout as delay } from 'node:timers/promises';
 import { RecordStore } from '../dist/records.js';
 import { DEFAULT_CONFIG } from '../dist/config.js';
 import { resolvedReferences } from '../dist/presentation.js';
@@ -107,6 +109,150 @@ async function documentFixture() {
   card.env.WORK_CARDS_NONCE=opened.pair.nonce; const context=await card.bootstrap(DEFAULT_CONFIG);
   return {...f,a,workspace,opened,card,context,target:path=>({checkout:r.checkout,path})};
 }
+async function heldLock(f, operation) {
+  let release, acquired;
+  const ready = new Promise(resolve => { acquired = resolve; });
+  const gate = new Promise(resolve => { release = resolve; });
+  const holder = withWorkspaceLock(f.context.socket, f.context.workspaceId, async () => { acquired(); await gate; });
+  await ready;
+  try { return await operation(async () => { release(); await holder; }); }
+  finally { release(); await holder; }
+}
+const effects = calls => calls.filter(a => a[1] === 'report-metadata' || a[0] === 'plugin' && (a[1] === 'link' || a[2] === 'open') || a[0] === 'tab');
+
+test('unchanged verified projections bypass a held lock and publish nothing, including absent empty tokens', async () => {
+  for (const empty of [false, true]) {
+    const f = await documentFixture(), agent = f.panes[0];
+    if (!empty) {
+      const a = await f.store.readAgent('term1');
+      await f.store.updateOwn(agentAuthority(a.record), { now: 'Current work' }, a.revision);
+      const workspace = await f.store.readWorkspace(a.record.workspaceId);
+      await f.store.applyPlan(agentAuthority(a.record), { goal: 'Current goal', sources: [f.target('plan.md')], fingerprint: 'goal' }, workspace.revision);
+      f.workspaces[0].tokens.wcw_goal = 'Current goal';
+    }
+    agent.tokens.wca_status = 'active';
+    if (!empty) agent.tokens.wca_now = 'Current work';
+    const before = f.calls.length;
+    await heldLock(f, () => f.card.project(f.store, f.context, f.opened.agent, DEFAULT_CONFIG));
+    assert.deepEqual(effects(f.calls.slice(before)), []);
+    assert.equal(f.workspaces[0].tokens.wcw_phase, 'ready');
+  }
+});
+
+test('projection rechecks records under lock and publishes only changed owned fields', async () => {
+  const f = await documentFixture(); f.panes[0].tokens.wca_status = 'active';
+  const a = await f.store.readAgent('term1');
+  await f.store.updateOwn(agentAuthority(a.record), { now: 'Preflight work' }, a.revision);
+  const paired = f.card.pairedCard.bind(f.card); let reads = 0;
+  f.card.pairedCard = async (...args) => {
+    const result = await paired(...args);
+    if (++reads === 1) {
+      const current = await f.store.readAgent('term1');
+      await f.store.updateOwn(agentAuthority(current.record), { now: 'Latest work' }, current.revision);
+    }
+    return result;
+  };
+  const before = f.calls.length;
+  await f.card.project(f.store, f.context, f.opened.agent, DEFAULT_CONFIG);
+  const writes = effects(f.calls.slice(before));
+  assert.equal(f.panes[0].tokens.wca_now, 'Latest work');
+  assert.equal(writes.length, 1);
+  assert.deepEqual(writes[0].slice(5), ['--token', 'wca_now=Latest work']);
+  assert.equal(f.workspaces[0].tokens.wcw_phase, 'ready');
+});
+
+test('Goal-only changes preserve pair, lifecycle and unrelated native metadata', async () => {
+  const f = await documentFixture(); f.panes[0].tokens.wca_status = 'active';
+  f.panes[0].tokens.unrelated = 'agent'; f.workspaces[0].tokens.unrelated = 'workspace';
+  const workspace = await f.store.readWorkspace(f.workspace.record.id);
+  await f.store.applyPlan(agentAuthority(f.opened.agent.record), { goal: 'New goal', sources: [f.target('plan.md')], fingerprint: 'goal' }, workspace.revision);
+  const before = f.calls.length, previous = structuredClone(f.panes[0]);
+  await f.card.project(f.store, f.context, f.opened.agent, DEFAULT_CONFIG);
+  const writes = effects(f.calls.slice(before));
+  assert.equal(writes.length, 1); assert.equal(writes[0][0], 'workspace');
+  assert.deepEqual(writes[0].slice(5), ['--token', 'wcw_goal=New goal']);
+  assert.deepEqual(f.panes[0], previous);
+  assert.equal(f.workspaces[0].tokens.wcw_phase, 'ready');
+  assert.equal(f.workspaces[0].tokens.unrelated, 'workspace');
+});
+
+test('authority lost after projection preflight blocks all writes under the lock', async () => {
+  const f = await documentFixture(), paired = f.card.pairedCard.bind(f.card); let reads = 0;
+  f.card.pairedCard = async (...args) => {
+    const result = await paired(...args);
+    if (++reads === 1) f.workspaces[0].tokens.wcw_phase = 'reserved';
+    return result;
+  };
+  const before = f.calls.length;
+  await assert.rejects(f.card.project(f.store, f.context, f.opened.agent, DEFAULT_CONFIG), /binding/i);
+  assert.deepEqual(effects(f.calls.slice(before)), []);
+});
+
+test('complete readonly display verification rejects stale bindings, separated pairs and membership changes without effects', async () => {
+  for (const invalid of ['binding', 'pair', 'membership', 'nonce', 'cancel']) {
+    const f = await documentFixture(), controller = new AbortController();
+    if (invalid === 'binding') f.workspaces[0].tokens.wcw_phase = 'reserved';
+    if (invalid === 'pair') f.panes[0].tab_id = 'w:t2';
+    if (invalid === 'membership') {
+      const { stringify } = await import('yaml');
+      await writeFile(f.opened.agent.path, stringify({ ...f.opened.agent.record, membershipToken: 'changed' }));
+    }
+    if (invalid === 'nonce') f.card.env.WORK_CARDS_NONCE = 'foreign';
+    if (invalid === 'cancel') controller.abort();
+    const before = f.calls.length;
+    await assert.rejects(f.card.verifyDisplay(f.store, f.context, f.opened.agent, DEFAULT_CONFIG, controller.signal));
+    assert.deepEqual(effects(f.calls.slice(before)), []);
+  }
+});
+
+test('document waits for the initial holder, then opens exactly once', async () => {
+  const f = await documentFixture(); const before = f.calls.length;
+  await heldLock(f, async release => {
+    await Promise.all([
+      f.card.openDocument(f.store, f.context, f.workspace, f.opened.agent, f.target('plan.md'), DEFAULT_CONFIG),
+      delay(30).then(async () => { assert.deepEqual(effects(f.calls.slice(before)), []); await release(); })
+    ]);
+  });
+  const calls = f.calls.slice(before);
+  assert.equal(calls.filter(a => a[0] === 'plugin' && a[2] === 'open').length, 1);
+  assert.equal(calls.filter(a => a[0] === 'tab' && a[1] === 'focus').length, 1);
+});
+
+for (const invalid of ['timeout', 'abort', 'move', 'membership', 'binding']) {
+  test(`document waiting rejects ${invalid} without launch, focus or stamp`, async () => {
+    const f = await documentFixture(), controller = new AbortController(), before = f.calls.length;
+    await heldLock(f, async release => {
+      const config = { ...DEFAULT_CONFIG, herdr_timeout_ms: invalid === 'timeout' ? 30 : 1000 };
+      const rejection = assert.rejects(f.card.openDocument(f.store, f.context, f.workspace, f.opened.agent, f.target('plan.md'), config, controller.signal), /timed out|abort|moved|stale|membership|binding/i);
+      if (invalid === 'timeout') { await rejection; return; }
+      await Promise.all([rejection, delay(30).then(async () => {
+        assert.deepEqual(effects(f.calls.slice(before)), []);
+        if (invalid === 'abort') controller.abort();
+        if (invalid === 'move') f.panes.find(p => p.terminal_id === f.context.terminalId).tab_id = 'w:t2';
+        if (invalid === 'binding') f.workspaces[0].tokens.wcw_phase = 'reserved';
+        if (invalid === 'membership') {
+          const { stringify } = await import('yaml');
+          await writeFile(f.opened.agent.path, stringify({ ...f.opened.agent.record, membershipToken: 'changed' }));
+        }
+        await release();
+      })]);
+    });
+    assert.deepEqual(effects(f.calls.slice(before)), []);
+  });
+}
+
+test('document failure after acquiring never retries a possibly partial launch', async () => {
+  const f = await documentFixture(), before = f.calls.length;
+  f.setFail(a => a[0] === 'plugin' && a[2] === 'open');
+  await heldLock(f, async release => {
+    await Promise.all([
+      assert.rejects(f.card.openDocument(f.store, f.context, f.workspace, f.opened.agent, f.target('plan.md'), DEFAULT_CONFIG), /partial/),
+      delay(30).then(release)
+    ]);
+  });
+  assert.equal(f.calls.slice(before).filter(a => a[0] === 'plugin' && a[2] === 'open').length, 1);
+});
+
 test('reuse rereads native identity after the final awaited agent identity lookup', async () => {
   const f=await documentFixture(); await f.card.openDocument(f.store,f.context,f.workspace,f.opened.agent,f.target('plan.md'),DEFAULT_CONFIG);
   const identity=f.card.identity.bind(f.card); let count=0;
@@ -167,7 +313,7 @@ test('two agents share one binding but own independent card pairs and isolated p
   const r=p.agent.record; await f.store.updateOwn({sessionId:r.sessionId,workspaceId:r.workspaceId,membershipToken:r.membershipToken,evidenceGeneration:r.evidenceGeneration},{now:'Only agent one'},p.agent.revision);
   await card.project(f.store,ctx,p.agent,DEFAULT_CONFIG);
   assert.equal(f.panes[0].tokens.wca_now,'Only agent one'); assert.equal(f.panes[1].tokens.wca_now,undefined);
-  assert.equal(f.workspaces[0].tokens.wca_now,undefined); assert.equal(f.workspaces[0].tokens.wcw_goal,'');
+  assert.equal(f.workspaces[0].tokens.wca_now,undefined); assert.equal(f.workspaces[0].tokens.wcw_goal ?? '','');
   await a.c.closeDisplay(f.store,a.context,p.agent,DEFAULT_CONFIG);
   assert.ok(f.panes.some(v=>v.terminal_id===q.pair.card.terminal_id)); assert.equal(f.workspaces[0].tokens.wcw_phase,'ready');
 });

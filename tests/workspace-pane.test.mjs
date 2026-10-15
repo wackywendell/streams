@@ -39,7 +39,7 @@ function launch(root, sessionId = 'one', options = {}) {
     const options = ${JSON.stringify(options)};
     const originalOutput = process.stdout, input = new PassThrough();
     input.isTTY = true; input.isRaw = false;
-    const result = { raw: [], frames: [], notices: [], projects: [], opens: [], observations: [], aborted: [], forbidden: [] };
+    const result = { raw: [], frames: [], notices: [], projects: [], opens: [], effects: [], observations: [], aborted: [], forbidden: [] };
     input.setRawMode = value => { result.raw.push(value); input.isRaw = value; };
     let painted = '', iteration = 0, signal;
     const output = new Writable({ write(chunk, encoding, done) { painted += chunk.toString(); done(); } });
@@ -67,14 +67,15 @@ function launch(root, sessionId = 'one', options = {}) {
       const next = { ...context, workspaceId: destination ? 'destination' : 'source', tabId: destination ? 'tab-destination' : 'tab-source', bindingNonce: destination ? 'binding-destination' : 'binding-source' };
       return { context: next, snapshot: { workspaces: [], tabs: [], panes: [], layouts: [] }, caller: { terminal_id: 'card', workspace_id: next.workspaceId, tab_id: next.tabId, pane_id: 'pane-card', tokens: {} } };
     };
-    WorkspaceClient.prototype.ownership = async (store, context, agent, config, passedSignal) => {
+    WorkspaceClient.prototype.verifyDisplay = async (store, context, agent, config, passedSignal) => {
       signal = passedSignal;
+      if (options.stale) throw new Error('Stale or foreign ready workspace binding');
       return { kind: options.separated ? 'separated' : 'paired', agent: { terminal_id: options.wrongOwner ? 'foreign' : 'owner' }, card: { terminal_id: 'card' }, nonce: 'nonce', identity: 'identity' };
     };
     WorkspaceClient.prototype.project = async (store, context, agent, config, passedSignal) => {
       signal = passedSignal;
       result.projects.push({ iteration, context, sessionId: agent.record.sessionId });
-      if (options.stale) throw new Error('Stale or foreign ready workspace binding');
+      if (options.contention) throw new Error('Work-cards lock exists');
       if (options.stopAt === 'project') {
         await new Promise(resolve => { passedSignal.addEventListener('abort', resolve, { once: true }); setImmediate(() => process.emit('SIGTERM')); });
         result.aborted.push(passedSignal.aborted);
@@ -83,6 +84,8 @@ function launch(root, sessionId = 'one', options = {}) {
     WorkspaceClient.prototype.openDocument = async (store, context, workspace, agent, identity, config, passedSignal) => {
       signal = passedSignal;
       result.opens.push({ context, workspaceId: workspace.record.id, sessionId: agent.record.sessionId, identity });
+      // Deliberately permissive effect sink: unsafe contexts cannot be rescued by adapter validation.
+      result.effects.push('launch', 'stamp', 'focus');
       input.emit('data', Buffer.from('aaaaaq'));
       if (options.stopAt === 'document') {
         await new Promise(resolve => { passedSignal.addEventListener('abort', resolve, { once: true }); setImmediate(() => process.emit('SIGTERM')); });
@@ -159,7 +162,7 @@ test('each serialized observation follows the card terminal, and failed observat
   assert.equal(result.projects.at(-1).context.workspaceId, 'destination');
   assert.equal(result.projects.at(-1).context.bindingNonce, 'binding-destination');
   assert.ok(result.observations.every(context => context.terminalId === 'card'));
-  assert.deepEqual(result.opens, []); assert.match(result.notices[1].text, /Inventory unavailable/); restored(result);
+  assert.deepEqual(result.effects, []); assert.match(result.notices[1].text, /Inventory unavailable/); restored(result);
   const afterMove = launch(root, 'one', { moves: true, failObserve: 3, rounds: 4 });
   assert.deepEqual(afterMove.projects.map(p => p.iteration), [1, 2, 4]);
   assert.equal(afterMove.observations[2].workspaceId, 'destination');
@@ -171,11 +174,20 @@ for (const options of [{ wrongOwner: true }, { separated: true }, { stale: true 
     const { root } = await fixture(t);
     const result = launch(root, 'one', { ...options, document: true, rounds: 3 });
     assert.equal(result.error, undefined); assert.equal(result.notices[0].source, 'projection');
-    assert.deepEqual(result.opens, []);
-    if (!options.stale) assert.deepEqual(result.projects, []);
+    assert.deepEqual(result.effects, []);
+    assert.deepEqual(result.projects, []);
     restored(result);
   });
 }
+
+test('projection lock contention preserves a fresh verified document key', async t => {
+  const { root } = await fixture(t);
+  const result = launch(root, 'one', { contention: true, document: true, rounds: 4 });
+  assert.equal(result.opens.length, 1);
+  assert.deepEqual(result.effects, ['launch', 'stamp', 'focus']);
+  assert.match(result.notices[0].text, /lock exists/);
+  restored(result);
+});
 
 for (const documentError of [false, true]) {
   test(`document intent uses exact checkout identity, discards queued q/autorepeat, and preserves document notice (${documentError})`, async t => {

@@ -168,6 +168,9 @@ export class WorkspaceClient extends HerdrTransport {
     if (state.kind !== 'paired' || state.card.terminal_id !== context.terminalId || state.nonce !== this.env.WORK_CARDS_NONCE || state.nonce !== records.agent.record.displayAttempt?.nonce) throw new Error('Only the verified paired card may perform this operation');
     return { ...records, live, pair: state };
   }
+  async verifyDisplay(store: RecordStore, context: NativeContext, painted: Snapshot<AgentRecord>, config: WorkCardsConfig, signal?: AbortSignal): Promise<LivePair> {
+    return (await this.pairedCard(store, context, painted, config, signal)).pair;
+  }
   async openDisplay(store: RecordStore, context: NativeContext, painted: Snapshot<AgentRecord>, mode: 'automatic' | 'explicit', config: WorkCardsConfig, signal?: AbortSignal): Promise<DisplayResult> {
     signal?.throwIfAborted();
     return withWorkspaceLock(context.socket, context.workspaceId, async () => {
@@ -259,12 +262,23 @@ export class WorkspaceClient extends HerdrTransport {
   }
   async project(store: RecordStore, context: NativeContext, painted: Snapshot<AgentRecord>, config: WorkCardsConfig, signal?: AbortSignal): Promise<void> {
     signal?.throwIfAborted();
+    const changes = (current: Awaited<ReturnType<typeof this.pairedCard>>) => {
+      const values = { wca_status: current.agent.record.status, wca_now: cap(current.agent.record.now) };
+      const own = Object.fromEntries(Object.entries(values).filter(([key, value]) => (current.pair.agent.tokens[key] ?? '') !== value));
+      const workspace = current.live.snapshot.workspaces.find(w => w.workspace_id === context.workspaceId)!;
+      const goal = cap(current.workspace.record.goal);
+      // Native Herdr omits empty text tokens; absent and empty represent the same projection.
+      return { own, workspace, goal: (workspace.tokens.wcw_goal ?? '') === goal ? undefined : { wcw_goal: goal } };
+    };
+    const preflight = changes(await this.pairedCard(store, context, painted, config, signal));
+    if (!Object.keys(preflight.own).length && !preflight.goal) return;
     await withWorkspaceLock(context.socket, context.workspaceId, async () => {
-      const { agent, pair } = await this.pairedCard(store, context, painted, config, signal);
+      // The readonly preflight is never write authority: reread records and native ownership under lock.
+      const current = await this.pairedCard(store, context, painted, config, signal), patch = changes(current);
       try {
-        await this.stamp('pane', pair.agent, { wca_status: agent.record.status, wca_now: cap(agent.record.now) }, context, config, signal);
-        const current = await this.pairedCard(store, context, painted, config, signal);
-        await this.stamp('workspace', current.live.snapshot.workspaces.find(w => w.workspace_id === context.workspaceId)!, { wcw_goal: cap(current.workspace.record.goal) }, context, config, signal);
+        if (Object.keys(patch.own).length) await this.stamp('pane', current.pair.agent, patch.own, context, config, signal);
+        const latest = changes(await this.pairedCard(store, context, painted, config, signal));
+        if (latest.goal) await this.stamp('workspace', latest.workspace, latest.goal, context, config, signal);
       } catch (error) { throw new Error(`Projection may be partial; matching metadata already published is retained: ${(error as Error).message}`, { cause: error }); }
     });
   }
@@ -332,7 +346,7 @@ export class WorkspaceClient extends HerdrTransport {
         if (tab.label === String(tab.number)) await this.renameEditor(stamped, tab.label, v.label, v.live.snapshot, context, config, signal);
         await focus(stamped);
       } catch (error) { throw new Error(`Document opening may be partial${returned ? ` (pane ${returned.pane_id}, terminal ${returned.terminal_id}, tab ${returned.tab_id})` : ''}; inspect before retrying, no editor was closed: ${(error as Error).message}`, { cause: error }); }
-    });
+    }, { waitMs: config.herdr_timeout_ms, signal });
   }
   /** Opt-in editor-only qualification refresh. Never called by reuse/open, never names agent/workspace surfaces. */
   async refreshDocumentNames(store: RecordStore, context: NativeContext, painted: Snapshot<AgentRecord>, config: WorkCardsConfig, signal?: AbortSignal): Promise<void> {

@@ -53,6 +53,8 @@ Checkout keys are stable once assigned. Generate fresh opaque keys rather than r
 
 Retain no-follow regular-file reads, strict schemas, raw-byte revisions, exclusive cooperating-writer locks and atomic replacement. Reuse existing primitives where doing so does not weaken legacy guards. Do not build a generic database or transaction framework.
 
+Keep the current hybrid concurrency policy: model reads and inference run outside write locks; proposals name specific fields or reference additions. Reference additions merge against current data. Other edits retain whole-record revision checks. Do not add general field-by-field conflict merging without evidence that rejected independent edits are a problem. The extension serializes the final read, check and write; rewriting YAML internally does not grant a helper whole-record editing authority.
+
 A shared mutation must validate the calling agent's workspace and membership token as well as the workspace revision or merge preconditions. Serialize membership-topology changes, checkout removal and record deletion with one store-local topology lock. Acquire affected record locks in lexical path order beneath it, and hold protection through the agent commit. Shared mutations that check membership use the same topology guard. Never acquire a native lock from inside a store transaction. The runtime also checks live Herdr context before effects; filesystem locks do not freeze Herdr movement.
 
 For joining an unbound destination:
@@ -86,6 +88,8 @@ Create card splits relative to the verified Pi pane. Several agent/card pairs ma
 Following a verified move may refresh public pane/tab IDs for the same owned terminals and nonce. It must not recover an unrelated or restored process through matching labels. Whole-tab moves should preserve the pair. Define and test the case where only the Pi pane moves: a verified owned old display may be replaced, but an absent display must not be treated as permission to respawn one closed with `q`.
 
 Publish per-agent summaries on the corresponding agent surface; do not let agents overwrite one workspace summary with their individual Now values. The workspace projection represents shared context. Keep lifecycle state separate from display metadata and do not take over Herdr's Pi agent-state integration.
+
+Verify document-navigation authority independently of metadata publishing. A publishing failure must not discard a document key after fresh display verification. Skip unchanged projections before acquiring a write lock; revalidate under the lock before any changed publication. Treat absent native text tokens as empty text when comparing projections. Document opens may wait up to `herdr_timeout_ms` to acquire the native lock. Retry only lock acquisition, never an operation that has entered its callback or may have opened an editor. Cancellation stops the wait; stale locks are never stolen.
 
 An explicit workspace open may select a durable record for that Herdr workspace. Automatic joining uses its verified binding. An unbound destination gets fresh shared context, not an implicit copy of the moving agent's previous workspace. Reopening old context remains explicit when no reliable native binding survives. Document this recovery boundary.
 
@@ -168,9 +172,13 @@ An isolated Herdr 0.9.4 server passed 7 checks. Cross-workspace pane moves chang
 
 Artifacts: `/private/tmp/wc-move-contract.xqm49W/{probe.mjs,evidence.json,calls.json,result.json}`. The harness used private HOME, XDG directories, configuration and socket; it closed only its own workspaces and stopped its server cleanly. This proves native primitives, not automatic Work Cards reconciliation, naming preservation or restart recovery. The public schema exposes cross-workspace pane movement; its `tab.move` operation only reorders tabs, so no atomic cross-workspace whole-tab operation was tested.
 
-A later adapter and standalone-pane smoke test passed shared context, distinct agent projections, and checkout A document opening, reuse and manual-title preservation. It failed when checkout B's document shortcut was dropped during projection-lock contention. The pane discards document keys if projection fails in that iteration, even after observing and verifying the pair. No wrong-file opening or ownership corruption was observed.
+A later adapter and standalone-pane smoke test passed shared context, distinct agent projections, and checkout A document opening, reuse and manual-title preservation. It failed when checkout B's document shortcut was dropped during projection-lock contention. The pane discarded document keys when projection failed in that iteration, even after observing and verifying the pair. No wrong-file opening or ownership corruption was observed.
 
-Artifacts: `/private/tmp/wc-workspace-native.b5jTSR/`, including `investigation.md` and `result.json`. All private workspaces were closed and the server exited with code 0. The run did not reach close/reopen or movement checks. Native integration remains incomplete; further native retries are paused after 3 harness correction retries.
+Artifacts: `/private/tmp/wc-workspace-native.b5jTSR/`, including `investigation.md` and `result.json`. All private workspaces were closed and the server exited with code 0. The run did not reach close/reopen or movement checks. After 3 harness correction retries, the user approved the targeted contention fix above and a fresh isolated verification run.
+
+The corrected adapter and pane passed all 5 groups in `/private/tmp/wc-workspace-native.Q0pnzu/` in one run. Both checkouts opened their documents on the first keypress under the original 250 ms polling contention. Exact editor targets, reuse, manual labels, close-without-respawn, explicit reopening, agent-only move cleanup and paired recovery after 2 sequential pane moves all passed. The other agent pair and a separate sentinel pair stayed intact. The harness closed its 3 private workspaces; server PID 29938 exited with code 0. See `result.json`, `checks.jsonl` and `evidence-1.json` through `evidence-5.json`.
+
+Astra approved the contention fix; all 439 tests passed on Node 22 and Node 26. The native smoke exercised real card panes and dummy agent shells, not Pi lifecycle, automatic naming, legacy import or removal. Those integration checks remain outstanding.
 
 ## Verification gates
 

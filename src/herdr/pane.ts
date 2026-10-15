@@ -31,7 +31,7 @@ export async function runPane(env: NodeJS.ProcessEnv = process.env): Promise<voi
   let context: NativeContext | undefined;
   const controller = new AbortController();
   const verifyOwner = async (current: NativeContext, agent: Snapshot<AgentRecord>) => {
-    const pair = await workspace!.client.ownership(workspace!.store, current, agent, config, controller.signal);
+    const pair = await workspace!.client.verifyDisplay(workspace!.store, current, agent, config, controller.signal);
     controller.signal.throwIfAborted();
     if (pair.kind !== 'paired' || pair.agent.terminal_id !== env.WORK_CARDS_OWNER_TERMINAL
       || pair.card.terminal_id !== current.terminalId || pair.nonce !== env.WORK_CARDS_NONCE) {
@@ -65,9 +65,9 @@ export async function runPane(env: NodeJS.ProcessEnv = process.env): Promise<voi
           context = live.context;
           if (saved && 'agent' in saved) {
             await verifyOwner(context, saved.agent);
+            readyContext = context;
             await workspace.client.project(workspace.store, context, saved.agent, config, controller.signal);
             if (stopped) break;
-            readyContext = context;
             view.clearNotice('projection');
           }
         } catch (error) { view.setNotice('projection', `Herdr projection unavailable: ${(error as Error).message}`); }
