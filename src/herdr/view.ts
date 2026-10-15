@@ -1,7 +1,7 @@
 import { basename, dirname, isAbsolute } from 'node:path';
 import stringWidth from 'string-width';
-import { readCard, type CardSnapshot } from '../card.js';
-import { parseStateSections } from '../state.js';
+import { readCard, type CardSnapshot, type CardStatus } from '../card.js';
+import { parseStateSections, type StateSections } from '../state.js';
 
 const documentKeys = 'abcdefghijklmnoprstuvwxyz';
 export function plain(text: string): string { return text.toWellFormed().replace(/[\p{Cc}\p{Cf}]/gu, ''); }
@@ -47,19 +47,34 @@ function webUrl(value: string): string | undefined {
   } catch { return undefined; }
 }
 interface DocumentTarget { cwd: string; path: string }
-export interface RenderedCard { text: string; documents: Map<string, DocumentTarget> }
+export interface DisplayCard<T> {
+  title: string; status: CardStatus;
+  state: { sections: StateSections } | { prose: string };
+  documents: { label: string; target: T }[];
+  issues: { url: string; description: string }[];
+  prs: { url: string; description: string }[];
+}
+export interface RenderedCard<T = DocumentTarget> { text: string; documents: Map<string, T> }
 export function renderCard(snapshot: CardSnapshot | undefined, columns: number, rows: number, notice?: string): RenderedCard {
+  const card = snapshot?.card;
+  const sections = card && parseStateSections(card.state);
+  return renderDisplayCard(card ? {
+    title: card.title, status: card.status, state: sections ? { sections } : { prose: card.state },
+    documents: card.documents.map(document => ({ label: document.path, target: { cwd: card.cwd, path: document.path } })),
+    issues: card.issues, prs: card.prs,
+  } : undefined, columns, rows, notice);
+}
+export function renderDisplayCard<T>(card: DisplayCard<T> | undefined, columns: number, rows: number, notice?: string): RenderedCard<T> {
   const height = Math.max(0, Math.floor(rows)), width = Math.max(0, Math.floor(columns));
-  const documents = new Map<string, DocumentTarget>();
+  const documents = new Map<string, T>();
   if (!height || !width) return { text: '', documents };
   const footer = width >= 9 ? '[q] close' : width >= 3 ? '[q]' : '';
   const contentHeight = height - Number(notice !== undefined);
   type Span = { text: string; code?: number; url?: string };
-  type Row = { spans: (width: number) => Span[]; key?: string; path?: string };
+  type Row = { spans: (width: number) => Span[]; key?: string; target?: T };
   const lines: Row[] = [];
   const textRow = (text: string, code?: number): Row => ({ spans: w => [{ text: clipped(text, w), code }] });
-  if (snapshot && contentHeight) {
-    const card = snapshot.card;
+  if (card && contentHeight) {
     const statuses = { active: ['●', 36], waiting: ['○', 33], blocked: ['!', 31], parked: ['○', 2], done: ['✓', 32] } as const;
     const [symbol, colour] = statuses[card.status];
     const status = `${symbol} ${card.status}`, statusWidth = stringWidth(status), title = plain(card.title);
@@ -69,13 +84,13 @@ export function renderCard(snapshot: CardSnapshot | undefined, columns: number, 
       return [{ text: label, code: 1 }, { text: ' '.repeat(w - stringWidth(label) - statusWidth) }, { text: status, code: colour }];
     } });
     const references = [
-      ...card.documents.map((document, index) => ({ path: document.path, key: documentKeys[index], label: '', url: undefined as string | undefined })),
-      ...card.issues.map((link, index) => ({ label: plain(`[${index + 1}] Issue: ${link.description || link.url}`), url: webUrl(link.url), path: undefined, key: undefined })),
-      ...card.prs.map((link, index) => ({ label: plain(`[${card.issues.length + index + 1}] PR: ${link.description || link.url}`), url: webUrl(link.url), path: undefined, key: undefined })),
+      ...card.documents.map((document, index) => ({ path: document.label, target: document.target, key: documentKeys[index], label: '', url: undefined as string | undefined })),
+      ...card.issues.map((link, index) => ({ label: plain(`[${index + 1}] Issue: ${link.description || link.url}`), url: webUrl(link.url), path: undefined, target: undefined, key: undefined })),
+      ...card.prs.map((link, index) => ({ label: plain(`[${card.issues.length + index + 1}] PR: ${link.description || link.url}`), url: webUrl(link.url), path: undefined, target: undefined, key: undefined })),
     ];
     const available = contentHeight - 1;
     let stateLimit = references.length ? (available < 2 ? available : Math.min(Math.ceil(available / 2), Math.max(1, available - Math.min(2, references.length)))) : available;
-    const sections = parseStateSections(card.state);
+    const sections = 'sections' in card.state ? card.state.sections : undefined;
     if (sections) {
       // Make room for three headings without taking the existing reserved reference slots.
       stateLimit = Math.max(stateLimit, Math.min(3, available - Math.min(2, references.length)));
@@ -96,7 +111,7 @@ export function renderCard(snapshot: CardSnapshot | undefined, columns: number, 
         budget -= visibleState.length;
       }
     } else {
-      const state = wrap(plain(card.state), width), visibleState = state.slice(0, stateLimit);
+      const state = wrap(plain('prose' in card.state ? card.state.prose : ''), width), visibleState = state.slice(0, stateLimit);
       if (state.length > visibleState.length && visibleState.length) {
         const last = visibleState.length - 1;
         visibleState[last] = prefix(visibleState[last], width - 1).trimEnd() + '…';
@@ -107,7 +122,7 @@ export function renderCard(snapshot: CardSnapshot | undefined, columns: number, 
     const visible = references.slice(0, Math.max(0, slots - Number(references.length > slots)));
     for (const entry of visible) {
       if (entry.path !== undefined) {
-        lines.push({ key: entry.key, path: entry.path, spans: w => {
+        lines.push({ key: entry.key, target: entry.target, spans: w => {
           const keyLabel = entry.key ? prefix(`[${entry.key}]`, w) : '';
           const space = keyLabel && w > stringWidth(keyLabel) ? ' ' : '';
           const path = fit(plain(entry.path!), w - stringWidth(keyLabel + space));
@@ -123,7 +138,7 @@ export function renderCard(snapshot: CardSnapshot | undefined, columns: number, 
   const painted = lines.map((line, index) => {
     const hint = index === height - 1 ? footer : '';
     const room = width - stringWidth(hint), spans = line.spans(room);
-    if (line.key && spans[0]?.text === `[${line.key}]` && snapshot) documents.set(line.key, { cwd: snapshot.card.cwd, path: line.path! });
+    if (line.key && spans[0]?.text === `[${line.key}]`) documents.set(line.key, line.target!);
     // Geometry and action visibility are settled on plain spans before adding trusted sequences.
     if (hint) spans.push({ text: ' '.repeat(room - spans.reduce((n, span) => n + stringWidth(span.text), 0)) }, { text: hint, code: 2 });
     return spans.map(span => {
