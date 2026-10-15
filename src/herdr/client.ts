@@ -1,40 +1,14 @@
-import { execFile } from 'node:child_process';
 import { createHash, randomUUID } from 'node:crypto';
 import { lstat, open, realpath, unlink } from 'node:fs/promises';
 import { basename, dirname, isAbsolute, join } from 'node:path';
-import { fileURLToPath } from 'node:url';
 import { isDeepStrictEqual } from 'node:util';
 import { homedir } from 'node:os';
 import { resolveDocument, type CardSnapshot } from '../card.js';
 import { configPath, documentCommand, type WorkCardsConfig } from '../config.js';
 import { parseStateSections } from '../state.js';
 import { classifyExplicitOwner, liveOwner, workspaceKeys, type Attachment, type Pane, type Workspace } from './ownership.js';
+import { HerdrTransport, object, id, tokens, parsePane } from './transport.js';
 export type { Attachment } from './ownership.js';
-type Run = (argv: string[], timeoutMs: number) => Promise<string>;
-interface ClientOptions { env?: NodeJS.ProcessEnv; run?: Run; pluginRoot?: string }
-const pluginPanes = [
-  { id: 'card', title: 'Work card', placement: 'split', command: ['node', 'dist/herdr/pane.js'] },
-  { id: 'document', title: 'Document', placement: 'tab', command: ['/bin/sh', 'bin/open-document.sh'] },
-];
-
-function object(value: unknown, label: string): Record<string, any> {
-  if (!value || typeof value !== 'object' || Array.isArray(value)) throw new Error(`Unexpected Herdr ${label}`);
-  return value as Record<string, any>;
-}
-function id(value: unknown): string {
-  if (typeof value !== 'string' || !value || /[\p{Cc}\p{Cf}]/u.test(value)) throw new Error('Invalid Herdr identifier');
-  return value;
-}
-function tokens(value: unknown): Record<string, string> {
-  if (value === undefined) return {};
-  const result = object(value, 'tokens');
-  if (Object.values(result).some(v => typeof v !== 'string')) throw new Error('Invalid Herdr tokens');
-  return result;
-}
-function parsePane(value: unknown): Pane {
-  const p = object(value, 'pane');
-  return { pane_id: id(p.pane_id), terminal_id: id(p.terminal_id), workspace_id: id(p.workspace_id), tab_id: id(p.tab_id), tokens: tokens(p.tokens) };
-}
 export async function cardIdentity(path: string): Promise<string> {
   if (!isAbsolute(path)) throw new Error('Work card path must be absolute');
   return createHash('sha256').update(await realpath(path)).digest('hex');
@@ -67,47 +41,7 @@ export async function withWorkspaceLock<T>(socket: string, workspaceId: string, 
   finally { try { await lock.close(); } finally { await unlink(path); } }
 }
 
-export class HerdrClient {
-  readonly env: NodeJS.ProcessEnv;
-  private readonly run: Run;
-  private readonly pluginRoot: string;
-  constructor(options: ClientOptions = {}) {
-    this.env = { ...(options.env ?? process.env) };
-    this.pluginRoot = options.pluginRoot ?? fileURLToPath(new URL('../../', import.meta.url));
-    this.run = options.run ?? ((argv, timeoutMs) => new Promise((resolve, reject) => {
-      execFile(this.env.HERDR_BIN_PATH || 'herdr', argv, { env: this.env, encoding: 'utf8', timeout: timeoutMs, shell: false }, (error, stdout, stderr) => {
-        if (error) reject(new Error(`Herdr ${argv.slice(0, 2).join(' ')} failed; a mutation may be partial, inspect before retrying: ${stderr || error.message}`));
-        else resolve(stdout);
-      });
-    }));
-  }
-  private async result(argv: string[], config: WorkCardsConfig, expected: string): Promise<Record<string, any>> {
-    let response;
-    try { response = object(JSON.parse(await this.run(argv, config.herdr_timeout_ms)), 'response'); }
-    catch (error) { throw new Error(`Invalid Herdr response: ${(error as Error).message}`, { cause: error }); }
-    if (response.error) throw new Error(`Herdr error: ${JSON.stringify(response.error)}`);
-    const result = object(response.result, 'result');
-    if (result.type !== expected) throw new Error(`Unexpected Herdr result; expected ${expected}`);
-    return result;
-  }
-  private async current(config: WorkCardsConfig): Promise<Pane> {
-    if (this.env.HERDR_ENV !== '1' || !this.env.HERDR_PANE_ID || !this.env.HERDR_SOCKET_PATH) {
-      throw new Error('Not in a Herdr-managed pane. Run explicit work-card open inside Herdr; GUI focus is never used.');
-    }
-    return parsePane((await this.result(['pane', 'current', '--current'], config, 'pane_current')).pane);
-  }
-  private async socket(config: WorkCardsConfig): Promise<string> {
-    const response = object(JSON.parse(await this.run(['status', '--json'], config.herdr_timeout_ms)), 'status');
-    const server = object(response.server, 'server');
-    const version = typeof server.version === 'string' ? /^(\d+)\.(\d+)\.(\d+)(?:[-+].*)?$/.exec(server.version) : null;
-    if (server.running !== true || server.compatible !== true || server.endpoint_compatible !== true || !version ||
-        (Number(version[1]) === 0 && (Number(version[2]) < 9 || (Number(version[2]) === 9 && Number(version[3]) < 3)))) {
-      throw new Error('Work cards require a running compatible Herdr server >=0.9.3; no automatic restart/update is attempted.');
-    }
-    const socket = id(server.socket);
-    if (!isAbsolute(socket) || socket !== this.env.HERDR_SOCKET_PATH) throw new Error('Herdr endpoint mismatch; refusing focused/default session fallback');
-    return socket;
-  }
+export class HerdrClient extends HerdrTransport {
   private async workspace(workspaceId: string, config: WorkCardsConfig): Promise<Workspace> {
     const w = object((await this.result(['workspace', 'get', workspaceId], config, 'workspace_info')).workspace, 'workspace');
     if (w.workspace_id !== workspaceId) throw new Error('Herdr workspace identity mismatch');
@@ -120,26 +54,6 @@ export class HerdrClient {
     const panes = list.map(parsePane);
     if (panes.some(p => p.workspace_id !== workspaceId)) throw new Error('Herdr pane workspace mismatch');
     return { workspace, panes };
-  }
-  private async report(kind: 'pane' | 'workspace', target: string, values: Record<string, string | null>, config: WorkCardsConfig): Promise<void> {
-    const argv = [kind, 'report-metadata', target, '--source', 'work-cards'];
-    for (const [key, value] of Object.entries(values)) argv.push(value === null ? '--clear-token' : '--token', value === null ? key : `${key}=${value}`);
-    await this.run(argv, config.herdr_timeout_ms);
-  }
-  private async ensurePlugin(config: WorkCardsConfig): Promise<void> {
-    const root = await realpath(this.pluginRoot);
-    const check = (value: unknown) => {
-      const p = object(value, 'plugin registration');
-      if (p.plugin_id !== 'work-cards' || p.enabled !== true || p.plugin_root !== root || p.manifest_path !== join(root, 'herdr-plugin.toml') ||
-          p.source?.kind !== 'local' || p.version !== '0.1.0' || p.min_herdr_version !== '0.9.3' ||
-          !isDeepStrictEqual(p.platforms, ['macos', 'linux']) || !isDeepStrictEqual(p.panes, pluginPanes)) {
-        throw new Error(`Conflicting or disabled work-cards plugin registration; inspect it and explicitly relink with herdr plugin link ${join(root, 'herdr-plugin.toml')}. No registration was replaced; linked manifests may require explicit relink for new entrypoints.`);
-      }
-    };
-    const plugins = (await this.result(['plugin', 'list', '--plugin', 'work-cards', '--json'], config, 'plugin_list')).plugins;
-    if (!Array.isArray(plugins) || plugins.length > 1) throw new Error('Unexpected Herdr plugin registration list');
-    if (plugins.length) check(plugins[0]);
-    else check((await this.result(['plugin', 'link', join(root, 'herdr-plugin.toml')], config, 'plugin_linked')).plugin);
   }
   async attachCard(snapshot: CardSnapshot, config: WorkCardsConfig): Promise<Attachment> {
     const caller = await this.current(config), socket = await this.socket(config), identity = await cardIdentity(snapshot.path);
