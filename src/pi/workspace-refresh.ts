@@ -1,5 +1,5 @@
 import {
-  validateMembership, type AgentRecord, type RecordStore, type Snapshot, type WorkspaceRecord,
+  type AgentRecord, type RecordStore, type Snapshot, type WorkspaceRecord,
 } from '../records.js';
 import type { ProjectedEvidence, ReferenceEvidence } from './evidence.js';
 import { PlanRefresher, type PlanRefreshInput } from './plan-refresh.js';
@@ -38,11 +38,7 @@ export class WorkspaceRefresher<TModel extends { api?: string }> {
     const requestOptions = { ...options, intent };
     const current = async (): Promise<WorkspaceRefreshResult> => {
       signal.throwIfAborted();
-      const agent = await store.readAgent(authority.sessionId);
-      if (agent.record.workspaceId !== authority.workspaceId || agent.record.membershipToken !== authority.membershipToken) throw new Error('Stale workspace membership');
-      if (agent.record.evidenceGeneration !== authority.evidenceGeneration) throw new Error('Stale evidence generation');
-      const workspace = await store.readWorkspace(authority.workspaceId);
-      validateMembership(workspace.record, agent.record);
+      const { agent, workspace } = await store.readMembership(authority.sessionId, authority);
       await assertCurrent();
       signal.throwIfAborted();
       return { agent, workspace };

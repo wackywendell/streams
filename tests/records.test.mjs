@@ -27,6 +27,55 @@ function joinInput(workspace, cwd, sessionId = '../custom/session') {
 const authority = a => ({ sessionId: a.record.sessionId, workspaceId: a.record.workspaceId, membershipToken: a.record.membershipToken, evidenceGeneration: a.record.evidenceGeneration });
 async function retry(fn) { for (let n = 0; ; n++) { try { return await fn(); } catch (e) { if (!/lock exists/.test(e.message) || n > 100) throw e; await new Promise(r => setTimeout(r, 2)); } } }
 
+for (const field of ['sessionId', 'workspaceId', 'membershipToken', 'checkout', 'cwd']) test(`checked membership rejects ${field} changes during paired read`, async t => {
+  const { store, workspace, cwd } = await fixture(t);
+  const agent = await store.join(joinInput(workspace, cwd));
+  const readWorkspace = store.readWorkspace.bind(store);
+  store.readWorkspace = async id => {
+    const result = await readWorkspace(id);
+    await writeFile(agent.path, JSON.stringify({ ...agent.record, [field]: field === 'cwd' ? join(cwd, 'subdir') : 'changed' }));
+    return result;
+  };
+  await assert.rejects(store.readMembership(agent.record.sessionId), /membership|identity/i);
+});
+
+for (const expected of [false, true]) for (const change of ['progress', 'evidence']) test(`checked membership ${expected ? 'effect' : 'display'} read handles ${change} changes`, async t => {
+  const { store, workspace, cwd } = await fixture(t);
+  const agent = await store.join(joinInput(workspace, cwd));
+  let latest;
+  const readWorkspace = store.readWorkspace.bind(store);
+  store.readWorkspace = async id => {
+    const result = await readWorkspace(id);
+    latest = change === 'progress'
+      ? await store.updateOwn(authority(agent), { now: 'Latest progress' }, agent.revision)
+      : await store.resetEvidence(authority(agent), boundary, agent.revision);
+    return result;
+  };
+  const read = store.readMembership(agent.record.sessionId, expected ? authority(agent) : undefined);
+  if (expected && change === 'evidence') await assert.rejects(read, /evidence generation/i);
+  else {
+    const result = await read;
+    assert.deepEqual(result.agent, latest);
+    assert.equal(result.workspace.record.id, workspace.record.id);
+  }
+});
+
+test('checked membership rejects stale initial authority and malformed or mismatched durable pairs', async t => {
+  const { store, workspace, cwd } = await fixture(t);
+  const agent = await store.join(joinInput(workspace, cwd));
+  for (const patch of [{ sessionId: 'other' }, { workspaceId: 'other' }, { membershipToken: 'other' }, { evidenceGeneration: 'other' }, { extra: 'unknown' }]) {
+    await assert.rejects(store.readMembership(agent.record.sessionId, { ...authority(agent), ...patch }));
+  }
+  for (const patch of [{ checkout: 'unknown' }, { cwd: '/outside' }, { now: 42 }]) {
+    await writeFile(agent.path, JSON.stringify({ ...agent.record, ...patch }));
+    await assert.rejects(store.readMembership(agent.record.sessionId), /membership|checkout|outside|text/i);
+  }
+  await writeFile(agent.path, JSON.stringify(agent.record));
+  const current = await store.readWorkspace(workspace.record.id);
+  await writeFile(current.path, JSON.stringify({ ...current.record, id: 'other' }));
+  await assert.rejects(store.readMembership(agent.record.sessionId), /identity/i);
+});
+
 test('reserved creation is idempotent only for matching creation tokens; custom sessions are hashed', async t => {
   const { store, workspace, cwd } = await fixture(t);
   assert.deepEqual(await store.createWorkspace({ id: workspace.record.id, creationToken: workspace.record.creationToken, title: 'Ignored retry' }), workspace);

@@ -40,6 +40,21 @@ async function fixture(t, withReference = true) {
   };
 }
 
+for (const field of ['workspaceId', 'membershipToken', 'checkout', 'cwd', 'evidenceGeneration']) test(`plan inference never starts after ${field} changes during paired read`, async t => {
+  const f = await fixture(t), agent = await f.store.readAgent('s');
+  const readWorkspace = f.store.readWorkspace.bind(f.store); let once = true;
+  f.store.readWorkspace = async id => {
+    const result = await readWorkspace(id);
+    if (once) {
+      once = false;
+      await writeFile(agent.path, JSON.stringify({ ...agent.record, [field]: field === 'cwd' ? join(f.root, 'subdir') : 'changed' }));
+    }
+    return result;
+  };
+  await assert.rejects(f.refresh(), /membership|generation|checkout/i);
+  assert.deepEqual(f.calls, []);
+});
+
 test('no references needs no model and preserves valid empty state with checked authority', async t => {
   const f = await fixture(t, false);
   const w = await f.workspace();

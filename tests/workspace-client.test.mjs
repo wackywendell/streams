@@ -4,7 +4,8 @@ import assert from 'node:assert/strict';
 import { mkdtemp, mkdir, writeFile, realpath, symlink, unlink } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { WorkspaceClient, agentAuthority } from '../dist/herdr/workspace-client.js';
+import { WorkspaceClient } from '../dist/herdr/workspace-client.js';
+import { agentAuthority } from '../dist/records.js';
 import { withWorkspaceLock } from '../dist/herdr/workspace-lock.js';
 import { setTimeout as delay } from 'node:timers/promises';
 import { RecordStore } from '../dist/records.js';
@@ -683,16 +684,36 @@ test('legacy and foreign bindings refuse joining before record creation', async 
     await assert.rejects(f.joinAgent('term1'), /legacy|foreign/i); assert.equal((await f.store.listWorkspaces()).length,0);
   }
 });
-test('a membership edit during the paired record read blocks native effects', async () => {
+for (const field of ['sessionId', 'workspaceId', 'membershipToken', 'checkout', 'cwd', 'evidenceGeneration']) test(`a ${field} edit during the paired record read blocks native effects`, async () => {
   const f=await fixture(); const a=await f.joinAgent('term1'); const read=f.store.readWorkspace.bind(f.store); let once=true;
   f.store.readWorkspace=async id=>{
     const result=await read(id);
-    if(once) { once=false; const {stringify}=await import('yaml'); await writeFile(a.agent.path,stringify({...a.agent.record,membershipToken:'replacement'})); }
+    if(once) { once=false; await writeFile(a.agent.path,JSON.stringify({...a.agent.record,[field]:field==='cwd'?join(f.cwd,'subdir'):'replacement'})); }
     return result;
   };
-  await assert.rejects(a.c.ownership(f.store,a.context,a.agent,DEFAULT_CONFIG),/stale|membership/i);
+  await assert.rejects(a.c.ownership(f.store,a.context,a.agent,DEFAULT_CONFIG),/stale|membership|identity/i);
   assert.equal(f.calls.some(args=>args[0]==='plugin'),false);
 });
+test('native paired read returns progress published during workspace read without replacing painted identity', async () => {
+  const f = await fixture(), a = await f.joinAgent('term1');
+  const read = f.store.readWorkspace.bind(f.store); let latest;
+  f.store.readWorkspace = async id => {
+    const workspace = await read(id);
+    latest = await f.store.updateOwn(agentAuthority(a.agent.record), { now: 'Latest progress' }, a.agent.revision);
+    return workspace;
+  };
+  const current = await a.c.currentRecords(f.store, a.agent);
+  assert.deepEqual(current.agent, latest);
+  assert.notEqual(current.agent.revision, a.agent.revision);
+});
+
+test('native paired read retains canonical painted agent path validation', async () => {
+  const f = await fixture(), a = await f.joinAgent('term1');
+  const foreign = join(f.root, 'foreign-agent.yaml');
+  await writeFile(foreign, JSON.stringify(a.agent.record));
+  await assert.rejects(a.c.currentRecords(f.store, { ...a.agent, path: foreign }), /foreign agent path/i);
+});
+
 test('orphan projection and incomplete legacy pane markers cannot allocate a competing workspace', async () => {
   for (const variant of ['projection','legacy']) {
     const f=await fixture();

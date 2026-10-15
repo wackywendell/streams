@@ -45,6 +45,21 @@ async function fixture(t) {
     agent: () => store.readAgent('s'), workspace: () => store.readWorkspace('w'),
   };
 }
+for (const field of ['workspaceId', 'membershipToken', 'checkout', 'cwd', 'evidenceGeneration']) test(`own inference never starts after ${field} changes during paired read`, async t => {
+  const f = await fixture(t), agent = await f.agent();
+  const readWorkspace = f.store.readWorkspace.bind(f.store); let once = true;
+  f.store.readWorkspace = async id => {
+    const result = await readWorkspace(id);
+    if (once) {
+      once = false;
+      await writeFile(agent.path, JSON.stringify({ ...agent.record, [field]: field === 'cwd' ? join(f.root, 'subdir') : 'changed' }));
+    }
+    return result;
+  };
+  await assert.rejects(f.refresh(), /membership|generation|checkout/i);
+  assert.deepEqual(f.calls, []);
+});
+
 test('reference-only evidence is copied before awaits and never sent to own inference', async t => {
   const f = await fixture(t);
   const referenceEvidence = { compactionSummary: null, transcript: [{ role: 'tool_activity', operation: 'edit', path: 'plan.md' }] };

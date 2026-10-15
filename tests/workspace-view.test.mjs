@@ -4,7 +4,7 @@ import stringWidth from 'string-width';
 import { mkdtemp, readdir, rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { RecordStore } from '../dist/records.js';
+import { RecordStore, validateAgent, validateWorkspace } from '../dist/records.js';
 import { WorkspaceCardView, renderWorkspaceCard } from '../dist/herdr/workspace-view.js';
 
 const unstyled = text => text.replace(/\x1b\[[\d;]*m/g, '').replace(/\x1b\]8;;[^\x1b]*\x1b\\/g, '');
@@ -23,8 +23,9 @@ function fixture() {
     now: 'Implement | verify', remaining: '界😀é | release',
   } };
   const store = new RecordStore('/never-written');
-  store.readAgent = async id => { assert.equal(id, agent.record.sessionId); return structuredClone(agent); };
-  store.readWorkspace = async id => { assert.equal(id, workspace.record.id); return structuredClone(workspace); };
+  // Keep RecordStore's real paired-read checks; fake only the validated storage boundary.
+  store.readAgent = async id => { assert.equal(id, agent.record.sessionId); return { ...agent, record: validateAgent(agent.record) }; };
+  store.readWorkspace = async id => { assert.equal(id, workspace.record.id); return { ...workspace, record: validateWorkspace(workspace.record) }; };
   return { workspace, agent, store, view: new WorkspaceCardView(store, 'session') };
 }
 
@@ -182,12 +183,25 @@ test('manual own-checkout changes invalidate a painted membership even with an u
   assert.match(view.notice.text, /changed|redraw/i);
 });
 
-for (const field of ['workspaceId', 'membershipToken', 'checkout']) test(`paired read fails visibly if ${field} changes during workspace read`, async () => {
+for (const field of ['workspaceId', 'membershipToken', 'checkout', 'cwd']) test(`paired read fails visibly if ${field} changes during workspace read`, async () => {
   const { store, view, workspace, agent } = fixture();
-  store.readWorkspace = async () => { agent.record[field] = 'changed'; return structuredClone(workspace); };
+  store.readWorkspace = async () => { agent.record[field] = field === 'cwd' ? '/code/library/changed' : 'changed'; return { ...workspace, record: validateWorkspace(workspace.record) }; };
   assert.equal(await view.refresh(), undefined); assert.equal(view.current, undefined);
   assert.match(unstyled(view.render(120, 6)), /unavailable.*membership/i);
   assert.deepEqual(await view.key('a'), { kind: 'none' });
+});
+
+for (const change of ['progress', 'evidence']) test(`display paired read accepts ${change} changes and returns the latest agent`, async () => {
+  const { store, view, workspace, agent } = fixture();
+  store.readWorkspace = async () => {
+    agent.revision = 'latest';
+    if (change === 'progress') agent.record.now = 'Latest progress';
+    else agent.record.evidenceGeneration = 'reset';
+    return { ...workspace, record: validateWorkspace(workspace.record) };
+  };
+  const current = await view.refresh();
+  assert.deepEqual(current.agent, agent);
+  assert.equal(view.notice, undefined);
 });
 
 test('missing agent/workspace reads never create records or directories', async t => {

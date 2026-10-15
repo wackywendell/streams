@@ -42,15 +42,7 @@ export class WorkspaceCardView {
   }
   async refresh(): Promise<WorkspaceCardSnapshot | undefined> {
     try {
-      const before = await this.store.readAgent(this.sessionId);
-      const workspace = await this.store.readWorkspace(before.record.workspaceId);
-      const agent = await this.store.readAgent(this.sessionId);
-      if (before.record.workspaceId !== agent.record.workspaceId || before.record.membershipToken !== agent.record.membershipToken
-        || before.record.checkout !== agent.record.checkout || before.record.cwd !== agent.record.cwd) {
-        throw new Error('Agent membership changed during read; refresh to load current context');
-      }
-      composeView(workspace, agent);
-      this.current = { workspace, agent };
+      this.current = await this.store.readMembership(this.sessionId);
       this.clearNotice('card');
       return this.current;
     } catch (error) {

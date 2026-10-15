@@ -5,12 +5,12 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { spawnSync } from 'node:child_process';
 import { registerWorkCards } from '../dist/pi/index.js';
-import { RecordStore, referenceIdentity } from '../dist/records.js';
+import { RecordStore, referenceIdentity, agentAuthority } from '../dist/records.js';
 import { DEFAULT_CONFIG } from '../dist/config.js';
-import { WorkspaceClient, agentAuthority } from '../dist/herdr/workspace-client.js';
+import { WorkspaceClient } from '../dist/herdr/workspace-client.js';
 import { AgentSession, SessionManager, SettingsManager } from '@earendil-works/pi-coding-agent';
 import { Agent } from '@earendil-works/pi-agent-core';
-const { createExtensionRuntime, loadExtensionFromFactory } = await import(new URL('./core/extensions/loader.js', import.meta.resolve('@earendil-works/pi-coding-agent')));
+const { createExtensionRuntime, loadExtensionFromFactory, loadExtensions } = await import(new URL('./core/extensions/loader.js', import.meta.resolve('@earendil-works/pi-coding-agent')));
 const tick = () => new Promise(resolve => setImmediate(resolve));
 async function until(predicate) {
   const deadline = performance.now() + 4000;
@@ -68,7 +68,7 @@ async function host(t, config = {}, initial = {}) {
   const emit = async (name, event = {}) => { await handlers.get(name)?.({ type: name, ...event }, ctx); await tick(); };
   const command = async args => { await commands.get('work-card').handler(args, ctx); await tick(); };
   t.after(async () => { await emit('session_shutdown', { reason: 'quit' }); await rm(root, { recursive: true, force: true, maxRetries: 3, retryDelay: 10 }); });
-  const h = { root, cwd, store, directory, env, client, native, calls, notices, statuses, settings, handlers, tools, ctx, install, command, emit,
+  const h = { root, cwd, store, directory, env, client, overrides, native, calls, notices, statuses, settings, handlers, tools, ctx, install, command, emit,
     setMessages: value => { messages = value; }, setSession: value => { sessionId = value; }, setBranch: value => { branch = value; }, branch: () => structuredClone(branch),
     setResult: value => { result = value; }, setHook: value => { hook = value; }, setConfigError: value => { configError = value; }, setConfigWait: value => { configWait = value; },
     launches: () => native.filter(a => a[0] === 'plugin' && a[2] === 'open'),
@@ -263,6 +263,90 @@ test('timed-out noncooperative provider holds queued force until actual rejectio
   try { await new Promise(resolve => setTimeout(resolve, 120)); assert.equal(starts, 1); }
   finally { wait.resolve(); }
   await until(() => starts > 1);
+});
+
+test('SDK loader reload and same-UUID resume retain physical provider occupancy across module evaluation', async t => {
+  for (const replacement of ['reload', 'resume']) for (const settlement of ['resolve', 'reject']) await t.test(`${replacement}, late ${settlement}`, { timeout: 15_000 }, async t => {
+    const h = await host(t, { check_every_n_responses: 0 }, { skipStart: true });
+    const { createEventBus } = await import(new URL('./core/event-bus.js', import.meta.resolve('@earendil-works/pi-coding-agent')));
+    const { AgentSessionRuntime } = await import(new URL('./core/agent-session-runtime.js', import.meta.resolve('@earendil-works/pi-coding-agent')));
+    const key = Symbol.for(`work-cards.test.${h.root}`), path = join(h.root, 'extension.ts');
+    globalThis[key] = h.overrides;
+    await writeFile(path, `import { registerWorkCards } from ${JSON.stringify(new URL('../src/pi/index.ts', import.meta.url).pathname)};\nexport default pi => registerWorkCards(pi, globalThis[Symbol.for(${JSON.stringify(key.description)})]);\n`);
+    const errors = [];
+    const create = async ({ sessionManager, sessionStartEvent }) => {
+      let loaded;
+      const resources = {
+        getExtensions: () => loaded,
+        getSystemPrompt: () => 'Test only', getAppendSystemPrompt: () => [],
+        getSkills: () => ({ skills: [] }), getAgentsFiles: () => ({ agentsFiles: [] }), getPrompts: () => ({ prompts: [] }),
+        reload: async () => { loaded = await loadExtensions([path], h.cwd, createEventBus(), createExtensionRuntime()); assert.deepEqual(loaded.errors, []); },
+      };
+      await resources.reload();
+      const session = new AgentSession({ agent: new Agent(), sessionManager, cwd: h.cwd, sessionStartEvent,
+        settingsManager: SettingsManager.inMemory({ compaction: { enabled: false } }), resourceLoader: resources,
+        baseToolsOverride: {}, initialActiveToolNames: [],
+        modelRuntime: { getModel: (...args) => h.ctx.modelRegistry.find(...args), streamSimple: (...args) => h.ctx.modelRegistry.streamSimple(...args) } });
+      await session.bindExtensions({ mode: 'tui', uiContext: h.ctx.ui, onError: error => errors.push(error) });
+      return { session, services: { cwd: h.cwd, agentDir: join(h.root, 'agent') } };
+    };
+    const manager = SessionManager.create(h.cwd, join(h.root, 'sessions'));
+    manager.appendMessage({ ...user('Persist this session'), timestamp: Date.now() });
+    const initial = await create({ sessionManager: manager, sessionStartEvent: { type: 'session_start', reason: 'startup' } });
+    const runtime = new AgentSessionRuntime(initial.session, initial.services, create);
+    const entered = deferred(), release = deferred(); let starts = 0, active = 0, maximum = 0;
+    t.after(async () => { release.resolve(); await runtime.dispose(); delete globalThis[key]; });
+    h.setResult(async () => {
+      const first = ++starts === 1; active++; maximum = Math.max(maximum, active);
+      try {
+        if (first) { entered.resolve(); await release.promise; if (settlement === 'reject') throw new Error('late provider rejection'); }
+        return first ? { action: 'update', patch: { now: 'STALE OLD FACTORY' } } : { action: 'no_change' };
+      } finally { active--; }
+    });
+    await runtime.session.prompt('/work-card new SDK occupancy'); await entered.promise;
+    const oldSignal = h.calls[0].options.signal;
+    if (replacement === 'reload') await runtime.session.reload();
+    else assert.deepEqual(await runtime.switchSession(manager.getSessionFile()), { cancelled: false });
+    assert.equal(oldSignal.aborted, true);
+    assert.equal(runtime.session.sessionManager.getSessionId(), manager.getSessionId());
+    await runtime.session.prompt('/work-card refresh');
+    await runtime.session.extensionRunner.getCommand('work-card').handler('show', runtime.session.extensionRunner.createCommandContext());
+    const shown = JSON.parse(h.notices.at(-1).text);
+    assert.equal(shown.refresh, null, 'replacement check must wait outside processing until old transport settles');
+    assert.equal(starts, 1);
+    release.resolve(); await until(() => starts > 1 && active === 0);
+    assert.equal(maximum, 1);
+    assert.notEqual((await h.store.readAgent(manager.getSessionId())).record.now, 'STALE OLD FACTORY');
+    assert.deepEqual(errors, []);
+  });
+});
+
+test('queued refresh and reset are cancelled without starting when a replacement factory detaches', async t => {
+  for (const intent of ['refresh', 'reset']) await t.test(intent, async t => {
+    const h = await attach(t, { check_every_n_responses: 0 });
+    await until(async () => (await h.current()).details.refresh?.state === 'complete');
+    const entered = deferred(), release = deferred(), providerDone = deferred();
+    t.after(() => release.resolve());
+    const count = h.calls.length;
+    h.setResult(async () => {
+      entered.resolve(); await release.promise; providerDone.resolve();
+      return { action: 'update', patch: { now: 'CANCELLED REQUEST' } };
+    });
+    await h.command('refresh'); await entered.promise;
+    await h.emit('session_shutdown', { reason: 'reload' });
+    const handlers = new Map(); let command, tool;
+    h.install({ on: (name, fn) => handlers.set(name, fn), registerCommand: (_name, def) => { command = def.handler; },
+      registerTool: def => { tool = def; }, appendEntry: () => {} });
+    t.after(() => handlers.get('session_shutdown')({ reason: 'quit' }, h.ctx));
+    await handlers.get('session_start')({ reason: 'reload' }, h.ctx);
+    await command(intent, h.ctx);
+    assert.equal((await tool.execute('read', {}, undefined, undefined, h.ctx)).details.refresh, null);
+    await command('detach', h.ctx);
+    release.resolve(); await providerDone.promise;
+    await command('show', h.ctx);
+    assert.equal(h.calls.length, count + 1, 'cancelled queued intent must not invoke a provider');
+    assert.notEqual((await h.read()).record.now, 'CANCELLED REQUEST');
+  });
 });
 
 test('q suppresses polls/reload/refresh respawn but does not pause summaries; explicit open reopens', async t => {

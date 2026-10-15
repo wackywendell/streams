@@ -5,7 +5,7 @@ import { mkdtemp, readdir, rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { RecordStore } from '../dist/records.js';
-import { agentAuthority } from '../dist/herdr/workspace-client.js';
+import { agentAuthority } from '../dist/records.js';
 
 const moduleURL = name => JSON.stringify(new URL(`../dist/${name}.js`, import.meta.url).href);
 async function fixture(t) {

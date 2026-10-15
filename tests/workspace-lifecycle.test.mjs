@@ -3,9 +3,12 @@ import assert from 'node:assert/strict';
 import { mkdtemp, mkdir, realpath, rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
+import { fileURLToPath } from 'node:url';
+import ts from 'typescript';
 import { RecordStore } from '../dist/records.js';
 import { DEFAULT_CONFIG } from '../dist/config.js';
-import { WorkspaceClient, agentAuthority } from '../dist/herdr/workspace-client.js';
+import { WorkspaceClient } from '../dist/herdr/workspace-client.js';
+import { agentAuthority } from '../dist/records.js';
 import { WorkspaceLifecycle } from '../dist/pi/workspace-lifecycle.js';
 import { projectSharedEvidence } from '../dist/pi/shared-evidence.js';
 
@@ -55,6 +58,61 @@ async function fixture(t, policy='automatic') {
   };
 }
 async function attached(t,policy='automatic') { const f=await fixture(t,policy); await f.lifecycle.restore(); f.fresh(); if(policy==='manual') await f.lifecycle.open('Library task'); else await f.lifecycle.reconcile(); return f; }
+
+test('lifecycle state requires verified ready membership for active authority in its TypeScript API', () => {
+  const filename = fileURLToPath(new URL('../src/workspace-lifecycle-typecheck.ts', import.meta.url));
+  const source = `import type { WorkspaceLifecycleState } from './pi/workspace-lifecycle.js';
+    import type { Membership, ReadyMembership, WorkspaceClient } from './herdr/workspace-client.js';
+    declare const membership: ReadyMembership, unverified: Membership;
+    const active: WorkspaceLifecycleState = { kind: 'active', membership };
+    const ready: 'ready' = membership.binding.phase;
+    const nonce: string = membership.context.bindingNonce;
+    declare const verified: Awaited<ReturnType<WorkspaceClient['verifyMembership']>>;
+    const result: ReadyMembership = verified;
+    // @ts-expect-error Ready membership cannot carry a reserved binding.
+    const reservedBinding: ReadyMembership = { ...membership, binding: { ...membership.binding, phase: 'reserved' } };
+    // @ts-expect-error Ready membership requires a native binding nonce.
+    const missingNonce: ReadyMembership = { ...membership, context: { socket: '', terminalId: '', workspaceId: '', tabId: '' } };
+    // @ts-expect-error Active authority cannot omit membership.
+    const missing: WorkspaceLifecycleState = { kind: 'active' };
+    // @ts-expect-error An agent snapshot alone is not active authority.
+    const agentOnly: WorkspaceLifecycleState = { kind: 'active', agent: membership.agent };
+    // @ts-expect-error An unverified/reserved membership cannot authorize active state.
+    const reserved: WorkspaceLifecycleState = { kind: 'active', membership: unverified };
+    // @ts-expect-error Restored state requires its agent snapshot.
+    const restored: WorkspaceLifecycleState = { kind: 'restored' };
+    // @ts-expect-error Suspended state cannot retain active membership.
+    const suspended: WorkspaceLifecycleState = { kind: 'suspended', membership };
+    // @ts-expect-error Disposed state cannot retain active membership.
+    const disposed: WorkspaceLifecycleState = { kind: 'disposed', membership };`;
+  const configPath = fileURLToPath(new URL('../tsconfig.json', import.meta.url));
+  const config = ts.readConfigFile(configPath, ts.sys.readFile);
+  const { options } = ts.parseJsonConfigFileContent(config.config, ts.sys, fileURLToPath(new URL('..', import.meta.url)));
+  const host = ts.createCompilerHost(options), getSourceFile = host.getSourceFile.bind(host);
+  host.getSourceFile = (path, ...args) => path === filename ? ts.createSourceFile(path, source, options.target, true) : getSourceFile(path, ...args);
+  const diagnostics = ts.getPreEmitDiagnostics(ts.createProgram([filename], { ...options, noEmit: true }, host));
+  assert.equal(diagnostics.length, 0, diagnostics.map(d => ts.flattenDiagnosticMessageText(d.messageText, '\n')).join('\n'));
+});
+
+test('active state owns the sole membership snapshot and last-known agent is derived', async t => {
+  const f = await attached(t);
+  assert.equal(f.lifecycle.state.kind, 'active');
+  assert.equal(f.lifecycle.state.membership.agent, f.lifecycle.lastKnownAgent);
+  assert.equal(Object.hasOwn(f.lifecycle.state, 'agent'), false);
+  assert.equal(f.lifecycle.state.membership.binding.phase, 'ready');
+  assert.equal(f.lifecycle.state.membership.context.bindingNonce, f.lifecycle.state.membership.binding.nonce);
+  const agent = f.lifecycle.lastKnownAgent;
+  f.options.onInvalidate = () => assert.equal(f.lifecycle.captureScope(), undefined);
+  f.lifecycle.invalidate();
+  assert.equal(f.lifecycle.state.kind, 'suspended');
+  assert.equal(f.lifecycle.lastKnownAgent, agent);
+  assert.equal(f.lifecycle.captureScope(), undefined);
+  assert.equal(Object.hasOwn(f.lifecycle.state, 'membership'), false);
+  f.lifecycle.dispose();
+  assert.equal(f.lifecycle.state.kind, 'disposed');
+  assert.equal(f.lifecycle.lastKnownAgent, agent);
+  assert.equal(f.lifecycle.captureScope(), undefined);
+});
 
 test('blank, inherited and assistant-only sessions allocate nothing; fresh input retains START boundary', async t=>{
   const f=await fixture(t); f.session={...f.session,evidence:evidence('inherited task')};
@@ -106,7 +164,7 @@ test('manual startup waits for explicit open; restore can summarize and observed
   const f=await fixture(t,'manual'); await f.lifecycle.restore(); f.fresh(); await f.lifecycle.reconcile(); assert.equal(f.calls.length,0);
   await f.lifecycle.open('Manual task'); const source=(await f.store.readAgent('session')).record.workspaceId;
   const scope=f.lifecycle.captureScope(); assert.ok(scope);
-  f.move(); await f.lifecycle.reconcile(); assert.equal(f.lifecycle.state.kind,'suspended');
+  f.move(); await f.lifecycle.reconcile(); assert.equal(f.lifecycle.state.kind,'suspended'); assert.equal(f.lifecycle.captureScope(),undefined);
   await assert.rejects(f.lifecycle.assertCurrent(scope)); await f.lifecycle.reconcile();
   assert.equal((await f.store.readAgent('session')).record.workspaceId,source);
   await f.lifecycle.open(); assert.notEqual((await f.store.readAgent('session')).record.workspaceId,source);
@@ -190,7 +248,8 @@ test('partial launch retains a current attempt snapshot and never auto retries',
   const f=await fixture(t); await f.lifecycle.restore(); f.fresh();
   f.setHook(async args=>{if(args[0]==='plugin'&&args[2]==='open')throw new Error('uncertain launch');});
   await assert.rejects(f.lifecycle.reconcile(),/partial/i);
-  assert.ok(f.lifecycle.state.agent.record.displayAttempt); f.setHook(async()=>{});
+  assert.equal(f.lifecycle.state.kind,'suspended'); assert.equal(f.lifecycle.captureScope(),undefined);
+  assert.ok(f.lifecycle.lastKnownAgent.record.displayAttempt); f.setHook(async()=>{});
   await f.lifecycle.reconcile(); await f.lifecycle.reconcile(); assert.equal(f.launches(),1);
   await f.lifecycle.open(); assert.equal(f.launches(),2);
 });
@@ -226,14 +285,14 @@ test('two lifecycle controllers share a native group but never overwrite another
   await f.store.updateOwn(agentAuthority(a.record),{now:'First work'},a.revision);
   await f.store.updateOwn(agentAuthority(b.record),{now:'Second work'},b.revision);
   await f.lifecycle.reconcile(); await second.reconcile();
-  assert.equal(f.lifecycle.state.agent.record.now,'First work'); assert.equal(second.state.agent.record.now,'Second work'); assert.equal(f.launches(),2);
+  assert.equal(f.lifecycle.lastKnownAgent.record.now,'First work'); assert.equal(second.lastKnownAgent.record.now,'Second work'); assert.equal(f.launches(),2);
 });
 test('failed in-Herdr observation is not offline authorization; binding loss cannot silently rebind active group',async t=>{
   const f=await attached(t), id=(await f.store.readAgent('session')).record.workspaceId;
   for(const key of Object.keys(f.workspaces[0].tokens)) delete f.workspaces[0].tokens[key];
   await assert.rejects(f.lifecycle.reconcile(),/binding|lifetime/i);
   assert.equal((await f.store.readAgent('session')).record.workspaceId,id); assert.equal((await f.store.listWorkspaces()).length,1);
-  assert.equal(f.lifecycle.captureScope(),undefined); assert.ok(f.lifecycle.state.agent);
+  assert.equal(f.lifecycle.captureScope(),undefined); assert.ok(f.lifecycle.lastKnownAgent);
 });
 test('session change detected by reconciliation cancels the previous scope before refusing work',async t=>{
   const f=await attached(t), scope=f.lifecycle.captureScope(); f.session={...f.session,sessionId:'unrestored'};
@@ -355,8 +414,32 @@ test('an unreadable record suspends authority even when failure recovery cannot 
   await assert.rejects(f.lifecycle.reconcile(),/records unavailable/);
   assert.ok(scope.signal.aborted); assert.equal(f.lifecycle.captureScope(),undefined); assert.equal(f.lifecycle.state.kind,'suspended');
 });
+test('unattached and restored disposal never authorizes a scope or drops disposed state', async t => {
+  const f = await attached(t);
+  for (const restore of [false, true]) {
+    const lifecycle = new WorkspaceLifecycle(f.options);
+    if (restore) {
+      await lifecycle.restore();
+      assert.equal(lifecycle.state.kind, 'restored');
+      assert.ok(lifecycle.lastKnownAgent);
+    }
+    const agent = lifecycle.lastKnownAgent;
+    lifecycle.dispose();
+    assert.equal(lifecycle.state.kind, 'disposed');
+    assert.equal(lifecycle.lastKnownAgent, agent);
+    assert.equal(lifecycle.captureScope(), undefined);
+    await assert.rejects(lifecycle.restore());
+    lifecycle.invalidate();
+    assert.equal(lifecycle.state.kind, 'disposed');
+    assert.equal(lifecycle.captureScope(), undefined);
+  }
+});
+
 test('disposal cancels work and cannot be reactivated; existing offline record is exposed but not authorized',async t=>{
   const f=await attached(t); const restored=new WorkspaceLifecycle(f.options); await restored.restore();
   assert.equal(restored.state.kind,'restored'); assert.ok(restored.state.agent); assert.equal(restored.captureScope(),undefined);
-  const scope=f.lifecycle.captureScope(); f.lifecycle.dispose(); assert.ok(scope.signal.aborted); await assert.rejects(f.lifecycle.reconcile()); await assert.rejects(f.lifecycle.restore());
+  const scope=f.lifecycle.captureScope(); f.lifecycle.dispose(); assert.ok(scope.signal.aborted);
+  assert.equal(f.lifecycle.state.kind,'disposed'); assert.equal(f.lifecycle.captureScope(),undefined);
+  await assert.rejects(f.lifecycle.reconcile()); await assert.rejects(f.lifecycle.restore());
+  assert.equal(f.lifecycle.state.kind,'disposed'); assert.equal(f.lifecycle.captureScope(),undefined);
 });

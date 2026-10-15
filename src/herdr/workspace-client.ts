@@ -3,7 +3,7 @@ import { mkdir, realpath } from 'node:fs/promises';
 import { isDeepStrictEqual } from 'node:util';
 import { configPath, documentCommand, type WorkCardsConfig } from '../config.js';
 import { resolvedReferences } from '../presentation.js';
-import { RecordStore, resolveWorkspaceDocument, documentIdentity, referenceIdentity, validateMembership, type AgentRecord, type Authority, type DocumentIdentity, type JoinInput, type Snapshot, type WorkspaceRecord } from '../records.js';
+import { RecordStore, agentAuthority, sameAgentMembership, resolveWorkspaceDocument, documentIdentity, referenceIdentity, validateMembership, type AgentRecord, type DocumentIdentity, type JoinInput, type Snapshot, type WorkspaceRecord } from '../records.js';
 import { withWorkspaceLock } from './workspace-lock.js';
 import type { Pane, Workspace } from './workspace-ownership.js';
 import { HerdrTransport, type ClientOptions } from './transport.js';
@@ -13,14 +13,17 @@ import { classifyPair, firstPane, locateTerminal, nativeObject, nativePane, pair
 export interface NativeContext { socket: string; terminalId: string; workspaceId: string; tabId: string; bindingNonce?: string }
 export interface WorkspaceBinding { id: string; store: string; token: string; nonce: string; phase: 'reserved' | 'ready' }
 export interface Membership { workspace: Snapshot<WorkspaceRecord>; agent: Snapshot<AgentRecord>; binding: WorkspaceBinding; context: NativeContext }
+export type ReadyWorkspaceBinding = Omit<WorkspaceBinding, 'phase'> & { phase: 'ready' };
+export interface ReadyMembership extends Membership {
+  binding: ReadyWorkspaceBinding;
+  context: NativeContext & { bindingNonce: string };
+  ownership: PairState;
+}
 export type DisplayResult = { kind: 'paired'; pair: LivePair; agent: Snapshot<AgentRecord> } | { kind: 'suppressed'; ownership: PairState; agent: Snapshot<AgentRecord> };
 export type WorkspaceJoinInput = Omit<JoinInput, 'workspaceId' | 'membershipToken'> & { targetWorkspaceId?: string };
 const bindingKeys = ['wcw_id', 'wcw_store', 'wcw_token', 'wcw_nonce', 'wcw_phase'];
 const digest = (text: string): string => createHash('sha256').update(text).digest('hex');
 const cap = (text: string): string => Array.from(text).slice(0, 80).join('');
-export function agentAuthority(a: AgentRecord): Authority {
-  return { sessionId: a.sessionId, workspaceId: a.workspaceId, membershipToken: a.membershipToken, evidenceGeneration: a.evidenceGeneration };
-}
 function bindingOf(workspace: Workspace, store: string): WorkspaceBinding | undefined {
   const t = workspace.tokens;
   if (Object.keys(t).some(k => k.startsWith('wc_'))) throw new Error('Legacy workspace publisher must be explicitly resolved before joining');
@@ -71,20 +74,17 @@ export class WorkspaceClient extends HerdrTransport {
   }
   private async currentRecords(store: RecordStore, painted: Snapshot<AgentRecord>): Promise<{ agent: Snapshot<AgentRecord>; workspace: Snapshot<WorkspaceRecord> }> {
     if (await realpath(painted.path) !== await realpath(store.agentPath(painted.record.sessionId))) throw new Error('Foreign agent path');
-    const agent = await store.readAgent(painted.record.sessionId), a = painted.record, current = agent.record;
-    if (!isDeepStrictEqual(agentAuthority(a), agentAuthority(current)) || a.checkout !== current.checkout || a.cwd !== current.cwd) throw new Error('Stale workspace membership or evidence generation');
-    const workspace = await store.readWorkspace(current.workspaceId); validateMembership(workspace.record, current);
-    const confirmed = await store.readAgent(current.sessionId);
-    if (!isDeepStrictEqual(agentAuthority(current), agentAuthority(confirmed.record)) || current.checkout !== confirmed.record.checkout || current.cwd !== confirmed.record.cwd) throw new Error('Stale membership during paired record read');
-    return { agent: confirmed, workspace };
+    const records = await store.readMembership(painted.record.sessionId, agentAuthority(painted.record));
+    if (!sameAgentMembership(painted.record, records.agent.record)) throw new Error('Stale workspace membership');
+    return records;
   }
-  private bound(storeKey: string, workspace: Snapshot<WorkspaceRecord>, native: NativeSnapshot, context: NativeContext): WorkspaceBinding {
+  private bound(storeKey: string, workspace: Snapshot<WorkspaceRecord>, native: NativeSnapshot, context: NativeContext): ReadyWorkspaceBinding {
     const w = native.workspaces.find(w => w.workspace_id === context.workspaceId);
     if (!w) throw new Error('Missing caller workspace');
     if (native.panes.some(p => p.workspace_id === context.workspaceId && Object.keys(p.tokens).some(k => k.startsWith('wc_')))) throw new Error('Legacy live publisher conflict');
     const binding = bindingOf(w, storeKey);
     if (!binding || binding.phase !== 'ready' || binding.id !== workspace.record.id || binding.token !== workspace.record.creationToken) throw new Error('Stale or foreign ready workspace binding');
-    return binding;
+    return { ...binding, phase: binding.phase };
   }
   private async stamp(kind: 'pane' | 'workspace', target: Pane | Workspace, values: Record<string, string | null>, context: NativeContext, config: WorkCardsConfig, signal?: AbortSignal, prepare?: () => Promise<(snapshot: NativeSnapshot) => void>): Promise<void> {
     const validate = await prepare?.();
@@ -192,7 +192,7 @@ export class WorkspaceClient extends HerdrTransport {
     return state;
   }
   /** Readonly Pi authority: q-absent is valid membership, never permission to relaunch. */
-  async verifyMembership(store: RecordStore, context: NativeContext, painted: Snapshot<AgentRecord>, config: WorkCardsConfig, signal?: AbortSignal): Promise<Membership & { ownership: PairState }> {
+  async verifyMembership(store: RecordStore, context: NativeContext, painted: Snapshot<AgentRecord>, config: WorkCardsConfig, signal?: AbortSignal): Promise<ReadyMembership> {
     const records = await this.currentRecords(store, painted);
     const identity = await this.identity(store, records.agent), key = await this.storeKey(store);
     const live = await this.guard(context, config, signal);

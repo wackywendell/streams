@@ -1,8 +1,8 @@
 import { isDeepStrictEqual } from 'node:util';
 import type { WorkCardsConfig } from '../config.js';
-import { agentAuthority, type Membership, type NativeContext, type WorkspaceClient } from '../herdr/workspace-client.js';
+import { type ReadyMembership, type NativeContext, type WorkspaceClient } from '../herdr/workspace-client.js';
 import { pairKeys } from '../herdr/workspace-ownership.js';
-import { type AgentRecord, type Authority, type RecordStore, type ReferenceBoundary, type Snapshot } from '../records.js';
+import { agentAuthority, type AgentRecord, type Authority, type RecordStore, type ReferenceBoundary, type Snapshot } from '../records.js';
 import type { ProjectedEvidence } from './evidence.js';
 import { captureReferenceBoundary, projectSharedEvidence } from './shared-evidence.js';
 
@@ -21,10 +21,11 @@ export interface WorkspaceScope {
   readonly authority: Readonly<Authority>;
   readonly context: Readonly<NativeContext>;
 }
-export interface WorkspaceLifecycleState {
-  readonly kind: 'unattached' | 'restored' | 'active' | 'suspended' | 'disposed';
-  readonly agent?: Snapshot<AgentRecord>;
-}
+export type WorkspaceLifecycleState =
+  | { readonly kind: 'unattached' }
+  | { readonly kind: 'restored'; readonly agent: Snapshot<AgentRecord> }
+  | { readonly kind: 'active'; readonly membership: ReadyMembership }
+  | { readonly kind: 'suspended' | 'disposed'; readonly agent?: Snapshot<AgentRecord> };
 interface Ticket { generation: number; signal: AbortSignal; sessionId: string }
 interface CleanupTarget { context: NativeContext; agent: Snapshot<AgentRecord> }
 
@@ -40,37 +41,37 @@ export class WorkspaceLifecycle {
   private sessionId?: string;
   private baseline?: Readonly<ReferenceBoundary>;
   private context?: NativeContext;
-  private membership?: Membership;
   private owned?: CleanupTarget;
   private retiring?: CleanupTarget;
   private retired = false;
   private pendingReset = false;
-  private disposed = false;
   private value: WorkspaceLifecycleState = { kind: 'unattached' };
 
   constructor(private readonly host: WorkspaceLifecycleOptions) {}
   get state(): WorkspaceLifecycleState { return this.value; }
+  get lastKnownAgent(): Snapshot<AgentRecord> | undefined {
+    return this.value.kind === 'active' ? this.value.membership.agent : this.value.kind === 'unattached' ? undefined : this.value.agent;
+  }
 
   invalidate(): void {
     this.abort.abort();
     this.abort = new AbortController();
     this.generation++;
-    this.membership = undefined;
-    if (!this.disposed) this.value = { kind: this.value.agent ? 'suspended' : 'unattached', agent: this.value.agent };
+    const agent = this.lastKnownAgent;
+    this.value = this.value.kind === 'disposed' ? { kind: 'disposed', agent } : agent ? { kind: 'suspended', agent } : { kind: 'unattached' };
     this.host.onInvalidate?.();
   }
   dispose(): void {
-    this.disposed = true;
+    this.value = { kind: 'disposed', agent: this.lastKnownAgent };
     this.invalidate();
     this.abort.abort();
-    this.value = { kind: 'disposed', agent: this.value.agent };
   }
   private ticket(): Ticket {
     return { generation: this.generation, signal: this.abort.signal, sessionId: this.host.current().sessionId };
   }
   private check(t: Ticket): void {
     t.signal.throwIfAborted();
-    if (this.disposed || t.generation !== this.generation) throw new Error('Stale lifecycle generation');
+    if (this.value.kind === 'disposed' || t.generation !== this.generation) throw new Error('Stale lifecycle generation');
     if (this.host.current().sessionId !== t.sessionId) {
       this.invalidate();
       throw new Error('Session changed; restore before effects');
@@ -123,6 +124,7 @@ export class WorkspaceLifecycle {
   }
   /** Call only for a committed transition, or reactivation after a cancelled before-event. */
   restore(): Promise<WorkspaceLifecycleState> {
+    if (this.value.kind === 'disposed') return Promise.reject(new Error('Stale lifecycle generation'));
     const current = this.host.current();
     const boundary = captureReferenceBoundary(current.evidence);
     if (this.sessionId !== undefined && this.sessionId !== current.sessionId) this.retiring ??= this.owned;
@@ -137,7 +139,7 @@ export class WorkspaceLifecycle {
       let agent = await this.readAgent(t.sessionId); this.check(t);
       if (agent) agent = await this.resetAgent(t, agent, boundary);
       this.pendingReset = false;
-      this.value = { kind: agent ? 'restored' : 'unattached', agent };
+      this.value = agent ? { kind: 'restored', agent } : { kind: 'unattached' };
       return this.value;
     });
   }
@@ -223,14 +225,13 @@ export class WorkspaceLifecycle {
       }
       this.context = verified.context;
       this.owned = { agent: verified.agent, context: verified.context };
-      this.membership = verified;
-      this.value = { kind: 'active', agent: verified.agent };
+      this.value = { kind: 'active', membership: verified };
       return this.value;
     } catch (error) {
       if (!t.signal.aborted && t.generation === this.generation) {
         // Suspend before fallible recovery. A partial launch may already have persisted its attempt.
         this.renew(t);
-        this.value = { kind: 'suspended', agent: this.value.agent };
+        this.value = { kind: 'suspended', agent: this.lastKnownAgent };
         try {
           const agent = await this.readAgent(t.sessionId); this.check(t);
           if (this.owned?.agent.record.sessionId === t.sessionId && agent) this.owned = { ...this.owned, agent };
@@ -241,22 +242,23 @@ export class WorkspaceLifecycle {
     }
   }
   captureScope(): WorkspaceScope | undefined {
-    if (!this.membership || this.value.kind !== 'active' || this.host.current().sessionId !== this.sessionId) return undefined;
+    if (this.value.kind !== 'active' || this.host.current().sessionId !== this.sessionId) return undefined;
+    const { membership } = this.value;
     return Object.freeze({ generation: this.generation, signal: this.abort.signal,
-      authority: Object.freeze(agentAuthority(this.membership.agent.record)), context: Object.freeze({ ...this.membership.context }) });
+      authority: Object.freeze(agentAuthority(membership.agent.record)), context: Object.freeze({ ...membership.context }) });
   }
   /** Recheck immediately before future effects; this is not a lock across host/model work. */
-  assertCurrent(scope: WorkspaceScope): Promise<Membership> {
+  assertCurrent(scope: WorkspaceScope): Promise<ReadyMembership> {
     return this.enqueue(async t => {
       try {
-        if (!scope || scope.authority.sessionId !== t.sessionId || scope.signal.aborted || scope.generation !== t.generation || !this.membership ||
-            !isDeepStrictEqual(scope.authority, agentAuthority(this.membership.agent.record)) ||
-            !isDeepStrictEqual(scope.context, this.membership.context)) throw new Error('Stale summary scope');
-        if (projectSharedEvidence(this.host.current().evidence, this.membership.agent.record.boundary, 'continue').kind !== 'suffix') throw new Error('Evidence reset required');
-        const verified = await this.host.client.verifyMembership(this.host.store, scope.context, this.membership.agent, this.host.config, t.signal); this.check(t);
-        this.membership = verified;
+        if (!scope || scope.authority.sessionId !== t.sessionId || scope.signal.aborted || scope.generation !== t.generation || this.value.kind !== 'active') throw new Error('Stale summary scope');
+        const { membership } = this.value;
+        if (!isDeepStrictEqual(scope.authority, agentAuthority(membership.agent.record)) ||
+            !isDeepStrictEqual(scope.context, membership.context)) throw new Error('Stale summary scope');
+        if (projectSharedEvidence(this.host.current().evidence, membership.agent.record.boundary, 'continue').kind !== 'suffix') throw new Error('Evidence reset required');
+        const verified = await this.host.client.verifyMembership(this.host.store, scope.context, membership.agent, this.host.config, t.signal); this.check(t);
         this.owned = { context: verified.context, agent: verified.agent };
-        this.value = { kind: 'active', agent: verified.agent };
+        this.value = { kind: 'active', membership: verified };
         return verified;
       } catch (error) {
         if (!t.signal.aborted && scope?.generation === this.generation) this.invalidate();

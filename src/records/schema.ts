@@ -29,6 +29,20 @@ export interface ReferenceSelection { workspaceId: string; revision: string; ide
 export interface Authority { sessionId: string; workspaceId: string; membershipToken: string; evidenceGeneration: string }
 export type OwnUpdate = Partial<Pick<AgentRecord, 'title' | 'status' | 'statusShort' | 'now' | 'remaining'>>;
 
+export function agentAuthority(agent: AgentRecord): Authority {
+  return { sessionId: agent.sessionId, workspaceId: agent.workspaceId, membershipToken: agent.membershipToken, evidenceGeneration: agent.evidenceGeneration };
+}
+export function sameAgentMembership(a: AgentRecord, b: AgentRecord): boolean {
+  return a.sessionId === b.sessionId && a.workspaceId === b.workspaceId && a.membershipToken === b.membershipToken
+    && a.checkout === b.checkout && a.cwd === b.cwd;
+}
+export function assertAgentAuthority(agent: AgentRecord, authority: Authority): void {
+  const v = object(authority, ['sessionId', 'workspaceId', 'membershipToken', 'evidenceGeneration']);
+  for (const value of Object.values(v)) text(value, true);
+  if (agent.sessionId !== authority.sessionId || agent.workspaceId !== authority.workspaceId || agent.membershipToken !== authority.membershipToken) throw new Error('Stale workspace membership');
+  if (agent.evidenceGeneration !== authority.evidenceGeneration) throw new Error('Stale evidence generation');
+}
+
 export function object(value: unknown, keys: string[], required = keys): Record<string, unknown> {
   if (!value || typeof value !== 'object' || Array.isArray(value) || ![Object.prototype, null].includes(Object.getPrototypeOf(value))) throw new Error('Expected plain object');
   const input = value as Record<string, unknown>;

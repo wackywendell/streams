@@ -6,7 +6,7 @@ import { isDeepStrictEqual } from 'node:util';
 import { homedir } from 'node:os';
 import { parseDocument, stringify } from 'yaml';
 import {
-  absolute, applyOwnUpdate, applyReferenceRemoval, applySharedAdditions, documentIdentity, object, opaque, referenceIdentity,
+  absolute, applyOwnUpdate, applyReferenceRemoval, applySharedAdditions, assertAgentAuthority, documentIdentity, object, opaque, referenceIdentity, sameAgentMembership,
   text, validateAgent, validateBoundary, validateMembership, validateReferenceIdentity, validateSharedReferenceUpdate, validateWorkspace,
   type AgentRecord, type Authority, type DocumentIdentity, type OwnUpdate, type ReferenceBoundary,
   type ReferenceIdentity, type ReferenceSelection, type SharedReferenceUpdate, type Snapshot, type WorkspaceRecord,
@@ -84,6 +84,18 @@ export class RecordStore {
     if (result.record.sessionId !== sessionId) throw new Error('Agent session identity mismatch');
     return result;
   }
+  /** Paired observation, not a transaction or lease: callers must still guard subsequent effects. */
+  async readMembership(sessionId: string, expectedAuthority?: Authority): Promise<{ agent: Snapshot<AgentRecord>; workspace: Snapshot<WorkspaceRecord> }> {
+    const expected = expectedAuthority ? { ...expectedAuthority } : undefined;
+    const before = await this.readAgent(sessionId);
+    if (expected) assertAgentAuthority(before.record, expected);
+    const workspace = await this.readWorkspace(before.record.workspaceId);
+    const agent = await this.readAgent(sessionId);
+    if (expected) assertAgentAuthority(agent.record, expected);
+    if (!sameAgentMembership(before.record, agent.record)) throw new Error('Agent membership changed during paired record read');
+    validateMembership(workspace.record, agent.record);
+    return { agent, workspace };
+  }
   async listWorkspaces(): Promise<Snapshot<WorkspaceRecord>[]> {
     const names = await optional(() => readdir(join(this.directory, 'workspaces'))) ?? [];
     return Promise.all(names.filter(n => n.endsWith('.yaml')).sort().map(n => this.readWorkspace(n.slice(0, -5))));
@@ -148,11 +160,8 @@ export class RecordStore {
     return this.publish(this.workspacePath(validated.id), { ...validated, mutationToken: randomUUID() }, current, signal);
   }
   private async caller(authority: Authority): Promise<Snapshot<AgentRecord>> {
-    const v = object(authority, ['sessionId', 'workspaceId', 'membershipToken', 'evidenceGeneration']);
-    for (const value of Object.values(v)) text(value, true);
     const a = await this.readAgent(authority.sessionId);
-    if (a.record.workspaceId !== authority.workspaceId || a.record.membershipToken !== authority.membershipToken) throw new Error('Stale workspace membership');
-    if (a.record.evidenceGeneration !== authority.evidenceGeneration) throw new Error('Stale evidence generation');
+    assertAgentAuthority(a.record, authority);
     return a;
   }
   async createWorkspace(input: { id: string; creationToken: string; title: string }, signal?: AbortSignal): Promise<Snapshot<WorkspaceRecord>> {

@@ -1,6 +1,6 @@
 import { isDeepStrictEqual } from 'node:util';
 import {
-  validateMembership, type Authority, type DocumentIdentity, type RecordStore,
+  type Authority, type DocumentIdentity, type RecordStore,
   type Snapshot, type WorkspaceRecord,
 } from '../records.js';
 import { capturePlanSources, isMarkdownDocument, recheckPlanSources, validatePlanSelection } from './plan-sources.js';
@@ -44,11 +44,7 @@ export class PlanRefresher<TModel extends { api?: string }> {
     const forced = intent !== 'automatic';
     const current = async (expectedRevision?: string): Promise<Snapshot<WorkspaceRecord>> => {
       signal.throwIfAborted();
-      const agent = await store.readAgent(authority.sessionId);
-      if (agent.record.workspaceId !== authority.workspaceId || agent.record.membershipToken !== authority.membershipToken) throw new Error('Stale workspace membership');
-      if (agent.record.evidenceGeneration !== authority.evidenceGeneration) throw new Error('Stale evidence generation');
-      const workspace = await store.readWorkspace(authority.workspaceId);
-      validateMembership(workspace.record, agent.record);
+      const { workspace } = await store.readMembership(authority.sessionId, authority);
       if (expectedRevision !== undefined && workspace.revision !== expectedRevision) throw new Error('Stale workspace revision during plan refresh');
       await assertCurrent();
       signal.throwIfAborted();

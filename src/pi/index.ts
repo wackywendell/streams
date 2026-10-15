@@ -4,15 +4,16 @@ import { resolve } from 'node:path';
 import { parseSessionEntries, type ExtensionAPI, type ExtensionContext } from '@earendil-works/pi-coding-agent';
 import { Type } from 'typebox';
 import { loadConfig, type WorkCardsConfig } from '../config.js';
-import { RecordStore, recordDirectory, validateMembership, type Authority } from '../records.js';
+import { RecordStore, recordDirectory, validateMembership, agentAuthority, type Authority } from '../records.js';
 import { composeView, resolvedReferences, selectReference } from '../presentation.js';
-import { WorkspaceClient, agentAuthority, type NativeContext } from '../herdr/workspace-client.js';
+import { WorkspaceClient, type NativeContext } from '../herdr/workspace-client.js';
 import { createCheckScheduler, type CheckIntent, type CheckScheduler } from './scheduler.js';
 import { normalizeEvidence, normalizeReferenceEvidence, referenceEvidenceContinues, type ReferenceEvidence } from './evidence.js';
 import { WorkspaceLifecycle, type WorkspaceScope, type WorkspaceSession } from './workspace-lifecycle.js';
 import { WorkspaceRefresher } from './workspace-refresh.js';
 import type { RefreshDiagnostic } from './plan-refresh.js';
 import type { SummaryRegistry } from './summarizer.js';
+import { RequestLane } from './request-lane.js';
 
 const stateEntry = 'work-cards.workspace';
 const usage = 'Usage: /work-card new <title> | open [workspace-id] | refresh | reset | show | detach | remove <substring>';
@@ -69,8 +70,7 @@ export function registerWorkCards(pi: ExtensionAPI, overrides: Partial<Dependenc
   let poll: ReturnType<typeof setTimeout> | undefined;
   let stopActivity: (() => void) | undefined;
   let tail: Promise<unknown> = Promise.resolve();
-  let requestFinished: Promise<void> | undefined;
-  let providerFinished: Promise<void> = Promise.resolve();
+  const requests = new RequestLane();
   let diagnostics: RefreshReport | undefined;
   const warnings = new Set<string>();
   const inHerdr = () => deps.env.HERDR_ENV === '1';
@@ -131,7 +131,7 @@ export function registerWorkCards(pi: ExtensionAPI, overrides: Partial<Dependenc
   }
   async function projectSummaries(): Promise<void> {
     if (!updates || !config || !inHerdr()) return;
-    const scope = lifecycle?.captureScope(), agent = lifecycle?.state.agent;
+    const scope = lifecycle?.captureScope(), agent = lifecycle?.lastKnownAgent;
     if (!scope || !agent) return;
     const token = generation;
     try {
@@ -141,11 +141,10 @@ export function registerWorkCards(pi: ExtensionAPI, overrides: Partial<Dependenc
     }
   }
   async function check(evidence: Evidence, signal: AbortSignal, intent: CheckIntent): Promise<void> {
-    // Keep this gate across scheduler replacement: an aborted provider may settle late.
-    if (requestFinished) await requestFinished;
+    await requests.run(evidence.session.sessionId, signal, () => checkOwned(evidence, signal, intent));
+  }
+  async function checkOwned(evidence: Evidence, signal: AbortSignal, intent: CheckIntent): Promise<void> {
     if (signal.aborted || disposed || evidence.generation !== generation || !config || !updates) return;
-    let finish!: () => void;
-    const gate = requestFinished = new Promise<void>(resolve => { finish = resolve; });
     const report: RefreshReport = { workspaceId: evidence.authority.workspaceId, intent, state: 'running', stages: [] };
     diagnostics = report;
     try {
@@ -155,9 +154,7 @@ export function registerWorkCards(pi: ExtensionAPI, overrides: Partial<Dependenc
         const registry: SummaryRegistry<{ api?: string }> = {
           find: (provider, modelId) => original.find(provider, modelId),
           streamSimple(model, context, options) {
-            const result = original.streamSimple(model as Parameters<typeof original.streamSimple>[0], context, options).result();
-            // Consume late rejection and retain transport settlement, not just abortable processing.
-            providerFinished = result.then(() => {}, () => {});
+            const result = requests.provider(() => original.streamSimple(model as Parameters<typeof original.streamSimple>[0], context, options).result());
             return { result: () => result };
           },
         };
@@ -186,7 +183,6 @@ export function registerWorkCards(pi: ExtensionAPI, overrides: Partial<Dependenc
       if (failed) throw new Error(`${intent} ${failed.stage} stage failed: ${errorText(error)}`, { cause: error });
       throw error;
     } finally {
-      void providerFinished.then(() => { finish(); if (requestFinished === gate) requestFinished = undefined; });
       schedulePoll();
     }
   }
@@ -349,7 +345,7 @@ export function registerWorkCards(pi: ExtensionAPI, overrides: Partial<Dependenc
           // Pause is persisted synchronously before native cleanup or configuration can fail.
           updates = false; savedCleanup = lifecycle?.cleanupContext() ?? savedCleanup;
           lifecycle?.invalidate(); cancel();
-          save(lifecycle?.state.agent?.record.workspaceId ?? savedWorkspaceId);
+          save(lifecycle?.lastKnownAgent?.record.workspaceId ?? savedWorkspaceId);
         }
         await enqueue(async () => {
           assertHost();
