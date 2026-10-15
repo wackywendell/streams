@@ -13,7 +13,7 @@ Records live under `$XDG_STATE_HOME/herdr/cards`, defaulting to `~/.local/state/
 
 These are strict, versioned records. Unknown fields, duplicate YAML keys, invalid membership and unsafe paths fail visibly. Writes use locks, revision checks and atomic publication. Cooperating writers cannot silently overwrite stale revisions. External editors do not honour these locks.
 
-Goal, Now and Remaining are separate fields, not an encoded prose string. Goal comes from selected registered Markdown documents: purpose-bearing designs, ADRs, relevant README files and plans. Documents establish intent, never proof of completed work. With no suitable registered source, Goal remains unknown. Own summaries use the agent's dialogue and compaction checkpoint. Shared reference proposals use only fresh dialogue from the current membership.
+Goal, Now and Remaining are separate fields, not an encoded prose string. Goal comes from selected registered Markdown documents: purpose-bearing designs, ADRs, relevant README files and plans. Documents establish intent, never proof of completed work. With no suitable registered source, Goal remains unknown. Own summaries use the agent's dialogue and compaction checkpoint. Shared reference proposals use the full available dialogue, checkpoint and inline file-operation paths.
 
 Documents form a small current reading list, not a history of useful files. Helpers should prefer a few complementary documents explaining the purpose, governing current work or providing an active plan. Usually 3 to 5 is guidance, not a quota or hard cap. Reading or editing a file does not qualify it. Explicitly requested pins remain possible. There is no automatic pruning or separate cleanup job.
 
@@ -29,12 +29,19 @@ Records are local host state, with no automatic backup or synchronisation. Keep 
 | --- | --- |
 | `/work-card new <title>` | Attach to workspace context and set this agent's assignment title without replacing shared context |
 | `/work-card open [workspace-id]` | Open or join verified workspace context, optionally selecting an existing durable workspace |
-| `/work-card refresh` | Request a summary check and force plan selection without reopening a closed display |
+| `/work-card refresh` | Reconcile with the prior card and force plan selection without reopening a closed display |
+| `/work-card reset` | Infer own summaries and reference additions afresh, then recompute document-derived Goal; retain attachment and stored references |
 | `/work-card show` | Show the current workspace, own agent, resolved references and latest refresh diagnostics |
 | `/work-card detach` | Pause updates durably and close only the owned display; retain records |
 | `/work-card remove <substring>` | Remove a uniquely matching document path or URL from shared references |
 
 To let the summarizer name a new assignment, use `/work-card open` without a title. If no title is available yet, it starts as `Untitled task` and remains eligible for automatic renaming. `/work-card new <title>` sets a manual title instead. Opening an existing assignment preserves its title mode.
+
+Reset omits the existing own summary and shared workspace title, Goal and references from the dialogue helpers' inputs. It requires a complete, validated own proposal, including empty fields when unknown; partial updates and `no_change` are rejected. It never clears records before successful inference. Stages still publish separately: a later failure does not roll back an earlier validated update.
+
+Reset preserves session and workspace identities, membership, checkout registrations, manual titles, all existing references and removal exclusions. References have no manual-versus-generated provenance, so reset preserves both. New additions use the normal guarded merge. Reset cannot relabel existing links it did not supply to the helper. Other agents' progress is untouched.
+
+Reset forces source selection and Goal inference from registered Markdown documents, not dialogue or repository crawling. It uses available projected dialogue, file-operation paths and compaction; it does not recover raw logs or lost precompaction context. It requires an attached, unpaused session and never opens a display or joins a workspace. Use open to attach or resume first.
 
 Removal matches literal path or URL text, not descriptions. Ambiguous matches fail rather than opening a picker. Removal changes metadata, not source files, and records an exclusion against automatic re-addition.
 
@@ -75,13 +82,15 @@ Document failures remain visible. Partial native failures report known tab ident
 
 ## Helper updates
 
-`check_every_n_responses` counts distinct changes in normalised user and assistant text, including projected compaction changes. It does not count tool calls or raw event notifications. Zero disables automatic checks, not explicit refresh. Idle membership polling makes no helper calls.
+`check_every_n_responses` counts distinct changes in projected dialogue, compaction and allowed file-operation evidence. Other tool calls and raw event notifications do not count. Zero disables automatic checks, not explicit refresh or reset. Idle membership polling makes no helper calls.
 
-Only one check runs at a time per session. New eligible input replaces pending input; busy refreshes coalesce. Invalidated membership, session changes and cancellation prevent stale updates. Own-agent summaries and shared-reference collection receive the latest projected compaction summary and all available dialogue, without an application text cap. The reference collector judges relevance against the workspace's current title, Goal and known references. Attachment boundaries still guard continuity and fresh-input startup; they do not limit reference evidence. Explicit removal exclusions remain authoritative.
+Only one check runs at a time per session. New eligible input replaces pending input; busy requests coalesce, retaining the strongest pending intent: reset, then refresh, then automatic. Invalidated membership, session changes and cancellation prevent stale updates. Own-agent summaries and shared-reference collection receive the latest projected compaction summary and all available dialogue, without an application text cap. The reference collector judges relevance against the workspace's current title, Goal and known references. Attachment boundaries still guard continuity and fresh-input startup; they do not limit reference evidence. Explicit removal exclusions remain authoritative.
+
+Reference evidence includes chronological `read`, `write` and `edit` operation names and paths, not tool bodies, outputs or arbitrary arguments. These are attempted operations, not proof of success or automatic reference admission. Supported codemode nested-call metadata contributes paths only when its parent call remains visible. Shell commands are not parsed. Own summaries remain dialogue-only; Goal remains document-only. Editing or removing captured projected evidence invalidates an in-flight result; appending evidence does not.
 
 Helpers have no executable tools. Own updates, shared proposals, source selection and Goal inference have separate validated protocols. Shared proposals can add references and label exact existing issue/PR URLs; they cannot replace lists, URLs or descriptions. Label updates skip references removed or described differently since the request. Helpers cannot change runtime identities, arbitrary checkout roots or source files. Selected Markdown documents are read through the checked checkout resolver, up to 256 KiB each. Oversized or unreadable selected sources fail visibly rather than becoming silently truncated plans. Sources are rechecked before publication.
 
-Refresh diagnostics distinguish own updates, shared proposals, source selection and Goal inference, including failures, skipped Goal inference and successful selection with no sources. Explicit refresh reports its result. Diagnostics contain no dialogue or document contents and are not persisted; inspection makes no helper requests. Sidebar publication failures are reported separately from successful record updates.
+Refresh diagnostics distinguish own updates, shared proposals, source selection and Goal inference, including failures, skipped Goal inference and successful selection with no sources. Explicit refresh and reset report their results and diagnostic intent. Diagnostics contain no dialogue or document contents and are not persisted; inspection makes no helper requests. Sidebar publication failures are reported separately from successful record updates.
 
 Short fields have validated display-cell limits. Full-summary brevity, maturity assessment, source interpretation and semantic reference admission remain model behaviour, not validator guarantees. No-change decisions leave record bytes and modification times untouched. Provider context errors are visible, without silent input trimming or automatic retries.
 

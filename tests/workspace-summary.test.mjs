@@ -14,6 +14,49 @@ const agent = validateAgent({ version: 1, workspaceId: 'w', sessionId: 's', memb
 const options = { model: 'helpers/simple', thinking_level: null, max_output_tokens: 512, request_timeout_ms: 1000 };
 const profiles = async () => ({ simple: { thinkingLevel: 'low' } });
 const data = context => JSON.parse(context.messages[0].content[0].text);
+test('reference helper treats inline file activity as candidate evidence, never completion or admission proof', () => {
+  const evidence = { compactionSummary: null, transcript: [{ role: 'tool_activity', operation: 'read', path: 'plan.md' }] };
+  for (const intent of ['automatic', 'refresh', 'reset']) {
+    const input = buildSharedAdditionsContext(workspace, 'repo', evidence, intent);
+    assert.deepEqual(data(input).transcript, evidence.transcript);
+    assert.match(input.systemPrompt, /tool_activity.*attempted/i);
+    assert.match(input.systemPrompt, /not.*success.*completion/i);
+    assert.match(input.systemPrompt, /not.*automatically.*references/i);
+  }
+});
+
+test('reset helper inputs omit prior generated context; refresh keeps it', () => {
+  const evidence = { compactionSummary: 'Checkpoint', transcript: [{ role: 'user', text: 'Fresh task' }] };
+  const ownReset = buildOwnSummaryContext(agent, evidence, workspace, 'reset');
+  assert.deepEqual(data(ownReset), { ...evidence, agent: { checkout: agent.checkout, cwd: agent.cwd } });
+  assert.match(ownReset.systemPrompt, /complete.*proposal/i);
+  const sharedReset = buildSharedAdditionsContext(workspace, 'repo', evidence, 'reset');
+  assert.deepEqual(data(sharedReset), { ...evidence, checkouts: workspace.checkouts, ownCheckout: 'repo' });
+  assert.equal(data(buildOwnSummaryContext(agent, evidence, workspace, 'refresh')).agent.title, agent.title);
+  assert.ok(data(buildSharedAdditionsContext(workspace, 'repo', evidence, 'refresh')).references);
+});
+
+test('reset own proposals must replace every derived field, never no_change or partial updates', () => {
+  const complete = { title: 'Fresh task', status: 'active', statusShort: '', now: '', remaining: '' };
+  const parse = value => parseOwnSummaryDecision(JSON.stringify(value), agent, 'reset');
+  assert.deepEqual(parse({ action: 'update', patch: complete }), { action: 'update', patch: complete });
+  assert.throws(() => parse({ action: 'no_change' }));
+  for (const key of Object.keys(complete)) {
+    const patch = { ...complete }; delete patch[key];
+    assert.throws(() => parse({ action: 'update', patch }));
+  }
+  assert.throws(() => parse({ action: 'update', patch: { ...complete, statusShort: 'x'.repeat(24) } }));
+  const applied = applyOwnUpdate({ ...agent, now: 'Stale now', remaining: 'Stale scope' }, parse({ action: 'update', patch: complete }).patch);
+  assert.equal(applied.title, agent.title);
+  assert.equal(applied.now, ''); assert.equal(applied.remaining, '');
+});
+
+test('reset shared proposals cannot relabel links omitted from their input', () => {
+  const snapshot = { ...workspace, issues: [{ url: 'https://example.com/issue', description: 'Existing' }] };
+  assert.throws(() => parseSharedAdditionsDecision(JSON.stringify({ action: 'update', labels: [{ url: snapshot.issues[0].url, label: 'Unseen' }] }), snapshot, 'reset'));
+  assert.equal(parseSharedAdditionsDecision('{"action":"no_change"}', snapshot, 'reset').action, 'no_change');
+});
+
 const own = value => parseOwnSummaryDecision(JSON.stringify(value), agent);
 const shared = value => parseSharedAdditionsDecision(JSON.stringify(value), workspace);
 const select = value => parsePlanSelectionDecision(JSON.stringify(value), workspace);

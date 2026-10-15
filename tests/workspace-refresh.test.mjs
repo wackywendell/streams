@@ -45,6 +45,90 @@ async function fixture(t) {
     agent: () => store.readAgent('s'), workspace: () => store.readWorkspace('w'),
   };
 }
+test('reference-only evidence is copied before awaits and never sent to own inference', async t => {
+  const f = await fixture(t);
+  const referenceEvidence = { compactionSummary: null, transcript: [{ role: 'tool_activity', operation: 'edit', path: 'plan.md' }] };
+  f.handlers.own = () => { referenceEvidence.transcript[0].path = 'Injected'; return noChange(); };
+  await f.refresh({ evidence: { compactionSummary: null, transcript: [] }, referenceEvidence,
+    authority: { ...f.authority, evidenceGeneration: (await f.store.resetEvidence(f.authority, captureReferenceBoundary({ compactionSummary: null, transcript: [] }), (await f.agent()).revision)).record.evidenceGeneration } });
+  assert.deepEqual(f.calls.find(c => c.kind === 'own').data.transcript, []);
+  assert.deepEqual(f.calls.find(c => c.kind === 'shared').data.transcript, [{ role: 'tool_activity', operation: 'edit', path: 'plan.md' }]);
+});
+
+const freshOwn = () => ({ action: 'update', patch: { title: 'Fresh assignment', status: 'active', statusShort: '', now: '', remaining: '' } });
+
+test('reset replaces derived own fields but preserves identities, manual titles, references, exclusions and other agents', async t => {
+  const f = await fixture(t);
+  await f.store.setOwnTitle(f.authority, 'Manual agent', (await f.agent()).revision);
+  await f.store.setWorkspaceTitle(f.authority, 'Manual workspace', (await f.workspace()).revision);
+  await f.store.updateOwn(f.authority, { now: 'Stale now', remaining: 'Stale scope', statusShort: 'Stale stage' }, (await f.agent()).revision);
+  await f.store.addReferences(f.authority, { documents: [{ ...f.identity, description: 'Plan' }], issues: [issue('keep'), issue('removed')], prs: [issue('keep-pr')] });
+  const w = await f.workspace();
+  await f.store.removeReference(f.authority, { workspaceId: 'w', revision: w.revision, identity: referenceIdentity(issue('removed')) });
+  const other = await f.store.join({ workspaceId: 'w', sessionId: 'other', cwd: f.root, membershipToken: 'other', boundary: f.boundary, title: 'Other' });
+  const beforeAgent = (await f.agent()).record, beforeWorkspace = (await f.workspace()).record;
+  f.handlers.own = data => {
+    assert.deepEqual(data.agent, { checkout: beforeAgent.checkout, cwd: beforeAgent.cwd });
+    assert.equal(data.workspace, undefined);
+    return freshOwn();
+  };
+  f.handlers.shared = data => {
+    assert.equal(data.workspace, undefined); assert.equal(data.references, undefined);
+    return { action: 'update', additions: { issues: [issue('removed'), issue('new')] } };
+  };
+  const result = await f.refresh({ intent: 'reset' });
+  const { title: ignoredTitle, ...derived } = freshOwn().patch;
+  assert.deepEqual(result.agent.record, { ...beforeAgent, ...derived });
+  assert.equal(result.workspace.record.title, 'Manual workspace');
+  for (const key of ['id', 'creationToken', 'checkouts', 'documents', 'prs', 'exclusions']) assert.deepEqual(result.workspace.record[key], beforeWorkspace[key]);
+  assert.deepEqual(result.workspace.record.issues, [issue('keep'), issue('new')]);
+  assert.equal((await f.store.readAgent('other')).revision, other.revision);
+  assert.equal(result.workspace.record.goal, 'Deliver library');
+});
+
+for (const proposal of [noChange(), { action: 'update', patch: { now: '' } }, { action: 'update', patch: { ...freshOwn().patch, statusShort: 'x'.repeat(24) } }]) {
+  test(`invalid reset own proposal never preclears stored records: ${JSON.stringify(proposal)}`, async t => {
+    const f = await fixture(t);
+    await f.store.updateOwn(f.authority, { now: 'Retained progress', remaining: 'Retained scope', statusShort: 'Retained stage' }, (await f.agent()).revision);
+    const a = await f.agent(), w = await f.workspace();
+    const before = [await fileState(a.path), await fileState(w.path)];
+    f.handlers.own = () => proposal;
+    await assert.rejects(f.refresh({ intent: 'reset' }));
+    assert.deepEqual([await fileState(a.path), await fileState(w.path)], before);
+    assert.deepEqual(kinds(f), ['own']);
+  });
+}
+
+test('reset forces document selection and Goal inference through unchanged caches with document-only inputs', async t => {
+  const f = await fixture(t);
+  await f.store.addReferences(f.authority, { documents: [{ ...f.identity, description: 'Plan' }] });
+  await f.refresh();
+  f.calls.length = 0;
+  f.handlers.own = freshOwn;
+  const before = (await f.agent()).record;
+  // Even identical long fields must not preserve an unseen derived short.
+  await f.store.updateOwn(f.authority, { statusShort: 'Stale stage' }, (await f.agent()).revision);
+  f.handlers.own = () => ({ action: 'update', patch: { title: before.title, status: before.status, now: before.now, remaining: before.remaining, statusShort: '' } });
+  const events = [];
+  const result = await f.refresh({ intent: 'reset', onDiagnostic: e => events.push(e) });
+  assert.deepEqual(kinds(f), ['own', 'shared', 'select', 'goal']);
+  assert.equal(result.agent.record.statusShort, '');
+  assert.deepEqual(f.calls.at(-1).data, { sources: [{ identity: f.identity, content: 'Deliver a library and client' }] });
+  assert.deepEqual(Object.keys(f.calls.at(-2).data), ['documents']);
+  assert.equal(events.find(e => e.stage === 'selection').cacheHit, false);
+});
+
+test('reset rejects oversized Goal short instead of retaining an unseen old short for an identical Goal', async t => {
+  const f = await fixture(t);
+  await f.store.addReferences(f.authority, { documents: [{ ...f.identity, description: 'Plan' }] });
+  await f.refresh();
+  const before = await fileState((await f.workspace()).path);
+  f.handlers.own = freshOwn;
+  f.handlers.goal = () => ({ goal: 'Deliver library', goalShort: 'x'.repeat(26) });
+  await assert.rejects(f.refresh({ intent: 'reset' }), /goalShort|short/i);
+  assert.deepEqual(await fileState((await f.workspace()).path), before);
+});
+
 async function fileState(path) { return { bytes: await readFile(path, 'utf8'), mtime: (await stat(path, { bigint: true })).mtimeNs }; }
 const kinds = f => f.calls.map(c => c.kind);
 const issue = url => ({ url: `https://example.com/${url}`, description: url });
@@ -176,16 +260,16 @@ for (const stage of ['own', 'shared']) for (const invalid of ['move', 'reset', '
   });
 }
 
-test('captures authority, evidence and force before awaits so caller mutation cannot retarget a request', async t => {
+test('captures authority, evidence and intent before awaits so caller mutation cannot retarget a request', async t => {
   const f = await fixture(t);
   await f.store.addReferences(f.authority, { documents: [{ ...f.identity, description: 'Plan' }] });
   await f.refresh(); f.calls.length = 0;
-  const input = { ...f.input, authority: { ...f.authority }, evidence: structuredClone(f.evidence), force: true };
+  const input = { ...f.input, authority: { ...f.authority }, evidence: structuredClone(f.evidence), intent: 'refresh' };
   const expectedEvidence = structuredClone(input.evidence);
   f.host(async () => {
     input.authority.sessionId = 'other'; input.authority.workspaceId = 'other';
     input.evidence.compactionSummary = 'Mutated'; input.evidence.transcript[0].text = 'Mutated';
-    input.evidence.transcript.push({ role: 'user', text: 'Injected' }); input.force = false;
+    input.evidence.transcript.push({ role: 'user', text: 'Injected' }); input.intent = 'automatic';
   });
   f.handlers.own = () => ({ action: 'update', patch: { now: 'Captured request' } });
   const result = await f.refresher.refresh(input);
@@ -242,7 +326,7 @@ test('newly added plans participate immediately; retained plan cache skips stabl
   await f.refresh();
   assert.deepEqual(kinds(f), ['own', 'shared', 'select', 'goal', 'own', 'shared']);
   assert.deepEqual([await fileState(first.agent.path), await fileState(first.workspace.path)], before);
-  await f.refresh({ force: true });
+  await f.refresh({ intent: 'refresh' });
   assert.deepEqual(kinds(f).slice(-4), ['own', 'shared', 'select', 'goal']);
   await writeFile(join(f.root, 'plan.md'), 'Changed intended scope');
   await f.refresh(); assert.deepEqual(kinds(f).slice(-3), ['own', 'shared', 'goal']);

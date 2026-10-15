@@ -59,7 +59,7 @@ test('initial selection is metadata-only, stable checks skip inference and force
   assert.equal(activity, 2); assert.equal(stopped, 2);
   assert.equal((await f.refresh()).revision, first.revision);
   f.goal(() => ({ goal: 'Corrected goal', goalShort: 'Corrected goal' }));
-  const corrected = await f.refresh({ force: true });
+  const corrected = await f.refresh({ intent: 'refresh' });
   assert.equal(corrected.record.goal, 'Corrected goal');
   assert.deepEqual(f.calls.map(c => c.kind), ['select', 'goal', 'select', 'goal']);
   await writeFile(f.path, 'Deliver changed capability');
@@ -82,7 +82,7 @@ test('candidate descriptions and identities invalidate selection, unrelated non-
 
 test('empty selection clears provenance and does not call goal model', async t => {
   const f = await fixture(t); await f.refresh(); f.select(() => ({ sources: [] }));
-  const result = await f.refresh({ force: true });
+  const result = await f.refresh({ intent: 'refresh' });
   assert.equal(result.record.goal, ''); assert.deepEqual(result.record.planSources, []); assert.equal(result.record.sourceFingerprint, null);
   await f.refresh(); assert.deepEqual(f.calls.map(c => c.kind), ['select', 'goal', 'select']);
 });
@@ -133,7 +133,7 @@ for (const mutation of ['bytes', 'remove', 'description', 'root', 'shared', 'pla
       if (mutation === 'host') f.host(async () => { throw new Error('host invalidated'); });
       return { goal: 'Must not apply', goalShort: 'Must not apply' };
     });
-    await assert.rejects(f.refresh({ force: true }));
+    await assert.rejects(f.refresh({ intent: 'refresh' }));
     assert.notEqual((await f.workspace()).record.goal, 'Must not apply');
     assert.equal(f.calls.length, 2);
   });
@@ -185,7 +185,7 @@ test('explicit force can replace a cached choice and infer from the new source',
   await f.store.addReferences(f.authority, { documents: [{ ...other, description: 'Alternative' }] });
   await f.refresh(); f.select(() => ({ sources: [other] }));
   await f.refresh(); assert.equal(f.calls.length, 2);
-  const result = await f.refresh({ force: true });
+  const result = await f.refresh({ intent: 'refresh' });
   assert.deepEqual(result.record.planSources, [other]);
   assert.equal(f.calls.at(-1).data.sources[0].content, 'Another intended scope');
   assert.deepEqual(f.calls.map(c => c.kind), ['select', 'goal', 'select', 'goal']);
@@ -267,7 +267,7 @@ test('oversized Goal short preserves the full Goal, title and provenance, then r
 test('oversized Goal short leaves an unchanged valid short intact rather than overwriting it', async t => {
   const f = await fixture(t); const first = await f.refresh();
   f.goal(() => ({ goal: first.record.goal, goalShort: 'x'.repeat(26) }));
-  const result = await f.refresh({ force: true });
+  const result = await f.refresh({ intent: 'refresh' });
   assert.equal(result.record.goalShort, first.record.goalShort);
   assert.equal(result.revision, first.revision);
   assert.deepEqual(f.calls.map(c => c.kind), ['select', 'goal', 'select', 'goal']);
@@ -286,7 +286,7 @@ test('diagnostics distinguish selection, cache, no sources and successful goal w
     { stage: 'selection', outcome: 'selected', selectedCount: 1, cacheHit: true },
     { stage: 'goal', outcome: 'unchanged' },
   ]);
-  events.length = 0; f.select(() => ({ sources: [] })); await f.refresh({ force: true, onDiagnostic });
+  events.length = 0; f.select(() => ({ sources: [] })); await f.refresh({ intent: 'refresh', onDiagnostic });
   assert.deepEqual(events, [
     { stage: 'selection', outcome: 'no_sources', selectedCount: 0, cacheHit: false },
     { stage: 'goal', outcome: 'no_sources' },

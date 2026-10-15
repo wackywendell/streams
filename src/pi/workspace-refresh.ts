@@ -1,7 +1,7 @@
 import {
   validateMembership, type AgentRecord, type RecordStore, type Snapshot, type WorkspaceRecord,
 } from '../records.js';
-import type { ProjectedEvidence } from './evidence.js';
+import type { ProjectedEvidence, ReferenceEvidence } from './evidence.js';
 import { PlanRefresher, type PlanRefreshInput } from './plan-refresh.js';
 import { projectSharedEvidence } from './shared-evidence.js';
 import type { SummaryRegistry, SummaryRequestOptions } from './summarizer.js';
@@ -9,6 +9,7 @@ import { requestOwnSummary, requestSharedAdditions } from './workspace-summary.j
 
 export interface WorkspaceRefreshInput extends PlanRefreshInput {
   evidence: ProjectedEvidence;
+  referenceEvidence?: ReferenceEvidence;
 }
 export interface WorkspaceRefreshResult {
   agent: Snapshot<AgentRecord>;
@@ -32,7 +33,9 @@ export class WorkspaceRefresher<TModel extends { api?: string }> {
     const { store, registry, options, loadHelperProfiles } = this.config;
     const authority = { ...input.authority };
     const evidence = structuredClone(input.evidence);
-    const { signal, assertCurrent, force, onRequest, onDiagnostic } = input;
+    const referenceEvidence = structuredClone(input.referenceEvidence ?? input.evidence);
+    const { signal, assertCurrent, intent = 'automatic', onRequest, onDiagnostic } = input;
+    const requestOptions = { ...options, intent };
     const current = async (): Promise<WorkspaceRefreshResult> => {
       signal.throwIfAborted();
       const agent = await store.readAgent(authority.sessionId);
@@ -49,7 +52,7 @@ export class WorkspaceRefresher<TModel extends { api?: string }> {
     try {
       const original = await current();
       if (projectSharedEvidence(evidence, original.agent.record.boundary, 'continue').kind === 'reset-needed') throw new Error('Evidence boundary needs reset by host');
-      const own = await requestOwnSummary(registry, original.agent.record, evidence, original.workspace.record, options, signal, loadHelperProfiles, onRequest);
+      const own = await requestOwnSummary(registry, original.agent.record, evidence, original.workspace.record, requestOptions, signal, loadHelperProfiles, onRequest);
       await current();
       let ownChanged = false;
       if (own.action === 'update') {
@@ -59,10 +62,10 @@ export class WorkspaceRefresher<TModel extends { api?: string }> {
       }
       onDiagnostic?.({ stage: 'own', outcome: ownChanged ? 'applied' : 'unchanged' });
 
-      if (evidence.compactionSummary?.trim() || evidence.transcript.length) {
+      if (referenceEvidence.compactionSummary?.trim() || referenceEvidence.transcript.length) {
         stage = 'shared';
         const latest = await current();
-        const additions = await requestSharedAdditions(registry, latest.workspace.record, latest.agent.record.checkout, evidence, options, signal, loadHelperProfiles, onRequest);
+        const additions = await requestSharedAdditions(registry, latest.workspace.record, latest.agent.record.checkout, referenceEvidence, requestOptions, signal, loadHelperProfiles, onRequest);
         await current();
         let changed = false;
         if (additions.action === 'update') {
@@ -79,7 +82,7 @@ export class WorkspaceRefresher<TModel extends { api?: string }> {
       throw error;
     }
 
-    await this.plans.refresh({ authority, signal, assertCurrent, force, onRequest, onDiagnostic });
+    await this.plans.refresh({ authority, signal, assertCurrent, intent, onRequest, onDiagnostic });
     try { return await current(); }
     catch (error) {
       onDiagnostic?.({ stage: 'goal', outcome: 'failed', cancelled: signal.aborted });

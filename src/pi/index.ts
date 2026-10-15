@@ -7,15 +7,15 @@ import { loadConfig, type WorkCardsConfig } from '../config.js';
 import { RecordStore, recordDirectory, validateMembership, type Authority } from '../records.js';
 import { composeView, resolvedReferences, selectReference } from '../presentation.js';
 import { WorkspaceClient, agentAuthority, type NativeContext } from '../herdr/workspace-client.js';
-import { createCheckScheduler, type CheckScheduler } from './scheduler.js';
-import { normalizeEvidence } from './evidence.js';
+import { createCheckScheduler, type CheckIntent, type CheckScheduler } from './scheduler.js';
+import { normalizeEvidence, normalizeReferenceEvidence, referenceEvidenceContinues, type ReferenceEvidence } from './evidence.js';
 import { WorkspaceLifecycle, type WorkspaceScope, type WorkspaceSession } from './workspace-lifecycle.js';
 import { WorkspaceRefresher } from './workspace-refresh.js';
 import type { RefreshDiagnostic } from './plan-refresh.js';
 import type { SummaryRegistry } from './summarizer.js';
 
 const stateEntry = 'work-cards.workspace';
-const usage = 'Usage: /work-card new <title> | open [workspace-id] | refresh | show | detach | remove <substring>';
+const usage = 'Usage: /work-card new <title> | open [workspace-id] | refresh | reset | show | detach | remove <substring>';
 const documentGuidance = "Substantive plans and ADRs belong in the attached card's project checkout (cwd); card metadata only references documents. This tool does not create documents.";
 interface Dependencies {
   recordDirectory: typeof recordDirectory;
@@ -25,14 +25,17 @@ interface Dependencies {
 }
 interface RefreshReport {
   workspaceId: string;
-  forced: boolean;
+  intent: CheckIntent;
   state: 'running' | 'complete' | 'failed';
   stages: RefreshDiagnostic[];
+}
+interface CapturedSession extends WorkspaceSession {
+  referenceEvidence: ReferenceEvidence;
 }
 interface Evidence {
   revision: string;
   generation: number;
-  session: WorkspaceSession;
+  session: CapturedSession;
   scope?: WorkspaceScope;
   authority: Authority;
 }
@@ -52,7 +55,7 @@ export function registerWorkCards(pi: ExtensionAPI, overrides: Partial<Dependenc
   const env = overrides.env ?? process.env;
   const deps: Dependencies = { recordDirectory, loadConfig, client: new WorkspaceClient({ env }), env, ...overrides };
   let store: RecordStore;
-  let session: WorkspaceSession;
+  let session: CapturedSession;
   let ctx: ExtensionContext;
   let lifecycle: WorkspaceLifecycle | undefined;
   let config: WorkCardsConfig | undefined;
@@ -86,10 +89,11 @@ export function registerWorkCards(pi: ExtensionAPI, overrides: Partial<Dependenc
   function live(token = generation): void {
     if (disposed || token !== generation) throw new Error('Stale work-card host context');
   }
-  function capture(context: ExtensionContext): WorkspaceSession {
+  function capture(context: ExtensionContext): CapturedSession {
     const sessionId = context.sessionManager.getSessionId(), sessionFile = context.sessionManager.getSessionFile();
+    const messages = context.sessionManager.buildSessionProjection().messages;
     return { sessionId, ...(sessionFile ? { sessionFile } : {}), cwd: context.cwd,
-      evidence: normalizeEvidence(context.sessionManager.buildSessionProjection().messages) };
+      evidence: normalizeEvidence(messages), referenceEvidence: normalizeReferenceEvidence(messages) };
   }
   function accept(context: ExtensionContext): boolean {
     if (!started || disposed) return false;
@@ -123,6 +127,7 @@ export function registerWorkCards(pi: ExtensionAPI, overrides: Partial<Dependenc
       if (JSON.stringify(agentAuthority(agent.record)) !== JSON.stringify(evidence.authority)) throw new Error('Stale durable workspace authority');
     }
     signal.throwIfAborted(); live(evidence.generation);
+    if (!referenceEvidenceContinues(evidence.session.referenceEvidence, capture(ctx).referenceEvidence)) throw new Error('Projected reference evidence changed during inference');
   }
   async function projectSummaries(): Promise<void> {
     if (!updates || !config || !inHerdr()) return;
@@ -135,13 +140,13 @@ export function registerWorkCards(pi: ExtensionAPI, overrides: Partial<Dependenc
       if (!disposed && token === generation && !scope.signal.aborted) warn(`Sidebar projection failed: ${errorText(error)}`);
     }
   }
-  async function check(evidence: Evidence, signal: AbortSignal, forced: boolean): Promise<void> {
+  async function check(evidence: Evidence, signal: AbortSignal, intent: CheckIntent): Promise<void> {
     // Keep this gate across scheduler replacement: an aborted provider may settle late.
     if (requestFinished) await requestFinished;
     if (signal.aborted || disposed || evidence.generation !== generation || !config || !updates) return;
     let finish!: () => void;
     const gate = requestFinished = new Promise<void>(resolve => { finish = resolve; });
-    const report: RefreshReport = { workspaceId: evidence.authority.workspaceId, forced, state: 'running', stages: [] };
+    const report: RefreshReport = { workspaceId: evidence.authority.workspaceId, intent, state: 'running', stages: [] };
     diagnostics = report;
     try {
       await assertCurrent(evidence, signal);
@@ -158,8 +163,8 @@ export function registerWorkCards(pi: ExtensionAPI, overrides: Partial<Dependenc
         };
         refresher = new WorkspaceRefresher({ store, registry, options: { ...config } });
       }
-      await refresher.refresh({ authority: evidence.authority, evidence: evidence.session.evidence, signal,
-        assertCurrent: () => assertCurrent(evidence, signal), force: forced, onRequest: activity,
+      await refresher.refresh({ authority: evidence.authority, evidence: evidence.session.evidence, referenceEvidence: evidence.session.referenceEvidence, signal,
+        assertCurrent: () => assertCurrent(evidence, signal), intent, onRequest: activity,
         onDiagnostic: event => { if (diagnostics === report) report.stages.push(event); } });
       report.state = 'complete';
       // Projection shares a native lock with reconciliation; serialize both host effects.
@@ -167,18 +172,18 @@ export function registerWorkCards(pi: ExtensionAPI, overrides: Partial<Dependenc
         signal.throwIfAborted(); live(evidence.generation);
         await projectSummaries();
       });
-      if (forced && diagnostics === report && !signal.aborted && !disposed) {
+      if (intent !== 'automatic' && diagnostics === report && !signal.aborted && !disposed) {
         const goal = report.stages.find(event => event.stage === 'goal');
         const summary = goal?.outcome === 'no_sources'
           ? 'Goal unknown: no suitable registered Markdown purpose documents.'
           : report.stages.map(event => event.stage === 'selection' && 'selectedCount' in event
             ? `selection ${event.selectedCount} document(s)` : `${event.stage} ${event.outcome}`).join('; ');
-        ctx.ui.notify(`Work-card refresh: ${summary}`, 'info');
+        ctx.ui.notify(`Work-card ${intent}: ${summary}`, 'info');
       }
     } catch (error) {
       report.state = 'failed';
       const failed = report.stages.find(event => event.outcome === 'failed');
-      if (failed) throw new Error(`${failed.stage} stage failed: ${errorText(error)}`, { cause: error });
+      if (failed) throw new Error(`${intent} ${failed.stage} stage failed: ${errorText(error)}`, { cause: error });
       throw error;
     } finally {
       void providerFinished.then(() => { finish(); if (requestFinished === gate) requestFinished = undefined; });
@@ -233,14 +238,16 @@ export function registerWorkCards(pi: ExtensionAPI, overrides: Partial<Dependenc
     const token = generation, input = structuredClone(session), scope = inHerdr() ? lifecycle?.captureScope() : undefined;
     if (inHerdr() && !scope) return;
     const agent = await readOwn(); live(token); if (!agent) return;
-    return { revision: createHash('sha256').update(JSON.stringify(input.evidence)).digest('hex'), generation: token, session: input,
+    return { revision: createHash('sha256').update(JSON.stringify([input.evidence, input.referenceEvidence])).digest('hex'), generation: token, session: input,
       authority: agentAuthority(agent.record), ...(scope ? { scope } : {}) };
   }
-  async function observe(mode: 'observe' | 'settled' | 'refresh', aborted = false): Promise<void> {
-    await reconcile();
+  async function observe(mode: 'observe' | 'settled' | 'refresh' | 'reset', aborted = false): Promise<void> {
+    // Reset is inference against existing authority, never implicit joining or rebinding.
+    if (mode !== 'reset') await reconcile();
     const evidence = await snapshot();
+    if (!evidence && mode === 'reset') throw new Error('No current workspace authority; use /work-card open first.');
     if (evidence) {
-      if (mode === 'refresh') scheduler!.refresh(evidence);
+      if (mode === 'refresh' || mode === 'reset') scheduler!.refresh(evidence, mode);
       else if (mode === 'settled') scheduler!.onSettled(evidence, aborted);
       else scheduler!.observe(evidence);
     }
@@ -328,7 +335,7 @@ export function registerWorkCards(pi: ExtensionAPI, overrides: Partial<Dependenc
       refresh: diagnostics?.workspaceId === workspace.record.id ? structuredClone(diagnostics) : null };
   }
   pi.registerCommand('work-card', {
-    description: 'Open workspace context, set own title, refresh, show, detach, or remove a reference',
+    description: 'Open workspace context, set own title, refresh, reset inference, show, detach, or remove a reference',
     async handler(args, context) {
       if (!accept(context)) return;
       const parsed = /^(\S+)(?:[ \t]+([\s\S]*))?$/.exec(args.trim());
@@ -353,9 +360,9 @@ export function registerWorkCards(pi: ExtensionAPI, overrides: Partial<Dependenc
             if (inHerdr()) await lifecycle?.retire(savedCleanup);
             context.ui.notify('Work-card updates paused; /work-card open resumes them.', 'info'); return;
           }
-          if (command === 'refresh' && !value) {
+          if ((command === 'refresh' || command === 'reset') && !value) {
             if (!updates) throw new Error('Work-card updates paused; use /work-card open to resume.');
-            await observe('refresh'); return;
+            await observe(command); return;
           }
           if ((command === 'new' && value.trim()) || command === 'open') {
             if (!inHerdr()) throw new Error('Explicit open/new requires a Herdr-managed pane; no native guesses or offline rebinding.');

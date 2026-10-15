@@ -84,6 +84,65 @@ async function host(t, config = {}, initial = {}) {
 }
 async function attach(t, config = {}) { const h = await host(t, config); await h.command('new Agent task'); return h; }
 
+test('reset requests fresh inference, reports its intent and preserves attachment without reopening', async t => {
+  const h = await attach(t, { check_every_n_responses: 0 });
+  await until(async () => (await h.current()).details.refresh?.state === 'complete');
+  const before = await h.read(), launches = h.launches().length;
+  h.q();
+  h.setResult(async kind => kind === 'own' ? { action: 'update', patch: { title: 'Inferred task', status: 'waiting', statusShort: '', now: '', remaining: '' } } : { action: 'no_change' });
+  await h.command('reset');
+  await until(async () => (await h.current()).details.refresh?.intent === 'reset' && (await h.current()).details.refresh.state === 'complete');
+  const after = await h.read();
+  assert.equal(after.record.title, before.record.title);
+  assert.equal(after.record.status, 'waiting');
+  for (const field of ['sessionId', 'workspaceId', 'membershipToken', 'evidenceGeneration', 'checkout', 'cwd', 'boundary']) assert.deepEqual(after.record[field], before.record[field]);
+  assert.equal(h.launches().length, launches);
+  await until(() => h.notices.some(n => n.text.startsWith('Work-card reset:')));
+  assert.equal(h.calls.at(-1).data.workspace, undefined);
+});
+
+test('projected file activity reaches only reference inference and triggers checks without dialogue changes', async t => {
+  const h = await attach(t);
+  await until(async () => (await h.current()).details.refresh?.state === 'complete');
+  const count = h.calls.length;
+  h.setMessages([{ role: 'assistant', content: [{ type: 'toolCall', name: 'read', arguments: { path: 'plan.md', secret: 'ARG_SECRET' } }] }]);
+  await h.emit('context');
+  await until(() => h.calls.length >= count + 2);
+  const calls = h.calls.slice(count);
+  assert.deepEqual(calls.find(c => c.kind === 'own').data.transcript, []);
+  assert.deepEqual(calls.find(c => c.kind === 'shared').data.transcript, [{ role: 'tool_activity', operation: 'read', path: 'plan.md' }]);
+  assert.doesNotMatch(JSON.stringify(calls), /ARG_SECRET/);
+});
+
+test('removing captured file evidence while a helper runs rejects its result', async t => {
+  const h = await attach(t, { check_every_n_responses: 0 });
+  await until(async () => (await h.current()).details.refresh?.state === 'complete');
+  const before = await h.read(), wait = deferred();
+  h.setMessages([{ role: 'assistant', content: [{ type: 'toolCall', name: 'read', arguments: { path: 'plan.md' } }] }]);
+  h.setResult(async () => { await wait.promise; return { action: 'update', patch: { now: 'Stale inference' } }; });
+  const count = h.calls.length;
+  await h.command('refresh'); await until(() => h.calls.length > count);
+  h.setMessages([]); wait.resolve();
+  await until(async () => (await h.current()).details.refresh?.state === 'failed');
+  assert.equal((await h.read()).revision, before.revision);
+  assert.ok(h.notices.some(n => /projected.*evidence.*changed/i.test(n.text)));
+});
+
+test('reset fails clearly while paused or unattached without creating or rebinding records', async t => {
+  const h = await host(t, { workspace_startup: 'manual' });
+  await h.command('reset');
+  assert.ok(h.notices.some(n => /No current workspace authority/.test(n.text)));
+  assert.deepEqual(await h.store.listAgents(), []);
+  assert.deepEqual(await h.store.listWorkspaces(), []);
+  assert.equal(h.calls.length, 0); assert.equal(h.launches().length, 0);
+  await h.command('new Task'); await until(async () => (await h.current()).details.refresh?.state === 'complete');
+  await h.command('detach');
+  const before = await h.read(), count = h.calls.length;
+  await h.command('reset');
+  assert.ok(h.notices.some(n => /updates paused/.test(n.text)));
+  assert.equal((await h.read()).revision, before.revision); assert.equal(h.calls.length, count);
+});
+
 test('factory does no I/O; empty/inherited-only startup ignores all old binding entries', async t => {
   const h = await host(t, {}, { skipStart: true, messages: [user('Inherited task')], branch: [{ type: 'custom', customType: 'work-cards.binding', data: { sessionId: 'session-1', slug: 'old' } }] });
   assert.equal(h.native.length, 0); assert.equal(h.calls.length, 0);
@@ -597,7 +656,7 @@ test('refresh diagnostics distinguish no purpose sources and read-only inspectio
   const h = await attach(t, { check_every_n_responses: 0, pane_poll_interval_ms: 60_000 });
   await until(async () => (await h.current()).details.refresh?.state === 'complete');
   const report = (await h.current()).details.refresh;
-  assert.equal(report.forced, true);
+  assert.equal(report.intent, 'refresh');
   assert.deepEqual(report.stages.map(({ stage, outcome }) => ({ stage, outcome })), [
     { stage: 'own', outcome: 'unchanged' },
     { stage: 'selection', outcome: 'no_sources' }, { stage: 'goal', outcome: 'no_sources' },

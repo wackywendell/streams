@@ -5,6 +5,7 @@ import {
 } from '../records.js';
 import { capturePlanSources, isMarkdownDocument, recheckPlanSources, validatePlanSelection } from './plan-sources.js';
 import type { SummaryRegistry, SummaryRequestOptions } from './summarizer.js';
+import type { CheckIntent } from './scheduler.js';
 import { requestPlanSelection, requestWorkspaceGoal } from './workspace-summary.js';
 
 export type RefreshDiagnostic =
@@ -17,8 +18,8 @@ export interface PlanRefreshInput {
   signal: AbortSignal;
   /** Reject when the host generation or live context no longer matches this request. */
   assertCurrent: () => Promise<void>;
-  /** Reselect metadata and regenerate the goal even when captured provenance is unchanged. */
-  force?: boolean;
+  /** Explicit requests reselect metadata and regenerate Goal even with unchanged provenance. */
+  intent?: CheckIntent;
   onRequest?: () => (() => void);
   /** Read-only observer; callbacks must not throw. Contains no source or dialogue contents. */
   onDiagnostic?: (event: RefreshDiagnostic) => void;
@@ -39,7 +40,8 @@ export class PlanRefresher<TModel extends { api?: string }> {
     const { store, registry, options, loadHelperProfiles } = this.config;
     // Caller-owned authority cannot change under an in-flight refresh.
     const authority = { ...input.authority };
-    const { signal, assertCurrent, onRequest, onDiagnostic } = input;
+    const { signal, assertCurrent, intent = 'automatic', onRequest, onDiagnostic } = input;
+    const forced = intent !== 'automatic';
     const current = async (expectedRevision?: string): Promise<Snapshot<WorkspaceRecord>> => {
       signal.throwIfAborted();
       const agent = await store.readAgent(authority.sessionId);
@@ -63,7 +65,7 @@ export class PlanRefresher<TModel extends { api?: string }> {
       let sources: DocumentIdentity[];
       let cacheHit = false;
       if (!candidates.length) sources = [];
-      else if (!input.force && cached?.workspaceId === workspace.id && cached.creationToken === workspace.creationToken && cached.metadata === metadata) {
+      else if (!forced && cached?.workspaceId === workspace.id && cached.creationToken === workspace.creationToken && cached.metadata === metadata) {
         sources = validatePlanSelection(workspace, cached.sources);
         cacheHit = true;
       } else {
@@ -78,10 +80,10 @@ export class PlanRefresher<TModel extends { api?: string }> {
       const captured = await capturePlanSources(workspace, sources);
       await current(original.revision);
       const unchanged = sources.length
-        ? !input.force && (!workspace.goal.trim() || !!workspace.goalShort?.trim()) && isDeepStrictEqual(sources, workspace.planSources) && captured.fingerprint === workspace.sourceFingerprint
+        ? !forced && (!workspace.goal.trim() || !!workspace.goalShort?.trim()) && isDeepStrictEqual(sources, workspace.planSources) && captured.fingerprint === workspace.sourceFingerprint
         : workspace.goal === '' && workspace.planSources.length === 0 && workspace.sourceFingerprint === null;
       const goal = unchanged || !sources.length ? null
-        : await requestWorkspaceGoal(registry, captured, options, signal, loadHelperProfiles, onRequest);
+        : await requestWorkspaceGoal(registry, captured, { ...options, intent }, signal, loadHelperProfiles, onRequest);
 
       const latest = await current(original.revision);
       await recheckPlanSources(latest.record, sources, captured);

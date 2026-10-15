@@ -52,10 +52,16 @@ On a verified move, retain the agent identity, assignment and status. Join the d
 | Purpose | Permitted source |
 | --- | --- |
 | Own-agent title, status, Now and Remaining | Projected compaction plus retained human-readable dialogue, with shared context |
-| Shared-reference additions | Latest projected compaction plus available dialogue, judged against the workspace title, Goal and known references |
+| Shared-reference additions | Latest projected compaction, available dialogue and inline file-operation paths, judged against shared purpose and known references |
 | Workspace Goal | Selected registered purpose-bearing Markdown documents only |
 
 Reference collection considers the full projected session context for new and existing workspaces, whether attachment is explicit or automatic. It does not read raw precompaction logs. The helper judges each candidate against the current workspace title, Goal and known references, rather than copying every mention. When shared purpose is unknown, session context can identify useful starting documents; Goal still comes only from their contents.
+
+Reference evidence preserves inline `read`, `write` and `edit` operations as operation-and-path entries. It excludes tool bodies, outputs, shell-command parsing and hidden history. Codemode nested metadata requires a still-visible parent call. Activity suggests candidates, not successful work or automatic admission. Own summaries and document-derived Goal do not receive this activity. Captured evidence may grow during inference, but edits or removals invalidate its result.
+
+Explicit reset is fresh inference, not record deletion or a membership reset. Own and reference helpers receive projected evidence without prior generated own fields, shared title, Goal or reference arrays. Own inference must return every derived field; partial proposals and `no_change` fail without clearing stored text. Manual titles remain protected. Reference additions still merge with all stored references and removal exclusions, because reference origin is not tracked. Reset cannot relabel unprovided existing links. Other agents retain their progress.
+
+Reset bypasses the source-selection and Goal caches but keeps Goal document-only. It does not recover raw precompaction history. Sequential stage publication remains unchanged: a failed later stage does not undo an earlier validated update.
 
 Attachment boundaries detect discontinuities and distinguish fresh task input for automatic startup. They do not limit reference eligibility. Resume, tree navigation, compaction and moves still invalidate stale requests through evidence generations and membership checks. Relevance is a model judgment; explicit removal exclusions prevent historical context from restoring removed references.
 

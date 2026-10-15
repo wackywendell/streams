@@ -127,10 +127,10 @@ test('passes explicit force separately from snapshots, including newest automati
   scheduler.refresh(snapshot(2)); scheduler.observe(snapshot(3)); scheduler.observe(snapshot(4));
   assert.equal(signals[1].aborted, false);
   first.resolve(); await flush();
-  assert.deepEqual(checked, [[1, true], [2, false], [4, true]]);
+  assert.deepEqual(checked, [[1, 'refresh'], [2, 'automatic'], [4, 'refresh']]);
   assert.equal(maximum, 1);
   scheduler.observe(snapshot(5)); await flush();
-  assert.deepEqual(checked.at(-1), [5, false]);
+  assert.deepEqual(checked.at(-1), [5, 'automatic']);
 });
 
 test('reset discards queued force while keeping cancelled work single-flight', async () => {
@@ -143,7 +143,23 @@ test('reset discards queued force while keeping cancelled work single-flight', a
   scheduler.observe(snapshot(3));
   assert.equal(signals[0].aborted, true); assert.equal(checked.length, 1);
   first.resolve(); await flush();
-  assert.deepEqual(checked, [[1, true], [3, false]]);
+  assert.deepEqual(checked, [[1, 'refresh'], [3, 'automatic']]);
+});
+
+test('busy reset keeps strongest intent while newer refresh and automatic evidence replaces its input', async () => {
+  const first = deferred(), checked = [];
+  const scheduler = createCheckScheduler({ check: async (s, signal, intent) => {
+    checked.push([s.revision, intent]);
+    if (checked.length === 1) await first.promise;
+  } });
+  scheduler.observe(snapshot(1));
+  scheduler.refresh(snapshot(2), 'reset');
+  scheduler.refresh(snapshot(3));
+  scheduler.observe(snapshot(4));
+  first.resolve(); await flush();
+  assert.deepEqual(checked, [[1, 'automatic'], [4, 'reset']]);
+  scheduler.refresh(snapshot(4), 'reset'); await flush();
+  assert.deepEqual(checked.at(-1), [4, 'reset']);
 });
 
 test('rejects invalid threshold', () => {
