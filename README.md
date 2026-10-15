@@ -15,9 +15,9 @@ These are strict, versioned records. Unknown fields, duplicate YAML keys, invali
 
 Goal, Now and Remaining are separate fields, not an encoded prose string. Goal comes from selected registered Markdown documents: purpose-bearing designs, ADRs, relevant README files and plans. Documents establish intent, never proof of completed work. With no suitable registered source, Goal remains unknown. Own summaries use the agent's dialogue and compaction checkpoint. Shared reference proposals use the full available dialogue, checkpoint and inline file-operation paths.
 
-Documents form a small current reading list, not a history of useful files. Helpers should prefer a few complementary documents explaining the purpose, governing current work or providing an active plan. Usually 3 to 5 is guidance, not a quota or hard cap. Reading or editing a file does not qualify it. Explicitly requested pins remain possible. There is no automatic pruning or separate cleanup job.
+Documents form a small current reading list, not a history of useful files. Helpers should prefer a few complementary documents explaining the purpose, governing current work or providing an active plan. Usually 3 to 5 is guidance, not a quota or hard cap. Reading or editing a file does not qualify it. Explicitly requested pins remain possible. Usable documents are never automatically pruned for relevance or count. During refresh, checked filesystem absence authorises removal of missing document references, not deletion of files.
 
-Issues must be published issues or tickets, not CI runs, logs or informal problems. PRs must be actively worked on or explicitly tracked for the session's assignment, not merely mentioned. These are helper admission rules, not proof of remote artifact type or status. Existing references require explicit cleanup.
+Issues must be published issues or tickets, not CI runs, logs or informal problems. PRs must be actively worked on or explicitly tracked for the session's assignment, not merely mentioned. These are helper admission rules, not proof of remote artifact type or status. Existing issue and PR references require explicit cleanup.
 
 Document identities combine a checkout key and relative path. Absolute document paths, traversal and symlinks escaping the registered checkout are rejected. Issue and PR URLs must use HTTP or HTTPS. Descriptions should describe the whole artifact, not its latest edit. Plans and ADRs belong in the project; records only reference them.
 
@@ -30,7 +30,7 @@ Records are local host state, with no automatic backup or synchronisation. Keep 
 | `/work-card new <title>` | Attach to workspace context and set this agent's assignment title without replacing shared context |
 | `/work-card open [workspace-id]` | Open or join verified workspace context, optionally selecting an existing durable workspace |
 | `/work-card refresh` | Reconcile with the prior card and force plan selection without reopening a closed display |
-| `/work-card reset` | Infer own summaries and reference additions afresh, then recompute document-derived Goal; retain attachment and stored references |
+| `/work-card reset` | Infer own summaries and reference additions afresh, clean up confirmed-missing documents, then recompute Goal; retain attachment |
 | `/work-card show` | Show the current workspace, own agent, resolved references and latest refresh diagnostics |
 | `/work-card detach` | Pause updates durably and close only the owned display; retain records |
 | `/work-card remove <substring>` | Remove a uniquely matching document path or URL from shared references |
@@ -39,11 +39,15 @@ To let the summarizer name a new assignment, use `/work-card open` without a tit
 
 Reset omits the existing own summary and shared workspace title, Goal and references from the dialogue helpers' inputs. It requires a complete, validated own proposal, including empty fields when unknown; partial updates and `no_change` are rejected. It never clears records before successful inference. Stages still publish separately: a later failure does not roll back an earlier validated update.
 
-Reset preserves session and workspace identities, membership, checkout registrations, manual titles, all existing references and removal exclusions. References have no manual-versus-generated provenance, so reset preserves both. New additions use the normal guarded merge. Reset cannot relabel existing links it did not supply to the helper. Other agents' progress is untouched.
+Reset preserves session and workspace identities, membership, checkout registrations, manual titles and removal exclusions. References have no manual-versus-generated provenance. Both receive the same checked missing-document cleanup; reset otherwise preserves them. New additions use the normal guarded merge. Reset cannot relabel existing links it did not supply to the helper. Other agents' progress is untouched.
 
 Reset forces source selection and Goal inference from registered Markdown documents, not dialogue or repository crawling. It uses available projected dialogue, file-operation paths and compaction; it does not recover raw logs or lost precompaction context. It requires an attached, unpaused session and never opens a display or joins a workspace. Use open to attach or resume first.
 
-Removal matches literal path or URL text, not descriptions. Ambiguous matches fail rather than opening a picker. Removal changes metadata, not source files, and records an exclusion against automatic re-addition.
+Explicit removal matches literal path or URL text, not descriptions. Ambiguous matches fail rather than opening a picker. It changes metadata, not source files, and records an exclusion against automatic re-addition.
+
+Automatic missing-document cleanup runs after own-summary inference, before reference collection and Goal refresh, even without reference evidence. It creates no exclusion: a missing file is not a user rejection. New automatic documents must be readable regular files within a registered checkout. Renamed or consolidated replacements come from ordinary reference inference using projected evidence, not filename similarity or a repository scan. Stale history cannot restore a path while it remains missing.
+
+Missing checkouts, changed roots, permissions, symlink components, nonregular entries and other I/O errors do not authorise cleanup. These unresolved references stay registered, with reason/count diagnostics. Automatic checks conservatively reject even contained symlinks; explicit document opening keeps its existing checked symlink behavior. Losing any selected Goal source invalidates the whole derived Goal and provenance. If a source disappears during inference, guarded cleanup invalidates it and that pass fails; a later check regenerates Goal from surviving sources.
 
 The default `workspace_startup: "automatic"` joins or creates context after meaningful task input. Repeated observations and reloads reuse verified membership. Use `"manual"` to require explicit joining. Existing attached summaries continue in manual mode. New/open require a Herdr-managed pane and target the caller, never GUI focus. Refresh can update an existing valid binding outside Herdr; it cannot guess a new native group.
 

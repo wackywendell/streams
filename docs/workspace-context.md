@@ -59,7 +59,7 @@ Reference collection considers the full projected session context for new and ex
 
 Reference evidence preserves inline `read`, `write` and `edit` operations as operation-and-path entries. It excludes tool bodies, outputs, shell-command parsing and hidden history. Codemode nested metadata requires a still-visible parent call. Activity suggests candidates, not successful work or automatic admission. Own summaries and document-derived Goal do not receive this activity. Captured evidence may grow during inference, but edits or removals invalidate its result.
 
-Explicit reset is fresh inference, not record deletion or a membership reset. Own and reference helpers receive projected evidence without prior generated own fields, shared title, Goal or reference arrays. Own inference must return every derived field; partial proposals and `no_change` fail without clearing stored text. Manual titles remain protected. Reference additions still merge with all stored references and removal exclusions, because reference origin is not tracked. Reset cannot relabel unprovided existing links. Other agents retain their progress.
+Explicit reset is fresh inference, not record deletion or a membership reset. Own and reference helpers receive projected evidence without prior generated own fields, shared title, Goal or reference arrays. Own inference must return every derived field; partial proposals and `no_change` fail without clearing stored text. Manual titles remain protected. Reference additions still merge with retained references and removal exclusions, because reference origin is not tracked. Checked missing-document cleanup runs outside the reset helper input, without restoring prior arrays to that input. Reset cannot relabel unprovided existing links. Other agents retain their progress.
 
 Reset bypasses the source-selection and Goal caches but keeps Goal document-only. It does not recover raw precompaction history. Sequential stage publication remains unchanged: a failed later stage does not undo an earlier validated update.
 
@@ -75,17 +75,25 @@ Retain selected-source provenance with the Goal, including an evaluated result t
 
 The model still interprets whether a document establishes purpose and what it means. Authority checks and provenance do not guarantee correct selection or a useful Goal.
 
-### Make shared additions additive and removals explicit
+### Keep helper proposals additive and repair missing documents
 
 Session-evidence helpers may update only their own agent, propose shared additions and generate derived labels for exact existing issue/PR URLs. Source-derived updates use the separate source policy above. Neither path may remove references, delete records, register arbitrary roots or write project documents. Separate request contracts enforce these limits rather than trusting a prompt to preserve arrays.
 
-Documents are a small current reading list, not a history of useful files. Admission favours complementary purpose documents, current governing guidance and active plans. Reading or editing a file is insufficient. A soft count guides restraint but does not authorise dropping another agent's reference or a Goal source. No separate cleanup job or automatic pruning is introduced.
+Documents are a small current reading list, not a history of useful files. Admission favours complementary purpose documents, current governing guidance and active plans. Reading or editing a file is insufficient. A soft count guides restraint but does not authorise dropping another agent's reference or a Goal source. Usable documents are never pruned automatically for relevance, overlap or count. Missing documents receive the narrow deterministic repair below, not model removal authority.
 
 Issues mean published issues or tickets, not CI runs or informal problems. PRs must concern work the contributing session actively undertakes or tracks. Prompt guidance governs this semantic admission; URL validation does not prove artifact type or importance.
 
 Derived link labels preserve full descriptions and exact URLs. Label proposals target only links in the request snapshot. Under the shared write lock, skip deleted references or those whose kind or description changed. Description edits invalidate old labels. This narrow annotation permission does not authorise changing reference membership.
 
 Shared additions merge against current references without dropping another agent's additions. Explicit removal records an exclusion in the same workspace write. Old or stale helper evidence cannot resurrect the removed reference. Only an explicit foreground re-add clears its exclusion.
+
+After own-summary inference, probe registered documents before shared inference and source selection, even without reference evidence. Confirm absence only in an available canonical directory root, through checked nonsymlink components. Recheck root device/inode identity and captured absence under the record locks. Missing roots, replaced roots, permissions, symlinks, nonregular entries and I/O errors remain unresolved, not deletion authority. Conservatively reject contained symlinks for automatic mutation without changing explicit opening behavior.
+
+Automatic repair requires the captured workspace creation identity and revision, current membership, cancellation checks and a final host guard before metadata publication. Restore checks preserve files that reappear; concurrent record changes fail rather than silently skipping changed snapshots. Repair changes reference metadata only, retains exclusions unchanged and never touches actual files or remote artifacts. Any selected-source removal goes through the Goal transition that invalidates all derived purpose and provenance.
+
+Ordinary reference inference judges replacement relevance from available dialogue, compaction and path activity. Safely existing replacements may be added; consolidation into a retained document needs no new addition. Every new automatic document requires checked usability, so stale history cannot restore a missing path. No crawler, filename-similarity rename guess or persistent health metadata is needed. Explicit reference APIs and generic record validation remain independent of filesystem availability.
+
+If a selected source disappears during capture or recheck, attempt the same guarded missing repair and fail that pass without retrying inference. A later scheduled check selects from surviving references. Cancellation, stale membership or stale host authority prevent recovery; preserve the original source error if recovery cannot apply. Unresolved references remain registered and contribute bounded reason/count diagnostics without source contents. Unreadable selected sources still fail visibly.
 
 Document reference identity is checkout key plus relative path. Link identity is the exact stored URL. Broken document references remain removable without resolving an existing file. Display letters and link numbers are never removal identities.
 

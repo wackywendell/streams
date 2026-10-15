@@ -137,15 +137,20 @@ export class RecordStore {
     const acquire = (i: number): Promise<T> => i === sorted.length ? operation() : this.lock(`${sorted[i]}.lock`, () => acquire(i + 1));
     return acquire(0);
   }
-  private async publish<T>(path: string, record: T, current?: Snapshot<T>, signal?: AbortSignal, serialize: (record: T) => unknown = record => record): Promise<Snapshot<T>> {
+  private async publish<T>(path: string, record: T, current?: Snapshot<T>, signal?: AbortSignal, serialize: (record: T) => unknown = record => record, beforePublish?: () => Promise<void>): Promise<Snapshot<T>> {
     signal?.throwIfAborted();
-    if (current && isDeepStrictEqual(current.record, record)) return current;
+    if (current && isDeepStrictEqual(current.record, record)) {
+      if (beforePublish) await beforePublish();
+      signal?.throwIfAborted();
+      return current;
+    }
     const bytes = Buffer.from(stringify(serialize(record)));
     const temporary = `${path}.${randomUUID()}.tmp`;
     const handle = await open(temporary, 'wx', 0o600);
     try {
       try { await handle.writeFile(bytes); await handle.sync(); }
       finally { await handle.close(); }
+      if (beforePublish) await beforePublish();
       // No await between cancellation and publication. Atomic visibility, not directory-fsync crash durability.
       signal?.throwIfAborted();
       if (current) await rename(temporary, path);
@@ -153,11 +158,11 @@ export class RecordStore {
       return snapshot(path, record, bytes);
     } finally { await removeTemp(temporary); }
   }
-  private async publishWorkspace(record: WorkspaceRecord, current?: Snapshot<WorkspaceRecord>, signal?: AbortSignal): Promise<Snapshot<WorkspaceRecord>> {
+  private async publishWorkspace(record: WorkspaceRecord, current?: Snapshot<WorkspaceRecord>, signal?: AbortSignal, beforePublish?: () => Promise<void>): Promise<Snapshot<WorkspaceRecord>> {
     const validated = validateWorkspace(record);
-    if (current && isDeepStrictEqual(current.record, validated)) return this.publish(current.path, validated, current, signal, serializeWorkspaceV1);
+    if (current && isDeepStrictEqual(current.record, validated)) return this.publish(current.path, validated, current, signal, serializeWorkspaceV1, beforePublish);
     // A genuine mutation must not restore an old raw revision after remove/re-add (ABA).
-    return this.publish(this.workspacePath(validated.id), { ...validated, mutationToken: randomUUID() }, current, signal, serializeWorkspaceV1);
+    return this.publish(this.workspacePath(validated.id), { ...validated, mutationToken: randomUUID() }, current, signal, serializeWorkspaceV1, beforePublish);
   }
   private async caller(authority: Authority): Promise<Snapshot<AgentRecord>> {
     const a = await this.readAgent(authority.sessionId);
@@ -208,10 +213,10 @@ export class RecordStore {
       return this.publish(this.agentPath(initial.sessionId), next, previous, signal);
     }), signal);
   }
-  private async shared(authority: Authority, change: (w: Snapshot<WorkspaceRecord>, a: Snapshot<AgentRecord>) => WorkspaceRecord, signal?: AbortSignal): Promise<Snapshot<WorkspaceRecord>> {
+  private async shared(authority: Authority, change: (w: Snapshot<WorkspaceRecord>, a: Snapshot<AgentRecord>) => WorkspaceRecord | Promise<WorkspaceRecord>, signal?: AbortSignal, beforePublish?: () => Promise<void>): Promise<Snapshot<WorkspaceRecord>> {
     return this.topology(() => this.records([this.workspacePath(authority.workspaceId), this.agentPath(authority.sessionId)], async () => {
       const a = await this.caller(authority); const w = await this.readWorkspace(authority.workspaceId);
-      return this.publishWorkspace(change(w, a), w, signal);
+      return this.publishWorkspace(await change(w, a), w, signal, beforePublish);
     }), signal);
   }
   async addReferences(authority: Authority, additions: unknown, options: { explicit?: boolean; revision?: string; signal?: AbortSignal } = {}): Promise<Snapshot<WorkspaceRecord>> {
@@ -220,14 +225,61 @@ export class RecordStore {
       return applySharedAdditions(w.record, additions, options.explicit);
     }, options.signal);
   }
-  async updateSharedReferences(authority: Authority, baseline: Snapshot<WorkspaceRecord>, proposal: SharedReferenceUpdate, signal?: AbortSignal): Promise<Snapshot<WorkspaceRecord> & { changed: boolean }> {
+  async repairMissingDocuments(authority: Authority, baseline: Snapshot<WorkspaceRecord>, candidates: readonly MissingDocument[], guards: { signal: AbortSignal; assertCurrent: () => Promise<void> }): Promise<Snapshot<WorkspaceRecord> & { removed: number; unresolved: DocumentProbe[] }> {
+    const caller = { ...authority }, captured = structuredClone(baseline), proofs = structuredClone(candidates);
+    const { signal, assertCurrent } = guards;
+    if (captured.record.id !== caller.workspaceId) throw new Error('Workspace selection mismatch');
+    let removed = 0;
+    const unresolved: DocumentProbe[] = [];
+    const result = await this.shared(caller, async (w, a) => {
+      if (w.record.creationToken !== captured.record.creationToken) throw new Error('Stale workspace creation');
+      revision(w, captured.revision);
+      validateMembership(w.record, a.record);
+      const next = validateWorkspace(w.record);
+      for (const proof of proofs) {
+        const identity = documentIdentity(proof.identity);
+        if (!captured.record.documents.some(d => referenceIdentity(d) === referenceIdentity(identity))) throw new Error('Stale document identity');
+        const fresh = await probeWorkspaceDocument(w.record, identity);
+        if (fresh.kind === 'unresolved') { unresolved.push(fresh); continue; }
+        if (fresh.kind !== 'missing') continue;
+        if (!isDeepStrictEqual(fresh.root, proof.root)) throw new Error('Checkout identity changed during document repair');
+        next.documents = next.documents.filter(d => referenceIdentity(d) !== referenceIdentity(identity));
+        next.goal = transitionGoal(next.goal, { kind: 'source_removed', identity });
+        removed++;
+      }
+      return next;
+    }, signal, assertCurrent);
+    return { ...result, removed, unresolved };
+  }
+  async updateSharedReferences(authority: Authority, baseline: Snapshot<WorkspaceRecord>, proposal: SharedReferenceUpdate, signal?: AbortSignal, assertCurrent: () => Promise<void> = async () => {}): Promise<Snapshot<WorkspaceRecord> & { changed: boolean; omitted: DocumentProbe[] }> {
+    const caller = { ...authority };
     const captured = validateWorkspace(baseline.record);
-    if (captured.id !== authority.workspaceId) throw new Error('Workspace selection mismatch');
-    const update = validateSharedReferenceUpdate(proposal, captured);
+    if (captured.id !== caller.workspaceId) throw new Error('Workspace selection mismatch');
+    const update = validateSharedReferenceUpdate(structuredClone(proposal), captured);
+    const prepared = await Promise.all((update.additions?.documents ?? []).map(d => probeWorkspaceDocument(captured, { checkout: d.checkout, path: d.path })));
     let changed = false;
-    const result = await this.shared(authority, w => {
+    const omitted: DocumentProbe[] = [];
+    const result = await this.shared(caller, async (w, a) => {
+      validateMembership(w.record, a.record);
       if (w.record.creationToken !== captured.creationToken) throw new Error('Stale workspace creation');
-      const next = applySharedAdditions(w.record, update.additions ?? {});
+      const additions = structuredClone(update.additions ?? {});
+      if (additions.documents) {
+        const admitted = [];
+        for (const [i, document] of additions.documents.entries()) {
+          const key = referenceIdentity(document);
+          if (w.record.documents.some(d => referenceIdentity(d) === key) || w.record.exclusions.some(d => referenceIdentity(d) === key)) continue;
+          const before = prepared[i];
+          if (before.kind !== 'usable') { omitted.push(before); continue; }
+          const fresh = await probeWorkspaceDocument(w.record, { checkout: document.checkout, path: document.path });
+          if (fresh.kind !== 'usable') { omitted.push(fresh); continue; }
+          if (!isDeepStrictEqual(before.root, fresh.root) || before.target !== fresh.target) {
+            omitted.push({ kind: 'unresolved', identity: fresh.identity, reason: 'changed' }); continue;
+          }
+          admitted.push(document);
+        }
+        additions.documents = admitted;
+      }
+      const next = applySharedAdditions(w.record, additions);
       for (const key of ['issues', 'prs'] as const) for (const label of update.labels ?? []) {
         const before = captured[key].find(ref => ref.url === label.url);
         const current = next[key].find(ref => ref.url === label.url);
@@ -236,8 +288,8 @@ export class RecordStore {
       const validated = validateWorkspace(next);
       changed = !isDeepStrictEqual(validated, w.record);
       return validated;
-    }, signal);
-    return { ...result, changed };
+    }, signal, assertCurrent);
+    return { ...result, changed, omitted };
   }
   async removeReference(authority: Authority, selection: ReferenceSelection, signal?: AbortSignal): Promise<Snapshot<WorkspaceRecord>> {
     return this.shared(authority, w => applyReferenceRemoval(w, selection), signal);
@@ -310,6 +362,68 @@ export class RecordStore {
       if ((await this.listAgents()).some(a => a.record.workspaceId === id)) throw new Error('Workspace has referring agent records');
       signal?.throwIfAborted(); await unlink(w.path);
     }), signal);
+  }
+}
+
+export type DocumentProbeReason = 'checkout_unavailable' | 'unsafe' | 'not_file' | 'permission' | 'io' | 'changed';
+interface DocumentRootIdentity { directory: string; dev: string; ino: string }
+export interface MissingDocument { kind: 'missing'; identity: DocumentIdentity; root: DocumentRootIdentity }
+export type DocumentProbe =
+  | { kind: 'usable'; identity: DocumentIdentity; root: DocumentRootIdentity; target: string }
+  | MissingDocument
+  | { kind: 'unresolved'; identity: DocumentIdentity; reason: DocumentProbeReason };
+
+/** Absence is authority only inside an available, unchanged checkout and checked real directories. */
+export async function probeWorkspaceDocument(workspace: WorkspaceRecord, identity: DocumentIdentity): Promise<DocumentProbe> {
+  const ref = documentIdentity(identity);
+  const unresolved = (reason: DocumentProbeReason): DocumentProbe => ({ kind: 'unresolved', identity: ref, reason });
+  const directory = workspace.checkouts[ref.checkout]?.directory;
+  if (!directory) return unresolved('checkout_unavailable');
+  let root;
+  try {
+    root = await lstat(directory, { bigint: true });
+    if (!root.isDirectory() || await realpath(directory) !== directory) return unresolved('checkout_unavailable');
+  } catch { return unresolved('checkout_unavailable'); }
+  const proof = { directory, dev: String(root.dev), ino: String(root.ino) };
+  const checked = [{ path: directory, info: root }];
+  const stable = async (): Promise<boolean> => {
+    if (await realpath(directory) !== directory) return false;
+    for (const entry of checked) {
+      const info = await lstat(entry.path, { bigint: true });
+      if (info.isSymbolicLink() || info.dev !== entry.info.dev || info.ino !== entry.info.ino) return false;
+    }
+    return true;
+  };
+  try {
+    let target = directory;
+    const parts = ref.path.split('/');
+    for (const [i, part] of parts.entries()) {
+      target = join(target, part);
+      let info;
+      try { info = await lstat(target, { bigint: true }); }
+      catch (error) {
+        if (code(error) !== 'ENOENT') throw error;
+        if (!await stable()) return unresolved('changed');
+        return { kind: 'missing', identity: ref, root: proof };
+      }
+      // Opening remains more permissive; automatic mutation conservatively rejects all symlink components.
+      if (info.isSymbolicLink()) return unresolved('unsafe');
+      checked.push({ path: target, info });
+      if (i !== parts.length - 1) {
+        if (!info.isDirectory()) return unresolved('not_file');
+      } else if (!info.isFile()) return unresolved('not_file');
+    }
+    const canonical = await resolveWorkspaceDocument(workspace, ref);
+    if (canonical !== target) return unresolved('changed');
+    const file = await open(target, constants.O_RDONLY | constants.O_NOFOLLOW | constants.O_NONBLOCK);
+    try {
+      const info = await file.stat({ bigint: true });
+      const expected = checked[checked.length - 1].info;
+      if (!info.isFile() || info.dev !== expected.dev || info.ino !== expected.ino || !await stable()) return unresolved('changed');
+    } finally { await file.close(); }
+    return { kind: 'usable', identity: ref, root: proof, target };
+  } catch (error) {
+    return unresolved(code(error) === 'EACCES' || code(error) === 'EPERM' ? 'permission' : 'io');
   }
 }
 

@@ -115,7 +115,7 @@ test('empty selection clears provenance and does not call goal model', async t =
 });
 
 test('selection cache survives source errors but failed goal is never treated as applied', async t => {
-  const f = await fixture(t); await rm(f.path);
+  const f = await fixture(t); await writeFile(f.path, Buffer.from([0xc3, 0x28]));
   await assert.rejects(f.refresh(), /Cannot read plan source/);
   assert.deepEqual(f.calls.map(c => c.kind), ['select']);
   await writeFile(f.path, 'Restored'); f.goal(() => { throw new Error('inference failed'); });

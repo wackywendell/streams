@@ -1,8 +1,9 @@
 import {
+  probeWorkspaceDocument, type MissingDocument,
   type AgentRecord, type RecordStore, type Snapshot, type WorkspaceRecord,
 } from '../records.js';
 import type { ProjectedEvidence, ReferenceEvidence } from './evidence.js';
-import { PlanRefresher, type PlanRefreshInput } from './plan-refresh.js';
+import { PlanRefresher, reportDocumentProbes, type PlanRefreshInput } from './plan-refresh.js';
 import { projectSharedEvidence } from './shared-evidence.js';
 import type { SummaryRegistry, SummaryRequestOptions } from './summarizer.js';
 import { requestOwnSummary, requestSharedAdditions } from './workspace-summary.js';
@@ -58,8 +59,20 @@ export class WorkspaceRefresher<TModel extends { api?: string }> {
       }
       onDiagnostic?.({ stage: 'own', outcome: ownChanged ? 'applied' : 'unchanged' });
 
+      stage = 'shared';
+      const baseline = (await current()).workspace;
+      const probes = await Promise.all(baseline.record.documents.map(d => probeWorkspaceDocument(baseline.record, { checkout: d.checkout, path: d.path })));
+      await current();
+      const missing = probes.filter((p): p is MissingDocument => p.kind === 'missing');
+      let removed = 0;
+      if (missing.length) {
+        const repair = await store.repairMissingDocuments(authority, baseline, missing, { signal, assertCurrent });
+        removed = repair.removed;
+        probes.push(...repair.unresolved);
+      }
+      reportDocumentProbes(onDiagnostic, 'documents_checked', probes, removed);
+
       if (referenceEvidence.compactionSummary?.trim() || referenceEvidence.transcript.length) {
-        stage = 'shared';
         const latest = await current();
         const additions = await requestSharedAdditions(registry, latest.workspace.record, latest.agent.record.checkout, referenceEvidence, requestOptions, signal, loadHelperProfiles, onRequest);
         await current();
@@ -67,8 +80,9 @@ export class WorkspaceRefresher<TModel extends { api?: string }> {
         if (additions.action === 'update') {
           // Merge against current references; foreground exclusions remain authoritative.
           const { action: _, ...proposal } = additions;
-          const result = await store.updateSharedReferences(authority, latest.workspace, proposal, signal);
+          const result = await store.updateSharedReferences(authority, latest.workspace, proposal, signal, assertCurrent);
           changed = result.changed;
+          reportDocumentProbes(onDiagnostic, 'documents_omitted', result.omitted);
         }
         onDiagnostic?.({ stage: 'shared', outcome: changed ? 'applied' : 'unchanged' });
       }
