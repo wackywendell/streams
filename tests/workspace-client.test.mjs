@@ -422,6 +422,68 @@ test('separated pair is positively classified and cleanup never respawns an abse
   assert.equal((await a.c.openDisplay(f.store,moved.context,opened.agent,'automatic',DEFAULT_CONFIG)).kind,'suppressed');
   await assert.rejects(a.c.cleanupSeparatedPair(f.store,moved.context,opened.agent,DEFAULT_CONFIG),/positively/i);
 });
+test('Pi membership verification validates ready lifetime, own caller and absent q display', async () => {
+  const f=await fixture(), a=await f.joinAgent('term1');
+  const empty=await a.c.verifyMembership(f.store,a.context,a.agent,DEFAULT_CONFIG);
+  assert.equal(empty.ownership.kind,'empty'); assert.equal(empty.context.bindingNonce,a.binding.nonce);
+  const opened=await a.c.openDisplay(f.store,a.context,a.agent,'automatic',DEFAULT_CONFIG);
+  f.panes.splice(f.panes.findIndex(p=>p.terminal_id===opened.pair.card.terminal_id),1);
+  assert.equal((await a.c.verifyMembership(f.store,a.context,opened.agent,DEFAULT_CONFIG)).ownership.kind,'absent');
+  await a.c.releaseDisplay(f.store,a.context,opened.agent,DEFAULT_CONFIG);
+  assert.equal(f.panes[0].tokens.wca_agent,undefined);
+  assert.ok((await f.store.readAgent('term1')).record.displayAttempt);
+  f.workspaces[0].tokens.wcw_phase='reserved';
+  await assert.rejects(a.c.verifyMembership(f.store,a.context,opened.agent,DEFAULT_CONFIG),/binding/i);
+});
+test('replacement refuses paired/q-absent/empty, replaces one fresh separated pair once', async () => {
+  const f=await fixture(), a=await f.joinAgent('term1');
+  await assert.rejects(a.c.replaceSeparatedDisplay(f.store,a.context,a.agent,DEFAULT_CONFIG),/separated/i);
+  const opened=await a.c.openDisplay(f.store,a.context,a.agent,'automatic',DEFAULT_CONFIG);
+  await assert.rejects(a.c.replaceSeparatedDisplay(f.store,a.context,opened.agent,DEFAULT_CONFIG),/separated/i);
+  f.panes[0].tab_id='w:t2'; const {context}=await a.c.observe(a.context,DEFAULT_CONFIG);
+  const replaced=await a.c.replaceSeparatedDisplay(f.store,context,opened.agent,DEFAULT_CONFIG);
+  assert.equal(replaced.kind,'paired'); assert.notEqual(replaced.pair.nonce,opened.pair.nonce);
+  await assert.rejects(a.c.replaceSeparatedDisplay(f.store,context,replaced.agent,DEFAULT_CONFIG),/separated/i);
+  f.panes.splice(f.panes.findIndex(p=>p.terminal_id===replaced.pair.card.terminal_id),1);
+  await assert.rejects(a.c.replaceSeparatedDisplay(f.store,context,replaced.agent,DEFAULT_CONFIG),/separated/i);
+  assert.equal((await a.c.openDisplay(f.store,context,replaced.agent,'automatic',DEFAULT_CONFIG)).kind,'suppressed');
+});
+test('replacement cleanup failure, cancellation and authority/native invalidation cannot launch', async () => {
+  for (const failure of ['close','stamp','abort','membership','native']) {
+    const f=await fixture(), a=await f.joinAgent('term1');
+    const opened=await a.c.openDisplay(f.store,a.context,a.agent,'automatic',DEFAULT_CONFIG);
+    f.panes[0].tab_id='w:t2'; const {context}=await a.c.observe(a.context,DEFAULT_CONFIG);
+    const controller=new AbortController(), base=f.run('term1');
+    const client=new WorkspaceClient({env:a.c.env,pluginRoot:f.root,run:async args=>{
+      if(failure==='close'&&args[0]==='plugin'&&args[2]==='close') throw new Error('close failed');
+      if(failure==='stamp'&&args[1]==='report-metadata') throw new Error('stamp failed');
+      const output=await base(args);
+      if(args[0]==='plugin'&&args[2]==='close') {
+        if(failure==='abort') controller.abort();
+        if(failure==='native') f.panes[0].tab_id='w:t1';
+        if(failure==='membership') {
+          const current=await f.store.readAgent('term1');
+          await f.store.resetEvidence(agentAuthority(current.record),boundary,current.revision);
+        }
+      }
+      return output;
+    }});
+    const before=f.calls.length;
+    await assert.rejects(client.replaceSeparatedDisplay(f.store,context,opened.agent,DEFAULT_CONFIG,controller.signal));
+    assert.equal(f.calls.slice(before).some(args=>args[0]==='plugin'&&args[2]==='open'),false);
+  }
+});
+test('failed replacement launch records an attempt and never automatically respawns', async () => {
+  const f=await fixture(), a=await f.joinAgent('term1');
+  const opened=await a.c.openDisplay(f.store,a.context,a.agent,'automatic',DEFAULT_CONFIG);
+  f.panes[0].tab_id='w:t2'; const {context}=await a.c.observe(a.context,DEFAULT_CONFIG);
+  f.setFail(args=>args[0]==='plugin'&&args[2]==='open');
+  await assert.rejects(a.c.replaceSeparatedDisplay(f.store,context,opened.agent,DEFAULT_CONFIG),/partial/i);
+  f.setFail(undefined); const current=await f.store.readAgent('term1');
+  assert.notEqual(current.record.displayAttempt.nonce,opened.agent.record.displayAttempt.nonce);
+  assert.equal((await a.c.openDisplay(f.store,context,current,'automatic',DEFAULT_CONFIG)).kind,'suppressed');
+  await assert.rejects(a.c.replaceSeparatedDisplay(f.store,context,current,DEFAULT_CONFIG),/separated/i);
+});
 test('collision refresh renames only proven automatic editor names and current first panes', async () => {
   const f=await fixture(); const a=await f.joinAgent('term1'); const r=a.agent.record;
   const auth={sessionId:r.sessionId,workspaceId:r.workspaceId,membershipToken:r.membershipToken,evidenceGeneration:r.evidenceGeneration};

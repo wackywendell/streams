@@ -159,6 +159,16 @@ export class WorkspaceClient extends HerdrTransport {
     if (state.kind !== 'empty' && state.nonce !== agent.record.displayAttempt?.nonce) throw new Error('Pair nonce conflicts with persisted display attempt');
     return state;
   }
+  /** Readonly Pi authority: q-absent is valid membership, never permission to relaunch. */
+  async verifyMembership(store: RecordStore, context: NativeContext, painted: Snapshot<AgentRecord>, config: WorkCardsConfig, signal?: AbortSignal): Promise<Membership & { ownership: PairState }> {
+    const records = await this.currentRecords(store, painted);
+    const identity = await this.identity(store, records.agent), key = await this.storeKey(store);
+    const live = await this.guard(context, config, signal);
+    const binding = this.bound(key, records.workspace, live.snapshot, context);
+    const ownership = classifyPair(live.snapshot, identity, context.terminalId);
+    if (ownership.kind !== 'empty' && (ownership.agent.terminal_id !== context.terminalId || ownership.nonce !== records.agent.record.displayAttempt?.nonce)) throw new Error('Only the verified owning Pi agent may use this membership');
+    return { ...records, binding, context: { ...context, bindingNonce: binding.nonce }, ownership };
+  }
   private async pairedCard(store: RecordStore, context: NativeContext, painted: Snapshot<AgentRecord>, config: WorkCardsConfig, signal?: AbortSignal) {
     const records = await this.currentRecords(store, painted);
     const identity = await this.identity(store, records.agent), key = await this.storeKey(store);
@@ -173,60 +183,92 @@ export class WorkspaceClient extends HerdrTransport {
   }
   async openDisplay(store: RecordStore, context: NativeContext, painted: Snapshot<AgentRecord>, mode: 'automatic' | 'explicit', config: WorkCardsConfig, signal?: AbortSignal): Promise<DisplayResult> {
     signal?.throwIfAborted();
+    return withWorkspaceLock(context.socket, context.workspaceId, () => this.openDisplayLocked(store, context, painted, mode, config, signal));
+  }
+  private async openDisplayLocked(store: RecordStore, context: NativeContext, painted: Snapshot<AgentRecord>, mode: 'automatic' | 'explicit', config: WorkCardsConfig, signal?: AbortSignal): Promise<DisplayResult> {
+    let { agent, workspace } = await this.currentRecords(store, painted);
+    const storeKey = await this.storeKey(store), live = await this.guard(context, config, signal); this.bound(storeKey, workspace, live.snapshot, context);
+    let state = await this.ownership(store, context, agent, config, signal);
+    if (state.kind === 'paired') {
+      if (state.agent.terminal_id !== context.terminalId) throw new Error('Only the owning agent may open its display');
+      return { kind: 'paired', pair: state, agent };
+    }
+    if (state.kind === 'separated') throw new Error('Verified separated pair requires explicit controller cleanup before replacement');
+    if (state.kind === 'absent' && state.agent.terminal_id !== context.terminalId) throw new Error('Foreign display opener');
+    if (mode === 'automatic' && agent.record.displayAttempt) return { kind: 'suppressed', ownership: state, agent };
+    if (state.kind === 'absent') {
+      await this.stamp('pane', state.agent, Object.fromEntries(pairKeys.map(k => [k, null])), context, config, signal);
+      state = await this.ownership(store, context, agent, config, signal);
+      if (state.kind !== 'empty') throw new Error('Absent-owner cleanup failed to round-trip');
+    }
+    const nonce = randomUUID(), identity = await this.identity(store, agent);
+    await this.guard(context, config, signal);
+    agent = await store.setDisplayAttempt(agentAuthority(agent.record), { attempt: randomUUID(), nonce }, agent.revision, signal);
+    const attempt = agent.record.displayAttempt;
+    const prepare = async () => {
+      const records = await this.currentRecords(store, agent);
+      const key = await this.storeKey(store);
+      if (await this.identity(store, records.agent) !== identity || !isDeepStrictEqual(records.agent.record.displayAttempt, attempt)) throw new Error('Stale display attempt identity');
+      return (snapshot: NativeSnapshot) => { this.bound(key, records.workspace, snapshot, context); };
+    };
+    const validate = async () => {
+      const check = await prepare(), current = await this.guard(context, config, signal);
+      check(current.snapshot); return current;
+    };
+    let returned: Pane | undefined;
+    try {
+      await validate(); await this.ensurePlugin(config, validate);
+      const root = await realpath(this.pluginRoot), agentPath = await realpath(agent.path), stateDirectory = await realpath(store.directory);
+      const before = await validate();
+      if (classifyPair(before.snapshot, identity, context.terminalId).kind !== 'empty') throw new Error('Pair changed before launch');
+      signal?.throwIfAborted();
+      const opened = await this.result(['plugin', 'pane', 'open', '--plugin', 'work-cards', '--entrypoint', 'card', '--placement', 'split', '--target-pane', before.caller.pane_id, '--direction', 'down', '--cwd', root, '--no-focus',
+        '--env', `WORK_CARDS_AGENT=${agentPath}`, '--env', `WORK_CARDS_SESSION_ID=${agent.record.sessionId}`, '--env', `WORK_CARDS_STATE_DIR=${stateDirectory}`, '--env', `WORK_CARDS_OWNER_TERMINAL=${context.terminalId}`, '--env', `WORK_CARDS_NONCE=${nonce}`, '--env', `WORK_CARDS_CONFIG=${configPath(this.env)}`, '--env', `EDITOR=${this.env.EDITOR ?? ''}`, ...(this.env.PATH === undefined ? [] : ['--env', `PATH=${this.env.PATH}`])], config, 'plugin_pane_opened');
+      const info = nativeObject(opened.plugin_pane); returned = nativePane(info.pane);
+      if (info.plugin_id !== 'work-cards' || info.entrypoint !== 'card' || returned.workspace_id !== context.workspaceId || returned.tab_id !== context.tabId || before.snapshot.panes.some(p => p.pane_id === returned!.pane_id || p.terminal_id === returned!.terminal_id)) throw new Error('Unexpected/reused card pane');
+      const after = await validate();
+      const card = locateTerminal(after.snapshot, returned.terminal_id);
+      if (!isDeepStrictEqual(card, returned) || pairKeys.some(k => Object.hasOwn(card.tokens, k))) throw new Error('Unexpected live card identity/markers');
+      const markers = pairMarkers(identity, nonce, context.terminalId, card.terminal_id);
+      await this.stamp('pane', card, { ...markers, wca_role: 'card' }, context, config, signal, prepare);
+      const current = await validate();
+      await this.stamp('pane', current.caller, { ...markers, wca_role: 'agent' }, context, config, signal, prepare);
+      const final = await this.ownership(store, context, agent, config, signal);
+      if (final.kind !== 'paired') throw new Error('Pair did not round-trip');
+      return { kind: 'paired', pair: final, agent };
+    } catch (error) {
+      throw new Error(`Display launch may be partial${returned ? ` (pane ${returned.pane_id}, terminal ${returned.terminal_id})` : ''}; persisted attempt retained, no automatic retry: ${(error as Error).message}`, { cause: error });
+    }
+  }
+  /** One fresh positive separated proof authorizes one replacement, under the same lock. */
+  async replaceSeparatedDisplay(store: RecordStore, context: NativeContext, painted: Snapshot<AgentRecord>, config: WorkCardsConfig, signal?: AbortSignal): Promise<DisplayResult> {
+    signal?.throwIfAborted();
     return withWorkspaceLock(context.socket, context.workspaceId, async () => {
-      let { agent, workspace } = await this.currentRecords(store, painted);
-      const storeKey = await this.storeKey(store), live = await this.guard(context, config, signal); this.bound(storeKey, workspace, live.snapshot, context);
-      let state = await this.ownership(store, context, agent, config, signal);
-      if (state.kind === 'paired') {
-        if (state.agent.terminal_id !== context.terminalId) throw new Error('Only the owning agent may open its display');
-        return { kind: 'paired', pair: state, agent };
+      const verified = await this.verifyMembership(store, context, painted, config, signal);
+      if (verified.ownership.kind !== 'separated') throw new Error('Replacement requires a positively verified separated pair');
+      await this.cleanupDisplayLocked(store, verified.context, verified.agent, true, config, signal);
+      // No durable suppression is cleared. Any partial launch retains its new attempt.
+      return this.openDisplayLocked(store, verified.context, verified.agent, 'explicit', config, signal);
+    });
+  }
+  /** Retire only this known session's own markers; absence never launches a card. */
+  async releaseDisplay(store: RecordStore, context: NativeContext, painted: Snapshot<AgentRecord>, config: WorkCardsConfig, signal?: AbortSignal): Promise<void> {
+    signal?.throwIfAborted();
+    await withWorkspaceLock(context.socket, context.workspaceId, async () => {
+      const state = await this.ownership(store, context, painted, config, signal);
+      if (state.kind === 'empty') return;
+      if (state.agent.terminal_id !== context.terminalId) throw new Error('Foreign release caller');
+      if (state.kind === 'paired' || state.kind === 'separated') {
+        await this.cleanupDisplayLocked(store, context, painted, state.kind === 'separated', config, signal);
+        return;
       }
-      if (state.kind === 'separated') throw new Error('Verified separated pair requires explicit controller cleanup before replacement');
-      if (state.kind === 'absent' && state.agent.terminal_id !== context.terminalId) throw new Error('Foreign display opener');
-      if (mode === 'automatic' && agent.record.displayAttempt) return { kind: 'suppressed', ownership: state, agent };
-      if (state.kind === 'absent') {
-        await this.stamp('pane', state.agent, Object.fromEntries(pairKeys.map(k => [k, null])), context, config, signal);
-        state = await this.ownership(store, context, agent, config, signal);
-        if (state.kind !== 'empty') throw new Error('Absent-owner cleanup failed to round-trip');
-      }
-      const nonce = randomUUID(), identity = await this.identity(store, agent);
-      await this.guard(context, config, signal);
-      agent = await store.setDisplayAttempt(agentAuthority(agent.record), { attempt: randomUUID(), nonce }, agent.revision, signal);
-      const attempt = agent.record.displayAttempt;
       const prepare = async () => {
-        const records = await this.currentRecords(store, agent);
-        const key = await this.storeKey(store);
-        if (await this.identity(store, records.agent) !== identity || !isDeepStrictEqual(records.agent.record.displayAttempt, attempt)) throw new Error('Stale display attempt identity');
-        return (snapshot: NativeSnapshot) => { this.bound(key, records.workspace, snapshot, context); };
+        await this.currentRecords(store, painted);
+        return (snapshot: NativeSnapshot) => {
+          if (!isDeepStrictEqual(classifyPair(snapshot, state.identity, context.terminalId), state)) throw new Error('Absent pair changed before release');
+        };
       };
-      const validate = async () => {
-        const check = await prepare(), current = await this.guard(context, config, signal);
-        check(current.snapshot); return current;
-      };
-      let returned: Pane | undefined;
-      try {
-        await validate(); await this.ensurePlugin(config, validate);
-        const root = await realpath(this.pluginRoot), agentPath = await realpath(agent.path), stateDirectory = await realpath(store.directory);
-        const before = await validate();
-        if (classifyPair(before.snapshot, identity, context.terminalId).kind !== 'empty') throw new Error('Pair changed before launch');
-        signal?.throwIfAborted();
-        const opened = await this.result(['plugin', 'pane', 'open', '--plugin', 'work-cards', '--entrypoint', 'card', '--placement', 'split', '--target-pane', before.caller.pane_id, '--direction', 'down', '--cwd', root, '--no-focus',
-          '--env', `WORK_CARDS_AGENT=${agentPath}`, '--env', `WORK_CARDS_SESSION_ID=${agent.record.sessionId}`, '--env', `WORK_CARDS_STATE_DIR=${stateDirectory}`, '--env', `WORK_CARDS_OWNER_TERMINAL=${context.terminalId}`, '--env', `WORK_CARDS_NONCE=${nonce}`, '--env', `WORK_CARDS_CONFIG=${configPath(this.env)}`, '--env', `EDITOR=${this.env.EDITOR ?? ''}`, ...(this.env.PATH === undefined ? [] : ['--env', `PATH=${this.env.PATH}`])], config, 'plugin_pane_opened');
-        const info = nativeObject(opened.plugin_pane); returned = nativePane(info.pane);
-        if (info.plugin_id !== 'work-cards' || info.entrypoint !== 'card' || returned.workspace_id !== context.workspaceId || returned.tab_id !== context.tabId || before.snapshot.panes.some(p => p.pane_id === returned!.pane_id || p.terminal_id === returned!.terminal_id)) throw new Error('Unexpected/reused card pane');
-        const after = await validate();
-        const card = locateTerminal(after.snapshot, returned.terminal_id);
-        if (!isDeepStrictEqual(card, returned) || pairKeys.some(k => Object.hasOwn(card.tokens, k))) throw new Error('Unexpected live card identity/markers');
-        const markers = pairMarkers(identity, nonce, context.terminalId, card.terminal_id);
-        await this.stamp('pane', card, { ...markers, wca_role: 'card' }, context, config, signal, prepare);
-        const current = await validate();
-        await this.stamp('pane', current.caller, { ...markers, wca_role: 'agent' }, context, config, signal, prepare);
-        const final = await this.ownership(store, context, agent, config, signal);
-        if (final.kind !== 'paired') throw new Error('Pair did not round-trip');
-        return { kind: 'paired', pair: final, agent };
-      } catch (error) {
-        throw new Error(`Display launch may be partial${returned ? ` (pane ${returned.pane_id}, terminal ${returned.terminal_id})` : ''}; persisted attempt retained, no automatic retry: ${(error as Error).message}`, { cause: error });
-      }
+      await this.stamp('pane', state.agent, Object.fromEntries([...pairKeys, 'wca_status', 'wca_now'].map(k => [k, null])), context, config, signal, prepare);
     });
   }
   /** Closes only an exact live owned display. q/absence never authorizes replacement. Shared binding survives. */
@@ -238,27 +280,32 @@ export class WorkspaceClient extends HerdrTransport {
   }
   private async cleanupDisplay(store: RecordStore, context: NativeContext, painted: Snapshot<AgentRecord>, separated: boolean, config: WorkCardsConfig, signal?: AbortSignal): Promise<void> {
     signal?.throwIfAborted();
-    await withWorkspaceLock(context.socket, context.workspaceId, async () => {
-      const state = await this.ownership(store, context, painted, config, signal);
-      if (state.kind !== (separated ? 'separated' : 'paired')) throw new Error('No positively verified live owned display; nothing closed');
-      if (context.terminalId !== state.agent.terminal_id && context.terminalId !== state.card.terminal_id) throw new Error('Foreign cleanup caller');
-      if (context.terminalId === state.card.terminal_id && this.env.WORK_CARDS_NONCE !== state.nonce) throw new Error('Foreign cleanup nonce');
-      const live = await this.guard(context, config, signal);
-      const confirmed = classifyPair(live.snapshot, state.identity, context.terminalId);
-      if (!isDeepStrictEqual(confirmed, state)) throw new Error('Pair changed before close; nothing closed');
-      const nonce = live.snapshot.workspaces.find(w => w.workspace_id === state.agent.workspace_id)?.tokens.wcw_nonce;
-      // Closing the card intentionally removes the caller. Continue only against its already-proven owning agent.
-      const cleanupContext: NativeContext = { socket: context.socket, terminalId: state.agent.terminal_id, workspaceId: state.agent.workspace_id, tabId: state.agent.tab_id, ...(nonce ? { bindingNonce: nonce } : {}) };
-      try {
-        signal?.throwIfAborted();
-        const closed = await this.result(['plugin', 'pane', 'close', state.card.pane_id], config, 'plugin_pane_closed');
-        if (closed.pane_id !== state.card.pane_id) throw new Error('Closed pane identity mismatch');
-        const after = await this.guard(cleanupContext, config, signal);
-        const agent = locateTerminal(after.snapshot, state.agent.terminal_id);
-        if (!pairKeys.every(k => agent.tokens[k] === state.agent.tokens[k]) || after.snapshot.panes.some(p => p.terminal_id === state.card.terminal_id)) throw new Error('Pair changed during close');
-        await this.stamp('pane', agent, Object.fromEntries([...pairKeys, 'wca_status', 'wca_now'].map(k => [k, null])), cleanupContext, config, signal);
-      } catch (error) { throw new Error(`Display close may be partial; no shared binding was cleared: ${(error as Error).message}`, { cause: error }); }
-    });
+    await withWorkspaceLock(context.socket, context.workspaceId, () => this.cleanupDisplayLocked(store, context, painted, separated, config, signal));
+  }
+  private async cleanupDisplayLocked(store: RecordStore, context: NativeContext, painted: Snapshot<AgentRecord>, separated: boolean, config: WorkCardsConfig, signal?: AbortSignal): Promise<void> {
+    const state = await this.ownership(store, context, painted, config, signal);
+    if (state.kind !== (separated ? 'separated' : 'paired')) throw new Error('No positively verified live owned display; nothing closed');
+    if (context.terminalId !== state.agent.terminal_id && context.terminalId !== state.card.terminal_id) throw new Error('Foreign cleanup caller');
+    if (context.terminalId === state.card.terminal_id && this.env.WORK_CARDS_NONCE !== state.nonce) throw new Error('Foreign cleanup nonce');
+    const live = await this.guard(context, config, signal);
+    const confirmed = classifyPair(live.snapshot, state.identity, context.terminalId);
+    if (!isDeepStrictEqual(confirmed, state)) throw new Error('Pair changed before close; nothing closed');
+    const nonce = live.snapshot.workspaces.find(w => w.workspace_id === state.agent.workspace_id)?.tokens.wcw_nonce;
+    // Closing the card intentionally removes the caller. Continue only against its already-proven owning agent.
+    const cleanupContext: NativeContext = { socket: context.socket, terminalId: state.agent.terminal_id, workspaceId: state.agent.workspace_id, tabId: state.agent.tab_id, ...(nonce ? { bindingNonce: nonce } : {}) };
+    try {
+      signal?.throwIfAborted();
+      const closed = await this.result(['plugin', 'pane', 'close', state.card.pane_id], config, 'plugin_pane_closed');
+      if (closed.pane_id !== state.card.pane_id) throw new Error('Closed pane identity mismatch');
+      await this.currentRecords(store, painted);
+      const after = await this.guard(cleanupContext, config, signal);
+      const agent = locateTerminal(after.snapshot, state.agent.terminal_id);
+      if (!pairKeys.every(k => agent.tokens[k] === state.agent.tokens[k]) || after.snapshot.panes.some(p => p.terminal_id === state.card.terminal_id)) throw new Error('Pair changed during close');
+      await this.stamp('pane', agent, Object.fromEntries([...pairKeys, 'wca_status', 'wca_now'].map(k => [k, null])), cleanupContext, config, signal, async () => {
+        await this.currentRecords(store, painted);
+        return () => {};
+      });
+    } catch (error) { throw new Error(`Display close may be partial; no shared binding was cleared: ${(error as Error).message}`, { cause: error }); }
   }
   async project(store: RecordStore, context: NativeContext, painted: Snapshot<AgentRecord>, config: WorkCardsConfig, signal?: AbortSignal): Promise<void> {
     signal?.throwIfAborted();
