@@ -5,7 +5,7 @@ import { mkdtemp, mkdir, rm, readFile, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { createCard, readCard } from '../dist/card.js';
-import { renderCard, CardView, plain } from '../dist/herdr/view.js';
+import { renderCard, renderDisplayCard, CardView, plain } from '../dist/herdr/view.js';
 
 const card = { title: 'Work cards', status: 'active', state: 'Extension built and installed. Shared workspace remains planned.', cwd: '/repo',
   documents: [{ path: 'docs/design.md', description: 'Design' }],
@@ -64,40 +64,116 @@ test('quiet wide and narrow layouts wrap sentences and retain useful references'
   ].join('\n'));
 });
 
+test('structured legacy layout combines italic title with plain goal and retains Now/status', () => {
+  const c = { ...card, state: 'Goal: Reliable recovery | Now: Failure reproduced | Remaining: Choose retry' };
+  const rendered = render(c, 100, 8).text;
+  const lines = unstyled(rendered).split('\n');
+  assert.equal(lines[0], 'Work cards: Reliable recovery');
+  assert.match(lines[1], /^Now: Failure reproduced +● active$/);
+  assert.equal(lines[2], 'Choose retry');
+  assert.ok(rendered.includes('\x1b[3mWork cards\x1b[0m: Reliable recovery'));
+  assert.ok(rendered.includes('\x1b[3mChoose retry\x1b[0m'));
+  assert.doesNotMatch(rendered, /Goal:|Remaining:|\*/);
+});
+
+test('empty structured fields omit empty sections and keep title-only rows without colons', () => {
+  const display = { title: 'Agent', workspaceTitle: 'Workspace', status: 'active',
+    state: { sections: { goal: '', now: '', remaining: '' } }, documents: [], issues: [], prs: [] };
+  const lines = unstyled(renderDisplayCard(display, 40, 5).text).split('\n');
+  assert.equal(lines[0], 'Workspace');
+  assert.equal(lines[1], 'Agent'.padEnd(32) + '● active');
+  assert.equal(lines[2], '');
+  const untitled = { ...display, title: '', workspaceTitle: '', state: { sections: { goal: 'Purpose', now: 'Stage', remaining: '' } } };
+  const untitledText = renderDisplayCard(untitled, 40, 5).text;
+  assert.ok(untitledText.startsWith('Purpose\nStage'));
+  const body = unstyled(untitledText).split('\n');
+  assert.equal(body[0], 'Purpose');
+  assert.equal(body[1], 'Stage'.padEnd(32) + '● active');
+  assert.equal(body[2], '');
+  const punctuation = renderDisplayCard({ ...display, workspaceTitle: 'Workspace:' }, 40, 5).text;
+  assert.ok(punctuation.startsWith('\x1b[3mWorkspace:\x1b[0m\n'));
+});
+
+test('wrapped structured titles and remaining are italic but bodies and legacy Now stay plain', () => {
+  const c = { ...card, title: 'Long workspace title', documents: [], issues: [],
+    state: 'Goal: Plain goal body | Now: Plain stage | Remaining: Next work wraps across lines' };
+  const styled = render(c, 12, 20).text;
+  assert.ok(styled.includes('\x1b[3mLong\x1b[0m\n\x1b[3mworkspace\x1b[0m\n\x1b[3mtitle\x1b[0m: Plain'));
+  assert.ok(render(c, 40, 20).text.includes('\nNow: Plain stage'));
+  assert.ok(styled.includes('\x1b[3mNext work\x1b[0m'));
+  assert.ok(styled.includes('\x1b[3mwraps across\x1b[0m'));
+  const one = unstyled(render(c, 20, 1).text);
+  assert.ok(one.startsWith('Long worksp'));
+  assert.ok(one.endsWith('[q] close'));
+});
+
+for (const field of ['workspaceTitle', 'title']) test(`${field} style splits preserve title/colon graphemes with tiny panes and footer`, () => {
+  const segmenter = new Intl.Segmenter(undefined, { granularity: 'grapheme' });
+  const display = { workspaceTitle: 'Workspace', title: 'Agent', status: 'active',
+    state: { sections: { goal: 'Goal', now: 'Now', remaining: 'Remaining' } }, documents: [], issues: [], prs: [] };
+  display[field] = 'a\u0d4e';
+  if (field === 'workspaceTitle') {
+    assert.equal(unstyled(renderDisplayCard(display, 5, 1).text), 'a\u0d4e:[q]');
+  }
+  const wide = renderDisplayCard(display, 80, 8).text;
+  assert.ok(wide.includes('\x1b[3ma\u0d4e:\x1b[0m ' + (field === 'workspaceTitle' ? 'Goal' : 'Now')));
+  for (const title of ['a\u0d4e', '界\u0d4e', 'é\u0d4e', '😀\u0d4e']) {
+    display[field] = title;
+    for (let rows = 1; rows <= 8; rows++) for (let columns = 1; columns <= 32; columns++) {
+      for (const notice of [undefined, 'Notice 界😀é']) {
+        const text = renderDisplayCard(display, columns, rows, notice).text;
+        const lines = text.split('\n');
+        assert.equal(lines.length, rows);
+        for (const line of lines) {
+          const painted = unstyled(line);
+          assert.ok(stringWidth(painted) <= columns);
+          const boundaries = new Set([0, painted.length, ...Array.from(segmenter.segment(painted), part => part.index)]);
+          for (const match of line.matchAll(/\x1b\[[\d;]*m/g)) {
+            const boundary = unstyled(line.slice(0, match.index)).length;
+            assert.ok(boundaries.has(boundary), `style splits grapheme at ${boundary}: ${JSON.stringify(line)}`);
+          }
+        }
+        if (columns >= 3) assert.ok(unstyled(lines.at(-1)).endsWith(columns >= 9 ? '[q] close' : '[q]'));
+      }
+    }
+  }
+});
+
 test('canonical short state paints separate ordered sections without carrier pipes', () => {
   const c = { ...card, state: 'Goal: Reliable recovery | Now: Failure reproduced | Remaining: Choose retry' };
-  assert.deepEqual(unstyled(render(c, 72, 8).text).split('\n').slice(1, 6), [
-    'Goal: Reliable recovery', 'Now: Failure reproduced', 'Remaining: Choose retry',
+  assert.deepEqual(unstyled(render(c, 72, 8).text).split('\n').slice(0, 5), [
+    'Work cards: Reliable recovery', 'Now: Failure reproduced'.padEnd(64) + '● active', 'Choose retry',
     '[a] docs/design.md', '[1] Issue: Workspace design',
   ]);
-  assert.deepEqual(unstyled(render(c, 24, 8).text).split('\n').slice(1, 6), [
-    'Goal: Reliable recovery', 'Now: Failure reproduced', 'Remaining: Choose retry',
+  assert.deepEqual(unstyled(render(c, 24, 8).text).split('\n').slice(0, 6), [
+    'Work cards: Reliable', 'recovery', 'Now: Failure…   ● active', 'Choose retry',
     '[a] docs/design.md', '[1] Issue: Workspace de…',
   ]);
 });
 
 test('section wrapping reserves later headings and ellipsizes within the state budget', () => {
   const c = { ...card, state: 'Goal: Very long purpose that would otherwise consume all the available rows | Now: Usable stage | Remaining: Major unfinished scope' };
-  assert.deepEqual(unstyled(render(c, 24, 8).text).split('\n').slice(1, 7), [
-    'Goal: Very long purpose', 'that would otherwise…', 'Now: Usable stage', 'Remaining: Major…',
+  assert.deepEqual(unstyled(render(c, 24, 8).text).split('\n').slice(0, 6), [
+    'Work cards: Very long', 'purpose that would…', 'Now: Usable…    ● active', 'Major unfinished scope',
     '[a] docs/design.md', '[1] Issue: Workspace de…',
   ]);
-  assert.deepEqual(unstyled(render(c, 24, 6).text).split('\n').slice(1, 5), [
-    'Goal: Very long purpose…', 'Now: Usable stage', 'Remaining: Major…', '[a] docs/design.md',
+  assert.deepEqual(unstyled(render(c, 24, 6).text).split('\n').slice(0, 5), [
+    'Work cards: Very long…', 'Now: Usable…    ● active', 'Major unfinished scope', '[a] docs/design.md', '[1] Issue: Workspace de…',
   ]);
   const noRefs = { ...c, documents: [], issues: [] };
-  assert.deepEqual(unstyled(render(noRefs, 40, 3).text).split('\n').slice(1), [
-    'Goal: Very long purpose that would…', 'Now: Usable stage…' + ' '.repeat(13) + '[q] close',
+  assert.deepEqual(unstyled(render(noRefs, 40, 3).text).split('\n'), [
+    'Work cards: Very long purpose that woul…', 'Now: Usable stage'.padEnd(32) + '● active',
+    'Major unfinished scope'.padEnd(31) + '[q] close',
   ]);
 });
 
 test('each section wraps independently when there is enough height', () => {
   const c = { ...card, documents: [], issues: [], state: 'Goal: Reliable queue recovery | Now: Failure reproduced | Remaining: Choose retry policy' };
-  assert.deepEqual(unstyled(render(c, 20, 12).text).split('\n').slice(1, 7), [
-    'Goal: Reliable queue', 'recovery', 'Now: Failure', 'reproduced', 'Remaining: Choose', 'retry policy',
+  assert.deepEqual(unstyled(render(c, 20, 12).text).split('\n').slice(0, 6), [
+    'Work cards: Reliable', 'queue recovery', 'Now:        ● active', 'Failure', 'reproduced', 'Choose retry policy',
   ]);
   assert.deepEqual(unstyled(render({ ...c, state: 'Goal: Purpose | Now: Stage | Remaining: Work' }, 30, 2).text).split('\n'), [
-    'Work cards            ● active', 'Goal: Purpose…' + ' '.repeat(7) + '[q] close',
+    'Work cards: Purpose', 'Now: Stage…  ● active[q] close',
   ]);
 });
 
@@ -112,8 +188,8 @@ test('malformed section carriers stay whole in the legacy prose layout', () => {
 test('section content is sanitized and UTF-8/cell bounded with tiny panes, references, notices and footer', () => {
   const c = { ...card, state: 'Goal: 界😀e\u0301\ud800\x1b[31m\u202e | Now: ' + '界'.repeat(30) + ' | Remaining: Scope\udc00' };
   const wide = render(c, 200, 8).text;
-  assert.ok(unstyled(wide).includes('Goal: 界😀e\u0301�[31m'));
-  assert.ok(unstyled(wide).includes('Remaining: Scope�'));
+  assert.ok(unstyled(wide).includes('Work cards: 界😀e\u0301�[31m'));
+  assert.ok(unstyled(wide).split('\n').includes('Scope�'));
   assert.doesNotMatch(wide, /\x1b\[31m|\u202e/);
   for (let rows = 0; rows <= 10; rows++) for (let columns = 0; columns <= 40; columns++) {
     for (const notice of [undefined, 'Notice\ud800\x1b[2J']) {
@@ -131,7 +207,7 @@ test('section content is sanitized and UTF-8/cell bounded with tiny panes, refer
 
 test('trusted palette styling is closed and state stays normal contrast', () => {
   const text = render(card, 72, 8).text;
-  assert.match(text, /\x1b\[1mWork cards\x1b\[0m/);
+  assert.match(text, /\x1b\[3mWork cards\x1b\[0m/);
   assert.match(text, /\x1b\[36m● active\x1b\[0m/);
   assert.ok(text.includes('\n' + card.state + '\n'));
   assert.match(text, /\x1b\[36m\[a\]\x1b\[0m/);
@@ -139,7 +215,7 @@ test('trusted palette styling is closed and state stays normal contrast', () => 
   assert.match(text, /\x1b\]8;;https:\/\/example.com\/1\x1b\\\x1b\[36m\[1\] Issue: Workspace design\x1b\[0m\x1b\]8;;\x1b\\/);
   assert.ok(text.endsWith('\x1b[2m[q] close\x1b[0m'));
   for (const line of text.split('\n')) {
-    const opens = [...line.matchAll(/\x1b\[(?:1|2|31|32|33|36)m/g)].length;
+    const opens = [...line.matchAll(/\x1b\[(?:1|2|3|31|32|33|36)m/g)].length;
     assert.equal(opens, [...line.matchAll(/\x1b\[0m/g)].length);
   }
 });

@@ -76,7 +76,19 @@ Checkout keys stay stable when display labels change. Resolve directory aliases 
 
 ## Display and navigation
 
-Each card combines the workspace Goal with the agent's Now and Remaining. The latter describe that agent's assignment, not the entire project's backlog. Preserve the existing short-summary intent, wrapping, height limits, reference shortcuts and close hint.
+Each card combines the workspace Goal with the agent's Now and Remaining. The latter describe that agent's assignment, not the entire project's backlog.
+
+Use the workspace title as the Goal label and the agent title as the Now label:
+
+```text
+Workspace title: shared goal
+Agent title: current progress                    ● active
+Remaining work
+```
+
+Italicize both titles and the remaining-work text. Keep Goal and Now text plain, without separate `Goal:` or `Now:` labels. Place the agent's status beside its progress when space permits. Omit empty remaining-work text; a title can stand alone when its corresponding text is empty. Wrap long text within the existing height and reference-space limits. Preserve reference shortcuts and the close hint.
+
+Legacy structured cards use the same combined title and Goal, but retain `Now:` because they have no separate agent title. Unstructured legacy prose remains intact.
 
 For one checkout, retain the current short document path:
 

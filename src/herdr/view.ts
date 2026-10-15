@@ -18,6 +18,14 @@ function prefix(text: string, columns: number): string {
   }
   return result;
 }
+function graphemeBoundary(text: string, offset: number): number {
+  if (offset <= 0) return 0;
+  for (const { index, segment } of graphemes.segment(text)) {
+    const end = index + segment.length;
+    if (end >= offset) return end;
+  }
+  return text.length;
+}
 function fit(text: string, columns: number): string {
   if (columns <= 0) return '';
   return stringWidth(text) <= columns ? text : prefix(text, columns - 1) + '…';
@@ -48,7 +56,7 @@ function webUrl(value: string): string | undefined {
 }
 interface DocumentTarget { cwd: string; path: string }
 export interface DisplayCard<T> {
-  title: string; status: CardStatus;
+  title: string; workspaceTitle?: string; status: CardStatus;
   state: { sections: StateSections } | { prose: string };
   documents: { label: string; target: T }[];
   issues: { url: string; description: string }[];
@@ -78,36 +86,54 @@ export function renderDisplayCard<T>(card: DisplayCard<T> | undefined, columns: 
     const statuses = { active: ['●', 36], waiting: ['○', 33], blocked: ['!', 31], parked: ['○', 2], done: ['✓', 32] } as const;
     const [symbol, colour] = statuses[card.status];
     const status = `${symbol} ${card.status}`, statusWidth = stringWidth(status), title = plain(card.title);
-    lines.push({ spans: w => {
-      if (w < statusWidth + 3) return [{ text: fit(title, w), code: 1 }];
+    const sections = 'sections' in card.state ? card.state.sections : undefined;
+    if (!sections) lines.push({ spans: w => {
+      if (w < statusWidth + 3) return [{ text: fit(title, w), code: 3 }];
       const label = fit(title, w - statusWidth - 2);
-      return [{ text: label, code: 1 }, { text: ' '.repeat(w - stringWidth(label) - statusWidth) }, { text: status, code: colour }];
+      return [{ text: label, code: 3 }, { text: ' '.repeat(w - stringWidth(label) - statusWidth) }, { text: status, code: colour }];
     } });
     const references = [
       ...card.documents.map((document, index) => ({ path: document.label, target: document.target, key: documentKeys[index], label: '', url: undefined as string | undefined })),
       ...card.issues.map((link, index) => ({ label: plain(`[${index + 1}] Issue: ${link.description || link.url}`), url: webUrl(link.url), path: undefined, target: undefined, key: undefined })),
       ...card.prs.map((link, index) => ({ label: plain(`[${card.issues.length + index + 1}] PR: ${link.description || link.url}`), url: webUrl(link.url), path: undefined, target: undefined, key: undefined })),
     ];
-    const available = contentHeight - 1;
+    const available = contentHeight - lines.length;
     let stateLimit = references.length ? (available < 2 ? available : Math.min(Math.ceil(available / 2), Math.max(1, available - Math.min(2, references.length)))) : available;
-    const sections = 'sections' in card.state ? card.state.sections : undefined;
     if (sections) {
-      // Make room for three headings without taking the existing reserved reference slots.
-      stateLimit = Math.max(stateLimit, Math.min(3, available - Math.min(2, references.length)));
+      const shared = card.workspaceTitle !== undefined;
       const states = [
-        `Goal: ${sections.goal}`, `Now: ${sections.now}`, `Remaining: ${sections.remaining}`,
-      ];
+        { label: shared ? card.workspaceTitle! : card.title, body: sections.goal, italic: 'title', ownStatus: false },
+        { label: shared ? card.title : (sections.now ? 'Now' : ''), body: sections.now, italic: shared ? 'title' : undefined, ownStatus: true },
+        { label: '', body: sections.remaining, italic: 'all', ownStatus: false },
+      ].map(section => ({ ...section, label: plain(section.label).trim(), body: plain(section.body).trim() }))
+        .filter(section => section.label || section.body || section.ownStatus);
+      // Keep each nonempty section visible without taking the reserved reference slots.
+      stateLimit = Math.max(stateLimit, Math.min(states.length, available - Math.min(2, references.length)));
       let budget = stateLimit;
-      for (const [index, text] of states.entries()) {
+      for (const [index, section] of states.entries()) {
         if (!budget) break;
-        const state = wrap(plain(text), width);
+        const { label, body, italic, ownStatus } = section;
+        const sectionWidth = ownStatus && width >= statusWidth + 3 ? width - statusWidth - 2 : width;
+        const heading = label + (label && body ? ':' : '');
+        const state = wrap(heading + (heading && body ? ' ' : '') + body, sectionWidth);
+        if (!state.length && ownStatus) state.push('');
+        const headings = wrap(heading, sectionWidth);
         const reserved = Math.min(states.length - index - 1, budget - 1);
         const visibleState = state.slice(0, budget - reserved);
         if (state.length > visibleState.length || (budget === visibleState.length && index < states.length - 1)) {
           const last = visibleState.length - 1;
-          visibleState[last] = prefix(visibleState[last]!, width - 1).trimEnd() + '…';
+          visibleState[last] = prefix(visibleState[last]!, sectionWidth - 1).trimEnd() + '…';
         }
-        lines.push(...visibleState.map(line => textRow(line)));
+        lines.push(...visibleState.map((line, row) => ({ spans: (w: number): Span[] => {
+          const showStatus = ownStatus && row === 0 && w >= statusWidth + 3;
+          const text = clipped(line, showStatus ? w - statusWidth - 2 : w);
+          const headingText = headings[row] ?? '';
+          const titleLength = headingText.length - Number(Boolean(label && body) && row === headings.length - 1);
+          const emphasized = italic === 'all' ? text.length : italic === 'title' ? graphemeBoundary(text, titleLength) : 0;
+          const spans: Span[] = [{ text: text.slice(0, emphasized), code: 3 }, { text: text.slice(emphasized) }];
+          if (showStatus) spans.push({ text: ' '.repeat(w - stringWidth(text) - statusWidth) }, { text: status, code: colour });
+          return spans;
+        } })));
         budget -= visibleState.length;
       }
     } else {
