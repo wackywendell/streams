@@ -28,6 +28,7 @@ async function fixture() {
     const result = (type, fields) => JSON.stringify({ result: { type, ...fields } });
     if (args[0] === 'api') return result('session_snapshot', { snapshot: inventory() });
     if (args[0] === 'pane' && args[1] === 'current') return result('pane_current', { pane: panes.find(p => p.terminal_id === terminal) });
+    if (args[0] === 'pane' && args[1] === 'resize') return result('pane_resize', { resize: { pane_id: args[3] } });
     if (args[1] === 'report-metadata') {
       const target = (args[0] === 'pane' ? panes : workspaces).find(p => (p.pane_id ?? p.workspace_id) === args[2]);
       for (let i = 5; i < args.length; i += 2) { const [key, ...v] = args[i+1].split('='); if (args[i] === '--clear-token') delete target.tokens[key]; else target.tokens[key] = v.join('='); }
@@ -56,6 +57,141 @@ async function fixture() {
   };
   return {root,cwd,store,panes,workspaces,tabs,calls,client,joinAgent,setFail:f=>{fail=f;},run};
 }
+const resizes = calls => calls.filter(args => args[0] === 'pane' && args[1] === 'resize');
+
+test('new display applies the configured initial fraction once without focus; reuse preserves geometry', async t => {
+  for (const fraction of [DEFAULT_CONFIG.pane_height_fraction, 0.75, 0.5]) await t.test(String(fraction), async () => {
+    const f = await fixture(), a = await f.joinAgent('term1');
+    const config = { ...DEFAULT_CONFIG, pane_height_fraction: fraction };
+    const opened = await a.c.openDisplay(f.store, a.context, a.agent, 'automatic', config);
+    assert.equal(opened.kind, 'paired');
+    const target = fraction < 0.5 ? opened.pair.agent : opened.pair.card;
+    const expected = fraction === 0.5 ? [] : [['pane', 'resize', '--pane', target.pane_id, '--direction', fraction < 0.5 ? 'down' : 'up', '--amount', String(Math.abs(0.5 - fraction))]];
+    assert.deepEqual(resizes(f.calls), expected);
+    const reused = await a.c.openDisplay(f.store, a.context, opened.agent, 'explicit', config);
+    assert.equal(reused.pair.nonce, opened.pair.nonce);
+    assert.deepEqual(resizes(f.calls), expected);
+    assert.equal(f.calls.some(args => args.includes('focus')), false);
+    const launch = f.calls.find(args => args[0] === 'plugin' && args[2] === 'open');
+    assert.ok(launch.includes('--no-focus'));
+  });
+});
+
+test('nested initial sizing changes only the shared agent/card separator, not unrelated geometry', async t => {
+  for (const fraction of [0.2, 0.75]) await t.test(String(fraction), async () => {
+    const f = await fixture(), a = await f.joinAgent('term1');
+    const owner = f.panes[0], unrelated = f.panes[1]; unrelated.tab_id = owner.tab_id;
+    // A downward outer split has the unrelated pane above the new downward agent/card split.
+    const layout = { outer: 0.5, inner: 0.5 };
+    const unrelatedRect = () => ({ x: 0, y: 0, width: 1000, height: layout.outer * 1000 });
+    const before = unrelatedRect(), run = a.c.run;
+    a.c.run = async args => {
+      if (args[0] === 'pane' && args[1] === 'resize') {
+        const target = f.panes.find(p => p.pane_id === args[3]);
+        const direction = args[args.indexOf('--direction') + 1], amount = Number(args[args.indexOf('--amount') + 1]);
+        // Herdr v0.9.5 searches the requested edge before considering the opposite edge.
+        // Agent/up therefore selects the outer separator; card/up selects the inner separator.
+        if (target === owner && direction === 'up') layout.outer -= amount;
+        else if (target === owner && direction === 'down') layout.inner += amount;
+        else if (target?.tokens.wca_role === 'card' && direction === 'up') layout.inner -= amount;
+        else assert.fail('Unexpected nested resize target/direction');
+      }
+      return run(args);
+    };
+    const opened = await a.c.openDisplay(f.store, a.context, a.agent, 'automatic', { ...DEFAULT_CONFIG, pane_height_fraction: fraction });
+    assert.equal(opened.kind, 'paired');
+    assert.equal(resizes(f.calls).length, 1);
+    assert.equal(layout.outer, 0.5);
+    assert.deepEqual(unrelatedRect(), before);
+    assert.equal(layout.inner, fraction === 0.2 ? 0.8 : 0.25);
+  });
+});
+
+test('q absence and automatic suppression do not resize; explicit reopen sizes only the new pair', async () => {
+  const f = await fixture(), a = await f.joinAgent('term1');
+  const first = await a.c.openDisplay(f.store, a.context, a.agent, 'automatic', DEFAULT_CONFIG);
+  assert.equal(resizes(f.calls).length, 1);
+  f.panes.splice(f.panes.findIndex(p => p.terminal_id === first.pair.card.terminal_id), 1);
+  assert.equal((await a.c.openDisplay(f.store, a.context, first.agent, 'automatic', DEFAULT_CONFIG)).kind, 'suppressed');
+  assert.equal(resizes(f.calls).length, 1);
+  const reopened = await a.c.openDisplay(f.store, a.context, first.agent, 'explicit', DEFAULT_CONFIG);
+  assert.equal(reopened.kind, 'paired'); assert.notEqual(reopened.pair.nonce, first.pair.nonce);
+  assert.equal(resizes(f.calls).length, 2);
+  assert.equal((await a.c.openDisplay(f.store, a.context, reopened.agent, 'automatic', DEFAULT_CONFIG)).kind, 'paired');
+  assert.equal(resizes(f.calls).length, 2);
+});
+
+test('late invalidation after pair round-trip prevents resizing and propagates', async t => {
+  for (const change of ['move', 'pane', 'card', 'nonce', 'membership', 'binding', 'attempt', 'abort']) await t.test(change, async () => {
+    const f = await fixture(), a = await f.joinAgent('term1'), controller = new AbortController();
+    const ownership = a.c.ownership.bind(a.c); let changed = false;
+    a.c.ownership = async (...args) => {
+      const pair = await ownership(...args);
+      if (pair.kind === 'paired' && !changed) {
+        changed = true;
+        if (change === 'move') f.panes[0].tab_id = 'w:t2';
+        if (change === 'pane') f.panes[0].pane_id = 'w:p99';
+        if (change === 'card') f.panes.find(p => p.tokens.wca_role === 'card').pane_id = 'w:p99';
+        if (change === 'nonce') for (const p of f.panes.filter(p => p.tokens.wca_role)) p.tokens.wca_nonce = 'other';
+        if (change === 'binding') f.workspaces[0].tokens.wcw_nonce = 'other';
+        if (change === 'abort') controller.abort(new Error('cancelled before resize'));
+        if (change === 'membership' || change === 'attempt') {
+          const current = await f.store.readAgent('term1');
+          if (change === 'membership') await f.store.resetEvidence(agentAuthority(current.record), boundary, current.revision);
+          else await f.store.setDisplayAttempt(agentAuthority(current.record), { attempt: 'other', nonce: 'other' }, current.revision);
+        }
+      }
+      return pair;
+    };
+    await assert.rejects(a.c.openDisplay(f.store, a.context, a.agent, 'automatic', DEFAULT_CONFIG, controller.signal), /stale|changed|cancelled/i);
+    assert.equal(changed, true); assert.deepEqual(resizes(f.calls), []);
+    assert.ok((await f.store.readAgent('term1')).record.displayAttempt);
+    assert.equal(f.calls.some(args => args[0] === 'plugin' && args[2] === 'close'), false);
+  });
+});
+
+test('resize failure or malformed acknowledgement retains the pair and attempt without retrying', async t => {
+  for (const fraction of [0.2, 0.75]) for (const failure of ['command', 'json', 'type', 'missing', 'pane']) await t.test(`${fraction}: ${failure}`, async () => {
+    const f = await fixture(), a = await f.joinAgent('term1'), run = a.c.run;
+    a.c.run = async args => {
+      const response = await run(args);
+      if (args[0] !== 'pane' || args[1] !== 'resize') return response;
+      if (failure === 'command') throw new Error('geometry unavailable');
+      if (failure === 'json') return '{';
+      if (failure === 'type') return JSON.stringify({ result: { type: 'wrong', resize: { pane_id: args[3] } } });
+      if (failure === 'missing') return JSON.stringify({ result: { type: 'pane_resize' } });
+      return JSON.stringify({ result: { type: 'pane_resize', resize: { pane_id: 'foreign' } } });
+    };
+    const config = { ...DEFAULT_CONFIG, pane_height_fraction: fraction };
+    const opened = await a.c.openDisplay(f.store, a.context, a.agent, 'automatic', config);
+    assert.equal(opened.kind, 'paired'); assert.equal(resizes(f.calls).length, 1);
+    const target = fraction < 0.5 ? opened.pair.agent : opened.pair.card;
+    assert.equal(resizes(f.calls)[0][3], target.pane_id);
+    const persisted = await f.store.readAgent('term1');
+    assert.deepEqual(persisted.record.displayAttempt, opened.agent.record.displayAttempt);
+    assert.equal((await a.c.ownership(f.store, a.context, persisted, DEFAULT_CONFIG)).kind, 'paired');
+    const retried = await a.c.openDisplay(f.store, a.context, persisted, 'automatic', config);
+    assert.equal(retried.pair.nonce, opened.pair.nonce);
+    assert.equal(resizes(f.calls).length, 1);
+    assert.equal(f.calls.filter(args => args[0] === 'plugin' && args[2] === 'open').length, 1);
+    assert.equal(f.calls.some(args => args[0] === 'plugin' && args[2] === 'close'), false);
+  });
+});
+
+test('cancellation during a failed resize is not swallowed as a geometry failure', async () => {
+  const f = await fixture(), a = await f.joinAgent('term1'), controller = new AbortController(), run = a.c.run;
+  a.c.run = async args => {
+    const response = await run(args);
+    if (args[0] === 'pane' && args[1] === 'resize') { controller.abort(new Error('cancelled during resize')); throw new Error('geometry failed'); }
+    return response;
+  };
+  await assert.rejects(a.c.openDisplay(f.store, a.context, a.agent, 'automatic', DEFAULT_CONFIG, controller.signal), /cancelled during resize/);
+  const current = await f.store.readAgent('term1');
+  assert.equal((await a.c.ownership(f.store, a.context, current, DEFAULT_CONFIG)).kind, 'paired');
+  assert.equal((await a.c.openDisplay(f.store, a.context, current, 'automatic', DEFAULT_CONFIG)).kind, 'paired');
+  assert.equal(resizes(f.calls).length, 1);
+});
+
 test('selected workspace rechecks cross-group bindings after record I/O', async () => {
   const f = await fixture();
   await f.store.createWorkspace({ id: 'selected', creationToken: 'token', title: 'Selected' });

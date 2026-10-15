@@ -36,6 +36,7 @@ async function host(t, config = {}, initial = {}) {
     if (args[0] === 'status') return JSON.stringify({ server: { running: true, compatible: true, endpoint_compatible: true, version: '0.9.4', socket } });
     if (args[0] === 'api') return reply('session_snapshot', { snapshot: { workspaces, tabs, panes, layouts: tabs.map(tab => ({ ...tab, panes: panes.filter(p => p.tab_id === tab.tab_id).map(p => ({ pane_id: p.pane_id })) })) } });
     if (args[0] === 'pane' && args[1] === 'current') return reply('pane_current', { pane: panes.find(p => p.terminal_id === 'pi') });
+    if (args[0] === 'pane' && args[1] === 'resize') return reply('pane_resize', { resize: { pane_id: args[3] } });
     if (args[1] === 'report-metadata') {
       const target = (args[0] === 'pane' ? panes : workspaces).find(p => (p.pane_id ?? p.workspace_id) === args[2]);
       for (let i = 5; i < args.length; i += 2) { const [key, ...v] = args[i + 1].split('='); if (args[i] === '--clear-token') delete target.tokens[key]; else target.tokens[key] = v.join('='); }

@@ -36,7 +36,7 @@ async function maybeAgent(store: RecordStore, session: string): Promise<Snapshot
   try { return await store.readAgent(session); } catch (e) { if ((e as NodeJS.ErrnoException).code !== 'ENOENT') throw e; return undefined; }
 }
 
-/** Unwired native adapter. Callers must serialize reconciliation and retain cancellation generations. */
+/** Native workspace adapter. Callers must serialize reconciliation and retain cancellation generations. */
 export class WorkspaceClient extends HerdrTransport {
   constructor(options: ClientOptions = {}) { super(options); }
   async snapshot(config: WorkCardsConfig): Promise<NativeSnapshot> {
@@ -258,7 +258,27 @@ export class WorkspaceClient extends HerdrTransport {
       await this.stamp('pane', current.caller, { ...markers, wca_role: 'agent' }, context, config, signal, prepare);
       const final = await this.ownership(store, context, agent, config, signal);
       if (final.kind !== 'paired') throw new Error('Pair did not round-trip');
-      return { kind: 'paired', pair: final, agent };
+      const verifyCreatedPair = async () => {
+        const current = await validate(), pair = classifyPair(current.snapshot, identity, context.terminalId);
+        if (pair.kind !== 'paired' || pair.nonce !== nonce || pair.agent.terminal_id !== context.terminalId ||
+            pair.agent.pane_id !== before.caller.pane_id || pair.card.pane_id !== returned!.pane_id || pair.card.terminal_id !== returned!.terminal_id) throw new Error('Created pair changed before sizing/return');
+        return pair;
+      };
+      const pair = await verifyCreatedPair(), fraction = config.pane_height_fraction;
+      if (fraction !== 0.5) {
+        // Grow toward the shared edge: agent/down or card/up, never an unrelated outer separator.
+        const target = fraction < 0.5 ? pair.agent : pair.card;
+        signal?.throwIfAborted();
+        try {
+          const resized = await this.result(['pane', 'resize', '--pane', target.pane_id, '--direction', fraction < 0.5 ? 'down' : 'up', '--amount', String(Math.abs(0.5 - fraction))], config, 'pane_resize');
+          if (nativeObject(resized.resize).pane_id !== target.pane_id) throw new Error('Resized pane identity mismatch');
+        } catch {
+          // Geometry is best effort; retain the proved pair and its persisted attempt.
+          signal?.throwIfAborted();
+        }
+        return { kind: 'paired', pair: await verifyCreatedPair(), agent };
+      }
+      return { kind: 'paired', pair, agent };
     } catch (error) {
       throw new Error(`Display launch may be partial${returned ? ` (pane ${returned.pane_id}, terminal ${returned.terminal_id})` : ''}; persisted attempt retained, no automatic retry: ${(error as Error).message}`, { cause: error });
     }

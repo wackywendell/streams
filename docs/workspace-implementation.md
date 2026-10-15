@@ -187,7 +187,9 @@ If initial configuration prevents startup, fix the configuration and run `/reloa
 
 The legacy runtime is removed: old card/state modules, native client/ownership, pane fallback, prose renderer, summary protocol and obsolete configuration fields. The shared lock and transport remain. `work-cards/records` replaces the old public card API. Astra approved the removal; 377 tests pass on Node 22.23.3 and 26.11.1. The lower count retires old-format and duplicate cases while retaining current safety coverage, including successful-looking editor metadata acknowledgements that do not persist. An actual tarball excludes the removed source and generated modules.
 
-The restart activated the new source entrypoint before review finished. The active Pi instance still needs reloading after the source tree is ready. Port the existing `pane_height_fraction` behavior as a separate fix, rerun the isolated native check, then merge the saved references with backups.
+The workspace adapter now applies `pane_height_fraction` to newly created pairs after fresh authority checks. Below 0.5, it grows the agent downward; above 0.5, it grows the card upward. Always resizing the agent selected an unrelated outer separator in nested layouts. Astra caught that error; the corrected implementation passed review and all 406 tests on Node 22.23.3 and 26.11.1. Reuse preserves geometry, and sizing failures retain the pair and persisted attempt.
+
+The restart activated the new source entrypoint before review finished. The active Pi instance still needs reloading after source edits finish. The isolated native check now passes; next, merge the saved references with backups.
 
 Foreground management and native/session naming remain unfinished. The installed naming extension has not been disabled.
 
@@ -208,6 +210,10 @@ Astra approved the contention fix; all 439 tests passed on Node 22 and Node 26. 
 The recovered Pi host later passed 5 isolated native checks on Herdr 0.9.5 and Node 26.11.1: fresh-input attachment, exact document opening, close/refresh/reload suppression and explicit reopen, two independent agents, and own-only shutdown cleanup. Artifacts are in `/private/tmp/wc-runtime-cutover.kTWk8m/`. The harness used injected SDK callbacks and 5 local fake helper calls, not a complete Pi session. Its private workspace closed, server exited with code 0, socket disappeared and all captured fixture processes stopped.
 
 This run preceded the review corrections for competing workspace selection, durable detach, late provider settlement and same-UUID resume through another file. It does not establish those edge cases or complete the naming and management rollout.
+
+The current runtime passed 7 checks in `/private/tmp/wc-runtime-cutover.3m4nhl/` on Herdr 0.9.5 and Node 26.11.1. It repeated the 5 host/pane checks and added nested 20% and 75% card fractions. Both preserved the outer separator, unrelated pane geometry and focus. The harness used injected SDK callbacks, real card/editor processes and 6 local fake helper calls. All 22 source/compiled module hashes stayed unchanged during the run. Its workspace closed, server exited with code 0, socket disappeared and all 11 captured fixture processes stopped; see `cleanup-audit.json`.
+
+The preceding attempt in `/private/tmp/wc-runtime-cutover.zAwyCi/` stopped at check 4 after a visible initial lock-acquisition refusal. The harness incorrectly waited for a helper that had not been scheduled. The reviewed correction retries only that refusal, with unchanged record revisions and no helper request. It also waits for an actual helper call after explicit open, not merely an inactive spinner. That failed run's 7 captured processes and private server were cleaned up; it did not reach the nested checks.
 
 ## Verification gates
 

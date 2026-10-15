@@ -44,6 +44,8 @@ The `work_card` tool is read-only. It returns the current workspace and own agen
 
 ## Terminal display and documents
 
+A new display opens below its owning agent without changing focus. Once ownership is verified, Work Cards requests `pane_height_fraction` of the initial split for the display. Sizing is best effort and subject to Herdr's layout and minimum-size constraints. A resize failure retains the paired display without relaunching it. Reusing a display leaves its size unchanged; `0.5` skips resizing.
+
 The pane shows shared workspace title and Goal, then own assignment title and Now, followed by italic Remaining text. Status is active, waiting, blocked, parked or done. It describes the assignment, not whether Pi is running. Shared and own sidebar projections are separate; agents do not publish their own Now as the workspace summary.
 
 Sections wrap at word boundaries, with long words split at grapheme boundaries. Clipped sections end with an ellipsis while retaining reference space where possible. The pane sanitises controls and measures Unicode display cells before adding trusted colours and OSC 8 links. A bottom-right `[q] close` hint overlays the last row; narrow panes show `[q]` or omit the hint.
@@ -84,7 +86,7 @@ Global configuration lives at `<PI_CODING_AGENT_DIR>/work-cards.json`, defaultin
 | `request_timeout_ms` | `30000` | Local helper timeout |
 | `pane_poll_interval_ms` | `1000` | Display refresh interval |
 | `herdr_timeout_ms` | `3000` | Native operation and document lock-wait timeout |
-| `pane_height_fraction` | `0.2` | Reserved split-height setting; current workspace adapter does not yet apply it |
+| `pane_height_fraction` | `0.2` | Requested display share of a new pair's initial split; best effort within native layout constraints |
 
 Thinking overrides are `off`, `minimal`, `low`, `medium`, `high`, `xhigh` or `max`. Numeric limits must be positive integers, except the check interval can be zero. Pane fraction must be strictly between zero and one. Removed legacy options are rejected rather than silently accepted.
 
@@ -112,9 +114,9 @@ Run Pi, the plugin, repository and Herdr server on the same host. macOS local an
 
 ## Verification status
 
-Legacy-runtime removal passes `npm run check` and all 377 tests on macOS with Node.js 22.23.3 and 26.11.1, without skips. The suite retains current filesystem, concurrency, cancellation, ownership, document, terminal and packaging checks while retiring old-format-only expectations. Package tests use Pi 1.2.0's real loader, verify same-process source reload and source/compiled plugin roots, and extract an actual npm tarball. Supplied read-only host dependencies are not a clean dependency-install test.
+The current runtime passes `npm run check` and all 406 tests on macOS with Node.js 22.23.3 and 26.11.1, without skips. The suite retains filesystem, concurrency, cancellation, ownership, document, terminal and packaging checks, including nested split sizing. Old-format-only expectations are retired. Package tests use Pi 1.2.0's real loader, verify same-process source reload and source/compiled plugin roots, and extract an actual npm tarball. Supplied read-only host dependencies are not a clean dependency-install test.
 
-Earlier isolated macOS native checks verified shared context, independent agent pairs, exact documents across checkouts, editor reuse and manual labels, close-without-respawn, explicit reopen and movement. A later injected-SDK smoke checked Pi-host attachment, documents, reload suppression, 2 agents and own-only shutdown cleanup. It used fake helpers, not a complete live Pi session. These runs preceded some lifecycle review corrections and are not proof of every current edge case.
+The latest isolated native run passed 7 checks on Herdr 0.9.5: attachment, exact document opening, close/refresh/reload suppression, explicit reopen, independent pairs, own-only cleanup and nested sizing. Both 20% and 75% card fractions preserved the outer split, unrelated pane geometry and focus. It used real card/editor processes with injected SDK callbacks and local fake helpers, not a complete live Pi session. Earlier native checks also verified multiple checkouts, editor reuse, manual labels and movement.
 
 This removal refactor makes no live native changes or paid model calls. Full automatic naming and foreground management remain unfinished. Linux, SSH and remote operation, browser-click handling, visual sidebar rendering and complete live Pi summarisation remain unverified. The existing naming extension is not disabled by this package change.
 
