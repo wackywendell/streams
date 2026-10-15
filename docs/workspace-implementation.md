@@ -1,6 +1,6 @@
 # Workspace implementation plan
 
-Status: technical contract reviewed and approved by Astra; staged implementation in progress. The user has authorized documentation, implementation with Sol and Astra, verification and local commits. [The specification](workspace-context.md) records the agreed product behavior. Do not push or migrate live user data during implementation.
+Status: technical contract reviewed and approved by Astra; staged implementation in progress. The user has authorized documentation, implementation with Sol and Astra, verification, local commits and a backed-up one-off local conversion. [The specification](workspace-context.md) records the agreed product behavior. Do not push. Live conversion and naming-extension changes require their reviewed verification steps.
 
 ## Architecture choices
 
@@ -155,11 +155,13 @@ Foreground reference removal executes directly. Deletion is metadata-only. Refus
 
 ## One-off local cutover
 
-A Herdr and Pi restart during implementation loaded the replacement entrypoint. It created a workspace record, an agent record and a verified native pair for the current session. Do not create another workspace or replace newer agent progress with the old saved state.
+Completed on 15 October 2026 with the reviewed script `/private/tmp/wc-local-cutover.pP2Ffb/merge.mjs`. A restart had already created workspace `119377fc-5703-4fcf-9d37-c941264b5ad4` and the current session's agent record. The merge reused them; it did not allocate another workspace or copy obsolete agent progress.
 
-The original card still contains its title and 3 document references. A second, empty card points to a temporary test checkout; do not import it as project context. After review and verification, back up both old files, the current records and native metadata. Merge the original title and references into the existing workspace through checked core operations. Leave session history untouched and keep Goal unknown until selected plans establish it. Retain source backups for recovery; do not add a runtime importer.
+The workspace now has the manual title `work cards` and the original 3 document references. Goal and source provenance were preserved, not inferred from the old conversation-derived Goal. The current agent's bytes were unchanged during the merge. The empty temporary-checkout card was not imported. Both original files remain unchanged, and session history was not edited.
 
-No native rebinding or stale-marker cleanup is currently needed. The display is now absent; do not reopen it during conversion. Reverify the owning session, workspace binding and pair markers before merging data. Refuse changed identity or ownership. Leave other panes, editor tabs and unrelated metadata alone. Use one launcher environment and one pane runtime. Test the exact environment produced by the launcher against the pane, rather than testing each side with separate fixtures.
+Backups are in `~/.local/state/herdr/work-cards-cutover-2026-10-15T16-57-48.092Z/`: both old files, the pre-merge workspace and agent, native binding/ownership evidence, the script and result. All 4 data backups passed hash checks and have private permissions. The script's 5 tests cover ownership changes before and after writes. Native identity and ownership were rechecked before mutation and after completion. The display remained absent; no native mutation, rebinding or reopening occurred.
+
+The live read-only `work_card` tool returns the merged title and exact document targets. Do not rerun the conversion or add a runtime importer. There is one launcher environment and one pane runtime; tests consume the exact environment produced by the launcher.
 
 ## Implementation slices
 
@@ -189,7 +191,7 @@ The legacy runtime is removed: old card/state modules, native client/ownership, 
 
 The workspace adapter now applies `pane_height_fraction` to newly created pairs after fresh authority checks. Below 0.5, it grows the agent downward; above 0.5, it grows the card upward. Always resizing the agent selected an unrelated outer separator in nested layouts. Astra caught that error; the corrected implementation passed review and all 406 tests on Node 22.23.3 and 26.11.1. Reuse preserves geometry, and sizing failures retain the pair and persisted attempt.
 
-The restart activated the new source entrypoint before review finished. The active Pi instance still needs reloading after source edits finish. The isolated native check now passes; next, merge the saved references with backups.
+The restart activated the new source entrypoint before review finished. The isolated native check and backed-up local merge are complete. The active Pi instance can reload when source workers have finished; the merge does not require reopening the closed display.
 
 Foreground management and native/session naming remain unfinished. The installed naming extension has not been disabled.
 

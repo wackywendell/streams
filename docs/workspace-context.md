@@ -1,6 +1,6 @@
 # Shared workspace context and agent cards
 
-Status: implementation authorized; technical contract reviewed by Astra. [The implementation plan](workspace-implementation.md) defines the storage and runtime contracts. Implementation is in progress; the feature is not active. [The architecture document](design.md) describes the current single-card system.
+Status: the workspace runtime is active, the legacy runtime is removed and the local records have been merged with backups. Automatic naming and foreground management remain unfinished. [The implementation plan](workspace-implementation.md) records the reviewed contracts and verification evidence. [The architecture document](design.md) provides design rationale and earlier context.
 
 ## Objective
 
@@ -185,14 +185,15 @@ Back up the existing card files and native binding metadata before conversion. P
 
 ## Implementation sequence for review
 
-- [ ] Specify and test the workspace, checkout, agent and reference contracts, including forbidden mutations.
-- [ ] Implement record persistence and guarded shared-reference operations, including removal exclusions and recovery from partial operations.
-- [ ] Adapt the combined card view and document opener to explicit checkout identities and qualified names.
-- [ ] Replace workspace-wide single-card ownership with verified per-agent pane ownership; test multiple tabs in one workspace.
-- [ ] Add session-backed startup, restore and membership transitions, including movement and `q` behavior.
-- [ ] Separate agent summarization from shared plan-derived updates, with provenance and stale-input checks.
+- [x] Specify and test the workspace, checkout, agent and reference contracts, including forbidden mutations.
+- [x] Implement record persistence and guarded shared-reference operations, including removal exclusions and recovery from partial operations.
+- [x] Adapt the combined card view and document opener to explicit checkout identities and qualified names.
+- [x] Replace workspace-wide single-card ownership with verified per-agent pane ownership; test multiple tabs in one workspace.
+- [x] Add session-backed startup, restore and membership transitions, including movement and `q` behavior.
+- [x] Separate agent summarization from shared plan-derived updates, with provenance and stale-input checks.
 - [ ] Add automatic naming and manual-name protection; prove first-pane-only tab naming.
-- [ ] Add command and foreground management entrypoints, then convert the local records once and remove the old runtime.
+- [x] Add command entrypoints, convert the local records once and remove the old runtime.
+- [ ] Add scoped foreground management entrypoints.
 - [ ] Verify the replacement before disabling the old naming extension and updating installed-session instructions.
 
 This order may change after the native integration investigation. Each implementation slice needs failing tests first, relevant verification, review and a focused local commit. No pushes are authorized.
@@ -234,6 +235,6 @@ Always preserve user edits and unrelated `.pi/subagents.json`. Ask before adding
 
 ## Technical review and remaining verification
 
-Astra approved the corrected implementation contract for staged implementation. Native movement and naming behavior still require isolated runtime verification. The implementation review must verify persistence recovery, reference exclusions, evidence boundaries and source freshness against the contract.
+Astra approved the corrected contract and the implemented runtime slices. Native adapter checks cover movement, independent pairs, documents and sizing. Full Pi-session move/reconnect behavior and automatic naming still need runtime verification. Foreground management remains to be implemented. Keep persistence recovery, reference exclusions, evidence boundaries and source freshness in the review gates.
 
 Product changes discovered during implementation return to the user rather than becoming undocumented defaults.
