@@ -1,6 +1,6 @@
 # ADR 2 Shared workspace context and per-session agent state
 
-Status: accepted; the workspace and agent runtime is active. General foreground management and the complete automatic naming rollout remain unfinished. See [status and boundaries](#status-and-boundaries). [ADR 1](design.md) defines the product purpose, evidence policy and authority limits.
+Status: accepted; the workspace and agent runtime is active. General foreground management remains unfinished. [ADR 3](automatic-naming.md) defines automatic naming. Its implementation has automated coverage; live rollout remains unverified. See [status and boundaries](#status-and-boundaries). [ADR 1](design.md) defines the product purpose, evidence policy and authority limits.
 
 ## Context and problem
 
@@ -16,7 +16,7 @@ Use two durable record types:
 
 | Record | Owns |
 | --- | --- |
-| Workspace | Shared title, plan-derived Goal, checkout registrations, documents, issues, PRs and removal exclusions |
+| Workspace | Shared title, intended Goal, checkout registrations, documents, issues, PRs and removal exclusions |
 | Agent | Pi session identity, workspace membership, checkout, actual working directory, title, status, Now and Remaining |
 
 Each card pane combines the workspace Goal and references with its own agent's assignment and progress. Several agent/card pairs can share a native workspace. There is no workspace-overview tab.
@@ -53,25 +53,25 @@ On a verified move, retain the agent identity, assignment and status. Join the d
 | --- | --- |
 | Own-agent title, status, Now and Remaining | Projected compaction plus retained human-readable dialogue, with shared context |
 | Shared-reference additions | Latest projected compaction, available dialogue and inline file-operation paths, judged against shared purpose and known references |
-| Workspace Goal | Selected registered purpose-bearing Markdown documents only |
+| Workspace Goal | Selected registered purpose-bearing Markdown documents; projected dialogue and compaction only when no suitable document is selected |
 
-Reference collection considers the full projected session context for new and existing workspaces, whether attachment is explicit or automatic. It does not read raw precompaction logs. The helper judges each candidate against the current workspace title, Goal and known references, rather than copying every mention. When shared purpose is unknown, session context can identify useful starting documents; Goal still comes only from their contents.
+Reference collection considers the full projected session context for new and existing workspaces, whether attachment is explicit or automatic. It does not read raw precompaction logs. The helper judges each candidate against the current workspace title, Goal and known references, rather than copying every mention. When shared purpose is unknown, session context can identify useful starting documents. Before suitable documents exist, meaningful dialogue and compaction may also establish a notable shared intended capability and automatic workspace name. This is intended purpose, never the latest activity, an agent's task status or aggregate progress. There is no fixed word or message threshold. Nonempty conversation can still be insufficient: leave Goal and short Goal empty, omit the empty section and invent neither a placeholder nor a name. Empty projected content skips purpose inference.
 
-Reference evidence preserves inline `read`, `write` and `edit` operations as operation-and-path entries. It excludes tool bodies, outputs, shell-command parsing and hidden history. Codemode nested metadata requires a still-visible parent call. Activity suggests candidates, not successful work or automatic admission. Own summaries and document-derived Goal do not receive this activity. Captured evidence may grow during inference, but edits or removals invalidate its result.
+Reference evidence preserves inline `read`, `write` and `edit` operations as operation-and-path entries. It excludes tool bodies, outputs, shell-command parsing and hidden history. Codemode nested metadata requires a still-visible parent call. Activity suggests candidates, not successful work or automatic admission. Own summaries and conversation-purpose inference do not receive this activity; document-derived Goal receives only selected document contents. Captured evidence may grow during inference, but edits or removals invalidate its result.
 
 Explicit reset is fresh inference, not record deletion or a membership reset. Own and reference helpers receive projected evidence without prior generated own fields, shared title, Goal or reference arrays. Own inference must return every derived field; partial proposals and `no_change` fail without clearing stored text. Manual titles remain protected. Reference additions still merge with retained references and removal exclusions, because reference origin is not tracked. Checked missing-document cleanup runs outside the reset helper input, without restoring prior arrays to that input. Reset cannot relabel unprovided existing links. Other agents retain their progress.
 
-Reset bypasses the source-selection and Goal caches but keeps Goal document-only. It does not recover raw precompaction history. Sequential stage publication remains unchanged: a failed later stage does not undo an earlier validated update.
+Reset bypasses source-selection and Goal caches. Documents retain precedence; an empty selection permits conversation-purpose inference without prior generated purpose or name. An insufficient conversation proposal does not erase known shared purpose or naming, including another agent's established context. Ordinary checks supply established purpose as reconciliation context; joining-agent chatter must not replace document-backed Goal. It does not recover raw precompaction history. Sequential stage publication remains unchanged: a failed later stage does not undo an earlier validated update.
 
 Attachment boundaries detect discontinuities and distinguish fresh task input for automatic startup. They do not limit reference eligibility. Resume, tree navigation, compaction and moves still invalidate stale requests through evidence generations and membership checks. Relevance is a model judgment; explicit removal exclusions prevent historical context from restoring removed references.
 
-Select purpose-bearing designs, ADRs, relevant README files and plans from known document references, not through a recursive repository crawler. No suitable source means no invented Goal. Runtime code reads sources within registered checkouts, with a 256 KiB limit per file. Oversized or unreadable selected sources fail visibly rather than being silently truncated.
+Select purpose-bearing designs, ADRs, relevant README files and plans from known document references, not through a recursive repository crawler. An empty selection permits the separate conversation-purpose contract, not arbitrary source-code evidence. A selected document that establishes no purpose stays evaluated unknown; read or validation failures never downgrade to conversation. Runtime code reads sources within registered checkouts, with a 256 KiB limit per file. Oversized or unreadable selected sources fail visibly rather than being silently truncated.
 
-Represent Goal as one readonly in-memory value: unevaluated with no provenance, evaluated unknown with nonempty sources and a fingerprint, or known with nonblank full text, optional short and the same required provenance. Constructors enforce text and provenance constraints; one pure transition owns evaluation replacement and invalidation when a selected source is removed. Unchanged full text can retain an omitted short; changed text cannot inherit it. Keep manual title application separate.
+Represent Goal as one readonly in-memory value: unevaluated without provenance, evaluated unknown, or known with nonblank text and an optional short. Both evaluated states require an explicit provenance union: `documents` with nonempty source identities and a fingerprint, or `conversation` with originating session ID and a deterministic SHA-256 digest of the captured projected dialogue and compaction. No raw transcript is persisted. Safe constructors copy and freeze provenance. One pure transition owns evaluation replacement and document-source removal invalidation; removing an unrelated document cannot invalidate a conversation-backed Goal. Unchanged full text can retain an omitted short; changed text cannot inherit it. Keep manual title application separate.
 
-Parse the existing flat version-1 YAML into this domain shape at the storage boundary and serialize it back only on a genuine mutation. The persisted fields and public tool/show record shape remain unchanged. Validate wire constraints before normalizing blank purpose or short values. Reads and semantic no-ops preserve original bytes, modification time and revision; there is no eager migration. Domain validation and wire parsing accept only their respective shapes.
+Parse the existing flat version-1 YAML into this domain shape at the storage boundary and serialize it back only on a genuine mutation. The flat text fields and document provenance remain unchanged. Conversation-backed results add optional `conversationProvenance: { sessionId, digest }`, mutually exclusive with document provenance: `planSources` must be empty and `sourceFingerprint` null. Missing attribution, malformed digests and mixed origins fail validation. Old document records omit this field. The domain API uses `evaluatedGoal(text, sources, fingerprint, short?)` for documents and `conversationGoal(text, { sessionId, digest }, short?)` for conversation, with no dual-shape domain parser. Validate wire constraints before normalizing blank purpose or short values. Reads and semantic no-ops preserve original bytes, modification time and revision; there is no eager migration. Domain validation and wire parsing accept only their respective shapes.
 
-Retain selected-source provenance with the Goal, including an evaluated result that establishes no purpose. Changes to candidate references trigger reselection. Scheduled checks reread selected sources and reuse unchanged Goal results; explicit refresh reruns selection and inference. Revalidate source identities and bytes before accepting results so an inference cannot silently use changed files. Ordinary dialogue is not a reason to rewrite shared Goal. A plan establishes intent, never completed work.
+Retain selected-source provenance with the Goal, including an evaluated result that establishes no purpose. Changes to candidate references trigger reselection. Scheduled checks reread selected sources and reuse unchanged Goal results; explicit refresh reruns selection and inference. Revalidate source identities and bytes before accepting results so an inference cannot silently use changed files. Conversation-backed known and unknown results cache by source kind, originating session and captured evidence digest. Evidence growth triggers later inference; unchanged insufficient evidence does not repeatedly request it. A host-local cache also remembers insufficient proposals that retained an established shared Goal. Document selection takes precedence on later checks. All paths retain original workspace CAS revision, paired membership reads and host/evidence cancellation guards; evidence is copied before awaits. A plan or conversation establishes intent, never completed work.
 
 The model still interprets whether a document establishes purpose and what it means. Authority checks and provenance do not guarantee correct selection or a useful Goal.
 
@@ -135,22 +135,11 @@ Open the exact canonical file in a full editor tab on the execution host. Reuse 
 
 ### Protect manual names on every surface
 
-The accepted complete naming model is:
+Names project shared workspace title, own-agent title or exact document identity without another model request. Only the actual first layout pane can supply a tab name; later eligible panes cannot replace an ineligible first pane. Pi session naming remains independent of native tab naming.
 
-| Surface | Automatic source |
-| --- | --- |
-| Native workspace | Workspace title |
-| Pi session | Own-agent title |
-| Agent tab | Own-agent title, only when its pane is the actual first layout pane |
-| Editor tab | Document identity, qualified by checkout and path when needed |
+Preserve independent manual choices. Unknown native workspace labels lack default proof and require explicit naming to establish tracking. Automatic own-title projection requires a source title attributed to the current session UUID through helper publication or successful explicit naming, or an explicit manual record title. Bootstrap excerpts alone are insufficient. Native provenance follows the surface and binding lifetime, not its current owner. The card-pane caption is a separate app-owned projection, not authority over other labels.
 
-Only the actual first layout pane has tab naming rights. Do not skip an ineligible first pane to find a later agent or editor. Session naming remains per-agent even for non-first panes.
-
-Automatic record titles do not grant permission to overwrite manual native labels. Track naming provenance with the surface, including its last applied automatic name, rather than with whichever agent currently comes first. Transfer of naming authority must retain that history. A changed external label becomes a protected manual override. Without provenance, preserve existing nondefault names. Malformed provenance suspends naming.
-
-Use local surface-scoped provenance where native metadata is insufficient, notably tabs. Scope it to the verified binding lifetime so recreated surfaces cannot inherit unrelated naming rights. This is a transient cache, not project state or a global registry. If a rename succeeds but provenance cannot be saved, preserve the now-unproven label rather than overwrite it on retry. A manual tab label must not be forced onto a separately named Pi session.
-
-The card-pane caption is a separate app-owned projection of workspace title. Its implementation does not establish complete workspace, tab or Pi naming. Do not run competing automatic namers; replace the old naming extension only after the new path is verified.
+[ADR 3 Automatic naming and manual overrides](automatic-naming.md) defines the surface policy, explicit native reclaim command, adapter interfaces, partial failures and single-namer rollout boundary.
 
 ## Alternatives and tradeoffs
 
@@ -159,7 +148,7 @@ The card-pane caption is a separate app-owned projection of workspace title. Its
 | One shared card for all agents | Conflates group intent with individual progress and ownership |
 | Duplicate all context per session | References diverge and moves can copy unrelated context |
 | Group by cwd or repository | Cannot represent a multi-repository native workspace or distinguish worktrees reliably |
-| Derive Goal from dialogue | Lets one agent's task or inherited history redefine shared intent |
+| Derive Goal indiscriminately from dialogue | Restrict conversation to empty document selection, shared intended capability and explicit provenance; retain established purpose on insufficient proposals |
 | Let helpers replace reference arrays | Can drop concurrent additions or undo explicit removals |
 | Add a global checkout registry | Extends authority beyond the local workspace without a demonstrated need |
 | Use native focus or labels for recovery | Presentation and focus do not prove identity or ownership |
@@ -169,7 +158,7 @@ These choices accept repeated shared context in each pane, conservative recovery
 
 ## Consequences
 
-Each agent can update its progress without claiming the whole project. Shared Goal is anchored to registered intent, while own-agent progress remains evidence-based. Workspace-aware relevance guides historical reference proposals, while membership checks and persistent exclusions prevent stale writes and undoing explicit removals.
+Each agent can update its progress without claiming the whole project. Shared Goal is anchored to registered documents or explicitly attributed projected conversation, while own-agent progress remains separate and evidence-based. Workspace-aware relevance guides historical reference proposals, while membership checks and persistent exclusions prevent stale writes and undoing explicit removals.
 
 The system deliberately leaves some recovery and management explicit. Records can survive their native bindings. Native operations and filesystem writes cannot be made one transaction; uncertainty must remain visible rather than trigger destructive cleanup or guessed adoption.
 
@@ -183,6 +172,6 @@ Earlier isolated native checks covered independent pairs, exact document targets
 
 Compact fields, narrow link relabeling, purpose-document selection, reference admission guidance, stage diagnostics and Pi-owned native summary publishing have deterministic coverage. Their live helper/sidebar rollout remains unverified. Sidebar configuration and other integrations do not automatically migrate to the new fields. Diagnostics are read-only, in-memory observations, not source evidence or durable project state.
 
-General foreground CRUD management and complete automatic workspace/tab/Pi naming remain unfinished. The separate `herdr-naming.ts` extension is still enabled. First-pane naming, protected manual names and safe replacement of that extension remain rollout requirements, not claims of completed behavior.
+General foreground CRUD management remains unfinished. Automatic workspace, tab and Pi naming follows [ADR 3](automatic-naming.md) and has automated coverage. Live naming rollout remains unverified. Activation requires discovery removal, full session reload and quiescence of old native work. The old shutdown does not await its native queue; reload alone is not a drain barrier. [ADR 3](automatic-naming.md#rollout-boundary) defines this limit and the conservative process-restart option.
 
 Operational rollout chronology, temporary harness paths and test counts are not part of this decision record. Code, tests and version history retain implementation detail. The [README verification status](../README.md#verification-status) distinguishes demonstrated support from remaining verification.

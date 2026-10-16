@@ -19,7 +19,7 @@ async function fixture(t, policy='automatic') {
   t.after(()=>rm(root,{recursive:true,force:true}));
   const cwd=join(root,'checkout'); await mkdir(cwd);
   const store=new RecordStore(join(root,'state')), socket=join(root,'h.sock');
-  const workspaces=['w','dest'].map(workspace_id=>({workspace_id,tokens:{}}));
+  const workspaces=['w','dest'].map((workspace_id,index)=>({workspace_id,label:workspace_id,number:index+1,tokens:{}}));
   const tabs=['w','dest'].map(workspace_id=>({workspace_id,tab_id:`${workspace_id}:tab`,number:1,label:'1'}));
   const panes=[{pane_id:'w:pi',terminal_id:'pi',workspace_id:'w',tab_id:'w:tab',tokens:{}}];
   const calls=[]; let next=1, hook=async()=>{};

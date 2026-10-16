@@ -6,6 +6,7 @@ import {
   buildSharedAdditionsContext, parseSharedAdditionsDecision, requestSharedAdditions,
   buildPlanSelectionContext, parsePlanSelectionDecision, requestPlanSelection,
   buildWorkspaceGoalContext, parseWorkspaceGoalDecision, requestWorkspaceGoal,
+  buildConversationGoalContext, requestConversationGoal,
 } from '../dist/pi/workspace-summary.js';
 
 const doc = { checkout: 'repo', path: 'plan.md', description: 'Implementation plan' };
@@ -155,7 +156,7 @@ test('selection is metadata-only and accepts exact known Markdown identities onl
   assert.deepEqual(select({ sources: [] }), { sources: [] });
   for (const sources of [[{ checkout: 'repo', path: 'code.ts' }], [{ checkout: 'repo', path: 'missing.md' }], [doc], [{ checkout: 'repo', path: 'plan.md' }, { checkout: 'repo', path: 'plan.md' }]]) assert.throws(() => select({ sources }));
   assert.throws(() => select({ sources: [], goal: 'no' }));
-  assert.match(buildPlanSelectionContext(workspace).systemPrompt, /unknown goal/);
+  assert.match(buildPlanSelectionContext(workspace).systemPrompt, /Conversation purpose.*separately.*empty selection/);
 });
 
 const capture = { sources: [{ identity: { checkout: 'repo', path: 'plan.md' }, directory: '/repo', target: '/repo/plan.md', content: 'Deliver a library and client', bytesFingerprint: 'abc' }], fingerprint: 'all' };
@@ -164,6 +165,40 @@ test('goal protocol sees only fixed selected source identities and contents', ()
   assert.equal(buildWorkspaceGoalContext({ sources: [], fingerprint: 'empty' }), null);
   assert.deepEqual(parseWorkspaceGoalDecision('{"goal":"Integrate library","goalShort":"Library integration","title":"Integration"}'), { goal: 'Integrate library', goalShort: 'Library integration', title: 'Integration' });
   for (const value of [{ goal: 'x', goalShort: 'x', sources: [] }, { goal: 'x', goalShort: 'x', status: 'done' }, { goal: 'x', goalShort: 'x', title: '' }, { goal: 'bad\ntext', goalShort: 'bad\ntext' }, { title: 'Missing goal' }]) assert.throws(() => parseWorkspaceGoalDecision(JSON.stringify(value)));
+});
+
+test('conversation purpose sees projected dialogue only, reconciles shared purpose and omits generated context on reset', () => {
+  const evidence = { compactionSummary: 'Checkpoint', transcript: [{ role: 'user', text: 'Build a reusable parser' }] };
+  assert.equal(buildConversationGoalContext(workspace, { compactionSummary: null, transcript: [] }), null);
+  assert.deepEqual(data(buildConversationGoalContext(workspace, evidence)), { ...evidence, workspace: { title: workspace.title, goal: '' } });
+  assert.deepEqual(data(buildConversationGoalContext(workspace, evidence, 'reset')), evidence);
+  const prompt = buildConversationGoalContext(workspace, evidence).systemPrompt;
+  assert.match(prompt, /no word or message-count threshold/i); assert.match(prompt, /Nonempty chatter.*insufficient/i);
+  assert.match(prompt, /not.*aggregate progress.*completion/i); assert.match(prompt, /No tool paths, tool results, source bodies or repository crawling/);
+  assert.match(prompt, /joining agent.*not a replacement workspace purpose/i);
+});
+
+test('conversation helper reuses strict purpose validation and ignores names on insufficient proposals', async () => {
+  let reply;
+  const registry = { find: () => ({ api: 'pi-virtual' }), streamSimple(_model, context) {
+    assert.deepEqual(context.tools, []);
+    return { result: async () => ({ stopReason: 'stop', content: [{ type: 'text', text: JSON.stringify(reply) }] }) };
+  } };
+  const evidence = { compactionSummary: null, transcript: [{ role: 'user', text: 'Hello' }] };
+  const request = intent => requestConversationGoal(registry, workspace, evidence, { ...options, intent }, undefined, profiles);
+  reply = { goal: '', goalShort: '', title: 'Invented' };
+  assert.deepEqual(await request(), { goal: '', goalShort: '' });
+  reply = { goal: 'Reusable parser', goalShort: '界'.repeat(13), title: 'Parser' };
+  assert.deepEqual(await request(), { goal: 'Reusable parser', title: 'Parser' });
+  await assert.rejects(request('reset'), /goalShort/i);
+  for (const invalid of [
+    null, {}, { goal: 'Purpose' }, { goal: 'Purpose', goalShort: '' },
+    { goal: '', goalShort: 'Nonempty' }, { goal: 'bad\ntext', goalShort: 'Short' },
+    { goal: 'Purpose', goalShort: 'x'.repeat(30) + '\u200b' },
+    { goal: '', goalShort: '', title: 'bad\nname' },
+    { goal: 'Purpose', goalShort: 'Short', status: 'done' },
+    { goal: 'Purpose', goalShort: 'Short', sources: [] },
+  ]) { reply = invalid; await assert.rejects(request()); }
 });
 
 test('all request helpers use the existing virtual route, literal reasoning and no tools', async () => {

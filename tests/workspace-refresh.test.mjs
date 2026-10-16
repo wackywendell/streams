@@ -60,6 +60,28 @@ for (const field of ['workspaceId', 'membershipToken', 'checkout', 'cwd', 'evide
   assert.deepEqual(f.calls, []);
 });
 
+test('own title publication reports accepted same-text and protected manual titles, never title-free decisions', async t => {
+  const f = await fixture(t), published = [];
+  await f.refresh({ onOwnTitlePublished: agent => published.push(agent.record.title) });
+  assert.deepEqual(published, []);
+  f.handlers.own = () => ({ action: 'update', patch: { title: 'Agent' } });
+  await f.refresh({ onOwnTitlePublished: agent => published.push(agent.record.title) });
+  assert.deepEqual(published, ['Agent']);
+  await f.store.setOwnTitle(f.authority, 'Manual own', (await f.agent()).revision);
+  f.handlers.own = () => ({ action: 'update', patch: { title: 'Requested helper title' } });
+  await f.refresh({ onOwnTitlePublished: agent => published.push(agent.record.title) });
+  assert.deepEqual(published, ['Agent', 'Manual own']);
+});
+
+test('cancelled own title publication does not emit source readiness', async t => {
+  const f = await fixture(t), published = [];
+  f.handlers.own = () => ({ action: 'update', patch: { title: 'Never accepted' } });
+  const update = f.store.updateOwn.bind(f.store);
+  f.store.updateOwn = async (...args) => { const result = await update(...args); f.controller.abort(); return result; };
+  await assert.rejects(f.refresh({ onOwnTitlePublished: agent => published.push(agent) }), /abort/i);
+  assert.deepEqual(published, []);
+});
+
 test('reference-only evidence is copied before awaits and never sent to own inference', async t => {
   const f = await fixture(t);
   const referenceEvidence = { compactionSummary: null, transcript: [{ role: 'tool_activity', operation: 'edit', path: 'plan.md' }] };
@@ -67,6 +89,7 @@ test('reference-only evidence is copied before awaits and never sent to own infe
   await f.refresh({ evidence: { compactionSummary: null, transcript: [] }, referenceEvidence,
     authority: { ...f.authority, evidenceGeneration: (await f.store.resetEvidence(f.authority, captureReferenceBoundary({ compactionSummary: null, transcript: [] }), (await f.agent()).revision)).record.evidenceGeneration } });
   assert.deepEqual(f.calls.find(c => c.kind === 'own').data.transcript, []);
+  assert.equal(f.calls.some(c => c.kind === 'goal'), false);
   assert.deepEqual(f.calls.find(c => c.kind === 'shared').data.transcript, [{ role: 'tool_activity', operation: 'edit', path: 'plan.md' }]);
 });
 
@@ -178,8 +201,10 @@ test('own and shared helpers get full uncapped evidence and the current workspac
   assert.equal(started, 3); assert.equal(stopped, 3);
 });
 
-test('unchanged full context still reaches shared helper; no_change preserves record bytes and mtimes', async t => {
+test('unchanged full context still reaches shared helper; cached insufficient purpose preserves record bytes and mtimes', async t => {
   const f = await fixture(t);
+  f.handlers.goal = () => ({ goal: '', goalShort: '' });
+  await f.refresh({ evidence: structuredClone(inherited) }); f.calls.length = 0;
   const a = await f.agent(), w = await f.workspace();
   const before = [await fileState(a.path), await fileState(w.path)];
   const result = await f.refresh({ evidence: structuredClone(inherited) });
@@ -204,7 +229,7 @@ for (const source of ['checkpoint', 'dialogue']) {
     };
     const first = await f.refresh({ evidence });
     assert.deepEqual(kinds(f), ['own', 'shared', 'select', 'goal']);
-    assert.deepEqual(first.workspace.record.goal.sources, [f.identity]);
+    assert.deepEqual(first.workspace.record.goal.provenance.sources, [f.identity]);
     assert.equal(goalText(first.workspace.record.goal), 'Deliver library');
     assert.equal(first.workspace.record.title, 'Automatic workspace');
     assert.equal(f.calls.at(-1).data.sources[0].content, 'Deliver a library and client');
@@ -213,7 +238,8 @@ for (const source of ['checkpoint', 'dialogue']) {
     const removed = await f.refresh({ evidence });
     assert.deepEqual(removed.workspace.record.documents, []);
     assert.deepEqual(removed.workspace.record.exclusions, [f.identity]);
-    assert.equal(goalText(removed.workspace.record.goal), '');
+    assert.equal(goalText(removed.workspace.record.goal), 'Deliver library');
+    assert.equal(removed.workspace.record.goal.provenance.kind, 'conversation');
   });
 }
 
@@ -334,7 +360,7 @@ test('newly added plans participate immediately; retained plan cache skips stabl
   f.handlers.shared = () => ({ action: 'update', additions: { documents: [{ ...f.identity, description: 'Implementation plan' }] } });
   const first = await f.refresh();
   assert.deepEqual(kinds(f), ['own', 'shared', 'select', 'goal']);
-  assert.deepEqual(first.workspace.record.goal.sources, [f.identity]);
+  assert.deepEqual(first.workspace.record.goal.provenance.sources, [f.identity]);
   assert.equal(goalText(first.workspace.record.goal), 'Deliver library');
   assert.equal(first.agent.record.title, 'Manual agent'); assert.equal(first.workspace.record.title, 'Manual workspace');
   const before = [await fileState(first.agent.path), await fileState(first.workspace.path)];
@@ -375,8 +401,8 @@ test('oversized own short preserves full updates and lets shared, selection and 
   assert.equal(first.agent.record.now, now); assert.equal(first.agent.record.remaining, remaining);
   assert.equal(first.agent.record.status, 'waiting'); assert.equal(first.agent.record.statusShort, undefined);
   assert.deepEqual(first.workspace.record.issues, [issue('task')]);
-  assert.deepEqual(first.workspace.record.goal.sources, [f.identity]);
-  assert.equal(goalText(first.workspace.record.goal), 'Deliver library'); assert.ok(first.workspace.record.goal.fingerprint);
+  assert.deepEqual(first.workspace.record.goal.provenance.sources, [f.identity]);
+  assert.equal(goalText(first.workspace.record.goal), 'Deliver library'); assert.ok(first.workspace.record.goal.provenance.fingerprint);
   assert.deepEqual(kinds(f), ['own', 'shared', 'select', 'goal']);
   assert.equal(events.some(event => event.outcome === 'failed'), false);
   f.handlers.own = data => {
@@ -395,7 +421,7 @@ test('oversized-only own short becomes no_change and does not stop later stages'
   const events = [];
   await f.refresh({ onDiagnostic: event => events.push(event) });
   assert.deepEqual(await fileState((await f.agent()).path), before);
-  assert.deepEqual(kinds(f), ['own', 'shared']);
+  assert.deepEqual(kinds(f), ['own', 'shared', 'goal']);
   assert.deepEqual(events[0], { stage: 'own', outcome: 'unchanged' });
 });
 
@@ -425,7 +451,7 @@ test('shared relabels use the captured full descriptions and do not overwrite fo
   result = await f.refresh(); assert.equal(result.workspace.record.issues[0].label, 'Fresh purpose label');
 });
 
-test('diagnostics report reached phases and no-source completion without aggregate agent progress', async t => {
+test('diagnostics report reached phases and conversation purpose without aggregate agent progress', async t => {
   const f = await fixture(t); const events = [];
   f.handlers.own = () => ({ action: 'update', patch: { statusShort: 'Assignment ready' } });
   await f.refresh({ onDiagnostic: event => events.push(event) });
@@ -433,7 +459,7 @@ test('diagnostics report reached phases and no-source completion without aggrega
     { stage: 'own', outcome: 'applied' },
     { stage: 'shared', outcome: 'unchanged' },
     { stage: 'selection', outcome: 'no_sources', selectedCount: 0, cacheHit: false },
-    { stage: 'goal', outcome: 'no_sources' },
+    { stage: 'goal', outcome: 'applied' },
   ]);
   const retained = []; await f.refresh({ evidence: structuredClone(inherited), onDiagnostic: event => retained.push(event) });
   assert.deepEqual(retained.find(e => e.stage === 'shared'), { stage: 'shared', outcome: 'unchanged' });
@@ -467,11 +493,11 @@ test('own CAS failure and cancellation never diagnose an unapplied patch as appl
 });
 
 
-test('final host invalidation is diagnosed even after completed no-source goal checking', async t => {
+test('final host invalidation is diagnosed even after completed conversation goal checking', async t => {
   const f = await fixture(t); const events = []; const error = new Error('final invalidation');
   await assert.rejects(f.refresh({ onDiagnostic: event => {
     events.push(event);
-    if (event.stage === 'goal' && event.outcome === 'no_sources') f.host(async () => { throw error; });
+    if (event.stage === 'goal' && event.outcome === 'applied') f.host(async () => { throw error; });
   } }), e => e === error);
   assert.deepEqual(events.at(-1), { stage: 'goal', outcome: 'failed', cancelled: false });
 });

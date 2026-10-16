@@ -291,7 +291,7 @@ test('foreground titles/descriptions and plan provenance obey CAS and helper per
   const source = { checkout: doc.checkout, path: doc.path };
   w = await store.applyPlan(auth, { goal: evaluatedGoal('Plan goal', [source], 'bytes-and-identities'), title: 'Ignored auto' }, w.revision);
   assert.equal(w.record.title, 'Manual shared'); assert.equal(composeView(w, a).goal, 'Plan goal');
-  await assert.rejects(store.applyPlan(auth, { goal: { kind: 'known', text: 'No provenance', sources: [], fingerprint: 'x' } }, w.revision), /provenance/);
+  await assert.rejects(store.applyPlan(auth, { goal: { kind: 'known', text: 'No provenance', provenance: { kind: 'documents', sources: [], fingerprint: 'x' } } }, w.revision), /provenance/);
   w = await store.removeReference(auth, selectReference(w, 'plan.md').selection); assert.equal(goalText(w.record.goal), ''); assert.equal(w.record.goal.kind, 'unevaluated');
 });
 
@@ -324,9 +324,9 @@ test('empty plan clears provenance without removing references or changing manua
   w = await store.describeReference(auth, source, 'not a plan', w.revision);
   const planned = w;
   for (const input of [
-    { goal: { kind: 'known', text: 'Still a goal', sources: [], fingerprint: 'bytes' } },
-    { goal: { kind: 'unknown', sources: [source], fingerprint: null } },
-    { goal: { kind: 'unknown', sources: [], fingerprint: 'orphaned' } },
+    { goal: { kind: 'known', text: 'Still a goal', provenance: { kind: 'documents', sources: [], fingerprint: 'bytes' } } },
+    { goal: { kind: 'unknown', provenance: { kind: 'documents', sources: [source], fingerprint: null } } },
+    { goal: { kind: 'unknown', provenance: { kind: 'documents', sources: [], fingerprint: 'orphaned' } } },
   ]) await assert.rejects(store.applyPlan(auth, input, w.revision));
   const empty = { goal: unevaluatedGoal(), title: 'Ignored automatic title' };
   await assert.rejects(store.applyPlan(auth, empty, workspace.revision), /revision|stale/i);

@@ -31,7 +31,7 @@ export function buildOwnSummaryContext(agent: AgentRecord, evidence: ProjectedEv
   return context(`Maintain THIS AGENT's assignment maturity, not the whole project backlog or an activity log.
 ${intent === 'reset'
     ? 'Infer a fresh complete assignment proposal only from the available dialogue and compaction checkpoint. No prior assignment or workspace purpose is supplied. Use empty now, remaining and statusShort when unknown; use Untitled task when no assignment title is established. Do not infer completion without affirmative evidence.'
-    : 'Derive the broad usable capability or stage and important remaining assignment scope from the full dialogue and compaction checkpoint first. Compare the previous record second; it is an editable draft, not completion evidence.\nShared workspace title and plan-derived Goal establish intended scope; plans are never completed-work proof. Do not infer this agent completed work from source documents or another agent\'s work.'}
+    : 'Derive the broad usable capability or stage and important remaining assignment scope from the full dialogue and compaction checkpoint first. Compare the previous record second; it is an editable draft, not completion evidence.\nShared workspace title and Goal establish intended scope, never progress; plans are never completed-work proof. Do not infer this agent completed work from source documents or another agent\'s work.'}
 Use short separate now and remaining sections, aiming for about 15–20 words combined (soft target). No pipe-delimited carrier, Goal section, routine test counts, commits or implementation minutiae.
 ${intent === 'reset' ? 'Do not retain unseen prior text or return no_change. Infer uncertainty from the evidence rather than inventing progress.' : 'Reconcile old blockers with affirmative outcomes. Keep sound broad summaries stable through routine activity; do not rewrite them for ordinary tests, commits or stylistic changes. Prefer no_change for uncertain conclusions.'}
 Do not invent completion. Mark done only with affirmative evidence about THIS AGENT's assignment.
@@ -98,7 +98,7 @@ export function buildPlanSelectionContext(workspace: WorkspaceRecord): Context {
   const shared = validateWorkspace(workspace);
   return context(`Select purpose-bearing design documents, ADRs, relevant README and plans ONLY among these CURRENT known Markdown document references, using identity and description metadata. Choose documents establishing the intended shared workspace purpose, not only implementation plans. No dialogue, filesystem crawling or content access is available.
 Return exactly {"sources":[{"checkout":"known-key","path":"known.md"},...]}. Select exact existing identities; no duplicates, descriptions, new sources or other fields.
-If no suitable plan is known, return {"sources":[]}; this means unknown goal, never a dialogue fallback.`, {
+If no suitable purpose document is known, return {"sources":[]}. Conversation purpose is evaluated separately by the core only for an empty selection.`, {
     documents: shared.documents.filter(isMarkdownDocument),
   });
 }
@@ -117,6 +117,35 @@ An automatic title is the stable project/workspace subject, never a literal requ
 No source-choice rewrites, references, runtime fields, status or completion claims. Source selection is fixed input. Manual titles remain protected by core applyPlan.`, {
     sources: capture.sources.map(source => ({ identity: source.identity, content: source.content })),
   });
+}
+
+/** Dialogue establishes shared intended capability, never progress or another agent's status. */
+export function buildConversationGoalContext(workspace: WorkspaceRecord, evidence: ProjectedEvidence, intent: CheckIntent = 'automatic'): Context | null {
+  const shared = validateWorkspace(workspace);
+  if (!evidence.compactionSummary?.trim() && !evidence.transcript.some(entry => entry.text.trim())) return null;
+  return context(`Infer a notable shared workspace purpose from ONLY the supplied user/assistant dialogue and compaction checkpoint.
+Infer the shared intended capability or project subject, not the latest request, activity, assignment status, aggregate progress or completion. Another agent's reported work is not purpose evidence. No tool paths, tool results, source bodies or repository crawling are available as evidence.
+Judge whether the conversation establishes enough meaning; there is no word or message-count threshold. Nonempty chatter may still be insufficient. Sparse greetings, setup or check/reset requests establish no purpose.
+${intent === 'reset' ? 'Infer afresh: prior generated purpose and name are intentionally omitted.' : 'Use established shared purpose and name as reconciliation context, not evidence of new scope. A joining agent\'s narrower assignment is not a replacement workspace purpose; retain a sound shared purpose. Return an empty proposal when insufficient evidence supports a purpose.'}
+Return exactly {"goal":"safe single-line shared purpose","goalShort":"short sidebar purpose"}, optionally with "title":"short automatic workspace name".
+For a nonempty goal, goalShort is required and nonempty: aim for about 20 display cells, maximum 25, no icons or prefixes. Never truncate the goal to synthesize it. The automatic name is a stable shared project subject, not task status or a literal request.
+When no notable purpose is established, return {"goal":"","goalShort":""}, with no title. Never invent a placeholder such as "Purpose not established yet".
+No references, runtime fields, status, source identities or completion claims. Manual titles remain protected by the core.`, {
+    compactionSummary: evidence.compactionSummary, transcript: evidence.transcript,
+    ...(intent === 'reset' ? {} : { workspace: { title: shared.title, goal: goalText(shared.goal) } }),
+  });
+}
+
+export function requestConversationGoal<TModel extends { api?: string }>(
+  registry: SummaryRegistry<TModel>, workspace: WorkspaceRecord, evidence: ProjectedEvidence,
+  options: SummaryRequestOptions & { intent?: CheckIntent }, ...tail: HelperRequestTail
+): Promise<WorkspaceGoalDecision | null> {
+  const input = buildConversationGoalContext(workspace, evidence, options.intent);
+  return input ? requestHelperDecision(registry, input, options, raw => {
+    const decision = parseWorkspaceGoalDecision(raw, options.intent);
+    // Even a safe title cannot manufacture a project name from an insufficient purpose proposal.
+    return decision.goal.trim() ? decision : { goal: '', goalShort: '' };
+  }, ...tail) : Promise.resolve(null);
 }
 
 export function parseWorkspaceGoalDecision(raw: string, intent: CheckIntent = 'automatic'): WorkspaceGoalDecision {

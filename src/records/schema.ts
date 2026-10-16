@@ -10,10 +10,14 @@ export interface LinkLabelUpdate { url: string; label: string }
 export interface SharedReferenceUpdate { additions?: ReferenceAdditions; labels?: LinkLabelUpdate[] }
 export type ReferenceIdentity = DocumentIdentity | { url: string };
 export interface ReferenceAdditions { documents?: WorkspaceDocument[]; issues?: WorkspaceLink[]; prs?: WorkspaceLink[] }
+export interface ConversationProvenance { readonly sessionId: string; readonly digest: string }
+export type GoalProvenance =
+  | { readonly kind: 'documents'; readonly sources: readonly [Readonly<DocumentIdentity>, ...Readonly<DocumentIdentity>[]]; readonly fingerprint: string; readonly sessionId?: never; readonly digest?: never }
+  | ({ readonly kind: 'conversation'; readonly sources?: never; readonly fingerprint?: never } & ConversationProvenance);
 export type Goal =
-  | { readonly kind: 'unevaluated'; readonly text?: never; readonly short?: never; readonly sources?: never; readonly fingerprint?: never }
-  | { readonly kind: 'unknown'; readonly text?: never; readonly short?: never; readonly sources: readonly [Readonly<DocumentIdentity>, ...Readonly<DocumentIdentity>[]]; readonly fingerprint: string }
-  | { readonly kind: 'known'; readonly text: string; readonly short?: string; readonly sources: readonly [Readonly<DocumentIdentity>, ...Readonly<DocumentIdentity>[]]; readonly fingerprint: string };
+  | { readonly kind: 'unevaluated'; readonly text?: never; readonly short?: never; readonly provenance?: never }
+  | { readonly kind: 'unknown'; readonly text?: never; readonly short?: never; readonly provenance: GoalProvenance }
+  | { readonly kind: 'known'; readonly text: string; readonly short?: string; readonly provenance: GoalProvenance };
 
 export interface WorkspaceRecord {
   version: 1; id: string; creationToken: string; mutationToken: string; title: string; titleMode: TitleMode;
@@ -24,6 +28,7 @@ export interface WorkspaceRecord {
 }
 export interface PersistedWorkspaceV1 extends Omit<WorkspaceRecord, 'goal'> {
   goal: string; goalShort?: string; planSources: DocumentIdentity[]; sourceFingerprint: string | null;
+  conversationProvenance?: ConversationProvenance;
 }
 export interface ReferenceBoundary { compactionDigest: string; transcriptLength: number; prefixDigest: string }
 export interface AgentRecord {
@@ -127,33 +132,57 @@ export function validateBoundary(value: unknown): ReferenceBoundary {
 }
 export function unevaluatedGoal(): Goal { return Object.freeze({ kind: 'unevaluated' }); }
 
-/** An evaluated result retains provenance even when the documents establish no purpose. */
-export function evaluatedGoal(fullText: string, sources: readonly DocumentIdentity[], fingerprint: string, short?: string): Goal {
+/** Evaluated results retain their origin even when the evidence establishes no purpose. */
+function purposeGoal(fullText: string, provenance: GoalProvenance, short?: string): Goal {
   const purpose = text(fullText);
-  const identities = array(sources, value => Object.freeze(documentIdentity(value)));
-  if (!identities.length) throw new Error('Goal requires nonempty plan provenance');
-  if (new Set(identities.map(referenceIdentity)).size !== identities.length) throw new Error('Duplicate reference identity');
-  const provenance = { sources: Object.freeze(identities) as readonly [Readonly<DocumentIdentity>, ...Readonly<DocumentIdentity>[]], fingerprint: text(fingerprint, true) };
   const derivative = short === undefined ? undefined : displayText(short, 25);
   if (!purpose.trim()) {
     if (derivative?.trim()) throw new Error('Short goal requires nonempty goal');
-    return Object.freeze({ kind: 'unknown', ...provenance });
+    return Object.freeze({ kind: 'unknown', provenance });
   }
-  return Object.freeze({ kind: 'known', text: purpose, ...(derivative?.trim() ? { short: derivative } : {}), ...provenance });
+  return Object.freeze({ kind: 'known', text: purpose, ...(derivative?.trim() ? { short: derivative } : {}), provenance });
+}
+
+/** Document-backed purpose requires a nonempty immutable source selection. */
+export function evaluatedGoal(fullText: string, sources: readonly DocumentIdentity[], fingerprint: string, short?: string): Goal {
+  const identities = array(sources, value => Object.freeze(documentIdentity(value)));
+  if (!identities.length) throw new Error('Goal requires nonempty plan provenance');
+  if (new Set(identities.map(referenceIdentity)).size !== identities.length) throw new Error('Duplicate reference identity');
+  return purposeGoal(fullText, Object.freeze({ kind: 'documents',
+    sources: Object.freeze(identities) as readonly [Readonly<DocumentIdentity>, ...Readonly<DocumentIdentity>[]],
+    fingerprint: text(fingerprint, true) }), short);
+}
+
+function conversationProvenance(value: unknown): ConversationProvenance {
+  const v = object(value, ['sessionId', 'digest']);
+  const digest = text(v.digest, true);
+  if (!/^[a-f0-9]{64}$/.test(digest)) throw new Error('Invalid conversation evidence digest');
+  return Object.freeze({ sessionId: text(v.sessionId, true), digest });
+}
+
+/** Persist only attribution and the digest, never the captured transcript. */
+export function conversationGoal(fullText: string, origin: ConversationProvenance, short?: string): Goal {
+  return purposeGoal(fullText, Object.freeze({ kind: 'conversation', ...conversationProvenance(origin) }), short);
 }
 
 export function parseGoal(value: unknown): Goal {
-  const v = object(value, ['kind', 'text', 'short', 'sources', 'fingerprint'], ['kind']);
+  const v = object(value, ['kind', 'text', 'short', 'provenance'], ['kind']);
   if (v.kind === 'unevaluated') { object(value, ['kind']); return unevaluatedGoal(); }
-  if (v.kind === 'unknown') {
-    object(value, ['kind', 'sources', 'fingerprint']);
-    return evaluatedGoal('', v.sources as DocumentIdentity[], v.fingerprint as string);
+  if (v.kind === 'unknown') object(value, ['kind', 'provenance']);
+  else if (v.kind === 'known') {
+    object(value, ['kind', 'text', 'short', 'provenance'], ['kind', 'text', 'provenance']);
+    text(v.text, true);
+    if (Object.hasOwn(v, 'short')) displayText(v.short, 25);
+  } else throw new Error('Invalid Goal kind');
+  const provenance = object(v.provenance, ['kind', 'sources', 'fingerprint', 'sessionId', 'digest'], ['kind']);
+  const purpose = v.kind === 'known' ? v.text as string : '';
+  if (provenance.kind === 'documents') {
+    object(provenance, ['kind', 'sources', 'fingerprint']);
+    return evaluatedGoal(purpose, provenance.sources as DocumentIdentity[], provenance.fingerprint as string, v.short as string | undefined);
   }
-  if (v.kind !== 'known') throw new Error('Invalid Goal kind');
-  object(value, ['kind', 'text', 'short', 'sources', 'fingerprint'], ['kind', 'text', 'sources', 'fingerprint']);
-  text(v.text, true);
-  if (Object.hasOwn(v, 'short')) displayText(v.short, 25);
-  return evaluatedGoal(v.text as string, v.sources as DocumentIdentity[], v.fingerprint as string, v.short as string | undefined);
+  if (provenance.kind !== 'conversation') throw new Error('Invalid Goal provenance');
+  object(provenance, ['kind', 'sessionId', 'digest']);
+  return conversationGoal(purpose, { sessionId: provenance.sessionId as string, digest: provenance.digest as string }, v.short as string | undefined);
 }
 
 export type GoalTransition =
@@ -163,12 +192,12 @@ export type GoalTransition =
 /** All purpose/provenance replacement and derivative invalidation has one owner. */
 export function transitionGoal(previous: Goal, event: GoalTransition): Goal {
   if (event.kind === 'source_removed') {
-    return previous.kind !== 'unevaluated' && previous.sources.some(source => referenceIdentity(source) === referenceIdentity(event.identity))
+    return previous.kind !== 'unevaluated' && previous.provenance.kind === 'documents' && previous.provenance.sources.some(source => referenceIdentity(source) === referenceIdentity(event.identity))
       ? unevaluatedGoal() : previous;
   }
   const next = parseGoal(event.goal);
   if (previous.kind === 'known' && next.kind === 'known' && next.text === previous.text && next.short === undefined && previous.short !== undefined) {
-    return evaluatedGoal(next.text, next.sources, next.fingerprint, previous.short);
+    return purposeGoal(next.text, next.provenance, previous.short);
   }
   return next;
 }
@@ -184,7 +213,7 @@ export function validateWorkspace(value: unknown): WorkspaceRecord {
   if (new Set(Object.values(checkouts).map(c => c.directory)).size !== Object.keys(checkouts).length) throw new Error('Duplicate checkout directory');
   const documents = array(v.documents, document); const issues = array(v.issues, link); const prs = array(v.prs, link);
   const exclusions = array(v.exclusions, validateReferenceIdentity); const goal = parseGoal(v.goal);
-  const planSources = goal.kind === 'unevaluated' ? [] : goal.sources;
+  const planSources = goal.kind !== 'unevaluated' && goal.provenance.kind === 'documents' ? goal.provenance.sources : [];
   const visible = [...documents, ...issues, ...prs];
   for (const list of [visible, exclusions, planSources]) if (new Set(list.map(referenceIdentity)).size !== list.length) throw new Error('Duplicate reference identity');
   for (const ref of [...documents, ...exclusions, ...planSources]) if ('checkout' in ref && !Object.hasOwn(checkouts, ref.checkout)) throw new Error('Unknown checkout');
@@ -196,23 +225,26 @@ export function validateWorkspace(value: unknown): WorkspaceRecord {
 /** Only flat version-1 storage is accepted here; validate before semantic normalization. */
 export function parseWorkspaceV1(value: unknown): WorkspaceRecord {
   const required = ['version', 'id', 'creationToken', 'mutationToken', 'title', 'titleMode', 'goal', 'planSources', 'sourceFingerprint', 'checkouts', 'documents', 'issues', 'prs', 'exclusions'];
-  const v = object(value, [...required, 'goalShort'], required);
+  const v = object(value, [...required, 'goalShort', 'conversationProvenance'], required);
   const purpose = text(v.goal);
   const sources = array(v.planSources, documentIdentity);
   const fingerprint = v.sourceFingerprint === null ? null : text(v.sourceFingerprint, true);
-  if ((purpose || sources.length || fingerprint) && (!sources.length || !fingerprint)) throw new Error('Goal requires plan provenance');
+  const conversation = Object.hasOwn(v, 'conversationProvenance') ? conversationProvenance(v.conversationProvenance) : undefined;
+  if (conversation ? sources.length || fingerprint !== null : (purpose || sources.length || fingerprint) && (!sources.length || !fingerprint)) throw new Error('Goal requires exclusive provenance');
   const short = Object.hasOwn(v, 'goalShort') ? displayText(v.goalShort, 25) : undefined;
   if (short?.trim() && !purpose.trim()) throw new Error('Short goal requires nonempty goal');
-  const { goal: _, goalShort: __, planSources: ___, sourceFingerprint: ____, ...shared } = v;
-  return validateWorkspace({ ...shared, goal: sources.length ? evaluatedGoal(purpose, sources, fingerprint!, short) : unevaluatedGoal() });
+  const { goal: _, goalShort: __, planSources: ___, sourceFingerprint: ____, conversationProvenance: _____, ...shared } = v;
+  return validateWorkspace({ ...shared, goal: conversation ? conversationGoal(purpose, conversation, short) : sources.length ? evaluatedGoal(purpose, sources, fingerprint!, short) : unevaluatedGoal() });
 }
 
 /** Storage and public record projection stay flat; domain snapshots never carry these fields. */
 export function serializeWorkspaceV1(record: WorkspaceRecord): PersistedWorkspaceV1 {
   const { goal, ...shared } = validateWorkspace(record);
   return { ...shared, goal: goalText(goal), ...(goal.kind === 'known' && goal.short !== undefined ? { goalShort: goal.short } : {}),
-    planSources: goal.kind === 'unevaluated' ? [] : goal.sources.map(source => ({ ...source })),
-    sourceFingerprint: goal.kind === 'unevaluated' ? null : goal.fingerprint };
+    planSources: goal.kind !== 'unevaluated' && goal.provenance.kind === 'documents' ? goal.provenance.sources.map(source => ({ ...source })) : [],
+    sourceFingerprint: goal.kind !== 'unevaluated' && goal.provenance.kind === 'documents' ? goal.provenance.fingerprint : null,
+    ...(goal.kind !== 'unevaluated' && goal.provenance.kind === 'conversation'
+      ? { conversationProvenance: { sessionId: goal.provenance.sessionId, digest: goal.provenance.digest } } : {}) };
 }
 export function validateAgent(value: unknown): AgentRecord {
   const required = ['version', 'workspaceId', 'sessionId', 'membershipToken', 'boundary', 'evidenceGeneration', 'checkout', 'cwd', 'title', 'titleMode', 'status', 'now', 'remaining'];

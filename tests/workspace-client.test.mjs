@@ -11,6 +11,7 @@ import { setTimeout as delay } from 'node:timers/promises';
 import { RecordStore } from '../dist/records.js';
 import { DEFAULT_CONFIG } from '../dist/config.js';
 import { resolvedReferences } from '../dist/presentation.js';
+import { NameStore } from '../dist/herdr/name-provenance.js';
 
 const boundary = { compactionDigest: 'c', transcriptLength: 0, prefixDigest: 'p' };
 async function fixture() {
@@ -19,7 +20,7 @@ async function fixture() {
   const store = new RecordStore(join(root, 'state')); await mkdir(store.directory);
   const socket = join(root, 'h.sock');
   const panes = [1,2].map(n => ({ pane_id: `w:p${n}`, terminal_id: `term${n}`, workspace_id: 'w', tab_id: `w:t${n}`, tokens: {} }));
-  const workspaces = [{ workspace_id: 'w', tokens: {} }];
+  const workspaces = [{ workspace_id: 'w', label: 'checkout', number: 1, tokens: {} }];
   const tabs = [1,2].map(n => ({ tab_id: `w:t${n}`, workspace_id: 'w', label: `${n}`, number: n }));
   const calls = []; let next = 3; let fail;
   const inventory = () => ({ workspaces, tabs, panes, layouts: tabs.map(t => ({ tab_id: t.tab_id, workspace_id: t.workspace_id, panes: panes.filter(p => p.tab_id === t.tab_id).map(p => ({ pane_id: p.pane_id })) })) });
@@ -43,11 +44,12 @@ async function fixture() {
       const entrypoint = arg('--entrypoint'); const owner = panes.find(p => p.pane_id === arg('--target-pane'));
       const n = next++; const tab_id = entrypoint === 'card' ? owner.tab_id : `w:t${n}`;
       const p = { pane_id: `w:p${n}`, terminal_id: `term${n}`, tab_id, workspace_id: owner?.workspace_id ?? arg('--workspace'), tokens:{}, ...(entrypoint === 'card' ? { label: 'Work card' } : {}) };
-      if (entrypoint !== 'card') tabs.push({tab_id,workspace_id:p.workspace_id,label:String(n),number:n});
+      if (entrypoint !== 'card') tabs.push({tab_id,workspace_id:p.workspace_id,label:String(tabs.filter(t => t.workspace_id === p.workspace_id).length + 1),number:n});
       panes.push(p); return result('plugin_pane_opened', { plugin_pane: {plugin_id:'work-cards',entrypoint,pane:p} });
     }
     if (args[0] === 'plugin' && args[2] === 'close') { const i=panes.findIndex(p => p.pane_id === args[3]); panes.splice(i,1); return result('plugin_pane_closed',{pane_id:args[3]}); }
     if (args[0] === 'pane' && args[1] === 'rename') { const p = panes.find(p=>p.pane_id===args[2]); if (args.length === 4 && args[3] === '--clear') delete p.label; else p.label=args.slice(3).join(' '); return result('pane_info',{pane:p}); }
+    if (args[0] === 'workspace' && args[1] === 'rename') { const w = workspaces.find(w => w.workspace_id === args[2]); w.label = args[3]; return result('workspace_info', {workspace:w}); }
     if (args[0] === 'tab' && args[1] === 'rename') { const t = tabs.find(t=>t.tab_id===args[2]); t.label=args[3]; return result('tab_info',{tab:t}); }
     if (args[0] === 'tab' && args[1] === 'focus') return JSON.stringify({result:{}});
     throw new Error(`Unexpected call ${args.join(' ')}`);
@@ -198,7 +200,7 @@ test('cancellation during a failed resize is not swallowed as a geometry failure
 test('selected workspace rechecks cross-group bindings after record I/O', async () => {
   const f = await fixture();
   await f.store.createWorkspace({ id: 'selected', creationToken: 'token', title: 'Selected' });
-  f.workspaces.push({ workspace_id: 'other', tokens: {} });
+  f.workspaces.push({ workspace_id: 'other', label: 'other', number: 2, tokens: {} });
   const c = f.client('term1'), context = await c.bootstrap(DEFAULT_CONFIG);
   const read = f.store.readWorkspace.bind(f.store); let once = true;
   f.store.readWorkspace = async id => {
@@ -213,7 +215,7 @@ test('selected workspace rechecks cross-group bindings after record I/O', async 
 test('concurrent selections serialize the same durable target across native groups and store aliases', async () => {
   const f = await fixture();
   await f.store.createWorkspace({ id: 'selected', creationToken: 'token', title: 'Selected' });
-  f.workspaces.push({ workspace_id: 'other', tokens: {} });
+  f.workspaces.push({ workspace_id: 'other', label: 'other', number: 2, tokens: {} });
   f.tabs[1].workspace_id = 'other'; f.panes[1].workspace_id = 'other';
   await symlink(f.store.directory, join(f.root, 'alias'));
   const stores = [f.store, new RecordStore(join(f.root, 'alias'))];
@@ -573,7 +575,7 @@ test('reuse rereads native identity after the final awaited agent identity looku
   f.card.identity=async(...args)=>{
     const result=await identity(...args);
     if(++count===2) {
-      f.workspaces.push({workspace_id:'dest',tokens:{}}); f.tabs.push({workspace_id:'dest',tab_id:'dest:t1',label:'1',number:1});
+      f.workspaces.push({workspace_id:'dest',label:'destination',number:2,tokens:{}}); f.tabs.push({workspace_id:'dest',tab_id:'dest:t1',label:'1',number:1});
       Object.assign(f.panes.find(p=>p.terminal_id===f.context.terminalId),{workspace_id:'dest',tab_id:'dest:t1',pane_id:'dest:p1'});
     }
     return result;
@@ -738,7 +740,7 @@ test('native cross-workspace terminal movement joins fresh destination without c
   const f=await fixture(); const a=await f.joinAgent('term1'), r=a.agent.record;
   const auth={sessionId:r.sessionId,workspaceId:r.workspaceId,membershipToken:r.membershipToken,evidenceGeneration:r.evidenceGeneration};
   await f.store.addReferences(auth,{documents:[{checkout:r.checkout,path:'plan.md',description:'source only'}]});
-  f.workspaces.push({workspace_id:'dest',tokens:{}}); f.tabs.push({workspace_id:'dest',tab_id:'dest:t1',label:'1',number:1});
+  f.workspaces.push({workspace_id:'dest',label:'destination',number:2,tokens:{}}); f.tabs.push({workspace_id:'dest',tab_id:'dest:t1',label:'1',number:1});
   Object.assign(f.panes[0],{workspace_id:'dest',tab_id:'dest:t1',pane_id:'dest:p1'});
   const observed=await a.c.observe(a.context,DEFAULT_CONFIG); assert.equal(observed.caller.terminal_id,'term1');
   const joined=await a.c.joinWorkspace(f.store,observed.context,{sessionId:'term1',cwd:f.cwd,title:'destination',boundary,expected:auth},DEFAULT_CONFIG);
@@ -901,12 +903,97 @@ test('collision refresh renames only proven automatic editor names and current f
   await card.refreshDocumentNames(f.store,context,opened.agent,DEFAULT_CONFIG);
   assert.equal(tab.label,resolvedReferences(workspace.record).documents[0].label);
   tab.label='Manual'; await card.refreshDocumentNames(f.store,context,opened.agent,DEFAULT_CONFIG);
-  assert.equal(tab.label,'Manual'); assert.equal(editor.tokens.wcd_auto,'manual');
-  const initialLabel=tab.label; editor.tokens.wcd_auto='auto';
-  const { createHash }=await import('node:crypto'); editor.tokens.wcd_name=createHash('sha256').update(initialLabel).digest('hex');
+  assert.equal(tab.label,'Manual');
+  const names = new NameStore(f.store.directory), scope = await names.scope({socket:context.socket,workspaceId:context.workspaceId,bindingNonce:context.bindingNonce,kind:'tab',surfaceId:tab.tab_id});
+  assert.equal((await names.read(scope)).record.mode,'manual');
+  assert.equal(editor.tokens.wcd_auto,undefined); assert.equal(editor.tokens.wcd_name,undefined);
+  const initialLabel=tab.label;
   const intruder={pane_id:'w:p100',terminal_id:'term100',workspace_id:'w',tab_id:tab.tab_id,tokens:{}}; f.panes.unshift(intruder);
   await card.refreshDocumentNames(f.store,context,opened.agent,DEFAULT_CONFIG); assert.equal(tab.label,initialLabel);
 });
+test('editor and agent hand over one tab history in both directions; later native rename pins both', async () => {
+  const f=await documentFixture();
+  await f.card.openDocument(f.store,f.context,f.workspace,f.opened.agent,f.target('second.md'),DEFAULT_CONFIG);
+  const editor=f.panes.find(p=>p.tokens.wcd_key), tab=f.tabs.find(t=>t.tab_id===editor.tab_id);
+  const agent=f.panes.find(p=>p.terminal_id==='term1'), originalTab=agent.tab_id;
+  agent.tab_id=editor.tab_id;
+  let {context}=await f.a.c.observe(f.a.context,DEFAULT_CONFIG);
+  assert.equal((await f.a.c.projectNames(f.store,context,f.opened.agent,DEFAULT_CONFIG)).tab,'renamed');
+  assert.equal(tab.label,'term1');
+  agent.tab_id=originalTab;
+  await f.card.refreshDocumentNames(f.store,f.context,f.opened.agent,DEFAULT_CONFIG);
+  assert.equal(tab.label,'second.md');
+  tab.label='Manual tab'; agent.tab_id=editor.tab_id;
+  ({context}=await f.a.c.observe(f.a.context,DEFAULT_CONFIG));
+  assert.equal((await f.a.c.projectNames(f.store,context,f.opened.agent,DEFAULT_CONFIG)).tab,'manual');
+  agent.tab_id=originalTab;
+  await f.card.refreshDocumentNames(f.store,f.context,f.opened.agent,DEFAULT_CONFIG);
+  assert.equal(tab.label,'Manual tab');
+});
+
+test('a new first owner inherits tab history after the editor predecessor disappears', async () => {
+  const f=await documentFixture();
+  await f.card.openDocument(f.store,f.context,f.workspace,f.opened.agent,f.target('plan.md'),DEFAULT_CONFIG);
+  const editor=f.panes.find(p=>p.tokens.wcd_key), tab=f.tabs.find(t=>t.tab_id===editor.tab_id);
+  const agent=f.panes.find(p=>p.terminal_id==='term1'); agent.tab_id=editor.tab_id;
+  f.panes.splice(f.panes.indexOf(editor),1);
+  const {context}=await f.a.c.observe(f.a.context,DEFAULT_CONFIG);
+  assert.equal((await f.a.c.projectNames(f.store,context,f.opened.agent,DEFAULT_CONFIG)).tab,'renamed');
+  assert.equal(tab.label,'term1');
+});
+
+test('pane-local legacy editor naming markers cannot import an unproven custom tab label', async () => {
+  const f=await documentFixture();
+  await f.card.openDocument(f.store,f.context,f.workspace,f.opened.agent,f.target('plan.md'),DEFAULT_CONFIG);
+  const editor=f.panes.find(p=>p.tokens.wcd_key), tab=f.tabs.find(t=>t.tab_id===editor.tab_id);
+  const names=new NameStore(f.store.directory), scope=await names.scope({socket:f.context.socket,workspaceId:f.context.workspaceId,bindingNonce:f.context.bindingNonce,kind:'tab',surfaceId:tab.tab_id});
+  await unlink(names.path(scope));
+  editor.tokens.wcd_auto='auto'; editor.tokens.wcd_name=createHash('sha256').update(tab.label).digest('hex');
+  const second=join(f.root,'other','checkout'); await mkdir(second,{recursive:true});
+  await f.store.registerCheckout(agentAuthority(f.opened.agent.record),second,f.workspace.revision);
+  await f.card.refreshDocumentNames(f.store,f.context,f.opened.agent,DEFAULT_CONFIG);
+  assert.equal(tab.label,'plan.md'); assert.equal((await names.read(scope)).record.mode,'manual');
+});
+
+test('editor naming rereads duplicate document ownership introduced during provenance preparation', async () => {
+  const f=await documentFixture();
+  await f.card.openDocument(f.store,f.context,f.workspace,f.opened.agent,f.target('second.md'),DEFAULT_CONFIG);
+  const editor=f.panes.find(p=>p.tokens.wcd_key), tab=f.tabs.find(t=>t.tab_id===editor.tab_id);
+  const second=join(f.root,'other','checkout'); await mkdir(second,{recursive:true});
+  await f.store.registerCheckout(agentAuthority(f.opened.agent.record),second,f.workspace.revision);
+  const read=NameStore.prototype.read; let once=true;
+  NameStore.prototype.read=async function(...args) {
+    const result=await read.apply(this,args);
+    if(once) {
+      once=false; const tab_id='w:t99';
+      f.tabs.push({workspace_id:'w',tab_id,label:'99',number:99});
+      f.panes.push({...editor,pane_id:'w:p99',terminal_id:'duplicate',tab_id,tokens:{...editor.tokens,wcd_pane:'w:p99',wcd_terminal:'duplicate',wcd_tab:tab_id}});
+    }
+    return result;
+  };
+  const before=f.calls.length;
+  try {await assert.rejects(f.card.refreshDocumentNames(f.store,f.context,f.opened.agent,DEFAULT_CONFIG),/document|editor|ownership/i);}
+  finally {NameStore.prototype.read=read;}
+  assert.equal(tab.label,'second.md'); assert.equal(f.calls.slice(before).some(args=>args[1]==='rename'),false);
+});
+
+test('multiple agents share workspace provenance while retaining independent own-tab histories', async () => {
+  const f=await fixture(), a=await f.joinAgent('term1'), b=await f.joinAgent('term2');
+  const ownA=await a.c.openDisplay(f.store,a.context,a.agent,'automatic',DEFAULT_CONFIG);
+  const ownB=await b.c.openDisplay(f.store,b.context,b.agent,'automatic',DEFAULT_CONFIG);
+  assert.deepEqual(await a.c.projectNames(f.store,a.context,ownA.agent,DEFAULT_CONFIG,undefined,'explicit'),{workspace:'renamed',tab:'renamed'});
+  assert.deepEqual(await b.c.projectNames(f.store,b.context,ownB.agent,DEFAULT_CONFIG),{workspace:'unchanged',tab:'renamed'});
+  const workspace=await f.store.readWorkspace(a.workspace.record.id);
+  await f.store.setWorkspaceTitle(agentAuthority(ownB.agent.record),'Shared update',workspace.revision);
+  assert.equal((await b.c.projectNames(f.store,b.context,ownB.agent,DEFAULT_CONFIG)).workspace,'renamed');
+  assert.equal((await a.c.projectNames(f.store,a.context,ownA.agent,DEFAULT_CONFIG)).workspace,'unchanged');
+  f.workspaces[0].label='Native pin';
+  assert.equal((await a.c.projectNames(f.store,a.context,ownA.agent,DEFAULT_CONFIG)).workspace,'manual');
+  f.workspaces[0].label='Shared update';
+  assert.equal((await b.c.projectNames(f.store,b.context,ownB.agent,DEFAULT_CONFIG)).workspace,'manual');
+  assert.equal(f.tabs[0].label,'term1'); assert.equal(f.tabs[1].label,'term2');
+});
+
 test('same document path in separate checkouts opens separate qualified editors and removed painted references cannot open', async () => {
   const f=await fixture(); const a=await f.joinAgent('term1'), r=a.agent.record;
   const auth={sessionId:r.sessionId,workspaceId:r.workspaceId,membershipToken:r.membershipToken,evidenceGeneration:r.evidenceGeneration};

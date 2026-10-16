@@ -190,7 +190,7 @@ test('cleanup invalidates a prior selected-source Goal before shared inference, 
     return { action: 'no_change' };
   };
   const result = await f.refresh({ referenceEvidence: { compactionSummary: 'Current work', transcript: [] } });
-  assert.deepEqual(result.workspace.record.goal.sources.map(s => s.path), ['two.md']);
+  assert.deepEqual(result.workspace.record.goal.provenance.sources.map(s => s.path), ['two.md']);
 });
 
 test('cleanup failures diagnose the shared stage rather than own summary failure', async t => {

@@ -1,5 +1,5 @@
 export interface Pane { pane_id: string; terminal_id: string; workspace_id: string; tab_id: string; label?: string; tokens: Readonly<Record<string, string>> }
-export interface Workspace { workspace_id: string; tokens: Readonly<Record<string, string>> }
+export interface Workspace { workspace_id: string; label: string; number: number; tokens: Readonly<Record<string, string>> }
 export interface NativeTab { tab_id: string; workspace_id: string; label: string; number: number }
 export interface NativeLayout { tab_id: string; workspace_id: string; panes: { pane_id: string }[] }
 export interface NativeSnapshot { workspaces: Workspace[]; tabs: NativeTab[]; panes: Pane[]; layouts: NativeLayout[] }
@@ -25,7 +25,10 @@ export function nativePane(value: unknown): Pane {
 export function parseNativeSnapshot(value: unknown): NativeSnapshot {
   const s = nativeObject(value);
   const list = (key: string): any[] => { if (!Array.isArray(s[key])) throw new Error(`Missing Herdr ${key}`); return s[key]; };
-  const workspaces = list('workspaces').map(w => ({ workspace_id: nativeId(w.workspace_id), tokens: nativeTokens(w.tokens) }));
+  const workspaces = list('workspaces').map(w => {
+    if (!Number.isSafeInteger(w.number) || w.number < 1 || typeof w.label !== 'string') throw new Error('Invalid Herdr workspace label/number');
+    return { workspace_id: nativeId(w.workspace_id), label: w.label, number: w.number, tokens: nativeTokens(w.tokens) };
+  });
   const tabs = list('tabs').map(t => {
     if (!Number.isSafeInteger(t.number) || t.number < 1 || typeof t.label !== 'string') throw new Error('Invalid Herdr tab label/number');
     return { tab_id: nativeId(t.tab_id), workspace_id: nativeId(t.workspace_id), label: t.label, number: t.number };

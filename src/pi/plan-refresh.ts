@@ -1,13 +1,15 @@
+import { createHash } from 'node:crypto';
 import { isDeepStrictEqual } from 'node:util';
+import type { ProjectedEvidence } from './evidence.js';
 import {
   type Authority, type DocumentIdentity, type RecordStore,
-  type Snapshot, type WorkspaceRecord, evaluatedGoal, unevaluatedGoal,
+  type Snapshot, type WorkspaceRecord, type Goal, evaluatedGoal, conversationGoal,
   probeWorkspaceDocument, type DocumentProbe, type DocumentProbeReason, type MissingDocument,
 } from '../records.js';
 import { capturePlanSources, isMarkdownDocument, recheckPlanSources, validatePlanSelection } from './plan-sources.js';
 import type { SummaryRegistry, SummaryRequestOptions } from './summarizer.js';
 import type { CheckIntent } from './scheduler.js';
-import { requestPlanSelection, requestWorkspaceGoal } from './workspace-summary.js';
+import { requestConversationGoal, requestPlanSelection, requestWorkspaceGoal } from './workspace-summary.js';
 
 export type RefreshDiagnostic =
   | { stage: 'own' | 'shared' | 'goal'; outcome: 'applied' | 'unchanged' | 'no_sources' | 'skipped' }
@@ -17,6 +19,8 @@ export type RefreshDiagnostic =
 
 export interface PlanRefreshInput {
   authority: Authority;
+  /** Projected dialogue and compaction only; never reference-only tool activity. */
+  evidence?: ProjectedEvidence;
   signal: AbortSignal;
   /** Reject when the host generation or live context no longer matches this request. */
   assertCurrent: () => Promise<void>;
@@ -36,6 +40,7 @@ export function reportDocumentProbes(onDiagnostic: PlanRefreshInput['onDiagnosti
 
 /** A single host-owned refresher, not a scheduler. Discard on host invalidation. */
 export class PlanRefresher<TModel extends { api?: string }> {
+  private retainedConversation?: { workspaceId: string; creationToken: string; sessionId: string; digest: string; goal: Goal };
   private selection?: { workspaceId: string; creationToken: string; metadata: string; sources: DocumentIdentity[] };
 
   constructor(private readonly config: {
@@ -49,6 +54,7 @@ export class PlanRefresher<TModel extends { api?: string }> {
     const { store, registry, options, loadHelperProfiles } = this.config;
     // Caller-owned authority cannot change under an in-flight refresh.
     const authority = { ...input.authority };
+    const evidence = structuredClone(input.evidence ?? { compactionSummary: null, transcript: [] });
     const { signal, assertCurrent, intent = 'automatic', onRequest, onDiagnostic } = input;
     const forced = intent !== 'automatic';
     const current = async (expectedRevision?: string): Promise<Snapshot<WorkspaceRecord>> => {
@@ -88,11 +94,45 @@ export class PlanRefresher<TModel extends { api?: string }> {
       const captured = await capturePlanSources(workspace, sources).catch(error => { sourceReadFailed = true; throw error; });
       await current(original.revision);
       const previous = workspace.goal;
-      const unchanged = sources.length
-        ? !forced && previous.kind !== 'unevaluated' && (previous.kind === 'unknown' || !!previous.short?.trim())
-          && isDeepStrictEqual(sources, previous.sources) && captured.fingerprint === previous.fingerprint
-        : previous.kind === 'unevaluated';
-      const goal = unchanged || !sources.length ? null
+      if (!sources.length) {
+        // Source absence grants no authority to erase established shared purpose.
+        if (previous.kind === 'known' && previous.provenance.kind === 'documents') {
+          onDiagnostic?.({ stage: 'goal', outcome: 'unchanged' });
+          return current(original.revision);
+        }
+        const origin = { sessionId: authority.sessionId, digest: createHash('sha256').update(JSON.stringify({
+          compactionSummary: evidence.compactionSummary, transcript: evidence.transcript,
+        })).digest('hex') };
+        const cachedConversation = this.retainedConversation;
+        const unchanged = !forced && (
+          previous.kind !== 'unevaluated' && previous.provenance.kind === 'conversation'
+            && (previous.kind === 'unknown' || !!previous.short?.trim())
+            && previous.provenance.sessionId === origin.sessionId && previous.provenance.digest === origin.digest
+          || cachedConversation?.workspaceId === workspace.id && cachedConversation.creationToken === workspace.creationToken
+            && cachedConversation.sessionId === origin.sessionId && cachedConversation.digest === origin.digest
+            && isDeepStrictEqual(cachedConversation.goal, previous));
+        const proposal = unchanged ? null
+          : await requestConversationGoal(registry, workspace, evidence, { ...options, intent }, signal, loadHelperProfiles, onRequest);
+        const checked = await current(original.revision);
+        if (unchanged || !proposal) {
+          onDiagnostic?.({ stage: 'goal', outcome: previous.kind === 'known' || unchanged ? 'unchanged' : 'no_sources' });
+          return checked;
+        }
+        // An empty proposal from sparse/new-agent context is not shared deletion authority, even on reset.
+        const retain = previous.kind === 'known' && !proposal.goal.trim();
+        const result = await store.applyPlan(authority, {
+          goal: retain ? previous : conversationGoal(proposal.goal, origin, proposal.goalShort),
+          ...(!retain && proposal.title !== undefined ? { title: proposal.title } : {}),
+        }, original.revision, signal);
+        // Only retention needs a host-local cache; accepted results use their durable provenance.
+        this.retainedConversation = retain
+          ? { workspaceId: workspace.id, creationToken: workspace.creationToken, ...origin, goal: result.record.goal } : undefined;
+        onDiagnostic?.({ stage: 'goal', outcome: result.revision === checked.revision ? 'unchanged' : 'applied' });
+        return result;
+      }
+      const unchanged = !forced && previous.kind !== 'unevaluated' && (previous.kind === 'unknown' || !!previous.short?.trim())
+        && previous.provenance.kind === 'documents' && isDeepStrictEqual(sources, previous.provenance.sources) && captured.fingerprint === previous.provenance.fingerprint;
+      const goal = unchanged ? null
         : await requestWorkspaceGoal(registry, captured, { ...options, intent }, signal, loadHelperProfiles, onRequest);
 
       const latest = await current(original.revision);
@@ -100,14 +140,14 @@ export class PlanRefresher<TModel extends { api?: string }> {
       // Filesystem preparation must finish before the final host guard and CAS effect.
       const checked = await current(original.revision);
       if (unchanged) {
-        onDiagnostic?.({ stage: 'goal', outcome: sources.length ? 'unchanged' : 'no_sources' });
+        onDiagnostic?.({ stage: 'goal', outcome: 'unchanged' });
         return checked;
       }
       const result = await store.applyPlan(authority, {
-        goal: sources.length ? evaluatedGoal(goal!.goal, sources, captured.fingerprint, goal!.goalShort) : unevaluatedGoal(),
+        goal: evaluatedGoal(goal!.goal, sources, captured.fingerprint, goal!.goalShort),
         ...(goal?.title !== undefined ? { title: goal.title } : {}),
       }, original.revision, signal);
-      onDiagnostic?.({ stage: 'goal', outcome: !sources.length ? 'no_sources' : result.revision === checked.revision ? 'unchanged' : 'applied' });
+      onDiagnostic?.({ stage: 'goal', outcome: result.revision === checked.revision ? 'unchanged' : 'applied' });
       return result;
     } catch (error) {
       if (sourceReadFailed && recovery) {

@@ -50,6 +50,20 @@ test('missing read creates nothing and only proven blank/numeric defaults permit
   assert.equal(decide(scope, null, { currentLabel: 'Next', desiredName: 'Next' }).kind, 'manual');
 });
 
+test('explicit reclaim overrides a valid pin and adopts a matching name without a native effect', async t => {
+  const { scope } = await fixture(t);
+  const manual = { version: 1, scope, mode: 'manual', owner: null, lastApplied: null };
+  const reclaimed = decide(scope, manual, { intent: 'explicit', currentLabel: 'Manual', desiredName: 'Next' });
+  assert.equal(reclaimed.kind, 'rename'); assert.equal(reclaimed.afterSuccess.mode, 'auto');
+  const same = decide(scope, manual, { intent: 'explicit', currentLabel: 'Next', desiredName: 'Next' });
+  assert.equal(same.kind, 'adopt'); assert.equal(same.afterSuccess.lastApplied, 'Next');
+  assert.equal(decide(scope, same.afterSuccess, { currentLabel: 'User override' }).kind, 'manual');
+  assert.throws(() => decide(scope, { ...manual, extra: true }, { intent: 'explicit' }));
+  assert.throws(() => decide(scope, manual, { intent: 'invalid' }));
+  const input = { ...scope, surfaceId: 'w1:t2' }; delete input.storePath;
+  assert.equal((await new NameStore(scope.storePath).scope(input)).surfaceId, 'w1:t2');
+});
+
 test('verified new first owner inherits unchanged automatic label without predecessor liveness', async t => {
   const { scope } = await fixture(t); const prior = automatic(scope);
   for (const nextOwner of [successor, { ...owner, nonce: 'restarted' }]) {

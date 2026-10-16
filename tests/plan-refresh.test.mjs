@@ -67,7 +67,7 @@ test('no references needs no model and preserves valid empty state with checked 
 test('initial selection is metadata-only, stable checks skip inference and force regenerates from captured sources', async t => {
   const f = await fixture(t); let activity = 0; let stopped = 0;
   const first = await f.refresh({ onRequest: () => { activity++; return () => { stopped++; }; } });
-  assert.equal(goalText(first.record.goal), 'Deliver library'); assert.deepEqual(first.record.goal.sources, [f.identity]); assert.ok(first.record.goal.fingerprint);
+  assert.equal(goalText(first.record.goal), 'Deliver library'); assert.deepEqual(first.record.goal.provenance.sources, [f.identity]); assert.ok(first.record.goal.provenance.fingerprint);
   assert.deepEqual(f.calls.map(c => c.kind), ['select', 'goal']);
   assert.deepEqual(f.calls[0].data, { documents: [{ ...f.identity, description: 'Implementation plan' }] });
   assert.deepEqual(f.calls[1].data, { sources: [{ identity: f.identity, content: 'Deliver a library and client' }] });
@@ -99,19 +99,120 @@ test('evaluated unknown purpose retains provenance and skips repeated inference'
   const f = await fixture(t); f.goal(() => ({ goal: '', goalShort: '' }));
   const first = await f.refresh();
   assert.equal(first.record.goal.kind, 'unknown');
-  assert.deepEqual(first.record.goal.sources, [f.identity]);
-  assert.ok(first.record.goal.fingerprint);
+  assert.deepEqual(first.record.goal.provenance.sources, [f.identity]);
+  assert.ok(first.record.goal.provenance.fingerprint);
   assert.equal((await f.refresh()).revision, first.revision);
   assert.deepEqual(f.calls.map(c => c.kind), ['select', 'goal']);
   await writeFile(f.path, 'Changed documents still establish no purpose');
   await f.refresh(); assert.deepEqual(f.calls.map(c => c.kind), ['select', 'goal', 'goal']);
 });
 
-test('empty selection clears provenance and does not call goal model', async t => {
+test('empty selection alone cannot erase established shared purpose and does not call goal model', async t => {
   const f = await fixture(t); await f.refresh(); f.select(() => ({ sources: [] }));
   const result = await f.refresh({ intent: 'refresh' });
-  assert.equal(goalText(result.record.goal), ''); assert.equal(result.record.goal.kind, 'unevaluated');
+  assert.equal(goalText(result.record.goal), 'Deliver library'); assert.equal(result.record.goal.kind, 'known');
   await f.refresh(); assert.deepEqual(f.calls.map(c => c.kind), ['select', 'goal', 'select']);
+});
+
+const dialogue = (text = 'Build a library and client for shared workspace context') => ({ compactionSummary: null, transcript: [{ role: 'user', text }] });
+
+test('meaningful dialogue establishes attributed Goal, short and automatic name, caches, grows and forces', async t => {
+  const f = await fixture(t, false), evidence = dialogue();
+  const first = await f.refresh({ evidence });
+  assert.equal(goalText(first.record.goal), 'Deliver library'); assert.equal(first.record.goal.short, 'Deliver library');
+  assert.equal(first.record.title, 'Automatic');
+  assert.equal(first.record.goal.provenance.kind, 'conversation'); assert.equal(first.record.goal.provenance.sessionId, 's');
+  assert.match(first.record.goal.provenance.digest, /^[a-f0-9]{64}$/);
+  assert.deepEqual(f.calls[0].data.transcript, evidence.transcript); assert.equal(f.calls[0].data.sources, undefined);
+  assert.equal((await f.refresh({ evidence })).revision, first.revision); assert.equal(f.calls.length, 1);
+  evidence.transcript.push({ role: 'assistant', text: 'The client is a reusable integration API' });
+  await f.refresh({ evidence }); assert.equal(f.calls.length, 2);
+  for (const intent of ['refresh', 'reset']) await f.refresh({ evidence, intent });
+  assert.equal(f.calls.length, 4); assert.equal(f.calls.at(-1).data.workspace, undefined);
+});
+
+test('insufficient nonempty dialogue is cached as unknown with empty goal, short and no invented automatic name', async t => {
+  const f = await fixture(t, false); f.goal(() => ({ goal: '', goalShort: '', title: 'Invented' }));
+  const first = await f.refresh({ evidence: dialogue('hello') });
+  assert.equal(first.record.goal.kind, 'unknown'); assert.equal(first.record.goal.provenance.kind, 'conversation');
+  assert.equal(goalText(first.record.goal), ''); assert.equal(first.record.goal.short, undefined); assert.equal(first.record.title, 'Workspace');
+  assert.equal((await f.refresh({ evidence: dialogue('hello') })).revision, first.revision); assert.equal(f.calls.length, 1);
+  await f.refresh({ evidence: dialogue('hello again') }); assert.equal(f.calls.length, 2);
+  await f.refresh({ evidence: dialogue('hello again'), intent: 'refresh' }); assert.equal(f.calls.length, 3);
+});
+
+test('sparse joining-agent context retains shared conversation purpose and name including reset, and caches its empty proposal', async t => {
+  const f = await fixture(t, false), first = await f.refresh({ evidence: dialogue() });
+  const joined = await f.store.join({ workspaceId: 'w', sessionId: 'other', cwd: f.root, membershipToken: 'other', boundary, title: 'Other' });
+  const authority = { sessionId: 'other', workspaceId: 'w', membershipToken: 'other', evidenceGeneration: joined.record.evidenceGeneration };
+  f.goal(() => ({ goal: '', goalShort: '', title: 'Invented' }));
+  const input = { authority, evidence: dialogue('hello') };
+  assert.equal((await f.refresh(input)).revision, first.revision); assert.equal(f.calls.at(-1).data.workspace.goal, 'Deliver library');
+  assert.equal((await f.refresh(input)).revision, first.revision); assert.equal(f.calls.length, 2);
+  assert.equal((await f.refresh({ ...input, intent: 'reset' })).revision, first.revision);
+  assert.equal(f.calls.at(-1).data.workspace, undefined);
+  assert.equal((await f.refresh({ evidence: { compactionSummary: null, transcript: [] } })).revision, first.revision);
+});
+
+test('documents take precedence, unreadable documents never fall back, and dialogue cannot replace document purpose', async t => {
+  const f = await fixture(t, false); await f.refresh({ evidence: dialogue() });
+  await f.store.addReferences(f.authority, { documents: [{ ...f.identity, description: 'Plan' }] });
+  f.goal(() => ({ goal: 'Document purpose', goalShort: 'Document purpose' }));
+  const document = await f.refresh({ evidence: dialogue() });
+  assert.equal(document.record.goal.provenance.kind, 'documents'); assert.ok(f.calls.at(-1).data.sources);
+  f.select(() => ({ sources: [] }));
+  assert.equal((await f.refresh({ evidence: dialogue('Different assignment'), intent: 'refresh' })).revision, document.revision);
+  assert.equal(f.calls.at(-1).kind, 'select');
+  f.select(() => ({ sources: [f.identity] })); await writeFile(f.path, Buffer.from([0xc3, 0x28]));
+  await assert.rejects(f.refresh({ evidence: dialogue(), intent: 'refresh' }), /Cannot read/);
+  assert.equal((await f.workspace()).revision, document.revision);
+});
+
+for (const mutation of ['shared', 'move', 'reset', 'cancel', 'host']) test(`conversation refuses ${mutation} changes under original CAS and authority`, async t => {
+  const f = await fixture(t, false);
+  f.goal(async () => {
+    if (mutation === 'shared') await f.store.addReferences(f.authority, { issues: [{ url: 'https://example.com/new', description: 'Concurrent' }] });
+    if (mutation === 'move') {
+      await f.store.createWorkspace({ id: 'other', creationToken: 'other', title: 'Other' });
+      await f.store.join({ workspaceId: 'other', sessionId: 's', cwd: f.root, membershipToken: 'new', boundary, title: 'Moved', expected: f.authority });
+    }
+    if (mutation === 'reset') { const a = await f.store.readAgent('s'); await f.store.resetEvidence(f.authority, boundary, a.revision); }
+    if (mutation === 'cancel') f.controller.abort(new Error('cancelled'));
+    if (mutation === 'host') f.host(async () => { throw new Error('evidence edited or host invalidated'); });
+    return { goal: 'Must not apply', goalShort: 'Must not apply' };
+  });
+  await assert.rejects(f.refresh({ evidence: dialogue() })); assert.equal(goalText((await f.workspace()).record.goal), '');
+});
+
+test('conversation is copied before awaits and manual workspace names stay protected', async t => {
+  const f = await fixture(t, false), evidence = dialogue();
+  await f.store.setWorkspaceTitle(f.authority, 'Manual', (await f.workspace()).revision);
+  let once = true; f.host(async () => { if (once) { once = false; evidence.transcript[0].text = 'Mutated'; } });
+  const result = await f.refresh({ evidence });
+  assert.equal(f.calls[0].data.transcript[0].text, dialogue().transcript[0].text); assert.equal(result.record.title, 'Manual');
+});
+
+test('conversation short overflow regenerates on ordinary checks and reset rejects overflow without preclearing', async t => {
+  const f = await fixture(t, false);
+  f.goal(() => ({ goal: 'Shared library', goalShort: '界'.repeat(13), title: 'Library' }));
+  const first = await f.refresh({ evidence: dialogue() });
+  assert.equal(first.record.goal.short, undefined); assert.equal(first.record.goal.text, 'Shared library');
+  f.goal(() => ({ goal: 'Shared library', goalShort: 'Shared library' }));
+  assert.equal((await f.refresh({ evidence: dialogue() })).record.goal.short, 'Shared library'); assert.equal(f.calls.length, 2);
+  const before = await f.workspace();
+  f.goal(() => ({ goal: 'Shared library', goalShort: '界'.repeat(13) }));
+  await assert.rejects(f.refresh({ evidence: dialogue(), intent: 'reset' }), /goalShort/i);
+  assert.equal((await f.workspace()).revision, before.revision);
+});
+
+test('unknown and known conversation caches survive refresher replacement without fake document sources', async t => {
+  for (const goal of ['', 'Library']) {
+    const f = await fixture(t, false); f.goal(() => ({ goal, goalShort: goal }));
+    const first = await f.refresh({ evidence: dialogue() });
+    const refresher = new PlanRefresher({ store: f.store, options, registry: { find() { throw new Error('Must use persisted cache'); } } });
+    const result = await refresher.refresh({ authority: f.authority, evidence: dialogue(), signal: f.controller.signal, assertCurrent: async () => {} });
+    assert.equal(result.revision, first.revision);
+  }
 });
 
 test('selection cache survives source errors but failed goal is never treated as applied', async t => {
@@ -213,7 +314,7 @@ test('explicit force can replace a cached choice and infer from the new source',
   await f.refresh(); f.select(() => ({ sources: [other] }));
   await f.refresh(); assert.equal(f.calls.length, 2);
   const result = await f.refresh({ intent: 'refresh' });
-  assert.deepEqual(result.record.goal.sources, [other]);
+  assert.deepEqual(result.record.goal.provenance.sources, [other]);
   assert.equal(f.calls.at(-1).data.sources[0].content, 'Another intended scope');
   assert.deepEqual(f.calls.map(c => c.kind), ['select', 'goal', 'select', 'goal']);
 });
@@ -279,9 +380,9 @@ test('oversized Goal short preserves the full Goal, title and provenance, then r
   const degraded = await f.refresh({ onDiagnostic: event => events.push(event) });
   assert.equal(goalText(degraded.record.goal), goal); assert.equal(degraded.record.title, 'Library integration');
   assert.equal(degraded.record.goal.short, undefined);
-  assert.deepEqual(degraded.record.goal.sources, [f.identity]);
+  assert.deepEqual(degraded.record.goal.provenance.sources, [f.identity]);
   const capture = await capturePlanSources(degraded.record, [f.identity]);
-  assert.equal(degraded.record.goal.fingerprint, capture.fingerprint);
+  assert.equal(degraded.record.goal.provenance.fingerprint, capture.fingerprint);
   assert.deepEqual(f.calls.map(c => c.kind), ['goal']);
   assert.deepEqual(events.at(-1), { stage: 'goal', outcome: 'applied' });
   f.goal(() => ({ goal, goalShort: 'Library integration' }));
@@ -317,9 +418,9 @@ test('diagnostics distinguish selection, cache, no sources and successful goal w
   events.length = 0; f.select(() => ({ sources: [] })); await f.refresh({ intent: 'refresh', onDiagnostic });
   assert.deepEqual(events, [
     { stage: 'selection', outcome: 'no_sources', selectedCount: 0, cacheHit: false },
-    { stage: 'goal', outcome: 'no_sources' },
+    { stage: 'goal', outcome: 'unchanged' },
   ]);
-  assert.equal((await f.workspace()).record.goal.short, undefined);
+  assert.equal((await f.workspace()).record.goal.short, 'Deliver library');
   assert.doesNotMatch(JSON.stringify(events), /plan.md|Deliver|file|https/);
 });
 

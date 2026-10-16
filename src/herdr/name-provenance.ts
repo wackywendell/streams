@@ -28,9 +28,12 @@ export interface NameInput {
   desiredName: string;
   /** Caller has verified this exact observed label is a native blank/numeric default. */
   defaultLabelProven: boolean;
+  /** Deliberate reclaim; caller still verifies every native authority guard. */
+  intent?: 'automatic' | 'explicit';
 }
 export type NameDecision =
   | { kind: 'noop' }
+  | { kind: 'adopt'; afterSuccess: NameProvenance }
   | { kind: 'manual'; provenance: NameProvenance }
   | { kind: 'rename'; name: string; afterSuccess: NameProvenance };
 
@@ -49,6 +52,11 @@ function token(value: unknown): string {
   if (!/^[A-Za-z0-9_-]+$/.test(result)) throw new Error('Invalid naming identity token');
   return result;
 }
+function surfaceToken(value: unknown): string {
+  const result = text(value);
+  if (!/^[A-Za-z0-9_:-]+$/.test(result)) throw new Error('Invalid naming surface identity');
+  return result;
+}
 function absolute(value: unknown): string {
   const path = text(value);
   if (!isAbsolute(path) || normalize(path) !== path) throw new Error('Invalid naming absolute path');
@@ -57,7 +65,7 @@ function absolute(value: unknown): string {
 function validateScope(value: unknown): NameScope {
   const v = object(value, ['storePath', 'socket', 'workspaceId', 'bindingNonce', 'kind', 'surfaceId']);
   if (v.kind !== 'workspace' && v.kind !== 'tab') throw new Error('Invalid naming surface kind');
-  return { storePath: absolute(v.storePath), socket: absolute(v.socket), workspaceId: token(v.workspaceId), bindingNonce: token(v.bindingNonce), kind: v.kind, surfaceId: token(v.surfaceId) };
+  return { storePath: absolute(v.storePath), socket: absolute(v.socket), workspaceId: token(v.workspaceId), bindingNonce: token(v.bindingNonce), kind: v.kind, surfaceId: surfaceToken(v.surfaceId) };
 }
 function validateOwner(value: unknown): NameOwner {
   const v = object(value, ['terminalId', 'nonce']);
@@ -75,16 +83,22 @@ function validateProvenance(value: unknown, scope: NameScope): NameProvenance {
 /** Pure policy, not native authority. Caller verifies eligibility/actual first pane,
  * binding, context and observed label under the native workspace lock. No predecessor
  * liveness is required. Persist manual pins immediately; persist afterSuccess ONLY
- * after verified native success. A failed cache read must suspend naming, not become null.
+ * after verified native success (or a fresh matching-label observation for adopt).
+ * A failed cache read must suspend naming, not become null.
  * A native success followed by a cache failure is partial progress: retry from a fresh
  * read/observation, never invent provenance for the newly observed nondefault label.
  */
 export function decideName(input: NameInput): NameDecision {
-  const v = object(input, ['scope', 'provenance', 'owner', 'currentLabel', 'desiredName', 'defaultLabelProven']);
+  const v = object(input, ['scope', 'provenance', 'owner', 'currentLabel', 'desiredName', 'defaultLabelProven', ...(Object.hasOwn(input, 'intent') ? ['intent'] : [])]);
   const scope = validateScope(v.scope); const owner = validateOwner(v.owner);
   const current = text(v.currentLabel, false); const desired = text(v.desiredName);
   if (typeof v.defaultLabelProven !== 'boolean') throw new Error('Invalid default-label proof');
   const prior = v.provenance === null ? null : validateProvenance(v.provenance, scope);
+  if (v.intent !== undefined && v.intent !== 'automatic' && v.intent !== 'explicit') throw new Error('Invalid naming intent');
+  if (v.intent === 'explicit') {
+    const afterSuccess: NameProvenance = { version: 1, scope, mode: 'auto', owner, lastApplied: desired };
+    return current === desired ? { kind: 'adopt', afterSuccess } : { kind: 'rename', name: desired, afterSuccess };
+  }
   if (prior?.mode === 'manual') return { kind: 'manual', provenance: prior };
   if (prior ? current !== prior.lastApplied : !(v.defaultLabelProven && /^\s*\d*\s*$/.test(current))) {
     const provenance: NameProvenance = prior

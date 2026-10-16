@@ -14,9 +14,10 @@ import { WorkspaceRefresher } from './workspace-refresh.js';
 import type { RefreshDiagnostic } from './plan-refresh.js';
 import type { SummaryRegistry } from './summarizer.js';
 import { RequestLane } from './request-lane.js';
+import { acceptSessionTitle, projectSessionName, sessionTitleReady } from './session-naming.js';
 
 const stateEntry = 'work-cards.workspace';
-const usage = 'Usage: /work-card new <title> | open [workspace-id] | refresh | reset | show | detach | remove <substring>';
+const usage = 'Usage: /work-card new <title> | open [workspace-id] | refresh | reset | naming | show | detach | remove <substring>';
 const documentGuidance = "Substantive plans and ADRs belong in the attached card's project checkout (cwd); card metadata only references documents. This tool does not create documents.";
 interface Dependencies {
   recordDirectory: typeof recordDirectory;
@@ -140,6 +141,32 @@ export function registerWorkCards(pi: ExtensionAPI, overrides: Partial<Dependenc
       if (!disposed && token === generation && !scope.signal.aborted) warn(`Sidebar projection failed: ${errorText(error)}`);
     }
   }
+  async function projectNaming(): Promise<void> {
+    if (!updates || !config || recovering) return;
+    const token = generation, identity = session.sessionId, signal = cancellation.signal;
+    const scope = lifecycle?.captureScope();
+    if (!scope) return;
+    const guard = () => {
+      signal.throwIfAborted(); scope?.signal.throwIfAborted(); live(token);
+      if (!updates || recovering || session.sessionId !== identity || ctx.sessionManager.getSessionId() !== identity) throw new Error('Stale Pi naming context');
+    };
+    try {
+      const agent = (await lifecycle!.assertCurrent(scope)).agent;
+      guard();
+      let ownReady = false;
+      try {
+        ownReady = sessionTitleReady(ctx.sessionManager, identity, agent.record.title, agent.record.titleMode);
+        if (ownReady) projectSessionName(pi, ctx.sessionManager, identity, agent.record.title, agent.record.titleMode, guard);
+      } catch (error) { guard(); warn(`Pi session naming failed: ${errorText(error)}`); }
+      if (inHerdr()) {
+        guard();
+        await deps.client.projectNames(store, scope.context, agent, config, scope.signal, 'automatic', ownReady ? agent.record.title : null);
+        guard();
+      }
+    } catch (error) {
+      if (!disposed && token === generation && !signal.aborted && !scope?.signal.aborted) warn(`Naming projection failed: ${errorText(error)}`);
+    }
+  }
   async function check(evidence: Evidence, signal: AbortSignal, intent: CheckIntent): Promise<void> {
     await requests.run(evidence.session.sessionId, signal, () => checkOwned(evidence, signal, intent));
   }
@@ -162,17 +189,26 @@ export function registerWorkCards(pi: ExtensionAPI, overrides: Partial<Dependenc
       }
       await refresher.refresh({ authority: evidence.authority, evidence: evidence.session.evidence, referenceEvidence: evidence.session.referenceEvidence, signal,
         assertCurrent: () => assertCurrent(evidence, signal), intent, onRequest: activity,
+        onOwnTitlePublished: agent => {
+          const guard = () => {
+            signal.throwIfAborted(); live(evidence.generation);
+            if (!updates || ctx.sessionManager.getSessionId() !== evidence.session.sessionId) throw new Error('Stale own title publication');
+          };
+          try { acceptSessionTitle(pi, ctx.sessionManager, evidence.session.sessionId, agent.record.title, guard); }
+          catch (error) { guard(); warn(`Naming source persistence failed: ${errorText(error)}`); }
+        },
         onDiagnostic: event => { if (diagnostics === report) report.stages.push(event); } });
       report.state = 'complete';
       // Projection shares a native lock with reconciliation; serialize both host effects.
       await enqueue(async () => {
         signal.throwIfAborted(); live(evidence.generation);
         await projectSummaries();
+        await projectNaming();
       });
       if (intent !== 'automatic' && diagnostics === report && !signal.aborted && !disposed) {
         const goal = report.stages.find(event => event.stage === 'goal');
         const summary = goal?.outcome === 'no_sources'
-          ? 'Goal unknown: no suitable registered Markdown purpose documents.'
+          ? 'complete.'
           : report.stages.map(event => event.stage === 'selection' && 'selectedCount' in event
             ? `selection ${event.selectedCount} document(s)` : `${event.stage} ${event.outcome}`).join('; ');
         ctx.ui.notify(`Work-card ${intent}: ${summary}`, 'info');
@@ -228,6 +264,7 @@ export function registerWorkCards(pi: ExtensionAPI, overrides: Partial<Dependenc
       await lifecycle!.reconcile();
       await projectSummaries();
     }
+    await projectNaming();
   }
   async function snapshot(): Promise<Evidence | undefined> {
     if (!updates || !config || !scheduler) return;
@@ -331,7 +368,7 @@ export function registerWorkCards(pi: ExtensionAPI, overrides: Partial<Dependenc
       refresh: diagnostics?.workspaceId === workspace.record.id ? structuredClone(diagnostics) : null };
   }
   pi.registerCommand('work-card', {
-    description: 'Open workspace context, set own title, refresh, reset inference, show, detach, or remove a reference',
+    description: 'Open workspace context, set own title, refresh, reset inference, resume native naming, show, detach, or remove a reference',
     async handler(args, context) {
       if (!accept(context)) return;
       const parsed = /^(\S+)(?:[ \t]+([\s\S]*))?$/.exec(args.trim());
@@ -356,6 +393,25 @@ export function registerWorkCards(pi: ExtensionAPI, overrides: Partial<Dependenc
             if (inHerdr()) await lifecycle?.retire(savedCleanup);
             context.ui.notify('Work-card updates paused; /work-card open resumes them.', 'info'); return;
           }
+          if (command === 'naming' && !value) {
+            if (!updates) throw new Error('Work-card updates paused; use /work-card open to resume.');
+            const scope = inHerdr() ? lifecycle.captureScope() : undefined;
+            if (!scope) throw new Error('No current workspace authority; use /work-card open first.');
+            const token = generation;
+            const member = await lifecycle.assertCurrent(scope); assertHost(); live(token); scope.signal.throwIfAborted();
+            const result = await deps.client.projectNames(store, scope.context, member.agent, config!, scope.signal, 'explicit');
+            assertHost(); live(token); scope.signal.throwIfAborted();
+            const current = await lifecycle.assertCurrent(scope);
+            const guard = () => {
+              assertHost(); live(token); scope.signal.throwIfAborted();
+              if (!updates || context.sessionManager.getSessionId() !== member.agent.record.sessionId) throw new Error('Stale naming acceptance context');
+            };
+            guard();
+            if (current.agent.record.title !== member.agent.record.title) throw new Error('Native naming applied, but own title changed; automatic naming source was not accepted.');
+            acceptSessionTitle(pi, context.sessionManager, member.agent.record.sessionId, current.agent.record.title, guard);
+            context.ui.notify(`Work-card naming: workspace ${result.workspace}; tab ${result.tab}. Pi session manual names remain protected.`, 'info');
+            return;
+          }
           if ((command === 'refresh' || command === 'reset') && !value) {
             if (!updates) throw new Error('Work-card updates paused; use /work-card open to resume.');
             await observe(command); return;
@@ -374,6 +430,7 @@ export function registerWorkCards(pi: ExtensionAPI, overrides: Partial<Dependenc
             updates = true; savedCleanup = lifecycle!.cleanupContext();
             const agent = await readOwn(); live(); if (agent) save(agent.record.workspaceId);
             await projectSummaries();
+            await projectNaming();
             const evidence = await snapshot(); if (evidence) scheduler!.refresh(evidence);
             schedulePoll(); return;
           }

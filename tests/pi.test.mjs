@@ -22,11 +22,13 @@ async function host(t, config = {}, initial = {}) {
   const root = await realpath(await mkdtemp(join(tmpdir(), 'wc-pi-')));
   const cwd = join(root, 'checkout'); await mkdir(cwd);
   const directory = join(root, 'state'), store = new RecordStore(directory), socket = join(root, 'herdr.sock');
-  const workspaces = ['w', 'dest'].map(workspace_id => ({ workspace_id, tokens: {} }));
+  const workspaces = ['w', 'dest'].map((workspace_id, i) => ({ workspace_id, label: 'Manual workspace', number: i + 1, tokens: {} }));
   const tabs = ['w', 'dest'].map(workspace_id => ({ workspace_id, tab_id: `${workspace_id}:tab`, number: 1, label: 'Manual tab' }));
   const panes = [{ pane_id: 'w:pi', terminal_id: 'pi', workspace_id: 'w', tab_id: 'w:tab', tokens: {} }];
   const native = [], calls = [], notices = [], statuses = [], handlers = new Map(), commands = new Map(), tools = new Map();
   let branch = initial.branch ?? [], messages = initial.messages ?? [], sessionId = initial.sessionId ?? 'session-1', next = 1;
+  let sessionName = initial.sessionName;
+  const names = [];
   let configError, configWait, hook = async () => {}, result = async () => ({ action: 'no_change' });
   const env = { HERDR_ENV: '1', HERDR_PANE_ID: 'old-public-id', HERDR_SOCKET_PATH: socket };
   const settings = { ...DEFAULT_CONFIG, model: 'fake/simple', ...config };
@@ -37,6 +39,14 @@ async function host(t, config = {}, initial = {}) {
     if (args[0] === 'api') return reply('session_snapshot', { snapshot: { workspaces, tabs, panes, layouts: tabs.map(tab => ({ ...tab, panes: panes.filter(p => p.tab_id === tab.tab_id).map(p => ({ pane_id: p.pane_id })) })) } });
     if (args[0] === 'pane' && args[1] === 'current') return reply('pane_current', { pane: panes.find(p => p.terminal_id === 'pi') });
     if (args[0] === 'pane' && args[1] === 'resize') return reply('pane_resize', { resize: { pane_id: args[3] } });
+    if (args[0] === 'workspace' && args[1] === 'rename') {
+      const workspace = workspaces.find(w => w.workspace_id === args[2]); workspace.label = args[3];
+      return reply('workspace_info', { workspace });
+    }
+    if (args[0] === 'tab' && args[1] === 'rename') {
+      const tab = tabs.find(tab => tab.tab_id === args[2]); tab.label = args[3];
+      return reply('tab_info', { tab });
+    }
     if (args[1] === 'report-metadata') {
       const target = (args[0] === 'pane' ? panes : workspaces).find(p => (p.pane_id ?? p.workspace_id) === args[2]);
       for (let i = 5; i < args.length; i += 2) { const [key, ...v] = args[i + 1].split('='); if (args[i] === '--clear-token') delete target.tokens[key]; else target.tokens[key] = v.join('='); }
@@ -62,13 +72,15 @@ async function host(t, config = {}, initial = {}) {
       calls.push({ kind, data, options }); return { result: async () => ({ stopReason: 'stop', content: [{ type: 'text', text: JSON.stringify(await result(kind, options)) }] }) };
     } },
   };
-  const pi = { on: (name, fn) => handlers.set(name, fn), registerCommand: (name, def) => commands.set(name, def), registerTool: def => tools.set(def.name, def), appendEntry: (customType, data) => branch.push({ type: 'custom', customType, data: structuredClone(data) }) };
+  const pi = { on: (name, fn) => handlers.set(name, fn), registerCommand: (name, def) => commands.set(name, def), registerTool: def => tools.set(def.name, def), appendEntry: (customType, data) => branch.push({ type: 'custom', customType, data: structuredClone(data) }),
+    getSessionName: () => sessionName, setSessionName: name => { sessionName = name; names.push(name); branch.push({ type: 'session_info', id: `name-${names.length}`, name }); } };
   const overrides = { recordDirectory: () => directory, loadConfig: async () => { if (configWait) await configWait; if (configError) throw new Error(configError); return { ...settings }; }, client, env };
-  const install = target => registerWorkCards(target, overrides); install(pi);
+  const install = target => registerWorkCards({ getSessionName: pi.getSessionName, setSessionName: pi.setSessionName, ...target }, overrides); install(pi);
   const emit = async (name, event = {}) => { await handlers.get(name)?.({ type: name, ...event }, ctx); await tick(); };
   const command = async args => { await commands.get('work-card').handler(args, ctx); await tick(); };
   t.after(async () => { await emit('session_shutdown', { reason: 'quit' }); await rm(root, { recursive: true, force: true, maxRetries: 3, retryDelay: 10 }); });
   const h = { root, cwd, store, directory, env, client, overrides, native, calls, notices, statuses, settings, handlers, tools, ctx, install, command, emit,
+    pi, names, sessionName: () => sessionName, setSessionName: value => { sessionName = value; },
     setMessages: value => { messages = value; }, setSession: value => { sessionId = value; }, setBranch: value => { branch = value; }, branch: () => structuredClone(branch),
     setResult: value => { result = value; }, setHook: value => { hook = value; }, setConfigError: value => { configError = value; }, setConfigWait: value => { configWait = value; },
     launches: () => native.filter(a => a[0] === 'plugin' && a[2] === 'open'),
@@ -77,12 +89,228 @@ async function host(t, config = {}, initial = {}) {
     current: () => tools.get('work_card').execute('call', {}, new AbortController().signal, undefined, ctx),
     q: () => { const i = panes.findIndex(p => p.tokens.wca_role === 'card'); if (i >= 0) panes.splice(i, 1); },
     move: (both = true) => { for (const p of panes.filter(p => p.terminal_id === 'pi' || both)) { p.workspace_id = 'dest'; p.tab_id = 'dest:tab'; p.pane_id = `dest:${p.terminal_id}`; } },
-    panes, workspaces,
+    panes, workspaces, tabs,
   };
   if (!initial.skipStart) await emit('session_start', { reason: 'startup' });
   return h;
 }
 async function attach(t, config = {}) { const h = await host(t, config); await h.command('new Agent task'); return h; }
+
+test('automatic bootstrap excerpts wait for an accepted title proposal, including same-text acceptance', async t => {
+  const h = await host(t, { check_every_n_responses: 0 });
+  h.setResult(async kind => kind === 'goal' ? { goal: '', goalShort: '' } : { action: 'no_change' });
+  h.setMessages([user('hi')]); await h.emit('context'); await h.command('refresh');
+  assert.equal(h.notices.some(n => n.level === 'warning'), false, JSON.stringify(h.notices));
+  await until(async () => (await h.current()).details?.refresh?.state === 'complete'); await h.command('show');
+  assert.equal((await h.read()).record.title, 'hi'); assert.equal(h.sessionName(), undefined);
+  assert.equal(h.branch().some(e => e.customType === 'work-cards.session-naming'), false);
+  h.setResult(async kind => kind === 'own' ? { action: 'update', patch: { title: 'hi' } } : kind === 'goal' ? { goal: '', goalShort: '' } : { action: 'no_change' });
+  await h.command('refresh'); await until(() => h.sessionName() === 'hi');
+  assert.equal(h.branch().filter(e => e.customType === 'work-cards.session-naming').at(-1).data.acceptedTitle, 'hi');
+});
+
+test('pre-dialogue Untitled task never projects automatically and explicit naming reclaims native only', async t => {
+  const h = await host(t, { check_every_n_responses: 0 }); await h.command('open');
+  await until(async () => (await h.current()).details.refresh?.state === 'complete'); await h.command('show');
+  assert.equal(h.sessionName(), undefined);
+  await h.command('naming'); assert.equal(h.sessionName(), undefined);
+  assert.match(h.notices.at(-1).text, /Work-card naming:/);
+});
+
+test('explicit native naming accepts an unproven own source and resumes tracking shared titles without touching Pi', async t => {
+  const h = await host(t, { check_every_n_responses: 0 }, { sessionName: 'Manual Pi name' });
+  h.setMessages([user('Unproven seed')]); await h.emit('context'); await h.command('show'); h.q();
+  const before = await h.read(), requests = h.calls.length, launches = h.launches().length;
+  assert.equal(h.branch().some(e => e.customType === 'work-cards.session-naming'), false);
+  await h.command('naming');
+  assert.equal(h.names.length, 0); assert.equal(h.sessionName(), 'Manual Pi name');
+  const accepted = h.branch().filter(e => e.customType === 'work-cards.session-naming').at(-1)?.data;
+  assert.equal(accepted?.acceptedTitle, before.record.title);
+  const workspace = await h.store.readWorkspace(before.record.workspaceId);
+  await h.store.setWorkspaceTitle(agentAuthority(before.record), 'Updated shared title', workspace.revision);
+  await h.emit('context'); await h.command('show');
+  assert.equal(h.workspaces.find(w => w.workspace_id === 'w').label, 'Updated shared title');
+  assert.equal(h.sessionName(), 'Manual Pi name'); assert.equal(h.names.length, 0);
+  assert.equal(h.calls.length, requests); assert.equal(h.launches().length, launches);
+});
+
+test('explicit placeholder naming keeps tab and Pi protected while shared workspace titles track independently', async t => {
+  const h = await host(t, { check_every_n_responses: 0 }); await h.command('open');
+  await until(async () => (await h.current()).details.refresh?.state === 'complete'); await h.command('show');
+  await h.command('naming'); h.q();
+  const before = await h.read(), requests = h.calls.length, launches = h.launches().length;
+  assert.equal(before.record.title, 'Untitled task'); assert.equal(h.tabs.find(tab => tab.tab_id === 'w:tab').label, 'Untitled task');
+  const workspace = await h.store.readWorkspace(before.record.workspaceId);
+  await h.store.setWorkspaceTitle(agentAuthority(before.record), 'Established shared purpose', workspace.revision);
+  const outcomes = [], original = h.client.projectNames.bind(h.client);
+  h.client.projectNames = async (...args) => { const result = await original(...args); outcomes.push({ accepted: args[6], result }); return result; };
+  await h.emit('context'); await h.command('show');
+  assert.equal(h.workspaces.find(w => w.workspace_id === 'w').label, 'Established shared purpose');
+  assert.equal(h.tabs.find(tab => tab.tab_id === 'w:tab').label, 'Untitled task');
+  assert.equal(h.sessionName(), undefined); assert.equal(h.names.length, 0);
+  assert.ok(outcomes.some(o => o.accepted === null && o.result.workspace === 'renamed' && o.result.tab === 'not-ready'));
+  assert.equal(h.calls.length, requests); assert.equal(h.launches().length, launches);
+});
+
+test('unready changed own title does not block existing automatic workspace tracking or rename tab and manual Pi', async t => {
+  const h = await host(t, { check_every_n_responses: 0 }, { sessionName: 'Manual Pi name' });
+  h.setMessages([user('Accepted native seed')]); await h.emit('context'); await h.command('show'); await h.command('naming'); h.q();
+  const before = await h.read(), requests = h.calls.length, launches = h.launches().length;
+  await h.store.updateOwn(agentAuthority(before.record), { title: 'Unaccepted own title' }, before.revision);
+  const workspace = await h.store.readWorkspace(before.record.workspaceId);
+  await h.store.setWorkspaceTitle(agentAuthority(before.record), 'Independent workspace title', workspace.revision);
+  const outcomes = [], original = h.client.projectNames.bind(h.client);
+  h.client.projectNames = async (...args) => { const result = await original(...args); outcomes.push({ accepted: args[6], result }); return result; };
+  await h.emit('context'); await h.command('show');
+  assert.equal(h.workspaces.find(w => w.workspace_id === 'w').label, 'Independent workspace title');
+  assert.equal(h.tabs.find(tab => tab.tab_id === 'w:tab').label, 'Accepted native seed');
+  assert.equal(h.sessionName(), 'Manual Pi name'); assert.equal(h.names.length, 0);
+  assert.ok(outcomes.some(o => o.accepted === null && o.result.workspace === 'renamed' && o.result.tab === 'not-ready'));
+  assert.equal(h.calls.length, requests); assert.equal(h.launches().length, launches);
+});
+
+test('explicit naming never accepts a concurrently changed own title', async t => {
+  const h = await host(t, { check_every_n_responses: 0 }, { sessionName: 'Manual Pi name' });
+  h.setMessages([user('Captured title')]); await h.emit('context'); await h.command('show');
+  const names = h.names.length, original = h.client.projectNames.bind(h.client);
+  h.client.projectNames = async (...args) => {
+    const result = await original(...args);
+    const agent = await h.read();
+    await h.store.updateOwn(agentAuthority(agent.record), { title: 'Concurrent title' }, agent.revision);
+    return result;
+  };
+  await h.command('naming');
+  assert.match(h.notices.at(-1).text, /own title changed/i);
+  assert.equal(h.branch().some(e => e.customType === 'work-cards.session-naming'), false);
+  assert.equal(h.names.length, names); assert.equal(h.sessionName(), 'Manual Pi name');
+});
+
+test('malformed Pi provenance suspends only Pi and tab naming while claimed native workspace names still track', async t => {
+  const h = await attach(t, { check_every_n_responses: 0 });
+  await until(async () => (await h.current()).details.refresh?.state === 'complete'); await h.command('show'); await h.command('naming'); h.q();
+  const before = await h.read(), names = [...h.names], requests = h.calls.length, launches = h.launches().length;
+  const tabName = h.tabs.find(tab => tab.tab_id === 'w:tab').label;
+  const malformed = { version: 999, sessionId: before.record.sessionId };
+  h.pi.appendEntry('work-cards.session-naming', malformed);
+  const workspace = await h.store.readWorkspace(before.record.workspaceId);
+  await h.store.setWorkspaceTitle(agentAuthority(before.record), 'Independent claimed workspace', workspace.revision);
+  const outcomes = [], original = h.client.projectNames.bind(h.client);
+  h.client.projectNames = async (...args) => { const result = await original(...args); outcomes.push({ accepted: args[6], result }); return result; };
+  await h.emit('context'); await h.command('show'); await h.emit('context'); await h.command('show');
+  assert.equal(h.workspaces.find(w => w.workspace_id === 'w').label, 'Independent claimed workspace');
+  assert.equal(h.tabs.find(tab => tab.tab_id === 'w:tab').label, tabName); assert.deepEqual(h.names, names);
+  assert.deepEqual(h.branch().filter(e => e.customType === 'work-cards.session-naming').at(-1).data, malformed);
+  assert.ok(outcomes.some(o => o.accepted === null && o.result.workspace === 'renamed' && o.result.tab === 'not-ready'));
+  assert.equal(h.notices.filter(n => /malformed.*suspended/i.test(n.text)).length, 1);
+  assert.equal(h.calls.length, requests); assert.equal(h.launches().length, launches);
+});
+
+for (const transition of ['cancel', 'identity']) test(`malformed naming readiness cannot bypass ${transition} guards into native projection`, async t => {
+  const h = await attach(t, { check_every_n_responses: 0 });
+  await until(async () => (await h.current()).details.refresh?.state === 'complete'); await h.command('show'); await h.command('naming');
+  h.pi.appendEntry('work-cards.session-naming', { version: 999 });
+  const getEntries = h.ctx.sessionManager.getEntries; let triggered = false, nativeCalls = 0;
+  h.client.projectNames = async () => { nativeCalls++; return { workspace: 'unchanged', tab: 'not-ready' }; };
+  h.ctx.sessionManager.getEntries = () => {
+    const entries = getEntries();
+    if (!triggered) {
+      triggered = true;
+      if (transition === 'cancel') h.handlers.get('session_before_tree')();
+      else h.setSession('changed-session');
+    }
+    return entries;
+  };
+  await h.emit('context'); await until(() => triggered); await tick();
+  assert.equal(nativeCalls, 0);
+});
+
+test('malformed naming state stays visible through helper title acceptance and explicit native naming', async t => {
+  const h = await host(t, { check_every_n_responses: 0 }, { sessionName: 'Manual Pi name' });
+  h.setMessages([user('Seed title')]); await h.emit('context'); await h.command('show');
+  h.pi.appendEntry('work-cards.session-naming', { version: 999, sessionId: h.ctx.sessionManager.getSessionId() });
+  await h.command('naming'); assert.match(h.notices.at(-1).text, /malformed.*suspended/i);
+  h.setResult(async kind => kind === 'own' ? { action: 'update', patch: { title: 'Helper accepted title' } } : kind === 'goal' ? { goal: '', goalShort: '' } : { action: 'no_change' });
+  await h.command('refresh');
+  await until(async () => ['complete', 'failed'].includes((await h.current()).details?.refresh?.state)); await h.command('show');
+  assert.equal((await h.current()).details.refresh.state, 'complete');
+  assert.equal(h.branch().filter(e => e.customType === 'work-cards.session-naming').at(-1).data.version, 999);
+  assert.equal(h.sessionName(), 'Manual Pi name'); assert.equal(h.names.length, 0);
+});
+
+test('non-first native pane still projects its eligible own Pi title', async t => {
+  const h = await host(t, { check_every_n_responses: 0 });
+  h.panes.unshift({ pane_id: 'other', terminal_id: 'other', workspace_id: 'w', tab_id: 'w:tab', tokens: {} });
+  await h.command('new Non-first task'); assert.equal(h.sessionName(), 'Non-first task');
+  await h.command('naming'); assert.match(h.notices.at(-1).text, /tab not-first/);
+});
+
+test('failed source readiness persistence warns without granting naming authority or undoing the own summary', async t => {
+  const h = await host(t, { check_every_n_responses: 0 }, { skipStart: true });
+  h.install({ ...h.pi, appendEntry: (type, data) => {
+    if (type === 'work-cards.session-naming') throw new Error('source readiness persistence failed');
+    h.pi.appendEntry(type, data);
+  } });
+  await h.emit('session_start');
+  h.setResult(async kind => kind === 'own' ? { action: 'update', patch: { title: 'Published assignment' } } : kind === 'goal' ? { goal: '', goalShort: '' } : { action: 'no_change' });
+  h.setMessages([user('Assignment evidence')]); await h.emit('context'); await h.command('refresh');
+  await until(async () => ['complete', 'failed'].includes((await h.current()).details?.refresh?.state));
+  assert.equal((await h.current()).details.refresh.state, 'complete');
+  assert.equal((await h.read()).record.title, 'Published assignment'); assert.equal(h.sessionName(), undefined);
+  assert.equal(h.notices.filter(n => /source readiness persistence failed/.test(n.text)).length, 1);
+});
+
+test('source readiness survives native failure and Pi manual protection', async t => {
+  const h = await host(t, { check_every_n_responses: 0 }, { sessionName: 'Manual Pi' });
+  h.client.projectNames = async () => { throw new Error('naming transport failed'); };
+  h.setResult(async kind => kind === 'own' ? { action: 'update', patch: { title: 'Accepted assignment' } } : kind === 'goal' ? { goal: '', goalShort: '' } : { action: 'no_change' });
+  h.setMessages([user('Establish assignment')]); await h.emit('context'); await h.command('refresh');
+  await until(async () => (await h.current()).details?.refresh?.state === 'complete'); await h.command('show');
+  assert.equal(h.sessionName(), 'Manual Pi');
+  const state = h.branch().filter(e => e.customType === 'work-cards.session-naming').at(-1).data;
+  assert.equal(state.acceptedTitle, 'Accepted assignment'); assert.equal(state.mode, 'manual');
+  assert.equal(h.notices.filter(n => /naming transport failed/.test(n.text)).length, 1);
+});
+
+test('automatic naming follows own record title and later manual Pi renames stay protected', async t => {
+  const h = await attach(t, { check_every_n_responses: 0 });
+  assert.equal(h.sessionName(), 'Agent task');
+  await until(async () => (await h.current()).details.refresh?.state === 'complete');
+  const count = h.names.length;
+  await h.emit('context'); await h.command('show'); assert.equal(h.names.length, count);
+  await h.command('new Changed own title'); assert.equal(h.sessionName(), 'Changed own title');
+  h.setSessionName('Manual Pi name');
+  await h.command('new Later own title'); assert.equal(h.sessionName(), 'Manual Pi name');
+  assert.equal(h.branch().filter(e => e.customType === 'work-cards.session-naming').at(-1).data.mode, 'manual');
+});
+
+test('unattached, paused and unproven manually named Pi sessions are not renamed', async t => {
+  const h = await host(t, { workspace_startup: 'manual' }, { sessionName: 'Existing manual name' });
+  await h.emit('context'); assert.deepEqual(h.names, []);
+  await h.command('new Own record'); assert.equal(h.sessionName(), 'Existing manual name');
+  await h.command('detach'); h.setSessionName(undefined);
+  await h.emit('context'); await h.command('show'); assert.deepEqual(h.names, []);
+});
+
+test('naming explicitly reclaims native names only without models or display reopen', async t => {
+  const h = await attach(t, { check_every_n_responses: 0 });
+  await until(async () => (await h.current()).details.refresh?.state === 'complete');
+  await h.command('show');
+  h.setSessionName('Manual Pi name'); h.q();
+  const launches = h.launches().length, requests = h.calls.length;
+  const intents = []; h.client.projectNames = async (...args) => { intents.push(args.at(-1)); return { workspace: 'renamed', tab: 'not-first' }; };
+  await h.command('naming');
+  assert.deepEqual(intents, ['explicit']); assert.equal(h.sessionName(), 'Manual Pi name');
+  assert.equal(h.launches().length, launches); assert.equal(h.calls.length, requests);
+  assert.match(h.notices.at(-1).text, /workspace renamed.*tab not-first/);
+  await h.command('detach'); await h.command('naming');
+  assert.match(h.notices.at(-1).text, /updates paused/); assert.equal(intents.length, 1);
+});
+
+test('naming rejects missing native authority and never implicitly opens or invokes a helper', async t => {
+  const h = await host(t, { workspace_startup: 'manual' });
+  await h.command('naming'); assert.match(h.notices.at(-1).text, /No current workspace authority/);
+  assert.equal(h.calls.length, 0); assert.equal(h.launches().length, 0); assert.deepEqual(await h.store.listAgents(), []);
+});
 
 test('reset requests fresh inference, reports its intent and preserves attachment without reopening', async t => {
   const h = await attach(t, { check_every_n_responses: 0 });
@@ -380,7 +608,7 @@ test('unnamed open after reset recovers documents and workspace naming from reta
     const h = await host(t, { workspace_startup, check_every_n_responses: 0 }, { messages });
     await mkdir(join(h.cwd, 'docs'));
     await writeFile(join(h.cwd, 'docs/design.md'), 'Provide reusable query parsing');
-    h.setResult(async kind => kind === 'select' ? { sources: [] } : { action: 'no_change' });
+    h.setResult(async kind => kind === 'select' ? { sources: [] } : kind === 'goal' ? { goal: '', goalShort: '' } : { action: 'no_change' });
     await h.command('new Old manual title');
     await until(async () => (await h.current()).details?.refresh?.state === 'complete');
     await h.command('detach');
@@ -409,8 +637,8 @@ test('unnamed open after reset recovers documents and workspace naming from reta
     const publicRecord = (await h.current()).details.workspace.record;
     assert.equal(publicRecord.goal, 'Provide reusable query parsing');
     assert.equal(publicRecord.goalShort, 'Query parsing');
-    assert.deepEqual(publicRecord.planSources, workspace.record.goal.sources);
-    assert.equal(publicRecord.sourceFingerprint, workspace.record.goal.fingerprint);
+    assert.deepEqual(publicRecord.planSources, workspace.record.goal.provenance.sources);
+    assert.equal(publicRecord.sourceFingerprint, workspace.record.goal.provenance.fingerprint);
     await h.command('show');
     assert.equal(JSON.parse(h.notices.at(-1).text).workspace.record.goal, publicRecord.goal);
     const calls = h.calls.slice(before);
@@ -567,10 +795,12 @@ test('shutdown cleanup failure reports explicit recovery and cannot revive the d
 
 test('outside Herdr reads and explicitly refreshes durable own records without native fallback or creation', async t => {
   const h = await attach(t); await h.emit('session_shutdown', { reason: 'quit' }); delete h.env.HERDR_ENV;
+  h.setSessionName(undefined); const names = h.names.length;
   const handlers = new Map(); h.install({ on: (name, fn) => handlers.set(name, fn), registerCommand: (_name, def) => { h.offlineCommand = def.handler; }, registerTool: def => { h.offlineTool = def; }, appendEntry: () => {} });
   await handlers.get('session_start')({}, h.ctx); const count = h.native.length, before = h.calls.length;
   assert.ok((await h.offlineTool.execute('read', {}, undefined, undefined, h.ctx)).details.agent);
   await h.offlineCommand('refresh', h.ctx); await until(() => h.calls.length > before); assert.equal(h.native.length, count);
+  assert.equal(h.sessionName(), undefined); assert.equal(h.names.length, names);
   await h.offlineCommand('open', h.ctx); assert.match(h.notices.at(-1).text, /Herdr/); assert.equal(h.native.length, count);
   await handlers.get('session_shutdown')({ reason: 'quit' }, h.ctx);
 });
@@ -588,7 +818,9 @@ test('native failure never becomes offline helper authority and config failures 
 });
 
 test('literal remove is unique, checked, metadata-only and broken references remain removable', async t => {
-  const h = await attach(t), a = await h.read(), authority = agentAuthority(a.record);
+  const h = await attach(t);
+  await until(async () => (await h.current()).details.refresh?.state === 'complete');
+  const a = await h.read(), authority = agentAuthority(a.record);
   await h.store.addReferences(authority, { documents: [{ checkout: a.record.checkout, path: 'missing-plan.md', description: 'description-only' }], issues: [{ url: 'https://example.com/issue/plan', description: '' }], prs: [{ url: 'https://example.com/pr/other', description: '' }] });
   for (const arg of ['', 'plan', 'description-only', 'PLAN']) { const w = await h.store.readWorkspace(a.record.workspaceId); await h.command(`remove ${arg}`); assert.equal((await h.store.readWorkspace(a.record.workspaceId)).revision, w.revision); }
   await h.command('remove missing-plan.md'); const w = await h.store.readWorkspace(a.record.workspaceId); assert.equal(w.record.documents.length, 0); assert.equal(w.record.exclusions.length, 1);
@@ -752,11 +984,69 @@ test('refresh diagnostics distinguish no purpose sources and read-only inspectio
     { stage: 'own', outcome: 'unchanged' },
     { stage: 'selection', outcome: 'no_sources' }, { stage: 'goal', outcome: 'no_sources' },
   ]);
-  await until(() => h.notices.some(n => /Goal unknown.*purpose documents/.test(n.text)));
+  await until(() => h.notices.some(n => n.text === 'Work-card refresh: complete.'));
+  assert.doesNotMatch(JSON.stringify(h.notices), /Goal unknown|Purpose not established|no suitable/);
   const requests = h.calls.length, native = h.native.length, revision = (await h.read()).revision;
   await h.current(); await h.command('show');
   assert.equal(h.calls.length, requests); assert.equal(h.native.length, native);
   assert.equal((await h.read()).revision, revision);
+});
+
+test('sparse and meaningful early workspaces project empty or notable purpose without document warnings', async t => {
+  const h = await attach(t, { check_every_n_responses: 0, pane_poll_interval_ms: 60_000 });
+  await until(async () => (await h.current()).details.refresh?.state === 'complete');
+  h.setMessages([user('hello')]);
+  h.setResult(async kind => kind === 'goal' ? { goal: '', goalShort: '', title: 'Invented' } : { action: 'no_change' });
+  await h.command('refresh');
+  await until(async () => (await h.current()).details.refresh?.state === 'complete');
+  let a = await h.read(), workspace = await h.store.readWorkspace(a.record.workspaceId);
+  assert.equal(workspace.record.goal.kind, 'unknown'); assert.equal(workspace.record.goal.provenance.kind, 'conversation');
+  assert.equal((await h.current()).details.workspace.record.goal, '');
+  assert.equal((await h.current()).details.workspace.record.goalShort, undefined);
+  assert.equal(h.workspaces[0].tokens.wcw_goal ?? '', ''); assert.equal(h.workspaces[0].tokens.wcw_goal_short ?? '', '');
+  const { renderWorkspaceCard } = await import('../dist/herdr/workspace-view.js');
+  const rendered = renderWorkspaceCard({ workspace, agent: a }, 100, 10).text;
+  assert.doesNotMatch(rendered, /Goal|Purpose not established|Invented/);
+  h.setResult(async kind => kind === 'own'
+    ? { action: 'update', patch: { title: 'Untitled task', status: 'active', now: '', remaining: '', statusShort: '' } }
+    : kind === 'goal' ? { goal: '', goalShort: '' } : { action: 'no_change' });
+  await h.command('reset'); await until(async () => (await h.current()).details.refresh?.state === 'complete');
+  assert.equal((await h.current()).details.workspace.record.goal, '');
+  assert.equal(h.workspaces[0].tokens.wcw_goal ?? '', ''); assert.equal(h.workspaces[0].tokens.wcw_goal_short ?? '', '');
+  h.setMessages([user('Build reusable query parsing for client integrations')]);
+  h.setResult(async kind => kind === 'goal'
+    ? { goal: 'Provide reusable query parsing', goalShort: 'Query parsing', title: 'Query parsing' } : { action: 'no_change' });
+  await h.command('refresh');
+  await until(() => h.workspaces[0].tokens.wcw_goal_short === 'Query parsing');
+  a = await h.read(); workspace = await h.store.readWorkspace(a.record.workspaceId);
+  assert.equal(workspace.record.title, 'Query parsing'); assert.equal(workspace.record.goal.provenance.kind, 'conversation');
+  assert.deepEqual(workspace.record.documents, []);
+  assert.equal(h.workspaces[0].tokens.wcw_goal, 'Provide reusable query parsing');
+  assert.match(renderWorkspaceCard({ workspace, agent: a }, 100, 10).text, /Provide reusable query parsing/);
+  assert.doesNotMatch(JSON.stringify(h.notices), /Goal unknown|Purpose not established|no suitable/);
+  assert.equal(h.notices.some(n => n.level === 'warning'), false);
+});
+
+for (const change of ['edit', 'remove', 'compaction', 'append']) test(`conversation purpose publication respects projected ${change} during inference`, async t => {
+  const h = await attach(t, { check_every_n_responses: 0, pane_poll_interval_ms: 60_000 });
+  await until(async () => (await h.current()).details.refresh?.state === 'complete');
+  const gate = deferred(), original = [user('Build a reusable query parsing library')];
+  h.setMessages(original);
+  h.setResult(async kind => {
+    if (kind !== 'goal') return { action: 'no_change' };
+    await gate.promise; return { goal: 'Reusable query parsing', goalShort: 'Query parsing', title: 'Query parser' };
+  });
+  await h.command('refresh'); await until(() => h.calls.at(-1)?.kind === 'goal');
+  if (change === 'edit') h.setMessages([user('Unrelated replacement')]);
+  if (change === 'remove') h.setMessages([]);
+  if (change === 'compaction') h.setMessages([{ role: 'compactionSummary', summary: 'New checkpoint' }, ...original]);
+  if (change === 'append') h.setMessages([...original, user('Expose an integration API')]);
+  gate.resolve();
+  await until(async () => (await h.current()).details.refresh?.state === (change === 'append' ? 'complete' : 'failed'));
+  const w = (await h.current()).details.workspace.record;
+  assert.equal(w.goal, change === 'append' ? 'Reusable query parsing' : '');
+  if (change === 'append') await until(() => h.workspaces[0].tokens.wcw_goal === 'Reusable query parsing');
+  assert.equal(h.workspaces[0].tokens.wcw_goal ?? '', change === 'append' ? 'Reusable query parsing' : '');
 });
 
 test('refresh diagnostics distinguish pre-goal failure and do not claim source selection ran', async t => {

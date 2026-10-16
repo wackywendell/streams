@@ -4,7 +4,7 @@ import stringWidth from 'string-width';
 import { mkdtemp, readdir, rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { RecordStore, validateAgent, validateWorkspace, evaluatedGoal, unevaluatedGoal } from '../dist/records.js';
+import { RecordStore, validateAgent, validateWorkspace, evaluatedGoal, unevaluatedGoal, conversationGoal } from '../dist/records.js';
 import { WorkspaceCardView, renderWorkspaceCard } from '../dist/herdr/workspace-view.js';
 
 const unstyled = text => text.replace(/\x1b\[[\d;]*m/g, '').replace(/\x1b\]8;;[^\x1b]*\x1b\\/g, '');
@@ -57,9 +57,9 @@ test('two agents share Goal and references while retaining own title, status, No
   assert.doesNotMatch(second, /Implement|release/);
 });
 
-test('empty shared sections omit bodies and dangling colons without losing own status', () => {
+for (const goal of [unevaluatedGoal(), evaluatedGoal('', [{ checkout: 'lib', path: 'docs/design.md' }], 'bytes'), conversationGoal('', { sessionId: 's', digest: 'a'.repeat(64) })]) test(`empty ${goal.kind} shared sections omit bodies and dangling colons without losing own status`, () => {
   const { workspace, agent } = fixture();
-  workspace.record.goal = unevaluatedGoal(); agent.record.now = ''; agent.record.remaining = '';
+  workspace.record.goal = goal; agent.record.now = ''; agent.record.remaining = '';
   const rendered = renderWorkspaceCard({ workspace, agent }, 100, 8);
   const lines = unstyled(rendered.text).split('\n');
   assert.match(lines[0], /^Own assignment +● active$/);

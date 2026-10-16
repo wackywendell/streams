@@ -11,6 +11,8 @@ import { requestOwnSummary, requestSharedAdditions } from './workspace-summary.j
 export interface WorkspaceRefreshInput extends PlanRefreshInput {
   evidence: ProjectedEvidence;
   referenceEvidence?: ReferenceEvidence;
+  /** Actual published own title, including accepted same-text proposals and protected manual titles. */
+  onOwnTitlePublished?: (agent: Snapshot<AgentRecord>) => void;
 }
 export interface WorkspaceRefreshResult {
   agent: Snapshot<AgentRecord>;
@@ -56,6 +58,10 @@ export class WorkspaceRefresher<TModel extends { api?: string }> {
         // Never replace the original whole-agent CAS revision with a later read.
         const result = await store.updateOwn(authority, own.patch, original.agent.revision, signal);
         ownChanged = result.revision !== original.agent.revision;
+        if (Object.hasOwn(own.patch, 'title')) {
+          const published = await current();
+          if (published.agent.revision === result.revision) input.onOwnTitlePublished?.(published.agent);
+        }
       }
       onDiagnostic?.({ stage: 'own', outcome: ownChanged ? 'applied' : 'unchanged' });
 
@@ -92,7 +98,7 @@ export class WorkspaceRefresher<TModel extends { api?: string }> {
       throw error;
     }
 
-    await this.plans.refresh({ authority, signal, assertCurrent, intent, onRequest, onDiagnostic });
+    await this.plans.refresh({ authority, evidence, signal, assertCurrent, intent, onRequest, onDiagnostic });
     try { return await current(); }
     catch (error) {
       onDiagnostic?.({ stage: 'goal', outcome: 'failed', cancelled: signal.aborted });

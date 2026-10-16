@@ -5,6 +5,7 @@ import { configPath, documentCommand, type WorkCardsConfig } from '../config.js'
 import { resolvedReferences } from '../presentation.js';
 import { RecordStore, agentAuthority, goalText, goalShort, sameAgentMembership, resolveWorkspaceDocument, documentIdentity, referenceIdentity, validateMembership, type AgentRecord, type DocumentIdentity, type JoinInput, type Snapshot, type WorkspaceRecord } from '../records.js';
 import { withWorkspaceLock } from './workspace-lock.js';
+import { NameStore, decideName, type NameOwner } from './name-provenance.js';
 import type { Pane, Workspace } from './workspace-ownership.js';
 import { HerdrTransport, type ClientOptions } from './transport.js';
 import { classifyPair, firstPane, locateTerminal, nativeObject, nativePane, pairKeys, pairMarkers, parseNativeSnapshot, type LivePair, type NativeSnapshot, type PairState } from './workspace-ownership.js';
@@ -18,6 +19,12 @@ export interface ReadyMembership extends Membership {
   binding: ReadyWorkspaceBinding;
   context: NativeContext & { bindingNonce: string };
   ownership: PairState;
+}
+export type NativeNamingResult = { workspace: 'renamed' | 'unchanged' | 'manual'; tab: 'renamed' | 'unchanged' | 'manual' | 'not-first' | 'not-ready' };
+type NativeNameRead = (NativeNameAuthority & { kind: 'ready' }) | { kind: 'skip'; reason: 'not-first' | 'not-ready' };
+interface NativeNameAuthority {
+  bindingNonce: string; surfaceId: string; owner: NameOwner; label: string; desired: string;
+  defaultLabelProven: boolean; proof: { number: number } & Record<string, unknown>;
 }
 export type DisplayResult = { kind: 'paired'; pair: LivePair; agent: Snapshot<AgentRecord> } | { kind: 'suppressed'; ownership: PairState; agent: Snapshot<AgentRecord> };
 export type WorkspaceJoinInput = Omit<JoinInput, 'workspaceId' | 'membershipToken'> & { targetWorkspaceId?: string };
@@ -420,6 +427,76 @@ export class WorkspaceClient extends HerdrTransport {
       } catch (error) { throw new Error(`Summary projection may be partial; already published fields are retained: ${(error as Error).message}`, { cause: error }); }
     }, { waitMs: config.herdr_timeout_ms, signal });
   }
+  /** Workspace authority is shared; only the actual first layout pane may name its tab. */
+  async projectNames(store: RecordStore, context: NativeContext, painted: Snapshot<AgentRecord>, config: WorkCardsConfig, signal?: AbortSignal, intent: 'automatic' | 'explicit' = 'automatic', acceptedOwnTitle: string | null = painted.record.title): Promise<NativeNamingResult> {
+    signal?.throwIfAborted();
+    return withWorkspaceLock(context.socket, context.workspaceId, async () => {
+      const read = async (kind: 'workspace' | 'tab'): Promise<NativeNameRead> => {
+        const records = await this.currentRecords(store, painted);
+        const identity = await this.identity(store, records.agent), key = await this.storeKey(store);
+        const live = await this.guard(context, config, signal);
+        const binding = this.bound(key, records.workspace, live.snapshot, context);
+        const ownership = classifyPair(live.snapshot, identity, context.terminalId);
+        if (ownership.kind === 'empty' || ownership.agent.terminal_id !== context.terminalId || ownership.nonce !== records.agent.record.displayAttempt?.nonce) throw new Error('Verified marked agent ownership required for naming');
+        const pane = locateTerminal(live.snapshot, context.terminalId);
+        if (kind === 'tab') {
+          if (!firstPane(live.snapshot, pane)) return { kind: 'skip', reason: 'not-first' };
+          if (intent === 'automatic' && (acceptedOwnTitle === null || records.agent.record.title !== acceptedOwnTitle)) return { kind: 'skip', reason: 'not-ready' };
+        }
+        const surface = kind === 'workspace' ? live.snapshot.workspaces.find(w => w.workspace_id === context.workspaceId)! : live.snapshot.tabs.find(t => t.tab_id === context.tabId)!;
+        return { kind: 'ready', bindingNonce: binding.nonce, surfaceId: kind === 'workspace' ? context.workspaceId : context.tabId,
+          owner: { terminalId: pane.terminal_id, nonce: ownership.nonce }, label: surface.label,
+          desired: kind === 'workspace' ? records.workspace.record.title : records.agent.record.title,
+          // Herdr derives workspace defaults from Git/CWD, but does not expose custom-name state.
+          // Tabs default to their current one-based position, not their stable public number.
+          defaultLabelProven: kind === 'tab' && surface.label === String(live.snapshot.tabs.filter(t => t.workspace_id === context.workspaceId).findIndex(t => t.tab_id === context.tabId) + 1),
+          proof: { agent: records.agent.revision, workspace: records.workspace.revision, binding, ownership, pane,
+            ...(kind === 'tab' ? { layout: live.snapshot.layouts.find(l => l.tab_id === context.tabId) } : {}), number: surface.number } };
+      };
+      try {
+        const workspace = await this.projectNativeName(store, context, 'workspace', () => read('workspace'), config, signal, intent);
+        const tab = await this.projectNativeName(store, context, 'tab', () => read('tab'), config, signal, intent);
+        if (workspace === 'not-first' || workspace === 'not-ready') throw new Error('Missing workspace naming authority');
+        return { workspace, tab };
+      } catch (error) { throw new Error(`Native naming may be partial; verified names and pins are retained: ${(error as Error).message}`, { cause: error }); }
+    }, { waitMs: config.herdr_timeout_ms, signal });
+  }
+  /** Caller holds the workspace lock. Both agent and editor use this surface history. */
+  private async projectNativeName(store: RecordStore, context: NativeContext, kind: 'workspace' | 'tab', read: () => Promise<NativeNameRead>, config: WorkCardsConfig, signal?: AbortSignal, intent: 'automatic' | 'explicit' = 'automatic'): Promise<'renamed' | 'unchanged' | 'manual' | 'not-first' | 'not-ready'> {
+    if (!context.bindingNonce) throw new Error('Native naming requires a captured binding nonce');
+    const initial = await read();
+    if (initial.kind === 'skip') return initial.reason;
+    if (initial.bindingNonce !== context.bindingNonce) throw new Error('Native naming binding lifetime changed');
+    const names = new NameStore(store.directory);
+    const scope = await names.scope({ socket: context.socket, workspaceId: context.workspaceId, bindingNonce: initial.bindingNonce, kind, surfaceId: initial.surfaceId });
+    const previous = await names.read(scope);
+    const same = (current: NativeNameRead, label: string): NativeNameAuthority => {
+      if (current.kind === 'skip' || current.label !== label || !isDeepStrictEqual({ ...current, label }, { ...initial, label })) throw new Error('Native naming records, surface, layout or label changed during preparation');
+      return current;
+    };
+    const current = same(await read(), initial.label);
+    const decision = decideName({ scope, provenance: previous?.record ?? null, owner: current.owner, currentLabel: current.label,
+      desiredName: current.desired, defaultLabelProven: current.defaultLabelProven, intent });
+    if (decision.kind === 'noop') return 'unchanged';
+    if (decision.kind === 'manual') {
+      await names.write(scope, decision.provenance, previous?.revision ?? null, signal);
+      return 'manual';
+    }
+    if (decision.kind === 'rename') {
+      // Native CLI joins all positional label arguments; reject option-like names for older CLI parsers.
+      if (decision.name.startsWith('-')) throw new Error('Native names cannot start with a CLI option prefix');
+      signal?.throwIfAborted();
+      const result = await this.result([kind, 'rename', current.surfaceId, decision.name], config, kind === 'workspace' ? 'workspace_info' : 'tab_info');
+      const returned = nativeObject(result[kind]);
+      if (returned.workspace_id !== context.workspaceId || (kind === 'tab' && returned.tab_id !== current.surfaceId) || returned.label !== decision.name || returned.number !== current.proof.number) throw new Error('Native naming acknowledgement identity/label mismatch');
+    }
+    const after = await read();
+    // Default eligibility describes the old label, not the new automatic name.
+    same(after.kind === 'ready' ? { ...after, defaultLabelProven: initial.defaultLabelProven } : after, current.desired);
+    signal?.throwIfAborted();
+    await names.write(scope, decision.afterSuccess, previous?.revision ?? null, signal);
+    return decision.kind === 'rename' ? 'renamed' : 'unchanged';
+  }
   async openDocument(store: RecordStore, context: NativeContext, paintedWorkspace: Snapshot<WorkspaceRecord>, paintedAgent: Snapshot<AgentRecord>, target: DocumentIdentity, config: WorkCardsConfig, signal?: AbortSignal): Promise<void> {
     signal?.throwIfAborted();
     const identity = documentIdentity(target), command = documentCommand(config, this.env);
@@ -479,9 +556,7 @@ export class WorkspaceClient extends HerdrTransport {
         await this.stamp('pane', pane, { wcd_key: v.key, wcd_pane: pane.pane_id, wcd_terminal: pane.terminal_id, wcd_tab: pane.tab_id, wcd_owner: nonce, wcd_store: storeKey }, context, config, signal);
         v = await verify(); const stamped = matching(v.live.snapshot);
         if (!stamped || stamped.terminal_id !== pane.terminal_id || stamped.tokens.wcd_owner !== nonce || !firstPane(v.live.snapshot, stamped)) throw new Error('Document metadata did not round-trip');
-        const tab = v.live.snapshot.tabs.find(t => t.tab_id === pane.tab_id)!;
-        // Preserve an unproven nondefault label even on a just-created surface.
-        if (tab.label === String(tab.number)) await this.renameEditor(stamped, tab.label, v.label, v.live.snapshot, context, config, signal);
+        await this.renameEditor(store, stamped, context, config, signal, verify);
         await focus(stamped);
       } catch (error) { throw new Error(`Document opening may be partial${returned ? ` (pane ${returned.pane_id}, terminal ${returned.terminal_id}, tab ${returned.tab_id})` : ''}; inspect before retrying, no editor was closed: ${(error as Error).message}`, { cause: error }); }
     }, { waitMs: config.herdr_timeout_ms, signal });
@@ -504,24 +579,36 @@ export class WorkspaceClient extends HerdrTransport {
         if (!matches.length) continue;
         const pane = matches[0], t = pane.tokens;
         if (matches.length !== 1 || t.wcd_pane !== pane.pane_id || t.wcd_terminal !== pane.terminal_id || t.wcd_tab !== pane.tab_id) throw new Error('Conflicting/incomplete document editor tuple');
-        if (t.wcd_store !== storeKey || !t.wcd_owner || t.wcd_auto !== 'auto' || !/^[a-f0-9]{64}$/.test(t.wcd_name ?? '')) continue;
-        const tab = current.live.snapshot.tabs.find(tab => tab.tab_id === pane.tab_id)!;
-        if (digest(tab.label) !== t.wcd_name) {
-          await this.stamp('pane', pane, { wcd_auto: 'manual' }, context, config, signal);
-          continue;
-        }
-        if (tab.label === latest.label || !firstPane(current.live.snapshot, pane)) continue;
-        await this.renameEditor(pane, tab.label, latest.label, current.live.snapshot, context, config, signal);
+        if (t.wcd_store !== storeKey || !t.wcd_owner) continue;
+        const verify = async () => {
+          const records = await this.currentRecords(store, painted);
+          const reference = resolvedReferences(records.workspace.record).documents.find(d => referenceIdentity(d) === referenceIdentity(ref));
+          if (!reference) throw new Error('Document reference changed during naming');
+          const path = await resolveWorkspaceDocument(records.workspace.record, { checkout: ref.checkout, path: ref.path });
+          const currentKey = digest(JSON.stringify([records.workspace.record.checkouts[ref.checkout].directory, path]));
+          const verified = await this.pairedCard(store, context, painted, config, signal);
+          if (verified.workspace.revision !== records.workspace.revision || currentKey !== key) throw new Error('Document identity changed during naming');
+          return { ...verified, key, label: reference.label };
+        };
+        await this.renameEditor(store, pane, context, config, signal, verify);
       }
     }, { waitMs: config.herdr_timeout_ms, signal });
   }
-  private async renameEditor(pane: Pane, previous: string, label: string, snapshot: NativeSnapshot, context: NativeContext, config: WorkCardsConfig, signal?: AbortSignal): Promise<void> {
-    const live = await this.guard(context, config, signal), p = locateTerminal(live.snapshot, pane.terminal_id);
-    const tab = live.snapshot.tabs.find(t => t.tab_id === p.tab_id)!;
-    if (!firstPane(live.snapshot, p) || p.pane_id !== pane.pane_id || p.tab_id !== pane.tab_id || !isDeepStrictEqual(p.tokens, pane.tokens) || tab.label !== previous || snapshot.tabs.find(t => t.tab_id === p.tab_id)?.label !== previous) throw new Error('Editor naming rights changed; manual name preserved');
-    signal?.throwIfAborted();
-    const renamed = nativeObject((await this.result(['tab', 'rename', p.tab_id, label], config, 'tab_info')).tab);
-    if (renamed.tab_id !== p.tab_id || renamed.workspace_id !== p.workspace_id || renamed.label !== label) throw new Error('Renamed editor identity mismatch');
-    await this.stamp('pane', p, { wcd_auto: 'auto', wcd_name: digest(label) }, context, config, signal);
+  private async renameEditor(store: RecordStore, pane: Pane, context: NativeContext, config: WorkCardsConfig, signal: AbortSignal | undefined,
+    verify: () => Promise<{ agent: Snapshot<AgentRecord>; workspace: Snapshot<WorkspaceRecord>; live: { snapshot: NativeSnapshot }; pair: LivePair; key: string; label: string }>): Promise<void> {
+    const storeKey = await this.storeKey(store);
+    await this.projectNativeName(store, context, 'tab', async () => {
+      const current = await verify(), snapshot = current.live.snapshot;
+      const binding = this.bound(storeKey, current.workspace, snapshot, context);
+      const p = locateTerminal(snapshot, pane.terminal_id), t = p.tokens;
+      if (snapshot.panes.filter(p => p.workspace_id === context.workspaceId && p.tokens.wcd_key === current.key).length !== 1) throw new Error('Conflicting document editor ownership');
+      if (p.workspace_id !== context.workspaceId || !isDeepStrictEqual(p, pane) || t.wcd_key !== current.key || t.wcd_store !== storeKey || !t.wcd_owner || t.wcd_pane !== p.pane_id || t.wcd_terminal !== p.terminal_id || t.wcd_tab !== p.tab_id) throw new Error('Editor naming identity changed');
+      if (!firstPane(snapshot, p)) return { kind: 'skip', reason: 'not-first' };
+      const tab = snapshot.tabs.find(t => t.tab_id === p.tab_id)!;
+      return { kind: 'ready', bindingNonce: binding.nonce, surfaceId: p.tab_id, owner: { terminalId: p.terminal_id, nonce: t.wcd_owner },
+        label: tab.label, desired: current.label,
+        defaultLabelProven: tab.label === String(snapshot.tabs.filter(t => t.workspace_id === p.workspace_id).findIndex(t => t.tab_id === p.tab_id) + 1),
+        proof: { agent: current.agent.revision, workspace: current.workspace.revision, binding, ownership: current.pair, pane: p, layout: snapshot.layouts.find(l => l.tab_id === p.tab_id), number: tab.number } };
+    }, config, signal);
   }
 }

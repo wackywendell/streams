@@ -3,7 +3,7 @@ import assert from 'node:assert/strict';
 import { parseNativeSnapshot, locateTerminal, classifyPair, pairMarkers } from '../dist/herdr/workspace-ownership.js';
 
 const pane = (n, tokens = {}) => ({ pane_id: `w:p${n}`, terminal_id: `term${n}`, workspace_id: 'w', tab_id: `w:t${Math.ceil(n/2)}`, tokens });
-const snapshot = panes => parseNativeSnapshot({ workspaces: [{ workspace_id: 'w' }], tabs: [...new Set(panes.map(p => p.tab_id))].map(tab_id => ({ tab_id, workspace_id: 'w', label: '1', number: 1 })), panes, layouts: [...new Set(panes.map(p => p.tab_id))].map(tab_id => ({ tab_id, workspace_id: 'w', panes: panes.filter(p => p.tab_id === tab_id).map(p => ({ pane_id: p.pane_id })) })) });
+const snapshot = panes => parseNativeSnapshot({ workspaces: [{ workspace_id: 'w', label: 'checkout', number: 1 }], tabs: [...new Set(panes.map(p => p.tab_id))].map(tab_id => ({ tab_id, workspace_id: 'w', label: '1', number: 1 })), panes, layouts: [...new Set(panes.map(p => p.tab_id))].map(tab_id => ({ tab_id, workspace_id: 'w', panes: panes.filter(p => p.tab_id === tab_id).map(p => ({ pane_id: p.pane_id })) })) });
 test('two independent pairs coexist in one workspace and track terminals after pane IDs change', () => {
   const a = pairMarkers('a'.repeat(64), 'nonce', 'term1', 'term2');
   const b = pairMarkers('b'.repeat(64), 'other', 'term3', 'term4');
@@ -18,6 +18,13 @@ test('native pane labels preserve strings, accept unlabeled panes and reject mal
   for (const label of ['Work card', '', '日本語 🐕']) assert.equal(snapshot([{ ...pane(1), label }]).panes[0].label, label);
   for (const value of [pane(1), { ...pane(1), label: null }]) assert.equal(snapshot([value]).panes[0].label, undefined);
   for (const label of [7, false, {}, []]) assert.throws(() => snapshot([{ ...pane(1), label }]), /label/i);
+});
+test('native workspace label/number fields survive parsing and malformed display fields fail closed', () => {
+  const s=snapshot([pane(1)]);
+  assert.equal(s.workspaces[0].label,'checkout'); assert.equal(s.workspaces[0].number,1);
+  for(const patch of [{label:undefined},{label:null},{label:3},{number:undefined},{number:0},{number:1.5}]) {
+    assert.throws(()=>parseNativeSnapshot({...s,workspaces:[{...s.workspaces[0],...patch}]}),/workspace label\/number/);
+  }
 });
 test('duplicate terminals and contradictory partial ownership fail closed', () => {
   assert.throws(() => snapshot([pane(1), { ...pane(2), terminal_id: 'term1' }]), /duplicate/i);
