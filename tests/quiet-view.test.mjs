@@ -8,37 +8,50 @@ const card = { title: 'Assignment', status: 'active', goal: 'Purpose', now: 'Sta
   issues: [{ url: 'https://example.com/1', description: 'Design' }], prs: [] };
 const unstyled = text => text.replace(/\x1b\[[\d;]*m/g, '').replace(/\x1b\]8;;[^\x1b]*\x1b\\/g, '');
 
-test('groups spend only surplus rows on separators and preserve the otherwise-empty footer row', () => {
+for (const rows of [6, 7, 8, 9]) test(`height ${rows} spends surplus on refs gap, then goal gap, then footer row`, () => {
+  const display = { ...card, issues: [], documents: 'abcdefgh'.split('').map(key => ({ label: `docs/${key}.md`, target: key })) };
+  const rendered = renderDisplayCard(display, 50, rows);
+  const lines = unstyled(rendered.text).split('\n');
+  const goalGap = rows >= 8 ? [''] : [];
+  const refsGap = rows >= 7 ? [''] : [];
+  assert.deepEqual(lines.slice(0, lines.findIndex(line => line.startsWith('[a]'))), [
+    'Purpose', ...goalGap, 'Assignment: Stage'.padEnd(42) + '● active', 'Remaining: Next work', ...refsGap,
+  ]);
+  const docs = lines.filter(line => /\[[a-h]\]/.test(line));
+  assert.deepEqual(docs.map(line => line.replace(/ +\[q\] close$/, '')), [
+    '[a] docs/a.md  [b] docs/b.md  [c] docs/c.md',
+    '[d] docs/d.md  [e] docs/e.md  [f] docs/f.md',
+    '[g] docs/g.md  [h] docs/h.md',
+  ]);
+  assert.equal(lines.at(-1).trim(), rows >= 9 ? '[q] close' : '[g] docs/g.md  [h] docs/h.md'.padEnd(41) + '[q] close');
+  assert.deepEqual([...rendered.documents.entries()], 'abcdefgh'.split('').map(key => [key, key]));
+});
+
+test('only applicable section gaps precede a dedicated footer row when goal or refs are absent', () => {
   const display = { ...card, issues: [] };
-  const render = rows => unstyled(renderDisplayCard(display, 80, rows).text).split('\n');
-  const tight = render(5);
-  assert.equal(tight[0], 'Purpose');
-  assert.match(tight[1], /^Assignment: Stage +● active$/);
-  assert.equal(tight[2], 'Remaining: Next work');
-  assert.equal(tight[3], '[a] docs/design.md');
-  assert.equal(tight[4].trim(), '[q] close');
-  const oneGap = render(6);
-  assert.equal(oneGap[1], '');
-  assert.equal(oneGap[3], 'Remaining: Next work');
-  assert.equal(oneGap[4], '[a] docs/design.md');
-  assert.equal(oneGap[5].trim(), '[q] close');
-  const bothGaps = render(7);
-  assert.equal(bothGaps[1], '');
-  assert.equal(bothGaps[4], '');
-  assert.equal(bothGaps[5], '[a] docs/design.md');
-  assert.equal(bothGaps[6].trim(), '[q] close');
-  const noticed = unstyled(renderDisplayCard(display, 80, 6, 'Notice').text).split('\n');
-  assert.equal(noticed[1], '');
-  assert.equal(noticed[4], '[a] docs/design.md');
-  assert.match(noticed[5], /^Notice +\[q\] close$/);
-  const noGoal = unstyled(renderDisplayCard({ ...display, goal: '', remaining: '' }, 80, 5).text).split('\n');
+  const noGoal = unstyled(renderDisplayCard({ ...display, goal: '', remaining: '' }, 80, 3).text).split('\n');
   assert.match(noGoal[0], /^Assignment: Stage/);
   assert.equal(noGoal[1], '');
-  assert.equal(noGoal[2], '[a] docs/design.md');
-  const noRefs = unstyled(renderDisplayCard({ ...display, documents: [] }, 80, 5).text).split('\n');
+  assert.match(noGoal[2], /^\[a\] docs\/design.md +\[q\] close$/);
+  const noRefs = unstyled(renderDisplayCard({ ...display, documents: [] }, 80, 4).text).split('\n');
+  assert.equal(noRefs[0], 'Purpose');
   assert.equal(noRefs[1], '');
-  assert.equal(noRefs[3], 'Remaining: Next work');
-  assert.equal(noRefs[4].trim(), '[q] close');
+  assert.match(noRefs[2], /^Assignment: Stage/);
+  assert.match(noRefs[3], /^Remaining: Next work +\[q\] close$/);
+  const neither = unstyled(renderDisplayCard({ ...display, goal: '', documents: [] }, 80, 3).text).split('\n');
+  assert.match(neither[0], /^Assignment: Stage/);
+  assert.equal(neither[1], 'Remaining: Next work');
+  assert.equal(neither[2].trim(), '[q] close');
+});
+
+for (const rows of [5, 6, 7]) test(`notices reserve their row before allocating section gaps at height ${rows}`, () => {
+  const display = { ...card, issues: [] };
+  const lines = unstyled(renderDisplayCard(display, 80, rows, 'Notice').text).split('\n');
+  assert.deepEqual(lines.slice(0, -1), [
+    'Purpose', ...(rows >= 7 ? [''] : []), 'Assignment: Stage'.padEnd(72) + '● active',
+    'Remaining: Next work', ...(rows >= 6 ? [''] : []), '[a] docs/design.md',
+  ]);
+  assert.match(lines.at(-1), /^Notice +\[q\] close$/);
 });
 
 test('three complete document labels fit one row at 150 columns, before full-width links', () => {
@@ -99,9 +112,10 @@ test('reference budget counts grid rows but overflow counts hidden items, with d
 test('every painted full grid shortcut maps exactly, while footer-clipped later keys stay inert', () => {
   const display = { ...card, goal: '', title: '', now: '', remaining: '', issues: [],
     documents: ['a.md', 'b.md', 'c.md'].map(label => ({ label, target: { label } })) };
-  const full = renderDisplayCard(display, 28, 3);
+  const full = renderDisplayCard(display, 28, 4);
   assert.equal(full.documents.size, 3);
-  const covered = renderDisplayCard(display, 28, 2);
+  const covered = renderDisplayCard(display, 28, 3);
+  assert.equal(unstyled(covered.text).split('\n')[1], '');
   assert.deepEqual([...covered.documents.keys()], ['a', 'b']);
   assert.ok(unstyled(covered.text).endsWith('[q] close'));
   assert.doesNotMatch(unstyled(covered.text), /\[c\]/);

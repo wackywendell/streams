@@ -170,12 +170,12 @@ export function renderDisplayCard<T>(card: DisplayCard<T> | undefined, columns: 
     lines.push(...visible);
     const hidden = references.slice(visible.length).reduce((sum, row) => sum + row.items!, 0);
     if (hidden && lines.length < contentHeight) lines.push(textRow(`… ${hidden} more; enlarge pane`, 2));
-    // Separators consume only surplus padding, never visible content or an empty footer row.
+    // Separators consume surplus padding before a dedicated footer row, never visible content.
     const boundaries = [];
-    if (goalEnd && workEnd > goalEnd) boundaries.push(goalEnd);
     if (workEnd > goalEnd && lines.length > workEnd) boundaries.push(workEnd);
-    const spare = contentHeight - lines.length - Number(notice === undefined && !!footer && lines.length < contentHeight);
-    for (const boundary of boundaries.slice(0, Math.max(0, spare)).reverse()) lines.splice(boundary, 0, textRow(''));
+    if (goalEnd && workEnd > goalEnd) boundaries.push(goalEnd);
+    const spare = contentHeight - lines.length;
+    for (const boundary of boundaries.slice(0, Math.max(0, spare)).sort((a, b) => b - a)) lines.splice(boundary, 0, textRow(''));
   }
   while (lines.length < contentHeight) lines.push(textRow(''));
   if (notice !== undefined) lines.push(textRow(notice));

@@ -91,7 +91,10 @@ test('later grid shortcuts open exact opaque targets and fail closed after resiz
   const wide = unstyled(view.render(150, 4));
   assert.ok(wide.split('\n').some(line => line.includes('[a]') && line.includes('[b]') && line.includes('[c]')));
   for (const key of 'bc') assert.deepEqual((await view.key(key)).identity, { checkout: 'lib', path: key + '.md' });
-  view.render(28, 2);
+  const sharedFooter = unstyled(view.render(28, 3)).split('\n');
+  assert.equal(sharedFooter[1], '');
+  assert.match(sharedFooter[2], /\[q\] close$/);
+  assert.doesNotMatch(sharedFooter[2], /\[c\]/);
   assert.deepEqual(await view.key('c'), { kind: 'none' });
   assert.deepEqual((await view.key('b')).identity, { checkout: 'lib', path: 'b.md' });
   view.setNotice('projection', 'Notice'); view.render(28, 2);
@@ -108,7 +111,7 @@ test('a fresh grid reflow hiding a previously painted later-column key fails clo
   workspace.record.goal = unevaluatedGoal(); workspace.record.issues = [];
   agent.record.title = 'Own'; agent.record.now = ''; agent.record.remaining = '';
   workspace.record.documents = ['a.md', 'b.md', 'c.md'].map(path => ({ checkout: 'lib', path, description: '' }));
-  await view.refresh(); view.render(30, 3);
+  await view.refresh(); view.render(35, 3);
   workspace.record.documents[0].path = 'a-name-too-long-to-share-a-row.md';
   assert.deepEqual(await view.key('c'), { kind: 'none' });
   assert.match(view.notice.text, /changed|redraw/i);
