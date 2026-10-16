@@ -8,7 +8,7 @@ export type SummaryRequestOptions = Pick<WorkCardsConfig, 'model' | 'thinking_le
 export interface SummaryRegistry<TModel> {
   find(provider: string, modelId: string): TModel | undefined;
   streamSimple(model: TModel, context: Context, options?: ModelsSimpleStreamOptions): {
-    result(): Promise<Pick<AssistantMessage, 'stopReason' | 'content'>>;
+    result(): Promise<Pick<AssistantMessage, 'stopReason' | 'content' | 'errorMessage'>>;
   };
 }
 
@@ -92,6 +92,15 @@ export async function requestHelperDecision<T, TModel extends { api?: string }>(
       registry.streamSimple(model, { ...context, tools: [] }, requestOptions).result(), requestSignal,
     );
     requestSignal.throwIfAborted();
+    if (result.stopReason === 'error') {
+      const diagnostic = (result.errorMessage ?? '')
+        .replace(/\u001b\][^\u0007\u001b]*(?:\u0007|\u001b\\)/g, '')
+        .replace(/\u001b\[[0-?]*[ -/]*[@-~]/g, '')
+        .replace(/[\u0000-\u001f\u007f-\u009f\u2028-\u202e\u2066-\u2069]/g, ' ')
+        .replace(/\bBearer\s+[A-Za-z0-9._~+/-]+=*/gi, 'Bearer [redacted]')
+        .replace(/\s+/g, ' ').trim().slice(0, 500);
+      throw new Error(`Summary model did not return a complete text decision (error). Model ${options.model}: ${diagnostic || 'No provider diagnostic was returned. Check the provider configuration and availability, then try again.'}`);
+    }
     if (result.stopReason !== 'stop' || result.content.some((block) => block.type === 'toolCall')) {
       throw new Error(`Summary model did not return a complete text decision (${result.stopReason}).`);
     }

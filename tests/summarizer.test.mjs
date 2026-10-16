@@ -120,6 +120,54 @@ test("missing alias/profile and invalid or unsuccessful model output fail action
   }
 });
 
+test('provider error reports the configured helper and diagnostic without parsing or leaking content', async () => {
+  let parsed = false, stopped = 0;
+  const registry = {
+    find: () => ({ api: 'pi-virtual' }),
+    streamSimple: () => ({ result: async () => ({ ...response('PRIVATE RESPONSE CONTENT', 'error'), errorMessage: '401 Unauthorized: sign in to the provider again' }) }),
+  };
+  await assert.rejects(requestHelperDecision(registry, context, config, () => { parsed = true; }, undefined,
+    async () => ({ simple: { thinkingLevel: 'off' } }), () => () => { stopped++; }), error => {
+    assert.match(error.message, /complete text decision \(error\)/);
+    assert.match(error.message, /helpers\/simple/);
+    assert.match(error.message, /401 Unauthorized: sign in to the provider again/);
+    assert.doesNotMatch(error.message, /PRIVATE RESPONSE CONTENT/);
+    return true;
+  });
+  assert.equal(parsed, false);
+  assert.equal(stopped, 1);
+});
+
+test('provider errors without usable diagnostics offer provider configuration guidance without guessing auth', async () => {
+  for (const errorMessage of [undefined, '', ' \r\n\u0000 ']) {
+    const registry = {
+      find: () => ({ api: 'physical' }),
+      streamSimple: () => ({ result: async () => ({ ...response('PRIVATE CONTENT', 'error'), errorMessage }) }),
+    };
+    await assert.rejects(requestHelperDecision(registry, context, physicalConfig, JSON.parse), error => {
+      assert.match(error.message, /provider\/model/);
+      assert.match(error.message, /provider.*configuration/i);
+      assert.doesNotMatch(error.message, /401|unauthorized|PRIVATE CONTENT/i);
+      return true;
+    });
+  }
+});
+
+test('provider diagnostic is bounded, terminal-safe and redacts bearer credentials', async () => {
+  const registry = {
+    find: () => ({ api: 'physical' }),
+    streamSimple: () => ({ result: async () => ({ ...response('PRIVATE CONTENT', 'error'),
+      errorMessage: '401\r\nAuthorization: Bearer fake-provider-secret\u001b[31m\u0000\u0008\u009b\u202e' + 'x'.repeat(2000) }) }),
+  };
+  await assert.rejects(requestHelperDecision(registry, context, physicalConfig, JSON.parse), error => {
+    assert.match(error.message, /401/);
+    assert.doesNotMatch(error.message, /fake-provider-secret|PRIVATE CONTENT|\[31m/);
+    assert.doesNotMatch(error.message, /[\u0000-\u001f\u007f-\u009f\u202e]/);
+    assert.ok(error.message.length < 700);
+    return true;
+  });
+});
+
 async function within(promise, milliseconds = 100) {
   let timer;
   try {
@@ -172,7 +220,7 @@ test("cancellation consumes late provider resolution and rejection without retur
   const onUnhandled = (error) => { unhandled.push(error); };
   process.on("unhandledRejection", onUnhandled);
   t.after(() => process.off("unhandledRejection", onUnhandled));
-  for (const lateFailure of [false, true]) {
+  for (const lateFailure of [false, true, 'error-result']) {
     let resolveProvider, rejectProvider, signal;
     const provider = new Promise((resolve, reject) => { resolveProvider = resolve; rejectProvider = reject; });
     const controller = new AbortController();
@@ -187,7 +235,8 @@ test("cancellation consumes late provider resolution and rejection without retur
     const reason = new Error("cancel before late result");
     controller.abort(reason);
     await assert.rejects(within(pending), (error) => error === reason);
-    if (lateFailure) rejectProvider(new Error("late provider rejection"));
+    if (lateFailure === true) rejectProvider(new Error("late provider rejection"));
+    else if (lateFailure === 'error-result') resolveProvider({ ...response('PRIVATE CONTENT', 'error'), errorMessage: 'late provider error' });
     else resolveProvider(response('{"action":"update","patch":{"status":"done"}}'));
     await new Promise((resolve) => setImmediate(resolve));
     await assert.rejects(pending, (error) => error === reason);
