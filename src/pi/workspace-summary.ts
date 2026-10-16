@@ -54,7 +54,7 @@ export function parseOwnSummaryDecision(raw: string, agent: AgentRecord, intent:
   const fields = ['title', 'status', 'statusShort', 'now', 'remaining'];
   const patch = object(value.patch, fields, intent === 'reset' ? fields : []);
   if (intent === 'reset') {
-    if (stringWidth(text(patch.statusShort)) > 23) throw new Error('Reset requires a valid complete statusShort');
+    if (stringWidth(text(patch.statusShort)) > 23) patch.statusShort = '';
   } else omitOversizedShort(patch, 'statusShort', 23);
   applyOwnUpdate(validateAgent(agent), patch);
   return Object.keys(patch).length ? { action: 'update', patch: patch as OwnUpdate } : { action: 'no_change' };
@@ -142,19 +142,18 @@ export function requestConversationGoal<TModel extends { api?: string }>(
 ): Promise<WorkspaceGoalDecision | null> {
   const input = buildConversationGoalContext(workspace, evidence, options.intent);
   return input ? requestHelperDecision(registry, input, options, raw => {
-    const decision = parseWorkspaceGoalDecision(raw, options.intent);
+    const decision = parseWorkspaceGoalDecision(raw);
     // Even a safe title cannot manufacture a project name from an insufficient purpose proposal.
     return decision.goal.trim() ? decision : { goal: '', goalShort: '' };
   }, ...tail) : Promise.resolve(null);
 }
 
-export function parseWorkspaceGoalDecision(raw: string, intent: CheckIntent = 'automatic'): WorkspaceGoalDecision {
+export function parseWorkspaceGoalDecision(raw: string): WorkspaceGoalDecision {
   const value = object(JSON.parse(raw), ['goal', 'goalShort', 'title'], ['goal']);
   const goal = text(value.goal);
   const short = Object.hasOwn(value, 'goalShort') ? { goalShort: text(value.goalShort, !!goal.trim()) } : {};
   if (goal.trim() && short.goalShort === undefined) throw new Error('Nonempty goal requires goalShort');
   if (!goal.trim() && short.goalShort?.trim()) throw new Error('Empty goal cannot have short purpose');
-  if (intent === 'reset' && short.goalShort !== undefined && stringWidth(short.goalShort) > 25) throw new Error('Reset requires a valid goalShort');
   omitOversizedShort(short, 'goalShort', 25);
   return { goal, ...short, ...(Object.hasOwn(value, 'title') ? { title: text(value.title, true) } : {}) };
 }
@@ -180,5 +179,5 @@ export function requestWorkspaceGoal<TModel extends { api?: string }>(
   registry: SummaryRegistry<TModel>, capture: PlanSourceCapture, options: SummaryRequestOptions & { intent?: CheckIntent }, ...tail: HelperRequestTail
 ): Promise<WorkspaceGoalDecision | null> {
   const input = buildWorkspaceGoalContext(capture);
-  return input ? requestHelperDecision(registry, input, options, raw => parseWorkspaceGoalDecision(raw, options.intent), ...tail) : Promise.resolve(null);
+  return input ? requestHelperDecision(registry, input, options, parseWorkspaceGoalDecision, ...tail) : Promise.resolve(null);
 }

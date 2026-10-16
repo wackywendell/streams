@@ -335,12 +335,13 @@ export class RecordStore {
   async setWorkspaceTitle(authority: Authority, title: string, expected: string, signal?: AbortSignal): Promise<Snapshot<WorkspaceRecord>> {
     return this.shared(authority, w => { revision(w, expected); return { ...w.record, title, titleMode: 'manual' }; }, signal);
   }
-  async applyPlan(authority: Authority, input: { goal: Goal; title?: string }, expected: string, signal?: AbortSignal): Promise<Snapshot<WorkspaceRecord>> {
-    object(input, ['goal', 'title'], ['goal']);
+  async applyPlan(authority: Authority, input: { goal: Goal; title?: string; preserveShort?: boolean }, expected: string, signal?: AbortSignal): Promise<Snapshot<WorkspaceRecord>> {
+    object(input, ['goal', 'title', 'preserveShort'], ['goal']);
     if (input.title !== undefined) text(input.title, true);
+    if (input.preserveShort !== undefined && typeof input.preserveShort !== 'boolean') throw new Error('Invalid short inheritance policy');
     return this.shared(authority, w => {
       revision(w, expected);
-      return { ...w.record, goal: transitionGoal(w.record.goal, { kind: 'evaluate', goal: input.goal }),
+      return { ...w.record, goal: transitionGoal(w.record.goal, { kind: 'evaluate', goal: input.goal, preserveShort: input.preserveShort }),
         title: w.record.titleMode === 'auto' ? (input.title ?? w.record.title) : w.record.title };
     }, signal);
   }

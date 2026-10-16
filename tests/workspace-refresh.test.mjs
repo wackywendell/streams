@@ -124,7 +124,9 @@ test('reset replaces derived own fields but preserves identities, manual titles,
   assert.equal(goalText(result.workspace.record.goal), 'Deliver library');
 });
 
-for (const proposal of [noChange(), { action: 'update', patch: { now: '' } }, { action: 'update', patch: { ...freshOwn().patch, statusShort: 'x'.repeat(24) } }]) {
+for (const proposal of [noChange(), { action: 'update', patch: { now: '' } },
+  ...['unsafe\nshort', 'unsafe\u001bshort', 12].map(statusShort => ({ action: 'update', patch: { ...freshOwn().patch, statusShort } })),
+  { action: 'update', patch: { title: 'Missing short', status: 'active', now: '', remaining: '' } }]) {
   test(`invalid reset own proposal never preclears stored records: ${JSON.stringify(proposal)}`, async t => {
     const f = await fixture(t);
     await f.store.updateOwn(f.authority, { now: 'Retained progress', remaining: 'Retained scope', statusShort: 'Retained stage' }, (await f.agent()).revision);
@@ -156,15 +158,66 @@ test('reset forces document selection and Goal inference through unchanged cache
   assert.equal(events.find(e => e.stage === 'selection').cacheHit, false);
 });
 
-test('reset rejects oversized Goal short instead of retaining an unseen old short for an identical Goal', async t => {
+test('reset accepts complete own updates with oversized safe shorts and finishes later stages', async t => {
   const f = await fixture(t);
-  await f.store.addReferences(f.authority, { documents: [{ ...f.identity, description: 'Plan' }] });
+  await f.store.updateOwn(f.authority, { statusShort: 'Stale stage' }, (await f.agent()).revision);
+  const patch = { title: 'Fresh assignment', status: 'waiting', now: 'Library capability is ready for clients', remaining: 'Integrate the client capability', statusShort: 'x'.repeat(24) };
+  f.handlers.own = () => ({ action: 'update', patch });
+  f.handlers.shared = () => ({ action: 'update', additions: { documents: [{ ...f.identity, description: 'Plan' }] } });
+  const result = await f.refresh({ intent: 'reset' });
+  assert.deepEqual(kinds(f), ['own', 'shared', 'select', 'goal']);
+  for (const key of ['title', 'status', 'now', 'remaining']) assert.equal(result.agent.record[key], patch[key]);
+  assert.equal(result.agent.record.statusShort, '');
+  assert.equal(goalText(result.workspace.record.goal), 'Deliver library');
+});
+
+for (const source of ['documents', 'conversation']) {
+  test(`reset accepts oversized Goal short and clears unseen same-text ${source} short`, async t => {
+    const f = await fixture(t);
+    if (source === 'documents') await f.store.addReferences(f.authority, { documents: [{ ...f.identity, description: 'Plan' }] });
+    else f.handlers.select = () => ({ sources: [] });
+    await f.refresh();
+    const before = (await f.workspace()).record.goal;
+    assert.equal(before.short, 'Deliver library');
+    f.handlers.goal = () => ({ goal: 'Deliver library', goalShort: 'x'.repeat(26) });
+    assert.deepEqual((await f.refresh({ intent: 'refresh' })).workspace.record.goal, before);
+    f.calls.length = 0;
+    f.handlers.own = freshOwn;
+    const result = await f.refresh({ intent: 'reset' });
+    assert.deepEqual(kinds(f), source === 'documents' ? ['own', 'shared', 'select', 'goal'] : ['own', 'shared', 'goal']);
+    assert.equal(result.workspace.record.goal.text, before.text);
+    assert.equal(result.workspace.record.goal.short, undefined);
+    assert.deepEqual(result.workspace.record.goal.provenance, before.provenance);
+    f.calls.length = 0;
+    f.handlers.goal = () => ({ goal: 'Deliver library', goalShort: 'Fresh purpose' });
+    assert.equal((await f.refresh()).workspace.record.goal.short, 'Fresh purpose');
+    assert.ok(kinds(f).includes('goal'));
+  });
+
+  for (const goalShort of [undefined, '', 'unsafe\nshort', 'unsafe\u001bshort', 12]) {
+    test(`invalid reset ${source} Goal short leaves prior shared state unchanged: ${JSON.stringify(goalShort)}`, async t => {
+      const f = await fixture(t);
+      if (source === 'documents') await f.store.addReferences(f.authority, { documents: [{ ...f.identity, description: 'Plan' }] });
+      else f.handlers.select = () => ({ sources: [] });
+      await f.refresh();
+      const before = await fileState((await f.workspace()).path);
+      f.handlers.own = freshOwn;
+      f.handlers.goal = () => ({ goal: 'Deliver library', ...(goalShort === undefined ? {} : { goalShort }) });
+      await assert.rejects(f.refresh({ intent: 'reset' }));
+      assert.deepEqual(await fileState((await f.workspace()).path), before);
+    });
+  }
+}
+
+test('sparse reset conversation proposal retains known purpose including its short and provenance', async t => {
+  const f = await fixture(t);
+  f.handlers.select = () => ({ sources: [] });
   await f.refresh();
-  const before = await fileState((await f.workspace()).path);
+  const before = (await f.workspace()).record.goal;
   f.handlers.own = freshOwn;
-  f.handlers.goal = () => ({ goal: 'Deliver library', goalShort: 'x'.repeat(26) });
-  await assert.rejects(f.refresh({ intent: 'reset' }), /goalShort|short/i);
-  assert.deepEqual(await fileState((await f.workspace()).path), before);
+  f.handlers.goal = () => ({ goal: '', goalShort: '' });
+  const result = await f.refresh({ intent: 'reset' });
+  assert.deepEqual(result.workspace.record.goal, before);
 });
 
 async function fileState(path) { return { bytes: await readFile(path, 'utf8'), mtime: (await stat(path, { bigint: true })).mtimeNs }; }

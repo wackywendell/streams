@@ -46,7 +46,8 @@ test('reset own proposals must replace every derived field, never no_change or p
     const patch = { ...complete }; delete patch[key];
     assert.throws(() => parse({ action: 'update', patch }));
   }
-  assert.throws(() => parse({ action: 'update', patch: { ...complete, statusShort: 'x'.repeat(24) } }));
+  assert.deepEqual(parse({ action: 'update', patch: { ...complete, statusShort: 'x'.repeat(24) } }), { action: 'update', patch: complete });
+  for (const statusShort of ['unsafe\nshort', 'unsafe\u001bshort', 12]) assert.throws(() => parse({ action: 'update', patch: { ...complete, statusShort } }));
   const applied = applyOwnUpdate({ ...agent, now: 'Stale now', remaining: 'Stale scope' }, parse({ action: 'update', patch: complete }).patch);
   assert.equal(applied.title, agent.title);
   assert.equal(applied.now, ''); assert.equal(applied.remaining, '');
@@ -190,7 +191,7 @@ test('conversation helper reuses strict purpose validation and ignores names on 
   assert.deepEqual(await request(), { goal: '', goalShort: '' });
   reply = { goal: 'Reusable parser', goalShort: '界'.repeat(13), title: 'Parser' };
   assert.deepEqual(await request(), { goal: 'Reusable parser', title: 'Parser' });
-  await assert.rejects(request('reset'), /goalShort/i);
+  assert.deepEqual(await request('reset'), { goal: 'Reusable parser', title: 'Parser' });
   for (const invalid of [
     null, {}, { goal: 'Purpose' }, { goal: 'Purpose', goalShort: '' },
     { goal: '', goalShort: 'Nonempty' }, { goal: 'bad\ntext', goalShort: 'Short' },

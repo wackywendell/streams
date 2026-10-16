@@ -192,7 +192,7 @@ test('conversation is copied before awaits and manual workspace names stay prote
   assert.equal(f.calls[0].data.transcript[0].text, dialogue().transcript[0].text); assert.equal(result.record.title, 'Manual');
 });
 
-test('conversation short overflow regenerates on ordinary checks and reset rejects overflow without preclearing', async t => {
+test('conversation short overflow regenerates on ordinary checks and reset clears stale same-text short', async t => {
   const f = await fixture(t, false);
   f.goal(() => ({ goal: 'Shared library', goalShort: '界'.repeat(13), title: 'Library' }));
   const first = await f.refresh({ evidence: dialogue() });
@@ -201,8 +201,10 @@ test('conversation short overflow regenerates on ordinary checks and reset rejec
   assert.equal((await f.refresh({ evidence: dialogue() })).record.goal.short, 'Shared library'); assert.equal(f.calls.length, 2);
   const before = await f.workspace();
   f.goal(() => ({ goal: 'Shared library', goalShort: '界'.repeat(13) }));
-  await assert.rejects(f.refresh({ evidence: dialogue(), intent: 'reset' }), /goalShort/i);
-  assert.equal((await f.workspace()).revision, before.revision);
+  const reset = await f.refresh({ evidence: dialogue(), intent: 'reset' });
+  assert.equal(reset.record.goal.text, before.record.goal.text);
+  assert.equal(reset.record.goal.short, undefined);
+  assert.deepEqual(reset.record.goal.provenance, before.record.goal.provenance);
 });
 
 test('unknown and known conversation caches survive refresher replacement without fake document sources', async t => {

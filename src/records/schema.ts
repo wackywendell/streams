@@ -186,7 +186,7 @@ export function parseGoal(value: unknown): Goal {
 }
 
 export type GoalTransition =
-  | { readonly kind: 'evaluate'; readonly goal: Goal }
+  | { readonly kind: 'evaluate'; readonly goal: Goal; readonly preserveShort?: boolean }
   | { readonly kind: 'source_removed'; readonly identity: ReferenceIdentity };
 
 /** All purpose/provenance replacement and derivative invalidation has one owner. */
@@ -196,7 +196,7 @@ export function transitionGoal(previous: Goal, event: GoalTransition): Goal {
       ? unevaluatedGoal() : previous;
   }
   const next = parseGoal(event.goal);
-  if (previous.kind === 'known' && next.kind === 'known' && next.text === previous.text && next.short === undefined && previous.short !== undefined) {
+  if (event.preserveShort !== false && previous.kind === 'known' && next.kind === 'known' && next.text === previous.text && next.short === undefined && previous.short !== undefined) {
     return purposeGoal(next.text, next.provenance, previous.short);
   }
   return next;

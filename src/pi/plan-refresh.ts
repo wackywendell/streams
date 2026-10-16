@@ -122,6 +122,7 @@ export class PlanRefresher<TModel extends { api?: string }> {
         const retain = previous.kind === 'known' && !proposal.goal.trim();
         const result = await store.applyPlan(authority, {
           goal: retain ? previous : conversationGoal(proposal.goal, origin, proposal.goalShort),
+          ...(!retain && intent === 'reset' ? { preserveShort: false } : {}),
           ...(!retain && proposal.title !== undefined ? { title: proposal.title } : {}),
         }, original.revision, signal);
         // Only retention needs a host-local cache; accepted results use their durable provenance.
@@ -145,6 +146,7 @@ export class PlanRefresher<TModel extends { api?: string }> {
       }
       const result = await store.applyPlan(authority, {
         goal: evaluatedGoal(goal!.goal, sources, captured.fingerprint, goal!.goalShort),
+        ...(intent === 'reset' ? { preserveShort: false } : {}),
         ...(goal?.title !== undefined ? { title: goal.title } : {}),
       }, original.revision, signal);
       onDiagnostic?.({ stage: 'goal', outcome: result.revision === checked.revision ? 'unchanged' : 'applied' });

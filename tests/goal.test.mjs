@@ -78,6 +78,21 @@ test('conversation Goal transitions preserve unchanged short text and invalidate
   assert.equal(changed.short, undefined);
 });
 
+test('explicit evaluation policy disables same-purpose short inheritance without changing Goal storage', () => {
+  for (const make of [
+    (short) => records.evaluatedGoal('Purpose', [source], 'bytes', short),
+    (short) => records.conversationGoal('Purpose', { sessionId: 's', digest: 'a'.repeat(64) }, short),
+  ]) {
+    const previous = make('Stale purpose');
+    const proposal = make();
+    assert.equal(records.transitionGoal(previous, { kind: 'evaluate', goal: proposal }).short, 'Stale purpose');
+    assert.equal(records.transitionGoal(previous, { kind: 'evaluate', goal: proposal, preserveShort: true }).short, 'Stale purpose');
+    assert.deepEqual(records.transitionGoal(previous, { kind: 'evaluate', goal: proposal, preserveShort: false }), proposal);
+    assert.equal(records.transitionGoal(previous, { kind: 'evaluate', goal: make('Fresh purpose'), preserveShort: false }).short, 'Fresh purpose');
+    assert.equal(Object.hasOwn(proposal, 'preserveShort'), false);
+  }
+});
+
 test('normalized legacy storage remains byte-identical on reads and no-op writes', async t => {
   const root = await mkdtemp(join(tmpdir(), 'goal-boundary-')); t.after(() => rm(root, { recursive: true, force: true }));
   const store = new records.RecordStore(join(root, 'records'));
