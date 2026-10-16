@@ -6,6 +6,7 @@ no module here imports a harness, frontend or the legacy scratch-note CLI.
 
 from .envelope import decode_operation, encode_operation
 from .local import LocalCatalog, RepairRequired, Result
+from .git import GitCatalog
 from .policy import Policy, Timing
 
-__all__ = ["LocalCatalog", "Policy", "Timing", "RepairRequired", "Result", "decode_operation", "encode_operation"]
+__all__ = ["GitCatalog", "LocalCatalog", "Policy", "Timing", "RepairRequired", "Result", "decode_operation", "encode_operation"]

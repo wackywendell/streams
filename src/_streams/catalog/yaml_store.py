@@ -85,6 +85,34 @@ class YamlStore:
     def __init__(self, root: Path):
         self.root = Path(root).absolute()
 
+    @staticmethod
+    def record_path(key: RecordKey) -> Path:
+        """Canonical relative path for file-backed transport; identities stay logical."""
+        return _path(Path(), key)
+
+    @staticmethod
+    def decode_snapshot(files: dict[str, bytes]) -> Snapshot:
+        """Validate a Git tree or other file snapshot using this adapter's encoding."""
+        records, revisions = [], {}
+        try:
+            for name, contents in sorted(files.items()):
+                envelope = object_fields(yaml.load(contents, Loader=_StrictLoader), {"version", "revision", "kind", "record"})
+                if type(envelope.get("version")) is not int or envelope["version"] != 1:
+                    raise ValidationError("unsupported catalog encoding version")
+                text(envelope.get("revision"), "storage revision")
+                record = record_from_data(envelope.get("kind"), envelope.get("record"))
+                key = record_key(record)
+                if name != _path(Path(), key).as_posix():
+                    raise ValidationError(f"record identity does not match its physical location: {name}")
+                records.append(record)
+                revisions[key] = hashlib.sha256(contents).hexdigest()
+            return Snapshot(catalog=Catalog(
+                streams=tuple(item for item in records if isinstance(item, Stream)),
+                sessions=tuple(item for item in records if isinstance(item, Session)),
+                hosts=tuple(item for item in records if isinstance(item, Host))), revisions=revisions)
+        except (ValueError, yaml.YAMLError) as error:
+            raise StorageError(f"cannot read catalog: {error}") from error
+
     @contextmanager
     def transaction(self):
         """Hold the common process lock across read, reconciliation, save and composition.
@@ -142,24 +170,9 @@ class _YamlTransaction:
 
     def read(self) -> Snapshot:
         self._check_active()
-        records, revisions = [], {}
         try:
-            for path in self._files():
-                contents = path.read_bytes()
-                envelope = object_fields(yaml.load(contents, Loader=_StrictLoader), {"version", "revision", "kind", "record"})
-                if type(envelope.get("version")) is not int or envelope["version"] != 1:
-                    raise ValidationError("unsupported catalog encoding version")
-                text(envelope.get("revision"), "storage revision")
-                record = record_from_data(envelope.get("kind"), envelope.get("record"))
-                key = record_key(record)
-                if path != _path(self.root, key):
-                    raise ValidationError(f"record identity does not match its physical location: {path}")
-                records.append(record)
-                revisions[key] = hashlib.sha256(contents).hexdigest()
-            catalog = Catalog(streams=tuple(item for item in records if isinstance(item, Stream)),
-                              sessions=tuple(item for item in records if isinstance(item, Session)),
-                              hosts=tuple(item for item in records if isinstance(item, Host)))
-            return Snapshot(catalog=catalog, revisions=revisions)
+            files = {path.relative_to(self.root).as_posix(): path.read_bytes() for path in self._files()}
+            return YamlStore.decode_snapshot(files)
         except (OSError, ValueError, yaml.YAMLError) as error:
             raise StorageError(f"cannot read catalog: {error}") from error
 
