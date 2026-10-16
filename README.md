@@ -91,6 +91,8 @@ Document failures remain visible. Partial native failures report known tab ident
 
 ## Helper updates
 
+Agent titles identify the session's broader contribution using the fewest clear words. Now describes what the session has achieved overall and its supported current state, such as actual use. Combine related milestones into a general capability or outcome rather than listing them. Remaining describes important unfinished scope within that remit. Follow-up questions, fixes and reviews do not redefine it unless the remit genuinely changes.
+
 `check_every_n_responses` counts distinct changes in projected dialogue, compaction and allowed file-operation evidence. Other tool calls and raw event notifications do not count. Zero disables automatic checks, not explicit refresh or reset. Idle membership polling makes no helper calls.
 
 Only one check runs at a time per session. New eligible input replaces pending input; busy requests coalesce, retaining the strongest pending intent: reset, then refresh, then automatic. Invalidated membership, session changes and cancellation prevent stale updates. Own-agent summaries and shared-reference collection receive the latest projected compaction summary and all available dialogue, without an application text cap. The reference collector judges relevance against the workspace's current title, Goal and known references. Attachment boundaries still guard continuity and fresh-input startup; they do not limit reference evidence. Explicit removal exclusions remain authoritative.
@@ -156,7 +158,7 @@ Run Pi, the plugin, repository and Herdr server on the same host. macOS local an
 
 ## Verification status
 
-The current runtime passes `npm run check` and all 856 tests on macOS with Node.js 22.23.3 and 26.12.0, without skips. The suite retains filesystem, concurrency, cancellation, ownership, document, terminal and packaging checks, including nested split sizing. Old-format-only expectations are retired. Package tests use Pi 1.2.0's real loader, verify same-process source reload and source/compiled plugin roots, and extract an actual npm tarball. Supplied read-only host dependencies are not a clean dependency-install test.
+The current runtime passes `npm run check` and all 864 tests on macOS with Node.js 22.23.3 and 26.12.0, without skips. The suite retains filesystem, concurrency, cancellation, ownership, document, terminal and packaging checks, including nested split sizing. Old-format-only expectations are retired. Package tests use Pi 1.2.0's real loader, verify same-process source reload and source/compiled plugin roots, and extract an actual npm tarball. Supplied read-only host dependencies are not a clean dependency-install test.
 
 The latest isolated runtime run passed 7 checks on Herdr 0.9.5: attachment, exact document opening, close/refresh/reload suppression, explicit reopen, independent pairs, own-only cleanup and nested sizing. Both 20% and 75% card fractions preserved the outer split, unrelated pane geometry and focus. It used real card/editor processes with injected SDK callbacks and local fake helpers, not a complete live Pi session. Earlier native checks also verified multiple checkouts, editor reuse, manual labels and movement.
 

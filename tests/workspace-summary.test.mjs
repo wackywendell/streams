@@ -86,7 +86,8 @@ test('own title prompt requests workspace-relative labels without weakening stab
     const input = buildOwnSummaryContext(previous, evidence, snapshot, intent);
     const prompt = input.systemPrompt;
     assert.match(prompt, /short assignment label relative to the shared workspace/i);
-    assert.match(prompt, /2–4 words.*soft target/i);
+    assert.match(prompt, /fewest words.*clear/i);
+    assert.match(prompt, /not.*pad.*word count/i);
     assert.match(prompt, /omit.*project\/workspace name.*work on.*unless needed to distinguish/i);
     assert.match(prompt, /preserve useful scope/i);
     assert.match(prompt, /shared context.*not supplied.*infer.*supplied evidence/i);
@@ -99,6 +100,35 @@ test('own title prompt requests workspace-relative labels without weakening stab
       assert.match(prompt, /otherwise.*sound titles stable/i);
       assert.match(prompt, /Prefer no_change for uncertain conclusions/i);
     }
+  }
+});
+
+test('own prompt keeps session-wide achievements distinct from the latest follow-up', () => {
+  const previous = { ...agent, titleMode: 'auto', title: 'Latest fix', now: 'Checking names' };
+  const evidence = {
+    compactionSummary: 'This session implemented the reusable parser and validation layer. Another agent owns deployment. A UI is only planned.',
+    transcript: [{ role: 'user', text: 'Can you check the naming?' }],
+  };
+  for (const intent of ['automatic', 'refresh', 'reset']) {
+    const input = buildOwnSummaryContext(previous, evidence, workspace, intent);
+    const prompt = input.systemPrompt;
+    assert.match(prompt, /session.*broader remit.*latest subtask/i);
+    assert.match(prompt, /follow-up questions.*do not.*redefine.*remit/i);
+    assert.match(prompt, /Now.*overall.*this session.*achieved/i);
+    assert.match(prompt, /current usable or adoption state.*supported.*useful/i);
+    assert.match(prompt, /not infer.*adoption.*implementation/i);
+    assert.match(prompt, /zoom out.*general.*capability or outcome/i);
+    assert.match(prompt, /not list.*or describe only.*latest activity/i);
+    assert.match(prompt, /no achievements.*Now empty/i);
+    assert.match(prompt, /Remaining.*unfinished scope.*same remit/i);
+    assert.match(prompt, /Title.*session.*broader remit or contribution.*latest subtask/i);
+    assert.match(prompt, /statusShort.*same session-wide stage/i);
+    assert.match(prompt, /plans.*never.*proof/i);
+    assert.match(prompt, /another agent.*work/i);
+    assert.deepEqual(data(input), intent === 'reset'
+      ? { ...evidence, agent: { checkout: previous.checkout, cwd: previous.cwd } }
+      : { ...evidence, agent: previous, workspace: { title: workspace.title, goal: '' } });
+    if (intent !== 'reset') assert.match(prompt, /correct.*title or Now.*latest subtask.*genuine change of remit/i);
   }
 });
 

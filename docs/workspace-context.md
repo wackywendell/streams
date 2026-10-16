@@ -21,7 +21,9 @@ Use two durable record types:
 
 Each card pane combines the workspace Goal and references with its own agent's assignment and progress. Several agent/card pairs can share a native workspace. There is no workspace-overview tab.
 
-Goal describes shared intent, not aggregate progress. Status, Now and Remaining describe the agent's assignment, not the whole project's backlog. One agent's Now must not become the workspace summary.
+Goal describes shared intent, not aggregate progress. The agent title identifies its Pi session's broader remit or contribution. Now describes what that session has achieved overall and its supported current state, such as actual use. Combine related milestones into a general capability or outcome rather than listing them. Remaining captures important unfinished scope within the same remit, not the whole project's backlog. One agent's Now must not become the workspace summary.
+
+Follow-up questions, fixes and reviews do not redefine the session's remit unless it genuinely changes. Retain supported earlier achievements relevant to that remit; exclude unrelated work, superseded outcomes and other agents' accomplishments. A summary narrowed to the latest activity can be corrected without new progress.
 
 Keep optional compact purpose and progress fields alongside the full text. Generate them in the existing helper requests, not by truncation or separate inference calls. Validate their display-cell limits, clear stale derivatives when their source text changes without a replacement, and leave unknown values absent. Compact progress remains per agent.
 
@@ -127,7 +129,7 @@ Detach pauses updates before fallible cleanup and preserves enough identity for 
 
 Put the workspace title in the native card-pane border. Show an unlabelled, muted, full-width Goal above the agent's work. Render the own-agent title in bold with normal-weight Now text, followed by a bold `Remaining:` label and normal body. Status sits beside progress when space permits. Omit empty Goal and Remaining sections.
 
-Optional blank lines separate Goal, work and references only when rows are spare. They must not displace content or the close hint. Documents form a responsive row-major grid. Prefer fewer columns with full paths before truncating a single column. Directories are dim, filenames normal and shortcut letters cyan. Issues and PRs occupy their own rows.
+Spend spare rows on a break before references, then between Goal and agent progress, before giving the close hint a separate row. Breaks must not displace content; the hint may share the final content row. Documents form a responsive row-major grid. Prefer fewer columns with full paths before truncating a single column. Directories are dim, filenames normal and shortcut letters cyan. Issues and PRs occupy their own rows.
 
 Use positional document letters `a` to `z`, excluding `q`. Assignment remains stable across column layouts, but reference changes can renumber it. Only fully painted shortcuts are active. After a fresh read, check the exact opaque target again before opening; truncation must never change it. HTTP links use the terminal client's link gesture; displayed numbers are inert. Show concise artifact labels and a separate issue or PR number derived from recognized URL paths. Keep full descriptions and exact destinations in the record.
 

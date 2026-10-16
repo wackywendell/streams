@@ -23,7 +23,7 @@ Naming is a deterministic projection of validated records and exact document ide
 
 Only the actual first layout pane has tab naming rights. An ineligible first pane does not transfer those rights to a later agent or editor. A non-first agent can still name its own Pi session.
 
-Record titles may be explicitly supplied or model-derived through the existing evidence contracts. An automatic agent title is a short assignment label within the workspace, not a repetition of the project name: “Naming and ADR” can distinguish an assignment inside “Work Cards”. Brevity is a soft target, not a truncation rule; retain words needed to distinguish the assignment. A redundant automatic title can be corrected without implying changed progress. Explicit manual titles remain protected.
+Record titles may be explicitly supplied or model-derived through the existing evidence contracts. An automatic agent title identifies the session's broader remit or contribution within the workspace, not its latest subtask. Use the fewest words that remain clear; do not pad to a word-count target. Omit repeated workspace names and generic process words unless they distinguish the contribution. Shortening is a semantic choice, not truncation or word stripping. Redundant or overly narrow automatic titles can be corrected without new progress. Explicit manual titles remain protected.
 
 Naming makes no model request and invents no purpose. Sparse purpose remains empty; neither fabricated Goal text nor compact summary fields supply a fallback label.
 
