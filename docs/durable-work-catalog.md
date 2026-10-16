@@ -1,6 +1,6 @@
 # ADR: Durable streams without scratch notes
 
-Status: draft. The product direction is agreed; the field shapes below are proposed. Not implemented.
+Status: draft. The product direction is agreed; the field shapes below are proposed. Records, operations and local YAML persistence are implemented; CLI and integration cutover remains pending.
 
 ## Decision and rationale
 
