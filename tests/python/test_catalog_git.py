@@ -263,6 +263,37 @@ class GitCatalogTest(unittest.TestCase):
         self.assertEqual(self.a.sync().local, "repair-required")
         self.assertEqual(self.a.snapshot().catalog.stream("work"), effort())
 
+    def test_signing_failure_preserves_save_without_unsigned_fallback(self):
+        git(self.a.root, "config", "commit.gpgsign", "true")
+        git(self.a.root, "config", "gpg.program", str(self.base / "missing-signer"))
+        result = self.a.save(create())
+        self.assertEqual(result.local, "repair-required")
+        self.assertEqual(git(self.a.root, "rev-list", "--count", "HEAD"), "1")
+        self.assertTrue((self.a.root / "streams/work.yaml").exists())
+        self.assertTrue((self.a.root / ".catalog-sync/save.json").exists())
+
+    def test_separate_processes_serialize_record_index_and_commit(self):
+        source = str(Path(__file__).resolve().parents[2] / "src")
+        script = '''
+import sys
+sys.path.insert(0, sys.argv[1])
+from pathlib import Path
+from _streams.catalog.model import Stream
+from _streams.catalog.operations import Operation
+from _streams.catalog.sync import GitCatalog
+catalog = GitCatalog(Path(sys.argv[2]), host_id="laptop")
+record = Stream(id=sys.argv[3], title="Parallel", goal="Keep both updates", owner_host_id="laptop")
+result = catalog.save(Operation(id=sys.argv[3], before=None, after=record, actor="user"))
+assert result.local == "committed", result
+'''
+        children = [subprocess.Popen([sys.executable, "-c", script, source, str(self.a.root), name],
+                                     stdout=subprocess.PIPE, stderr=subprocess.PIPE) for name in ("first", "second")]
+        for child in children:
+            out, err = child.communicate(timeout=30)
+            self.assertEqual(child.returncode, 0, err.decode())
+        self.assertEqual({s.id for s in self.a.snapshot().catalog.streams}, {"first", "second"})
+        self.assertEqual(git(self.a.root, "rev-list", "--count", "HEAD"), "3")
+
     def test_manual_record_or_commit_envelope_tampering_fails_closed(self):
         self.a.save(create())
         path = self.a.root / "streams/work.yaml"

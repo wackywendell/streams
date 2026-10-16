@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from dataclasses import replace
+from datetime import datetime, timezone
 from pathlib import Path
 import sys
 import tempfile
@@ -9,7 +9,7 @@ from unittest.mock import patch
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "src"))
 
-from _streams.catalog.model import Session, Stream, ValidationError
+from _streams.catalog.model import Checkout, Document, Host, Link, Repository, Session, Stream, ValidationError
 from _streams.catalog.operations import Operation, update
 from _streams.catalog.sync import LocalCatalog, Policy, Timing, decode_operation, encode_operation
 from _streams.catalog.yaml_store import YamlStore
@@ -67,6 +67,19 @@ class EnvelopeTest(unittest.TestCase):
             decoded, origin = decode_operation(encoded)
             self.assertEqual(decoded, operation)
             self.assertEqual(origin, {"host": "laptop", "session": "native"})
+
+    def test_codec_roundtrips_nested_references_and_evidence_times(self):
+        stream = Stream(id="work", title="Title", goal="Goal", owner_host_id="laptop",
+                        repositories={"src": Repository("ssh://example.org/repo")},
+                        documents=(Document("src", "main", "docs/design.md", "Design"),),
+                        issues=(Link("https://example.org/ticket", "Ticket"),))
+        host = Host("laptop", "Laptop", datetime(2026, 10, 16, tzinfo=timezone.utc))
+        session = Session("s", "laptop", "work", "pi", "native", "Title",
+                          checkout=Checkout("src", "main", "src"))
+        for record in (stream, host, session):
+            operation = Operation("create", None, record, "user",
+                                  ownership_token="term" if isinstance(record, Session) else None)
+            self.assertEqual(decode_operation(encode_operation(operation))[0], operation)
 
     def test_unsupported_or_ambiguous_envelopes_are_rejected(self):
         for message in ('{}', '{"version":2}', '{"version":1,"version":1}',
