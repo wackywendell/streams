@@ -139,6 +139,73 @@ class GitCatalogTest(unittest.TestCase):
         self.assertEqual(self.a.snapshot().catalog.stream("work").status, "parked")
         self.assertEqual(self.a.save(create(effort("later"), "later")).local, "committed")
 
+    def test_retired_intent_keeps_retry_identity_after_adoption_and_restart(self):
+        self.publish_initial()
+        b = self.open("b", "server")
+        park = update("park-a", effort(), {"status": "parked"})
+        self.a.save(park)
+        b.save(update("park-b", effort(), {"status": "parked"}))
+        b.sync()
+        self.assertEqual(self.a.sync().sharing, "confirmed")
+        self.a.save(update("restore", park.after, {"status": "active"}))
+        self.a.sync()
+        a = GitCatalog(self.a.root, host_id="laptop", clock=lambda: self.now)
+        self.assertEqual(a.save(park).domain.outcome, "no-change")
+        self.assertEqual(a.snapshot().catalog.stream("work").status, "active")
+        changed = a.save(update("park-a", effort(), {"status": "done"}))
+        self.assertEqual(changed.local, "repair-required")
+
+    def test_remote_cannot_reinterpret_a_locally_retired_operation_id(self):
+        self.publish_initial()
+        b = self.open("b", "server")
+        park = update("park-a", effort(), {"status": "parked"})
+        self.a.save(park)
+        b.save(update("park-b", effort(), {"status": "parked"}))
+        b.sync()
+        self.a.sync()
+        last_confirmed = self.a._metadata()["confirmed"]
+        b.save(update("park-a", park.after, {"status": "done"}))
+        b.sync()
+        result = self.a.sync()
+        self.assertEqual(result.local, "repair-required")
+        self.assertEqual(self.a._metadata()["confirmed"], last_confirmed)
+        self.assertEqual(self.a.snapshot().catalog.stream("work").status, "parked")
+
+    def test_repaired_commit_establishes_missing_receipt_before_retirement(self):
+        self.publish_initial()
+        b = self.open("b", "server")
+        park = update("park-a", effort(), {"status": "parked"})
+        with patch.object(self.a.state, "remember", side_effect=OSError("crash before receipt")):
+            self.assertEqual(self.a.save(park).local, "repair-required")
+        # Explicit manual repair: verify the clean supported commit then clear
+        # the marker. There is deliberately no receipt for park-a yet.
+        from _streams.catalog.sync.history import read_history
+        self.assertEqual(read_history(self.a.git, self.a.git.head()).operations["park-a"][0], park)
+        self.a.state.clear("save.json")
+        b.save(update("park-b", effort(), {"status": "parked"}))
+        b.sync()
+        self.assertEqual(self.a.sync().sharing, "confirmed")
+        self.a.save(update("restore", park.after, {"status": "active"}))
+        self.a.sync()
+        a = GitCatalog(self.a.root, host_id="laptop")
+        self.assertEqual(a.save(park).domain.outcome, "no-change")
+        self.assertEqual(a.snapshot().catalog.stream("work").status, "active")
+
+    def test_confirmed_lost_push_counts_only_once_despite_later_conflicts(self):
+        self.a.save(create())
+        with patch.object(self.a.git, "run", side_effect=self.lose_push_response()):
+            self.assertEqual(self.a.sync().sharing, "uncertain")
+        b = self.open("b", "server")
+        b.save(update("remote-title", effort(), {"title": "Remote"}))
+        b.sync()
+        self.a.save(update("local-title", effort(), {"title": "Local"}))
+        self.now += 100
+        self.assertEqual(self.a.sync().sharing, "blocked")
+        confirmed_at = self.a._metadata()["last_push"]
+        self.now += 100
+        self.assertEqual(self.a.sync().sharing, "blocked")
+        self.assertEqual(self.a._metadata()["last_push"], confirmed_at)
+
     def test_automatic_stale_update_is_retired_instead_of_retrying_forever(self):
         self.publish_initial()
         b = self.open("b", "server")
@@ -256,12 +323,77 @@ class GitCatalogTest(unittest.TestCase):
         self.assertEqual(self.open("reader").snapshot().catalog.stream("work"), effort())
         self.assertTrue((self.a.root / ".catalog-sync/publication.json").exists())
 
+    def test_adoption_interruption_after_worktree_update_preserves_both_histories(self):
+        self.publish_initial()
+        b = self.open("b", "server")
+        b.save(update("remote-title", effort(), {"title": "Remote title"}))
+        b.sync()
+        self.a.save(update("park", effort(), {"status": "parked"}))
+        old_tip = git(self.a.root, "rev-parse", "HEAD")
+        original = self.a.git.run
+        def interrupt(*args, **kwargs):
+            if args[:2] == ("update-ref", "refs/heads/main"):
+                raise GitError("interrupted ref adoption", code=1)
+            return original(*args, **kwargs)
+        with patch.object(self.a.git, "run", side_effect=interrupt):
+            result = self.a.sync()
+        self.assertEqual((result.sharing, result.local), ("confirmed", "repair-required"))
+        self.assertEqual(git(self.a.root, "rev-parse", "HEAD"), old_tip)
+        self.assertIn("Remote title", (self.a.root / "streams/work.yaml").read_text())
+        self.assertEqual(self.a.save(create(effort("later"), "later")).local, "repair-required")
+        reader = self.open("reader").snapshot().catalog.stream("work")
+        self.assertEqual((reader.status, reader.title), ("parked", "Remote title"))
+
+    def test_unaccepted_uncertain_push_replays_later_saves_with_remote_changes(self):
+        self.publish_initial()
+        b = self.open("b", "server")
+        self.a.save(update("park", effort(), {"status": "parked"}))
+        original = self.a.git.run
+        pushed = False
+        def unavailable(*args, **kwargs):
+            nonlocal pushed
+            if args[0] == "push":
+                pushed = True
+                raise GitError("request lost before acceptance")
+            if pushed and args[0] in ("ls-remote", "fetch"):
+                raise GitError("cannot inspect")
+            return original(*args, **kwargs)
+        with patch.object(self.a.git, "run", side_effect=unavailable):
+            self.assertEqual(self.a.sync().sharing, "uncertain")
+        self.assertEqual(self.a.save(create(effort("later"), "later")).local, "committed")
+        b.save(update("rename", effort(), {"title": "Concurrent remote"}))
+        b.sync()
+        self.assertEqual(self.a.sync().sharing, "confirmed")
+        catalog = self.open("reader").snapshot().catalog
+        self.assertEqual((catalog.stream("work").status, catalog.stream("work").title),
+                         ("parked", "Concurrent remote"))
+        self.assertIsNotNone(catalog.stream("later"))
+        history = git(self.remote, "log", "--format=%B", "main")
+        self.assertEqual(history.count('"id":"park"'), 1)
+
     def test_remote_history_replacement_is_not_silently_adopted(self):
         self.publish_initial()
         # Delete the published branch to simulate unsupported external surgery.
         git(self.remote, "update-ref", "-d", "refs/heads/main")
         self.assertEqual(self.a.sync().local, "repair-required")
         self.assertEqual(self.a.snapshot().catalog.stream("work"), effort())
+
+    def test_history_validation_reuses_immutable_objects_instead_of_rereading_every_tree(self):
+        # A supported fixture without timing each preceding coordinator save.
+        from _streams.catalog.sync import encode_operation
+        for number in range(40):
+            operation = create(effort(str(number)), id="create-" + str(number))
+            with self.a.store.transaction() as transaction:
+                transaction.save(operation.after, expected=transaction.read())
+            git(self.a.root, "add", self.a.store.record_path(operation.target).as_posix())
+            git(self.a.root, "commit", "-m", encode_operation(operation))
+        a = GitCatalog(self.a.root, host_id="laptop")
+        with patch.object(a.git, "run", wraps=a.git.run) as calls:
+            self.assertEqual(a.save(create(effort("cold"), "cold")).local, "committed")
+            self.assertLess(calls.call_count, 120, "cold validation should not reread unchanged historical blobs")
+        with patch.object(a.git, "run", wraps=a.git.run) as calls:
+            self.assertEqual(a.save(create(effort("warm"), "warm")).local, "committed")
+            self.assertLess(calls.call_count, 40, "warm saves should validate only new immutable commits")
 
     def test_signing_failure_preserves_save_without_unsigned_fallback(self):
         git(self.a.root, "config", "commit.gpgsign", "true")

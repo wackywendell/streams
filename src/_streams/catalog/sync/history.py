@@ -1,6 +1,6 @@
 """Validate materialized Git history against the original domain operations."""
 
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 
 from ..model import Catalog, Stream, record_key
 from ..operations import Authority, Operation, reconcile
@@ -33,14 +33,27 @@ def read_history(git: Git, tip: str | None) -> History:
 
 
 def _read_history(git: Git, tip: str | None) -> History:
+    if tip in git.histories:
+        return git.histories[tip]
     history = History(tip=tip)
     if tip is None:
         return history
-    previous = None
-    for line in git.text("rev-list", "--reverse", "--topo-order", "--parents", tip).splitlines():
-        revision, *parents = line.split()
+    entries = git.run("log", "-z", "--reverse", "--topo-order", "--format=%H%x00%P%x00%B", tip).decode().split("\0")
+    if entries[-1] == "":
+        entries.pop()
+    if len(entries) % 3:
+        raise RepairRequired("invalid Git commit metadata")
+    commits = list(zip(entries[::3], entries[1::3], entries[2::3]))
+    start, previous = 0, None
+    for index, (revision, _, _) in enumerate(commits):
+        if revision in git.histories:
+            history = git.histories[revision]
+            start, previous = index + 1, revision
+    for revision, parent_text, raw_message in commits[start:]:
+        history = replace(history, authorities=dict(history.authorities), operations=dict(history.operations))
+        parents = parent_text.split()
         files = git.files(revision)
-        message = git.run("show", "-s", "--format=%B", revision).decode().rstrip() + "\n"
+        message = raw_message.rstrip() + "\n"
         if previous is None:
             if parents or files or message != BOOTSTRAP:
                 raise RepairRequired("catalog history must start with an empty Streams catalog v1 commit")
@@ -64,6 +77,10 @@ def _read_history(git: Git, tip: str | None) -> History:
                 history.authorities[operation.after.id] = Authority(operation.after.owner_host_id, operation.id)
             history.catalog = actual
             history.operations[operation.id] = (operation, origin)
-        history.files = files
+        history = replace(history, tip=revision, files=files)
+        git.histories[revision] = history
+        # Keep a few validated tips, not a complete copy of every prefix.
+        if len(git.histories) > 8:
+            del git.histories[next(iter(git.histories))]
         previous = revision
     return history

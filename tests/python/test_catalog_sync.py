@@ -119,6 +119,20 @@ class LocalCatalogTest(unittest.TestCase):
         result = local.save(desired)
         self.assertEqual((result.domain.outcome, result.local), ("conflict", "unchanged"))
 
+    def test_local_retry_identity_survives_restore_and_process_restart(self):
+        local = LocalCatalog(YamlStore(self.root), host_id="laptop")
+        local.save(create())
+        park = update("park", effort(), {"status": "parked"})
+        local.save(park)
+        local.save(update("restore", park.after, {"status": "active"}))
+        local = LocalCatalog(YamlStore(self.root), host_id="laptop")
+        retried = local.save(park)
+        self.assertEqual(retried.domain.outcome, "no-change")
+        self.assertEqual(local.snapshot().catalog.stream("work").status, "active")
+        changed = local.save(update("park", effort(), {"status": "done"}))
+        self.assertEqual(changed.local, "repair-required")
+        self.assertEqual(local.snapshot().catalog.stream("work").status, "active")
+
     def test_local_save_failure_preserves_marker_and_requires_repair(self):
         local = LocalCatalog(YamlStore(self.root), host_id="laptop")
         with patch("_streams.catalog.yaml_store._YamlTransaction.save", side_effect=OSError("disk")):

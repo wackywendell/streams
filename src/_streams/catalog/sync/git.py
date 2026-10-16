@@ -107,7 +107,11 @@ class GitCatalog:
         return self.git.commit(tree, message, parent)
 
     def _history(self) -> History:
-        return read_history(self.git, self.git.head())
+        history = read_history(self.git, self.git.head())
+        # A manually verified/repaired commit may predate its receipt write.
+        # Establish retry protection before any history can leave the live tip.
+        self.state.validate_operations((op for op, _ in history.operations.values()), remember=True)
+        return history
 
     def snapshot(self) -> Snapshot:
         with self.store.transaction() as transaction:
@@ -136,14 +140,17 @@ class GitCatalog:
                 self._ready()
                 history = self._history()
                 previous = history.operations.get(operation.id)
-                if previous is not None:
-                    if previous[0] != operation:
+                remembered = self.state.seen(operation)
+                if previous is not None or remembered:
+                    if previous is not None and previous[0] != operation:
                         raise RepairRequired(f"operation ID reused with different intent: {operation.id}")
                     return Result("pending", domain=Reconciliation(operation.id, "no-change", reason="operation already saved"),
                                   local_revision=history.tip)
                 snapshot = transaction.read()
                 result = reconcile(snapshot.catalog, operation, authority=authority_for(operation, self._authorities(history)))
                 if result.outcome != "changes":
+                    if result.outcome == "no-change":
+                        self.state.remember(operation)
                     return Result("pending", domain=result, local_revision=history.tip)
                 self.state.write("save.json", {"start": history.tip, "operation": message})
                 transaction.save(result.record, expected=snapshot)
@@ -154,6 +161,7 @@ class GitCatalog:
                 self.git.run("update-ref", "refs/heads/" + branch, commit, history.tip)
                 self._clean()
                 read_history(self.git, commit)
+                self.state.remember(operation)
                 self.state.clear("save.json")
                 return Result("pending", local="committed", domain=result, local_revision=commit)
         except (OSError, ValueError, StorageError) as error:
@@ -171,11 +179,13 @@ class GitCatalog:
         if found:
             self.git.run("fetch", "--no-tags", "origin", ref)
             tip = self.git.text("rev-parse", "--verify", "FETCH_HEAD")
-            read_history(self.git, tip)
+            history = read_history(self.git, tip)
         metadata = self._metadata()
         previous = metadata.get("confirmed")
         if previous is not None and (tip is None or not self.git.ancestor(previous, tip)):
             raise RepairRequired("confirmed remote history was removed or replaced")
+        if tip is not None:
+            self.state.validate_operations((op for op, _ in history.operations.values()), remember=True)
         metadata.update(confirmed=tip, fetched_at=self.clock())
         self.state.write("sync.json", metadata)
         return tip
@@ -265,11 +275,22 @@ class GitCatalog:
         return bool(ids) and all(id in remote.operations and id in candidate.operations
                                  and remote.operations[id][0] == candidate.operations[id][0] for id in ids)
 
-    def _success(self, *, pushed: bool):
+    def _record_confirmation(self, marker: dict):
+        if marker.get("confirmed_at") is not None:
+            return
+        # Write the scheduling baseline first, then the marker. A crash here
+        # requires inspection rather than repeatedly moving the baseline.
+        metadata = self._metadata()
+        key = marker["candidate"]
+        if metadata.get("last_confirmed_attempt") != key:
+            metadata.update(last_push=self.clock(), last_confirmed_attempt=key)
+            self.state.write("sync.json", metadata)
+        marker["confirmed_at"] = metadata["last_push"]
+        self.state.write("publication.json", marker)
+
+    def _success(self):
         metadata = self._metadata()
         metadata.update(last_sync=self.clock(), retry_after=0)
-        if pushed:
-            metadata["last_push"] = self.clock()
         self.state.write("sync.json", metadata)
 
     def _failure(self):
@@ -299,6 +320,7 @@ class GitCatalog:
                     if marker is not None:
                         if self._confirmed_attempt(marker, remote):
                             had_publication = True
+                            self._record_confirmation(marker)
                         elif marker["base"] == remote.tip and marker["local_tip"] == local.tip:
                             reuse = True
                     if reuse:
@@ -306,10 +328,6 @@ class GitCatalog:
                     else:
                         candidate, conflicts = self._candidate(local, remote)
                     if conflicts:
-                        if had_publication:
-                            metadata = self._metadata()
-                            metadata["last_push"] = self.clock()
-                            self.state.write("sync.json", metadata)
                         return Result("blocked", local_revision=local.tip, remote_revision=remote.tip,
                                       detail="domain conflict blocks the outgoing batch", conflicts=conflicts)
                     changed = candidate != (remote.tip or local.root)
@@ -330,6 +348,7 @@ class GitCatalog:
                                 self._failure()
                                 return Result("uncertain", local_revision=local.tip, detail=str(push_error))
                             if self._confirmed_attempt(marker, observed):
+                                self._record_confirmation(marker)
                                 remote, had_publication = observed, True
                                 # Rebuild only remaining operations against the
                                 # newest accepted state, not the old candidate.
@@ -346,6 +365,7 @@ class GitCatalog:
                             metadata = self._metadata()
                             metadata.update(confirmed=candidate, fetched_at=self.clock())
                             self.state.write("sync.json", metadata)
+                            self._record_confirmation(marker)
                     # Publication has been established (or no push was needed).
                     try:
                         self._adopt(local.tip, candidate, marker)
@@ -354,7 +374,7 @@ class GitCatalog:
                         self.state.write("publication.json", marker)
                         return Result("confirmed" if had_publication else "blocked", local="repair-required",
                                       local_revision=local.tip, remote_revision=self._metadata()["confirmed"], detail=str(error))
-                    self._success(pushed=had_publication)
+                    self._success()
                     return Result("confirmed", local_revision=candidate, remote_revision=self._metadata()["confirmed"])
                 self._failure()
                 return Result("failed", detail="competing-push retry budget exhausted")

@@ -1,6 +1,7 @@
 """Local file-store coordination and durable, fail-closed transport bookkeeping."""
 
 from dataclasses import dataclass
+import hashlib
 import os
 from pathlib import Path
 import tempfile
@@ -80,6 +81,43 @@ class State:
         finally:
             os.close(descriptor)
 
+    def _receipts(self) -> dict:
+        data = self.read("receipts.json") or {"operations": {}}
+        operations = data.get("operations")
+        if (not isinstance(operations, dict) or
+                any(not isinstance(key, str) or not isinstance(value, str) or len(value) != 64
+                    or any(c not in "0123456789abcdef" for c in value) for key, value in operations.items())):
+            raise RepairRequired("invalid operation retry receipts")
+        return operations
+
+    @staticmethod
+    def _digest(operation: Operation) -> str:
+        return hashlib.sha256(encode_operation(operation).encode()).hexdigest()
+
+    def seen(self, operation: Operation) -> bool:
+        digest = self._receipts().get(operation.id)
+        if digest is not None and digest != self._digest(operation):
+            raise RepairRequired(f"operation ID reused with different intent: {operation.id}")
+        return digest is not None
+
+    def remember(self, operation: Operation):
+        self.validate_operations((operation,), remember=True)
+
+    def validate_operations(self, intents, *, remember: bool = False):
+        """Compare a validated history in one pass before accepting or retiring it."""
+        operations = self._receipts()
+        changed = False
+        for operation in intents:
+            digest = self._digest(operation)
+            previous = operations.get(operation.id)
+            if previous is not None and previous != digest:
+                raise RepairRequired(f"operation ID reused with different intent: {operation.id}")
+            if previous is None:
+                operations[operation.id] = digest
+                changed = True
+        if remember and changed:
+            self.write("receipts.json", {"operations": operations})
+
     def check_save(self):
         marker = self.read("save.json")
         if marker is not None:
@@ -141,8 +179,12 @@ class LocalCatalog:
             with self.store.transaction() as transaction:
                 self.state.check_save()
                 snapshot = transaction.read()
+                if self.state.seen(operation):
+                    return Result("local-only", domain=Reconciliation(operation.id, "no-change", reason="operation already saved"))
                 result = reconcile(snapshot.catalog, operation, authority=authority_for(operation, self._creations()))
                 if result.outcome != "changes":
+                    if result.outcome == "no-change":
+                        self.state.remember(operation)
                     return Result("local-only", domain=result)
                 self.state.write("save.json", {"operation": encode_operation(operation, origin=origin)})
                 if operation.before is None and isinstance(operation.after, Stream):
@@ -150,6 +192,7 @@ class LocalCatalog:
                     receipts["creations"][operation.after.id] = encode_operation(operation, origin=origin)
                     self.state.write("local.json", receipts)
                 transaction.save(result.record, expected=snapshot)
+                self.state.remember(operation)
                 self.state.clear("save.json")
                 return Result("local-only", local="persisted", domain=result)
         except (OSError, StorageError) as error:

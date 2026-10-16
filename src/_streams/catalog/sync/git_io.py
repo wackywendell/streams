@@ -16,6 +16,8 @@ class GitError(StorageError):
 class Git:
     def __init__(self, root: Path, timeout: float):
         self.root, self.timeout = root, timeout
+        self.histories = {}
+        self._blobs = {}
 
     def run(self, *args: str, input: bytes | None = None, index: Path | None = None,
             allowed: tuple[int, ...] = (0,)) -> bytes:
@@ -47,7 +49,7 @@ class Git:
         return self.text("merge-base", before, after, allowed=(0, 1)) == before
 
     def files(self, revision: str) -> dict[str, bytes]:
-        files = {}
+        paths = {}
         for entry in self.run("ls-tree", "-rz", "--full-tree", revision).split(b"\0"):
             if not entry:
                 continue
@@ -55,8 +57,21 @@ class Git:
             mode, kind, oid = description.decode().split()
             if mode != "100644" or kind != "blob":
                 raise StorageError("catalog history contains a non-regular record")
-            files[path.decode()] = self.run("cat-file", "blob", oid)
-        return files
+            paths[path.decode()] = oid
+        missing = sorted(set(paths.values()) - self._blobs.keys())
+        if missing:
+            output = self.run("cat-file", "--batch", input=("\n".join(missing) + "\n").encode())
+            offset = 0
+            for expected in missing:
+                end = output.index(b"\n", offset)
+                oid, kind, size = output[offset:end].decode().split()
+                size = int(size)
+                if oid != expected or kind != "blob":
+                    raise StorageError("invalid Git blob batch response")
+                offset = end + 1
+                self._blobs[oid] = output[offset:offset + size]
+                offset += size + 1
+        return {path: self._blobs[oid] for path, oid in paths.items()}
 
     def commit(self, tree: str, message: str, parent: str | None = None) -> str:
         args = ["commit-tree", tree]

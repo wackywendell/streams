@@ -24,7 +24,9 @@ assert result.local == "persisted"
 assert result.sharing == "local-only"
 ```
 
-Retain operation IDs and original inputs when retrying. Generate IDs for new intents, not for each attempt. The catalog's host ID must be stable across processes on the same host. Do not infer it from a terminal pane or a temporary process ID.
+Retain operation IDs and original inputs when retrying. Generate IDs for new intents, not for each attempt. Local receipt fingerprints prevent an accepted operation from being applied again after later edits, including after Git replay retires it as satisfied or superseded. Reusing an accepted ID with different inputs requires repair rather than changing that ID's meaning.
+
+The catalog's host ID must be stable across processes on the same host. Do not infer it from a terminal pane or a temporary process ID.
 
 ## Git-backed storage
 
@@ -108,7 +110,11 @@ git for-each-ref refs/catalog/retained/
 
 Read the marker files as JSON. Operation messages use the `Streams operation v1` header and can be decoded with `decode_operation(message)`. Compare the marker's starting commit, original operation, changed files, index and resulting commit. A valid record alone is insufficient: every operation commit must explain exactly its intended record change through domain reconciliation.
 
-If the original operation was fully committed, verify its envelope, parent and materialized record before clearing the leftover save marker. If it was not, either finish that exact operation or restore the recorded starting state only under explicit user direction, preserving evidence first. Do not invent a different operation under the old ID. An adoption repair similarly needs to establish the accepted remote tip and preserve later local operations before changing the checkout.
+If the original operation was fully committed, verify its envelope, parent and materialized record before clearing the leftover save marker. The next coordinated history read establishes missing retry receipts before any local operation can retire. Fetched operations are checked against those receipts before becoming the confirmed snapshot.
+
+Local-only mode has no commit history to rebuild receipts from. Before clearing its verified completed save marker, decode the marker's original operation and retain its accepted-intent receipt with `catalog.state.remember(operation)`. Receipt completion is bookkeeping for that verified save, not permission to apply the operation again. Preserve the receipts along with other local state.
+
+If the save was not complete, either finish that exact operation or restore the recorded starting state only under explicit user direction, preserving evidence first. Do not invent a different operation under the old ID. An adoption repair similarly needs to establish the accepted remote tip and preserve later local operations before changing the checkout.
 
 After repairing files, index and supported operation history, clear only the marker whose condition was repaired. Merely deleting a marker is not a repair: the next call still validates checkout and history. `snapshot()` refuses uncertain live state; `confirmed_snapshot()` can inspect the last verified remote catalog separately. Dedicated repair and conflict-resolution commands are not part of this library slice.
 
