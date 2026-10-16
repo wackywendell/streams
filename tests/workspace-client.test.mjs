@@ -1,7 +1,7 @@
 import test from 'node:test';
 import { createHash } from 'node:crypto';
 import assert from 'node:assert/strict';
-import { mkdtemp, mkdir, writeFile, realpath, symlink, unlink } from 'node:fs/promises';
+import { mkdtemp, mkdir, writeFile, realpath, symlink, unlink, rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { WorkspaceClient } from '../dist/herdr/workspace-client.js';
@@ -911,6 +911,31 @@ test('collision refresh renames only proven automatic editor names and current f
   const intruder={pane_id:'w:p100',terminal_id:'term100',workspace_id:'w',tab_id:tab.tab_id,tokens:{}}; f.panes.unshift(intruder);
   await card.refreshDocumentNames(f.store,context,opened.agent,DEFAULT_CONFIG); assert.equal(tab.label,initialLabel);
 });
+test('disabled tab naming leaves editor open/focus intact and preserves history across re-enable', async t => {
+  const f=await documentFixture(); t.after(()=>rm(f.root,{recursive:true,force:true}));
+  const disabled={...DEFAULT_CONFIG,tab_naming:false};
+  await f.card.openDocument(f.store,f.context,f.workspace,f.opened.agent,f.target('plan.md'),disabled);
+  const editor=f.panes.find(p=>p.tokens.wcd_key), tab=f.tabs.find(t=>t.tab_id===editor.tab_id);
+  const names=new NameStore(f.store.directory), scope=await names.scope({socket:f.context.socket,workspaceId:f.context.workspaceId,bindingNonce:f.context.bindingNonce,kind:'tab',surfaceId:tab.tab_id});
+  assert.equal(await names.read(scope),null);
+  assert(f.calls.some(args=>args[0]==='tab'&&args[1]==='focus'&&args[2]===tab.tab_id));
+  assert.equal(f.calls.some(args=>args[1]==='rename'),false);
+  await f.card.refreshDocumentNames(f.store,f.context,f.opened.agent,disabled);
+  assert.equal(await names.read(scope),null);
+  await f.card.refreshDocumentNames(f.store,f.context,f.opened.agent,DEFAULT_CONFIG);
+  const automaticLabel=tab.label;
+  assert.equal((await names.read(scope)).record.lastApplied,automaticLabel);
+  assert.notEqual(automaticLabel,String(tab.number));
+  tab.label='Pinned editor';
+  await f.card.refreshDocumentNames(f.store,f.context,f.opened.agent,DEFAULT_CONFIG);
+  const pin=await names.read(scope);
+  await f.card.refreshDocumentNames(f.store,f.context,f.opened.agent,disabled);
+  assert.equal((await names.read(scope)).revision,pin.revision);
+  tab.label=automaticLabel;
+  await f.card.refreshDocumentNames(f.store,f.context,f.opened.agent,DEFAULT_CONFIG);
+  assert.equal((await names.read(scope)).record.mode,'manual');
+});
+
 test('editor and agent hand over one tab history in both directions; later native rename pins both', async () => {
   const f=await documentFixture();
   await f.card.openDocument(f.store,f.context,f.workspace,f.opened.agent,f.target('second.md'),DEFAULT_CONFIG);

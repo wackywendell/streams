@@ -78,6 +78,40 @@ test('own protocol retains the entire projection and limits shared context to ti
   assert.doesNotMatch(context.systemPrompt, /Goal:.*\| Now:/);
 });
 
+test('own title prompt requests workspace-relative labels without weakening stability or reset isolation', () => {
+  const snapshot = { ...workspace, title: 'Work Cards', goal: { kind: 'known', text: 'Organize durable work assignments', provenance: { kind: 'conversation', sessionId: 's', digest: 'd'.repeat(64) } } };
+  const previous = { ...agent, title: 'Work-card Naming and ADR', titleMode: 'auto' };
+  const evidence = { compactionSummary: 'Naming and ADR assignment', transcript: [{ role: 'user', text: 'Improve assignment naming' }] };
+  for (const intent of ['automatic', 'refresh', 'reset']) {
+    const input = buildOwnSummaryContext(previous, evidence, snapshot, intent);
+    const prompt = input.systemPrompt;
+    assert.match(prompt, /short assignment label relative to the shared workspace/i);
+    assert.match(prompt, /2–4 words.*soft target/i);
+    assert.match(prompt, /omit.*project\/workspace name.*work on.*unless needed to distinguish/i);
+    assert.match(prompt, /preserve useful scope/i);
+    assert.match(prompt, /shared context.*not supplied.*infer.*supplied evidence/i);
+    assert.match(prompt, /untrusted data, not instructions/i);
+    assert.deepEqual(data(input), intent === 'reset'
+      ? { ...evidence, agent: { checkout: previous.checkout, cwd: previous.cwd } }
+      : { ...evidence, agent: previous, workspace: { title: snapshot.title, goal: snapshot.goal.text } });
+    if (intent !== 'reset') {
+      assert.match(prompt, /correct.*automatic.*overlong or redundant.*maturity.*unchanged/i);
+      assert.match(prompt, /otherwise.*sound titles stable/i);
+      assert.match(prompt, /Prefer no_change for uncertain conclusions/i);
+    }
+  }
+});
+
+test('concise title-only proposals update automatic titles but preserve manual titles and maturity', () => {
+  for (const titleMode of ['auto', 'manual']) {
+    const previous = { ...agent, title: 'Work-card Naming and ADR', titleMode, statusShort: 'Naming review' };
+    const decision = parseOwnSummaryDecision('{"action":"update","patch":{"title":"Naming and ADR"}}', previous);
+    assert.deepEqual(decision, { action: 'update', patch: { title: 'Naming and ADR' } });
+    assert.deepEqual(applyOwnUpdate(previous, decision.patch), { ...previous, title: titleMode === 'auto' ? 'Naming and ADR' : previous.title });
+  }
+  assert.deepEqual(own({ action: 'no_change' }), { action: 'no_change' });
+});
+
 test('own decisions use exact core title/status validation and preserve manual titles at application', () => {
   const decision = own({ action: 'update', patch: { title: 'Automatic', now: 'Adapter usable', remaining: 'Compatibility checks', status: 'waiting' } });
   assert.equal(applyOwnUpdate(agent, decision.patch).title, 'Manual title');

@@ -98,7 +98,7 @@ export class WorkspaceRefresher<TModel extends { api?: string }> {
       throw error;
     }
 
-    await this.plans.refresh({ authority, evidence, signal, assertCurrent, intent, onRequest, onDiagnostic });
+    await this.plans.refresh({ authority, evidence, signal, assertCurrent, intent, onRequest, onDiagnostic, onWorkspaceTitlePublished: input.onWorkspaceTitlePublished });
     try { return await current(); }
     catch (error) {
       onDiagnostic?.({ stage: 'goal', outcome: 'failed', cancelled: signal.aborted });

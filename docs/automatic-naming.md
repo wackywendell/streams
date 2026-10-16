@@ -23,7 +23,9 @@ Naming is a deterministic projection of validated records and exact document ide
 
 Only the actual first layout pane has tab naming rights. An ineligible first pane does not transfer those rights to a later agent or editor. A non-first agent can still name its own Pi session.
 
-Record titles may be explicitly supplied or model-derived through the existing evidence contracts. Naming makes no model request and invents no purpose. Sparse purpose remains empty; neither fabricated Goal text nor compact summary fields supply a fallback label.
+Record titles may be explicitly supplied or model-derived through the existing evidence contracts. An automatic agent title is a short assignment label within the workspace, not a repetition of the project name: “Naming and ADR” can distinguish an assignment inside “Work Cards”. Brevity is a soft target, not a truncation rule; retain words needed to distinguish the assignment. A redundant automatic title can be corrected without implying changed progress. Explicit manual titles remain protected.
+
+Naming makes no model request and invents no purpose. Sparse purpose remains empty; neither fabricated Goal text nor compact summary fields supply a fallback label.
 
 The card-pane caption remains a separate app-owned projection of the workspace title. Caption ownership does not authorise renaming other surfaces. Document identity governs editor reuse; its displayed name never becomes an identity or a document target.
 
@@ -35,15 +37,29 @@ A successful own-helper response must contain an actual title proposal. After pu
 
 Successful explicit native naming can also establish acceptance of the current own source title, including a bootstrap title. Before recording acceptance, recheck host and scope authority and confirm the title has not changed during the operation.
 
-Automatic Pi session and agent-tab naming require a matching accepted source title, or an explicit manual record title. Same-UUID reload can reuse the attribution. Automatic `Untitled task` remains ineligible, even after explicit acceptance. Shared workspace naming does not depend on own-title readiness; native provenance still protects unknown labels. This adds no `AgentRecord` schema field or title-length, status or plausibility heuristic.
+Automatic Pi session and agent-tab naming require a matching accepted source title, or an explicit manual record title. Same-UUID reload can reuse the attribution. Automatic `Untitled task` remains ineligible, even after explicit acceptance. Shared workspace naming does not depend on own-title readiness; its initial claim and manual protection use separate provenance. This adds no `AgentRecord` schema field or title-length, status or plausibility heuristic.
 
 Malformed session-local naming provenance visibly suspends Pi and automatic own-tab naming, not independently authorised workspace naming. Accepting a title must not silently replace malformed state. Optional naming failures do not invalidate a successfully published own summary or block subsequent shared-reference and Goal stages.
 
+### Control each naming surface independently
+
+`workspace_naming`, `tab_naming` and `session_naming` each accept `true`, `false` or `null`. Omitted or `null` settings follow `workspace_startup`: enabled for `automatic`, disabled for `manual`. Explicit booleans override that default independently. The tab setting covers agent and document-editor tabs. The session setting does not disable assignment-title attribution needed by tabs.
+
+Disabling automatic naming leaves records and naming history intact. Re-enabling it does not reclaim a manually protected surface. `/work-card naming` is deliberate native reclaim, so it bypasses these automatic switches without changing Pi session names. Card-pane captions remain app-owned and are not controlled by these switches.
+
+### Claim an initial workspace name once
+
+Herdr 0.9.5 derives workspace labels from git and the working directory. Snapshot `WorkspaceInfo` exposes a label and number, but no automatic, manual, custom-name or default proof. First Goal creation cannot establish that the native label was never manually named. Automatic workspace naming instead grants one initial claim when a grounded purpose and name are accepted. This may replace a name chosen before Work Cards observed it; that is an accepted cost of automatic naming, not a native default-label heuristic.
+
+Before inference, capture an unclaimed workspace's observed label in surface-scoped pending provenance. Pending state grants no automatic ownership. If the label changes before the claim, protect it as manual. A claim requires a known Goal and an accepted title proposal, or an explicitly authored workspace title. A known Goal with an unproven bootstrap title is not enough. Bind helper-title acceptance to the pending revision captured before that inference, so older source attribution cannot authorise a later baseline.
+
+The host persists accepted workspace-title attribution in a UUID-bound Pi entry, separate from own-session naming. It records workspace identity, title and the pending revision, not conversation contents. Same-session reload retains this proof. Foreign sessions and changed workspace identities cannot reuse it. Reset, source loss and configuration toggles do not reset native claim history.
+
+Existing manual pins remain protected, including pins written by the older conservative policy: their origin cannot be distinguished from a deliberate override. Use `/work-card naming` to reclaim those names. An existing bound workspace with genuinely missing native provenance can establish a pending baseline, but needs a fresh accepted name proposal; historical Goal text alone supplies no attribution.
+
 ### Preserve independent manual choices
 
-Without trustworthy automatic provenance, preserve existing nondefault names as manual. This includes names produced by an older namer. Do not take over a name merely because it matches the desired title.
-
-Herdr 0.9.5 derives workspace labels from git and the working directory. Snapshot `WorkspaceInfo` exposes a label and number, but no automatic, manual, custom-name or default proof. Preserve initial unknown workspace labels, even numeric ones. Do not reproduce Herdr's fallback logic. `/work-card naming` explicitly establishes provenance; subsequent automatic tracking can then follow the record.
+Outside the initial workspace claim, preserve unproven nondefault names. Matching the desired title never proves automatic ownership. Names produced by an older namer receive no special authority.
 
 A tab's default label is its one-based current position among that workspace's tabs in authoritative snapshot order. Its stable `tab.number` is not default-label proof after reordering. A verified default tab remains eligible for automatic naming.
 
@@ -59,7 +75,7 @@ Native workspace, native tab and Pi session overrides are independent. A manual 
 
 This scope prevents unrelated or recreated surfaces from inheriting naming rights. It also preserves history when first-pane ownership transfers between agents or between an agent and an editor. Transfer does not require the predecessor to remain live.
 
-Provenance records the last applied automatic name and whether a manual override protects the surface. It is a local cache, not project state or a global registry. Missing provenance does not prove automatic ownership. Malformed or unavailable provenance suspends naming rather than granting takeover rights.
+Provenance records a pending workspace baseline, the last applied automatic name, or a manual pin. It is a local cache, not project state or a global registry. Missing provenance does not prove automatic ownership. Malformed or unavailable provenance suspends naming rather than granting takeover rights.
 
 Editor tabs share this native surface provenance. Separate agent and editor caches would lose manual protection when the first pane changes role.
 
@@ -82,13 +98,14 @@ The adapter contract is:
 ```ts
 WorkspaceClient.projectNames(
   store, context, paintedAgent, config, signal?, intent = 'automatic',
-  acceptedOwnTitle = paintedAgent.record.title
+  acceptedOwnTitle = paintedAgent.record.title,
+  acceptedWorkspaceTitle = null
 )
 ```
 
-The host passes the exact accepted own title, or `null` when it is unready. Automatic tab projection rechecks that title against the current record; workspace projection remains independent. Explicit intent bypasses the own-title readiness gate.
+The host passes the exact accepted own title, or `null` when it is unready. Automatic tab projection rechecks that title against the current record. `prepareWorkspaceNaming` captures the pending revision before inference. Initial workspace claims receive `{ title, pendingRevision }` and recheck both values against current records and provenance. Already claimed workspace names track independently of own-title readiness. Explicit intent bypasses source readiness, not native authority.
 
-It returns separate workspace and tab outcomes. Each can be `renamed`, `unchanged` or `manual`; the tab can also be `not-first` or `not-ready`. Invalid authority, invalid provenance and native or persistence failures remain visible failures, not successful outcomes.
+The adapter returns separate workspace and tab outcomes: `renamed`, `unchanged`, `manual`, `not-ready` or `disabled`. Tabs can also report `not-first`. Invalid authority, invalid provenance and native or persistence failures remain visible failures, not successful outcomes.
 
 The Pi host owns session lifecycle and session-local naming. It calls native projection only through current attachment authority. Neither layer treats a successful record update as proof that a native label or Pi name changed.
 

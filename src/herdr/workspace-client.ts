@@ -1,7 +1,7 @@
 import { createHash, randomUUID } from 'node:crypto';
 import { mkdir, realpath } from 'node:fs/promises';
 import { isDeepStrictEqual } from 'node:util';
-import { configPath, documentCommand, type WorkCardsConfig } from '../config.js';
+import { configPath, documentCommand, namingEnabled, type WorkCardsConfig } from '../config.js';
 import { resolvedReferences } from '../presentation.js';
 import { RecordStore, agentAuthority, goalText, goalShort, sameAgentMembership, resolveWorkspaceDocument, documentIdentity, referenceIdentity, validateMembership, type AgentRecord, type DocumentIdentity, type JoinInput, type Snapshot, type WorkspaceRecord } from '../records.js';
 import { withWorkspaceLock } from './workspace-lock.js';
@@ -20,10 +20,12 @@ export interface ReadyMembership extends Membership {
   context: NativeContext & { bindingNonce: string };
   ownership: PairState;
 }
-export type NativeNamingResult = { workspace: 'renamed' | 'unchanged' | 'manual'; tab: 'renamed' | 'unchanged' | 'manual' | 'not-first' | 'not-ready' };
+export interface AcceptedWorkspaceTitle { title: string; pendingRevision: string }
+export type NativeNamingResult = { workspace: 'renamed' | 'unchanged' | 'manual' | 'not-ready' | 'disabled'; tab: 'renamed' | 'unchanged' | 'manual' | 'not-first' | 'not-ready' | 'disabled' };
 type NativeNameRead = (NativeNameAuthority & { kind: 'ready' }) | { kind: 'skip'; reason: 'not-first' | 'not-ready' };
 interface NativeNameAuthority {
   bindingNonce: string; surfaceId: string; owner: NameOwner; label: string; desired: string;
+  initialClaim?: { manual: boolean; pendingRevision: string | null };
   defaultLabelProven: boolean; proof: { number: number } & Record<string, unknown>;
 }
 export type DisplayResult = { kind: 'paired'; pair: LivePair; agent: Snapshot<AgentRecord> } | { kind: 'suppressed'; ownership: PairState; agent: Snapshot<AgentRecord> };
@@ -427,42 +429,74 @@ export class WorkspaceClient extends HerdrTransport {
       } catch (error) { throw new Error(`Summary projection may be partial; already published fields are retained: ${(error as Error).message}`, { cause: error }); }
     }, { waitMs: config.herdr_timeout_ms, signal });
   }
-  /** Workspace authority is shared; only the actual first layout pane may name its tab. */
-  async projectNames(store: RecordStore, context: NativeContext, painted: Snapshot<AgentRecord>, config: WorkCardsConfig, signal?: AbortSignal, intent: 'automatic' | 'explicit' = 'automatic', acceptedOwnTitle: string | null = painted.record.title): Promise<NativeNamingResult> {
+  private async readAgentName(store: RecordStore, context: NativeContext, painted: Snapshot<AgentRecord>, config: WorkCardsConfig, kind: 'workspace' | 'tab', signal?: AbortSignal, intent: 'automatic' | 'explicit' = 'automatic', acceptedOwnTitle: string | null = painted.record.title, acceptedWorkspaceTitle: AcceptedWorkspaceTitle | null = null): Promise<NativeNameRead> {
+    const records = await this.currentRecords(store, painted);
+    const identity = await this.identity(store, records.agent), key = await this.storeKey(store);
+    const live = await this.guard(context, config, signal);
+    const binding = this.bound(key, records.workspace, live.snapshot, context);
+    const ownership = classifyPair(live.snapshot, identity, context.terminalId);
+    if (ownership.kind === 'empty' || ownership.agent.terminal_id !== context.terminalId || ownership.nonce !== records.agent.record.displayAttempt?.nonce) throw new Error('Verified marked agent ownership required for naming');
+    const pane = locateTerminal(live.snapshot, context.terminalId);
+    if (kind === 'tab') {
+      if (!firstPane(live.snapshot, pane)) return { kind: 'skip', reason: 'not-first' };
+      if (intent === 'automatic' && (acceptedOwnTitle === null || records.agent.record.title !== acceptedOwnTitle)) return { kind: 'skip', reason: 'not-ready' };
+    }
+    const surface = kind === 'workspace' ? live.snapshot.workspaces.find(w => w.workspace_id === context.workspaceId)! : live.snapshot.tabs.find(t => t.tab_id === context.tabId)!;
+    const workspace = records.workspace.record;
+    return { kind: 'ready', bindingNonce: binding.nonce, surfaceId: kind === 'workspace' ? context.workspaceId : context.tabId,
+      owner: { terminalId: pane.terminal_id, nonce: ownership.nonce }, label: surface.label,
+      desired: kind === 'workspace' ? workspace.title : records.agent.record.title,
+      ...(kind === 'workspace' ? { initialClaim: { manual: workspace.goal.kind === 'known' && workspace.titleMode === 'manual',
+        pendingRevision: workspace.goal.kind === 'known' && acceptedWorkspaceTitle?.title === workspace.title ? acceptedWorkspaceTitle.pendingRevision : null } } : {}),
+      // Tabs default to their current one-based position, not their stable public number.
+      defaultLabelProven: kind === 'tab' && surface.label === String(live.snapshot.tabs.filter(t => t.workspace_id === context.workspaceId).findIndex(t => t.tab_id === context.tabId) + 1),
+      proof: { agent: records.agent.revision, workspace: records.workspace.revision, binding, ownership, pane,
+        ...(kind === 'tab' ? { layout: live.snapshot.layouts.find(l => l.tab_id === context.tabId) } : {}), number: surface.number } };
+  }
+  /** Capture before inference. A receipt never grants permission for a later baseline. */
+  async prepareWorkspaceNaming(store: RecordStore, context: NativeContext, painted: Snapshot<AgentRecord>, config: WorkCardsConfig, signal?: AbortSignal): Promise<string | null> {
     signal?.throwIfAborted();
+    if (!namingEnabled(config, 'workspace')) return null;
     return withWorkspaceLock(context.socket, context.workspaceId, async () => {
-      const read = async (kind: 'workspace' | 'tab'): Promise<NativeNameRead> => {
-        const records = await this.currentRecords(store, painted);
-        const identity = await this.identity(store, records.agent), key = await this.storeKey(store);
-        const live = await this.guard(context, config, signal);
-        const binding = this.bound(key, records.workspace, live.snapshot, context);
-        const ownership = classifyPair(live.snapshot, identity, context.terminalId);
-        if (ownership.kind === 'empty' || ownership.agent.terminal_id !== context.terminalId || ownership.nonce !== records.agent.record.displayAttempt?.nonce) throw new Error('Verified marked agent ownership required for naming');
-        const pane = locateTerminal(live.snapshot, context.terminalId);
-        if (kind === 'tab') {
-          if (!firstPane(live.snapshot, pane)) return { kind: 'skip', reason: 'not-first' };
-          if (intent === 'automatic' && (acceptedOwnTitle === null || records.agent.record.title !== acceptedOwnTitle)) return { kind: 'skip', reason: 'not-ready' };
-        }
-        const surface = kind === 'workspace' ? live.snapshot.workspaces.find(w => w.workspace_id === context.workspaceId)! : live.snapshot.tabs.find(t => t.tab_id === context.tabId)!;
-        return { kind: 'ready', bindingNonce: binding.nonce, surfaceId: kind === 'workspace' ? context.workspaceId : context.tabId,
-          owner: { terminalId: pane.terminal_id, nonce: ownership.nonce }, label: surface.label,
-          desired: kind === 'workspace' ? records.workspace.record.title : records.agent.record.title,
-          // Herdr derives workspace defaults from Git/CWD, but does not expose custom-name state.
-          // Tabs default to their current one-based position, not their stable public number.
-          defaultLabelProven: kind === 'tab' && surface.label === String(live.snapshot.tabs.filter(t => t.workspace_id === context.workspaceId).findIndex(t => t.tab_id === context.tabId) + 1),
-          proof: { agent: records.agent.revision, workspace: records.workspace.revision, binding, ownership, pane,
-            ...(kind === 'tab' ? { layout: live.snapshot.layouts.find(l => l.tab_id === context.tabId) } : {}), number: surface.number } };
-      };
+      const read = () => this.readAgentName(store, context, painted, config, 'workspace', signal);
+      if (!context.bindingNonce) throw new Error('Native naming requires a captured binding nonce');
+      const initial = await read();
+      if (initial.kind !== 'ready' || initial.bindingNonce !== context.bindingNonce) throw new Error('Native naming binding lifetime changed');
+      const names = new NameStore(store.directory);
+      const scope = await names.scope({ socket: context.socket, workspaceId: context.workspaceId, bindingNonce: initial.bindingNonce, kind: 'workspace', surfaceId: initial.surfaceId });
+      const previous = await names.read(scope), current = await read();
+      if (!isDeepStrictEqual(initial, current)) throw new Error('Native naming authority or label changed during baseline preparation');
+      if (previous && previous.record.mode !== 'pending') return null;
+      const decision = decideName({ scope, provenance: previous?.record ?? null, owner: initial.owner, currentLabel: initial.label, desiredName: initial.desired, defaultLabelProven: false });
+      if (decision.kind === 'pending') {
+        const saved = await names.write(scope, { version: 1, scope, mode: 'pending', baseline: decision.baseline, nonce: randomUUID() }, previous?.revision ?? null, signal);
+        return saved.revision;
+      }
+      if (decision.kind === 'manual') {
+        await names.write(scope, decision.provenance, previous?.revision ?? null, signal);
+        return null;
+      }
+      return previous?.revision ?? null;
+    }, { waitMs: config.herdr_timeout_ms, signal });
+  }
+  /** Workspace authority is shared; only the actual first layout pane may name its tab. */
+  async projectNames(store: RecordStore, context: NativeContext, painted: Snapshot<AgentRecord>, config: WorkCardsConfig, signal?: AbortSignal, intent: 'automatic' | 'explicit' = 'automatic', acceptedOwnTitle: string | null = painted.record.title, acceptedWorkspaceTitle: AcceptedWorkspaceTitle | null = null): Promise<NativeNamingResult> {
+    signal?.throwIfAborted();
+    const accepted = acceptedWorkspaceTitle === null ? null : { ...acceptedWorkspaceTitle };
+    return withWorkspaceLock(context.socket, context.workspaceId, async () => {
+      const read = (kind: 'workspace' | 'tab') => this.readAgentName(store, context, painted, config, kind, signal, intent, acceptedOwnTitle, accepted);
       try {
         const workspace = await this.projectNativeName(store, context, 'workspace', () => read('workspace'), config, signal, intent);
         const tab = await this.projectNativeName(store, context, 'tab', () => read('tab'), config, signal, intent);
-        if (workspace === 'not-first' || workspace === 'not-ready') throw new Error('Missing workspace naming authority');
+        if (workspace === 'not-first') throw new Error('Missing workspace naming authority');
         return { workspace, tab };
       } catch (error) { throw new Error(`Native naming may be partial; verified names and pins are retained: ${(error as Error).message}`, { cause: error }); }
     }, { waitMs: config.herdr_timeout_ms, signal });
   }
   /** Caller holds the workspace lock. Both agent and editor use this surface history. */
-  private async projectNativeName(store: RecordStore, context: NativeContext, kind: 'workspace' | 'tab', read: () => Promise<NativeNameRead>, config: WorkCardsConfig, signal?: AbortSignal, intent: 'automatic' | 'explicit' = 'automatic'): Promise<'renamed' | 'unchanged' | 'manual' | 'not-first' | 'not-ready'> {
+  private async projectNativeName(store: RecordStore, context: NativeContext, kind: 'workspace' | 'tab', read: () => Promise<NativeNameRead>, config: WorkCardsConfig, signal?: AbortSignal, intent: 'automatic' | 'explicit' = 'automatic'): Promise<'renamed' | 'unchanged' | 'manual' | 'not-first' | 'not-ready' | 'disabled'> {
+    signal?.throwIfAborted();
+    if (intent === 'automatic' && !namingEnabled(config, kind)) return 'disabled';
     if (!context.bindingNonce) throw new Error('Native naming requires a captured binding nonce');
     const initial = await read();
     if (initial.kind === 'skip') return initial.reason;
@@ -476,8 +510,14 @@ export class WorkspaceClient extends HerdrTransport {
     };
     const current = same(await read(), initial.label);
     const decision = decideName({ scope, provenance: previous?.record ?? null, owner: current.owner, currentLabel: current.label,
-      desiredName: current.desired, defaultLabelProven: current.defaultLabelProven, intent });
+      desiredName: current.desired, defaultLabelProven: current.defaultLabelProven, intent,
+      initialClaimReady: !!current.initialClaim && (current.initialClaim.manual || (previous !== null && current.initialClaim.pendingRevision === previous.revision)) });
     if (decision.kind === 'noop') return 'unchanged';
+    if (decision.kind === 'not-ready') return 'not-ready';
+    if (decision.kind === 'pending') {
+      await names.write(scope, { version: 1, scope, mode: 'pending', baseline: decision.baseline, nonce: randomUUID() }, previous?.revision ?? null, signal);
+      return 'not-ready';
+    }
     if (decision.kind === 'manual') {
       await names.write(scope, decision.provenance, previous?.revision ?? null, signal);
       return 'manual';
@@ -564,6 +604,7 @@ export class WorkspaceClient extends HerdrTransport {
   /** Opt-in editor-only qualification refresh. Never called by reuse/open, never names agent/workspace surfaces. */
   async refreshDocumentNames(store: RecordStore, context: NativeContext, painted: Snapshot<AgentRecord>, config: WorkCardsConfig, signal?: AbortSignal): Promise<void> {
     signal?.throwIfAborted();
+    if (!namingEnabled(config, 'tab')) return;
     await withWorkspaceLock(context.socket, context.workspaceId, async () => {
       const initial = await this.pairedCard(store, context, painted, config, signal);
       const refs = resolvedReferences(initial.workspace.record).documents;
@@ -596,6 +637,8 @@ export class WorkspaceClient extends HerdrTransport {
   }
   private async renameEditor(store: RecordStore, pane: Pane, context: NativeContext, config: WorkCardsConfig, signal: AbortSignal | undefined,
     verify: () => Promise<{ agent: Snapshot<AgentRecord>; workspace: Snapshot<WorkspaceRecord>; live: { snapshot: NativeSnapshot }; pair: LivePair; key: string; label: string }>): Promise<void> {
+    signal?.throwIfAborted();
+    if (!namingEnabled(config, 'tab')) return;
     const storeKey = await this.storeKey(store);
     await this.projectNativeName(store, context, 'tab', async () => {
       const current = await verify(), snapshot = current.live.snapshot;

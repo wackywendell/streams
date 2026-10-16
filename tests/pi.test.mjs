@@ -96,6 +96,103 @@ async function host(t, config = {}, initial = {}) {
 }
 async function attach(t, config = {}) { const h = await host(t, config); await h.command('new Agent task'); return h; }
 
+test('workspace baseline is prepared before helpers and only that pass receipt is persisted', async t => {
+  const h = await host(t, { check_every_n_responses: 0 });
+  const receipt = 'a'.repeat(64), observations = [];
+  h.client.prepareWorkspaceNaming = async (...args) => { observations.push({ calls: h.calls.length, title: h.workspaces[0].label, workspaceId: args[2].record.workspaceId }); return receipt; };
+  h.setResult(async kind => kind === 'goal' ? { goal: 'Grounded shared purpose', goalShort: 'Shared purpose', title: 'Shared title' } : { action: 'no_change' });
+  h.setMessages([user('Build grounded shared purpose')]); await h.emit('context'); await h.command('refresh');
+  await until(async () => (await h.current()).details?.refresh?.state === 'complete'); await h.command('show');
+  assert.equal(observations[0].calls, 0); assert.equal(observations[0].title, 'Manual workspace');
+  const proof = h.branch().filter(e => e.customType === 'work-cards.workspace-naming').at(-1)?.data;
+  assert.equal(proof?.pendingRevision, receipt); assert.equal(proof?.title, 'Shared title');
+  h.client.prepareWorkspaceNaming = async () => null;
+  h.setResult(async kind => kind === 'goal' ? { goal: 'New shared purpose', goalShort: 'New purpose', title: 'New shared title' } : { action: 'no_change' });
+  await h.command('refresh'); await until(async () => (await h.current()).details?.refresh?.state === 'complete'); await h.command('show');
+  assert.equal(h.branch().filter(e => e.customType === 'work-cards.workspace-naming').length, 1);
+});
+
+for (const [session_naming, tab_naming] of [[false, true], [true, false], [false, false]]) test(`independent host naming flags session=${session_naming} tab=${tab_naming}`, async t => {
+  const h = await host(t, { check_every_n_responses: 0, session_naming, tab_naming, workspace_naming: false });
+  const projections = []; h.client.projectNames = async (...args) => { projections.push(args); return { workspace: 'disabled', tab: 'disabled' }; };
+  h.setResult(async kind => kind === 'own' ? { action: 'update', patch: { title: 'Accepted own title' } } : kind === 'goal' ? { goal: '', goalShort: '' } : { action: 'no_change' });
+  h.setMessages([user('Own task')]); await h.emit('context'); await h.command('refresh');
+  await until(async () => (await h.current()).details?.refresh?.state === 'complete'); await h.command('show');
+  assert.equal(h.sessionName(), session_naming ? 'Accepted own title' : undefined);
+  assert.equal(h.branch().some(e => e.customType === 'work-cards.session-naming' && e.data.acceptedTitle === 'Accepted own title'), true);
+  if (tab_naming) assert.equal(projections.at(-1)[6], 'Accepted own title');
+  if (!session_naming && !tab_naming) assert.equal(projections.length, 0);
+});
+
+for (const failure of ['prepare', 'persist']) test(`optional workspace naming ${failure} failure leaves valid inference and later stages intact`, async t => {
+  const h = await host(t, { check_every_n_responses: 0 });
+  h.client.prepareWorkspaceNaming = async () => { if (failure === 'prepare') throw new Error('optional preparation fault'); return 'a'.repeat(64); };
+  if (failure === 'persist') {
+    const append = h.pi.appendEntry;
+    h.install({ ...h.pi, appendEntry(type, data) { if (type === 'work-cards.workspace-naming') throw new Error('optional persistence fault'); append(type, data); } });
+    await h.emit('session_start', { reason: 'startup' });
+  }
+  h.setResult(async kind => kind === 'own' ? { action: 'update', patch: { title: 'Accepted own' } } : kind === 'goal' ? { goal: 'Accepted purpose', goalShort: 'Purpose', title: 'Accepted workspace' } : { action: 'no_change' });
+  h.setMessages([user('Deliver accepted purpose')]); await h.emit('context'); await h.command('refresh');
+  await until(async () => (await h.current()).details?.refresh?.state === 'complete'); await h.command('show');
+  const details = (await h.current()).details;
+  assert.equal(details.workspace.record.goal, 'Accepted purpose'); assert.equal(details.workspace.record.title, 'Accepted workspace');
+  assert.equal(details.agent.record.title, 'Accepted own'); assert.equal(h.sessionName(), 'Accepted own');
+  assert.ok(h.notices.some(n => /optional .* fault/.test(n.text)), JSON.stringify(h.notices));
+});
+
+test('malformed own source cannot block independent accepted workspace projection', async t => {
+  const h = await host(t, { check_every_n_responses: 0 });
+  h.client.prepareWorkspaceNaming = async () => 'a'.repeat(64);
+  h.pi.appendEntry('work-cards.session-naming', { version: 99 });
+  const proofs = []; h.client.projectNames = async (...args) => { proofs.push({ own: args[6], workspace: args[7] }); return { workspace: 'renamed', tab: 'not-ready' }; };
+  h.setResult(async kind => kind === 'goal' ? { goal: 'Grounded purpose', goalShort: 'Purpose', title: 'Grounded title' } : { action: 'no_change' });
+  h.setMessages([user('Build grounded purpose')]); await h.emit('context'); await h.command('refresh');
+  await until(async () => (await h.current()).details?.refresh?.state === 'complete'); await h.command('show');
+  assert.deepEqual(proofs.at(-1), { own: null, workspace: { title: 'Grounded title', pendingRevision: 'a'.repeat(64) } });
+});
+
+test('malformed workspace source does not block accepted own Pi and tab effects', async t => {
+  const h = await host(t, { check_every_n_responses: 0 });
+  h.pi.appendEntry('work-cards.workspace-naming', { version: 99 });
+  const proofs = []; h.client.projectNames = async (...args) => { proofs.push({ own: args[6], workspace: args[7] }); return { workspace: 'not-ready', tab: 'renamed' }; };
+  h.setResult(async kind => kind === 'own' ? { action: 'update', patch: { title: 'Accepted own' } } : kind === 'goal' ? { goal: 'Grounded purpose', goalShort: 'Purpose', title: 'Grounded title' } : { action: 'no_change' });
+  h.setMessages([user('Build grounded purpose')]); await h.emit('context'); await h.command('refresh');
+  await until(async () => (await h.current()).details?.refresh?.state === 'complete'); await h.command('show');
+  assert.equal(h.sessionName(), 'Accepted own'); assert.deepEqual(proofs.at(-1), { own: 'Accepted own', workspace: null });
+});
+
+test('manual startup inherits disabled naming while explicit native naming bypasses flags without Pi effects', async t => {
+  const h = await host(t, { workspace_startup: 'manual', check_every_n_responses: 0 });
+  const projections = [], original = h.client.projectNames.bind(h.client);
+  h.client.projectNames = async (...args) => { projections.push(args[5]); return original(...args); };
+  await h.command('new Explicit own'); await until(async () => (await h.current()).details?.refresh?.state === 'complete'); await h.command('show');
+  assert.equal(h.sessionName(), undefined); assert.deepEqual(projections, []);
+  await h.command('naming'); assert.deepEqual(projections, ['explicit']); assert.equal(h.sessionName(), undefined);
+  assert.equal(h.tabs[0].label, 'Explicit own');
+});
+
+test('real native pending baseline takes over old workspace label once and later manual changes stay protected', async t => {
+  const h = await host(t, { check_every_n_responses: 0 });
+  h.setResult(async kind => kind === 'goal' ? { goal: 'Grounded shared purpose', goalShort: 'Purpose', title: 'Grounded workspace' } : { action: 'no_change' });
+  h.setMessages([user('Build grounded shared purpose')]); await h.emit('context'); await h.command('refresh');
+  await until(async () => (await h.current()).details?.refresh?.state === 'complete'); await h.command('show');
+  assert.equal(h.workspaces[0].label, 'Grounded workspace');
+  assert.match(h.branch().filter(e => e.customType === 'work-cards.workspace-naming').at(-1).data.pendingRevision, /^[a-f0-9]{64}$/);
+  h.workspaces[0].label = 'User workspace name';
+  h.setResult(async kind => kind === 'goal' ? { goal: 'Changed shared purpose', goalShort: 'Purpose', title: 'Changed workspace' } : { action: 'no_change' });
+  await h.command('refresh'); await until(async () => (await h.current()).details?.refresh?.state === 'complete'); await h.command('show');
+  assert.equal(h.workspaces[0].label, 'User workspace name');
+});
+
+test('all disabled flags still permit explicit native naming without Pi renaming', async t => {
+  const h = await host(t, { check_every_n_responses: 0, session_naming: false, workspace_naming: false, tab_naming: false });
+  await h.command('new Explicit task'); await until(async () => (await h.current()).details?.refresh?.state === 'complete'); await h.command('show');
+  assert.equal(h.tabs[0].label, 'Manual tab'); assert.equal(h.sessionName(), undefined);
+  const requests = h.calls.length; await h.command('naming');
+  assert.equal(h.tabs[0].label, 'Explicit task'); assert.equal(h.sessionName(), undefined); assert.equal(h.calls.length, requests);
+});
+
 test('automatic bootstrap excerpts wait for an accepted title proposal, including same-text acceptance', async t => {
   const h = await host(t, { check_every_n_responses: 0 });
   h.setResult(async kind => kind === 'goal' ? { goal: '', goalShort: '' } : { action: 'no_change' });

@@ -1,10 +1,10 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { mkdtemp, mkdir, rm, realpath, writeFile, readFile, symlink } from 'node:fs/promises';
+import { mkdtemp, mkdir, rm, realpath, writeFile, readFile, symlink, unlink } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { createHash } from 'node:crypto';
-import { RecordStore, agentAuthority } from '../dist/records.js';
+import { RecordStore, agentAuthority, conversationGoal } from '../dist/records.js';
 import { WorkspaceClient } from '../dist/herdr/workspace-client.js';
 import { NameStore } from '../dist/herdr/name-provenance.js';
 import { DEFAULT_CONFIG as config } from '../dist/config.js';
@@ -41,9 +41,174 @@ async function fixture(t) {
   return {store,client,agent,workspace,context,snapshot,tab,pane,workspaceNative,effects,names,scope,setHook:f=>{hook=f;},project:(intent='automatic',signal,acceptedOwnTitle=agent.record.title)=>client.projectNames(store,context,agent,config,signal,intent,acceptedOwnTitle)};
 }
 
-test('native default tab adopts, workspace CWD label stays manual; explicit resumes both and no-op has no native effect', async t => {
+test('workspace initial claim requires a pre-inference baseline receipt and accepted known title', async t => {
   const f = await fixture(t);
-  assert.deepEqual(await f.project(), {workspace:'manual',tab:'renamed'});
+  const prepare = (configOverride = config) => f.client.prepareWorkspaceNaming(f.store, f.context, f.agent, configOverride);
+  const project = (proof, configOverride = config, intent = 'automatic') => f.client.projectNames(f.store, f.context, f.agent, configOverride, undefined, intent, null, proof);
+  const revision = await prepare(); assert.match(revision, /^[a-f0-9]{64}$/);
+  assert.equal(await prepare(), revision);
+  assert.equal((await project({ title: 'Workspace title', pendingRevision: revision })).workspace, 'not-ready');
+  const workspace = await f.store.readWorkspace('durable');
+  await f.store.applyPlan(agentAuthority(f.agent.record), { goal: conversationGoal('Established purpose', { sessionId: 'session', digest: 'a'.repeat(64) }), title: 'Accepted purpose' }, workspace.revision);
+  for (const proof of [null, { title: 'Wrong title', pendingRevision: revision }, { title: 'Accepted purpose', pendingRevision: '0'.repeat(64) }]) {
+    assert.equal((await project(proof)).workspace, 'not-ready'); assert.equal(f.effects.length, 0);
+  }
+  assert.equal((await project({ title: 'Accepted purpose', pendingRevision: revision })).workspace, 'renamed');
+  assert.equal(f.workspaceNative.label, 'Accepted purpose');
+  assert.equal(await prepare(), null);
+  assert.equal((await project(null)).workspace, 'unchanged');
+});
+
+test('recreated pending baseline cannot reuse a previously accepted receipt', async t => {
+  for (const replacement of ['projection', 'preparation']) await t.test(replacement, async t => {
+    const f=await fixture(t);
+    const pendingRevision=await f.client.prepareWorkspaceNaming(f.store,f.context,f.agent,config);
+    const scope=await f.scope('workspace'), original=await f.names.read(scope);
+    const workspace=await f.store.readWorkspace('durable');
+    const publication=await f.store.applyPlan(agentAuthority(f.agent.record),{goal:conversationGoal('Purpose',{sessionId:'session',digest:'a'.repeat(64)}),title:'Accepted'},workspace.revision);
+    const oldProof={title:'Accepted',pendingRevision};
+    const project=proof=>f.client.projectNames(f.store,f.context,f.agent,config,undefined,'automatic',null,proof);
+    await unlink(original.path);
+    if(replacement==='preparation') await f.client.prepareWorkspaceNaming(f.store,f.context,f.agent,config);
+    assert.equal((await project(oldProof)).workspace,'not-ready');
+    const recreated=await f.names.read(scope);
+    assert.equal(recreated.record.baseline,original.record.baseline);
+    assert.notEqual(recreated.record.nonce,original.record.nonce);
+    assert.notEqual(recreated.revision,pendingRevision);
+    for(let i=0;i<2;i++) assert.equal((await project(oldProof)).workspace,'not-ready');
+    assert.equal(f.effects.length,0);
+    assert.equal((await f.names.read(scope)).revision,recreated.revision);
+    assert.equal(await f.client.prepareWorkspaceNaming(f.store,f.context,f.agent,config),recreated.revision);
+    await f.store.applyPlan(agentAuthority(f.agent.record),{goal:publication.record.goal,title:'Accepted'},publication.revision);
+    assert.equal((await project({title:'Accepted',pendingRevision:recreated.revision})).workspace,'renamed');
+    assert.equal(f.workspaceNative.label,'Accepted');
+  });
+});
+
+test('pending receipt survives reload/evidence reset, and consumed ownership never rearms after source loss or toggles', async t => {
+  const f=await fixture(t);
+  const pendingRevision=await f.client.prepareWorkspaceNaming(f.store,f.context,f.agent,config);
+  const pendingScope=await f.scope('workspace'), pending=await f.names.read(pendingScope);
+  assert.match(pending.record.nonce,/^[A-Za-z0-9_-]+$/);
+  const client=new WorkspaceClient({env:f.client.env,run:f.client.run});
+  const agent=await f.store.resetEvidence(agentAuthority(f.agent.record),{compactionDigest:'new',transcriptLength:0,prefixDigest:'new'},f.agent.revision);
+  assert.equal(await client.prepareWorkspaceNaming(f.store,f.context,agent,config),pendingRevision);
+  assert.equal((await client.projectNames(f.store,f.context,agent,config,undefined,'automatic',null,null)).workspace,'not-ready');
+  assert.deepEqual(await f.names.read(pendingScope),pending);
+  let workspace=await f.store.readWorkspace('durable');
+  workspace=await f.store.applyPlan(agentAuthority(agent.record),{goal:conversationGoal('Purpose',{sessionId:'session',digest:'a'.repeat(64)}),title:'Accepted'},workspace.revision);
+  const proof={title:'Accepted',pendingRevision};
+  assert.equal((await client.projectNames(f.store,f.context,agent,config,undefined,'automatic',null,proof)).workspace,'renamed');
+  await f.store.applyPlan(agentAuthority(agent.record),{goal:conversationGoal('',{sessionId:'session',digest:'b'.repeat(64)})},workspace.revision);
+  const scope=await f.scope('workspace'), claimed=await f.names.read(scope);
+  assert.equal(await client.prepareWorkspaceNaming(f.store,f.context,agent,{...config,workspace_naming:false}),null);
+  assert.equal((await f.names.read(scope)).revision,claimed.revision);
+  assert.equal(await client.prepareWorkspaceNaming(f.store,f.context,agent,config),null);
+  assert.equal((await client.projectNames(f.store,f.context,agent,config,undefined,'automatic',null,null)).workspace,'unchanged');
+});
+
+test('pending baseline drift is manual even without source proof and survives toggles', async t => {
+  const f = await fixture(t);
+  const revision = await f.client.prepareWorkspaceNaming(f.store, f.context, f.agent, config);
+  f.workspaceNative.label = 'User renamed during inference';
+  assert.equal(await f.client.prepareWorkspaceNaming(f.store, f.context, f.agent, { ...config, workspace_naming: false }), null);
+  assert.equal((await f.names.read(await f.scope('workspace'))).revision, revision);
+  assert.equal((await f.project()).workspace, 'manual');
+  f.workspaceNative.label = 'checkout';
+  assert.equal(await f.client.prepareWorkspaceNaming(f.store, f.context, f.agent, config), null);
+  assert.equal((await f.project()).workspace, 'manual');
+});
+
+test('missing baseline never consumes an older receipt, while manual known source can claim later', async t => {
+  const f = await fixture(t);
+  let workspace = await f.store.readWorkspace('durable');
+  workspace = await f.store.applyPlan(agentAuthority(f.agent.record), { goal: conversationGoal('Purpose', { sessionId: 'session', digest: 'a'.repeat(64) }) }, workspace.revision);
+  await f.store.setWorkspaceTitle(agentAuthority(f.agent.record), 'User source', workspace.revision);
+  const project = () => f.client.projectNames(f.store, f.context, f.agent, config, undefined, 'automatic', null, { title: 'User source', pendingRevision: '0'.repeat(64) });
+  assert.equal((await project()).workspace, 'not-ready');
+  assert.equal((await project()).workspace, 'renamed');
+});
+
+for (const startup of ['automatic', 'manual']) for (const workspace_naming of [null, false, true]) for (const tab_naming of [null, false, true]) {
+  test(`native switches resolve independently: ${startup}/${workspace_naming}/${tab_naming}`, async t => {
+    const f = await fixture(t), cfg = { ...config, workspace_startup: startup, workspace_naming, tab_naming };
+    const workspaceEnabled = workspace_naming ?? startup === 'automatic', tabEnabled = tab_naming ?? startup === 'automatic';
+    const result = await f.client.projectNames(f.store, f.context, f.agent, cfg);
+    assert.equal(result.workspace, workspaceEnabled ? 'not-ready' : 'disabled');
+    assert.equal(result.tab, tabEnabled ? 'renamed' : 'disabled');
+    if (!workspaceEnabled) assert.equal(await f.names.read(await f.scope('workspace')), null);
+    if (!tabEnabled) assert.equal(await f.names.read(await f.scope('tab')), null);
+    assert.deepEqual(await f.client.projectNames(f.store, f.context, f.agent, cfg, undefined, 'explicit'), { workspace: 'renamed', tab: tabEnabled ? 'unchanged' : 'renamed' });
+  });
+}
+
+test('initial claim acknowledgement/cache failures retain pending baseline and never grant retry adoption', async t => {
+  for (const failure of ['cache', 'late-label', 'late-goal', 'late-binding', 'abort']) await t.test(failure, async t => {
+    const f=await fixture(t), controller=new AbortController();
+    const pendingRevision=await f.client.prepareWorkspaceNaming(f.store,f.context,f.agent,config), scope=await f.scope('workspace');
+    const workspace=await f.store.readWorkspace('durable');
+    const published=await f.store.applyPlan(agentAuthority(f.agent.record),{goal:conversationGoal('Purpose',{sessionId:'session',digest:'a'.repeat(64)}),title:'Accepted'},workspace.revision);
+    const proof={title:'Accepted',pendingRevision}, original=NameStore.prototype.write, run=f.client.run;
+    if(failure==='cache') NameStore.prototype.write=async()=>{throw new Error('cache unavailable');};
+    else f.client.run=async args=>{
+      const result=await run(args);
+      if(args[0]==='workspace'&&args[1]==='rename') {
+        if(failure==='late-label') f.workspaceNative.label='User late rename';
+        if(failure==='late-goal') await f.store.applyPlan(agentAuthority(f.agent.record),{goal:conversationGoal('',{sessionId:'session',digest:'b'.repeat(64)})},published.revision);
+        if(failure==='late-binding') f.workspaceNative.tokens.wcw_nonce='changed';
+        if(failure==='abort') controller.abort();
+      }
+      return result;
+    };
+    try {await assert.rejects(f.client.projectNames(f.store,f.context,f.agent,config,controller.signal,'automatic',null,proof));}
+    finally {NameStore.prototype.write=original;f.client.run=run;}
+    assert.equal((await f.names.read(scope)).revision,pendingRevision);
+    if(failure==='late-binding') f.workspaceNative.tokens.wcw_nonce='binding';
+    assert.equal((await f.client.projectNames(f.store,f.context,f.agent,config,undefined,'automatic',null,proof)).workspace,'manual');
+  });
+});
+
+test('disabled surfaces never inspect malformed caches and explicit naming still rejects them', async t => {
+  const f=await fixture(t), scope=await f.scope('workspace');
+  await mkdir(join(f.store.directory,'.native-names')); await writeFile(f.names.path(scope),'{');
+  const cfg={...config,workspace_naming:false,tab_naming:false};
+  assert.equal(await f.client.prepareWorkspaceNaming(f.store,f.context,f.agent,cfg),null);
+  assert.deepEqual(await f.client.projectNames(f.store,f.context,f.agent,cfg),{workspace:'disabled',tab:'disabled'});
+  await assert.rejects(f.client.projectNames(f.store,f.context,f.agent,cfg,undefined,'explicit'));
+  assert.equal(f.effects.length,0);
+});
+
+test('legacy manual workspace pins cannot be upgraded by accepted source or baseline preparation', async t => {
+  const f=await fixture(t), scope=await f.scope('workspace');
+  const saved=await f.names.write(scope,{version:1,scope,mode:'manual',owner:null,lastApplied:null},null);
+  assert.equal(await f.client.prepareWorkspaceNaming(f.store,f.context,f.agent,config),null);
+  assert.equal((await f.client.projectNames(f.store,f.context,f.agent,config,undefined,'automatic',null,{title:'Workspace title',pendingRevision:saved.revision})).workspace,'manual');
+  assert.equal((await f.names.read(scope)).revision,saved.revision);
+});
+
+test('baseline preparation rejects cancellation, cache corruption and authority changes before persistence', async t => {
+  for(const change of ['abort','binding','label','record','ownership']) await t.test(change,async t=>{
+    const f=await fixture(t), controller=new AbortController(), original=NameStore.prototype.read; let once=true;
+    NameStore.prototype.read=async function(scope){
+      const value=await original.call(this,scope);
+      if(once){once=false;
+        if(change==='abort') controller.abort();
+        if(change==='binding') f.workspaceNative.tokens.wcw_nonce='changed';
+        if(change==='label') f.workspaceNative.label='User rename';
+        if(change==='record') await f.store.setOwnTitle(agentAuthority(f.agent.record),'Changed',f.agent.revision);
+        if(change==='ownership') f.pane.tokens.wca_nonce='changed';
+      }
+      return value;
+    };
+    try {await assert.rejects(f.client.prepareWorkspaceNaming(f.store,f.context,f.agent,config,controller.signal));}
+    finally {NameStore.prototype.read=original;}
+    assert.equal(f.effects.length,0);
+  });
+});
+
+test('native default tab adopts, workspace CWD label waits for purpose; explicit resumes both and no-op has no native effect', async t => {
+  const f = await fixture(t);
+  assert.deepEqual(await f.project(), {workspace:'not-ready',tab:'renamed'});
   assert.equal(f.tab.label, 'Agent title'); assert.equal(f.workspaceNative.label,'checkout');
   assert.deepEqual(await f.project('explicit'), {workspace:'renamed',tab:'unchanged'});
   assert.equal((await f.names.read(await f.scope('tab'))).record.mode,'auto');
@@ -154,7 +319,7 @@ test('manual record titles still project through automatic provenance, while nat
 test('binding recreation has a new surface history and cannot import former automatic labels', async t => {
   const f=await fixture(t); await f.project('explicit');
   f.workspaceNative.tokens.wcw_nonce='replacement'; f.context.bindingNonce='replacement';
-  assert.deepEqual(await f.project(),{workspace:'manual',tab:'manual'});
+  assert.deepEqual(await f.project(),{workspace:'not-ready',tab:'manual'});
   assert.equal((await f.names.read(await f.scope('tab'))).record.owner,null);
 });
 
@@ -240,5 +405,5 @@ test('cache publication failure retains native progress and retries do not adopt
   try { await assert.rejects(f.project('explicit'),/partial|cache unavailable/); }
   finally {NameStore.prototype.write=original;}
   assert.equal(f.workspaceNative.label,'Workspace title');
-  assert.equal((await f.project()).workspace,'manual');
+  assert.equal((await f.project()).workspace,'not-ready');
 });

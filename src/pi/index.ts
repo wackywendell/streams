@@ -3,7 +3,7 @@ import { open } from 'node:fs/promises';
 import { resolve } from 'node:path';
 import { parseSessionEntries, type ExtensionAPI, type ExtensionContext } from '@earendil-works/pi-coding-agent';
 import { Type } from 'typebox';
-import { loadConfig, type WorkCardsConfig } from '../config.js';
+import { loadConfig, namingEnabled, type WorkCardsConfig } from '../config.js';
 import { RecordStore, recordDirectory, validateMembership, agentAuthority, serializeWorkspaceV1, type Authority } from '../records.js';
 import { composeView, resolvedReferences, selectReference } from '../presentation.js';
 import { WorkspaceClient, type NativeContext } from '../herdr/workspace-client.js';
@@ -15,6 +15,7 @@ import type { RefreshDiagnostic } from './plan-refresh.js';
 import type { SummaryRegistry } from './summarizer.js';
 import { RequestLane } from './request-lane.js';
 import { acceptSessionTitle, projectSessionName, sessionTitleReady } from './session-naming.js';
+import { acceptWorkspaceTitle, acceptedWorkspaceTitle, type AcceptedWorkspaceTitle } from './workspace-naming.js';
 
 const stateEntry = 'work-cards.workspace';
 const usage = 'Usage: /work-card new <title> | open [workspace-id] | refresh | reset | naming | show | detach | remove <substring>';
@@ -151,16 +152,24 @@ export function registerWorkCards(pi: ExtensionAPI, overrides: Partial<Dependenc
       if (!updates || recovering || session.sessionId !== identity || ctx.sessionManager.getSessionId() !== identity) throw new Error('Stale Pi naming context');
     };
     try {
-      const agent = (await lifecycle!.assertCurrent(scope)).agent;
+      const { agent, workspace } = await lifecycle!.assertCurrent(scope);
       guard();
+      const sessionEnabled = namingEnabled(config, 'session'), tabEnabled = namingEnabled(config, 'tab'), workspaceEnabled = namingEnabled(config, 'workspace');
       let ownReady = false;
-      try {
-        ownReady = sessionTitleReady(ctx.sessionManager, identity, agent.record.title, agent.record.titleMode);
-        if (ownReady) projectSessionName(pi, ctx.sessionManager, identity, agent.record.title, agent.record.titleMode, guard);
-      } catch (error) { guard(); warn(`Pi session naming failed: ${errorText(error)}`); }
-      if (inHerdr()) {
+      if (sessionEnabled || tabEnabled) {
+        try {
+          ownReady = sessionTitleReady(ctx.sessionManager, identity, agent.record.title, agent.record.titleMode);
+          if (ownReady && sessionEnabled) projectSessionName(pi, ctx.sessionManager, identity, agent.record.title, agent.record.titleMode, guard);
+        } catch (error) { guard(); warn(`Pi session naming failed: ${errorText(error)}`); }
+      }
+      let workspaceProof: AcceptedWorkspaceTitle | null = null;
+      if (workspaceEnabled) {
+        try { workspaceProof = acceptedWorkspaceTitle(ctx.sessionManager, identity, workspace); guard(); }
+        catch (error) { guard(); warn(`Workspace naming source failed: ${errorText(error)}`); }
+      }
+      if (inHerdr() && (workspaceEnabled || tabEnabled)) {
         guard();
-        await deps.client.projectNames(store, scope.context, agent, config, scope.signal, 'automatic', ownReady ? agent.record.title : null);
+        await deps.client.projectNames(store, scope.context, agent, config, scope.signal, 'automatic', ownReady ? agent.record.title : null, workspaceProof);
         guard();
       }
     } catch (error) {
@@ -187,8 +196,31 @@ export function registerWorkCards(pi: ExtensionAPI, overrides: Partial<Dependenc
         };
         refresher = new WorkspaceRefresher({ store, registry, options: { ...config } });
       }
+      let pendingRevision: string | null = null;
+      if (inHerdr() && evidence.scope) {
+        try {
+          const member = await lifecycle!.assertCurrent(evidence.scope);
+          await assertCurrent(evidence, signal);
+          pendingRevision = await deps.client.prepareWorkspaceNaming(store, evidence.scope.context, member.agent, config, evidence.scope.signal);
+          await assertCurrent(evidence, signal);
+        } catch (error) {
+          await assertCurrent(evidence, signal);
+          warn(`Workspace naming preparation failed: ${errorText(error)}`);
+        }
+      }
+      const publicationEpoch = epoch;
       await refresher.refresh({ authority: evidence.authority, evidence: evidence.session.evidence, referenceEvidence: evidence.session.referenceEvidence, signal,
         assertCurrent: () => assertCurrent(evidence, signal), intent, onRequest: activity,
+        onWorkspaceTitlePublished: workspace => {
+          if (pendingRevision === null) return;
+          const guard = () => {
+            signal.throwIfAborted(); evidence.scope?.signal.throwIfAborted(); live(evidence.generation);
+            if (!updates || epoch !== publicationEpoch || session.sessionId !== evidence.session.sessionId || ctx.sessionManager.getSessionId() !== evidence.session.sessionId
+              || workspace.record.id !== evidence.authority.workspaceId) throw new Error('Stale workspace title publication');
+          };
+          try { acceptWorkspaceTitle(pi, ctx.sessionManager, evidence.session.sessionId, workspace, pendingRevision, guard); }
+          catch (error) { guard(); warn(`Workspace naming source persistence failed: ${errorText(error)}`); }
+        },
         onOwnTitlePublished: agent => {
           const guard = () => {
             signal.throwIfAborted(); live(evidence.generation);

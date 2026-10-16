@@ -3,7 +3,7 @@ import assert from 'node:assert/strict';
 import { mkdir, mkdtemp, writeFile, rm } from 'node:fs/promises';
 import { resolve, join } from 'node:path';
 import { homedir } from 'node:os';
-import { DEFAULT_CONFIG, configPath, loadConfig, documentCommand } from '../dist/config.js';
+import { DEFAULT_CONFIG, configPath, loadConfig, documentCommand, namingEnabled } from '../dist/config.js';
 
 async function fixture(t) {
   await mkdir(resolve('.test-tmp'), { recursive: true });
@@ -50,6 +50,38 @@ test('workspace startup is one global automatic/manual policy', async t => {
   for (const workspace_startup of [null, true, 'legacy', 'Automatic', 0]) {
     await writeFile(path, JSON.stringify({ workspace_startup }));
     await assert.rejects(loadConfig(path), /workspace_startup/);
+  }
+});
+
+test('each naming surface independently inherits startup policy unless explicitly overridden', async t => {
+  const path = await fixture(t);
+  for (const workspace_startup of ['automatic', 'manual']) {
+    for (const surface of ['workspace', 'tab', 'session']) {
+      const key = `${surface}_naming`;
+      assert.equal(DEFAULT_CONFIG[key], null);
+      for (const override of [undefined, null, true, false]) {
+        await writeFile(path, JSON.stringify({ workspace_startup, ...(override === undefined ? {} : { [key]: override }) }));
+        const config = await loadConfig(path);
+        assert.equal(namingEnabled(config, surface), override ?? workspace_startup === 'automatic');
+        for (const other of ['workspace', 'tab', 'session'].filter(s => s !== surface)) {
+          assert.equal(namingEnabled(config, other), workspace_startup === 'automatic');
+        }
+      }
+    }
+  }
+  const config = { ...DEFAULT_CONFIG, workspace_startup: 'manual' };
+  assert.equal(namingEnabled(config, 'workspace'), false);
+  config.workspace_startup = 'automatic';
+  assert.equal(namingEnabled(config, 'workspace'), true);
+});
+
+test('naming settings reject non-boolean non-null values', async t => {
+  const path = await fixture(t);
+  for (const key of ['workspace_naming', 'tab_naming', 'session_naming']) {
+    for (const value of ['true', 'false', 0, 1, [], {}]) {
+      await writeFile(path, JSON.stringify({ [key]: value }));
+      await assert.rejects(loadConfig(path), new RegExp(key));
+    }
   }
 });
 

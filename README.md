@@ -36,7 +36,7 @@ Records are local host state, with no automatic backup or synchronisation. Keep 
 | `/work-card detach` | Pause updates durably and close only the owned display; retain records |
 | `/work-card remove <substring>` | Remove a uniquely matching document path or URL from shared references |
 
-To let the summarizer name a new assignment, use `/work-card open` without a title. Bootstrap titles are first-message excerpts or `Untitled task`; automatic Pi and agent-tab naming waits for helper publication or successful explicit acceptance through `/work-card naming`. An automatic `Untitled task` remains ineligible, without blocking shared workspace naming. `/work-card new <title>` sets an explicit manual record title instead. Opening an existing assignment preserves its title mode. Native labels retain separate manual protection; unknown workspace labels require explicit `/work-card naming` to establish automatic tracking. See [ADR 3](docs/automatic-naming.md).
+To let the summarizer name a new assignment, use `/work-card open` without a title. Bootstrap titles are first-message excerpts or `Untitled task`; automatic Pi and agent-tab naming waits for helper publication or successful explicit acceptance through `/work-card naming`. An automatic `Untitled task` remains ineligible, without blocking shared workspace naming. `/work-card new <title>` sets an explicit manual record title instead. Opening an existing assignment preserves its title mode. Native labels retain separate manual protection. Enabled workspace naming can claim an unclaimed label once after accepting grounded purpose and a name. Existing manual pins require explicit `/work-card naming`. See [ADR 3](docs/automatic-naming.md).
 
 Reset omits the existing own summary and shared workspace title, Goal and references from the dialogue helpers' inputs. It requires a complete, validated own proposal, including empty fields when unknown; partial updates and `no_change` are rejected. It never clears records before successful inference. Safe overlong display summaries do not reject otherwise valid updates: reset clears them instead of inheriting stale text. Missing required fields and unsafe text still fail. Stages still publish separately: a later failure does not roll back an earlier validated update.
 
@@ -112,6 +112,9 @@ Global configuration lives at `<PI_CODING_AGENT_DIR>/work-cards.json`, defaultin
 | Setting | Default | Purpose |
 | --- | --- | --- |
 | `workspace_startup` | `automatic` | Automatic or manual joining |
+| `workspace_naming` | `null` | Automatically claim and track workspace names; inherit startup mode when null |
+| `tab_naming` | `null` | Automatically name eligible agent and editor tabs; inherit startup mode when null |
+| `session_naming` | `null` | Automatically name Pi sessions; inherit startup mode when null |
 | `model` | `helpers/simple` | Helper provider/model or registered alias |
 | `thinking_level` | `null` | Inherit helper profile; physical models default to thinking off |
 | `show_refresh_spinner` | `false` | Show activity only during helper requests |
@@ -122,6 +125,8 @@ Global configuration lives at `<PI_CODING_AGENT_DIR>/work-cards.json`, defaultin
 | `pane_poll_interval_ms` | `1000` | Display refresh interval |
 | `herdr_timeout_ms` | `3000` | Native operation and document lock-wait timeout |
 | `pane_height_fraction` | `0.2` | Requested display share of a new pair's initial split; best effort within native layout constraints |
+
+Naming settings accept `true`, `false` or `null`. Omitted or null means enabled when `workspace_startup` is `automatic`, disabled when it is `manual`. Each surface is independent. Disabling naming preserves records and manual protection; re-enabling does not reclaim pinned names. Explicit `/work-card naming` bypasses automatic native switches, not independent Pi manual protection.
 
 Thinking overrides are `off`, `minimal`, `low`, `medium`, `high`, `xhigh` or `max`. Numeric limits must be positive integers, except the check interval can be zero. Pane fraction must be strictly between zero and one. Removed legacy options are rejected rather than silently accepted.
 
@@ -151,7 +156,7 @@ Run Pi, the plugin, repository and Herdr server on the same host. macOS local an
 
 ## Verification status
 
-The current runtime passes `npm run check` and all 792 tests on macOS with Node.js 22.23.3 and 26.12.0, without skips. The suite retains filesystem, concurrency, cancellation, ownership, document, terminal and packaging checks, including nested split sizing. Old-format-only expectations are retired. Package tests use Pi 1.2.0's real loader, verify same-process source reload and source/compiled plugin roots, and extract an actual npm tarball. Supplied read-only host dependencies are not a clean dependency-install test.
+The current runtime passes `npm run check` and all 856 tests on macOS with Node.js 22.23.3 and 26.12.0, without skips. The suite retains filesystem, concurrency, cancellation, ownership, document, terminal and packaging checks, including nested split sizing. Old-format-only expectations are retired. Package tests use Pi 1.2.0's real loader, verify same-process source reload and source/compiled plugin roots, and extract an actual npm tarball. Supplied read-only host dependencies are not a clean dependency-install test.
 
 The latest isolated runtime run passed 7 checks on Herdr 0.9.5: attachment, exact document opening, close/refresh/reload suppression, explicit reopen, independent pairs, own-only cleanup and nested sizing. Both 20% and 75% card fractions preserved the outer split, unrelated pane geometry and focus. It used real card/editor processes with injected SDK callbacks and local fake helpers, not a complete live Pi session. Earlier native checks also verified multiple checkouts, editor reuse, manual labels and movement.
 

@@ -27,6 +27,8 @@ export interface PlanRefreshInput {
   /** Explicit requests reselect metadata and regenerate Goal even with unchanged provenance. */
   intent?: CheckIntent;
   onRequest?: () => (() => void);
+  /** Guarded helper title publication, not cache retention or protected manual proposals. */
+  onWorkspaceTitlePublished?: (workspace: Snapshot<WorkspaceRecord>) => void;
   /** Read-only observer; callbacks must not throw. Contains no source or dialogue contents. */
   onDiagnostic?: (event: RefreshDiagnostic) => void;
 }
@@ -66,6 +68,10 @@ export class PlanRefresher<TModel extends { api?: string }> {
       return workspace;
     };
 
+    const publishedTitle = async (result: Snapshot<WorkspaceRecord>, title: string | undefined): Promise<void> => {
+      const published = await current(result.revision);
+      if (title !== undefined && published.record.goal.kind === 'known' && published.record.title === title) input.onWorkspaceTitlePublished?.(published);
+    };
     let stage: 'selection' | 'goal' = 'selection';
     let sourceReadFailed = false;
     let recovery: { baseline: Snapshot<WorkspaceRecord>; sources: DocumentIdentity[] } | undefined;
@@ -125,6 +131,7 @@ export class PlanRefresher<TModel extends { api?: string }> {
           ...(!retain && intent === 'reset' ? { preserveShort: false } : {}),
           ...(!retain && proposal.title !== undefined ? { title: proposal.title } : {}),
         }, original.revision, signal);
+        await publishedTitle(result, retain ? undefined : proposal.title);
         // Only retention needs a host-local cache; accepted results use their durable provenance.
         this.retainedConversation = retain
           ? { workspaceId: workspace.id, creationToken: workspace.creationToken, ...origin, goal: result.record.goal } : undefined;
@@ -149,6 +156,7 @@ export class PlanRefresher<TModel extends { api?: string }> {
         ...(intent === 'reset' ? { preserveShort: false } : {}),
         ...(goal?.title !== undefined ? { title: goal.title } : {}),
       }, original.revision, signal);
+      await publishedTitle(result, goal?.title);
       onDiagnostic?.({ stage: 'goal', outcome: result.revision === checked.revision ? 'unchanged' : 'applied' });
       return result;
     } catch (error) {

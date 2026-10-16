@@ -4,6 +4,9 @@ import { join } from 'node:path';
 
 export interface WorkCardsConfig {
   workspace_startup: 'automatic' | 'manual';
+  workspace_naming: boolean | null;
+  tab_naming: boolean | null;
+  session_naming: boolean | null;
   model: string;
   thinking_level: null | 'off' | 'minimal' | 'low' | 'medium' | 'high' | 'xhigh' | 'max';
   show_refresh_spinner: boolean;
@@ -19,6 +22,9 @@ export interface WorkCardsConfig {
 
 export const DEFAULT_CONFIG: Readonly<WorkCardsConfig> = Object.freeze({
   workspace_startup: 'automatic',
+  workspace_naming: null,
+  tab_naming: null,
+  session_naming: null,
   model: 'helpers/simple',
   thinking_level: null,
   show_refresh_spinner: false,
@@ -30,6 +36,10 @@ export const DEFAULT_CONFIG: Readonly<WorkCardsConfig> = Object.freeze({
   herdr_timeout_ms: 3000,
   pane_height_fraction: 0.2,
 });
+
+export function namingEnabled(config: WorkCardsConfig, surface: 'workspace' | 'tab' | 'session'): boolean {
+  return config[`${surface}_naming`] ?? config.workspace_startup === 'automatic';
+}
 
 function validateDocumentCommand(value: unknown, label: string): asserts value is string {
   if (typeof value !== 'string' || !value.trim() || /[\p{Cc}\p{Cf}]/u.test(value)) {
@@ -65,6 +75,8 @@ export async function loadConfig(path = configPath()): Promise<WorkCardsConfig> 
         }
       } else if (key === 'workspace_startup') {
         if (value !== 'automatic' && value !== 'manual') throw new Error('workspace_startup must be automatic or manual');
+      } else if (key === 'workspace_naming' || key === 'tab_naming' || key === 'session_naming') {
+        if (value !== null && typeof value !== 'boolean') throw new Error(`${key} must be a boolean or null`);
       } else if (key === 'show_refresh_spinner') {
         if (typeof value !== 'boolean') throw new Error('show_refresh_spinner must be a boolean');
       } else if (key === 'document_command') {

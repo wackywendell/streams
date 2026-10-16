@@ -40,6 +40,40 @@ async function fixture(t, withReference = true) {
   };
 }
 
+test('workspace title publication requires a guarded accepted known title, including same text but never cached or protected proposals', async t => {
+  for (const documents of [true, false]) {
+    const f = await fixture(t, documents), published = [];
+    const input = { evidence: dialogue(), onWorkspaceTitlePublished: w => published.push(w.record.title) };
+    await f.refresh(input); assert.deepEqual(published, ['Automatic']);
+    await f.refresh(input); assert.equal(published.length, 1);
+    await f.refresh({ ...input, intent: 'reset' }); assert.deepEqual(published, ['Automatic', 'Automatic']);
+    f.goal(() => ({ goal: 'Known purpose', goalShort: 'Purpose' })); await f.refresh({ ...input, intent: 'refresh' }); assert.equal(published.length, 2);
+    await f.store.setWorkspaceTitle(f.authority, 'Protected', (await f.workspace()).revision);
+    f.goal(() => ({ goal: 'Known purpose', goalShort: 'Purpose', title: 'Rejected' }));
+    await f.refresh({ ...input, intent: 'refresh' }); assert.equal(published.length, 2);
+  }
+});
+test('workspace publication excludes sparse retained and unknown proposals and rejected CAS', async t => {
+  const f = await fixture(t, false), published = [], input = { evidence: dialogue(), onWorkspaceTitlePublished: w => published.push(w) };
+  await f.refresh(input); assert.equal(published.length, 1);
+  f.goal(() => ({ goal: '', goalShort: '', title: 'Automatic' }));
+  await f.refresh({ ...input, intent: 'reset' }); assert.equal(published.length, 1);
+  const fresh = await fixture(t, false); fresh.goal(() => ({ goal: '', goalShort: '', title: 'Invented' }));
+  await fresh.refresh(input); assert.equal(published.length, 1);
+  f.goal(async () => {
+    await f.store.setWorkspaceTitle(f.authority, 'Concurrent title', (await f.workspace()).revision);
+    return { goal: 'New purpose', goalShort: 'Purpose', title: 'New title' };
+  });
+  await assert.rejects(f.refresh({ ...input, intent: 'refresh' }), /stale/i); assert.equal(published.length, 1);
+});
+
+test('cancelled title publication cannot grant workspace readiness after apply', async t => {
+  const f = await fixture(t), published = [], apply = f.store.applyPlan.bind(f.store);
+  f.store.applyPlan = async (...args) => { const result = await apply(...args); f.controller.abort(); return result; };
+  await assert.rejects(f.refresh({ onWorkspaceTitlePublished: w => published.push(w) }), /abort/i);
+  assert.deepEqual(published, []);
+});
+
 for (const field of ['workspaceId', 'membershipToken', 'checkout', 'cwd', 'evidenceGeneration']) test(`plan inference never starts after ${field} changes during paired read`, async t => {
   const f = await fixture(t), agent = await f.store.readAgent('s');
   const readWorkspace = f.store.readWorkspace.bind(f.store); let once = true;

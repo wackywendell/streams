@@ -82,6 +82,14 @@ test('cancelled own title publication does not emit source readiness', async t =
   assert.deepEqual(published, []);
 });
 
+test('workspace title publication forwards guarded known proposals through sequential refresh', async t => {
+  const f = await fixture(t), published = [];
+  await f.refresh({ onWorkspaceTitlePublished: w => published.push(w.record.title) });
+  assert.deepEqual(published, ['Automatic workspace']);
+  await f.refresh({ onWorkspaceTitlePublished: w => published.push(w.record.title) });
+  assert.deepEqual(published, ['Automatic workspace']);
+});
+
 test('reference-only evidence is copied before awaits and never sent to own inference', async t => {
   const f = await fixture(t);
   const referenceEvidence = { compactionSummary: null, transcript: [{ role: 'tool_activity', operation: 'edit', path: 'plan.md' }] };

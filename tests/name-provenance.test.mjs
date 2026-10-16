@@ -50,6 +50,38 @@ test('missing read creates nothing and only proven blank/numeric defaults permit
   assert.equal(decide(scope, null, { currentLabel: 'Next', desiredName: 'Next' }).kind, 'manual');
 });
 
+test('workspace pending baseline requires accepted source and pins drift before readiness', async t => {
+  const { scope: tab, store } = await fixture(t);
+  const scope = { ...tab, kind: 'workspace', surfaceId: 'workspace-1' };
+  const first = decide(scope, null, { currentLabel: 'Existing native name' });
+  assert.deepEqual(first, { kind: 'pending', baseline: 'Existing native name' });
+  const saved = await store.write(scope, { version: 1, scope, mode: 'pending', baseline: first.baseline, nonce: 'baseline-1' }, null);
+  const pending = (await store.read(scope)).record;
+  assert.equal(decide(scope, pending, { currentLabel: pending.baseline }).kind, 'not-ready');
+  const claim = decide(scope, pending, { currentLabel: pending.baseline, initialClaimReady: true });
+  assert.equal(claim.kind, 'rename'); assert.equal(claim.afterSuccess.mode, 'auto');
+  assert.equal(decide(scope, pending, { currentLabel: pending.baseline, desiredName: pending.baseline, initialClaimReady: true }).kind, 'adopt');
+  const drift = decide(scope, pending, { currentLabel: 'User rename' });
+  assert.deepEqual(drift.provenance, { version: 1, scope, mode: 'manual', owner: null, lastApplied: null });
+  assert.equal(decide(scope, drift.provenance, { initialClaimReady: true }).kind, 'manual');
+  await store.write(scope, { ...pending, baseline: '' }, saved.revision);
+  assert.equal((await store.read(scope)).record.baseline, '');
+  assert.equal((await store.read(scope)).record.nonce, 'baseline-1');
+  const { nonce: _nonce, ...missingNonce } = pending;
+  for (const invalid of [missingNonce, { ...pending, nonce: '' }, { ...pending, nonce: 'a/b' }, { ...pending, nonce: null }, { ...pending, extra: true }]) {
+    await assert.rejects(store.write(scope, invalid, saved.revision));
+    await writeFile(saved.path, JSON.stringify(invalid));
+    await assert.rejects(store.read(scope));
+    assert.throws(() => decide(scope, invalid));
+  }
+  await assert.rejects(store.write(tab, { ...pending, scope: tab }, null));
+  await writeFile(store.path(tab), JSON.stringify({ ...pending, scope: tab }));
+  await assert.rejects(store.read(tab));
+  assert.throws(() => decide(scope, { ...pending, owner: null }));
+  assert.throws(() => decide(scope, pending, { initialClaimReady: 'yes' }));
+  assert.equal(decide(scope, pending, { intent: 'explicit' }).kind, 'rename');
+});
+
 test('explicit reclaim overrides a valid pin and adopts a matching name without a native effect', async t => {
   const { scope } = await fixture(t);
   const manual = { version: 1, scope, mode: 'manual', owner: null, lastApplied: null };
