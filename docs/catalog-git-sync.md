@@ -1,6 +1,6 @@
 # ADR: Streams-managed storage and optional Git sync
 
-Status: agreed design with an initial library implementation. The [sync implementation plan](../plans/catalog-sync.md) defines its testable contracts and scope; the [library usage guide](catalog-sync-usage.md) describes its API and manual inspection. CLI replacement, handover coordination and installed-runtime cutover remain follow-on work.
+Status: agreed design with an initial library implementation. The [sync implementation plan](../plans/catalog-sync.md) defines its testable contracts and scope; the [library usage guide](catalog-sync-usage.md) describes its API and manual inspection. This checkout's CLI uses the coordinators; see the [CLI usage](../README.md). Handover coordination, agent/frontend projections and installed-runtime cutover remain follow-on work.
 
 ## Context and decision
 

@@ -1,6 +1,6 @@
 # ADR: Durable streams without scratch notes
 
-Status: draft. The product direction is agreed; the field shapes below are proposed. Records, operations and local YAML persistence are implemented; CLI and integration cutover remains pending.
+Status: agreed design with an initial catalog and CLI implementation. The examples describe the domain, not a storage API. Pi, skill and Work Cards integration remains pending; the installed runtime has not switched.
 
 ## Decision and rationale
 
@@ -57,7 +57,7 @@ issues: []
 prs: []
 ```
 
-The naming modes distinguish automatic text from protected manual choices. `goal` describes the intended outcome. An overall progress view can be assembled from session descriptions and reference documents when needed, rather than maintained as another record. Scope not assigned to a session belongs in the goal or a referenced plan.
+The naming modes distinguish automatic text from protected manual choices. `goal` describes the intended outcome and may be null while that outcome is unspecified. In that case `goal_short` is also null; creation must not invent placeholder text. An overall progress view can be assembled from session descriptions and reference documents when needed, rather than maintained as another record. Scope not assigned to a session belongs in the goal or a referenced plan.
 
 Repository aliases belong to the stream. Documents identify a repository, relevant remote branch/bookmark, relative path and description. Issue and PR references contain URLs and descriptions. Missing local checkouts must not erase these references. Non-repository work may have an empty repository map.
 
@@ -155,6 +155,6 @@ For the initial Git backend, ordinary saves succeed after a local commit. Public
 
 ## Remaining work
 
-This decision establishes the record boundaries and lifecycle, not a complete schema or CLI specification. Remaining design work includes validation and migration, command syntax and conflict results, internal consistency metadata, automatic session descriptions, and the normal resume-selection flow. Git hosting, batching intervals and retry mechanics belong to the sync design.
+This decision establishes the record boundaries and lifecycle, not a complete CLI specification. The [README](../README.md) describes implemented commands. Handover, automatic session descriptions, Work Cards projections and multi-session reconstruction remain follow-on work. Git hosting, batching intervals and retry mechanics belong to the sync design.
 
-Migration must preserve existing scratch material while retiring it as the authority; it must also replace the scratch-generating checkpoint workflow. The current [format contract](../src/_streams/FORMAT.md) and [checkpoint specification](pi-stream-checkpoint-spec.md) describe the existing implementation, not this design.
+No automatic migration or legacy-format compatibility is required. Existing scratch material may be kept or migrated manually. The scratch-generating checkpoint workflow still needs a replacement. The [scratch format contract](../src/_streams/FORMAT.md) and [checkpoint specification](pi-stream-checkpoint-spec.md) describe that pre-cutover integration, not the catalog CLI.

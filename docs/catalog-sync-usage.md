@@ -1,6 +1,6 @@
 # Using the catalog sync library
 
-The sync library composes the catalog foundation. It provides application-level sync and read orchestration without starting a background service or configuring a hosted repository. CLI and runtime cutover is a separate integration. The [sync ADR](catalog-git-sync.md) explains the policy; the [implementation plan](../plans/catalog-sync.md) defines its scope.
+The sync library composes the catalog foundation. It provides application-level sync and read orchestration without starting a background service or configuring a hosted repository. The [CLI](../README.md) uses these coordinators; Pi and Work Cards integration remains separate. The [sync ADR](catalog-git-sync.md) explains the policy; the [implementation plan](../plans/catalog-sync.md) defines its scope.
 
 ## Local-only storage
 
@@ -95,7 +95,7 @@ Reads never push or reset the M/N publication clocks. They share a separate 60-s
 - `freshness`, `fetched_at` and `detail` describe refresh evidence and any fetch failure
 - `conflicts` identifies pending decisions that cannot safely combine
 
-On a genuine domain conflict, the primary view remains the complete local catalog and the confirmed alternative remains available separately. This avoids inventing a partially merged, potentially invalid record graph. CLI output must expose those conflicts and the alternative rather than label local state as reconciled. The projected catalog is not a persistence revision or permission to overwrite records.
+On a genuine domain conflict, the primary view remains the complete local catalog and the confirmed alternative remains available separately. This avoids inventing a partially merged, potentially invalid record graph. CLI output must expose those conflicts and the alternative rather than label local state as reconciled. The projected catalog is not a persistence revision or permission to overwrite records. Writes must use the actual local snapshot. In the initial CLI, run `streams sync` to adopt records visible only in the refreshed view before editing them or their dependent relationships.
 
 Reads do not change live record files, index, HEAD or pending publication markers. Pending projected state never grants ownership; authority still comes from validated confirmed history or genuine local creation provenance. Unsupported history or repair-required state fails closed rather than becoming an ordinary offline warning. `inspect_remote()` remains an unconditional low-level fetch returning only a confirmed snapshot; `confirmed_snapshot()` reads that snapshot without network access.
 
