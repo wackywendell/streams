@@ -1,6 +1,6 @@
 # Using the catalog sync library
 
-The sync library composes the catalog foundation. It does not replace the installed scratch-note CLI, start a background service or configure a hosted repository. The [sync ADR](catalog-git-sync.md) explains the policy; the [implementation plan](../plans/catalog-sync.md) defines its scope.
+The sync library composes the catalog foundation. It provides application-level sync and read orchestration without starting a background service or configuring a hosted repository. CLI and runtime cutover is a separate integration. The [sync ADR](catalog-git-sync.md) explains the policy; the [implementation plan](../plans/catalog-sync.md) defines its scope.
 
 ## Local-only storage
 
@@ -48,7 +48,7 @@ catalog = GitCatalog.initialize(
 
 Initialization creates an empty bootstrap locally if the remote branch does not exist. If another host already published a supported catalog, it fetches and validates that history. It will not adopt arbitrary existing Git contents. Reopen an initialized directory with `GitCatalog(path, host_id="laptop")`; pass the same policy in every process if overriding defaults.
 
-`save(operation)` commits a validated change locally. It does not push automatically. A running integration normally creates a stream, then its session record, then checks publication once:
+`save(operation)` commits a validated change locally. It does not push automatically. Command handlers use `SyncCoordinator` to request opportunistic publication after related saves. They must check even after a no-change save: older pending changes may now be eligible. A running integration normally creates a stream, then its session record, then checks publication once:
 
 ```python
 from _streams.catalog.model import Session
@@ -60,7 +60,8 @@ if created.local == "committed" or (created.domain and created.domain.outcome ==
                       harness="pi", harness_session_id="native-session-id", title="Investigate indexing")
     joined = catalog.save(Operation(id=str(uuid4()), before=None, after=session,
                                     actor="automatic", ownership_token=authority.token))
-    publication = catalog.sync(event="session")
+    from _streams.catalog.sync import SyncCoordinator
+    publication = SyncCoordinator(catalog).maybe_sync("session")
 ```
 
 The initial creation operation establishes local ownership without a push. Generic operations cannot transfer ownership or reattach a session. `handover()` explicitly raises `NotImplementedError`; the domain handover coordinator is a follow-on.
@@ -69,7 +70,7 @@ Each record save is separate. If session creation fails after stream creation, r
 
 ## Publication events and results
 
-Call `sync(event=...)` after an event's related saves:
+Call `SyncCoordinator(catalog).maybe_sync(event)` after an event's related saves. The backend checks timing and pending state under its shared store lock; callers do not implement their own timers. `sync(event=...)` remains the lower-level backend entry point.
 
 | Event | Eligibility |
 | --- | --- |
@@ -80,7 +81,23 @@ Call `sync(event=...)` after an event's related saves:
 
 Defaults are M = 300 seconds, N = 3,600 seconds. Each Git subprocess has a 30-second timeout. A pass makes at most 3 competing-push attempts. Failed automatic attempts share a 60-second cooldown; shutdown and explicit/forced requests bypass it. These are caller-driven checks, not delivery deadlines or a scheduled task. A backward clock change conservatively delays interval-based attempts.
 
-`inspect_remote()` fetches and returns a confirmed snapshot without publishing or changing the live working records. It does not postpone pending publication. `confirmed_snapshot()` reads the last fetched state without network access. Both keep fetched state separate from pending local edits.
+### Scheduled and explicit read refresh
+
+List/show command handlers call `SyncCoordinator(catalog).read(refresh=False)`. A Git read fetches when N has elapsed since the last successful refresh; `refresh=True` requests an explicit blocking fetch. A successful fetch in any write sync counts toward this read clock, even if its later push fails. There is no daemon and no asynchronous refresh to wait for later.
+
+Reads never push or reset the M/N publication clocks. They share a separate 60-second failed-read cooldown; explicit refresh bypasses it. Fetch success clears the prior read error. A failure returns the cached view with `freshness='failed'` and diagnostic detail. During the cooldown, cached reads retain that detail rather than hiding the failure. Local-only reads make no network calls, including explicit refresh requests.
+
+`ReadResult` separates the displayed catalog from persistence:
+
+- `catalog` is the logical view produced by domain replay of pending local intent onto confirmed remote state
+- `local` is the actual local persistence snapshot, not that projected view
+- `confirmed` is the last verified remote snapshot, or None if unavailable/local-only
+- `freshness`, `fetched_at` and `detail` describe refresh evidence and any fetch failure
+- `conflicts` identifies pending decisions that cannot safely combine
+
+On a genuine domain conflict, the primary view remains the complete local catalog and the confirmed alternative remains available separately. This avoids inventing a partially merged, potentially invalid record graph. CLI output must expose those conflicts and the alternative rather than label local state as reconciled. The projected catalog is not a persistence revision or permission to overwrite records.
+
+Reads do not change live record files, index, HEAD or pending publication markers. Pending projected state never grants ownership; authority still comes from validated confirmed history or genuine local creation provenance. Unsupported history or repair-required state fails closed rather than becoming an ordinary offline warning. `inspect_remote()` remains an unconditional low-level fetch returning only a confirmed snapshot; `confirmed_snapshot()` reads that snapshot without network access.
 
 A `Result` separates the domain outcome, local save and sharing state. In particular:
 

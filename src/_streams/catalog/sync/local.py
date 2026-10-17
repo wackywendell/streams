@@ -198,6 +198,11 @@ class LocalCatalog:
         except (OSError, StorageError) as error:
             return Result("local-only", local="repair-required", detail=str(error))
 
+    def read(self, *, refresh: bool = False):
+        from .coordinator import ReadResult
+        snapshot = self.snapshot()
+        return ReadResult(snapshot.catalog, snapshot, None, "local-only")
+
     def sync(self, **kwargs) -> Result:
         return Result("local-only")
 

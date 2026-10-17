@@ -31,6 +31,14 @@ class Policy:
         if self.timeout_seconds == 0 or type(self.attempts) is not int or not 1 <= self.attempts <= 3:
             raise ValueError("sync needs a positive timeout and one to three attempts")
 
+    def read_due(self, *, fetched_at: float | None, now: float, retry_after: float = 0, force: bool = False) -> bool:
+        Timing(last_sync=fetched_at, retry_after=retry_after)
+        if force:
+            return True
+        if now < retry_after:
+            return False
+        return fetched_at is None or now - fetched_at >= self.session_seconds
+
     def due(self, event: str, timing: Timing, *, now: float, pending_stream: bool = False) -> bool:
         if event in ("shutdown", "explicit", "force"):
             return True

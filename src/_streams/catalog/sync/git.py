@@ -186,9 +186,38 @@ class GitCatalog:
             raise RepairRequired("confirmed remote history was removed or replaced")
         if tip is not None:
             self.state.validate_operations((op for op, _ in history.operations.values()), remember=True)
-        metadata.update(confirmed=tip, fetched_at=self.clock())
+        metadata.update(confirmed=tip, fetched_at=self.clock(), refresh_retry_after=0, refresh_error="")
         self.state.write("sync.json", metadata)
         return tip
+
+    def read(self, *, refresh: bool = False):
+        """Blocking scheduled fetch and a non-publishing projection of pending intent."""
+        from .coordinator import ReadResult
+        from .replay import replay
+        with self.store.transaction() as transaction:
+            self._ready()
+            local = self._history()
+            snapshot = transaction.read()
+            metadata = self._metadata()
+            freshness = "cached"
+            if self.policy.read_due(fetched_at=metadata["fetched_at"], now=self.clock(),
+                                    retry_after=metadata.get("refresh_retry_after", 0), force=refresh):
+                try:
+                    self._fetch()
+                    freshness = "refreshed"
+                except GitError as error:
+                    metadata = self._metadata()
+                    metadata.update(refresh_retry_after=self.clock() + self.policy.cooldown_seconds,
+                                    refresh_error=str(error))
+                    self.state.write("sync.json", metadata)
+                    freshness = "failed"
+            metadata = self._metadata()
+            remote = read_history(self.git, metadata["confirmed"])
+            projected = replay(local, remote)
+            catalog = snapshot.catalog if projected.conflicts else projected.catalog
+            confirmed = YamlStore.decode_snapshot(remote.files) if metadata["fetched_at"] is not None else None
+            return ReadResult(catalog, snapshot, confirmed, freshness, metadata["fetched_at"],
+                              projected.conflicts, metadata.get("refresh_error", ""))
 
     def inspect_remote(self) -> Snapshot:
         """Fetch-only inspection never advances the publication gate or adopts files."""
@@ -204,10 +233,11 @@ class GitCatalog:
 
     def _candidate(self, local: History, remote: History):
         """Return a candidate tip and diagnostics, without touching the live index."""
-        from ..operations import Authority
+        from .replay import replay
         base = remote.tip or local.root
-        authorities = dict(remote.authorities)
-        conflicts = []
+        projected = replay(local, remote)
+        if projected.conflicts:
+            return base, projected.conflicts
         with tempfile.TemporaryDirectory(prefix="streams-candidate-") as directory:
             root = Path(directory) / "records"
             root.mkdir()
@@ -219,36 +249,15 @@ class GitCatalog:
             index = Path(directory) / "index"
             self.git.run("read-tree", base, index=index)
             with store.transaction() as transaction:
-                for operation, origin in local.operations.values():
-                    published = remote.operations.get(operation.id)
-                    if published is not None:
-                        if published[0] != operation:
-                            raise RepairRequired(f"remote operation ID has different intent: {operation.id}")
-                        continue
-                    # Even identical fields cannot turn a different creation into
-                    # ownership of an existing identity.
-                    if operation.before is None and isinstance(operation.after, Stream) and remote.catalog.stream(operation.after.id):
-                        result = Reconciliation(operation.id, "conflict", conflicts=("identity",), reason="remote stream has a different creation")
-                    else:
-                        snapshot = transaction.read()
-                        result = reconcile(snapshot.catalog, operation, authority=authority_for(operation, authorities))
-                    if result.outcome == "conflict":
-                        conflicts.append({"operation": operation.id, "target": operation.target,
-                                          "origin": origin, "fields": result.conflicts, "reason": result.reason})
-                        break
-                    if result.outcome != "changes":
-                        continue
-                    transaction.save(result.record, expected=snapshot)
+                for operation, origin, record in projected.changes:
+                    transaction.save(record, expected=transaction.read())
                     path = store.record_path(operation.target).as_posix()
                     blob = self.git.text("hash-object", "-w", "--stdin", input=(root / path).read_bytes())
                     self.git.run("update-index", "--add", "--cacheinfo", "100644," + blob + "," + path, index=index)
                     tree = self.git.text("write-tree", index=index)
                     base = self._commit(tree, encode_operation(operation, origin=origin), base)
-                    if operation.before is None and isinstance(operation.after, Stream):
-                        authorities[operation.after.id] = Authority(operation.after.owner_host_id, operation.id)
-            if not conflicts:
-                read_history(self.git, base)
-            return base, tuple(conflicts)
+            read_history(self.git, base)
+            return base, ()
 
     def _retain(self, revision: str) -> str:
         ref = "refs/catalog/retained/" + str(uuid4())
