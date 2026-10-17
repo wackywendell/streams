@@ -80,6 +80,10 @@ A stream-pending flag must describe the whole active unpublished history, not ju
 
 Complete an event's related local saves before checking its gate. A running session normally creates a new stream and its first session association in that order, then triggers the timing check once. Both records are available locally immediately, without a special first-publication requirement. Each save remains a separate commit: if the second fails, report the successfully created stream and the failed association rather than pretending the pair rolled back.
 
+A shared application coordinator accepts publication events after related saves, including no-change updates. CLI handlers and integrations do not keep separate timers.
+
+List/show reads use N since the last successful fetch, with an explicit blocking refresh override. A successful write-sync fetch updates that freshness clock even when its later push fails. Reads do not push, adopt live records or reset publication timing. They replay pending intent onto confirmed state for display; a conflict keeps the complete local view and exposes the confirmed alternative and diagnostics. Fetch failures return cached state and diagnostic detail under a separate shared cooldown. Invalid history and repair-required state still fail closed.
+
 A fetch-only inspection records freshness separately and does not reset the publication gate. A failed attempt does not advance either successful timestamp. A successful full sync with no push advances only the full-sync time. When a lost push response is later resolved, record its confirmation once as the scheduling baseline. Rechecking that same confirmed attempt while later operations conflict must not repeatedly advance it. Do not invent a remote acceptance time or update progress-observation times.
 
 Keep retries small and bounded. Use timed Git calls, at most three competing-push attempts in one pass, and a shared short cooldown after failed automatic attempts. Exact timeout and cooldown defaults may be chosen during implementation and documented; they must not create an unbounded loop or one retry storm per session. Explicit requests may bypass the cooldown, but not repair-required or unresolved in-flight-publication checks.
@@ -156,6 +160,7 @@ Use temporary directories and local bare Git remotes. Do not depend on GitHub, r
 12. A remote race or ownership change invalidates old preconditions. Pending or uncertain handover never grants authority; unsupported domain handover cannot be smuggled through generic operations.
 13. A failed local adoption after remote success is reported as published but locally repair-required, preserving both histories.
 14. Invalid records, changed operation payloads under the same ID, tracked local lock files and unexpected remote history replacement fail visibly.
+15. Reads fetch at N or explicit refresh, never push and preserve pending local intent. Successful write fetches count for read freshness, even before a failed push. Read refresh and its failure cooldown do not postpone publication. Concurrent due readers share one fetch; cached conflict and failure diagnostics remain visible.
 
 ## Implementation order and handoff constraints
 

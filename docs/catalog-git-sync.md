@@ -89,11 +89,15 @@ A full sync fetches, reconciles and publishes pending changes together, not just
 
 Track the successful-sync times and unpublished stream changes once per host, not per session. The pending-stream condition persists through subsequent session commits. Do not restart the M interval on every edit or forget a pending stream change because the latest commit touched only a session file. With no successful baseline, a trigger is eligible immediately.
 
-Complete related local saves before checking an event's publication gate. In particular, a running session normally creates its stream and session association together, then checks the normal timing rules. Each record is committed separately; this does not promise a multi-record rollback transaction. A failed later save reports the earlier successful saves rather than hiding or undoing them.
+The CLI's shared application layer checks publication eligibility after related local saves. An unchanged update still checks: older changes may now be due. A running session normally creates its stream and session association together, then checks the normal timing rules once. Each record is committed separately; this does not promise a multi-record rollback transaction. A failed later save reports the earlier successful saves rather than hiding or undoing them.
 
 The intervals are eligibility checks at events, not daemon-enforced deadlines. Running integrations can update observations periodically and request the shared check. An unused host does nothing until its next use. Shutdown publication is best effort; abrupt termination may leave changes unpublished.
 
 Failed attempts do not advance successful-sync timestamps. A successful full sync with nothing to publish advances its sync time, but does not invent a successful push. Fetch-only inspection has its own freshness timestamp and must not postpone publication by resetting the M gate. Bounded retries and failure backoff must prevent several local sessions from repeatedly attempting the same failing sync.
+
+List and show also fetch on a schedule, with an explicit refresh override. They block when N has elapsed since the last successful fetch. Every write sync fetches and reconciles before publication; that fetch counts toward read freshness even if the later push fails. Read freshness does not reset M or the session-publication clock, and reads never push. Failed reads share a separate cooldown so they do not delay eligible publication.
+
+Read views combine confirmed remote state with pending local intent through domain replay, not Git text merging. If the intents conflict, keep the complete local view and expose the confirmed alternative and conflict diagnostics. An offline read exposes cached state and its refresh failure. Neither a projected view nor its freshness grants execution authority or supplies a persistence revision.
 
 ## Reconcile operations rather than overwrite files
 
