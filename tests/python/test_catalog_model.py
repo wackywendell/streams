@@ -33,6 +33,20 @@ class CatalogModelTest(unittest.TestCase):
         self.assertFalse(hasattr(effort, "path"))
         self.assertFalse(hasattr(contribution, "sequence"))
 
+    def test_unspecified_goal_preserves_positional_constructor_compatibility(self):
+        effort = Stream("stream-1", "Catalog", None, "laptop")
+        self.assertIsNone(effort.goal)
+        self.assertIsNone(effort.goal_short)
+
+    def test_unspecified_goal_cannot_have_a_compact_description(self):
+        with self.assertRaises(ValidationError):
+            stream(goal=None, goal_short="Unrelated description")
+
+    def test_goal_rejects_blank_strings_and_invalid_types(self):
+        for goal in ("", " \t\n", 42, False, [], {}, "bad\x00goal"):
+            with self.subTest(goal=goal), self.assertRaises(ValidationError):
+                stream(goal=goal)
+
     def test_archive_is_independent_of_lifecycle(self):
         for status in ("active", "waiting", "blocked", "parked", "done"):
             self.assertEqual(stream(status=status, archived=True).status, status)

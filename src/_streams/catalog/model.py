@@ -102,7 +102,7 @@ class Checkout:
 class Stream:
     id: str
     title: str
-    goal: str
+    goal: str | None
     owner_host_id: str
     title_mode: NamingMode = "automatic"
     goal_short: str | None = None
@@ -115,8 +115,12 @@ class Stream:
     prs: tuple[Link, ...] = ()
 
     def __post_init__(self) -> None:
-        for name in ("id", "title", "goal", "owner_host_id"):
+        for name in ("id", "title", "owner_host_id"):
             text(getattr(self, name), f"stream.{name}")
+        if self.goal is not None:
+            text(self.goal, "stream.goal")
+        elif self.goal_short is not None:
+            raise ValidationError("stream.goal_short requires a goal")
         choice(self.title_mode, "stream.title_mode", NAMING_MODES)
         choice(self.goal_mode, "stream.goal_mode", NAMING_MODES)
         choice(self.status, "stream.status", STATUSES)

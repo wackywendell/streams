@@ -78,6 +78,35 @@ class CatalogOperationsTest(unittest.TestCase):
         op = update("new", contribution, {"state": "New state", "state_short": "New"}, ownership_token="term-1")
         self.assertEqual(op.after.state_short, "New")
 
+    def test_goal_transitions_reconcile_and_retry_without_stale_derivatives(self):
+        for old_goal, new_goal in ((None, "New outcome"), ("Old outcome", None)):
+            for actor in ("user", "automatic"):
+                with self.subTest(old_goal=old_goal, new_goal=new_goal, actor=actor):
+                    before = stream(goal=old_goal, goal_short="Old" if old_goal else None)
+                    op = update("goal", before, {"goal": new_goal}, actor=actor)
+                    self.assertEqual(op.after.goal, new_goal)
+                    self.assertIsNone(op.after.goal_short)
+                    result = reconcile(Catalog(streams=(before,)), op)
+                    self.assertEqual((result.outcome, result.record), ("changes", op.after))
+                    self.assertEqual(reconcile(Catalog(streams=(result.record,)), op).outcome, "no-change")
+
+    def test_goal_transitions_protect_manual_goals_and_concurrent_overrides(self):
+        for old_goal, new_goal in ((None, "Generated"), ("Existing outcome", None)):
+            with self.subTest(old_goal=old_goal, new_goal=new_goal):
+                before = stream(goal=old_goal, goal_mode="manual")
+                op = update("automatic", before, {"goal": new_goal}, actor="automatic")
+                self.assertEqual(reconcile(Catalog(streams=(before,)), op).outcome, "superseded")
+                before = stream(goal=old_goal)
+                current = replace(before, goal_mode="manual")
+                for actor, outcome in (("user", "conflict"), ("automatic", "superseded")):
+                    op = update("goal", before, {"goal": new_goal}, actor=actor)
+                    self.assertEqual(reconcile(Catalog(streams=(current,)), op).outcome, outcome)
+                current = replace(before, goal="Concurrent outcome")
+                op = update("goal", before, {"goal": new_goal})
+                result = reconcile(Catalog(streams=(current,)), op)
+                self.assertEqual(result.outcome, "conflict")
+                self.assertIn("goal", result.conflicts)
+
     def test_concurrent_manual_override_is_not_overwritten(self):
         before = stream()
         op = update("rename", before, {"title": "New title"})

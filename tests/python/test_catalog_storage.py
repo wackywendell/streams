@@ -52,11 +52,29 @@ class CatalogStorageTest(unittest.TestCase):
                          ["hosts/laptop.yaml", "sessions/laptop/session-1.yaml", "streams/stream-1.yaml"])
         self.assertFalse((self.root / ".git").exists())
 
+    def test_cleared_goal_round_trips_through_codec_and_yaml(self):
+        before = stream(goal_short="Old goal")
+        self.create(before)
+        with self.store.transaction() as tx:
+            result, _ = apply_operation(tx, update("clear-goal", before, {"goal": None}))
+        self.assertEqual(result.outcome, "changes")
+        cleared = result.record
+        data = json.loads(json.dumps(record_to_data(cleared)))
+        self.assertIsNone(data["goal"])
+        self.assertIsNone(data["goal_short"])
+        self.assertEqual(record_from_data("stream", data), cleared)
+        with self.store.transaction() as tx:
+            loaded = tx.read().catalog.streams[0]
+        self.assertEqual(loaded, cleared)
+        self.assertIsNone(loaded.goal)
+        self.assertIsNone(loaded.goal_short)
+
     def test_minimal_physical_mapping_and_strict_unknown_fields(self):
         data = {"id": "s", "title": "Work", "goal": "Understand it", "owner": {"host_id": "laptop"}}
         self.assertEqual(record_from_data("stream", data).status, "active")
         for changes in ({"state": "Legacy field"}, {"version": 1}, {"archived": 1}, {"owner": {}},
-                        {"repositories": []}, {"issues": None}, {"goal": None}):
+                        {"repositories": []}, {"issues": None}, {"goal": ""}, {"goal": " "},
+                        {"goal": 42}, {"goal": None, "goal_short": "Orphaned"}):
             with self.subTest(changes=changes), self.assertRaises(ValidationError):
                 record_from_data("stream", data | changes)
         for value in (None, [], "record", {"id": "only-an-id"}):
