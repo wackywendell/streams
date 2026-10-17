@@ -11,57 +11,55 @@ from unittest.mock import patch
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "src"))
 
+from _streams import catalog_config as config
+from _streams.catalog_runtime import Runtime
 from _streams.cli import build_parser, main
 from _streams.cmux import CmuxWorkspace
 from _streams.errors import StreamError
-from _streams.frontend import FrontendMode
-from _streams.herdr import HerdrWorkspace
+from _streams.herdr import HerdrPane, HerdrWorkspace
 from _streams.herdr_binding import HerdrEndpoint
-from _streams.location import StreamLocation
-from test_streams import write_stream
 
 
-CMUX = {"CMUX_WORKSPACE_ID": "workspace:caller"}
+CMUX = {"CMUX_WORKSPACE_ID": "caller-id"}
 HERDR = {"HERDR_ENV": "1", "HERDR_PANE_ID": "old:pane"}
 
 
 class CurrentSelectorParserTest(unittest.TestCase):
-    commands = (["start", "New"], ["rename", "old", "New"], ["resume"])
-
     def parse(self, args):
         with patch("sys.stderr", io.StringIO()):
             return build_parser().parse_args(args)
 
-    def test_one_normalized_optional_selector(self):
-        forms = [((), None), (("-c",), "auto"), (("--current",), "auto"),
-                 (("-f", "auto"), "auto"), (("--frontend", "auto"), "auto"),
-                 (("-f", "cmux"), "cmux"), (("-f", "herdr"), "herdr")]
-        for command in self.commands:
-            for flags, expected in forms:
-                with self.subTest(command=command, flags=flags):
-                    args = self.parse([*command, *flags])
-                    self.assertEqual(args.frontend, expected)
-                    self.assertFalse(hasattr(args, "current"))
+    def test_current_and_frontend_are_independent(self):
+        for command in ("show", "update", "archive", "restore", "open", "resume"):
+            for frontend in ("auto", "cmux", "herdr"):
+                with self.subTest(command=command, frontend=frontend):
+                    args = self.parse([command, "--current", "--frontend", frontend])
+                    self.assertTrue(args.current)
+                    self.assertEqual(args.frontend, frontend)
+                    self.assertIsNone(args.ref)
+                    explicit = self.parse([command, "stable-id", "-f", frontend])
+                    self.assertFalse(explicit.current)
+                    self.assertEqual(explicit.ref, "stable-id")
 
-    def test_missing_invalid_repeated_and_conflicting_forms_fail(self):
-        flags = [("-f",), ("--frontend",), ("-f", "none"), ("-f", "unknown"),
-                 ("-c", "--current"), ("-c", "-c"), ("-c", "-f", "auto"),
-                 ("-f", "herdr", "-c"), ("-f", "cmux", "-f", "herdr"),
-                 ("-f", "auto", "--frontend", "auto")]
-        for command in self.commands:
-            for form in flags:
-                with self.subTest(command=command, form=form):
-                    with self.assertRaises(SystemExit) as error:
-                        self.parse([*command, *form])
-                    self.assertEqual(error.exception.code, 2)
+    def test_frontend_alone_does_not_select_current(self):
+        args = self.parse(["resume", "-f", "herdr"])
+        self.assertFalse(args.current)
+        self.assertIsNone(args.ref)
+        self.assertEqual(args.frontend, "herdr")
 
-    def test_named_groups_remain_explicit_and_current_is_only_a_target(self):
-        for name in ("cmux", "herdr"):
-            args = self.parse([name, "update", "stream", "-c"])
-            self.assertTrue(args.current)
-            self.assertFalse(hasattr(args, "frontend"))
-            with self.assertRaises(SystemExit):
-                self.parse([name, "update", "stream", "-f", "herdr"])
+    def test_start_opens_a_new_stream_not_the_current_target(self):
+        args = self.parse(["start", "New", "-f", "herdr"])
+        self.assertEqual(args.frontend, "herdr")
+        self.assertFalse(hasattr(args, "current"))
+        with self.assertRaises(SystemExit):
+            self.parse(["start", "New", "-c"])
+
+    def test_removed_groups_and_invalid_frontends_fail(self):
+        for arguments in (("herdr", "update"), ("cmux", "open"),
+                          ("show", "-f"), ("show", "-f", "none"), ("show", "-f", "unknown")):
+            with self.subTest(arguments=arguments), self.assertRaises(SystemExit) as error:
+                self.parse(list(arguments))
+            self.assertEqual(error.exception.code, 2)
 
 
 class CurrentCliTest(unittest.TestCase):
@@ -69,14 +67,26 @@ class CurrentCliTest(unittest.TestCase):
         temporary = tempfile.TemporaryDirectory()
         self.addCleanup(temporary.cleanup)
         self.root = Path(temporary.name)
-        self.notes = self.root / "notes"
-        self.notes.mkdir()
-        self.enterContext(patch.dict(os.environ, {"HOME": str(self.root), "XDG_CONFIG_HOME": str(self.root / "config")}, clear=True))
-        self.enterContext(patch("_streams.store.scratch_root", return_value=self.notes))
-        self.enterContext(patch("_streams.resolve.scratch_root", return_value=self.notes))
-        self.enterContext(patch("_streams.store.discover_stream_location", return_value=StreamLocation(None, None, self.root)))
-        # Native execution is always forbidden in this suite, including inherited caller context.
+        self.enterContext(patch.dict(os.environ, {
+            "HOME": str(self.root), "XDG_CONFIG_HOME": str(self.root / "config"),
+            "XDG_DATA_HOME": str(self.root / "data"), "XDG_STATE_HOME": str(self.root / "state"),
+        }, clear=True))
         self.native = self.enterContext(patch("subprocess.run", side_effect=AssertionError("unexpected native call")))
+        self.assertEqual(self.cli("init", "--sync", "none")[0], 0)
+        self.herdr = self.enterContext(patch("_streams.catalog_runtime.HerdrClient")).return_value
+        self.herdr.endpoint.return_value = HerdrEndpoint("/actual/herdr.sock", None)
+        self.herdr.resolve_workspace.return_value = HerdrWorkspace("live-workspace", "Stale title", str(self.root))
+        self.herdr.current_pane.return_value = HerdrPane("live-pane", "live-tab", "live-workspace", str(self.root))
+        self.herdr.command_result.return_value = {
+            "workspace": {"workspace_id": "live-workspace", "label": "New"},
+            "tab": {"tab_id": "live-tab", "workspace_id": "live-workspace"},
+            "root_pane": {"pane_id": "live-pane", "tab_id": "live-tab", "workspace_id": "live-workspace"},
+        }
+        self.cmux = self.enterContext(patch("_streams.catalog_runtime.CmuxClient")).return_value
+        self.cmux.json_from_command.return_value = {"workspace_id": "caller-id"}
+        self.cmux.workspaces.return_value = [CmuxWorkspace({
+            "id": "caller-id", "ref": "workspace:1", "title": "Stale title", "current_directory": str(self.root),
+        })]
 
     def cli(self, *args):
         out, err = io.StringIO(), io.StringIO()
@@ -87,197 +97,132 @@ class CurrentCliTest(unittest.TestCase):
                 code = error.code
         return code, out.getvalue(), err.getvalue()
 
-    def backends(self):
-        cmux = self.enterContext(patch("_streams.current.CmuxClient")).return_value
-        cmux.resolve_workspace.return_value = CmuxWorkspace({"ref": "workspace:caller", "title": "Old"})
-        herdr = self.enterContext(patch("_streams.current.HerdrClient")).return_value
-        herdr.resolve_workspace.return_value = HerdrWorkspace("live:workspace", "Old", str(self.root))
-        herdr.endpoint.return_value = HerdrEndpoint("/actual/herdr.sock", None)
-        update_cmux = self.enterContext(patch("_streams.current.update_cmux_workspace"))
-        update_herdr = self.enterContext(patch("_streams.current.update_herdr_workspace"))
-        return cmux, herdr, update_cmux, update_herdr
+    def create(self, title="Example"):
+        code, out, err = self.cli("create", title, "--cwd", str(self.root), "--json")
+        self.assertEqual((code, err), (0, ""), out)
+        return json.loads(out)["stream"]
 
-    def test_all_policy_aliases_follow_configured_mode(self):
-        cmux, herdr, update_cmux, update_herdr = self.backends()
-        for mode in FrontendMode:
-            for index, form in enumerate((("-c",), ("--current",), ("-f", "auto"), ("--frontend", "auto"))):
-                title = f"{mode} {index}"
-                with self.subTest(mode=mode, form=form), patch("_streams.cli.get_frontend_mode", return_value=mode), patch.dict(os.environ, HERDR):
-                    cmux.reset_mock(); herdr.reset_mock(); update_cmux.reset_mock(); update_herdr.reset_mock()
-                    code, out, err = self.cli("start", title, *form, "--json")
-                    if mode == FrontendMode.NONE:
-                        self.assertEqual(code, 2)
-                        self.assertFalse((self.notes / f"{mode}-{index}.md").exists())
-                        cmux.resolve_workspace.assert_not_called()
-                        herdr.resolve_workspace.assert_not_called()
-                    else:
-                        self.assertEqual((code, err), (0, ""))
-                        is_cmux = mode == FrontendMode.CMUX
-                        expected = "workspace:caller" if is_cmux else "live:workspace"
-                        self.assertEqual(json.loads(out)["updated_workspace"], expected)
-                        selected, other = (cmux, herdr) if is_cmux else (herdr, cmux)
-                        selected.resolve_workspace.assert_called_once_with(None)
-                        other.resolve_workspace.assert_not_called()
-                        updater = update_cmux if is_cmux else update_herdr
-                        updater.assert_called_once()
-                        self.assertIs(updater.call_args.args[2], selected)
+    def attach(self, stream):
+        code, out, err = self.cli("session", "attach", stream["id"], "--harness", "pi",
+                                  "--session-id", "native session", "--title", "Implementation", "--cwd", str(self.root), "--json")
+        self.assertEqual((code, err), (0, ""), out)
+        return json.loads(out)["session"]
 
-    def test_named_selectors_override_none_and_need_no_current_flag(self):
-        cmux, herdr, update_cmux, update_herdr = self.backends()
-        for name, context, client, update in (("cmux", CMUX, cmux, update_cmux), ("herdr", HERDR, herdr, update_herdr)):
-            with self.subTest(name=name), patch("_streams.cli.get_frontend_mode", return_value=FrontendMode.NONE), patch.dict(os.environ, context):
-                code, out, err = self.cli("start", name, "-f", name)
-                self.assertEqual((code, err), (0, ""))
-                client.resolve_workspace.assert_called_once_with(None)
-                update.assert_called_once()
-                self.assertIn("updated:", out)
+    def open(self, stream, frontend):
+        code, out, err = self.cli("open", stream["id"], "-f", frontend, "--json")
+        self.assertEqual((code, err), (0, ""), out)
+        return json.loads(out)["runtime"]
 
-    def test_note_only_start_and_rename_never_resolve_policy_or_probe_native(self):
-        with patch("_streams.cli.get_frontend_mode", side_effect=AssertionError("note-only policy lookup")):
-            self.assertEqual(self.cli("start", "New")[0], 0)
-            self.assertEqual(self.cli("rename", "new", "Renamed")[0], 0)
-            code, out, err = self.cli("start", "Preview", "--dry-run", "--json")
-        self.assertEqual((code, err), (0, ""))
-        self.assertEqual(json.loads(out)["slug"], "preview")
-        self.assertFalse((self.notes / "preview.md").exists())
+    def test_create_does_not_launch_but_start_opens_with_explicit_frontend(self):
+        self.create()
+        self.herdr.command_result.assert_not_called()
+        self.cmux.json_from_command.assert_not_called()
+        code, out, err = self.cli("start", "New", "-f", "herdr", "--cwd", str(self.root), "--json")
+        self.assertEqual((code, err), (0, ""), out)
+        payload = json.loads(out)
+        self.assertEqual(payload["runtime"]["workspace_id"], "live-workspace")
+        self.assertIn(f'STREAMS_STREAM_ID={payload["stream"]["id"]}', self.herdr.command_result.call_args.args[0])
         self.native.assert_not_called()
 
-    def test_dry_run_with_selector_is_rejected_without_writes_or_target_lookup(self):
-        with patch("_streams.cli.get_frontend_mode", side_effect=AssertionError("dry-run lookup")):
-            for form in (("-c",), ("-f", "cmux"), ("-f", "herdr")):
-                code, out, err = self.cli("start", "New", "--dry-run", *form)
-                self.assertEqual((code, out), (2, ""))
-                self.assertIn("dry-run", err)
-        self.assertEqual(list(self.notes.iterdir()), [])
+    def test_missing_ref_never_uses_frontend_or_matching_title_and_cwd(self):
+        self.create("Stale title")
+        with patch.dict(os.environ, HERDR):
+            for command in ("show", "open", "resume", "update"):
+                code, out, err = self.cli(command, "-f", "herdr", "--json")
+                self.assertEqual((code, err), (2, ""), out)
+                self.assertEqual(json.loads(out)["error"]["kind"], "invalid-ref")
+        self.herdr.current_pane.assert_not_called()
+        self.herdr.command_result.assert_not_called()
 
-    def test_no_or_bad_auto_context_fails_before_start_or_rename(self):
-        original = write_stream(self.notes, "old", title="Old")
-        content = original.read_bytes()
-        for context in ({}, CMUX | HERDR, {"HERDR_ENV": "1"}):
-            for command in (("start", "New"), ("rename", "old", "New")):
-                with self.subTest(context=context, command=command), patch.dict(os.environ, context):
-                    code, out, err = self.cli(*command, "-c")
-                    self.assertEqual((code, out), (2, ""))
-                    self.assertTrue(err)
-                    self.assertEqual(original.read_bytes(), content)
-                    self.assertEqual(list(self.notes.iterdir()), [original])
-        self.native.assert_not_called()
+    def test_unassociated_current_never_infers_from_matching_title_and_cwd(self):
+        self.create("Stale title")
+        for frontend, context in (("cmux", CMUX), ("herdr", HERDR)):
+            with self.subTest(frontend=frontend), patch.dict(os.environ, context):
+                code, out, err = self.cli("show", "--current", "-f", frontend, "--json")
+                self.assertEqual((code, err), (2, ""))
+                self.assertIn("no catalog association", json.loads(out)["error"]["message"])
+        self.herdr.command_result.assert_not_called()
+        self.cmux.json_from_command.assert_not_called()
 
-    def test_named_current_requires_its_own_caller_before_any_write(self):
-        original = write_stream(self.notes, "old", title="Old")
-        content = original.read_bytes()
-        for name in ("cmux", "herdr"):
-            for command in (("start", "New"), ("rename", "old", "New")):
-                with self.subTest(name=name, command=command):
-                    code, out, err = self.cli(*command, "-f", name)
-                    self.assertEqual((code, out), (2, ""))
-                    self.assertIn("caller context", err)
-                    self.assertEqual(original.read_bytes(), content)
-                    self.assertEqual(list(self.notes.iterdir()), [original])
-        self.native.assert_not_called()
-
-    def test_native_target_failure_precedes_note_write(self):
-        cmux, herdr, _, _ = self.backends()
-        original = write_stream(self.notes, "old", title="Old")
-        for name, client in (("cmux", cmux), ("herdr", herdr)):
-            client.resolve_workspace.side_effect = StreamError("caller moved or unavailable")
-            for command in (("start", "New"), ("rename", "old", "New")):
-                with self.subTest(name=name, command=command):
-                    self.assertEqual(self.cli(*command, "-f", name)[0], 2)
-                    self.assertEqual(list(self.notes.iterdir()), [original])
-
-    def test_rename_updates_the_preflighted_target_in_either_frontend(self):
-        cmux, herdr, update_cmux, update_herdr = self.backends()
-        for name, client, update in (("cmux", cmux, update_cmux), ("herdr", herdr, update_herdr)):
-            with self.subTest(name=name):
-                write_stream(self.notes, f"old-{name}", title=f"Old {name}")
-                code, out, err = self.cli("rename", f"old-{name}", f"New {name}", "-f", name)
-                self.assertEqual((code, err), (0, ""))
-                self.assertIn(f"renamed: old-{name} -> new-{name}", out)
-                self.assertIn(f"updated: {client.resolve_workspace.return_value.display_ref if name == 'cmux' else 'live:workspace'}", out)
-                stream, workspace, used_client = update.call_args.args
-                self.assertEqual(stream.slug, f"new-{name}")
-                self.assertIs(workspace, client.resolve_workspace.return_value)
-                self.assertIs(used_client, client)
-                self.assertTrue((self.notes / f"old-{name}.md").is_symlink())
-
-    def test_failed_projection_retains_created_note_and_reports_actual_slug_and_path(self):
-        _, _, _, update = self.backends()
-        update.side_effect = StreamError("native refresh may be partial")
-        code, out, err = self.cli("start", "New", "-f", "herdr", "--json")
+    def test_explicit_ref_and_current_conflict_before_native_lookup(self):
+        stream = self.create()
+        code, out, err = self.cli("show", stream["id"], "-c", "-f", "herdr", "--json")
         self.assertEqual((code, err), (2, ""))
-        note = self.notes / "new.md"
-        self.assertTrue(note.is_file())
-        message = json.loads(out)["error"]["message"]
-        self.assertIn("created: new", message)
-        self.assertIn(str(note), message)
-        self.assertIn("native refresh may be partial", message)
-        self.assertIn("live:workspace", message)
-        update.assert_called_once()
+        self.assertIn("not both", json.loads(out)["error"]["message"])
+        self.herdr.endpoint.assert_not_called()
 
-    def test_failed_projection_retains_rename_and_alias_without_retry(self):
-        _, _, update, _ = self.backends()
-        write_stream(self.notes, "old", title="Old")
-        update.side_effect = StreamError("metadata failed")
-        code, out, err = self.cli("rename", "old", "New", "-f", "cmux")
-        self.assertEqual((code, out), (2, ""))
-        self.assertTrue((self.notes / "new.md").is_file())
-        self.assertTrue((self.notes / "old.md").is_symlink())
-        self.assertIn("renamed: old -> new", err)
-        self.assertIn(str(self.notes / "new.md"), err)
-        self.assertIn("workspace:caller", err)
-        update.assert_called_once()
+    def test_explicit_environment_binding_needs_no_native_lookup(self):
+        stream = self.create()
+        with patch.dict(os.environ, {"STREAMS_STREAM_ID": stream["id"]} | CMUX | HERDR):
+            code, out, err = self.cli("show", "-c", "--json")
+        self.assertEqual((code, err), (0, ""))
+        self.assertEqual(json.loads(out)["stream"]["id"], stream["id"])
+        self.herdr.endpoint.assert_not_called()
+        self.cmux.workspaces.assert_not_called()
 
-    def test_resume_requires_selector_when_no_ref_and_rejects_selector_with_ref(self):
-        with patch("_streams.cli.exec_resume") as execute, patch("_streams.cli.get_frontend_mode", side_effect=AssertionError("invalid resume lookup")):
-            for arguments in ((), ("old", "-c"), ("old", "-f", "herdr")):
-                code, out, err = self.cli("resume", *arguments)
-                self.assertEqual((code, out), (2, ""))
-                self.assertIn("selector", err)
-            execute.assert_not_called()
+    def test_dangling_current_identity_never_falls_back_to_another_stream_title(self):
+        missing_id = "00000000-0000-4000-8000-000000000000"
+        competitor = self.create(missing_id)
+        with patch.dict(os.environ, {"STREAMS_STREAM_ID": missing_id}):
+            code, out, err = self.cli("update", "--current", "--status", "done", "--json")
+        self.assertEqual((code, err), (2, ""), out)
+        self.assertEqual(json.loads(out)["error"]["kind"], "not-found")
+        view = json.loads(self.cli("show", competitor["id"], "--json")[1])
+        self.assertEqual(view["stream"]["status"], "active")
 
-    def test_explicit_resume_is_frontend_independent_even_with_mixed_context(self):
-        write_stream(self.notes, "old", title="Old")
-        with patch.dict(os.environ, CMUX | HERDR), patch("_streams.cli.get_frontend_mode", side_effect=AssertionError("explicit resume policy")), patch("_streams.cli.exec_resume") as execute:
-            self.assertEqual(self.cli("resume", "old")[0], 0)
-            self.assertEqual(execute.call_args.args[0].slug, "old")
-        self.native.assert_not_called()
+    def test_current_association_survives_title_update_and_native_labels(self):
+        stream = self.create()
+        for frontend, context in (("cmux", CMUX), ("herdr", HERDR)):
+            with self.subTest(frontend=frontend), patch.dict(os.environ, context):
+                self.open(stream, frontend)
+                self.assertEqual(self.cli("update", stream["id"], "--title", f"Renamed {frontend}")[0], 0)
+                code, out, err = self.cli("show", "-c", "-f", frontend, "--json")
+                self.assertEqual((code, err), (0, ""))
+                self.assertEqual(json.loads(out)["stream"]["id"], stream["id"])
+                self.assertEqual(json.loads(out)["stream"]["title"], f"Renamed {frontend}")
+        self.herdr.resolve_workspace.assert_called_with("live-workspace")
 
-    def test_resume_selector_infers_from_live_target_without_projection(self):
-        cmux, herdr, update_cmux, update_herdr = self.backends()
-        write_stream(self.notes, "old", title="Old")
-        for name, client in (("cmux", cmux), ("herdr", herdr)):
-            with self.subTest(name=name), patch("_streams.cli.exec_resume") as execute:
-                self.assertEqual(self.cli("resume", "-f", name)[0], 0)
-                self.assertEqual(execute.call_args.args[0].slug, "old")
-                client.resolve_workspace.assert_called_once_with(None)
-        update_cmux.assert_not_called(); update_herdr.assert_not_called()
+    def test_malformed_association_fails_closed_without_overwriting_or_relaunch(self):
+        stream = self.create("Stale title")
+        self.open(stream, "herdr")
+        binding = next(config.runtime_state_dir().rglob("associations/*/*.json"))
+        binding.write_text("malformed")
+        self.herdr.command_result.reset_mock()
+        with patch.dict(os.environ, HERDR):
+            self.assertEqual(self.cli("show", "-c", "-f", "herdr")[0], 2)
+        self.assertEqual(self.cli("open", stream["id"], "-f", "herdr")[0], 2)
+        self.assertEqual(binding.read_text(), "malformed")
+        self.herdr.command_result.assert_not_called()
 
-    def test_resume_auto_obeys_policy_and_fails_without_a_selected_frontend(self):
-        cmux, herdr, update_cmux, update_herdr = self.backends()
-        write_stream(self.notes, "old", title="Old")
-        for mode in FrontendMode:
-            with self.subTest(mode=mode), patch("_streams.cli.get_frontend_mode", return_value=mode), patch.dict(os.environ, HERDR), patch("_streams.cli.exec_resume") as execute:
-                cmux.reset_mock(); herdr.reset_mock()
-                code, out, err = self.cli("resume", "-c")
-                self.assertEqual(code, 2 if mode == FrontendMode.NONE else 0)
-                if mode == FrontendMode.NONE:
-                    execute.assert_not_called()
-                else:
-                    self.assertEqual(execute.call_args.args[0].slug, "old")
-                    (cmux if mode == FrontendMode.CMUX else herdr).resolve_workspace.assert_called_once_with(None)
-        update_cmux.assert_not_called(); update_herdr.assert_not_called()
+    def test_failed_start_keeps_durable_stream_and_reports_retry_identity(self):
+        with patch.object(Runtime, "open", side_effect=StreamError("native open may be partial")) as launch:
+            code, out, err = self.cli("start", "New", "-f", "herdr", "--json")
+        self.assertEqual((code, err), (2, ""))
+        payload = json.loads(out)
+        self.assertIn("native open may be partial", payload["runtime"]["error"]["message"])
+        self.assertIn("retry open with its ID", payload["runtime"]["detail"])
+        self.assertEqual(self.cli("show", payload["stream"]["id"])[0], 0)
+        launch.assert_called_once()
 
-    def test_resume_inference_fails_conservatively(self):
-        cmux, herdr, _, _ = self.backends()
-        write_stream(self.notes, "old", title="Different", repo=str(self.root), cwd=str(self.root))
-        cmux.resolve_workspace.return_value = CmuxWorkspace({"ref": "workspace:caller", "title": "Old", "current_directory": str(self.root)})
-        with patch("_streams.cli.exec_resume") as execute:
-            for name in ("cmux", "herdr"):
-                code, out, err = self.cli("resume", "-f", name)
-                self.assertEqual((code, out), (2, ""))
-                self.assertIn("pass a slug", err)
-            execute.assert_not_called()
+    def test_explicit_resume_is_frontend_independent_even_in_mixed_context(self):
+        stream = self.create()
+        self.attach(stream)
+        with patch.dict(os.environ, CMUX | HERDR), patch("_streams.catalog_runtime.os.chdir") as chdir, \
+                patch("_streams.catalog_runtime.os.execvp") as execute:
+            self.assertEqual(self.cli("resume", stream["id"])[0], 0)
+        chdir.assert_called_once_with(self.root.resolve())
+        execute.assert_called_once_with("pi", ["pi", "--session", "native session"])
+        self.herdr.endpoint.assert_not_called()
+        self.cmux.workspaces.assert_not_called()
+
+    def test_resume_current_uses_association_not_native_label(self):
+        stream = self.create()
+        self.open(stream, "herdr")
+        self.attach(stream)
+        with patch.dict(os.environ, HERDR), patch("_streams.catalog_runtime.os.chdir"), \
+                patch("_streams.catalog_runtime.os.execvp") as execute:
+            self.assertEqual(self.cli("resume", "--current", "-f", "herdr")[0], 0)
+        execute.assert_called_once_with("pi", ["pi", "--session", "native session"])
 
 
 if __name__ == "__main__":

@@ -1,8 +1,5 @@
 from __future__ import annotations
 
-import io
-import json
-import os
 import sys
 import tempfile
 import unittest
@@ -11,8 +8,6 @@ from unittest.mock import patch
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "src"))
 
-from _streams.cli import main
-from _streams.config import set_config
 from _streams.errors import StreamError
 from _streams.frontmatter import render_frontmatter
 from _streams.resolve import resolve_stream_ref
@@ -73,23 +68,6 @@ class RenameAliasTest(unittest.TestCase):
         (self.root / "old.md").symlink_to("absent.md")
         with self.assertRaises(StreamError):
             resolve_stream_ref("old", root=self.root)
-
-    def test_cli_show_and_read_follow_alias_to_canonical_note(self) -> None:
-        self.write("old")
-        renamed = rename_stream(show_stream("old", self.root), "New")
-        with patch.dict(os.environ, {"XDG_CONFIG_HOME": str(self.root / "config")}, clear=True):
-            set_config("notes.root", str(self.root))
-            # This fixture's scratch directory is the configured root's child.
-            scratch = self.root / "scratch"
-            scratch.mkdir()
-            (self.root / "old.md").rename(scratch / "old.md")
-            renamed.path.rename(scratch / "new.md")
-            for command in ("show", "read"):
-                output = io.StringIO()
-                with self.subTest(command=command), patch("sys.stdout", output):
-                    self.assertEqual(main([command, "old", "--json"]), 0)
-                payload = json.loads(output.getvalue())
-                self.assertEqual(payload["slug"], "new")
 
     def test_update_through_alias_preserves_symlink_and_writes_canonical_note(self) -> None:
         self.write("old")

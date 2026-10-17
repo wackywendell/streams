@@ -1,7 +1,7 @@
 [project]
 name = "streams-cli"
 version = "0.1.0"
-description = "Manage scratch-first AI coding streams"
+description = "Manage durable work streams and session contributions"
 readme = "README.md"
 license = "MIT"
 license-files = ["LICENSE"]

@@ -1,431 +1,524 @@
-"""Command-line interface for scratch streams."""
+"""CLI for durable work records. Runtime effects and publication are separate outcomes."""
 
 from __future__ import annotations
 
 import argparse
-import hashlib
+from collections.abc import Mapping
+from dataclasses import asdict, fields, is_dataclass, replace
+from enum import Enum
 import json
 import os
-import sys
 from pathlib import Path
+import sys
+from uuid import uuid4
 
+import yaml
+
+from . import catalog_config as config
+from .catalog.codec import record_to_data
+from .catalog.model import Checkout, Document, Link, Repository, Session, STATUSES, Stream, ValidationError
+from .catalog.operations import Operation, update
+from .catalog.storage import StorageError
+from .catalog.sync import Result, SyncCoordinator
 from .errors import StreamError
-from .config import CONFIG_KEYS, config_path, get_frontend_mode, load_config, read_overrides, set_config
-from .frontend import Frontend, FrontendRequest, resolve_frontend
-from .current import CurrentTarget, current_target
-from .herdr import HerdrClient, load_stream_for_update as load_herdr_stream_for_update, open_workspace as open_herdr_workspace, update_workspace as update_herdr_workspace
-from .models import Stream, json_value
-from .schema import SchemaFinding, error_messages
-from .store import archive_stream, preview_start, read_note, rename_stream, scan_streams, start_stream, update_stream
-from .cmux import CmuxClient, load_stream_for_update, markdown_link_for_item, open_workspace, update_all_workspaces, update_workspace
-from .check import check_streams, findings_json
-from .store import check_paths
-from .resolve import resolve_check_path_ref, resolve_note_path, resolve_stream_ref
-from .resume import exec_resume, resolve_stream_for_resume
+from .frontend import Frontend, resolve_frontend
 
 
-def render_list(streams: list[Stream]) -> str:
-    rows = [(stream.title, stream.status, stream.state, stream.slug) for stream in streams]
-    headers = ("Title", "Status", "State", "Slug")
-    widths = [
-        max(len(headers[index]), *(len(row[index]) for row in rows)) if rows else len(headers[index])
-        for index in range(len(headers))
-    ]
-    lines = [
-        "  ".join(headers[index].ljust(widths[index]) for index in range(len(headers))),
-        "  ".join("-" * width for width in widths),
-    ]
-    lines.extend("  ".join(row[index].ljust(widths[index]) for index in range(len(row))) for row in rows)
-    return "\n".join(lines)
+def output_data(value):
+    if isinstance(value, Enum):
+        return value.value
+    if is_dataclass(value):
+        return {field.name: output_data(getattr(value, field.name)) for field in fields(value)}
+    if isinstance(value, Mapping):
+        return {key: output_data(item) for key, item in value.items()}
+    if isinstance(value, (list, tuple)):
+        return [output_data(item) for item in value]
+    return value
 
 
-def render_show(stream: Stream) -> str:
-    issues = ", ".join(markdown_link_for_item(item, "I") for item in stream.issues) or "-"
-    prs = ", ".join(markdown_link_for_item(item, "PR") for item in stream.prs) or "-"
-    sessions = ", ".join(stream.sessions) or "-"
-    return "\n".join(
-        [
-            f"title:       {stream.title}",
-            f"slug:        {stream.slug}",
-            f"status:      {stream.status}",
-            f"state:       {stream.state}",
-            f"description: {stream.description}",
-            f"repo:        {stream.location.repo_root}",
-            f"cwd:         {stream.location.working_root}",
-            f"vcs:         {stream.location.vcs}",
-            f"issues:      {issues}",
-            f"prs:         {prs}",
-            f"sessions:    {sessions}",
-            f"path:        {stream.path}",
-        ]
-    )
-
-
-def command_config(args: argparse.Namespace) -> int:
-    if args.config_action == "set":
-        set_config(args.key, args.value)
-    config = load_config()
-    if args.config_action:
-        if args.key not in CONFIG_KEYS:
-            raise StreamError(f"unknown streams config key: {args.key}")
-        section, name = args.key.split(".")
-        value = config[section][name]
-        print(json.dumps(value) if args.json or isinstance(value, bool) else value)
-    elif args.json:
-        print(json.dumps(config, indent=2, sort_keys=True))
+def emit(value: object, args: argparse.Namespace) -> None:
+    value = output_data(value)
+    if args.json:
+        print(json.dumps(value, ensure_ascii=False, indent=2))
     else:
-        overrides = read_overrides()
-        print(f"Config: {config_path()}")
-        for key in CONFIG_KEYS:
+        print(yaml.safe_dump(value, allow_unicode=True, sort_keys=False).rstrip())
+
+
+def runtime():
+    from .catalog_runtime import Runtime
+    return Runtime(config.runtime_state_dir(), config.host_id(), config.get_frontend_mode())
+
+
+def resolve(records, ref: str):
+    """Resolve identity before names; an ambiguous name is never a selection heuristic."""
+    if not ref or not ref.strip():
+        raise StreamError("reference must be nonempty", kind="invalid-ref")
+    exact = [item for item in records if ref == item.id or
+             isinstance(item, Session) and ref == f"{item.host_id}/{item.id}"]
+    matches = exact or [item for item in records if item.title.casefold() == ref.casefold()]
+    matches = matches or [item for item in records if ref.casefold() in item.title.casefold()]
+    if not matches:
+        raise StreamError(f"no record matches {ref!r}", kind="not-found")
+    if len(matches) != 1:
+        candidates = [f"{item.host_id}/{item.id}" if isinstance(item, Session) else item.id for item in matches]
+        raise StreamError(f"ambiguous reference {ref!r}: {', '.join(candidates)}", kind="ambiguous", candidates=candidates)
+    return matches[0]
+
+
+def stream_ref(args) -> str:
+    if args.current:
+        if args.ref is not None:
+            raise StreamError("use a reference or --current, not both")
+        return runtime().current_stream_id(frontend=args.frontend)
+    if args.ref is None:
+        raise StreamError("supply a stream reference or --current", kind="invalid-ref")
+    return args.ref
+
+
+def target_stream(catalog, args, *, local=False):
+    ref = stream_ref(args)
+    try:
+        if args.current:
+            stream = catalog.stream(ref)
+            if stream is None:
+                raise StreamError(f"associated stream {ref!r} no longer exists", kind="not-found")
+            return stream
+        return resolve(catalog.streams, ref)
+    except StreamError as error:
+        if local and error.kind == "not-found":
+            raise StreamError(f"{error}; run streams sync to adopt records visible only in refreshed reads", kind=error.kind) from error
+        raise
+
+
+def catalog_data(catalog):
+    return {"streams": [record_to_data(item) for item in catalog.streams],
+            "sessions": [record_to_data(item) for item in catalog.sessions]}
+
+
+def read_catalog(backend, args):
+    result = SyncCoordinator(backend).read(refresh=args.refresh)
+    sharing = {"freshness": result.freshness, "fetched_at": result.fetched_at,
+               "view": "local" if result.catalog == result.local.catalog else "projected",
+               "conflicts": list(result.conflicts), "detail": result.detail}
+    if result.conflicts and result.confirmed is not None:
+        sharing["confirmed"] = catalog_data(result.confirmed.catalog)
+    return result.catalog, sharing
+
+
+def maybe_sync(backend, event):
+    return SyncCoordinator(backend).maybe_sync(event)
+
+
+def successful(result: Result) -> bool:
+    return result.local not in ("failed", "repair-required") and (result.domain is None or result.domain.outcome in ("changes", "no-change"))
+
+
+def save(backend, operation):
+    return backend.save(operation, origin={"command": "streams"})
+
+
+def result_data(result):
+    # Immutable records contain mapping proxies; asdict's deepcopy cannot encode them.
+    data = asdict(replace(result, domain=None))
+    if result.domain is not None:
+        domain = asdict(replace(result.domain, record=None))
+        domain.pop("record")
+        data["domain"] = domain
+    return data
+
+
+def finish(backend, operation, saved, *, event, args, extra=None):
+    payload = {"operation_id": operation.id, "save": result_data(saved)}
+    kind = "session" if isinstance(operation.after, Session) else "stream"
+    accepted = saved.domain.record if saved.domain and saved.domain.record else operation.after
+    payload[kind] = record_to_data(accepted)
+    ok = successful(saved)
+    if ok:
+        try:
+            payload["publication"] = result_data(maybe_sync(backend, event))
+            current = backend.snapshot().catalog.get(operation.target)
+            payload[kind] = record_to_data(current)
+        except (StreamError, StorageError, OSError, ValueError) as error:
+            payload["completion_error"] = {"message": str(error), "detail": "local save succeeded; inspect before retrying"}
+            ok = False
+    payload.update(extra or {})
+    emit(payload, args)
+    return 0 if ok else 2
+
+
+def text_value(args, name):
+    value = getattr(args, name, None)
+    path = getattr(args, name + "_file", None)
+    if path is not None:
+        value = sys.stdin.read() if path == "-" else Path(path).expanduser().read_text(encoding="utf-8")
+    return value
+
+
+def scalar_changes(args, fields):
+    changes = {}
+    for name in fields:
+        value = text_value(args, name)
+        if value is not None:
+            changes[name] = value
+    for name in ("title", "goal"):
+        if name in changes:
+            changes[name + "_mode"] = "manual"
+        mode = getattr(args, name + "_mode", None)
+        if mode is not None:
+            changes[name + "_mode"] = mode
+    if getattr(args, "clear_goal", False):
+        changes.update(goal=None, goal_mode=args.goal_mode or "manual")
+    return changes
+
+
+def collection_changes(args, before):
+    changes = {}
+    if args.add_repository or args.remove_repository:
+        repositories = dict(before.repositories)
+        for alias in args.remove_repository:
+            repositories.pop(alias, None)
+        for alias, url in args.add_repository:
+            repository = Repository(url)
+            if alias in repositories and repositories[alias] != repository:
+                raise StreamError(f"repository {alias!r} exists; remove and add it explicitly to replace it")
+            repositories[alias] = repository
+        changes["repositories"] = repositories
+    for field, cls in (("documents", Document), ("issues", Link), ("prs", Link)):
+        singular = {"documents": "document", "issues": "issue", "prs": "pr"}[field]
+        additions, removals = getattr(args, "add_" + singular), getattr(args, "remove_" + singular)
+        if not additions and not removals:
+            continue
+        def identity(item):
+            return item.identity if isinstance(item, Document) else item.url
+        removed = {tuple(item) for item in removals} if field == "documents" else set(removals)
+        values = [item for item in getattr(before, field) if identity(item) not in removed]
+        for arguments in additions:
+            item = cls(*arguments)
+            old = next((old for old in values if identity(old) == identity(item)), None)
+            if old is not None and old != item:
+                raise StreamError(f"{singular} exists with different contents; remove and add it explicitly")
+            if old is None:
+                values.append(item)
+        changes[field] = tuple(values)
+    return changes
+
+
+def command_init(args):
+    backend = config.initialize(args.sync, remote=args.remote, branch=args.branch)
+    emit({"catalog": str(config.catalog_root()), "sync": args.sync, "host_id": backend.host_id}, args)
+    return 0
+
+
+def command_config(args):
+    if args.action == "set":
+        config.set_config(args.key, args.value)
+    values = config.load_config()
+    if args.action:
+        if args.key not in config.CONFIG_KEYS:
+            raise StreamError(f"unknown configuration key: {args.key}")
+        section, name = args.key.split(".")
+        value = values[section][name]
+        print(json.dumps(value) if args.json else value)
+    elif args.json:
+        emit(values, args)
+    else:
+        print(f"Config: {config.config_path()}")
+        overrides = config.read_overrides()
+        for key in config.CONFIG_KEYS:
             section, name = key.split(".")
             source = "configured" if name in overrides.get(section, {}) else "default"
-            if key == "frontend.mode" and source == "default" and "enabled" in overrides.get("cmux", {}):
-                source = "legacy cmux.enabled"
-            print(f"{key}: {json.dumps(config[section][name])} ({source})")
+            print(f"{key}: {json.dumps(values[section][name])} ({source})")
     return 0
 
 
-def command_frontend_get(args: argparse.Namespace) -> int:
-    requested: FrontendRequest | None = args.frontend if args.frontend in (None, "auto") else Frontend(args.frontend)
-    selection = resolve_frontend(get_frontend_mode(), requested, dict(os.environ))
+def command_frontend(args):
+    emit(resolve_frontend(config.get_frontend_mode(), args.frontend, dict(os.environ)).as_json(), args)
+    return 0
+
+
+def command_list(args):
+    backend = config.open_catalog()
+    catalog, sharing = read_catalog(backend, args)
+    query = (args.query or "").casefold()
+    streams = [item for item in catalog.streams if
+               (args.all or item.archived == args.archived) and
+               (not args.status or item.status in args.status) and
+               (query in item.title.casefold() or query in (item.goal or "").casefold())]
+    streams.sort(key=lambda item: (item.title.casefold(), item.id))
     if args.json:
-        print(json.dumps(selection.as_json(), indent=2, sort_keys=True))
+        emit({"streams": [record_to_data(item) for item in streams], "sharing": sharing}, args)
     else:
-        print(f"configured: {selection.configured}\nrequested: {selection.requested or '-'}\nresolved: {selection.resolved or 'none'}")
+        print("ID  STATUS  TITLE")
+        for item in streams:
+            title = "".join(char if char.isprintable() else " " for char in item.title)
+            print(f"{item.id}  {item.status}  {title}")
+        if sharing.get("detail"):
+            print(sharing["detail"], file=sys.stderr)
+        if sharing["conflicts"]:
+            print("catalog conflicts: showing local records; use list --json or show for confirmed alternatives", file=sys.stderr)
     return 0
 
 
-def print_findings(findings: list[SchemaFinding], file=None) -> None:
-    for finding in findings:
-        print(f"{finding.level}: {finding.slug}: {finding.message}", file=file)
-
-
-def command_list(args: argparse.Namespace) -> int:
-    streams, findings = scan_streams()
-    if args.json:
-        payload = {"streams": [stream.as_json() for stream in streams], "findings": [finding.as_json() for finding in findings]}
-        print(json.dumps(payload, indent=2, sort_keys=True))
-    else:
-        print(render_list(streams))
-        print_findings(findings, file=sys.stderr)
-    return 1 if error_messages(findings) else 0
-
-
-def command_read(args: argparse.Namespace) -> int:
-    note = read_note(resolve_note_path(args.slug))
-    if args.json:
-        payload = {
-            "slug": note.slug,
-            "frontmatter": json_value(note.frontmatter),
-            "contents": note.contents,
-            "sha256": note.sha256,
-            "findings": [finding.as_json() for finding in note.findings],
-        }
-        print(json.dumps(payload, indent=2, sort_keys=True))
-    else:
-        # Exact bytes, so callers can diff the note and hash it as `--if-match` does.
-        sys.stdout.flush()
-        if args.hash:
-            sys.stdout.buffer.write(f"{note.sha256}\n".encode())
-        sys.stdout.buffer.write(note.raw)
-        sys.stdout.buffer.flush()
-        print_findings(note.findings, file=sys.stderr)
-    return 1 if error_messages(note.findings) else 0
-
-
-def command_show(args: argparse.Namespace) -> int:
-    stream = resolve_stream_ref(args.slug, exact=args.exact)
-    if args.json:
-        print(json.dumps(stream.as_json(), indent=2, sort_keys=True))
-    else:
-        print(render_show(stream))
+def command_show(args):
+    backend = config.open_catalog()
+    catalog, sharing = read_catalog(backend, args)
+    stream = target_stream(catalog, args)
+    emit({"stream": record_to_data(stream), "sessions": [record_to_data(item) for item in catalog.sessions if item.stream_id == stream.id], "sharing": sharing}, args)
     return 0
 
 
-def selected_current_target(requested: FrontendRequest | None) -> CurrentTarget | None:
-    if requested is None:
-        return None
-    selection = resolve_frontend(get_frontend_mode(), requested, dict(os.environ))
-    if selection.resolved is None:
-        raise StreamError("current-workspace action has no selected frontend; check configured policy and caller context")
-    return current_target(selection.resolved)
+def command_create(args):
+    backend = config.open_catalog()
+    changes = scalar_changes(args, ("goal", "status"))
+    stream = Stream(id=str(uuid4()), title=args.title, goal=None, owner_host_id=backend.host_id, title_mode="manual")
+    changes.update(collection_changes(args, stream))
+    if changes:
+        stream = replace(stream, **changes)
+    operation = Operation(str(uuid4()), None, stream, "user")
+    saved = save(backend, operation)
+    extra = {}
+    code = 0
+    if successful(saved):
+        try:
+            local = runtime()
+            local.remember_directory(stream.id, Path(args.cwd or Path.cwd()))
+            if args.command == "start":
+                extra["runtime"] = local.open(stream, (), authority=backend.authority(stream.id), frontend=args.frontend, cwd=Path(args.cwd) if args.cwd else None)
+        except (StreamError, OSError, ValueError) as error:
+            failure = error if isinstance(error, StreamError) else StreamError(str(error))
+            extra["runtime"] = {"error": failure.as_json(), "detail": "stream saved; retry open with its ID"}
+            code = 2
+    result = finish(backend, operation, saved, event="start" if args.command == "start" else "stream", args=args, extra=extra)
+    return code or result
 
 
-def project_written_stream(stream: Stream, target: CurrentTarget, written: str) -> None:
-    try:
-        target.update(stream)
-    except StreamError as exc:
-        raise StreamError(
-            f"{written} {stream.path}; note retained, but refresh of {target.ref} failed and may be partial: {exc}"
-        ) from exc
+def command_update(args):
+    backend = config.open_catalog()
+    before = target_stream(backend.snapshot().catalog, args, local=True)
+    changes = scalar_changes(args, ("title", "goal", "status"))
+    changes.update(collection_changes(args, before))
+    if not changes:
+        raise StreamError("update requires at least one field change")
+    operation = update(str(uuid4()), before, changes)
+    return finish(backend, operation, save(backend, operation), event="stream", args=args)
 
 
-def command_start(args: argparse.Namespace) -> int:
-    if args.dry_run and args.frontend is not None:
-        raise StreamError("start --dry-run cannot update a current workspace")
-    target = selected_current_target(args.frontend)
-    stream = preview_start(args.title) if args.dry_run else start_stream(args.title)
-    if target is not None:
-        project_written_stream(stream, target, f"created: {stream.slug}")
-    if args.json:
-        payload = stream.as_json()
-        if target is not None:
-            payload["updated_workspace"] = target.ref
-        print(json.dumps(payload, indent=2, sort_keys=True))
+def command_archive(args):
+    backend = config.open_catalog()
+    before = target_stream(backend.snapshot().catalog, args, local=True)
+    operation = update(str(uuid4()), before, {"archived": args.command == "archive"})
+    return finish(backend, operation, save(backend, operation), event="stream", args=args)
+
+
+def command_check(args):
+    backend = config.open_catalog()
+    catalog = backend.snapshot().catalog
+    stream = resolve(catalog.streams, args.ref) if args.ref is not None else None
+    emit({"valid": True, "streams": 1 if stream else len(catalog.streams), "sessions": sum(item.stream_id == stream.id for item in catalog.sessions) if stream else len(catalog.sessions)}, args)
+    return 0
+
+
+def command_sync(args):
+    result = maybe_sync(config.open_catalog(), "explicit")
+    emit(result_data(result), args)
+    return 2 if result.sharing in ("failed", "blocked", "uncertain") or result.local == "repair-required" else 0
+
+
+def command_runtime(args):
+    backend = config.open_catalog()
+    catalog = backend.snapshot().catalog
+    stream = target_stream(catalog, args, local=True)
+    local = runtime()
+    authority = backend.authority(stream.id)
+    sessions = tuple(item for item in catalog.sessions if item.stream_id == stream.id)
+    kwargs = {"authority": authority, "session_ref": args.session, "cwd": Path(args.cwd) if args.cwd else None}
+    if args.command == "open":
+        result = local.open(stream, sessions, frontend=args.frontend, **kwargs)
+        publication = maybe_sync(backend, "start")
+        emit({"stream_id": stream.id, "runtime": result, "publication": result_data(publication)}, args)
     else:
-        print(f"{'would create' if args.dry_run else 'created'}: {stream.slug} {stream.path}")
-        if target is not None:
-            print(f"updated: {target.ref} {stream.slug}")
+        # Resume replaces this process, so perform the event check before exec.
+        maybe_sync(backend, "start")
+        local.resume(stream, sessions, **kwargs)
     return 0
 
 
-def command_rename(args: argparse.Namespace) -> int:
-    target = selected_current_target(args.frontend)
-    stream = resolve_stream_ref(args.stream_ref)
-    old_slug = stream.slug
-    renamed = rename_stream(stream, args.title)
-    if target is not None:
-        project_written_stream(renamed, target, f"renamed: {old_slug} -> {renamed.slug}")
-    print(f"renamed: {old_slug} -> {renamed.slug} {renamed.path}")
-    if target is not None:
-        print(f"updated: {target.ref} {renamed.slug}")
-    return 0
-
-
-def command_cmux_open(args: argparse.Namespace) -> int:
-    stream = resolve_stream_ref(args.slug)
-    open_workspace(stream)
-    print(f"opened: {stream.slug}")
-    return 0
-
-
-def command_cmux_update(args: argparse.Namespace) -> int:
-    cmux = CmuxClient()
-    if args.all:
-        if args.slug or args.current or args.workspace:
-            raise StreamError("update --all does not accept a slug, --current, or --workspace")
-        updated, warnings = update_all_workspaces(cmux)
-        for workspace, stream in updated:
-            print(f"updated: {workspace.display_ref} {stream.slug}")
-        for warning in warnings:
-            print(warning)
+def command_session(args):
+    backend = config.open_catalog()
+    catalog = backend.snapshot().catalog
+    if args.session_command == "list":
+        stream = resolve(catalog.streams, args.stream) if args.stream else None
+        emit({"sessions": [record_to_data(item) for item in catalog.sessions if stream is None or item.stream_id == stream.id]}, args)
         return 0
-    stream, workspace = load_stream_for_update(args.slug, args.workspace, args.current, cmux)
-    update_workspace(stream, workspace, cmux)
-    print(f"updated: {workspace.display_ref} {stream.slug}")
-    return 0
-
-
-def command_herdr_open(args: argparse.Namespace) -> int:
-    stream = resolve_stream_ref(args.slug)
-    opened = open_herdr_workspace(stream)
-    print(f"opened: {opened.workspace.id} {stream.slug}; links: {opened.links_pane.id}")
-    if opened.agent_name is not None:
-        print(f"resumed: {opened.agent_name}")
-    return 0
-
-
-def command_herdr_update(args: argparse.Namespace) -> int:
-    herdr = HerdrClient()
-    stream, workspace = load_herdr_stream_for_update(args.slug, args.workspace, args.current, herdr)
-    update_herdr_workspace(stream, workspace, herdr)
-    print(f"updated: {workspace.id} {stream.slug}")
-    return 0
-
-
-def command_check(args: argparse.Namespace) -> int:
-    if args.slug:
-        paths = [resolve_check_path_ref(args.slug)]
+    if args.session_command == "show":
+        emit({"session": record_to_data(resolve(catalog.sessions, args.ref))}, args)
+        return 0
+    if args.session_command == "attach":
+        stream = target_stream(catalog, args, local=True)
+        authority = backend.authority(stream.id)
+        checkout = Checkout(args.repository, args.vcs_ref, args.directory_within_checkout) if args.repository else None
+        if args.repository is None and (args.vcs_ref is not None or args.directory_within_checkout != "."):
+            raise StreamError("checkout --ref/--directory-within-checkout requires --repository")
+        if args.repository is not None and args.vcs_ref is None:
+            raise StreamError("checkout --repository requires --ref")
+        session = Session(str(uuid4()), backend.host_id, stream.id, args.harness, args.session_id, args.title, title_mode="manual", checkout=checkout)
+        operation = Operation(str(uuid4()), None, session, "user", ownership_token=authority.token if authority else None)
     else:
-        paths = check_paths()
-    findings = check_streams(paths)
-    if args.json:
-        print(findings_json(findings))
-    elif findings:
-        print_findings(findings)
-    else:
-        target = args.slug or "all streams"
-        print(f"ok: {target}")
-    return 1 if any(finding.level == "error" for finding in findings) else 0
+        before = resolve(catalog.sessions, args.ref)
+        authority = backend.authority(before.stream_id)
+        changes = scalar_changes(args, ("title", "status", "state", "remaining"))
+        if not changes:
+            raise StreamError("session update requires at least one field change")
+        operation = update(str(uuid4()), before, changes, ownership_token=authority.token if authority else None)
+    saved = save(backend, operation)
+    extra = None
+    if args.session_command == "attach" and successful(saved):
+        try:
+            runtime().remember_directory(stream.id, Path(args.cwd or Path.cwd()), session_id=session.id)
+        except (StreamError, OSError) as error:
+            extra = {"runtime": {"error": str(error), "detail": "session saved; pass --cwd when resuming"}}
+    return finish(backend, operation, saved, event="attach" if args.session_command == "attach" else "session", args=args, extra=extra)
 
 
-def command_update(args: argparse.Namespace) -> int:
-    path = resolve_note_path(args.slug)
-    candidate = sys.stdin.read()
-    findings, written = update_stream(path, candidate, dry_run=args.dry_run, if_match=args.if_match)
-    payload = {
-        "slug": path.stem,
-        "path": str(path),
-        "updated": not args.dry_run,
-        "sha256": hashlib.sha256(written.encode("utf-8")).hexdigest(),
-        "findings": [finding.as_json() for finding in findings],
-    }
-    if args.json:
-        print(json.dumps(payload, indent=2, sort_keys=True))
-    else:
-        print(f"{'validated' if args.dry_run else 'updated'}: {path.stem} {path}")
-        print_findings(findings)
-    return 0
+def add_output(parser):
+    parser.add_argument("--json", action="store_true", help="print structured JSON instead of the default output")
 
 
-def command_format(args: argparse.Namespace) -> int:
-    print((Path(__file__).with_name("FORMAT.md")).read_text().rstrip())
-    return 0
+def add_target(parser):
+    parser.add_argument("ref", nargs="?", help="stable ID, exact title or unique title substring")
+    parser.add_argument("-c", "--current", action="store_true", help="use the calling session/workspace's explicit association")
+    parser.add_argument("-f", "--frontend", choices=("auto", *Frontend), help="select a runtime backend independently of --current")
 
 
-def command_resume(args: argparse.Namespace) -> int:
-    if args.slug is not None and args.frontend is not None:
-        raise StreamError("resume with a stream reference does not accept a frontend selector")
-    if args.slug is None and args.frontend is None:
-        raise StreamError("resume without a stream reference requires a frontend selector (-c or -f)")
-    target = selected_current_target(args.frontend)
-    stream = target.infer_stream() if target is not None else resolve_stream_for_resume(args.slug)
-    exec_resume(stream)
-    return 0
+def add_text(parser, name, *, clear=False):
+    group = parser.add_mutually_exclusive_group()
+    group.add_argument("--" + name, help=f"set {name}")
+    group.add_argument("--" + name + "-file", help="read UTF-8 text from a file; - reads stdin")
+    if clear:
+        group.add_argument("--clear-" + name, action="store_true", help=f"make {name} unspecified")
 
 
-def command_archive(args: argparse.Namespace) -> int:
-    stream = resolve_stream_ref(args.slug)
-    destination = archive_stream(stream, month=args.month, force=args.force, dry_run=args.dry_run)
-    verb = "would archive" if args.dry_run else "archived"
-    print(f"{verb}: {stream.slug} {destination}")
-    return 0
+def add_stream_fields(parser):
+    add_text(parser, "goal", clear=True)
+    parser.add_argument("--status", choices=STATUSES)
+    for field in ("title", "goal"):
+        parser.add_argument("--" + field + "-mode", choices=("automatic", "manual"))
+    parser.add_argument("--add-repository", nargs=2, metavar=("ALIAS", "URL"), action="append", default=[])
+    parser.add_argument("--remove-repository", metavar="ALIAS", action="append", default=[])
+    parser.add_argument("--add-document", nargs=4, metavar=("REPOSITORY", "REF", "PATH", "DESCRIPTION"), action="append", default=[])
+    parser.add_argument("--remove-document", nargs=3, metavar=("REPOSITORY", "REF", "PATH"), action="append", default=[])
+    for field in ("issue", "pr"):
+        parser.add_argument("--add-" + field, nargs=2, metavar=("URL", "DESCRIPTION"), action="append", default=[])
+        parser.add_argument("--remove-" + field, metavar="URL", action="append", default=[])
 
 
-class FrontendSelector(argparse.Action):
-    """Normalize aliases to one value and reject repeated selector forms."""
-
-    def __call__(self, parser: argparse.ArgumentParser, namespace: argparse.Namespace, values: str | None, option_string: str | None = None) -> None:
-        if getattr(namespace, self.dest, None) is not None:
-            parser.error("supply exactly one frontend selector (-c/--current or -f/--frontend)")
-        value = self.const if self.nargs == 0 else values
-        setattr(namespace, self.dest, value if value == "auto" else Frontend(value))
-
-
-def add_current_selector(parser: argparse.ArgumentParser) -> None:
-    parser.add_argument("-c", "--current", dest="frontend", action=FrontendSelector, nargs=0, const="auto", default=None,
-                        help="act on the caller's workspace using configured frontend policy (alias for -f auto)")
-    parser.add_argument("-f", "--frontend", action=FrontendSelector, choices=("auto", *Frontend),
-                        help="act on the caller's workspace: auto follows configuration; a name overrides it")
-
-
-def build_parser() -> argparse.ArgumentParser:
-    parser = argparse.ArgumentParser(description="Manage scratch-first work streams.")
-    subparsers = parser.add_subparsers(dest="command", required=True)
-
-    config_parser = subparsers.add_parser("config", help="view or change shared streams settings")
-    config_parser.add_argument("--json", action="store_true", help="print effective configuration as JSON")
-    config_parser.set_defaults(func=command_config)
-    config_actions = config_parser.add_subparsers(dest="config_action")
-    for action in ("get", "set"):
-        action_parser = config_actions.add_parser(action)
-        action_parser.add_argument("key", help=", ".join(CONFIG_KEYS))
-        if action == "set":
-            action_parser.add_argument("value")
-        action_parser.add_argument("--json", action="store_true", default=argparse.SUPPRESS)
-
-    frontend_parser = subparsers.add_parser("frontend", help="inspect configured frontend selection")
-    frontend_actions = frontend_parser.add_subparsers(dest="frontend_command", required=True)
-    frontend_get = frontend_actions.add_parser("get", help="resolve frontend policy without contacting a backend")
-    frontend_get.add_argument("-f", "--frontend", choices=("auto", *Frontend), help="follow configured policy with auto, or request a named frontend")
-    frontend_get.add_argument("--json", action="store_true", help="print configured, requested, and resolved selection as JSON")
-    frontend_get.set_defaults(func=command_frontend_get)
-
-    list_parser = subparsers.add_parser("list", help="list current streams")
-    list_parser.add_argument("--json", action="store_true", help="print valid streams and invalid-note findings as JSON")
-    list_parser.set_defaults(func=command_list)
-
-    show_parser = subparsers.add_parser("show", help="show one stream")
-    show_parser.add_argument("slug", help="stream filename stem")
-    show_parser.add_argument("--exact", action="store_true", help="require an exact current slug or rename alias; no title or substring matching")
-    show_parser.add_argument("--json", action="store_true", help="print stream frontmatter as JSON")
-    show_parser.set_defaults(func=command_show)
-
-    read_parser = subparsers.add_parser("read", help="print a stream's note exactly as stored, even if it's invalid")
-    read_parser.add_argument("slug", help="stream title or slug; only the exact slug reaches an invalid note")
-    read_output = read_parser.add_mutually_exclusive_group()
-    read_output.add_argument("--hash", action="store_true", help="print the note's SHA-256 for --if-match on the first line")
-    read_output.add_argument("--json", action="store_true", help="print parsed frontmatter, contents, SHA-256 and findings as JSON")
-    read_parser.set_defaults(func=command_read)
-
-    check_parser = subparsers.add_parser("check", help="check stream frontmatter")
-    check_parser.add_argument("slug", nargs="?", help="stream filename stem")
-    check_parser.add_argument("--json", action="store_true", help="print findings as JSON")
-    check_parser.set_defaults(func=command_check)
-
-    update_parser = subparsers.add_parser("update", help="validate and replace a stream from markdown on stdin")
-    update_parser.add_argument("slug", help="existing stream title or slug")
-    update_parser.add_argument("-n", "--dry-run", action="store_true", help="validate without writing")
-    update_parser.add_argument("--if-match", help="require the current file's SHA-256 to match this digest")
-    update_parser.add_argument("--json", action="store_true", help="print update result as JSON")
-    update_parser.set_defaults(func=command_update)
-
-    start_parser = subparsers.add_parser("start", aliases=["s"], help="create a new active stream")
-    start_parser.add_argument("title", help="stream title")
-    start_parser.add_argument("--json", action="store_true", help="print stream frontmatter as JSON")
-    start_parser.add_argument("-n", "--dry-run", action="store_true", help="preview the starter note without creating it")
-    add_current_selector(start_parser)
-    start_parser.set_defaults(func=command_start)
-
-    rename_parser = subparsers.add_parser("rename", help="rename a stream")
-    rename_parser.add_argument("stream_ref", help="current stream title or slug")
-    rename_parser.add_argument("title", help="new stream title")
-    add_current_selector(rename_parser)
-    rename_parser.set_defaults(func=command_rename)
-
-    format_parser = subparsers.add_parser("format", help="print scratch stream format documentation")
-    format_parser.set_defaults(func=command_format)
-
-    resume_parser = subparsers.add_parser("resume", help="resume a stream's latest recorded AI session")
-    resume_parser.add_argument("slug", nargs="?", help="stream reference; omit only with a current-workspace selector")
-    add_current_selector(resume_parser)
-    resume_parser.set_defaults(func=command_resume)
-
-    archive_parser = subparsers.add_parser("archive", aliases=["a"], help="move a done stream to scratch/archive")
-    archive_parser.add_argument("slug", help="stream filename stem")
-    archive_parser.add_argument("--month", help="archive month in YYYY-MM form; defaults to the current month")
-    archive_parser.add_argument("--dry-run", action="store_true", help="show destination without moving the file")
-    archive_parser.add_argument("--force", action="store_true", help="archive a stream whose status is not done")
-    archive_parser.set_defaults(func=command_archive)
-
-    cmux_parser = subparsers.add_parser("cmux", aliases=["c"], help="project streams into CMUX")
-    cmux_subparsers = cmux_parser.add_subparsers(dest="cmux_command", required=True)
-
-    cmux_open = cmux_subparsers.add_parser("open", aliases=["o"], help="open a CMUX workspace for a stream")
-    cmux_open.add_argument("slug", help="stream filename stem")
-    cmux_open.set_defaults(func=command_cmux_open)
-
-    cmux_update = cmux_subparsers.add_parser("update", aliases=["u"], help="update a CMUX workspace from a stream")
-    cmux_update.add_argument("slug", nargs="?", help="stream filename stem; defaults from current workspace title with --current")
-    cmux_update.add_argument("-a", "--all", action="store_true", help="update all matching CMUX workspaces")
-    cmux_update.add_argument("-c", "--current", action="store_true", help="target the current CMUX workspace")
-    cmux_update.add_argument("-w", "--workspace", help="target a CMUX workspace ref, UUID, or title")
-    cmux_update.set_defaults(func=command_cmux_update)
-
-    herdr_parser = subparsers.add_parser("herdr", help="project streams into Herdr")
-    herdr_actions = herdr_parser.add_subparsers(dest="herdr_command", required=True)
-    herdr_open = herdr_actions.add_parser("open", help="open a working tab with links and the latest recorded agent session, or a shell")
-    herdr_open.add_argument("slug", help="stream reference")
-    herdr_open.set_defaults(func=command_herdr_open)
-    herdr_update = herdr_actions.add_parser("update", help="refresh an existing Herdr workspace without changing focus or layout")
-    herdr_update.add_argument("slug", nargs="?", help="stream reference; use the workspace association first, otherwise conservative label/cwd hints")
-    herdr_update.add_argument("-c", "--current", action="store_true", help="target the calling Herdr pane's live workspace (the default)")
-    herdr_update.add_argument("-w", "--workspace", help="target an explicit Herdr workspace ID")
-    herdr_update.set_defaults(func=command_herdr_update)
-
+def build_parser():
+    parser = argparse.ArgumentParser(description="Manage durable work streams.", allow_abbrev=False)
+    sub = parser.add_subparsers(dest="command", required=True, parser_class=lambda **kwargs: argparse.ArgumentParser(allow_abbrev=False, **kwargs))
+    init = sub.add_parser("init", help="explicitly initialize a new local or shared catalog")
+    init.add_argument("--sync", choices=("none", "git"), required=True)
+    init.add_argument("--remote")
+    init.add_argument("--branch", default="main")
+    init.set_defaults(func=command_init)
+    settings = sub.add_parser("config", help="read or change catalog location and frontend settings")
+    settings.set_defaults(func=command_config)
+    actions = settings.add_subparsers(dest="action")
+    for name in ("get", "set"):
+        action = actions.add_parser(name, allow_abbrev=False)
+        action.add_argument("key")
+        if name == "set":
+            action.add_argument("value")
+        add_output(action)
+    frontend = sub.add_parser("frontend", help="inspect frontend selection without native calls")
+    frontend_sub = frontend.add_subparsers(required=True)
+    frontend_get = frontend_sub.add_parser("get", allow_abbrev=False)
+    frontend_get.add_argument("-f", "--frontend", choices=("auto", *Frontend))
+    add_output(frontend_get)
+    frontend_get.set_defaults(func=command_frontend)
+    listing = sub.add_parser("list", help="list streams with literal title/goal search")
+    listing.add_argument("query", nargs="?")
+    listing.add_argument("--status", choices=STATUSES, action="append")
+    visibility = listing.add_mutually_exclusive_group()
+    visibility.add_argument("--archived", action="store_true")
+    visibility.add_argument("--all", action="store_true")
+    listing.add_argument("--refresh", action="store_true", help="fetch shared state now without pushing")
+    listing.set_defaults(func=command_list)
+    show = sub.add_parser("show", help="show the complete stream and its sessions as YAML")
+    add_target(show)
+    show.add_argument("--refresh", action="store_true", help="fetch shared state now without pushing")
+    show.set_defaults(func=command_show)
+    for name in ("create", "start"):
+        create = sub.add_parser(name, help="create a stream" + (" and open its workspace" if name == "start" else " without launching anything"))
+        create.add_argument("title")
+        add_stream_fields(create)
+        create.add_argument("--cwd", help="record a host-local working directory (default: caller's cwd)")
+        if name == "start":
+            create.add_argument("-f", "--frontend", choices=("auto", *Frontend))
+        create.set_defaults(func=command_create)
+    editing = sub.add_parser("update", help="edit explicit stream fields without changing its identity")
+    add_target(editing)
+    editing.add_argument("--title")
+    add_stream_fields(editing)
+    editing.set_defaults(func=command_update)
+    for name in ("archive", "restore"):
+        lifecycle = sub.add_parser(name, help="change visibility without changing work status or closing runtimes")
+        add_target(lifecycle)
+        lifecycle.set_defaults(func=command_archive)
+    check = sub.add_parser("check", help="validate saved catalog records and relationships")
+    check.add_argument("ref", nargs="?")
+    check.set_defaults(func=command_check)
+    sync = sub.add_parser("sync", help="attempt explicit publication and reconciliation now")
+    sync.set_defaults(func=command_sync)
+    for name in ("open", "resume"):
+        native = sub.add_parser(name, help="open a workspace" if name == "open" else "resume one recorded conversation in this terminal")
+        add_target(native)
+        native.add_argument("--session", help="select a session by ID/title when more than one is eligible")
+        native.add_argument("--cwd", help="use and remember an explicit local directory")
+        native.set_defaults(func=command_runtime)
+    sessions = sub.add_parser("session", help="inspect, attach and report individual contributions")
+    session_sub = sessions.add_subparsers(dest="session_command", required=True)
+    session_list = session_sub.add_parser("list", allow_abbrev=False)
+    session_list.add_argument("--stream", help="limit sessions to this stream")
+    session_show = session_sub.add_parser("show", allow_abbrev=False)
+    session_show.add_argument("ref")
+    attach = session_sub.add_parser("attach", allow_abbrev=False)
+    add_target(attach)
+    attach.add_argument("--harness", choices=("pi", "codex", "claude"), required=True)
+    attach.add_argument("--session-id", required=True, help="existing native conversation identity; does not start it")
+    attach.add_argument("--title", required=True)
+    attach.add_argument("--cwd")
+    attach.add_argument("--repository", help="stream repository alias for this checkout")
+    attach.add_argument("--ref", dest="vcs_ref", help="portable VCS branch/bookmark reference")
+    attach.add_argument("--directory-within-checkout", default=".")
+    session_update = session_sub.add_parser("update", allow_abbrev=False)
+    session_update.add_argument("ref")
+    session_update.add_argument("--title")
+    session_update.add_argument("--title-mode", choices=("automatic", "manual"))
+    session_update.add_argument("--status", choices=STATUSES)
+    add_text(session_update, "state")
+    add_text(session_update, "remaining")
+    for child in (session_list, session_show, attach, session_update):
+        child.set_defaults(func=command_session)
+        add_output(child)
+    for name, child in sub.choices.items():
+        if name not in ("frontend", "session"):
+            add_output(child)
     return parser
 
 
-def main(argv: list[str] | None = None) -> int:
+def main(argv=None):
     parser = build_parser()
     args = parser.parse_args(argv)
     try:
+        if sum(value == "-" for key, value in vars(args).items() if key.endswith("_file")) > 1:
+            raise StreamError("only one field can read stdin in a command")
         return args.func(args)
-    except StreamError as exc:
+    except (StreamError, ValidationError, StorageError, OSError, ValueError) as error:
+        failure = error if isinstance(error, StreamError) else StreamError(str(error))
         if getattr(args, "json", False):
-            print(json.dumps({"error": exc.as_json()}, indent=2, sort_keys=True))
+            print(json.dumps({"error": failure.as_json()}, ensure_ascii=False, indent=2))
         else:
-            print(f"streams: {exc}", file=sys.stderr)
+            print(f"streams: {failure}", file=sys.stderr)
         return 2
 
 

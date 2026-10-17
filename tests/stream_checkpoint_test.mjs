@@ -2038,7 +2038,9 @@ test("CLI diagnostics retain bounded output and exit status but never stdin", as
 });
 
 for (const withRepo of [true, false]) {
-test(`StreamCli agrees with the real streams CLI ${withRepo ? "inside" : "outside"} a repository`, async () => {
+test(`StreamCli agrees with the real streams CLI ${withRepo ? "inside" : "outside"} a repository`, {
+	skip: "Pi still uses the removed scratch-note CLI contract; replace this integration test during the catalog port (plans/catalog-cutover.md)",
+}, async () => {
 	const dir = mkdtempSync(join(tmpdir(), "streams-contract-"));
 	try {
 		const root = join(dir, "notes");

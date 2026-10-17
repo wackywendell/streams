@@ -184,18 +184,6 @@ class HerdrOpenTest(unittest.TestCase):
             open_workspace(self.stream, client)
         self.assertEqual(len(client.calls), 8)
 
-    def test_cli_open_reports_returned_workspace_links_and_agent_ids(self) -> None:
-        import io
-        from _streams.cli import main
-        from _streams.herdr import HerdrOpenedWorkspace, HerdrPane, HerdrWorkspace
-        opened = HerdrOpenedWorkspace(HerdrWorkspace("w9", "Example"), HerdrPane.parse(pane("w9:p2")),
-                                      HerdrPane.parse(pane("w9:p8")), self.binding, self.agent_name)
-        output = io.StringIO()
-        with patch("_streams.cli.resolve_stream_ref", return_value=self.stream), \
-                patch("_streams.cli.open_herdr_workspace", return_value=opened) as open, patch("sys.stdout", output):
-            self.assertEqual(main(["herdr", "open", "example"]), 0)
-        open.assert_called_once_with(self.stream)
-        self.assertEqual(output.getvalue(), f"opened: w9 example; links: w9:p8\nresumed: {self.agent_name}\n")
 
     def test_blocked_agent_start_reports_attempted_name_without_relaunch(self) -> None:
         self.stream = stream_at(self.root, cwd=str(self.root), sessions=["codex:recorded"])

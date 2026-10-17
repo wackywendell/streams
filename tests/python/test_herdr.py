@@ -12,7 +12,6 @@ from unittest.mock import patch
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "src"))
 
-from _streams.cli import main
 from _streams.cmux import CmuxClient
 from _streams.config import VALID_STATUSES
 from _streams.errors import StreamError
@@ -312,26 +311,6 @@ class HerdrTest(unittest.TestCase):
         write_binding(path, "example")
         client = FakeHerdr({("workspace", "get", "w2"): workspace(label="Unknown"), ("status", "--json"): status()})
         self.assertEqual(load_stream_for_update(None, "w2", False, client, root=self.root)[0].slug, "example")
-
-    def test_explicit_group_ignores_configured_frontend(self) -> None:
-        stream = stream_at(self.root)
-        config = self.root / "config" / "streams" / "config.json"
-        config.parent.mkdir(parents=True)
-        config.write_text(json.dumps({"cmux": {"enabled": False}}))
-        output = io.StringIO()
-        client = FakeHerdr({("workspace", "get", "w2"): workspace()})
-        with patch("_streams.cli.HerdrClient", return_value=client), \
-                patch("_streams.herdr.resolve_stream_ref", return_value=stream), \
-                patch("_streams.cli.update_herdr_workspace") as update, patch("sys.stdout", output):
-            self.assertEqual(main(["herdr", "update", "example", "--workspace", "w2"]), 0)
-        update.assert_called_once_with(stream, HerdrWorkspace("w2", "Example"), client)
-        self.assertEqual(output.getvalue(), "updated: w2 example\n")
-
-    def test_cli_current_without_context_fails_without_native_calls(self) -> None:
-        with patch("_streams.herdr.subprocess.run") as run, patch("sys.stderr", io.StringIO()) as error:
-            self.assertEqual(main(["herdr", "update", "example", "--current"]), 2)
-        run.assert_not_called()
-        self.assertIn("--workspace", error.getvalue())
 
     def test_cmux_current_requires_caller_instead_of_global_focus(self) -> None:
         with patch("_streams.cmux.subprocess.run") as run, self.assertRaisesRegex(StreamError, "caller.*--workspace"):

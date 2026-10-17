@@ -11,10 +11,12 @@ import tempfile
 import unittest
 from unittest.mock import patch
 
+import yaml
+
 sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "src"))
 
 from _streams.cli import main
-from _streams import config
+from _streams import catalog_config as config
 from _streams.errors import StreamError
 
 
@@ -104,15 +106,15 @@ class FrontendQueryTest(unittest.TestCase):
                 code = error.code
         return code, out.getvalue(), err.getvalue()
 
-    def test_absent_legacy_setting_uses_auto_without_creating_configuration(self):
+    def test_absent_setting_uses_auto_without_creating_configuration(self):
         self.assertEqual(str(config.get_frontend_mode()), "auto")
         code, out, err = self.cli("frontend", "get", "--json")
         self.assertEqual((code, err), (0, ""))
         self.assertEqual(json.loads(out), {"configured": "auto", "requested": None, "resolved": None})
         self.assertFalse(self.path.exists())
 
-    def test_legacy_policy_is_fresh_and_distinguishes_false_from_absence(self):
-        for data, expected in (({}, "auto"), ({"cmux": {}}, "auto"), ({"cmux": {"enabled": True}}, "cmux"), ({"cmux": {"enabled": False}}, "none")):
+    def test_policy_is_fresh_and_distinguishes_none_from_absence(self):
+        for data, expected in (({}, "auto"), ({"frontend": {}}, "auto"), ({"frontend": {"mode": "cmux"}}, "cmux"), ({"frontend": {"mode": "none"}}, "none")):
             with self.subTest(data=data):
                 self.write_config(data)
                 original = self.path.read_bytes()
@@ -120,7 +122,7 @@ class FrontendQueryTest(unittest.TestCase):
                 self.assertEqual(self.path.read_bytes(), original)
 
     def test_query_uses_configuration_for_auto_and_named_choice_for_override(self):
-        self.write_config({"cmux": {"enabled": True}})
+        self.write_config({"frontend": {"mode": "cmux"}})
         with patch.dict(os.environ, HERDR_CONTEXT):
             for selector, requested, expected in (((), None, "cmux"), (("-f", "auto"), "auto", "cmux"), (("--frontend", "herdr"), "herdr", "herdr")):
                 with self.subTest(selector=selector):
@@ -128,12 +130,21 @@ class FrontendQueryTest(unittest.TestCase):
                     self.assertEqual((code, err), (0, ""))
                     self.assertEqual(json.loads(out), {"configured": "cmux", "requested": requested, "resolved": expected})
 
-    def test_disabled_legacy_policy_can_be_overridden_by_named_query(self):
-        self.write_config({"cmux": {"enabled": False}})
+    def test_disabled_policy_can_be_overridden_by_named_query(self):
+        self.write_config({"frontend": {"mode": "none"}})
         for selector, expected in ((("-f", "auto"), None), (("-f", "herdr"), "herdr")):
             code, out, err = self.cli("frontend", "get", *selector, "--json")
             self.assertEqual((code, err), (0, ""))
             self.assertEqual(json.loads(out)["resolved"], expected)
+
+    def test_query_uses_catalog_configuration(self):
+        from _streams.frontend import FrontendMode
+
+        with patch("_streams.catalog_config.get_frontend_mode", return_value=FrontendMode.NONE) as mode:
+            code, out, err = self.cli("frontend", "get", "--json")
+        self.assertEqual((code, err), (0, ""))
+        self.assertIsNone(json.loads(out)["resolved"])
+        mode.assert_called_once_with()
 
     def test_query_never_probes_binaries_or_backend_connectivity(self):
         with patch.dict(os.environ, HERDR_CONTEXT), patch("subprocess.run", side_effect=AssertionError("native execution")), patch("subprocess.Popen", side_effect=AssertionError("native execution")):
@@ -151,12 +162,12 @@ class FrontendQueryTest(unittest.TestCase):
     def test_bad_configuration_fails_closed(self):
         for value in ("true", None, 1):
             with self.subTest(value=value):
-                self.write_config({"cmux": {"enabled": value}})
+                self.write_config({"frontend": {"mode": value}})
                 with self.assertRaises(StreamError):
                     config.get_frontend_mode()
                 code, out, err = self.cli("frontend", "get", "--json")
                 self.assertEqual((code, err), (2, ""))
-                self.assertIn("boolean", json.loads(out)["error"]["message"])
+                self.assertIn("frontend.mode", json.loads(out)["error"]["message"])
 
     def test_frontend_value_is_required_and_invalid_values_are_rejected(self):
         for arguments in (("-f",), ("--frontend", "none"), ("-f", "unknown")):
@@ -170,8 +181,7 @@ class FrontendQueryTest(unittest.TestCase):
         with patch.dict(os.environ, HERDR_CONTEXT):
             code, out, err = self.cli("frontend", "get")
         self.assertEqual((code, err), (0, ""))
-        self.assertIn("configured: auto", out)
-        self.assertIn("resolved: herdr", out)
+        self.assertEqual(yaml.safe_load(out), {"configured": "auto", "requested": None, "resolved": "herdr"})
 
     def test_module_entrypoint_matches_console_entrypoint_outside_checkout(self):
         result = subprocess.run([sys.executable, "-m", "_streams.cli", "frontend", "get", "--json"], cwd=self.root, env=dict(os.environ), capture_output=True, text=True)

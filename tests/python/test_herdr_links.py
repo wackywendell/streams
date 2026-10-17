@@ -3,15 +3,10 @@ from __future__ import annotations
 import dataclasses
 import json
 import os
-import pty
 import re
-import select
-import signal
-import struct
 import subprocess
 import sys
 import tempfile
-import time
 import tomllib
 import unittest
 from pathlib import Path
@@ -22,11 +17,9 @@ SRC = Path(__file__).resolve().parents[2] / "src"
 sys.path.insert(0, str(SRC))
 
 from _streams.errors import StreamError
-from _streams.frontmatter import render_frontmatter
 from _streams.herdr_binding import read_binding, write_binding
-from _streams.herdr_links import LinksView, NotesConfig, ShortcutInput, StreamsRuntime, note_uri, render
+from _streams.herdr_links import LinksView, NotesConfig, ShortcutInput, note_uri, render
 from _streams.models import Link, Stream
-from _streams.store import rename_stream
 
 
 def example(root: Path = Path("/notes/scratch"), **fields: object) -> Stream:
@@ -166,51 +159,6 @@ class LinksRuntimeTest(unittest.TestCase):
         env = patch.dict(os.environ, {"XDG_CONFIG_HOME": str(self.root / "config")}, clear=True)
         env.start()
         self.addCleanup(env.stop)
-
-    def test_cli_queries_pin_interpreter_and_import_root_without_global_streams(self) -> None:
-        result = subprocess.CompletedProcess([], 0, json.dumps(example().as_json()), "")
-        with patch.dict(os.environ, {"PYTHONPATH": "/wrong/package", "PYTHONHOME": "/wrong/home"}), \
-                patch("_streams.herdr_links.subprocess.run", return_value=result) as run:
-            runtime = StreamsRuntime()
-            self.assertEqual(runtime.stream("example").title, "Example stream")
-            args, kwargs = run.call_args
-        self.assertEqual(args[0], [sys.executable, "-P", "-m", "_streams.cli", "show", "example", "--exact", "--json"])
-        self.assertEqual(Path(kwargs["env"]["PYTHONPATH"]), SRC.resolve())
-        self.assertNotIn("PYTHONHOME", kwargs["env"])
-        self.assertEqual(kwargs["timeout"], 10)
-
-    def test_cli_failure_invalid_json_and_invalid_stream_are_expected_errors(self) -> None:
-        for failure in (subprocess.CalledProcessError(2, [], stderr="bad note"), FileNotFoundError(),
-                        subprocess.TimeoutExpired([], 10)):
-            with self.subTest(failure=failure), patch("_streams.herdr_links.subprocess.run", side_effect=failure), \
-                    self.assertRaises(StreamError):
-                StreamsRuntime().stream("example")
-        for output in ("not json", "[]", "{}", json.dumps({"error": {"message": "bad note"}})):
-            with self.subTest(output=output), patch("_streams.herdr_links.subprocess.run", return_value=subprocess.CompletedProcess([], 0, output, "")), \
-                    self.assertRaises(StreamError):
-                StreamsRuntime().stream("example")
-
-    def test_rebinding_and_renames_are_read_fresh(self) -> None:
-        notes = self.root / "notes"
-        scratch = notes / "scratch"
-        scratch.mkdir(parents=True)
-        stream = example(scratch)
-        stream.path.write_text(render_frontmatter(stream.frontmatter, stream.body))
-        from _streams.config import set_config
-        set_config("notes.root", str(notes))
-        view = LinksView(self.binding)
-        self.assertIn("Example stream", view.refresh())
-        renamed = rename_stream(stream, "Renamed stream")
-        self.assertIn("Renamed stream", view.refresh())
-        self.assertEqual(view.stream.path, renamed.path)
-        renamed = rename_stream(renamed, "Renamed again")
-        self.assertIn("Renamed again", view.refresh())
-        self.assertEqual(view.stream.path, renamed.path)
-        other = dataclasses.replace(example(scratch, title="Other stream"), path=scratch / "other.md")
-        other.path.write_text(render_frontmatter(other.frontmatter, other.body))
-        write_binding(self.binding, "other")
-        self.assertIn("Other stream", view.refresh())
-        self.assertEqual(view.stream.slug, "other")
 
     def test_note_action_refreshes_binding_stream_and_configuration_at_keypress(self) -> None:
         view = LinksView(self.binding)
@@ -354,128 +302,6 @@ class PackagedViewTest(unittest.TestCase):
         )
         self.assertEqual(result.returncode, 2)
         self.assertIn("requires an interactive terminal", result.stderr)
-
-    def test_live_view_refresh_opener_failure_and_pinned_runtime_over_pty(self) -> None:
-        # Set these only when verifying the wheel in a disposable environment.
-        import_root = Path(os.environ.get("STREAMS_TEST_IMPORT_ROOT", str(SRC)))
-        interpreter = os.environ.get("STREAMS_TEST_PYTHON", sys.executable)
-        launcher = import_root / "_streams" / "herdr_plugin" / "launch.sh"
-        with tempfile.TemporaryDirectory() as directory:
-            root = Path(directory)
-            notes = root / "notes"
-            scratch = notes / "scratch"
-            scratch.mkdir(parents=True)
-            config = root / "config" / "streams" / "config.json"
-            config.parent.mkdir(parents=True)
-            config.write_text(json.dumps({"notes": {"root": str(notes)}, "obsidian": {"vault": "Notes"}}))
-            stream = example(scratch)
-            stream.path.write_text(render_frontmatter(stream.frontmatter, stream.body))
-            binding = root / "binding.json"
-            write_binding(binding, stream.slug)
-            evil = root / "_streams"
-            evil.mkdir()
-            (evil / "__init__.py").write_text("raise RuntimeError('wrong import root')\n")
-            bin = root / "bin"
-            bin.mkdir()
-            for name, source in {
-                "streams": "from pathlib import Path\nPath('wrong-streams').touch()\nraise SystemExit(7)\n",
-                "open": "import json,sys\nfrom pathlib import Path\nif Path('fail-open').exists(): raise SystemExit(2)\nPath('opened.json').write_text(json.dumps(sys.argv[1:]))\nwith Path('opened.jsonl').open('a') as log: log.write(json.dumps(sys.argv[1:]) + '\\n')\n",
-            }.items():
-                path = bin / name
-                path.write_text(f"#!{sys.executable}\n" + source)
-                path.chmod(0o755)
-            master, slave = pty.openpty()
-            import fcntl
-            import termios
-            fcntl.ioctl(slave, termios.TIOCSWINSZ, struct.pack("HHHH", 6, 80, 0, 0))
-            process = subprocess.Popen(
-                ["/bin/sh", str(launcher)], stdin=slave, stdout=slave, stderr=slave, cwd=root,
-                env={"PATH": str(bin), "HOME": str(root), "XDG_CONFIG_HOME": str(root / "config"),
-                     "STREAMS_PYTHON": interpreter, "STREAMS_IMPORT_ROOT": str(import_root), "STREAMS_BINDING": str(binding),
-                     "PYTHONPATH": str(root), "PYTHONHOME": str(root / "wrong-python")},
-            )
-            # Keep a slave handle open: macOS can discard unread final output
-            # when the child's last slave handle closes.
-            output = b""
-
-            def await_condition(condition) -> None:
-                nonlocal output
-                deadline = time.monotonic() + 7
-                while time.monotonic() < deadline:
-                    if condition():
-                        return
-                    if process.poll() is not None:
-                        self.fail(f"View exited early: {output!r}")
-                    ready, _, _ = select.select([master], [], [], 0.05)
-                    if ready:
-                        try:
-                            output += os.read(master, 65536)
-                        except OSError:
-                            self.fail(f"View closed PTY early: {output!r}")
-                self.fail(f"Timed out waiting for view: {output!r}")
-
-            try:
-                await_condition(lambda: b"No linked issues or PRs." in output)
-                self.assertIn(b"\x1b[?1049h\x1b[?25l\x1b[?7l", output)
-                os.write(master, b"n")
-                await_condition(lambda: (root / "opened.json").exists())
-                uri = json.loads((root / "opened.json").read_text())[0]
-                self.assertEqual(parse_qs(urlsplit(uri).query), {"vault": ["Notes"], "file": ["scratch/example.md"]})
-                stream.path.write_text(render_frontmatter({**stream.frontmatter, "state": "State changed while pane is open."}, ""))
-                await_condition(lambda: b"State changed while pane is open." in output)
-                issue_url = "https://github.com/example/repo/issues/42"
-                stream.path.write_text(render_frontmatter({**stream.frontmatter, "issues": [
-                    {"url": issue_url, "description": "Test numbered action"},
-                ]}, ""))
-                await_condition(lambda: b"Test numbered action" in output)
-                os.write(master, b"1")
-                await_condition(lambda: json.loads((root / "opened.json").read_text()) == [issue_url])
-                event_log = root / "opened.jsonl"
-                await_condition(lambda: len(event_log.read_text().splitlines()) == 2)
-                os.write(master, b"\x1b[1;5A\x1b[15~\x1bO1;5P\x1b[200~n123\x1b[201~xn")
-                await_condition(lambda: len(event_log.read_text().splitlines()) >= 3)
-                self.assertEqual(len(event_log.read_text().splitlines()), 3)
-                self.assertEqual(json.loads(event_log.read_text().splitlines()[-1]), [uri])
-                prs = [
-                    {"url": f"https://github.com/example/repo/pull/{i}", "description": f"Change {i}"} for i in range(1, 7)
-                ]
-                stream.path.write_text(render_frontmatter({**stream.frontmatter, "prs": prs}, ""))
-                await_condition(lambda: b"3 more links" in output)
-                frame = output.rsplit(b"\x1b[2J\x1b[H", 1)[-1]
-                self.assertLessEqual(len(frame.splitlines()), 6)
-                self.assertIn(b"Example stream", frame)
-                self.assertIn(b"[n]", frame)
-                prs[1] = {"url": "https://github.com/example/repo/pull/99", "description": "Changed target"}
-                stream.path.write_text(render_frontmatter({**stream.frontmatter, "prs": prs}, ""))
-                os.write(master, b"12")
-                await_condition(lambda: b"Links changed; press the key again" in output)
-                self.assertEqual(len(event_log.read_text().splitlines()), 4)
-                self.assertEqual(json.loads(event_log.read_text().splitlines()[-1]), [prs[0]["url"]])
-                (root / "fail-open").touch()
-                os.write(master, b"n")
-                await_condition(lambda: b"Open note failed:" in output)
-                self.assertIsNone(process.poll())
-                self.assertFalse((root / "wrong-streams").exists())
-                process.send_signal(signal.SIGINT)
-                process.wait(timeout=5)
-                self.assertEqual(process.returncode, 0)
-                # Drain final terminal restoration without waiting for another refresh.
-                deadline = time.monotonic() + 1
-                while time.monotonic() < deadline and select.select([master], [], [], 0.1)[0]:
-                    try:
-                        chunk = os.read(master, 65536)
-                    except OSError:
-                        break
-                    if not chunk:
-                        break
-                    output += chunk
-                self.assertIn(b"\x1b[?7h\x1b[?25h\x1b[?1049l", output)
-            finally:
-                if process.poll() is None:
-                    process.terminate()
-                    process.wait(timeout=5)
-                os.close(slave)
-                os.close(master)
 
 
 if __name__ == "__main__":
