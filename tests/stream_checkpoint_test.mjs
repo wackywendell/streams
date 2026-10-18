@@ -23,6 +23,7 @@ const { defaults, validateSettings, loadSettings, saveSettings } = await load('s
 const stream = { id:'effort', title:'Work', title_mode:'manual', goal:'Goal', goal_mode:'automatic', goal_short:null, status:'active', archived:false, owner:{host_id:'host'}, repositories:{repo:{url:'https://example.com/repo'}}, issues:[], prs:[], documents:[] };
 const session = { id:'session', host_id:'host', stream_id:'effort', harness:'pi', harness_session_id:'native', title:'Session', title_mode:'automatic', status:'active', state:'', state_short:null, remaining:'', checkout:null };
 const context = () => structuredClone({catalog_source:'source-a',host_id:'host',stream,session,sessions:[session],authority:{host_id:'host',token:'owner'}});
+const localSync = async () => ({local:'unchanged',sharing:'local-only',domain:null});
 
 test('catalog CLI uses stdin; accepted code2 receipt is retained without retry', async () => {
  const calls=[]; const receipt={operation_id:'op',save:{local:'persisted',sharing:'local-only',domain:{outcome:'changes'}},session,completion_error:'offline'};
@@ -163,17 +164,17 @@ test('bound chooser never lists or switches, and live card offers no switch/crea
 for(const intent of ['reply','automatic','user'])test(`card discussion ${intent} has typed intent and no redundant confirmation`,async()=>{
  const handlers=new Map(),receipts=[],writes=[],history=[];let shortcut,submitted=false;const menu=['Discuss live card','Close'];
  const visible=context();visible.sessions.push({...session,id:'sibling',host_id:'other-host'});
- const cli={context:async()=>structuredClone(visible),apply:async req=>{writes.push(req);return {operation_id:req.operation_id,save:{local:'persisted',sharing:'local-only',domain:{outcome:'changes'}}};}};
+ const cli={sync:localSync,context:async()=>structuredClone(visible),apply:async req=>{writes.push(req);return {operation_id:req.operation_id,save:{local:'persisted',sharing:'local-only',domain:{outcome:'changes'}}};}};
  const edit=intent==='reply'?undefined:{kind:'stream',actor:intent,changes:intent==='user'?{status:'parked'}:{goal:'Current descriptive goal'}};
  registerWorkCard({on:(name,fn)=>handlers.set(name,fn),registerCommand:()=>{},registerTool:()=>{},registerShortcut:(_key,options)=>{shortcut=options.handler;},appendEntry:(type,value)=>receipts.push({type,value})},{settings:{...defaults,reporting:'manual'},cli,infer:async(_ctx,req)=>{assert.equal(req.type,'discussion');assert.match(req.discussion.at(-1).text,/card question/);return {reply:'Discussed without assuming extra intent',...(edit?{edit}:{})};}});
  const ctx={mode:'tui',hasUI:true,cwd:'/repo',sessionManager:{getSessionId:()=> 'native',getLeafId:()=> 'leaf',getBranch:()=>[{id:'leaf'}],buildSessionProjection:()=>({messages:[]})},ui:{select:async()=>menu.shift(),confirm:()=>assert.fail('explicit direction needs no second confirmation'),notify:()=>{},setStatus:()=>{},custom:async factory=>new Promise(resolve=>{const component=factory({terminal:{rows:30},requestRender(){}},{fg:(_color,text)=>text},{},resolve);history.push(component.render(80).join('\n'));if(!submitted){submitted=true;component.handleInput('card question');component.handleInput('\r');}else component.handleInput('\x1b');})}};
- handlers.get('session_start')({},ctx);await shortcut(ctx);
+ await handlers.get('session_start')({},ctx);await shortcut(ctx);
  assert.equal(writes.length,intent==='reply'?0:1);assert.match(history.at(-1),/Discussed without assuming extra intent/);
  if(intent!=='reply'){assert.equal(writes[0].actor,intent);assert.equal(writes[0].catalog_source,'source-a');assert.equal(writes[0].ownership_token,intent==='user'?null:'owner');assert.equal(receipts.length,1);assert.equal(writes[0].before.status,'active');assert.deepEqual(writes[0].inputs.map(input=>input.record.id),['session','sibling']);}
 });
 for(const failure of ['throw','abort','invalid','branch'])test(`discussion ${failure} retains composer/history and isolates replacement source`,async()=>{
  const handlers=new Map(),renders=[];let shortcut,submitted=false,menuCount=0,leaf='leaf';const catalog=context();
- const cli={context:async()=>structuredClone(catalog),apply:()=>assert.fail('failed discussion must not write')};
+ const cli={sync:localSync,context:async()=>structuredClone(catalog),apply:()=>assert.fail('failed discussion must not write')};
  registerWorkCard({on:(name,fn)=>handlers.set(name,fn),registerCommand:()=>{},registerTool:()=>{},registerShortcut:(_key,options)=>{shortcut=options.handler;},appendEntry:()=>assert.fail('no receipt')},{settings:{...defaults,reporting:'manual'},cli,infer:async(_ctx,req)=>{
   assert.deepEqual(req.discussion,[{role:'user',text:'retry question'}]);
   if(failure==='throw')throw Error('Model unavailable');
@@ -182,15 +183,15 @@ for(const failure of ['throw','abort','invalid','branch'])test(`discussion ${fai
   return failure==='invalid'?{reply:42}:{reply:'Unexpected committed reply'};
  }});
  const ctx={mode:'tui',hasUI:true,cwd:'/repo',sessionManager:{getSessionId:()=> 'native',getLeafId:()=>leaf,getBranch:()=>[{id:leaf}],buildSessionProjection:()=>({messages:[]})},ui:{select:async()=>menuCount++%2===0?'Discuss live card':'Close',notify:()=>{},setStatus:()=>{},custom:async factory=>new Promise(resolve=>{const component=factory({terminal:{rows:30},requestRender(){}},{fg:(_color,text)=>text},{},resolve);renders.push(component.render(100).join('\n'));if(!submitted){submitted=true;component.handleInput('retry question');component.handleInput('\r');}else component.handleInput('\x1b');})}};
- handlers.get('session_start')({},ctx);await shortcut(ctx);assert.match(renders[1],/retry question/);assert.doesNotMatch(renders[1],/user: retry question|Unexpected committed reply/);
+ await handlers.get('session_start')({},ctx);await shortcut(ctx);assert.match(renders[1],/retry question/);assert.doesNotMatch(renders[1],/user: retry question|Unexpected committed reply/);
  await shortcut(ctx);assert.match(renders[2],/retry question/);
  catalog.catalog_source='replacement-source';await shortcut(ctx);assert.doesNotMatch(renders[3],/retry question|Model unavailable|cancelled|typed reply/);
 });
 test('extension startup and Alt+P do not enroll or run a model; report uses completed response event',async()=>{
  const handlers=new Map(),commands=new Map(),tools=new Map();let shortcut;const contexts=[];
- registerWorkCard({on:(name,fn)=>handlers.set(name,fn),registerCommand:(name,options)=>commands.set(name,options),registerTool:tool=>tools.set(tool.name,tool),registerShortcut:(_key,options)=>{shortcut=options.handler;},appendEntry:()=>{}},{settings:{...defaults,reporting:'manual'},cli:{context:async()=>{contexts.push(1);return context();}},infer:()=>assert.fail('no model on view')});
+ registerWorkCard({on:(name,fn)=>handlers.set(name,fn),registerCommand:(name,options)=>commands.set(name,options),registerTool:tool=>tools.set(tool.name,tool),registerShortcut:(_key,options)=>{shortcut=options.handler;},appendEntry:()=>{}},{settings:{...defaults,reporting:'manual'},cli:{sync:localSync,context:async()=>{contexts.push(1);return context();}},infer:()=>assert.fail('no model on view')});
  const ctx={mode:'tui',hasUI:true,sessionManager:{getSessionId:()=> 'native'},ui:{select:async()=> 'Close',notify:()=>{},setStatus:()=>{}}};
- handlers.get('session_start')({},ctx);assert.equal(contexts.length,0);await shortcut(ctx);assert.equal(contexts.length,2);
+ await handlers.get('session_start')({},ctx);assert.equal(contexts.length,0);await shortcut(ctx);assert.equal(contexts.length,2);
  assert.ok(handlers.has('agent_end'));assert.equal(handlers.has('before_agent_start'),false);
  assert.match(tools.get('checkpoint').description,/durable/);assert.match(tools.get('stream_read').description,/typed durable/);
 });

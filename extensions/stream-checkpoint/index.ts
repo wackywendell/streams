@@ -22,6 +22,8 @@ export default function registerWorkCard(pi: ExtensionAPI, options: Options = {}
  const settings = () => config ??= loadSettings(agentDir);
  let current: ExtensionContext | undefined;
  let panelOpen = false;
+ let shutdown: Promise<void> | undefined;
+ let generation = 0;
  const states = new Map<string, CardState>();
  const cli = (ctx: ExtensionContext) => options.cli ?? new StreamCli(ctx.cwd);
  const warning = (text: string) => {current?.ui.notify(`Work card: ${text}`, "warning");};
@@ -32,6 +34,18 @@ export default function registerWorkCard(pi: ExtensionAPI, options: Options = {}
   current?.ui.notify(text, value.completion_error || value.save && (!value.save.domain || ["conflict", "superseded"].includes(value.save.domain.outcome)) || value.saves?.some(({save}) => !save.domain || ["conflict", "superseded"].includes(save.domain.outcome)) ? "warning" : "info");
  };
  const reporter = new Reporter({cli, settings, infer: options.infer, notice: warning, receipt, activity: (text) => current?.ui.setStatus("stream-reporting", text ? `Work card · ${text} · Alt+P` : undefined)});
+ async function sync(ctx: ExtensionContext, event: "start" | "shutdown"): Promise<void> {
+  const epoch = generation;
+  let failure: {event: string; result?: unknown; error?: string} | undefined;
+  try {
+   const value = await cli(ctx).sync(event);
+   if (["failed", "blocked", "uncertain"].includes(value.sharing) || value.local === "repair-required") failure = {event, result: value};
+  } catch (error) {failure = {event, error: String(error)};}
+  if (failure && epoch === generation) {
+   pi.appendEntry("stream-catalog-sync", failure);
+   ctx.ui.notify(`Catalog sync (${event}): ${JSON.stringify(failure)}. Inspect with streams sync; local saves and publication are separate.`, "warning");
+  }
+ }
  const configure = async (ctx: ExtensionContext) => settingsDialog(ctx, settings(), (value) => {saveSettings(agentDir, value);config = value;});
  async function discussion(ctx: ExtensionContext, state: CardState): Promise<void> {
   for (;;) {
@@ -103,12 +117,19 @@ export default function registerWorkCard(pi: ExtensionAPI, options: Options = {}
  pi.registerTool({name: "checkpoint", label: "Report work card", description: "Request an immediate durable progress report. Local saves and publication are separate; this is not an approval draft.", parameters: Type.Object({instructions: Type.Optional(Type.String())}), async execute(_id, args, _signal, _update, ctx) {current = ctx;settings();reporter.request(ctx, true, args.instructions);return result({status: "report-requested"});}});
  pi.registerTool({name: "select_stream", label: "Attach initial effort", description: "Ask the user to attach this unbound Pi conversation to an exact catalog stream ID. An enrolled conversation cannot switch; membership moves/forks are not implemented.", parameters: Type.Object({stream_id: Type.Optional(Type.String()), reason: Type.String()}), async execute(_id, args, _signal, _update, ctx) {return result(await attach(ctx, {streamId: args.stream_id, reason: args.reason}));}});
  pi.registerTool({name: "create_stream", label: "Create initial effort", description: "Ask the user to create an initial durable effort and enroll this conversation. Never switches existing membership or launches workspaces.", parameters: Type.Object({title: Type.String(), reason: Type.String()}), async execute(_id, args, _signal, _update, ctx) {return result(await attach(ctx, args));}});
- pi.on("session_start", (_event, ctx) => {current = ctx;reporter.invalidate();});
+ pi.on("session_start", async (_event, ctx) => {generation++;shutdown = undefined;current = ctx;reporter.invalidate();await sync(ctx, "start");});
  pi.on("agent_end", (event, ctx) => {
+  if (shutdown) return;
   current = ctx;
   if (!event.messages.some((message) => message.role === "assistant" && ["stop", "length"].includes(message.stopReason))) return;
   try {reporter.response(ctx);} catch(error) {warning(String(error));}
  });
  pi.on("session_tree", () => {reporter.invalidate();});
- pi.on("session_shutdown", () => {reporter.invalidate();current = undefined;});
+ pi.on("session_shutdown", (_event, ctx) => shutdown ??= (async () => {
+  const epoch = generation;
+  reporter.invalidate();
+  // Flush already-saved catalog changes only, never infer a final summary.
+  await sync(ctx, "shutdown");
+  if (epoch === generation) current = undefined;
+ })());
 }

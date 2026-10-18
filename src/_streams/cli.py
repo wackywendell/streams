@@ -321,7 +321,7 @@ def command_check(args):
 
 
 def command_sync(args):
-    result = maybe_sync(config.open_catalog(), "explicit")
+    result = maybe_sync(config.open_catalog(), args.event)
     emit(result_data(result), args)
     return 2 if result.sharing in ("failed", "blocked", "uncertain") or result.local == "repair-required" else 0
 
@@ -493,6 +493,8 @@ def build_parser():
     check.add_argument("ref", nargs="?")
     check.set_defaults(func=command_check)
     sync = sub.add_parser("sync", help="attempt explicit publication and reconciliation now")
+    sync.add_argument("--event", choices=("explicit", "start", "shutdown"), default="explicit",
+                      help="lifecycle trigger; start respects the stream interval, shutdown bypasses timing")
     sync.set_defaults(func=command_sync)
     for name in ("open", "resume"):
         native = sub.add_parser(name, help="open a workspace" if name == "open" else "resume one recorded conversation in this terminal")

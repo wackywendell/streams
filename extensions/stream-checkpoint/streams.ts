@@ -11,7 +11,7 @@ export type Result = { local: string; sharing: string; domain: { outcome: "chang
 export type Receipt = { operation_id?: string; save?: Result; saves?: { operation_id: string; save: Result }[]; stream?: StreamWire; session?: SessionWire; authority?: LocalContext["authority"]; publication?: unknown; completion_error?: unknown };
 export type ApplyRequest = {catalog_source: string; operation_id: string; kind: "stream" | "session"; actor: "automatic" | "user"; before: StreamWire | SessionWire; changes: Record<string, unknown>; ownership_token: string | null; inputs: {kind: "stream" | "session"; record: StreamWire | SessionWire}[]};
 type CommandResult = {code: number | null; stdout: string; stderr: string};
-export type Runner = (args: string[], input?: string) => Promise<CommandResult>;
+export type Runner = (args: string[], input?: string, options?: {timeout: number}) => Promise<CommandResult>;
 export class StreamsCliError extends Error {
  constructor(message: string, readonly kind?: string, readonly receipt?: Receipt) { super(message); }
 }
@@ -27,30 +27,41 @@ function stream(value: unknown): value is StreamWire {
 function session(value: unknown): value is SessionWire {
  return object(value) && [value.id, value.host_id, value.stream_id, value.harness, value.harness_session_id, value.title, value.state, value.remaining].every(text) && mode(value.title_mode) && status(value.status) && nullableText(value.state_short) && (value.checkout === null || object(value.checkout) && [value.checkout.repository, value.checkout.ref, value.checkout.directory_within_checkout].every(text));
 }
+const result = (v: unknown): v is Result => object(v) && text(v.local) && text(v.sharing) && (v.domain === null || object(v.domain) && ["changes", "no-change", "superseded", "conflict"].includes(v.domain.outcome));
 function receipt(value: unknown): value is Receipt {
- const result = (v: unknown) => object(v) && text(v.local) && text(v.sharing) && (v.domain === null || object(v.domain) && ["changes", "no-change", "superseded", "conflict"].includes(v.domain.outcome));
  return object(value) && (result(value.save) || (Array.isArray(value.saves) && value.saves.every((s: any) => typeof s.operation_id === "string" && result(s.save)) && (value.saves.length > 0 || stream(value.stream) && session(value.session) && "authority" in value && "publication" in value)));
 }
 export class StreamCli {
  private runner: Runner;
  constructor(readonly cwd: string, runner?: Runner) {
-  this.runner = runner ?? ((args, input) => new Promise((resolve, reject) => {
-   const child = spawn("streams", args, {cwd, stdio: ["pipe", "pipe", "pipe"]});
-   let stdout = "", stderr = "";
+  this.runner = runner ?? ((args, input, options) => new Promise((resolve, reject) => {
+   const child = spawn("streams", args, {cwd, detached: !!options?.timeout, stdio: ["pipe", "pipe", "pipe"]});
+   let stdout = "", stderr = "", timedOut = false;
+   // A timed sync owns its process group: do not release Python's catalog lock
+   // while a surviving Git/signing child can still mutate the checkout.
+   const timer = options?.timeout ? setTimeout(() => {
+    timedOut = true;
+    try {process.kill(-child.pid!, "SIGKILL");} catch (error) {if ((error as NodeJS.ErrnoException).code !== "ESRCH") reject(error);}
+   }, options.timeout) : undefined;
    child.stdout.setEncoding("utf8").on("data", (chunk) => {stdout += chunk;});
    child.stderr.setEncoding("utf8").on("data", (chunk) => {stderr += chunk;});
-   child.on("error", reject); child.on("close", (code) => resolve({code, stdout, stderr}));
+   child.on("error", (error) => {clearTimeout(timer);reject(error);});
+   child.on("close", (code) => {
+    clearTimeout(timer);
+    if (timedOut) reject(new StreamsCliError("Catalog sync timed out; publication may be uncertain. Run streams sync to inspect publication or repair state; do not discard saved changes."));
+    else resolve({code, stdout, stderr});
+   });
    child.stdin.on("error", (error: NodeJS.ErrnoException) => {if (error.code !== "EPIPE") reject(error);});
    child.stdin.end(input);
   }));
  }
- private async run(args: string[], input?: unknown, write = false): Promise<any> {
-  const output = await this.runner(args, input === undefined ? undefined : JSON.stringify(input));
+ private async run(args: string[], input?: unknown, write = false, sync = false): Promise<any> {
+  const output = await this.runner(args, input === undefined ? undefined : JSON.stringify(input), sync ? {timeout: 10000} : undefined);
   let value: any;
   try {value = JSON.parse(output.stdout);} catch {throw new StreamsCliError(`streams ${args.join(" ")}: invalid JSON response (${output.code}); ${output.stderr}`);}
   // Accepted local saves are receipts even when publication or later enrollment steps failed.
-  if (write && receipt(value) && (output.code === 0 || output.code === 2)) return value;
-  if (output.code !== 0 || write) throw new StreamsCliError(value?.error?.message ?? output.stderr ?? "Invalid catalog receipt", value?.error?.kind);
+  if ((write && receipt(value) || sync && result(value) && value.domain === null && ["local-only", "pending", "confirmed", "blocked", "failed", "uncertain"].includes(value.sharing)) && (output.code === 0 || output.code === 2)) return value;
+  if (output.code !== 0 || write || sync) throw new StreamsCliError(value?.error?.message ?? output.stderr ?? "Invalid catalog receipt", value?.error?.kind);
   return value;
  }
  async context(sessionId: string, streamId?: string): Promise<LocalContext> {
@@ -64,6 +75,7 @@ export class StreamCli {
   if (!Array.isArray(rows) || !rows.every(stream)) throw new StreamsCliError("Invalid catalog list");
   return rows;
  }
+ async sync(event: "start" | "shutdown"): Promise<Result> {return this.run(["sync", "--event", event, "--json"], undefined, false, true);}
  async enroll(request: unknown): Promise<Receipt> {return this.run(["agent", "enroll", "--json"], request, true);}
  async apply(request: ApplyRequest): Promise<Receipt> {return this.run(["agent", "apply", "--json"], request, true);}
 }

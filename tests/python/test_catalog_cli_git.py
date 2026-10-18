@@ -55,6 +55,17 @@ class GitCliTest(unittest.TestCase):
             self.assertEqual(self.cli("update", stream["id"], "--goal", " ")[0], 2)
         maybe.assert_not_called()
 
+    def test_lifecycle_sync_events_are_forwarded_and_local_only_never_uses_git(self):
+        self.assertEqual(self.cli("init", "--sync", "none")[0], 0)
+        with patch("subprocess.run", side_effect=AssertionError("local-only invoked Git")):
+            for event in ("explicit", "start", "shutdown"):
+                with self.subTest(event=event), patch("_streams.cli.maybe_sync", wraps=cli_module.maybe_sync) as maybe:
+                    code, out, err = self.cli("sync", "--event", event, "--json")
+                    self.assertEqual((code, err), (0, ""))
+                    self.assertEqual(json.loads(out)["sharing"], "local-only")
+                    self.assertEqual(maybe.call_args.args[1], event)
+        self.assertEqual(self.cli("sync", "--event", "unknown")[0], 2)
+
     def test_explicit_git_init_create_and_force_sync_publish(self):
         self.setup_git()
         stream = self.create("Git catalog")
