@@ -7,8 +7,11 @@ export type Document = { repository: string; ref: string; path: string; descript
 export type StreamWire = { id: string; title: string; title_mode: Mode; goal: string | null; goal_short: string | null; goal_mode: Mode; status: Status; archived: boolean; owner: { host_id: string }; repositories: Record<string, { url: string }>; documents: Document[]; issues: Link[]; prs: Link[] };
 export type SessionWire = { id: string; host_id: string; stream_id: string; harness: string; harness_session_id: string; title: string; title_mode: Mode; status: Status; state: string; state_short: string | null; remaining: string; checkout: {repository: string; ref: string; directory_within_checkout: string} | null };
 export type LocalContext = { catalog_source: string; host_id: string; stream: StreamWire | null; session: SessionWire | null; sessions: SessionWire[]; authority: { host_id: string; token: string } | null };
-export type Result = { local: string; sharing: string; domain: { outcome: "changes" | "no-change" | "superseded" | "conflict"; [key: string]: unknown } | null; detail?: string; [key: string]: unknown };
-export type Receipt = { operation_id?: string; save?: Result; saves?: { operation_id: string; save: Result }[]; stream?: StreamWire; session?: SessionWire; authority?: LocalContext["authority"]; publication?: unknown; completion_error?: unknown };
+export type LocalStatus = "unchanged" | "persisted" | "committed" | "repair-required";
+export type SharingStatus = "local-only" | "pending" | "confirmed" | "blocked" | "failed" | "uncertain";
+export type Result = { local: LocalStatus; sharing: SharingStatus; domain: { outcome: "changes" | "no-change" | "superseded" | "conflict"; [key: string]: unknown } | null; detail?: string; [key: string]: unknown };
+export type PublicationResult = Result & {domain: null};
+export type Receipt = {stream?: StreamWire; session?: SessionWire; authority?: LocalContext["authority"]; publication?: PublicationResult; completion_error?: unknown} & ({operation_id: string; save: Result; saves?: never} | {operation_id?: never; save?: never; saves: {operation_id: string; save: Result}[]});
 export type ApplyRequest = {catalog_source: string; operation_id: string; kind: "stream" | "session"; actor: "automatic" | "user"; before: StreamWire | SessionWire; changes: Record<string, unknown>; ownership_token: string | null; inputs: {kind: "stream" | "session"; record: StreamWire | SessionWire}[]};
 type CommandResult = {code: number | null; stdout: string; stderr: string};
 export type Runner = (args: string[], input?: string, options?: {timeout: number}) => Promise<CommandResult>;
@@ -27,9 +30,23 @@ function stream(value: unknown): value is StreamWire {
 function session(value: unknown): value is SessionWire {
  return object(value) && [value.id, value.host_id, value.stream_id, value.harness, value.harness_session_id, value.title, value.state, value.remaining].every(text) && mode(value.title_mode) && status(value.status) && nullableText(value.state_short) && (value.checkout === null || object(value.checkout) && [value.checkout.repository, value.checkout.ref, value.checkout.directory_within_checkout].every(text));
 }
-const result = (v: unknown): v is Result => object(v) && text(v.local) && text(v.sharing) && (v.domain === null || object(v.domain) && ["changes", "no-change", "superseded", "conflict"].includes(v.domain.outcome));
+const result = (v: unknown): v is Result => object(v) && ["unchanged", "persisted", "committed", "repair-required"].includes(v.local) && ["local-only", "pending", "confirmed", "blocked", "failed", "uncertain"].includes(v.sharing) && (v.domain === null || object(v.domain) && ["changes", "no-change", "superseded", "conflict"].includes(v.domain.outcome));
 function receipt(value: unknown): value is Receipt {
- return object(value) && (result(value.save) || (Array.isArray(value.saves) && value.saves.every((s: any) => typeof s.operation_id === "string" && result(s.save)) && (value.saves.length > 0 || stream(value.stream) && session(value.session) && "authority" in value && "publication" in value)));
+ if (!object(value) || value.publication !== undefined && (!result(value.publication) || value.publication.domain !== null)) return false;
+ if (value.save !== undefined) return value.saves === undefined && text(value.operation_id) && !!value.operation_id && result(value.save);
+ if (value.operation_id !== undefined || !Array.isArray(value.saves) || !value.saves.every((s: unknown) => object(s) && text(s.operation_id) && !!s.operation_id && result(s.save))) return false;
+ return value.saves.length > 0 || stream(value.stream) && session(value.session) && "authority" in value && (value.publication !== undefined || value.completion_error !== undefined);
+}
+export function resultNeedsAttention(value: Result): boolean {
+ return value.local === "repair-required" || ["failed", "blocked", "uncertain"].includes(value.sharing);
+}
+export function receiptCanContinue(value: Receipt): boolean {
+ const saves = value.saves?.map(item => item.save) ?? (value.save ? [value.save] : []);
+ return !value.completion_error && value.publication?.local !== "repair-required" && saves.every(save => save.local !== "repair-required" && !!save.domain && ["changes", "no-change"].includes(save.domain.outcome));
+}
+export function receiptHasWarning(value: Receipt): boolean {
+ const saves = value.saves?.map(item => item.save) ?? (value.save ? [value.save] : []);
+ return !receiptCanContinue(value) || saves.some(resultNeedsAttention) || !!value.publication && resultNeedsAttention(value.publication);
 }
 export class StreamCli {
  private runner: Runner;
@@ -55,13 +72,13 @@ export class StreamCli {
    child.stdin.end(input);
   }));
  }
- private async run(args: string[], input?: unknown, write = false, sync = false): Promise<any> {
-  const output = await this.runner(args, input === undefined ? undefined : JSON.stringify(input), sync ? {timeout: 10000} : undefined);
+ private async run(args: string[], input?: unknown, purpose: "read" | "save" | "publication" = "read"): Promise<any> {
+  const output = await this.runner(args, input === undefined ? undefined : JSON.stringify(input), purpose === "publication" ? {timeout: 10000} : undefined);
   let value: any;
   try {value = JSON.parse(output.stdout);} catch {throw new StreamsCliError(`streams ${args.join(" ")}: invalid JSON response (${output.code}); ${output.stderr}`);}
   // Accepted local saves are receipts even when publication or later enrollment steps failed.
-  if ((write && receipt(value) || sync && result(value) && value.domain === null && ["local-only", "pending", "confirmed", "blocked", "failed", "uncertain"].includes(value.sharing)) && (output.code === 0 || output.code === 2)) return value;
-  if (output.code !== 0 || write || sync) throw new StreamsCliError(value?.error?.message ?? output.stderr ?? "Invalid catalog receipt", value?.error?.kind);
+  if ((purpose === "save" && receipt(value) || purpose === "publication" && result(value) && value.domain === null) && (output.code === 0 || output.code === 2)) return value;
+  if (output.code !== 0 || purpose !== "read") throw new StreamsCliError(value?.error?.message ?? output.stderr ?? "Invalid catalog receipt", value?.error?.kind);
   return value;
  }
  async context(sessionId: string, streamId?: string): Promise<LocalContext> {
@@ -75,9 +92,9 @@ export class StreamCli {
   if (!Array.isArray(rows) || !rows.every(stream)) throw new StreamsCliError("Invalid catalog list");
   return rows;
  }
- async sync(event: "start" | "shutdown"): Promise<Result> {return this.run(["sync", "--event", event, "--json"], undefined, false, true);}
- async enroll(request: unknown): Promise<Receipt> {return this.run(["agent", "enroll", "--json"], request, true);}
- async apply(request: ApplyRequest): Promise<Receipt> {return this.run(["agent", "apply", "--json"], request, true);}
+ async sync(event: "start" | "shutdown"): Promise<PublicationResult> {return this.run(["sync", "--event", event, "--json"], undefined, "publication");}
+ async enroll(request: unknown): Promise<Receipt> {return this.run(["agent", "enroll", "--json"], request, "save");}
+ async apply(request: ApplyRequest): Promise<Receipt> {return this.run(["agent", "apply", "--json"], request, "save");}
 }
 export function receiptText(value: Receipt): string {
  const saves = value.saves ?? (value.save ? [{operation_id: value.operation_id ?? "", save: value.save}] : []);

@@ -32,7 +32,7 @@ test('catalog CLI uses stdin; accepted code2 receipt is retained without retry',
  assert.equal(calls.length,1); assert.deepEqual(calls[0].args,['agent','apply','--json']); assert.equal(JSON.parse(calls[0].input).operation_id,'op');
 });
 test('idempotent enrollment with no new saves is a valid receipt, including publication',async()=>{
- const value={stream,session,authority:context().authority,saves:[],publication:{sharing:'local-only'}};
+ const value={stream,session,authority:context().authority,saves:[],publication:{local:'unchanged',sharing:'local-only',domain:null}};
  const cli=new StreamCli('/tmp',async()=>({code:0,stdout:JSON.stringify(value),stderr:''}));
  assert.deepEqual(await cli.enroll({}),value);assert.match(receiptText(value),/Already enrolled; no new local saves/);
 });
@@ -88,6 +88,34 @@ test('response cadence coalesces and accepts old prefixes then follows up; captu
 test('rewind and explicit invalidation cancel inference and cannot save stale evidence',async()=>{
  for(const invalidate of [false,true]){const f=reporterFixture();f.reporter.response(f.ctx);await until(()=>f.inferences.length===1);
  if(invalidate)f.reporter.invalidate();else f.rewind();f.release();await f.reporter.idle();assert.equal(f.saves.length,0);}
+});
+test('tree and start invalidations reset automatic reporting cadence',async()=>{
+ for(const reset of [reporter=>reporter.invalidate(),(reporter,ctx)=>reporter.scope.reset({...ctx})]) {
+  const f=reporterFixture({frequency:2});f.reporter.response(f.ctx);reset(f.reporter,f.ctx);
+  f.reporter.response({...f.ctx});await turn();assert.equal(f.inferences.length,0);
+  f.reporter.response({...f.ctx});await until(()=>f.inferences.length===1);f.release();await f.reporter.idle();assert.equal(f.saves.length,2);
+ }
+});
+test('native, cwd and environment changes cannot reuse captured report evidence',async()=>{
+ const previous=process.env.STREAMS_STREAM_ID;
+ try {
+  for(const change of [f=>f.ctx.cwd='/different',f=>f.ctx.sessionManager.getSessionId=()=> 'different',f=>f.reporter.scope.use({...f.ctx,cwd:'/different-event-cwd'}),()=>process.env.STREAMS_STREAM_ID='different']) {
+   const f=reporterFixture();f.reporter.request(f.ctx);await until(()=>f.inferences.length===1);change(f);f.release();await f.reporter.idle();assert.equal(f.saves.length,0);
+   if(previous===undefined)delete process.env.STREAMS_STREAM_ID;else process.env.STREAMS_STREAM_ID=previous;
+  }
+ } finally {if(previous===undefined)delete process.env.STREAMS_STREAM_ID;else process.env.STREAMS_STREAM_ID=previous;}
+});
+test('publication failures retain accepted saves and allow metadata, but repair or refusal stops inference',async()=>{
+ for(const publication of [{local:'unchanged',sharing:'failed',domain:null},{local:'unchanged',sharing:'blocked',domain:null},{local:'unchanged',sharing:'uncertain',domain:null},{local:'repair-required',sharing:'local-only',domain:null}]) {
+  const steps=[],receipts=[];const f=reporterFixture();
+  const reporter=new Reporter({cli:()=>({context:async()=>context(),apply:async()=>({save:{local:'persisted',sharing:'local-only',domain:{outcome:'changes'}},publication})}),settings:()=>defaults,infer:async(_ctx,request)=>{steps.push(request.type);return {changes:request.type==='session'?{state:'Saved'}:{goal:'Metadata'}};},notice:text=>assert.fail(text),receipt:value=>receipts.push(value)});
+  reporter.request(f.ctx);await reporter.idle();assert.deepEqual(steps,publication.local==='repair-required'?['session']:['session','stream']);assert.equal(receipts.length,steps.length);
+ }
+ for(const outcome of ['conflict','superseded']) {
+  const steps=[];const f=reporterFixture();
+  const reporter=new Reporter({cli:()=>({context:async()=>context(),apply:async()=>({save:{local:'unchanged',sharing:'local-only',domain:{outcome}}})}),settings:()=>defaults,infer:async(_ctx,request)=>{steps.push(request.type);return {changes:{state:'Refused'}};},notice:text=>assert.fail(text),receipt:()=>{}});
+  reporter.request(f.ctx);await reporter.idle();assert.deepEqual(steps,['session']);
+ }
 });
 test('manual mode does not report automatically but explicit checkpoint does',async()=>{
  const f=reporterFixture({reporting:'manual'});f.reporter.response(f.ctx);await turn();assert.equal(f.inferences.length,0);
@@ -172,20 +200,34 @@ for(const intent of ['reply','automatic','user'])test(`card discussion ${intent}
  assert.equal(writes.length,intent==='reply'?0:1);assert.match(history.at(-1),/Discussed without assuming extra intent/);
  if(intent!=='reply'){assert.equal(writes[0].actor,intent);assert.equal(writes[0].catalog_source,'source-a');assert.equal(writes[0].ownership_token,intent==='user'?null:'owner');assert.equal(receipts.length,1);assert.equal(writes[0].before.status,'active');assert.deepEqual(writes[0].inputs.map(input=>input.record.id),['session','sibling']);}
 });
-for(const failure of ['throw','abort','invalid','branch'])test(`discussion ${failure} retains composer/history and isolates replacement source`,async()=>{
- const handlers=new Map(),renders=[];let shortcut,submitted=false,menuCount=0,leaf='leaf';const catalog=context();
- const cli={sync:localSync,context:async()=>structuredClone(catalog),apply:()=>assert.fail('failed discussion must not write')};
- registerWorkCard({on:(name,fn)=>handlers.set(name,fn),registerCommand:()=>{},registerTool:()=>{},registerShortcut:(_key,options)=>{shortcut=options.handler;},appendEntry:()=>assert.fail('no receipt')},{settings:{...defaults,reporting:'manual'},cli,infer:async(_ctx,req)=>{
+for(const failure of ['throw','abort','invalid','branch','cwd','source','attachment','shutdown','conflict','superseded','repair','completion'])test(`discussion ${failure} retains composer/history and isolates replacement source`,async()=>{
+ const handlers=new Map(),renders=[],notices=[],receipts=[];let shortcut,submitted=false,menuCount=0,leaf='leaf';const catalog=context();
+ const saveFailure=['conflict','superseded','repair','completion'].includes(failure);
+ const cli={sync:localSync,context:async()=>structuredClone(catalog),apply:async req=>{
+  assert.equal(saveFailure,true,'cancelled discussion must not write');
+  return {operation_id:req.operation_id,save:{local:'persisted',sharing:'local-only',domain:{outcome:['conflict','superseded'].includes(failure)?failure:'changes'}},...(failure==='repair'?{publication:{local:'repair-required',sharing:'confirmed',domain:null}}:{}),...(failure==='completion'?{completion_error:{message:'Incomplete'}}:{})};
+ }};
+ registerWorkCard({on:(name,fn)=>handlers.set(name,fn),registerCommand:()=>{},registerTool:()=>{},registerShortcut:(_key,options)=>{shortcut=options.handler;},appendEntry:(type,value)=>{assert.equal(saveFailure,true,'no receipt');receipts.push({type,value});}},{settings:{...defaults,reporting:'manual'},cli,infer:async(_ctx,req,signal)=>{
   assert.deepEqual(req.discussion,[{role:'user',text:'retry question'}]);
   if(failure==='throw')throw Error('Model unavailable');
-  if(failure==='abort')handlers.get('session_tree')({},ctx);
+  if(failure==='abort') {handlers.get('session_tree')({}, {...ctx});assert.equal(signal.aborted,true);throw Error('Aborted discussion');}
   if(failure==='branch')leaf='other-branch';
-  return failure==='invalid'?{reply:42}:{reply:'Unexpected committed reply'};
+  if(failure==='cwd')ctx.cwd='/other-repo';
+  if(failure==='source')catalog.catalog_source='changed-during-inference';
+  if(failure==='attachment')catalog.stream.id='other-effort';
+  if(failure==='shutdown') {await handlers.get('session_shutdown')({}, {...ctx});assert.equal(signal.aborted,true);throw Error('Aborted on shutdown');}
+  return failure==='invalid'?{reply:42}:{reply:'Unexpected committed reply',edit:{kind:'session',actor:'automatic',changes:{state:'Must not write'}}};
  }});
- const ctx={mode:'tui',hasUI:true,cwd:'/repo',sessionManager:{getSessionId:()=> 'native',getLeafId:()=>leaf,getBranch:()=>[{id:leaf}],buildSessionProjection:()=>({messages:[]})},ui:{select:async()=>menuCount++%2===0?'Discuss live card':'Close',notify:()=>{},setStatus:()=>{},custom:async factory=>new Promise(resolve=>{const component=factory({terminal:{rows:30},requestRender(){}},{fg:(_color,text)=>text},{},resolve);renders.push(component.render(100).join('\n'));if(!submitted){submitted=true;component.handleInput('retry question');component.handleInput('\r');}else component.handleInput('\x1b');})}};
- await handlers.get('session_start')({},ctx);await shortcut(ctx);assert.match(renders[1],/retry question/);assert.doesNotMatch(renders[1],/user: retry question|Unexpected committed reply/);
- await shortcut(ctx);assert.match(renders[2],/retry question/);
- catalog.catalog_source='replacement-source';await shortcut(ctx);assert.doesNotMatch(renders[3],/retry question|Model unavailable|cancelled|typed reply/);
+ const ctx={mode:'tui',hasUI:true,cwd:'/repo',sessionManager:{getSessionId:()=> 'native',getLeafId:()=>leaf,getBranch:()=>[{id:leaf}],buildSessionProjection:()=>({messages:[]})},ui:{select:async()=>menuCount++%2===0?'Discuss live card':'Close',notify:text=>notices.push(text),setStatus:()=>{},custom:async factory=>new Promise(resolve=>{const component=factory({terminal:{rows:30},requestRender(){}},{fg:(_color,text)=>text},{},resolve);renders.push(component.render(100).join('\n'));if(!submitted){submitted=true;component.handleInput('retry question');component.handleInput('\r');}else component.handleInput('\x1b');})}};
+ await handlers.get('session_start')({},ctx);await shortcut(ctx);
+ assert.equal(receipts.length,saveFailure?1:0);
+ if(saveFailure)assert.ok(notices.some(text=>text.includes('input and save receipt retained')));
+ else if(!['throw','invalid'].includes(failure))assert.deepEqual(notices,[]);
+ if(failure==='shutdown') {assert.equal(renders.length,1);await handlers.get('session_start')({}, {...ctx});}
+ // Reopen the original attachment after a cancelled source/attachment change.
+ catalog.catalog_source='source-a';catalog.stream.id='effort';
+ await shortcut(ctx);assert.match(renders.at(-1),/retry question/);assert.doesNotMatch(renders.at(-1),/user: retry question|Unexpected committed reply/);
+ catalog.catalog_source='replacement-source';await shortcut(ctx);assert.doesNotMatch(renders.at(-1),/retry question|Model unavailable|cancelled|typed reply/);
 });
 test('extension startup and Alt+P do not enroll or run a model; report uses completed response event',async()=>{
  const handlers=new Map(),commands=new Map(),tools=new Map();let shortcut;const contexts=[];

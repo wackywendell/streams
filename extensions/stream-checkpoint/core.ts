@@ -1,5 +1,5 @@
 import { randomUUID } from "node:crypto";
-import type { ApplyRequest, LocalContext, Receipt, SessionWire, StreamWire } from "./streams.ts";
+import { receiptCanContinue, type ApplyRequest, type LocalContext, type Receipt, type SessionWire, type StreamWire } from "./streams.ts";
 export const statuses = ["active", "waiting", "blocked", "parked", "done"];
 export const fields = {
  stream: ["title", "title_mode", "goal", "goal_short", "goal_mode", "status", "archived", "documents", "issues", "prs"],
@@ -81,6 +81,7 @@ export class FieldEdit {
    onReceipt?.(result);
    if (!result.save?.domain) throw Error("Save outcome is uncertain; receipt and input retained. Inspect catalog repair state before another write. Do not blindly retry.");
    if (result.save.domain.outcome === "conflict" || result.save.domain.outcome === "superseded") throw Error(`Edit ${result.save.domain.outcome}. Your input is retained. Compare the live field, then discard and reopen to use its new base.`);
+   if (!receiptCanContinue(result)) throw Error("Local save receipt retained; completion or publication requires inspection before another write. Do not blindly retry.");
    this.error = undefined;return result;
   } catch (error) {this.error = String(error);throw error;}
  }

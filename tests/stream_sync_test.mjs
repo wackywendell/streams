@@ -69,6 +69,59 @@ test('shutdown cancels in-flight inference, never adds a summary, and retains sy
  assert.match(f.entries[0].value.error,/offline or timed out/);assert.match(f.warnings[0].text,/local saves and publication are separate/);
 });
 
+test('shutdown retires a pending startup before awaiting its own diagnostic result',async()=>{
+ for(const reject of [false,true]) {
+  let finishStart,finishShutdown;
+  const f=hooks({sync:event=>new Promise((resolve,rejectStart)=>{
+   if(event==='start')finishStart=()=>reject?rejectStart(Error('stale start error')):resolve({...local,sharing:'failed',detail:'stale start result'});
+   else finishShutdown=resolve;
+  })});
+  const start=f.handlers.get('session_start')({},f.ctx);
+  const shutdown=f.handlers.get('session_shutdown')({}, {...f.ctx});
+  finishStart();await start;assert.deepEqual(f.entries,[]);assert.deepEqual(f.warnings,[]);
+  finishShutdown({...local,sharing:'blocked',detail:'current shutdown result'});await shutdown;
+  assert.equal(f.entries.length,1);assert.match(f.warnings[0].text,/current shutdown result/);
+ }
+});
+
+test('a replacement startup retires an old shutdown completion but tree changes retain live sync diagnostics',async()=>{
+ let finish;const f=hooks({sync:async event=>event==='shutdown'?new Promise(resolve=>finish=resolve):local});
+ await f.handlers.get('session_start')({},f.ctx);
+ const shutdown=f.handlers.get('session_shutdown')({}, {...f.ctx});
+ const next={...f.ctx,sessionManager:{...f.ctx.sessionManager,getSessionId:()=> 'next'}};
+ await f.handlers.get('session_start')({},next);
+ finish({...local,sharing:'failed'});await shutdown;assert.deepEqual(f.entries,[]);
+ let complete;const g=hooks({sync:()=>new Promise(resolve=>complete=resolve)});
+ const start=g.handlers.get('session_start')({},g.ctx);
+ g.handlers.get('session_tree')({}, {...g.ctx});complete({...local,sharing:'failed',detail:'live transport failure'});await start;
+ assert.equal(g.entries.length,1);assert.match(g.warnings[0].text,/live transport failure/);
+});
+
+test('distinct event contexts share the live inference scope and route receipt warnings to the latest UI',async()=>{
+ for(const [sharing,level] of [['local-only','info'],['failed','warning'],['blocked','warning'],['uncertain','warning']]) {
+ let release,entered;const started=new Promise(resolve=>entered=resolve), writes=[];
+ const catalog={catalog_source:'source',host_id:'host',stream:{id:'effort',title:'Manual',title_mode:'manual',goal:'Manual goal',goal_mode:'manual'},session:{id:'session',harness_session_id:'native',stream_id:'effort',title:'Session',state:''},sessions:[],authority:{token:'owner'}};
+ const f=hooks({sync:async()=>local,context:async()=>structuredClone(catalog),apply:async request=>{writes.push(request);return {save:{local:'persisted',sharing:'local-only',domain:{outcome:'changes'}},publication:{local:'unchanged',sharing,domain:null}};}},async()=>{entered();await new Promise(resolve=>release=resolve);return {changes:{state:'Reported'}};});
+ await f.handlers.get('session_start')({}, {...f.ctx});
+ f.handlers.get('agent_end')({messages:[{role:'assistant',stopReason:'stop'}]}, {...f.ctx});await started;
+ const notices=[];const latest={...f.ctx,ui:{...f.ctx.ui,notify:(text,level)=>notices.push({text,level})}};
+ f.handlers.get('agent_end')({messages:[]},latest);
+ release();for(let i=0;i<100&&!notices.length;i++)await new Promise(resolve=>setImmediate(resolve));
+ assert.equal(writes.length,1);assert.equal(f.warnings.length,0);assert.equal(notices.length,1);assert.equal(notices[0].level,level);
+ }
+});
+
+test('shutdown suppresses late accepted report receipts without another inference',async()=>{
+ let complete,entered,models=0;const applying=new Promise(resolve=>entered=resolve);
+ const catalog={catalog_source:'source',host_id:'host',stream:null,session:{id:'session',host_id:'host',harness_session_id:'native',stream_id:'effort',title:'Session',state:''},sessions:[],authority:{token:'owner'}};
+ const f=hooks({sync:async()=>local,context:async()=>structuredClone(catalog),apply:()=>{entered();return new Promise(resolve=>complete=resolve);}},async()=>{models++;return {changes:{state:'Accepted locally'}};});
+ await f.handlers.get('session_start')({},f.ctx);
+ f.handlers.get('agent_end')({messages:[{role:'assistant',stopReason:'stop'}]}, {...f.ctx});await applying;
+ await f.handlers.get('session_shutdown')({}, {...f.ctx});
+ complete({save:{local:'persisted',sharing:'failed',domain:{outcome:'changes'}}});
+ await new Promise(resolve=>setImmediate(resolve));assert.equal(models,1);assert.deepEqual(f.warnings,[]);assert.deepEqual(f.entries,[]);
+});
+
 test('native lifecycle deadline kills the CLI and its child processes', {timeout:20000}, async t=>{
  const root=mkdtempSync(join(tmpdir(),'streams-sync-timeout-'));t.after(()=>rmSync(root,{recursive:true,force:true}));
  const bin=join(root,'bin');mkdirSync(bin);const pidfile=join(root,'pids.json');
@@ -100,6 +153,7 @@ test('Pi/CLI reports publish across two isolated Git catalogs, remain saved offl
  };
  const a=runner('a'), b=runner('b');
  const command=async(run,...args)=>{const value=await run([...args,'--json']);assert.equal(value.code,0,value.stderr||value.stdout);return JSON.parse(value.stdout);};
+ for(const run of [a,b])await command(run,'config','set','frontend.mode','none');
  await command(a,'config','set','sync.stream_seconds','0');await command(a,'config','set','sync.session_seconds','999999');
  const initialized=await command(a,'init','--sync','git','--remote',remote);
  let cli=new StreamCli(checkout,a);const empty=await cli.context('native');

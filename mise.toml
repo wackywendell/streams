@@ -8,7 +8,7 @@ run = "uv run python -m unittest discover tests/python"
 
 [tasks."test:pi"]
 description = "Run Pi checkpoint extension tests"
-run = "node --test tests/stream_checkpoint_test.mjs tests/stream_sync_test.mjs"
+run = "node --test tests/stream_checkpoint_test.mjs tests/stream_sync_test.mjs tests/stream_outcomes_test.mjs"
 
 [tasks."test:herdr"]
 description = "Run native Herdr work-card regression tests"

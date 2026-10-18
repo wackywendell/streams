@@ -1,6 +1,6 @@
 import { randomUUID } from "node:crypto";
 import type { ExtensionContext } from "@earendil-works/pi-coding-agent";
-import type { Receipt, StreamCli } from "./streams.ts";
+import { receiptCanContinue, type Receipt, type StreamCli } from "./streams.ts";
 
 /** Only initial enrollment offers membership selection. No native focus or workspace calls. */
 export async function chooseInitial(ctx: ExtensionContext, cli: StreamCli, options: {streamId?: string; title?: string; reason?: string}, receipt: (value: Receipt) => void, signal?: AbortSignal): Promise<{status: string; stream_id?: string}> {
@@ -26,5 +26,5 @@ export async function chooseInitial(ctx: ExtensionContext, cli: StreamCli, optio
  if (ctx.sessionManager.getSessionId() !== native || signal?.aborted) return {status: "cancelled"};
  const value = await cli.enroll({catalog_source: before.catalog_source, operation_id: randomUUID(), harness: "pi", harness_session_id: native, ...(streamId ? {stream_id: streamId} : {stream: {title}}), session: {title: sessionTitle}, actor: "user", cwd: ctx.cwd});
  receipt(value);
- return {status: value.completion_error || value.saves?.some(({save}) => !save.domain || ["conflict", "superseded"].includes(save.domain.outcome)) ? "receipts retained; inspect save outcomes before further writes" : "enrolled", stream_id: value.stream?.id};
+ return {status: receiptCanContinue(value) ? "enrolled" : "receipts retained; inspect save outcomes before further writes", stream_id: value.stream?.id};
 }
