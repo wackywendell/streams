@@ -26,7 +26,7 @@ The original Work Cards history through `e7d74ce2` is merged under `integrations
 
 The [native projection ADR](../docs/native-herdr-work-cards.md) preserves the per-session pane, renderer, navigation and naming policies while replacing catalog and membership authority. The concrete unresolved boundary is mapping portable repository/ref/path document references to exact local checkouts; a display-only port must not be presented as the completed UI.
 
-The Pi slash-command family is now `/streams`, `/streams report [instructions]`, `/streams settings` and `/streams attach`, with subcommand completion. The model-callable `checkpoint` tool is unchanged. The canonical installed checkout still needs to advance to this change, then participating Pi sessions need a reload for the command rename.
+The Pi slash-command family is now `/streams`, `/streams report [instructions]`, `/streams settings` and `/streams attach`, with subcommand completion. The model-callable `checkpoint` tool is unchanged. The canonical installed checkout is advanced on local `main`; its Pi tests pass and the live catalog still validates with 20 streams and 32 sessions. Participating Pi sessions need a reload for the command rename. The native adapter remains inactive.
 
 ## Follow-on slices
 
