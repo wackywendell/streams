@@ -201,11 +201,13 @@ class Runtime:
         except (OSError, ValueError, RuntimeError) as exc:
             raise StreamError(f'cwd must be an existing directory: {cwd}: {exc}; pass --cwd') from exc
 
-    def remember_directory(self, stream_id: str, cwd: Path, *, session_id: str | None = None) -> None:
+    def remember_directory(self, stream_id: str, cwd: Path, *, session_id: str | None = None, if_missing: bool = False) -> None:
         if not _text(stream_id) or (session_id is not None and not _text(session_id)):
             raise StreamError('directory mapping requires nonempty stream/session IDs')
         directory = self._checked_directory(cwd)
-        self._directory_record(stream_id, session_id)  # Never overwrite a corrupt mapping.
+        existing = self._directory_record(stream_id, session_id)  # Never overwrite a corrupt mapping.
+        if if_missing and existing is not None:
+            return
         self._write(self._directory_path(stream_id, session_id), {
             'stream_id': stream_id, 'session_id': session_id, 'cwd': str(directory),
         })
@@ -352,6 +354,26 @@ class Runtime:
                 yield enrollment
             finally:
                 enrollment._active = False
+
+    def context_stream_id(self, *, frontend: str | None = None) -> str | None:
+        """Read exact caller associations/claims without creating locks or bindings."""
+        explicit = os.environ.get('STREAMS_STREAM_ID')
+        if explicit is not None and not _text(explicit):
+            raise StreamError('STREAMS_STREAM_ID must be a nonempty stream ID')
+        selected = resolve_frontend(self.frontend_mode, frontend, os.environ).resolved
+        if selected is None:
+            return explicit
+        client, scope = self._transport(selected)
+        workspace_id = self._caller_workspace(selected, client)
+        binding = self._association(self._association_path(scope, workspace_id))
+        if binding is not None and not binding['ready']:
+            raise StreamError('calling workspace has a partial open; inspect runtime state before reporting')
+        claim = self._enrollment_claim(self._enrollment_path(scope, workspace_id), workspace_id)
+        identities = {value for value in (explicit, binding['stream_id'] if binding else None,
+                                          claim['stream_id'] if claim else None) if value is not None}
+        if len(identities) > 1:
+            raise StreamError('calling workspace association and enrollment claim disagree; inspect runtime state')
+        return next(iter(identities), None)
 
     def current_stream_id(self, *, frontend: str | None = None) -> str:
         if 'STREAMS_STREAM_ID' in os.environ:

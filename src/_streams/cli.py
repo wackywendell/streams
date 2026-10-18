@@ -25,6 +25,8 @@ from .frontend import Frontend, resolve_frontend
 
 
 def output_data(value):
+    if isinstance(value, Stream):
+        return record_to_data(value)
     if isinstance(value, Enum):
         return value.value
     if is_dataclass(value):
@@ -380,6 +382,29 @@ def command_session(args):
     return finish(backend, operation, saved, event="attach" if args.session_command == "attach" else "session", args=args, extra=extra)
 
 
+def command_agent(args):
+    from . import catalog_agent
+    backend = config.open_catalog()
+    if args.agent_command == "context":
+        emit(catalog_agent.context(backend, harness=args.harness, native_id=args.session_id, stream_id=args.stream_id,
+                                   workspace_stream_id=runtime().context_stream_id()), args)
+        return 0
+    source = sys.stdin.read()
+    if args.agent_command == "apply":
+        operation = catalog_agent.parse_update(source, catalog_source=catalog_agent.source_id(backend))
+        return finish(backend, operation, save(backend, operation),
+                      event="session" if isinstance(operation.after, Session) else "stream", args=args)
+    payload, code = catalog_agent.enroll(backend, runtime(), source)
+    if code == 0 or any(successful(item["save"]) for item in payload["saves"]):
+        try:
+            payload["publication"] = result_data(maybe_sync(backend, "attach"))
+        except (StreamError, StorageError, OSError, ValueError) as error:
+            payload["completion_error"] = {"message": str(error), "detail": "local save succeeded; inspect before retrying"}
+            code = 2
+    emit(payload, args)
+    return code
+
+
 def add_output(parser):
     parser.add_argument("--json", action="store_true", help="print structured JSON instead of the default output")
 
@@ -500,8 +525,19 @@ def build_parser():
     for child in (session_list, session_show, attach, session_update):
         child.set_defaults(func=command_session)
         add_output(child)
+    agents = sub.add_parser("agent", help="local captured-record integration for agent harnesses")
+    agent_sub = agents.add_subparsers(dest="agent_command", required=True)
+    context = agent_sub.add_parser("context", allow_abbrev=False, help="read local records without fetching or attaching")
+    context.add_argument("--harness", choices=("pi", "codex", "claude"), required=True)
+    context.add_argument("--session-id", required=True)
+    context.add_argument("--stream-id", help="exact stream identity; never switches an attached conversation")
+    enroll = agent_sub.add_parser("enroll", allow_abbrev=False, help="enroll the caller from a structured stdin request")
+    apply = agent_sub.add_parser("apply", allow_abbrev=False, help="apply a captured-record update from stdin")
+    for child in (context, enroll, apply):
+        child.set_defaults(func=command_agent)
+        add_output(child)
     for name, child in sub.choices.items():
-        if name not in ("frontend", "session"):
+        if name not in ("frontend", "session", "agent"):
             add_output(child)
     return parser
 

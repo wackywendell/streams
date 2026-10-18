@@ -59,6 +59,42 @@ class RuntimeTest(unittest.TestCase):
     def open(self, sessions=(), **kwargs):
         return self.runtime.open(self.stream, sessions, authority=self.authority, **kwargs)
 
+    def test_reporting_context_reads_unbound_claimed_and_bound_workspaces_without_writes(self):
+        self.assertIsNone(self.runtime.context_stream_id())
+        self.assertFalse(self.runtime.state_dir.exists())
+        with self.runtime.enrollment() as scope:
+            scope.claim(self.stream.id)
+        before = sorted(str(path) for path in self.runtime.state_dir.rglob('*'))
+        with patch.object(self.runtime, '_write', side_effect=AssertionError('context wrote state')):
+            self.assertEqual(self.runtime.context_stream_id(), self.stream.id)
+        self.assertEqual(before, sorted(str(path) for path in self.runtime.state_dir.rglob('*')))
+        with self.runtime.enrollment() as scope:
+            scope.bind(self.stream, authority=self.authority)
+        with patch.object(self.runtime, '_write', side_effect=AssertionError('context wrote state')):
+            self.assertEqual(self.runtime.context_stream_id(), self.stream.id)
+        self.herdr.command_result.assert_not_called()
+        self.herdr.run.assert_not_called()
+
+    def test_reporting_context_rejects_conflicting_explicit_identity_and_partial_binding(self):
+        with self.runtime.enrollment() as scope:
+            scope.claim(self.stream.id)
+            scope.bind(self.stream, authority=self.authority)
+        with patch.dict(os.environ, {'STREAMS_STREAM_ID': 'different'}):
+            with self.assertRaisesRegex(StreamError, 'disagree'):
+                self.runtime.context_stream_id()
+        path = next(self.runtime.state_dir.glob('associations/*/*.json'))
+        binding = self.runtime._association(path)
+        self.runtime._write(path, {key: value for key, value in {**binding, 'ready': False}.items() if key != 'version'})
+        with self.assertRaisesRegex(StreamError, 'partial'):
+            self.runtime.context_stream_id()
+
+    def test_remember_initial_directory_does_not_replace_an_explicit_mapping(self):
+        self.runtime.remember_directory(self.stream.id, self.cwd)
+        other = self.root / 'other'
+        other.mkdir()
+        self.runtime.remember_directory(self.stream.id, other, if_missing=True)
+        self.assertEqual(self.runtime._directory_record(self.stream.id, None)['cwd'], str(self.cwd.resolve()))
+
     def test_pending_enrollment_claim_blocks_explicit_open_after_interruption(self):
         with self.runtime.enrollment() as scope:
             scope.claim(self.stream.id)
