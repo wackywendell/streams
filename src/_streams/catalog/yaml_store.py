@@ -91,21 +91,29 @@ class YamlStore:
         return _path(Path(), key)
 
     @staticmethod
+    def decode_record(path: str, contents: bytes) -> Record:
+        """Decode one physical record, including its canonical identity location."""
+        try:
+            envelope = object_fields(yaml.load(contents, Loader=_StrictLoader), {"version", "revision", "kind", "record"})
+            if type(envelope.get("version")) is not int or envelope["version"] != 1:
+                raise ValidationError("unsupported catalog encoding version")
+            text(envelope.get("revision"), "storage revision")
+            record = record_from_data(envelope.get("kind"), envelope.get("record"))
+            if path != _path(Path(), record_key(record)).as_posix():
+                raise ValidationError(f"record identity does not match its physical location: {path}")
+            return record
+        except (ValueError, yaml.YAMLError) as error:
+            raise StorageError(f"cannot read catalog: {error}") from error
+
+    @staticmethod
     def decode_snapshot(files: dict[str, bytes]) -> Snapshot:
         """Validate a Git tree or other file snapshot using this adapter's encoding."""
         records, revisions = [], {}
         try:
             for name, contents in sorted(files.items()):
-                envelope = object_fields(yaml.load(contents, Loader=_StrictLoader), {"version", "revision", "kind", "record"})
-                if type(envelope.get("version")) is not int or envelope["version"] != 1:
-                    raise ValidationError("unsupported catalog encoding version")
-                text(envelope.get("revision"), "storage revision")
-                record = record_from_data(envelope.get("kind"), envelope.get("record"))
-                key = record_key(record)
-                if name != _path(Path(), key).as_posix():
-                    raise ValidationError(f"record identity does not match its physical location: {name}")
+                record = YamlStore.decode_record(name, contents)
                 records.append(record)
-                revisions[key] = hashlib.sha256(contents).hexdigest()
+                revisions[record_key(record)] = hashlib.sha256(contents).hexdigest()
             return Snapshot(catalog=Catalog(
                 streams=tuple(item for item in records if isinstance(item, Stream)),
                 sessions=tuple(item for item in records if isinstance(item, Session)),

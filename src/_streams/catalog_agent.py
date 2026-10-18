@@ -18,7 +18,7 @@ from uuid import NAMESPACE_URL, uuid5
 
 from .catalog.codec import object_fields, record_from_data, record_to_data
 from .catalog.model import Session, Stream, ValidationError, choice, text
-from .catalog.operations import Operation, update
+from .catalog.operations import Operation, filter_automatic_changes, normalize_changes, update
 from .catalog.storage import StorageError
 from .catalog.sync.envelope import load_json
 from .errors import StreamError
@@ -93,19 +93,11 @@ def parse_update(source: str, *, catalog_source: str) -> Operation:
     before = record_from_data(kind, data["before"])
     changes = _fields(data["changes"], AUTOMATIC[kind] if actor == "automatic" else EDITABLE[kind])
     if actor == "automatic":
-        for mode, names in (("title_mode", ("title",)), ("goal_mode", ("goal", "goal_short"))):
-            if getattr(before, mode, None) == "manual":
-                for name in names:
-                    changes.pop(name, None)
-    else:
-        for name in ("title", "goal"):
-            if name in changes and changes[name] != getattr(before, name) and name + "_mode" not in changes:
-                changes[name + "_mode"] = "manual"
-    # Reuse the strict physical codec for nested references, then let update()
-    # clear derivatives absent from changes. Never use a current snapshot here.
+        changes = filter_automatic_changes(before, changes)
+    changes = normalize_changes(before, changes, actor=actor)
+    # Normalize before the codec constructs a record so clearing a goal cannot
+    # leave an invalid intermediate goal_short. References stay codec-owned.
     wire = {**record_to_data(before), **changes}
-    if kind == "stream" and "goal" in changes and "goal_short" not in changes:
-        wire["goal_short"] = None
     desired = record_from_data(kind, wire)
     changes = {name: getattr(desired, name) for name in changes}
     inputs = data.get("inputs", [])
@@ -117,10 +109,6 @@ def parse_update(source: str, *, catalog_source: str) -> Operation:
         captured.append(record_from_data(item["kind"], item["record"]))
     return update(data["operation_id"], before, changes, actor=actor,
                   ownership_token=data.get("ownership_token"), inputs=tuple(captured))
-
-
-def _accepted(result):
-    return result.local not in ("failed", "repair-required") and (result.domain is None or result.domain.outcome in ("changes", "no-change"))
 
 
 @contextmanager
@@ -172,7 +160,7 @@ def enroll(backend, runtime, source: str):
     def persist(operation):
         saved = backend.save(operation, origin={"command": "streams-agent"})
         payload["saves"].append({"operation_id": operation.id, "save": saved})
-        if not _accepted(saved):
+        if not saved.accepted:
             raise StreamError("enrollment operation was not accepted; inspect its save receipt")
 
     if data["actor"] == "automatic":

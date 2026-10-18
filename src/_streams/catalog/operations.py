@@ -10,6 +10,35 @@ from .model import Catalog, Document, Host, Record, RecordKey, Session, Stream, 
 Actor = Literal["user", "automatic"]
 Outcome = Literal["changes", "no-change", "superseded", "conflict"]
 
+_MANUAL_TEXT_FIELDS = (("title_mode", {"title"}), ("goal_mode", {"goal", "goal_short"}))
+
+
+def filter_automatic_changes(before: Record, changes: Mapping[str, object]) -> dict[str, object]:
+    """Remove protected text from a harness proposal, not from captured operations."""
+    protected = set().union(*(names for mode, names in _MANUAL_TEXT_FIELDS
+                              if getattr(before, mode, None) == "manual"))
+    return {name: value for name, value in changes.items() if name not in protected}
+
+
+def normalize_changes(before: Record, changes: Mapping[str, object], *, actor: Actor) -> dict[str, object]:
+    """Normalize edit intent before construction, without parsing physical fields.
+
+    Supplied user text selects manual mode even when its value is unchanged;
+    explicit modes and replacement derivatives take precedence. Automatic edits
+    retain their modes and intent, including protected fields for reconciliation.
+    """
+    changes = dict(changes)
+    if actor == "user":
+        for name in ("title", "goal"):
+            if name in changes and hasattr(before, name + "_mode"):
+                changes.setdefault(name + "_mode", "manual")
+    if isinstance(before, Stream) and "goal" in changes and changes["goal"] != before.goal:
+        changes.setdefault("goal_short", None)
+    if isinstance(before, Session) and any(name in changes and changes[name] != getattr(before, name)
+                                           for name in ("state", "remaining", "status")):
+        changes.setdefault("state_short", None)
+    return changes
+
 
 @dataclass(frozen=True)
 class Authority:
@@ -102,12 +131,7 @@ def update(id: str, before: Record, changes: Mapping[str, object], *, actor: Act
     A changed goal invalidates goal_short. Changed state, remaining work or status
     invalidates state_short. Supply a new derivative in changes to retain one.
     """
-    changes = dict(changes)
-    if isinstance(before, Stream) and "goal" in changes and changes["goal"] != before.goal:
-        changes.setdefault("goal_short", None)
-    if isinstance(before, Session) and any(name in changes and changes[name] != getattr(before, name)
-                                           for name in ("state", "remaining", "status")):
-        changes.setdefault("state_short", None)
+    changes = normalize_changes(before, changes, actor=actor)
     try:
         after = replace(before, **changes)
     except TypeError as error:
@@ -192,13 +216,19 @@ def reconcile(catalog: Catalog, operation: Operation, *, authority: Authority | 
         if current is None:
             return refuse("update target does not exist", ("identity",))
         if operation.actor == "automatic":
-            for mode, names in (("title_mode", {"title"}), ("goal_mode", {"goal", "goal_short"})):
+            for mode, names in _MANUAL_TEXT_FIELDS:
                 if getattr(current, mode, None) == "manual" and operation.changed_fields & names:
                     return refuse("manual text is protected", (mode,), superseded=True)
             if current == after:
                 return Reconciliation(operation.id, "no-change")
             if current != before:
                 return refuse("generated description inputs changed", ("inputs",), superseded=True)
+        # A concurrent mode change fences pending text, even if normalization
+        # selected the same mode. An already-applied edit still remains a no-op.
+        for mode, names in _MANUAL_TEXT_FIELDS:
+            if getattr(current, mode, None) != getattr(before, mode, None) and any(
+                    getattr(current, name) != getattr(after, name) for name in operation.changed_fields & names):
+                return refuse("text mode changed since capture", (mode,), superseded=True)
         changes = {}
         conflicts = []
         for name in sorted(_guard_fields(operation)):

@@ -1,6 +1,8 @@
 """Validate materialized Git history against the original domain operations."""
 
 from dataclasses import dataclass, field, replace
+from types import MappingProxyType
+from typing import Mapping
 
 from ..model import Catalog, Stream, record_key
 from ..operations import Authority, Operation, reconcile
@@ -15,14 +17,22 @@ def records(catalog: Catalog) -> dict:
     return {record_key(record): record for record in catalog.records}
 
 
-@dataclass
+@dataclass(frozen=True)
 class History:
     tip: str | None = None
     root: str | None = None
     catalog: Catalog = field(default_factory=Catalog)
-    files: dict[str, bytes] = field(default_factory=dict)
-    authorities: dict[str, Authority] = field(default_factory=dict)
-    operations: dict[str, tuple[Operation, dict[str, str]]] = field(default_factory=dict)
+    files: Mapping[str, bytes] = field(default_factory=dict)
+    authorities: Mapping[str, Authority] = field(default_factory=dict)
+    operations: Mapping[str, tuple[Operation, Mapping[str, str]]] = field(default_factory=dict)
+
+    def __post_init__(self) -> None:
+        object.__setattr__(self, "files", MappingProxyType(dict(self.files)))
+        object.__setattr__(self, "authorities", MappingProxyType(dict(self.authorities)))
+        object.__setattr__(self, "operations", MappingProxyType({
+            id: (operation, MappingProxyType(dict(origin)))
+            for id, (operation, origin) in self.operations.items()
+        }))
 
 
 def read_history(git: Git, tip: str | None) -> History:
@@ -35,7 +45,7 @@ def read_history(git: Git, tip: str | None) -> History:
 def _read_history(git: Git, tip: str | None) -> History:
     if tip in git.histories:
         return git.histories[tip]
-    history = History(tip=tip)
+    history = History()
     if tip is None:
         return history
     entries = git.run("log", "-z", "--reverse", "--topo-order", "--format=%H%x00%P%x00%B", tip).decode().split("\0")
@@ -50,14 +60,13 @@ def _read_history(git: Git, tip: str | None) -> History:
             history = git.histories[revision]
             start, previous = index + 1, revision
     for revision, parent_text, raw_message in commits[start:]:
-        history = replace(history, authorities=dict(history.authorities), operations=dict(history.operations))
         parents = parent_text.split()
         files = git.files(revision)
         message = raw_message.rstrip() + "\n"
         if previous is None:
             if parents or files or message != BOOTSTRAP:
                 raise RepairRequired("catalog history must start with an empty Streams catalog v1 commit")
-            history.root = revision
+            history = History(tip=revision, root=revision, files=files)
         else:
             if parents != [previous]:
                 raise RepairRequired("catalog history must be linear and non-merged")
@@ -67,20 +76,23 @@ def _read_history(git: Git, tip: str | None) -> History:
             result = reconcile(history.catalog, operation, authority=authority_for(operation, history.authorities))
             if result.outcome != "changes":
                 raise RepairRequired(f"operation {operation.id} does not explain its commit: {result.outcome}")
-            actual = YamlStore.decode_snapshot(files).catalog
-            expected = history.catalog.replacing(result.record)
             changes = {name for name in files.keys() | history.files.keys() if files.get(name) != history.files.get(name)}
             path = YamlStore.record_path(operation.target).as_posix()
-            if records(actual) != records(expected) or changes != {path}:
+            if changes != {path} or path not in files:
                 raise RepairRequired(f"commit changes do not match operation {operation.id}")
+            actual = history.catalog.replacing(YamlStore.decode_record(path, files[path]))
+            expected = history.catalog.replacing(result.record)
+            if records(actual) != records(expected):
+                raise RepairRequired(f"commit changes do not match operation {operation.id}")
+            authorities = dict(history.authorities)
             if isinstance(operation.after, Stream) and operation.before is None:
-                history.authorities[operation.after.id] = Authority(operation.after.owner_host_id, operation.id)
-            history.catalog = actual
-            history.operations[operation.id] = (operation, origin)
-        history = replace(history, tip=revision, files=files)
-        git.histories[revision] = history
-        # Keep a few validated tips, not a complete copy of every prefix.
-        if len(git.histories) > 8:
-            del git.histories[next(iter(git.histories))]
+                authorities[operation.after.id] = Authority(operation.after.owner_host_id, operation.id)
+            history = replace(history, tip=revision, catalog=actual, files=files, authorities=authorities,
+                              operations={**history.operations, operation.id: (operation, origin)})
         previous = revision
+    # Intermediate prefixes are validated but only explicitly requested tips
+    # compete for cache space with HEAD and the confirmed publication tip.
+    git.histories[tip] = history
+    if len(git.histories) > 8:
+        del git.histories[next(iter(git.histories))]
     return history

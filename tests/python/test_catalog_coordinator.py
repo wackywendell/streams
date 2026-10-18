@@ -85,8 +85,8 @@ class CoordinatorGitTest(unittest.TestCase):
         self.assertEqual(git(self.a.root, "rev-parse", "HEAD"), local_before)
         self.assertEqual(git(self.remote, "rev-parse", "main"), remote_before)
         self.assertFalse(any(call.args[0] == "push" for call in calls.call_args_list))
-        self.assertEqual(self.a._metadata()["last_sync"], timing_before["last_sync"])
-        self.assertEqual(self.a._metadata()["last_push"], timing_before["last_push"])
+        self.assertEqual(self.a._metadata().last_sync, timing_before.last_sync)
+        self.assertEqual(self.a._metadata().last_push, timing_before.last_push)
 
     def test_conflicted_read_keeps_local_view_and_exposes_confirmed_alternative(self):
         self.publish_initial()
@@ -117,9 +117,9 @@ class CoordinatorGitTest(unittest.TestCase):
         self.assertEqual(result.freshness, "failed")
         self.assertIn("offline", result.detail)
         self.assertEqual(result.catalog.stream("work"), effort())
-        self.assertEqual(self.a._metadata()["fetched_at"], before["fetched_at"])
-        self.assertEqual(self.a._metadata()["last_sync"], before["last_sync"])
-        self.assertEqual(self.a._metadata()["retry_after"], before["retry_after"])
+        self.assertEqual(self.a._metadata().fetched_at, before.fetched_at)
+        self.assertEqual(self.a._metadata().last_sync, before.last_sync)
+        self.assertEqual(self.a._metadata().retry_after, before.retry_after)
         self.assertEqual(coordinator.read().freshness, "cached")
         self.assertEqual(coordinator.read(refresh=True).freshness, "refreshed")
 
@@ -145,7 +145,7 @@ class CoordinatorGitTest(unittest.TestCase):
         result = SyncCoordinator(self.a).read(refresh=True)
         self.assertEqual(result.freshness, "refreshed")
         self.assertEqual(self.a.state.read("publication.json"), marker)
-        self.assertEqual(self.a._metadata()["last_push"], clocks["last_push"])
+        self.assertEqual(self.a._metadata().last_push, clocks.last_push)
         self.assertEqual(SyncCoordinator(self.a).maybe_sync("explicit").sharing, "confirmed")
 
     def test_expired_read_cooldown_keeps_failure_visible_until_success(self):

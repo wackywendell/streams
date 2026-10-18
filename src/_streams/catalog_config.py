@@ -231,20 +231,6 @@ def _empty_root(root: Path) -> None:
         raise StreamError("initialization requires empty catalog bookkeeping; inspect existing state")
 
 
-def _local_validate(backend: LocalCatalog) -> None:
-    root = backend.store.root
-    allowed = {".catalog.lock", ".catalog-sync", ".catalog-staging", "streams", "sessions", "hosts"}
-    if any(path.name not in allowed for path in root.iterdir()):
-        raise StreamError("unexpected contents in local catalog; inspect before continuing")
-    state = State(root)
-    if any(path.name not in {"cli.json", "local.json", "receipts.json", "save.json"} for path in state.root.iterdir()):
-        raise StreamError("unexpected local catalog bookkeeping; strategy cannot be switched")
-    state.check_save()
-    # Validate private replay/creation receipts as well as public YAML records.
-    state._receipts()
-    backend._creations()
-
-
 def open_catalog() -> LocalCatalog | GitCatalog:
     settings = load_config()
     root = Path(settings["catalog"]["root"])
@@ -256,9 +242,7 @@ def open_catalog() -> LocalCatalog | GitCatalog:
         _check_host(marker, identity)
         if marker["strategy"] == "none":
             backend = LocalCatalog(YamlStore(root), host_id=identity)
-            with backend.store.transaction() as transaction:
-                _local_validate(backend)
-                transaction.read()
+            backend.snapshot()
             return backend
         backend = GitCatalog(root, host_id=identity, policy=Policy(**settings["sync"]))
         backend.snapshot()
@@ -307,10 +291,10 @@ def initialize(strategy: str, *, remote: str | None = None, branch: str = "main"
                     _check_host(marker, identity)
                     if marker["strategy"] != strategy:
                         raise StreamError("catalog sync strategy does not match")
-                    _local_validate(backend)
                 transaction.read()
                 if marker is None:
                     State(root).write("cli.json", {"strategy": strategy, "host": identity})
+            backend.snapshot()
             return backend
     except (OSError, StorageError, ValueError) as error:
         raise StreamError(f"cannot initialize catalog: {error}") from error

@@ -319,6 +319,30 @@ class CatalogAgentTest(unittest.TestCase):
         self.assertEqual(sync.call_count, 1)
         self.assertEqual(sync.call_args.args[1], "attach")
 
+    def test_repair_required_publication_retains_enrollment_saves_but_fails_completion(self):
+        from _streams.catalog.sync import Result
+        request = {"operation_id": "repair-enroll", "catalog_source": self.context()["catalog_source"],
+                   "harness": "pi", "harness_session_id": "native", "actor": "automatic", "cwd": str(self.root),
+                   "stream": {"title": "Saved before publication"}, "session": {"title": "Retained"}}
+        with patch("_streams.cli.maybe_sync", return_value=Result("blocked", local="repair-required", detail="inspect adoption")):
+            code, result, _ = self.call("agent", "enroll", request=request)
+        self.assertEqual(code, 2)
+        self.assertEqual(len(result["saves"]), 2)
+        self.assertTrue(all(item["save"]["local"] == "persisted" for item in result["saves"]))
+        self.assertEqual(result["publication"]["local"], "repair-required")
+        self.assertEqual(self.context()["session"]["id"], result["session"]["id"])
+
+    def test_repair_required_publication_stops_apply_completion_without_losing_save(self):
+        from _streams.catalog.sync import Result
+        before = self.enroll()
+        with patch("_streams.cli.maybe_sync", return_value=Result("confirmed", local="repair-required", detail="inspect adoption")):
+            code, result, _ = self.apply(before, {"state": "Saved before repair"})
+        self.assertEqual(code, 2)
+        self.assertEqual(result["save"]["local"], "persisted")
+        self.assertEqual(result["publication"]["sharing"], "confirmed")
+        self.assertEqual(result["publication"]["local"], "repair-required")
+        self.assertEqual(self.context()["session"]["state"], "Saved before repair")
+
     def test_enrollment_preserves_a_stream_default_directory(self):
         from _streams.cli import runtime
         enrolled = self.enroll()
@@ -326,11 +350,11 @@ class CatalogAgentTest(unittest.TestCase):
         # Runtime lookup with no eligible session still has a useful cwd.
         self.assertEqual(local._directory_record(enrolled["stream"]["id"], None)["cwd"], str(self.root.resolve()))
 
-    def test_user_unchanged_title_does_not_implicitly_change_its_mode(self):
+    def test_user_supplied_title_selects_manual_mode_even_when_unchanged(self):
         before = self.enroll()
         code, result, _ = self.apply(before, {"title": before["session"]["title"]}, actor="user", inputs=[])
         self.assertEqual(code, 0, result)
-        self.assertEqual(result["session"]["title_mode"], "automatic")
+        self.assertEqual(result["session"]["title_mode"], "manual")
 
     def test_captured_source_fences_a_configuration_switch_to_an_identical_catalog(self):
         before = self.enroll()

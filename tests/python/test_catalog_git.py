@@ -163,12 +163,12 @@ class GitCatalogTest(unittest.TestCase):
         b.save(update("park-b", effort(), {"status": "parked"}))
         b.sync()
         self.a.sync()
-        last_confirmed = self.a._metadata()["confirmed"]
+        last_confirmed = self.a._metadata().confirmed
         b.save(update("park-a", park.after, {"status": "done"}))
         b.sync()
         result = self.a.sync()
         self.assertEqual(result.local, "repair-required")
-        self.assertEqual(self.a._metadata()["confirmed"], last_confirmed)
+        self.assertEqual(self.a._metadata().confirmed, last_confirmed)
         self.assertEqual(self.a.snapshot().catalog.stream("work").status, "parked")
 
     def test_repaired_commit_establishes_missing_receipt_before_retirement(self):
@@ -201,10 +201,10 @@ class GitCatalogTest(unittest.TestCase):
         self.a.save(update("local-title", effort(), {"title": "Local"}))
         self.now += 100
         self.assertEqual(self.a.sync().sharing, "blocked")
-        confirmed_at = self.a._metadata()["last_push"]
+        confirmed_at = self.a._metadata().last_push
         self.now += 100
         self.assertEqual(self.a.sync().sharing, "blocked")
-        self.assertEqual(self.a._metadata()["last_push"], confirmed_at)
+        self.assertEqual(self.a._metadata().last_push, confirmed_at)
 
     def test_automatic_stale_update_is_retired_instead_of_retrying_forever(self):
         self.publish_initial()
@@ -283,11 +283,11 @@ class GitCatalogTest(unittest.TestCase):
 
     def test_successful_no_push_sync_advances_only_full_sync_time(self):
         self.publish_initial()
-        pushed_at = self.a._metadata()["last_push"]
+        pushed_at = self.a._metadata().last_push
         self.now += 301
         self.assertEqual(self.a.sync(event="start").sharing, "confirmed")
-        self.assertEqual(self.a._metadata()["last_push"], pushed_at)
-        self.assertEqual(self.a._metadata()["last_sync"], self.now)
+        self.assertEqual(self.a._metadata().last_push, pushed_at)
+        self.assertEqual(self.a._metadata().last_sync, self.now)
 
     def test_push_race_fetches_and_reconciles_again(self):
         self.publish_initial()
@@ -343,7 +343,7 @@ class GitCatalogTest(unittest.TestCase):
             return original(*args, **kwargs)
         with patch.object(self.a.git, "run", side_effect=denied):
             self.assertEqual(self.a.sync().sharing, "failed")
-        self.assertEqual(self.a._metadata()["last_sync"], before["last_sync"])
+        self.assertEqual(self.a._metadata().last_sync, before.last_sync)
         self.assertEqual(self.a.snapshot().catalog.stream("work").status, "parked")
         self.now += 301
         self.assertEqual(self.a.sync(event="session").sharing, "confirmed")

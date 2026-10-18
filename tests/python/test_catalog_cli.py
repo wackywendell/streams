@@ -199,7 +199,7 @@ class CatalogCliTest(unittest.TestCase):
         import _streams.cli as module
         from _streams.catalog.storage import StorageError
         backend = module.config.open_catalog()
-        with patch("_streams.cli.config.open_catalog", return_value=backend), patch.object(backend, "snapshot", side_effect=StorageError("readback failed")):
+        with patch("_streams.cli.config.open_catalog", return_value=backend), patch.object(backend, "sync", return_value=module.Result("local-only")), patch.object(backend, "snapshot", side_effect=StorageError("readback failed")):
             code, out, _ = self.cli("create", "Retained", "--json")
         self.assertEqual(code, 2)
         receipt = json.loads(out)

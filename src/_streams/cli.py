@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import argparse
 from collections.abc import Mapping
-from dataclasses import asdict, fields, is_dataclass, replace
+from dataclasses import fields, is_dataclass, replace
 from enum import Enum
 import json
 import os
@@ -17,7 +17,7 @@ import yaml
 from . import catalog_config as config
 from .catalog.codec import record_to_data
 from .catalog.model import Checkout, Document, Link, Repository, Session, STATUSES, Stream, ValidationError
-from .catalog.operations import Operation, update
+from .catalog.operations import Operation, normalize_changes, update
 from .catalog.storage import StorageError
 from .catalog.sync import Result, SyncCoordinator
 from .errors import StreamError
@@ -111,19 +111,15 @@ def maybe_sync(backend, event):
     return SyncCoordinator(backend).maybe_sync(event)
 
 
-def successful(result: Result) -> bool:
-    return result.local not in ("failed", "repair-required") and (result.domain is None or result.domain.outcome in ("changes", "no-change"))
-
-
 def save(backend, operation):
     return backend.save(operation, origin={"command": "streams"})
 
 
 def result_data(result):
-    # Immutable records contain mapping proxies; asdict's deepcopy cannot encode them.
-    data = asdict(replace(result, domain=None))
+    # Materialize immutable mappings without deep-copying record/history objects.
+    data = output_data(replace(result, domain=None))
     if result.domain is not None:
-        domain = asdict(replace(result.domain, record=None))
+        domain = output_data(replace(result.domain, record=None))
         domain.pop("record")
         data["domain"] = domain
     return data
@@ -134,12 +130,15 @@ def finish(backend, operation, saved, *, event, args, extra=None):
     kind = "session" if isinstance(operation.after, Session) else "stream"
     accepted = saved.domain.record if saved.domain and saved.domain.record else operation.after
     payload[kind] = record_to_data(accepted)
-    ok = successful(saved)
+    ok = saved.accepted
     if ok:
         try:
-            payload["publication"] = result_data(maybe_sync(backend, event))
-            current = backend.snapshot().catalog.get(operation.target)
-            payload[kind] = record_to_data(current)
+            publication = maybe_sync(backend, event)
+            payload["publication"] = result_data(publication)
+            ok = not publication.requires_repair
+            if ok:
+                current = backend.snapshot().catalog.get(operation.target)
+                payload[kind] = record_to_data(current)
         except (StreamError, StorageError, OSError, ValueError) as error:
             payload["completion_error"] = {"message": str(error), "detail": "local save succeeded; inspect before retrying"}
             ok = False
@@ -163,13 +162,11 @@ def scalar_changes(args, fields):
         if value is not None:
             changes[name] = value
     for name in ("title", "goal"):
-        if name in changes:
-            changes[name + "_mode"] = "manual"
         mode = getattr(args, name + "_mode", None)
         if mode is not None:
             changes[name + "_mode"] = mode
     if getattr(args, "clear_goal", False):
-        changes.update(goal=None, goal_mode=args.goal_mode or "manual")
+        changes["goal"] = None
     return changes
 
 
@@ -275,12 +272,12 @@ def command_create(args):
     stream = Stream(id=str(uuid4()), title=args.title, goal=None, owner_host_id=backend.host_id, title_mode="manual")
     changes.update(collection_changes(args, stream))
     if changes:
-        stream = replace(stream, **changes)
+        stream = replace(stream, **normalize_changes(stream, changes, actor="user"))
     operation = Operation(str(uuid4()), None, stream, "user")
     saved = save(backend, operation)
     extra = {}
     code = 0
-    if successful(saved):
+    if saved.accepted:
         try:
             local = runtime()
             local.remember_directory(stream.id, Path(args.cwd or Path.cwd()))
@@ -323,7 +320,7 @@ def command_check(args):
 def command_sync(args):
     result = maybe_sync(config.open_catalog(), args.event)
     emit(result_data(result), args)
-    return 2 if result.sharing in ("failed", "blocked", "uncertain") or result.local == "repair-required" else 0
+    return 2 if result.needs_attention else 0
 
 
 def command_runtime(args):
@@ -374,7 +371,7 @@ def command_session(args):
         operation = update(str(uuid4()), before, changes, ownership_token=authority.token if authority else None)
     saved = save(backend, operation)
     extra = None
-    if args.session_command == "attach" and successful(saved):
+    if args.session_command == "attach" and saved.accepted:
         try:
             runtime().remember_directory(stream.id, Path(args.cwd or Path.cwd()), session_id=session.id)
         except (StreamError, OSError) as error:
@@ -395,9 +392,12 @@ def command_agent(args):
         return finish(backend, operation, save(backend, operation),
                       event="session" if isinstance(operation.after, Session) else "stream", args=args)
     payload, code = catalog_agent.enroll(backend, runtime(), source)
-    if code == 0 or any(successful(item["save"]) for item in payload["saves"]):
+    if code == 0 or any(item["save"].accepted for item in payload["saves"]):
         try:
-            payload["publication"] = result_data(maybe_sync(backend, "attach"))
+            publication = maybe_sync(backend, "attach")
+            payload["publication"] = result_data(publication)
+            if publication.requires_repair:
+                code = 2
         except (StreamError, StorageError, OSError, ValueError) as error:
             payload["completion_error"] = {"message": str(error), "detail": "local save succeeded; inspect before retrying"}
             code = 2
