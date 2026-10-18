@@ -1,6 +1,6 @@
 # ADR 1 Durable, evidence-grounded orientation
 
-Status: accepted and implemented. [ADR 2](workspace-context.md) records the shared workspace and per-session model, including its unfinished naming and management work. The [README](../README.md) owns commands, configuration and verification instructions.
+Status: historical Work Cards decision, preserved with its original implementation and evidence. Its orientation and evidence principles inform the Streams port; its separate local catalog is superseded by the [durable Streams model](../../../docs/durable-work-catalog.md). The [native Herdr ADR](../../../docs/native-herdr-work-cards.md) explains current applicability. Runtime and API descriptions below refer to the imported package, not an activated Streams integration.
 
 ## Context and problem
 

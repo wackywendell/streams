@@ -1,6 +1,6 @@
 # ADR 2 Shared workspace context and per-session agent state
 
-Status: accepted; the workspace and agent runtime is active. General foreground management remains unfinished. [ADR 3](automatic-naming.md) defines automatic naming. Its implementation has automated coverage; live rollout remains unverified. See [status and boundaries](#status-and-boundaries). [ADR 1](design.md) defines the product purpose, evidence policy and authority limits.
+Status: historical Work Cards decision. The [native Herdr ADR](../../../docs/native-herdr-work-cards.md) carries forward its per-session display, exact navigation and lifecycle protections. Streams supersedes the separate workspace/agent store, automatic reassignment on native moves and helper pipelines described below; portable references must not be removed because a file is absent on one host. Original runtime and verification statements describe the imported implementation, not current Streams activation. [ADR 1](design.md) retains its context; [ADR 3](automatic-naming.md) retains naming rationale.
 
 ## Context and problem
 

@@ -1,6 +1,6 @@
 # ADR: Streams-managed storage and optional Git sync
 
-Status: agreed design with an initial library implementation. The [sync implementation plan](../plans/catalog-sync.md) defines its testable contracts and scope; the [library usage guide](catalog-sync-usage.md) describes its API and manual inspection. This checkout's CLI uses the coordinators; see the [CLI usage](../README.md). Handover coordination, agent/frontend projections and installed-runtime cutover remain follow-on work.
+Status: accepted, with local-only and Git coordinators used by the CLI. Handover coordination remains incomplete. This ADR defines save, publication and authority guarantees, not deployment status; the [README](../README.md) owns current setup and commands. The [native Herdr ADR](native-herdr-work-cards.md) governs frontend projection.
 
 ## Context and decision
 
@@ -8,7 +8,7 @@ Move catalog management from the Obsidian-managed notes workflow to the `streams
 
 The Git strategy uses a dedicated private repository with one shared branch and a managed local copy on each host. Save changes as local commits and publish them according to their urgency. The user should not need to manage commits, pulls or pushes during ordinary work. These Git mechanics are not requirements of every storage backend.
 
-The existing Streams format combines work metadata and a Markdown scratch body under a configurable notes root. It also uses local repository paths and Obsidian note links. Merely putting that directory in Git would preserve the wrong persistence model. The [durable work catalog ADR](durable-work-catalog.md) replaces scratch notes with structured records: the stream's goal and references, and each session's progress description. There is no second stored aggregate progress summary. Substantive plans and decisions belong in project repositories.
+The former Streams format combined work metadata and a Markdown scratch body under a configurable notes root. It also used local repository paths and Obsidian note links. Merely putting that directory in Git would preserve the wrong persistence model. The [durable work catalog ADR](durable-work-catalog.md) replaces scratch notes with structured records: the stream's goal and references, and each session's progress description. There is no second stored aggregate progress summary. Substantive plans and decisions belong in project repositories.
 
 Git makes the catalog readable, inspectable and recoverable from published history. It is also the meeting point between hosts: one host commits and pushes, and another fetches when it next needs the catalog. The design does not require live cross-host communication, an always-running service, transcript synchronisation or project-checkout backup.
 
@@ -168,6 +168,6 @@ Session and host snapshots replace current files, but their earlier versions rem
 
 ## Implementation boundary
 
-The [sync implementation plan](../plans/catalog-sync.md) records the concrete states, failure checks and acceptance scenarios for the next model. Use M = 5 minutes and N = 60 minutes as configurable initial defaults. Hosting, credential provisioning and installed-runtime cutover are deployment choices, not permission for implementation to change live services.
+The [sync implementation plan](../plans/catalog-sync.md) tracks concrete failure checks and acceptance scenarios separately from this decision. Use M = 5 minutes and N = 60 minutes as configurable initial defaults. Hosting, credential provisioning and installed-runtime cutover are deployment choices, not permission for implementation to change live services.
 
 Automatic save repair, partial publication past a domain conflict, legacy-format compatibility and automatic migration are outside the first implementation. Record schemas, producer identities, lifecycle permissions and resume selection remain governed by the durable work catalog ADR. Handover requires that domain's validated coordination; the transport must not bypass its generic-operation restrictions.

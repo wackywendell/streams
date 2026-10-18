@@ -1,6 +1,6 @@
 # ADR: Durable streams without scratch notes
 
-Status: implemented in this checkout's catalog, CLI, Pi extension and skill. The examples describe the domain, not a storage API. Work Cards integration remains pending; the installed runtime has not switched.
+Status: accepted. The catalog, CLI and Pi integration implement these record boundaries. Native Herdr adaptation is governed by the [work-card projection ADR](native-herdr-work-cards.md); handover and multi-session reconstruction remain incomplete. Examples describe the domain, not a storage API.
 
 ## Decision and rationale
 
@@ -28,7 +28,7 @@ Implement these definitions and rules independently of serialization, filesystem
 
 ### Stream record
 
-The stream holds the whole effort's goal, lifecycle, owning host and references. Progress descriptions belong to sessions, avoiding a second account that must be kept in sync. This example shows the proposed domain fields:
+The stream holds the whole effort's goal, lifecycle, owning host and references. Progress descriptions belong to sessions, avoiding a second account that must be kept in sync. This example illustrates the domain fields:
 
 ```yaml
 id: str_catalog
@@ -114,7 +114,7 @@ Runtime inspection returns process state with its check time, separately from th
 
 ## Initial physical data model
 
-The first storage adapter maps these logical records to versioned YAML files in a Git repository with one shared branch:
+The first storage adapter maps these logical records to versioned YAML files. It supports local-only persistence or Git coordination with one shared branch. This layout illustrates the separation between shared records and host-local state, not an API for locating runtime files:
 
 ```text
 <catalog Git repository>/
@@ -122,16 +122,16 @@ The first storage adapter maps these logical records to versioned YAML files in 
   sessions/<host-id>/<session-record-id>.yaml
   hosts/<host-id>.yaml
 
-$XDG_STATE_HOME/streams/                 # host-local, not synchronised
-  host.yaml
-  bindings/<session-record-id>.yaml
-  workspaces/<stream-id>.yaml
-  sync/
+<host-local state>/                    # not synchronised
+  installation identity
+  checkout and saved-session locators
+  native workspace and pane bindings
+  sync bookkeeping
 ```
 
 Encoding versions, directory conventions and Git commits belong to this adapter, not the logical records. Stable IDs determine filenames, so renaming and archiving do not move files. Git history supplies edit metadata; Git ancestry and locally serialised operations supply save ordering. Filesystem timestamps are not durable across clones and checkouts. Local files hold installation identity, absolute paths, saved-session locations, native ownership/layout information and sync bookkeeping.
 
-The adapter must preserve logical identities, relationships and operation semantics, and expose revisions and save outcomes without leaking storage mechanics into domain rules. JSON files, database tables or ticket-system fields could provide another physical mapping. A ticket-backed catalog would still need independent personal lifecycle state, not equate it with a team ticket's status. Only YAML/Git is in scope now.
+The adapter must preserve logical identities, relationships and operation semantics, and expose revisions and save outcomes without leaking storage mechanics into domain rules. JSON files, database tables or ticket-system fields could provide another physical mapping. A ticket-backed catalog would still need independent personal lifecycle state, not equate it with a team ticket's status. Only file-backed YAML storage with local-only or Git coordination is in scope now.
 
 ## Host ownership and resumption
 
@@ -151,10 +151,10 @@ The `streams` CLI is the primary interface for listing, searching, inspecting an
 
 The domain layer validates operations against logical records. Operations carry stable IDs, exact targets and relevant preconditions. Independent changes may combine; conflicting intent must be surfaced. Adapters provide revision-checked persistence; domain rules decide whether changed data conflicts. Git sync replays domain operations rather than merging arbitrary YAML, preserving operation identity and rejecting superseded ownership or stale updates. Generated descriptions still need input checks before saving, since save order alone cannot prevent an old inference from finishing late. Session progress updates do not rewrite the stream record.
 
-For the initial Git backend, ordinary saves succeed after a local commit. Publication is separately pending, failed or confirmed, and unpublished changes remain for later reconciliation. Sync is session-driven or explicitly requested, with batched reports and check-ins; it does not require a host daemon. Cached reads and local work continue offline. Handover is the exception to delayed activation because an unpublished ownership claim cannot authorise another host.
+With local-only coordination, an ordinary save succeeds at validated store persistence and requires no Git repository or network. With Git coordination, it succeeds after a local commit. Publication is separately pending, failed or confirmed, and unpublished changes remain for later reconciliation. Sync is session-driven or explicitly requested, with batched reports and check-ins; it does not require a host daemon. Cached reads and local work continue offline. Handover is the exception to delayed activation because an unpublished ownership claim cannot authorise another host.
 
-## Remaining work
+## Boundaries
 
-This decision establishes the record boundaries and lifecycle, not a complete CLI specification. The [README](../README.md) describes implemented commands. Handover, Work Cards projections and multi-session reconstruction remain follow-on work. Git hosting, batching intervals and retry mechanics belong to the sync design.
+This decision establishes record meaning and lifecycle, not a complete CLI specification or a claim that every recovery path is implemented. The [README](../README.md) owns current commands and setup. The [sync ADR](catalog-git-sync.md) owns publication and reconciliation; the [Pi ADR](pi-work-card.md) owns evidence and guarded reporting; the [native Herdr ADR](native-herdr-work-cards.md) owns the Work Cards adaptation.
 
-No automatic migration or legacy-format compatibility is required. Existing scratch material may be kept or migrated manually. The [Pi work-card design](pi-work-card.md) replaces scratch-generating checkpoints with catalog reporting. The [scratch format contract](../src/_streams/FORMAT.md) and [checkpoint specification](pi-stream-checkpoint-spec.md) describe the historical integration, not the current catalog workflow.
+Legacy-format compatibility and an automatic migration subsystem are not required. A one-off migration may preserve real identities, statuses and source references through validated operations without making old scratch notes or Work Cards records a second writable catalog. The [scratch format contract](../src/_streams/FORMAT.md) and [checkpoint specification](pi-stream-checkpoint-spec.md) remain historical context, not current workflow instructions.

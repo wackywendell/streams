@@ -104,8 +104,10 @@ The checkout's Pi extension maintains catalog records instead of generating scra
 - Alt+P opens the card without running a model. Edit labelled fields, choose valid statuses and manage reference rows. Whole-effort actions are separate from session actions; IDs, ownership and membership are read-only.
 - Editing a title or goal makes it manual. Change its mode back to automatic to allow refinement. Invalid or conflicting edits retain their input; unchanged fields are not submitted.
 - Card discussion can answer without edits, refresh descriptions, or carry out an explicitly requested edit. User direction is approval; uncertain intent produces a question rather than a management action.
-- `/checkpoint` requests a report now, not a draft awaiting Apply. Explicit reporting can enroll an unbound conversation. `/checkpoint:attach` offers initial selection or creation; attached conversations cannot switch efforts.
-- `/checkpoint:settings` controls automatic/manual reporting, initial enrollment, completed responses between reports, context and model. Manual reporting disables background requests, not explicit commands.
+- `/streams` or `/streams report` requests a report now, not a draft awaiting Apply. Use `/streams report [instructions]` to give reporting direction. Explicit reporting can enroll an unbound conversation. The model-callable `checkpoint` tool remains unchanged.
+- `/streams attach` offers initial selection or creation; attached conversations cannot switch efforts.
+- `/streams settings` controls automatic/manual reporting, initial enrollment, completed responses between reports, context and model. Manual reporting disables background requests, not explicit commands.
+- Tab completes `report`, `settings` and `attach`. Unknown subcommands and extra arguments to `settings` or `attach` show usage without reporting or saving. Free-text instructions must follow `report`.
 
 Settings live in `$PI_CODING_AGENT_DIR/stream-reporting.json`, defaulting to `~/.pi/agent/stream-reporting.json`. The defaults are:
 
@@ -120,6 +122,12 @@ Session progress and effort metadata use separate inferences, so updating both t
 The menu refreshes on action or reopen, not while waiting for a selection. Discussion and unsent inputs survive closing and reopening the card in the same Pi process, not extension reload. Work Cards projections and native tab/title updates remain separate follow-on work.
 
 When testing, keep the CLI and extension from the same checkout, use isolated XDG/agent directories and do not also load the published scratch-based extension. Restart running Pi sessions after updating the extension; existing processes retain their previously loaded code. The [bundled skill](skills/streams/SKILL.md) covers record semantics and guarded reporting from other harnesses.
+
+## Native Herdr work cards
+
+The original Work Cards source, tests and design documents are imported under [`integrations/herdr-work-cards`](integrations/herdr-work-cards), with its original commit history intact through `e7d74ce22f95893fa8eed570ef2e6a14d61f74bd`. The [native projection decision](docs/native-herdr-work-cards.md) identifies which behavior carries forward and which legacy authority is superseded.
+
+The import is not an activated catalog adapter. Do not load its old Pi entrypoint or follow its standalone installation steps: that runtime writes a separate Work Cards catalog. Streams remains the only writable catalog. Exact document-checkout resolution and Streams-backed native ownership must be completed before activating the pane.
 
 ## Open or resume work
 
@@ -165,10 +173,13 @@ If reconciliation finds a conflict, reads retain the complete local view and exp
 ```sh
 uv sync
 npm ci
+npm --prefix integrations/herdr-work-cards ci --ignore-scripts
 mise run test
 ```
 
 Python tests cover the catalog, CLI, sync library, guarded agent API and runtime adapters. Node tests cover reporting, the guided card editor, discussion, settings and real checkout-CLI integration inside and outside a repository; neither contract case is skipped. Tests exercise Pi's local model-registry and context-projection APIs without credentialed inference. Native runtime effects remain mocked rather than opening real workspaces.
+
+`mise run test:herdr` builds and runs the imported Work Cards regression suite; it also runs as part of `mise run test`. Its legacy storage and helper tests preserve prior coverage, not proof of a Streams-backed native adapter.
 
 The Python package requires Python 3.11 or newer. See the [durable catalog decision](docs/durable-work-catalog.md), [sync decision](docs/catalog-git-sync.md) and temporary [cutover plan](plans/catalog-cutover.md) for scope and remaining integration work.
 

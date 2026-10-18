@@ -1,5 +1,7 @@
 # Work Cards
 
+This package was imported with its original history through `e7d74ce22f95893fa8eed570ef2e6a14d61f74bd`. It preserves the source, tests and design of the standalone Work Cards runtime. It is not yet a Streams-backed native adapter. Do not install its Pi entrypoint or activate its separate record writer. The [Streams native ADR](../../docs/native-herdr-work-cards.md) defines the adaptation; the [Streams README](../../README.md) owns current installation and commands. The instructions below describe the original package.
+
 Work Cards shows shared workspace context beside each Pi agent's own assignment. The package provides a Pi extension and a read-only Herdr terminal pane. It does not launch agents or manage checkouts.
 
 ## Workspace and agent records

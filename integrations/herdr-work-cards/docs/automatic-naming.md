@@ -1,6 +1,6 @@
 # ADR 3 Automatic naming and manual overrides
 
-Status: accepted. [ADR 2](workspace-context.md) defines records, membership and document identity. The [README verification status](../README.md#verification-status) distinguishes verified behavior from rollout requirements.
+Status: accepted naming policy from the imported Work Cards implementation. Independent manual protection, surface-scoped provenance and first-pane eligibility remain requirements of the [Streams native port](../../../docs/native-herdr-work-cards.md). Record types, commands and adapter signatures below describe the original runtime; they must be adapted to Streams identities and do not authorize activating its old writer or namer. [ADR 2](workspace-context.md) preserves the original membership context.
 
 ## Context and problem
 

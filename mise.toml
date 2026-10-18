@@ -10,6 +10,10 @@ run = "uv run python -m unittest discover tests/python"
 description = "Run Pi checkpoint extension tests"
 run = "node --test tests/stream_checkpoint_test.mjs"
 
+[tasks."test:herdr"]
+description = "Run native Herdr work-card regression tests"
+run = "npm --prefix integrations/herdr-work-cards test"
+
 [tasks.test]
 description = "Run all tests"
-depends = ["test:python", "test:pi"]
+depends = ["test:python", "test:pi", "test:herdr"]

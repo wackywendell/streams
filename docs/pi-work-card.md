@@ -1,6 +1,6 @@
-# Pi work cards backed by the catalog
+# ADR: Catalog-backed Pi work cards
 
-Status: implemented in this checkout. The installed runtime is unchanged.
+Status: accepted; the catalog-backed Pi integration implements this decision. Native Herdr presentation is a separate [projection decision](native-herdr-work-cards.md), not another catalog.
 
 ## Decision
 
@@ -26,7 +26,7 @@ Resolve an existing session association before enrolling anything. A caller work
 
 Once attached, Pi does not offer a switch-to-another-stream action. Moving or forking contributions needs a future explicit lifecycle command; changing a title must never silently change membership. Conflicting session and caller-workspace associations fail visibly rather than choosing one by guesswork.
 
-Shared workspace enrollment must converge on one stream identity even when several Pi conversations begin together. Native associations and absolute directories remain host-local. Enrollment does not open workspaces, launch agents or move focus.
+Shared workspace enrollment must converge on one stream identity even when several Pi conversations begin together. Automatic Herdr enrollment must also verify that the requested conversation is the exact native caller: background helpers can inherit a parent's pane environment without being that conversation. Inherited environment alone must not let a helper claim the workspace under its narrower assignment. Native associations and absolute directories remain host-local. Enrollment does not open workspaces, launch agents or move focus.
 
 ## Viewing, editing and discussion
 
@@ -42,7 +42,9 @@ A direct edit is user intent. User-directed lifecycle edits are permitted, but b
 
 Closing the panel does not discard its unsent input or discussion. Reopening restores it for that native Pi conversation and catalog within the same process; extension reload does not. Menus refresh on action or reopen rather than pushing updates while a selection is open. Opening the panel alone neither starts a model request nor modifies the catalog. Only explicitly submitted edits or discussion run its agent.
 
-`/checkpoint` becomes an immediate report request, not an approval queue. Settings expose reporting mode, frequency, model and context selection. The extension and bundled skill describe the same record semantics; they do not retain scratch-format aliases or instructions.
+An explicit report request saves progress without creating an approval queue. Group user-facing actions under `/streams` with space-separated subcommands, including `/streams report`, `/streams settings` and `/streams attach`. Pi supports argument completion on a registered command, so this keeps related actions discoverable without separate colon-named registrations. Bare `/streams` remains an immediate report request; instructions belong after `report`, avoiding ambiguity with management actions. The model-callable `checkpoint` tool remains a separate interface.
+
+Settings expose reporting mode, frequency, model and context selection. The extension and bundled skill describe the same record semantics; they do not retain scratch-format aliases or instructions.
 
 ## Persistence boundary
 
@@ -56,8 +58,8 @@ Generate existing-session progress and stream metadata as separate target-scoped
 
 Keep record saves separate rather than promising a multi-record rollback transaction. If one save succeeds and a later step fails, return the accepted records and receipts. Publication failure must not turn an accepted local report into an apparent unsaved operation. Session progress never rewrites the stream merely to refresh its timestamp.
 
-## Scope and validation
+## Consequences and boundaries
 
-This slice ports the Pi package and bundled skill, not Work Cards' own storage/projection integration, cross-host handover, contribution moves or multi-tab reconstruction. It does not install packages, modify live catalogs or migrate scratch notes.
+Automatic reporting removes the routine approval step, but makes captured inputs, manual protection and visible failures essential. A report is a last-known account, not independent verification of every statement. Keeping the card available for guided edits and discussion preserves user control without reinstating a second draft document.
 
-Tests cover automatic/manual policy, cadence and coalescing, context modes, model APIs, enrollment identity, protected manual text, stale-input rejection, retained editor/chat input and partial-save receipts. Both real Pi/CLI contract tests now use isolated catalogs, including operation outside a repository. Native runtime acceptance and credentialed inference are not exercised by these tests.
+This decision covers the Pi integration and bundled skill. Cross-host handover, contribution moves, multi-tab reconstruction and native pane ownership require their own application contracts; a Pi conversation change must not silently invent those operations. The [README](../README.md) owns usage and configuration, while tests and the temporary cutover plan track implementation and acceptance evidence.

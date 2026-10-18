@@ -24,6 +24,7 @@ jobs:
       - uses: jdx/mise-action@v5
       - run: uv sync --locked
       - run: npm ci
+      - run: npm --prefix integrations/herdr-work-cards ci --ignore-scripts
       - run: mise run test
 
   build:
