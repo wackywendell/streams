@@ -1,6 +1,6 @@
 # Pi work cards backed by the catalog
 
-Status: agreed interaction direction; implementation in progress. Proposed defaults and implementation choices below are not an installed-runtime change.
+Status: implemented in this checkout. The installed runtime is unchanged.
 
 ## Decision
 
@@ -10,13 +10,13 @@ The user chose automatic updates by default, with configurable automatic/manual 
 
 ## Reporting and context
 
-The proposed defaults are automatic reporting after each completed response, the current Pi model and trimmed context. Frequency is a positive number of completed responses. Manual mode disables background reporting and enrollment; explicit requests still work. A configured model that cannot run fails visibly rather than falling back to a different model.
+The defaults are automatic reporting after each completed response, the current Pi model and trimmed context. Frequency is a positive number of completed responses. Manual mode disables background reporting and enrollment; explicit requests still work. A configured model that cannot run fails visibly rather than falling back to a different model.
 
 A report captures Pi's active projected conversation, respecting compaction and context edits. Full mode preserves that projection, excluding incomplete tool batches; trimmed mode retains conversational content without tool calls, tool results or thinking. Do not silently truncate oversized inputs. Report failures leave recorded progress intact and do not interrupt the main agent.
 
 The helper receives captured catalog records and conversation evidence. It has no project-writing or shell tools and does not independently reread documents. Historical file contents in the conversation remain historical evidence, not a fresh verification claim. Include current names, goals and progress in its input so later reports can respect edits made through the card.
 
-Use a single background operation per Pi session. Coalesce newer evidence rather than queueing a report for every event. Before applying, check session identity, attachment and that the captured conversation remains on the active branch. Appending work does not invalidate an older captured prefix: save that report and schedule a follow-up. A rewind, branch switch or session replacement invalidates the result. Automatic updates cannot change stream lifecycle, archive state or protected naming modes.
+Use a single background operation per Pi session. Coalesce newer evidence rather than queueing a report for every event. Before applying, check session identity, attachment and that the captured conversation remains on the active branch. Appending work does not invalidate an older captured prefix: save that report and schedule a follow-up. A rewind, branch switch or session replacement invalidates the result. Automatic updates may report session status but cannot change stream lifecycle, archive state or protected naming modes.
 
 ## Identity and initial enrollment
 
@@ -40,7 +40,7 @@ Scope reference editing to issue/PR URL-and-description rows and documents whose
 
 A direct edit is user intent. User-directed lifecycle edits are permitted, but background inference must never park, finish or archive an effort. Chat may discuss uncertainty without changing records. Separate a conversational reply, an automatic description refresh and an explicitly requested user edit; do not treat every chat turn as permission for management changes.
 
-Closing or minimizing the panel does not discard its unsent input or discussion. Reopening restores it for that native Pi conversation and catalog. Opening the panel alone neither starts a model request nor modifies the catalog. Only explicitly submitted edits or discussion run its agent.
+Closing the panel does not discard its unsent input or discussion. Reopening restores it for that native Pi conversation and catalog within the same process; extension reload does not. Menus refresh on action or reopen rather than pushing updates while a selection is open. Opening the panel alone neither starts a model request nor modifies the catalog. Only explicitly submitted edits or discussion run its agent.
 
 `/checkpoint` becomes an immediate report request, not an approval queue. Settings expose reporting mode, frequency, model and context selection. The extension and bundled skill describe the same record semantics; they do not retain scratch-format aliases or instructions.
 
@@ -48,7 +48,7 @@ Closing or minimizing the panel does not discard its unsent input or discussion.
 
 The Python CLI owns record validation, effective authority, persistence and publication scheduling. TypeScript exchanges structured requests and receipts with it; it never writes catalog YAML. Use persisted local records for report bases and execution authority, not refreshed display projections.
 
-A local-context CLI endpoint returns persisted records and effective authority without a fetch. A structured apply endpoint accepts stable operation IDs, the original captured target, allowlisted changes and other captured catalog inputs. It does not retake an edit's base after inference or force generated text into manual naming modes. Omit protected fields before constructing an automatic operation so a manual title does not discard an otherwise valid goal update.
+A local-context CLI endpoint returns persisted records and effective authority without a fetch. An opaque host-local source guard fences catalog selection or replacement, including replacements with copied record IDs; it is not a shared domain field. A structured apply endpoint accepts this guard, stable operation IDs, the original captured target, allowlisted changes and every other captured catalog record supplied to inference. It does not retake an edit's base after inference or force generated text into manual naming modes. Omit protected fields before constructing an automatic operation so a manual title does not discard an otherwise valid goal update.
 
 Domain reconciliation rejects changed inputs and ownership, including during publication replay, before an already-satisfied/no-change shortcut. Ordinary user edits retain field-level reconciliation. Generated output is parsed into an allowlisted update shape before it reaches persistence.
 
@@ -60,4 +60,4 @@ Keep record saves separate rather than promising a multi-record rollback transac
 
 This slice ports the Pi package and bundled skill, not Work Cards' own storage/projection integration, cross-host handover, contribution moves or multi-tab reconstruction. It does not install packages, modify live catalogs or migrate scratch notes.
 
-Verify automatic/manual policy, cadence and coalescing, both context modes, configured models, enrollment identity, protected manual text, stale-input rejection, panel/chat persistence and partial-save receipts. Replace the two deferred real Pi/CLI contract tests with isolated catalog-backed cases, including operation outside a repository. Review code changes with Gemini Argon using the design-review skill before finalising the implementation commits.
+Tests cover automatic/manual policy, cadence and coalescing, context modes, model APIs, enrollment identity, protected manual text, stale-input rejection, retained editor/chat input and partial-save receipts. Both real Pi/CLI contract tests now use isolated catalogs, including operation outside a repository. Native runtime acceptance and credentialed inference are not exercised by these tests.

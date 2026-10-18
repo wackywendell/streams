@@ -1,6 +1,6 @@
 # Using the catalog sync library
 
-The sync library composes the catalog foundation. It provides application-level sync and read orchestration without starting a background service or configuring a hosted repository. The [CLI](../README.md) uses these coordinators; Pi and Work Cards integration remains separate. The [sync ADR](catalog-git-sync.md) explains the policy; the [implementation plan](../plans/catalog-sync.md) defines its scope.
+The sync library composes the catalog foundation. It provides application-level sync and read orchestration without starting a background service or configuring a hosted repository. The [CLI](../README.md) uses these coordinators, including for Pi's catalog reports; Work Cards integration remains separate. The [sync ADR](catalog-git-sync.md) explains the policy; the [implementation plan](../plans/catalog-sync.md) defines its scope.
 
 ## Local-only storage
 

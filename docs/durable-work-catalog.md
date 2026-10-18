@@ -1,6 +1,6 @@
 # ADR: Durable streams without scratch notes
 
-Status: agreed design with an initial catalog and CLI implementation. The examples describe the domain, not a storage API. Pi, skill and Work Cards integration remains pending; the installed runtime has not switched.
+Status: implemented in this checkout's catalog, CLI, Pi extension and skill. The examples describe the domain, not a storage API. Work Cards integration remains pending; the installed runtime has not switched.
 
 ## Decision and rationale
 
@@ -155,6 +155,6 @@ For the initial Git backend, ordinary saves succeed after a local commit. Public
 
 ## Remaining work
 
-This decision establishes the record boundaries and lifecycle, not a complete CLI specification. The [README](../README.md) describes implemented commands. Handover, automatic session descriptions, Work Cards projections and multi-session reconstruction remain follow-on work. Git hosting, batching intervals and retry mechanics belong to the sync design.
+This decision establishes the record boundaries and lifecycle, not a complete CLI specification. The [README](../README.md) describes implemented commands. Handover, Work Cards projections and multi-session reconstruction remain follow-on work. Git hosting, batching intervals and retry mechanics belong to the sync design.
 
-No automatic migration or legacy-format compatibility is required. Existing scratch material may be kept or migrated manually. The scratch-generating checkpoint workflow still needs a replacement. The [scratch format contract](../src/_streams/FORMAT.md) and [checkpoint specification](pi-stream-checkpoint-spec.md) describe that pre-cutover integration, not the catalog CLI.
+No automatic migration or legacy-format compatibility is required. Existing scratch material may be kept or migrated manually. The [Pi work-card design](pi-work-card.md) replaces scratch-generating checkpoints with catalog reporting. The [scratch format contract](../src/_streams/FORMAT.md) and [checkpoint specification](pi-stream-checkpoint-spec.md) describe the historical integration, not the current catalog workflow.

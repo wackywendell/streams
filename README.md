@@ -2,7 +2,7 @@
 
 Streams keeps a personal catalog of ongoing work. Each stream has a stable identity, an optional goal, a work status and links to project documents. Sessions describe their own current state and remaining work. Plans and design decisions stay in project repositories, not in scratch notes.
 
-This checkout replaces the scratch-note CLI. The Pi checkpoint extension and bundled agent skill have not yet switched to the catalog. Do not pair them with this CLI. Published `v0.1.0` packages still use the old workflow.
+This checkout includes the catalog CLI, Pi work-card extension and bundled agent skill. Published `v0.1.0` packages still use the scratch workflow; do not mix those packages with this CLI. The installed runtime is unchanged.
 
 ## Run from this checkout
 
@@ -97,6 +97,30 @@ Attaching records an existing conversation; it does not start it. A session has 
 
 For a portable checkout reference, add `--repository ALIAS --ref BRANCH` when attaching. `--cwd` records the local directory. Session references also accept `HOST_ID/SESSION_RECORD_ID` when needed to disambiguate IDs.
 
+## Pi work cards
+
+The checkout's Pi extension maintains catalog records instead of generating scratch drafts. By default it reports after each completed response, using the current Pi model and trimmed conversation context. Meaningful work can enroll an effort and its first session automatically; greetings alone do not. Existing caller-workspace associations are reused without launching agents or moving focus.
+
+- Alt+P opens the card without running a model. Edit labelled fields, choose valid statuses and manage reference rows. Whole-effort actions are separate from session actions; IDs, ownership and membership are read-only.
+- Editing a title or goal makes it manual. Change its mode back to automatic to allow refinement. Invalid or conflicting edits retain their input; unchanged fields are not submitted.
+- Card discussion can answer without edits, refresh descriptions, or carry out an explicitly requested edit. User direction is approval; uncertain intent produces a question rather than a management action.
+- `/checkpoint` requests a report now, not a draft awaiting Apply. Explicit reporting can enroll an unbound conversation. `/checkpoint:attach` offers initial selection or creation; attached conversations cannot switch efforts.
+- `/checkpoint:settings` controls automatic/manual reporting, initial enrollment, completed responses between reports, context and model. Manual reporting disables background requests, not explicit commands.
+
+Settings live in `$PI_CODING_AGENT_DIR/stream-reporting.json`, defaulting to `~/.pi/agent/stream-reporting.json`. The defaults are:
+
+```json
+{"reporting": "automatic", "enrollment": "automatic", "frequency": 1, "context": "trimmed"}
+```
+
+Add `"model": {"provider": "PROVIDER", "id": "MODEL_ID"}` to select a helper model; omit it to use the current Pi model. Unavailable models fail visibly without fallback. Trimmed context excludes tool calls/results and thinking; full context preserves the active projected conversation, excluding incomplete tool batches. Oversized input fails rather than silently dropping history.
+
+Session progress and effort metadata use separate inferences, so updating both takes two helper requests. Reports preserve captured records, ownership and conversation-lineage guards. They may update session status, but cannot park, finish or archive the whole effort. Historical conversation is evidence, not fresh verification of files or remote services.
+
+The menu refreshes on action or reopen, not while waiting for a selection. Discussion and unsent inputs survive closing and reopening the card in the same Pi process, not extension reload. Work Cards projections and native tab/title updates remain separate follow-on work.
+
+When testing, keep the CLI and extension from the same checkout, use isolated XDG/agent directories and do not also load the published scratch-based extension. No installation or live-catalog migration is part of this cutover. The [bundled skill](skills/streams/SKILL.md) covers record semantics and guarded reporting from other harnesses.
+
 ## Open or resume work
 
 ```sh
@@ -144,7 +168,7 @@ npm ci
 mise run test
 ```
 
-Python tests cover the catalog, CLI, sync library and runtime adapters. Node tests still cover the pre-cutover Pi checkpoint extension. Its 2 real scratch-CLI contract tests are explicitly skipped pending the catalog port; passing unit tests do not establish CLI compatibility. Native tests mock runtime effects rather than opening real workspaces.
+Python tests cover the catalog, CLI, sync library, guarded agent API and runtime adapters. Node tests cover reporting, the guided card editor, discussion, settings and real checkout-CLI integration inside and outside a repository; neither contract case is skipped. Tests exercise Pi's local model-registry and context-projection APIs without credentialed inference. Native runtime effects remain mocked rather than opening real workspaces.
 
 The Python package requires Python 3.11 or newer. See the [durable catalog decision](docs/durable-work-catalog.md), [sync decision](docs/catalog-git-sync.md) and temporary [cutover plan](plans/catalog-cutover.md) for scope and remaining integration work.
 

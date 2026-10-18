@@ -1,6 +1,6 @@
 # Pi stream checkpoint extension
 
-Status: implemented against Pi 0.99. This document records the accepted behavior, including batched annotations and independent main-session input.
+Status: historical scratch-based integration, superseded by [Pi work cards](pi-work-card.md). This specification does not describe the checkout's catalog-backed extension.
 
 ## Objective
 

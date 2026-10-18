@@ -1,4 +1,4 @@
 interface:
   display_name: "Streams"
-  short_description: "Manage scratch-first coding streams"
-  default_prompt: "Use $streams to manage this coding stream or streams portfolio."
+  short_description: "Manage durable work and session progress"
+  default_prompt: "Use $streams to inspect this effort, report session progress, or manage the work catalog."
