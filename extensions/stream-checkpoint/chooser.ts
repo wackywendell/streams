@@ -1,225 +1,30 @@
-import { Input, Loader, matchesKey, truncateToWidth, visibleWidth, wrapTextWithAnsi } from "@earendil-works/pi-tui";
-import type { Component, TUI } from "@earendil-works/pi-tui";
-import type { Theme } from "@earendil-works/pi-coding-agent";
-import type { Recommendations } from "./core.ts";
-import type { StreamCli } from "./streams.ts";
-import { shortcutLabel } from "./view.ts";
+import { randomUUID } from "node:crypto";
+import type { ExtensionContext } from "@earendil-works/pi-coding-agent";
+import type { Receipt, StreamCli } from "./streams.ts";
 
-export type ChosenStream = { stream: Awaited<ReturnType<StreamCli["list"]>>[number]; created: boolean };
-type ChooserChoice = { kind: "existing"; stream: ChosenStream["stream"] } | { kind: "new"; title: string; reason: string } | { kind: "manual" };
-
-export class StreamChooser implements Component {
-	focused = true;
-	readonly input = new Input({ placeholder: "Search streams…" });
-	readonly titleInput = new Input({ placeholder: "New stream title…" });
-	private selected = 0;
-	private expanded = false;
-	private creating = false;
-	/** Why the title being edited was suggested, if it was. */
-	private creatingReason?: string;
-	private closed = false;
-	private busy = false;
-	private loader?: Loader;
-	private moved = false;
-	private status = "↑↓ choose · Enter select · Ctrl+N Write your own";
-
-	constructor(
-		private tui: TUI,
-		private theme: Theme,
-		private streams: ChosenStream["stream"][],
-		private cli: Pick<StreamCli, "show" | "previewStart" | "start" | "list">,
-		private done: (choice: ChosenStream | undefined) => void,
-		private recommendations: Recommendations = { existing: [] },
-		initialRef = "",
-		/**
-		 * `minimize` hides the chooser on `shortcut`; `finding` shows that recommendations are still on their way.
-		 * `reason` says why the chooser opened. `create` opens it editing the suggested new stream, with Esc back to the list.
-		 * `drafting` says a checkpoint draft follows the choice.
-		 */
-		private options: { shortcut?: string; minimize?: () => void; settings?: () => void; finding?: boolean; busyChanged?: (busy: boolean) => void; reason?: string; create?: boolean; drafting?: boolean } = {},
-	) {
-		fill(this.input, initialRef);
-		const suggested = recommendations.newStream;
-		if (options.create && suggested) this.editTitle(suggested.title, suggested.reason);
-		this.input.onSubmit = (value) => {
-			const choice = this.choices()[this.selected];
-			if (!value.trim() && choice) this.choose(choice);
-			else if (value.trim()) this.run(async () => { this.finish({ stream: await this.cli.show(value.trim()), created: false }); });
-		};
-		this.titleInput.onSubmit = (value) => {
-			const title = value.trim();
-			if (!title) { this.status = "Enter a title"; return; }
-			this.run(async () => {
-				const preview = await this.cli.previewStart(title);
-				if (this.closed) return;
-				const existing = await this.cli.list();
-				if (this.closed) return;
-				if (existing.some((item) => item.slug === preview.slug)) throw new Error(`Stream ${preview.slug} now exists; select it instead`);
-				this.finish({ stream: await this.cli.start(title), created: true });
-			});
-		};
-		this.syncLoader();
-	}
-
-	private syncLoader(): void {
-		if (!this.closed) this.options.busyChanged?.(this.busy || !!this.options.finding);
-		if (this.closed || (!this.busy && !this.options.finding)) {
-			this.loader?.stop();
-			this.loader = undefined;
-			return;
-		}
-		const message = this.busy ? this.creating ? "Creating stream…" : "Working…" : "Finding recommendations…";
-		if (this.loader) this.loader.setMessage(message);
-		else this.loader = new Loader(this.tui, (text) => this.theme.fg("accent", text), (text) => text, message);
-	}
-
-	setRecommendations(recommendations: Recommendations): void {
-		this.recommendations = recommendations;
-		this.options.finding = false;
-		this.syncLoader();
-		if (!this.moved) this.selected = 0;
-		if (!this.closed) this.tui.requestRender();
-	}
-
-	private choices(): ChooserChoice[] {
-		const query = this.input.getValue().trim().toLowerCase();
-		const matching = this.streams.filter((item) => !query || `${item.title} ${item.slug}`.toLowerCase().includes(query));
-		const rank = (slug: string) => this.recommendations.existing.findIndex((item) => item.slug === slug);
-		const existing: ChooserChoice[] = matching.sort((a, b) => {
-			const ar = rank(a.slug);
-			const br = rank(b.slug);
-			if (ar >= 0 || br >= 0) return ar < 0 ? 1 : br < 0 ? -1 : ar - br;
-			return Number(b.status === "active") - Number(a.status === "active") || a.title.localeCompare(b.title);
-		}).slice(0, this.expanded ? undefined : 20).map((stream) => ({ kind: "existing", stream }));
-		const newStream = this.recommendations.newStream;
-		return [...(newStream && (!query || newStream.title.toLowerCase().includes(query)) ? [{ kind: "new" as const, ...newStream }] : []), ...existing, { kind: "manual" }];
-	}
-
-	private choose(choice: ChooserChoice): void {
-		if (choice.kind === "existing") this.finish({ stream: choice.stream, created: false });
-		else if (choice.kind === "new") this.editTitle(choice.title, choice.reason);
-		else this.editTitle("");
-	}
-
-	private editTitle(title: string, reason?: string): void {
-		this.creating = true;
-		this.creatingReason = reason;
-		fill(this.titleInput, title);
-		this.status = this.options.drafting ? "Enter creates the stream; the checkpoint draft still needs Apply" : "Enter creates the stream";
-	}
-
-	private finish(choice: ChosenStream | undefined): void {
-		if (this.closed) return;
-		this.dispose();
-		this.done(choice);
-	}
-
-	private run(work: () => Promise<void>): void {
-		if (this.busy || this.closed) return;
-		this.busy = true;
-		this.syncLoader();
-		void work().catch((error) => { this.status = String(error); }).finally(() => { this.busy = false; this.syncLoader(); if (!this.closed) this.tui.requestRender(); });
-	}
-
-	handleInput(data: string): void {
-		if (this.closed) return;
-		if (this.options.minimize && this.options.shortcut && matchesKey(data, this.options.shortcut)) { this.options.minimize(); return; }
-		if (this.busy) {
-			if (!this.creating && matchesKey(data, "escape")) this.finish(undefined);
-			return;
-		}
-		if (this.options.settings && matchesKey(data, "alt+s")) { this.options.settings(); return; }
-		if (this.creating) {
-			if (matchesKey(data, "escape")) { this.creating = false; this.status = "↑↓ choose · Enter select · Ctrl+N Write your own"; }
-			else this.titleInput.handleInput(data);
-		} else if (matchesKey(data, "escape")) {
-			this.finish(undefined);
-		} else if (matchesKey(data, "alt+m")) {
-			this.expanded = true;
-		} else if (matchesKey(data, "tab")) {
-			const selected = this.choices()[this.selected];
-			if (selected) this.choose(selected);
-		} else if (matchesKey(data, "ctrl+n")) {
-			this.editTitle(this.input.getValue().trim());
-		} else if (matchesKey(data, "up") || matchesKey(data, "down")) {
-			this.moved = true;
-			this.selected = Math.max(0, Math.min(this.choices().length - 1, this.selected + (matchesKey(data, "down") ? 1 : -1)));
-		} else {
-			this.input.handleInput(data);
-			this.selected = Math.min(this.selected, Math.max(0, this.choices().length - 1));
-		}
-		this.tui.requestRender();
-	}
-
-	dispose(): void { this.closed = true; this.loader?.stop(); this.loader = undefined; }
-
-	invalidate(): void { this.input.invalidate(); this.titleInput.invalidate(); this.loader?.invalidate(); }
-
-	render(width: number): string[] {
-		const inside = Math.max(1, width - 2);
-		const row = (text: string, styled = false) => {
-			const clipped = truncateToWidth(styled ? text : text.replace(/\p{Cc}/gu, ""), inside, "…", true);
-			return this.theme.fg("border", "│") + clipped + " ".repeat(Math.max(0, inside - visibleWidth(clipped))) + this.theme.fg("border", "│");
-		};
-		const input = this.creating ? this.titleInput : this.input;
-		input.focused = this.focused;
-		const inputLine = input.render(inside)[0] ?? "";
-		const inputRow = this.theme.fg("border", "│") + inputLine + " ".repeat(Math.max(0, inside - visibleWidth(inputLine))) + this.theme.fg("border", "│");
-		const activity = this.loader?.render(inside + 2)[1]?.trim();
-		const statusRow = activity ? row(activity, true) : row(this.status);
-		const reasonRows = (reason: string) => wrapTextWithAnsi(this.theme.fg("muted", `  ↳ ${reason.replace(/\p{Cc}/gu, "")}`), inside).map((line) => row(line, true));
-		if (this.creating) return [
-			this.theme.fg("border", `╭${"─".repeat(inside)}╮`),
-			row("New stream · Edit title"), inputRow,
-			...(this.creatingReason ? reasonRows(this.creatingReason) : []),
-			statusRow,
-			row(this.busy ? "Please wait for creation to finish" : `Enter Create · Esc Back${this.options.settings ? " · Alt+S Settings" : ""}`),
-			this.theme.fg("border", `╰${"─".repeat(inside)}╯`),
-		];
-		const choices = this.choices();
-		const header = this.options.reason ? wrapTextWithAnsi(this.theme.fg("muted", this.options.reason.replace(/\p{Cc}/gu, "")), inside).map((line) => row(line, true)) : [];
-		const maxHeight = Math.min(36, Math.floor(this.tui.terminal.rows * 0.8));
-		const available = Math.max(1, maxHeight - 7 - header.length);
-		const renderChoices = (first: number) => {
-			const lines: string[] = [];
-			let used = 0;
-			let selectedVisible = false;
-			for (let index = first; index < choices.length; index++) {
-				const item = choices[index];
-				if (item.kind === "manual") break;
-				const reason = item.kind === "new" ? item.reason : this.recommendations.existing.find((suggestion) => suggestion.slug === item.stream.slug)?.reason;
-				const explanation = reason ? reasonRows(reason) : [];
-				const choiceRows = item.kind === "new"
-					? wrapTextWithAnsi(`${index === this.selected ? "▶" : " "} ${this.theme.fg("accent", `★ Suggested new: ${item.title}`)} ${this.theme.fg("muted", "· Enter edit")}`, Math.max(1, inside - 2)).map((text, line) => row(line ? `  ${text}` : text, true))
-					: [row(`${index === this.selected ? "▶" : " "} ${reason ? this.theme.fg("accent", "★ ") : ""}${this.theme.fg("accent", item.stream.title)} · ${this.theme.fg(item.stream.status === "active" ? "success" : item.stream.status === "blocked" ? "error" : item.stream.status === "waiting" ? "warning" : "muted", item.stream.status)} · ${this.theme.italic?.(item.stream.state) ?? item.stream.state} · ${this.theme.fg("muted", item.stream.slug)}`, true)];
-				const spacer = item.kind === "new" && index < choices.length - 1 ? 1 : 0;
-				const cost = choiceRows.length + explanation.length + spacer;
-				if (used + cost > available && lines.length) break;
-				lines.push(...choiceRows, ...explanation);
-				if (spacer) lines.push(row(""));
-				selectedVisible ||= index === this.selected;
-				used += cost;
-			}
-			return { lines, selectedVisible };
-		};
-		let rendered = renderChoices(Math.max(0, this.selected - Math.floor(available / 2)));
-		if (this.selected < choices.length - 1 && !rendered.selectedVisible) rendered = renderChoices(this.selected);
-		return [
-			this.theme.fg("border", `╭${"─".repeat(inside)}╮`),
-			row("Select or create a stream"),
-			...header,
-			...(rendered.lines.length ? rendered.lines : [row("No matching streams")]),
-			row(`${this.selected === choices.length - 1 ? "▶" : " "} ${this.theme.fg("accent", "Write your own…")}`, true),
-			inputRow,
-			statusRow,
-			row(`Tab select · ${this.options.settings ? "Alt+S Settings · " : ""}Alt+M Show more · Esc Cancel${this.options.minimize && this.options.shortcut ? ` · ${shortcutLabel(this.options.shortcut)} Hide` : ""}`),
-			this.theme.fg("border", `╰${"─".repeat(inside)}╯`),
-		];
-	}
-}
-
-/** Replaces an input's text with the cursor at the end, where `setValue` alone would leave it at the start. */
-function fill(input: Input, text: string): void {
-	input.setValue("");
-	input.handleInput(text);
+/** Only initial enrollment offers membership selection. No native focus or workspace calls. */
+export async function chooseInitial(ctx: ExtensionContext, cli: StreamCli, options: {streamId?: string; title?: string; reason?: string}, receipt: (value: Receipt) => void, signal?: AbortSignal): Promise<{status: string; stream_id?: string}> {
+ const native = ctx.sessionManager.getSessionId();
+ const before = await cli.context(native, process.env.STREAMS_STREAM_ID);
+ if (before.session) return {status: "already-bound; membership moves/forks are not implemented", stream_id: before.session.stream_id};
+ if (before.stream && (options.title || options.streamId && options.streamId !== before.stream.id)) throw Error("Caller workspace is already associated with an effort. Membership moves/forks are not implemented; initial enrollment cannot switch it.");
+ if (!ctx.hasUI) throw Error("Initial enrollment needs an interactive UI");
+ let streamId = before.stream?.id ?? options.streamId;
+ let title = options.title;
+ if (!before.stream) {
+  const streams = await cli.list();
+  if (streamId && !streams.some((stream) => stream.id === streamId)) throw Error("Pass an exact catalog stream ID from streams list --json");
+  const rows = streams.map((stream) => `${stream.id} · ${stream.title}`);
+  const chosen = title ? "Create effort" : await ctx.ui.select(`Initial work card attachment${options.reason ? `\n${options.reason}` : ""}`, [...(streamId ? rows.filter((row) => row.startsWith(`${streamId} ·`)) : rows), "Create effort", "Cancel"]);
+  if (!chosen || chosen === "Cancel" || signal?.aborted) return {status: "cancelled"};
+  if (chosen === "Create effort") {
+   title = await ctx.ui.editor("New effort title", title ?? "");if (!title?.trim()) return {status: "cancelled"};streamId = undefined;
+  } else streamId = streams.find((stream) => chosen === `${stream.id} · ${stream.title}`)!.id;
+ }
+ const sessionTitle = await ctx.ui.editor("This session title", "Pi contribution");if (!sessionTitle?.trim() || signal?.aborted) return {status: "cancelled"};
+ if (!await ctx.ui.confirm("Enroll this conversation?", `Effort: ${title ?? streamId}\nSession: ${sessionTitle}\nMembership cannot be switched through this card.`)) return {status: "cancelled"};
+ if (ctx.sessionManager.getSessionId() !== native || signal?.aborted) return {status: "cancelled"};
+ const value = await cli.enroll({catalog_source: before.catalog_source, operation_id: randomUUID(), harness: "pi", harness_session_id: native, ...(streamId ? {stream_id: streamId} : {stream: {title}}), session: {title: sessionTitle}, actor: "user", cwd: ctx.cwd});
+ receipt(value);
+ return {status: value.completion_error || value.saves?.some(({save}) => !save.domain || ["conflict", "superseded"].includes(save.domain.outcome)) ? "receipts retained; inspect save outcomes before further writes" : "enrolled", stream_id: value.stream?.id};
 }

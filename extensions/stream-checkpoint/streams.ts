@@ -1,164 +1,73 @@
 import { spawn } from "node:child_process";
 
-type Stream = { slug: string; title: string; status: string; state: string; path: string; [key: string]: unknown };
-/** `sha256` is the hash of the note as written, or as it would be on a dry run. */
-type UpdateResult = { slug: string; path: string; updated: boolean; sha256: string; findings: unknown[] };
-/** A note exactly as stored. `sha256` is the CLI's hash, for `update --if-match`; `findings` is set when the note is invalid. */
-export type Note = { content: string; sha256: string; findings?: string };
-type CommandResult = { code: number | null; stdout: string; stderr: string };
-type Runner = (args: string[], input?: string) => Promise<CommandResult>;
-export type CommandDiagnostic = CommandResult & { args: string[]; warnings?: string[] };
-export type Frontend = "cmux" | "herdr";
-export type RefreshOutcome =
-	| { status: "skipped"; reason: "disabled" | "no-context" }
-	| { status: "updated"; frontend: Frontend }
-	| { status: "selection-failed"; warning: string }
-	| { status: "backend-failed"; frontend: Frontend; warning: string };
-export type FrontendMode = "auto" | Frontend | "none";
-export type FrontendSelection = { configured: FrontendMode; requested: "auto" | Frontend | null; resolved: Frontend | null };
-
-function isFrontend(value: unknown): value is Frontend { return value === "cmux" || value === "herdr"; }
-function isFrontendMode(value: unknown): value is FrontendMode { return value === "auto" || value === "none" || isFrontend(value); }
-
-function isFrontendSelection(value: unknown): value is FrontendSelection {
-	const selection = value as Partial<FrontendSelection> | null;
-	return !!selection && isFrontendMode(selection.configured)
-		&& (selection.requested === null || selection.requested === "auto" || isFrontend(selection.requested))
-		&& (selection.resolved === null || isFrontend(selection.resolved));
-}
-
-/** A failed CLI command; `kind` comes from the CLI's `--json` error, when it printed one. */
+export type Status = "active" | "waiting" | "blocked" | "parked" | "done";
+export type Mode = "automatic" | "manual";
+export type Link = { url: string; description: string };
+export type Document = { repository: string; ref: string; path: string; description: string };
+export type StreamWire = { id: string; title: string; title_mode: Mode; goal: string | null; goal_short: string | null; goal_mode: Mode; status: Status; archived: boolean; owner: { host_id: string }; repositories: Record<string, { url: string }>; documents: Document[]; issues: Link[]; prs: Link[] };
+export type SessionWire = { id: string; host_id: string; stream_id: string; harness: string; harness_session_id: string; title: string; title_mode: Mode; status: Status; state: string; state_short: string | null; remaining: string; checkout: {repository: string; ref: string; directory_within_checkout: string} | null };
+export type LocalContext = { catalog_source: string; host_id: string; stream: StreamWire | null; session: SessionWire | null; sessions: SessionWire[]; authority: { host_id: string; token: string } | null };
+export type Result = { local: string; sharing: string; domain: { outcome: "changes" | "no-change" | "superseded" | "conflict"; [key: string]: unknown } | null; detail?: string; [key: string]: unknown };
+export type Receipt = { operation_id?: string; save?: Result; saves?: { operation_id: string; save: Result }[]; stream?: StreamWire; session?: SessionWire; authority?: LocalContext["authority"]; publication?: unknown; completion_error?: unknown };
+export type ApplyRequest = {catalog_source: string; operation_id: string; kind: "stream" | "session"; actor: "automatic" | "user"; before: StreamWire | SessionWire; changes: Record<string, unknown>; ownership_token: string | null; inputs: {kind: "stream" | "session"; record: StreamWire | SessionWire}[]};
+type CommandResult = {code: number | null; stdout: string; stderr: string};
+export type Runner = (args: string[], input?: string) => Promise<CommandResult>;
 export class StreamsCliError extends Error {
-	constructor(message: string, readonly kind?: string, readonly candidates: string[] = []) { super(message); }
+ constructor(message: string, readonly kind?: string, readonly receipt?: Receipt) { super(message); }
 }
-
-function jsonError(stdout: string): { kind: string; message: string; candidates?: unknown } | undefined {
-	try {
-		const error = JSON.parse(stdout)?.error;
-		return typeof error?.kind === "string" && typeof error.message === "string" ? error : undefined;
-	} catch { return undefined; }
+const object = (value: unknown): value is Record<string, any> => !!value && typeof value === "object" && !Array.isArray(value);
+const text = (value: unknown): value is string => typeof value === "string" && !value.includes("\0");
+const mode = (value: unknown) => value === "automatic" || value === "manual";
+const status = (value: unknown) => ["active", "waiting", "blocked", "parked", "done"].includes(String(value));
+const nullableText = (value: unknown) => value === null || text(value);
+const link = (value: unknown) => object(value) && text(value.url) && text(value.description);
+function stream(value: unknown): value is StreamWire {
+ return object(value) && text(value.id) && text(value.title) && mode(value.title_mode) && nullableText(value.goal) && nullableText(value.goal_short) && mode(value.goal_mode) && status(value.status) && typeof value.archived === "boolean" && object(value.owner) && text(value.owner.host_id) && object(value.repositories) && Object.values(value.repositories).every((repo) => object(repo) && text(repo.url)) && Array.isArray(value.documents) && value.documents.every((doc: unknown) => object(doc) && [doc.repository, doc.ref, doc.path, doc.description].every(text)) && Array.isArray(value.issues) && value.issues.every(link) && Array.isArray(value.prs) && value.prs.every(link);
 }
-
-function bounded(text: string): string { return text.length > 2048 ? `${text.slice(0, 2048)}\n[truncated]` : text; }
-
-function isStream(value: unknown): value is Stream {
-	const stream = value as Partial<Stream> | null;
-	return !!stream && typeof stream.slug === "string" && typeof stream.title === "string" && typeof stream.status === "string" && typeof stream.state === "string" && typeof stream.path === "string";
+function session(value: unknown): value is SessionWire {
+ return object(value) && [value.id, value.host_id, value.stream_id, value.harness, value.harness_session_id, value.title, value.state, value.remaining].every(text) && mode(value.title_mode) && status(value.status) && nullableText(value.state_short) && (value.checkout === null || object(value.checkout) && [value.checkout.repository, value.checkout.ref, value.checkout.directory_within_checkout].every(text));
 }
-
-function defaultRunner(cwd: string): Runner {
-	return (args, input) => new Promise((resolve, reject) => {
-		const child = spawn("streams", args, { cwd, stdio: ["pipe", "pipe", "pipe"] });
-		let stdout = "";
-		let stderr = "";
-		child.stdout.setEncoding("utf8").on("data", (chunk: string) => { stdout += chunk; });
-		child.stderr.setEncoding("utf8").on("data", (chunk: string) => { stderr += chunk; });
-		child.on("error", reject);
-		child.on("close", (code) => resolve({ code, stdout, stderr }));
-		child.stdin.on("error", (error: NodeJS.ErrnoException) => { if (error.code !== "EPIPE") reject(error); });
-		child.stdin.end(input);
-	});
+function receipt(value: unknown): value is Receipt {
+ const result = (v: unknown) => object(v) && text(v.local) && text(v.sharing) && (v.domain === null || object(v.domain) && ["changes", "no-change", "superseded", "conflict"].includes(v.domain.outcome));
+ return object(value) && (result(value.save) || (Array.isArray(value.saves) && value.saves.every((s: any) => typeof s.operation_id === "string" && result(s.save)) && (value.saves.length > 0 || stream(value.stream) && session(value.session) && "authority" in value && "publication" in value)));
 }
-
 export class StreamCli {
-	readonly diagnostics: CommandDiagnostic[] = [];
-	private readonly runner: Runner;
-	constructor(cwd: string, runner?: Runner, private warning?: (text: string) => void) { this.runner = runner ?? defaultRunner(cwd); }
-
-	/**
-	 * Run a command, throwing unless it exits with one of `okCodes`, such as `list` exiting 1 to report invalid notes.
-	 * `noteOutput` keeps note text out of the diagnostics, which receipts carry, as stdin already is.
-	 */
-	private async exec(args: string[], { input, okCodes = [0], noteOutput = false }: { input?: string; okCodes?: number[]; noteOutput?: boolean } = {}): Promise<CommandResult> {
-		let result: CommandResult;
-		try { result = await this.runner(args, input); }
-		catch (error) { result = { code: null, stdout: "", stderr: String(error) }; }
-		this.diagnostics.push({ args: [...args], code: result.code, stdout: noteOutput ? "[note text omitted]" : bounded(result.stdout), stderr: bounded(result.stderr) });
-		if (this.diagnostics.length > 16) this.diagnostics.shift();
-		if (result.code === null || !okCodes.includes(result.code)) {
-			const error = jsonError(result.stdout);
-			const detail = error?.message ?? (result.stderr.trim() || result.stdout.trim() || "No output");
-			const candidates = Array.isArray(error?.candidates) ? error.candidates.filter((item): item is string => typeof item === "string") : [];
-			throw new StreamsCliError(`streams ${args[0]} (exit ${result.code ?? "unavailable"}): ${bounded(detail)}`, error?.kind, candidates);
-		}
-		return result;
-	}
-
-	private async run(args: string[], input?: string, okCodes?: number[]): Promise<string> {
-		const result = await this.exec(args, { input, okCodes });
-		if (result.stderr.trim()) this.warning?.(bounded(result.stderr.trim()));
-		return result.stdout;
-	}
-
-	/** The CLI owns selection policy and caller detection; this query never contacts a backend. */
-	async frontend(): Promise<FrontendSelection> {
-		const value: unknown = JSON.parse((await this.exec(["frontend", "get", "--json"])).stdout);
-		if (!isFrontendSelection(value)) throw new Error("Invalid streams frontend response");
-		return value;
-	}
-
-	async list(): Promise<Stream[]> {
-		const value = JSON.parse(await this.run(["list", "--json"], undefined, [0, 1]));
-		if (!Array.isArray(value?.streams) || !value.streams.every(isStream) || !Array.isArray(value.findings)) throw new Error("Invalid streams list response");
-		const invalid = [...new Set(value.findings.filter((finding: { level?: unknown }) => finding?.level === "error").map((finding: { slug?: unknown }) => String(finding.slug)))];
-		if (invalid.length) this.warning?.(`Skipped ${invalid.length} invalid stream note${invalid.length === 1 ? "" : "s"}: ${invalid.join(", ")}. Run \`streams check\` for details.`);
-		return value.streams;
-	}
-
-	async show(ref: string): Promise<Stream> {
-		const value = JSON.parse(await this.run(["show", ref, "--json"]));
-		if (!isStream(value)) throw new Error("Invalid streams show response");
-		return value;
-	}
-
-	/** Read a note through the CLI, even an invalid one, which only its exact slug reaches. */
-	async read(ref: string): Promise<Note> {
-		const result = await this.exec(["read", ref, "--hash"], { okCodes: [0, 1], noteOutput: true });
-		const sha256 = result.stdout.slice(0, 64);
-		if (!/^[0-9a-f]{64}$/.test(sha256) || result.stdout[64] !== "\n") throw new Error("Invalid streams read response");
-		const findings = result.code === 1 ? bounded(result.stderr.trim()) || "The note is invalid" : undefined;
-		return { content: result.stdout.slice(65), sha256, ...(findings ? { findings } : {}) };
-	}
-
-	async previewStart(title: string): Promise<Stream> {
-		const value = JSON.parse(await this.run(["start", title, "--dry-run", "--json"]));
-		if (!isStream(value)) throw new Error("Invalid streams start preview response");
-		return value;
-	}
-
-	async start(title: string): Promise<Stream> {
-		const value = JSON.parse(await this.run(["start", title, "--json"]));
-		if (!isStream(value)) throw new Error("Invalid streams start response");
-		return value;
-	}
-
-	async update(slug: string, content: string, options: { dryRun?: boolean; ifMatch?: string } = {}): Promise<UpdateResult> {
-		const args = ["update", slug];
-		if (options.dryRun) args.push("--dry-run");
-		if (options.ifMatch) args.push("--if-match", options.ifMatch);
-		args.push("--json");
-		const value = JSON.parse(await this.run(args, content));
-		if (typeof value?.slug !== "string" || typeof value.path !== "string" || typeof value.updated !== "boolean" || typeof value.sha256 !== "string" || !Array.isArray(value.findings)) {
-			throw new Error("Invalid streams update response");
-		}
-		const warnings = value.findings.filter((finding: { level?: string; message?: string }) => finding?.level === "warn" && typeof finding.message === "string").slice(0, 16).map((finding: { message: string }) => bounded(finding.message));
-		this.diagnostics.at(-1)!.warnings = warnings;
-		for (const warning of warnings) this.warning?.(warning);
-		return value;
-	}
-
-	/** Optional refresh never turns a completed note write or session binding into a failure. */
-	async refresh(slug: string): Promise<RefreshOutcome> {
-		let selection: FrontendSelection;
-		try { selection = await this.frontend(); }
-		catch (error) { return { status: "selection-failed", warning: bounded(String(error)) }; }
-		if (selection.resolved === null) return { status: "skipped", reason: selection.configured === "none" ? "disabled" : "no-context" };
-		const frontend = selection.resolved;
-		try { await this.project(slug, frontend); }
-		catch (error) { return { status: "backend-failed", frontend, warning: bounded(String(error)) }; }
-		return { status: "updated", frontend };
-	}
-
-	async project(slug: string, frontend: Frontend): Promise<void> { await this.exec([frontend, "update", "-c", slug]); }
-	async format(): Promise<string> { return this.run(["format"]); }
+ private runner: Runner;
+ constructor(readonly cwd: string, runner?: Runner) {
+  this.runner = runner ?? ((args, input) => new Promise((resolve, reject) => {
+   const child = spawn("streams", args, {cwd, stdio: ["pipe", "pipe", "pipe"]});
+   let stdout = "", stderr = "";
+   child.stdout.setEncoding("utf8").on("data", (chunk) => {stdout += chunk;});
+   child.stderr.setEncoding("utf8").on("data", (chunk) => {stderr += chunk;});
+   child.on("error", reject); child.on("close", (code) => resolve({code, stdout, stderr}));
+   child.stdin.on("error", (error: NodeJS.ErrnoException) => {if (error.code !== "EPIPE") reject(error);});
+   child.stdin.end(input);
+  }));
+ }
+ private async run(args: string[], input?: unknown, write = false): Promise<any> {
+  const output = await this.runner(args, input === undefined ? undefined : JSON.stringify(input));
+  let value: any;
+  try {value = JSON.parse(output.stdout);} catch {throw new StreamsCliError(`streams ${args.join(" ")}: invalid JSON response (${output.code}); ${output.stderr}`);}
+  // Accepted local saves are receipts even when publication or later enrollment steps failed.
+  if (write && receipt(value) && (output.code === 0 || output.code === 2)) return value;
+  if (output.code !== 0 || write) throw new StreamsCliError(value?.error?.message ?? output.stderr ?? "Invalid catalog receipt", value?.error?.kind);
+  return value;
+ }
+ async context(sessionId: string, streamId?: string): Promise<LocalContext> {
+  const value = await this.run(["agent", "context", "--session-id", sessionId, "--harness", "pi", ...(streamId ? ["--stream-id", streamId] : []), "--json"]);
+  if (!object(value) || typeof value.catalog_source !== "string" || !value.catalog_source || typeof value.host_id !== "string" || !(value.stream === null || stream(value.stream)) || !(value.session === null || session(value.session)) || !Array.isArray(value.sessions) || !value.sessions.every(session) || !(value.authority === null || (object(value.authority) && text(value.authority.host_id) && text(value.authority.token)))) throw new StreamsCliError("Invalid local catalog context");
+  return value as LocalContext;
+ }
+ async list(): Promise<StreamWire[]> {
+  const value = await this.run(["list", "--json"]);
+  const rows = Array.isArray(value) ? value : value.streams;
+  if (!Array.isArray(rows) || !rows.every(stream)) throw new StreamsCliError("Invalid catalog list");
+  return rows;
+ }
+ async enroll(request: unknown): Promise<Receipt> {return this.run(["agent", "enroll", "--json"], request, true);}
+ async apply(request: ApplyRequest): Promise<Receipt> {return this.run(["agent", "apply", "--json"], request, true);}
+}
+export function receiptText(value: Receipt): string {
+ const saves = value.saves ?? (value.save ? [{operation_id: value.operation_id ?? "", save: value.save}] : []);
+ return (saves.length ? saves.map(({operation_id, save}) => `${operation_id}: ${save.domain?.outcome ?? "not reconciled; save outcome uncertain — inspect catalog repair state before another write"}; local=${save.local}; sharing=${save.sharing}${save.detail ? `; ${save.detail}` : ""}`).join("\n") : "Already enrolled; no new local saves") + (value.publication ? `\nPublication: ${JSON.stringify(value.publication)}` : "") + (value.completion_error ? `\nSaved receipt retained; completion problem: ${JSON.stringify(value.completion_error)}. Do not blindly retry.` : "");
 }

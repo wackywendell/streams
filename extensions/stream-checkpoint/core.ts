@@ -1,240 +1,87 @@
-import { existsSync, mkdirSync, readFileSync, renameSync, unlinkSync, writeFileSync } from "node:fs";
-import { dirname, join } from "node:path";
-import { createHash, randomUUID } from "node:crypto";
-import type { KeyId } from "@earendil-works/pi-tui";
-import { StreamsCliError, type Note, type RefreshOutcome, type StreamCli } from "./streams.ts";
-import type { Annotation, AnnotationEditor, Feedback } from "./review.ts";
-import { isSeq, parseDocument } from "yaml";
-import { CHECKPOINT_PROMPTING, STREAM_PROMPTING } from "./policy.ts";
-import type { PromptingConfig } from "./policy.ts";
-
-export const BINDING_TYPE = "stream-checkpoint-binding";
-
-export interface Binding {
-	ownerId: string;
-	slug: string;
-	/** The note's path when bound, compared only to notice a renamed stream; Pi reads notes through the CLI. */
-	path: string;
+import { randomUUID } from "node:crypto";
+import type { ApplyRequest, LocalContext, Receipt, SessionWire, StreamWire } from "./streams.ts";
+export const statuses = ["active", "waiting", "blocked", "parked", "done"];
+export const fields = {
+ stream: ["title", "title_mode", "goal", "goal_short", "goal_mode", "status", "archived", "documents", "issues", "prs"],
+ session: ["title", "title_mode", "status", "state", "state_short", "remaining"],
+};
+export function automaticFields(kind: "stream" | "session", before: StreamWire | SessionWire): string[] {
+ const result = before.title_mode === "automatic" ? ["title"] : [];
+ if (kind === "stream") return [...result, ...((before as StreamWire).goal_mode === "automatic" ? ["goal", "goal_short"] : [])];
+ return [...result, "status", "state", "state_short", "remaining"];
 }
-
-export interface Draft {
-	slug: string;
-	revision: number;
-	baseContent: string;
-	proposedContent: string;
-	summary?: string;
+const nonempty = (value: unknown, field: string) => {if (typeof value !== "string" || !value.trim() || value.includes("\0")) throw Error(`${field} must be a nonempty string`);};
+export function validateChanges(kind: "stream" | "session", before: StreamWire | SessionWire, changes: Record<string, unknown>, actor: "automatic" | "user"): void {
+ if (!changes || typeof changes !== "object" || Array.isArray(changes) || !Object.keys(changes).length) throw Error("An edit must contain at least one changed field");
+ const goal = Object.hasOwn(changes, "goal") ? changes.goal : (before as StreamWire).goal;
+ if (kind === "stream" && Object.hasOwn(changes, "goal_short") && changes.goal_short !== null && goal === null) throw Error("goal_short requires a non-null goal; set the goal first or clear the compact goal");
+ const allowed = actor === "automatic" ? automaticFields(kind, before) : fields[kind];
+ for (const [key, value] of Object.entries(changes)) {
+  if (!allowed.includes(key)) throw Error(`${key} is not allowed for ${actor} ${kind} edits`);
+  if (key === "title") nonempty(value, key);
+  else if (key.endsWith("_mode") && !["automatic", "manual"].includes(String(value))) throw Error(`${key}: choose automatic or manual`);
+  else if (key === "status" && !statuses.includes(String(value))) throw Error("Choose a valid status");
+  else if (key === "archived" && typeof value !== "boolean") throw Error("archived must be boolean");
+  else if (["goal", "goal_short", "state_short"].includes(key) && value !== null) nonempty(value, key);
+  else if (["state", "remaining"].includes(key) && (typeof value !== "string" || value.includes("\0"))) throw Error(`${key} must be text`);
+  else if (["documents", "issues", "prs"].includes(key)) validateReferences(key, value, before as StreamWire);
+ }
 }
-
-export interface CheckpointConfig extends PromptingConfig {
-	focusShortcut: KeyId;
-	/** Register the main-agent checkpoint tool. */
-	agentTools: boolean;
-	selectorModel?: { provider: string; id: string };
-	drafterModel?: { provider: string; id: string };
+export function validateReferences(field: string, rows: unknown, stream: StreamWire): void {
+ if (!Array.isArray(rows)) throw Error(`${field} must contain rows`);
+ const seen = new Set<string>();
+ for (const row of rows) {
+  if (!row || typeof row !== "object" || Array.isArray(row)) throw Error("Invalid reference row");
+  const keys = field === "documents" ? ["repository", "ref", "path", "description"] : ["url", "description"];
+  if (Object.keys(row).some((key) => !keys.includes(key)) || keys.some((key) => typeof row[key] !== "string" || row[key].includes("\0"))) throw Error("Reference rows require labelled text fields");
+  let id: string;
+  if (field === "documents") {
+   if (!Object.hasOwn(stream.repositories, row.repository)) throw Error("Choose an existing repository alias");
+   nonempty(row.ref, "ref");nonempty(row.path, "path");
+   if (/^(\/|[a-z]:)/i.test(row.path) || row.path.includes("\\") || row.path.split("/").includes("..")) throw Error("Document path must be a portable relative path");
+   id = `${row.repository}\0${row.ref}\0${row.path}`;
+  } else {
+   let url: URL;try {url = new URL(row.url);} catch {throw Error("Reference URL must be an absolute HTTP(S) URL");}
+   if (!["http:", "https:"].includes(url.protocol)) throw Error("Reference URL must use HTTP(S)");
+   id = row.url;
+  }
+  if (seen.has(id)) throw Error("Duplicate reference row");seen.add(id);
+ }
 }
-
-function readConfig(agentDir: string): any {
-	const path = join(agentDir, "checkpoint.json");
-	return existsSync(path) ? JSON.parse(readFileSync(path, "utf8")) : {};
+export function editRequest(context: LocalContext, kind: "stream" | "session", changes: Record<string, unknown>, actor: "automatic" | "user", operationId = randomUUID(), guardInputs = actor === "automatic"): ApplyRequest {
+ const before = context[kind];if (!before) throw Error(`No attached ${kind}`);
+ validateChanges(kind, before, changes, actor);
+ if ((kind === "session" || actor === "automatic") && !context.authority) throw Error("No reporting authority; resume ownership with the CLI");
+ const identity = (kind: "stream" | "session", record: StreamWire | SessionWire) => JSON.stringify([kind, kind === "session" ? (record as SessionWire).host_id : null, record.id]);
+ const seen = new Set([identity(kind, before)]);
+ const inputs: ApplyRequest["inputs"] = [];
+ if (guardInputs) {
+  const add = (kind: "stream" | "session", record: StreamWire | SessionWire | null) => {
+   if (!record || seen.has(identity(kind, record))) return;
+   seen.add(identity(kind, record));inputs.push({kind, record});
+  };
+  add("stream", context.stream);add("session", context.session);
+  context.sessions.forEach((record) => add("session", record));
+ }
+ return structuredClone({catalog_source: context.catalog_source, operation_id: operationId, kind, actor, before, changes, ownership_token: kind === "stream" && actor === "user" ? null : context.authority!.token, inputs});
 }
-
-function parseConfig(config: any): CheckpointConfig {
-	if (config === null || typeof config !== "object" || Array.isArray(config)) throw new Error("checkpoint.json must be an object");
-	if (config.cmux !== undefined) throw new Error("checkpoint.json: frontend selection belongs to streams; use streams config set frontend.mode auto (or cmux, herdr, none), then remove cmux from checkpoint.json");
-	if (config.focusShortcut !== undefined && (typeof config.focusShortcut !== "string" || !config.focusShortcut.trim())) throw new Error("checkpoint.json: focusShortcut must be a nonempty Pi keybinding");
-	if (config.agentTools !== undefined && typeof config.agentTools !== "boolean") throw new Error("checkpoint.json: agentTools must be true or false");
-	for (const [key, values] of [["streamPrompting", STREAM_PROMPTING], ["checkpointPrompting", CHECKPOINT_PROMPTING]] as const) {
-		if (config[key] !== undefined && (typeof config[key] !== "string" || !Object.hasOwn(values, config[key]))) {
-			throw new Error(`checkpoint.json: ${key} must be one of ${Object.keys(values).join(", ")}`);
-		}
-	}
-	for (const key of ["selectorModel", "drafterModel"] as const) {
-		const model = config[key];
-		if (model !== undefined && (model === null || typeof model !== "object" || Array.isArray(model) || typeof model.provider !== "string" || !model.provider.trim() || typeof model.id !== "string" || !model.id.trim())) {
-			throw new Error(`checkpoint.json: ${key} must contain nonempty provider and id strings`);
-		}
-	}
-	return { focusShortcut: (config.focusShortcut ?? "alt+p") as KeyId, agentTools: config.agentTools ?? true,
-		streamPrompting: config.streamPrompting ?? "manual", checkpointPrompting: config.checkpointPrompting ?? "low",
-		...(config.selectorModel ? { selectorModel: config.selectorModel } : {}),
-		...(config.drafterModel ? { drafterModel: config.drafterModel } : {}) };
-}
-
-export function loadConfig(agentDir: string): CheckpointConfig { return parseConfig(readConfig(agentDir)); }
-
-/** Save only the prompting fields, preserving settings read at Save rather than when the editor opened. */
-export function savePromptingConfig(agentDir: string, policy: PromptingConfig): void {
-	const current = readConfig(agentDir);
-	parseConfig(current);
-	const config = { ...current, streamPrompting: policy.streamPrompting, checkpointPrompting: policy.checkpointPrompting };
-	parseConfig(config);
-	mkdirSync(agentDir, { recursive: true, mode: 0o700 });
-	const path = join(agentDir, "checkpoint.json");
-	const temporary = `${path}.${randomUUID()}.tmp`;
-	try {
-		writeFileSync(temporary, `${JSON.stringify(config, null, 2)}\n`, { flag: "wx", mode: 0o600 });
-		renameSync(temporary, path);
-	} finally {
-		if (existsSync(temporary)) unlinkSync(temporary);
-	}
-}
-
-export function latestBinding(entries: readonly { type: string; customType?: string; data?: unknown }[], ownerId: string): Binding | undefined {
-	for (let i = entries.length - 1; i >= 0; i--) {
-		const entry = entries[i];
-		if (entry.type !== "custom" || entry.customType !== BINDING_TYPE) continue;
-		const data = entry.data as Partial<Binding> | undefined;
-		if (data?.ownerId === ownerId && typeof data.slug === "string" && typeof data.path === "string") return data as Binding;
-	}
-	return undefined;
-}
-
-export async function selectStream(ref: string, binding: Binding | undefined, cli: Pick<StreamCli, "list" | "show">): Promise<Awaited<ReturnType<StreamCli["list"]>>[number] | undefined> {
-	const streams = await cli.list();
-	if (ref.trim()) return cli.show(ref.trim());
-	return binding ? streams.find((stream) => stream.slug === binding.slug && stream.path === binding.path) : undefined;
-}
-
-/**
- * The stream whose slug is exactly `slug`, for tools that must not guess. A title, prefix or unknown
- * slug fails, naming the streams it matched or the slugs containing it; other failures, such as a broken note, pass through.
- */
-export async function exactStream(slug: string, cli: Pick<StreamCli, "list" | "show">): Promise<Awaited<ReturnType<StreamCli["show"]>>> {
-	let candidates: string[] = [];
-	try {
-		const stream = await cli.show(slug);
-		if (stream.slug === slug) return stream;
-		candidates = [stream.slug];
-	} catch (error) {
-		if (!(error instanceof StreamsCliError && ["not-found", "ambiguous", "invalid-ref"].includes(error.kind ?? ""))) throw error;
-		candidates = error.candidates;
-	}
-	if (!candidates.length) candidates = (await cli.list()).map((stream) => stream.slug).filter((candidate) => candidate.includes(slug));
-	const similar = candidates.length ? ` Close matches: ${candidates.slice(0, 10).join(", ")}.` : "";
-	throw new Error(`No stream has the slug "${slug}".${similar} Pass an exact slug from \`streams list\`, or call create_stream if no stream fits.`);
-}
-
-export interface Recommendations {
-	existing: Array<{ slug: string; reason: string }>;
-	newStream?: { title: string; reason: string };
-}
-
-export function parseRecommendations(text: string, streams: Array<{ slug: string }>): Recommendations {
-	let value: any;
-	try { value = JSON.parse(text); } catch { return { existing: [] }; }
-	const known = new Set(streams.map((stream) => stream.slug));
-	const seen = new Set<string>();
-	const existing = (Array.isArray(value?.existing) ? value.existing : []).filter((item: any) => {
-		if (typeof item?.slug !== "string" || !known.has(item.slug) || seen.has(item.slug) || typeof item.reason !== "string") return false;
-		seen.add(item.slug);
-		return true;
-	}).map((item: { slug: string; reason: string }) => ({ slug: item.slug, reason: item.reason.slice(0, 160) }));
-	const proposal = value?.newStream;
-	const title = typeof proposal?.title === "string" ? proposal.title.trim() : "";
-	const newStream = title && typeof proposal.reason === "string"
-		? { title, reason: proposal.reason.slice(0, 160) } : undefined;
-	return newStream ? { existing, newStream } : { existing };
-}
-
-export function includeMainSession(content: string, ownerId: string): string {
-	const frontmatter = /^---\r?\n([\s\S]*?)\r?\n---(?=\r?\n|$)/.exec(content);
-	if (!frontmatter) throw new Error("Proposal must contain YAML frontmatter");
-	const document = parseDocument(frontmatter[1]);
-	if (document.errors.length) throw new Error(`Invalid proposal frontmatter: ${document.errors[0].message}`);
-	const sessions = document.get("sessions", true);
-	if (!isSeq(sessions)) throw new Error("Proposal frontmatter must contain a sessions list");
-	const session = `pi:${ownerId}`;
-	if ((sessions.toJSON() as unknown[]).includes(session)) return content;
-	sessions.add(session);
-	return `---\n${document.toString().trimEnd()}\n---${content.slice(frontmatter[0].length)}`;
-}
-
-export interface Pending {
-	version: 1;
-	ownerId: string;
-	slug: string;
-	messages: unknown[];
-	draft?: Draft;
-	source?: { ownerId: string; leafId: string | null };
-	input: string;
-	annotations?: Annotation[];
-	annotationEditor?: AnnotationEditor;
-	feedback?: Feedback[];
-}
-
-function pendingPath(agentDir: string, ownerId: string, slug: string): string {
-	const key = createHash("sha256").update(JSON.stringify([ownerId, slug])).digest("hex");
-	return join(agentDir, "checkpoints", `${key}.json`);
-}
-
-export function readPending(agentDir: string, ownerId: string, slug: string): Pending | undefined {
-	const path = pendingPath(agentDir, ownerId, slug);
-	if (!existsSync(path)) return undefined;
-	const data = JSON.parse(readFileSync(path, "utf8"));
-	if (data?.version !== 1 || data.ownerId !== ownerId || data.slug !== slug || !Array.isArray(data.messages) || typeof data.input !== "string") {
-		throw new Error(`Invalid checkpoint state: ${path}`);
-	}
-	return data;
-}
-
-export function savePending(agentDir: string, pending: Pending): void {
-	const path = pendingPath(agentDir, pending.ownerId, pending.slug);
-	mkdirSync(dirname(path), { recursive: true, mode: 0o700 });
-	const temporary = `${path}.${randomUUID()}.tmp`;
-	try {
-		writeFileSync(temporary, JSON.stringify(pending), { flag: "wx", mode: 0o600 });
-		renameSync(temporary, path);
-	} finally {
-		if (existsSync(temporary)) unlinkSync(temporary);
-	}
-}
-
-export function clearPending(agentDir: string, ownerId: string, slug: string): void {
-	const path = pendingPath(agentDir, ownerId, slug);
-	if (existsSync(path)) unlinkSync(path);
-}
-
-/** `baseContent` is the note as read through the CLI when the draft was proposed. */
-export function stageDraft(pending: Pending, binding: Binding, content: string, summary: string, baseContent: string): Draft {
-	if (pending.ownerId !== binding.ownerId || pending.slug !== binding.slug) throw new Error("Checkpoint does not belong to this session and stream");
-	const draft: Draft = {
-		slug: binding.slug,
-		revision: (pending.draft?.revision ?? 0) + 1,
-		baseContent,
-		proposedContent: content,
-		summary,
-	};
-	return draft;
-}
-
-export interface ApplyDependencies {
-	read(slug: string): Promise<Note>;
-	update(slug: string, content: string, options: { dryRun?: boolean; ifMatch: string }): Promise<{ slug: string; updated: boolean; sha256: string }>;
-	project?(): Promise<RefreshOutcome>;
-}
-
-/**
- * Apply only the UI-approved revision; the CLI owns reading, hashing, validation and writing.
- * `--if-match` with the hash of the note as drafted makes the CLI refuse a write over newer changes.
- * The CLI dates what it writes, so the dry-run's hash, not the draft's bytes, identifies the applied note.
- */
-export async function applyDraft(draft: Draft, approvedRevision: number, deps: ApplyDependencies): Promise<{ written: true; validationError?: string; refresh?: RefreshOutcome }> {
-	if (draft.revision !== approvedRevision) throw new Error("Draft revision differs from the approved revision");
-	const current = await deps.read(draft.slug);
-	const ifMatch = current.sha256;
-	const preview = await deps.update(draft.slug, draft.proposedContent, { dryRun: true, ifMatch });
-	if (preview.slug !== draft.slug || preview.updated) throw new Error("Dry-run did not confirm the draft target");
-	if (current.content !== draft.baseContent) {
-		throw new Error(current.sha256 === preview.sha256 ? "Draft already applied; do not repeat the write" : "Scratch changed since this draft was proposed");
-	}
-	try {
-		const applied = await deps.update(draft.slug, draft.proposedContent, { ifMatch });
-		if (applied.slug !== draft.slug || !applied.updated) throw new Error("CLI did not confirm the update");
-	} catch (error) {
-		if ((await deps.read(draft.slug).catch(() => undefined))?.sha256 === preview.sha256) {
-			return { written: true, validationError: `Update confirmation failed: ${String(error)}` };
-		}
-		throw error;
-	}
-	return deps.project ? { written: true, refresh: await deps.project() } : { written: true };
+export class FieldEdit {
+ readonly base: LocalContext;
+ value: unknown;
+ error?: string;
+ constructor(readonly kind: "stream" | "session", context: LocalContext, readonly field: string) {
+  this.base = structuredClone(context);this.value = structuredClone((context[kind] as any)?.[field]);
+ }
+ get dirty(): boolean {return JSON.stringify(this.value) !== JSON.stringify((this.base[this.kind] as any)?.[this.field]);}
+ refresh(context: LocalContext): void {if (!this.dirty && !this.error) {Object.assign(this.base, structuredClone(context));this.value = structuredClone((context[this.kind] as any)?.[this.field]);}}
+ async save(cli: {apply(request: ApplyRequest): Promise<Receipt>}, onReceipt?: (receipt: Receipt) => void): Promise<Receipt | undefined> {
+  try {
+   if (!this.dirty) return;
+   const result = await cli.apply(editRequest(this.base, this.kind, {[this.field]: this.value}, "user", undefined, false));
+   onReceipt?.(result);
+   if (!result.save?.domain) throw Error("Save outcome is uncertain; receipt and input retained. Inspect catalog repair state before another write. Do not blindly retry.");
+   if (result.save.domain.outcome === "conflict" || result.save.domain.outcome === "superseded") throw Error(`Edit ${result.save.domain.outcome}. Your input is retained. Compare the live field, then discard and reopen to use its new base.`);
+   this.error = undefined;return result;
+  } catch (error) {this.error = String(error);throw error;}
+ }
 }

@@ -1,229 +1,101 @@
-import { Editor, Markdown, matchesKey, truncateToWidth, visibleWidth, wrapTextWithAnsi } from "@earendil-works/pi-tui";
-import type { Component, KeyId, TUI } from "@earendil-works/pi-tui";
-import { getMarkdownTheme, getSelectListTheme, renderDiff } from "@earendil-works/pi-coding-agent";
-import type { Theme } from "@earendil-works/pi-coding-agent";
-import { anchorAnnotation, annotationContext, diffText, reviewLines, sameAnchor } from "./review.ts";
-import type { ReviewLine } from "./review.ts";
-import type { Draft } from "./core.ts";
-import { activityLabel, shortcutLabel } from "./view.ts";
-import type { PanelState, UnsentFeedback } from "./view.ts";
-
-export interface PanelActions {
-	send(): void;
-	apply(): void;
-	refresh(): void;
-	clear(): void;
-	stop(): void;
-	focusMain(): void;
-	settings(): void;
-	/** Edits unsent feedback; the conversation refuses while it is busy. */
-	editFeedback(change: (feedback: UnsentFeedback) => void): void;
+import { Editor, matchesKey, truncateToWidth, wrapTextWithAnsi } from "@earendil-works/pi-tui";
+import type { ExtensionContext } from "@earendil-works/pi-coding-agent";
+import type { LocalContext, Receipt, StreamCli } from "./streams.ts";
+import { FieldEdit, fields, statuses, validateReferences } from "./core.ts";
+export type DiscussionState = {input: string; messages: {role: "user" | "assistant"; text: string}[]; error?: string};
+export type CardState = {discussion: DiscussionState; edits: Map<string, FieldEdit>};
+export function cardSummary(catalog: LocalContext): string {
+ const stream = catalog.stream, session = catalog.session;
+ if (!stream) return "No work card attached";
+ return [`Whole effort · ${stream.title} [${stream.title_mode}]`, `ID: ${stream.id} · owner: ${stream.owner.host_id}`, `${stream.status}${stream.archived ? " · archived" : ""}`, `Goal [${stream.goal_mode}]: ${stream.goal ?? "—"}`, ...stream.documents.map((row) => `Document: ${row.repository}@${row.ref}:${row.path} — ${row.description}`), ...[...stream.issues, ...stream.prs].map((row) => `${row.url} — ${row.description}`), "", "This session", session ? `${session.title} [${session.title_mode}] · ${session.status}\nID: ${session.id} · host: ${session.host_id} · membership: ${session.stream_id}\n${session.state}\nRemaining: ${session.remaining}` : "Not yet enrolled", "", "Other recorded contributions", ...catalog.sessions.filter((row) => row.id !== session?.id || row.host_id !== session?.host_id).map((row) => `${row.title} · ${row.host_id} · ${row.status}: ${row.state_short ?? row.state}`)].join("\n");
 }
-
-const safeText = (text: string) => text.replace(/[\x00-\x09\x0b-\x1f\x7f]/g, "");
-
-/** Two views share durable feedback, but only an idle conversation can edit it. */
-export class CheckpointPanel implements Component {
-	focused = true;
-	private tab: "chat" | "review" = "chat";
-	private readonly input: Editor;
-	private syncingInput = false;
-	private expandedAnnotations = false;
-	private confirmingClear = false;
-	private selected = 0;
-	private reviewTop = 0;
-	private chatTop: number | undefined;
-	private lastChatTop = 0;
-	private contentHeight = 1;
-	private reviewStarts: number[] = [];
-	private diffCache?: { draft: Draft; lines: ReviewLine[]; colored: string[] };
-	private transcriptCache: { text: string; markdown: Markdown }[] = [];
-	private spinnerTimer?: ReturnType<typeof setInterval>;
-	private spinnerFrame = 0;
-
-	constructor(private tui: TUI, private theme: Theme, public state: PanelState, private actions: PanelActions, private focusShortcut: KeyId = "alt+p") {
-		this.input = new Editor(tui, { borderColor: (text) => this.theme.fg("border", text), selectList: getSelectListTheme() });
-		this.input.onChange = (text) => {
-			if (this.syncingInput) return;
-			this.actions.editFeedback((feedback) => {
-				if (this.tab === "review" && feedback.annotationEditor) feedback.annotationEditor.text = text;
-				else feedback.input = text;
-			});
-		};
-		// The controller clears feedback only after the SDK accepts it, not on Enter.
-		this.input.disableSubmit = true;
-	}
-
-	refresh(): void { this.tui.requestRender(); }
-	dispose(): void { clearInterval(this.spinnerTimer); this.spinnerTimer = undefined; }
-	invalidate(): void {
-		this.transcriptCache.forEach((entry) => entry.markdown.invalidate());
-		this.diffCache = undefined;
-		this.input.invalidate();
-	}
-
-	private diff(): NonNullable<CheckpointPanel["diffCache"]> | undefined {
-		if (!this.state.draft) return undefined;
-		if (this.diffCache?.draft !== this.state.draft) {
-			const lines = reviewLines(this.state.draft);
-			this.diffCache = { draft: this.state.draft, lines, colored: renderDiff(lines.map((line) => safeText(diffText(line))).join("\n")).split("\n") };
-			this.selected = Math.min(this.selected, Math.max(0, lines.length - 1));
-			this.reviewTop = 0;
-		}
-		return this.diffCache;
-	}
-
-	private editAnnotation(): void {
-		const line = this.diff()?.lines[this.selected];
-		if (!line || !this.state.draft) return;
-		const anchor = anchorAnnotation(this.state.draft, line);
-		this.actions.editFeedback((feedback) => {
-			const existing = feedback.annotations.find((comment) => sameAnchor(comment, anchor));
-			feedback.annotationEditor = { anchor, text: existing?.comment ?? "" };
-		});
-	}
-
-	private saveAnnotation(): void {
-		this.actions.editFeedback((feedback) => {
-			const editor = feedback.annotationEditor;
-			if (!editor) return;
-			const index = feedback.annotations.findIndex((annotation) => sameAnchor(annotation, editor.anchor));
-			const comment = editor.text.trim();
-			if (index >= 0) {
-				if (comment) feedback.annotations[index] = { ...editor.anchor, comment };
-				else feedback.annotations.splice(index, 1);
-			} else if (comment) feedback.annotations.push({ ...editor.anchor, comment });
-			feedback.annotationEditor = undefined;
-		});
-	}
-
-	private syncInput(): void {
-		const text = this.tab === "review" ? this.state.annotationEditor?.text ?? "" : this.state.input;
-		if (this.input.getText() === text) return;
-		this.syncingInput = true;
-		this.input.setText(text);
-		this.syncingInput = false;
-	}
-
-	handleInput(data: string): void {
-		if (matchesKey(data, "escape") || matchesKey(data, this.focusShortcut)) {
-			this.actions.focusMain();
-			return;
-		}
-		if (matchesKey(data, "alt+s")) { this.actions.settings(); return; }
-		if (this.confirmingClear) {
-			if (data === "y") { this.confirmingClear = false; this.actions.clear(); }
-			if (data === "n") this.confirmingClear = false;
-		} else if (matchesKey(data, "tab")) {
-			this.tab = this.tab === "chat" ? "review" : "chat";
-		} else if (matchesKey(data, "ctrl+c")) {
-			if (this.state.activity === "drafting") this.actions.stop();
-			else if (this.state.annotationEditor) this.actions.editFeedback((feedback) => { feedback.annotationEditor = undefined; });
-		} else if (matchesKey(data, "alt+a") && this.tab === "chat") {
-			this.expandedAnnotations = !this.expandedAnnotations;
-		} else if (matchesKey(data, "pageUp") || matchesKey(data, "pageDown")) {
-			const delta = matchesKey(data, "pageUp") ? -this.contentHeight : this.contentHeight;
-			if (this.tab === "chat") this.chatTop = Math.max(0, (this.chatTop ?? this.lastChatTop) + delta);
-			else {
-				this.reviewTop = Math.max(0, this.reviewTop + delta);
-				this.selected = Math.max(0, this.reviewStarts.findLastIndex((start) => start <= this.reviewTop));
-			}
-		} else if (this.tab === "review" && !this.state.annotationEditor && (matchesKey(data, "up") || matchesKey(data, "down"))) {
-			const lines = this.diff()?.lines ?? [];
-			this.selected = Math.max(0, Math.min(lines.length - 1, this.selected + (matchesKey(data, "down") ? 1 : -1)));
-			const start = this.reviewStarts[this.selected] ?? 0;
-			if (start < this.reviewTop || start >= this.reviewTop + this.contentHeight) this.reviewTop = start;
-		} else if (!this.state.activity) {
-			if (matchesKey(data, "alt+c")) this.confirmingClear = true;
-			else if (matchesKey(data, "ctrl+g")) this.actions.apply();
-			else if (matchesKey(data, "ctrl+r")) this.actions.refresh();
-			else if (matchesKey(data, "alt+k") && this.tab === "review") this.editAnnotation();
-			else if (matchesKey(data, "enter")) {
-				if (this.tab === "review" && this.state.annotationEditor) this.saveAnnotation();
-				else if (this.tab === "chat" && (this.state.input.trim() || this.state.annotations.length)) { this.chatTop = undefined; this.actions.send(); }
-			} else if (this.tab === "chat" || this.state.annotationEditor) { this.syncInput(); this.input.handleInput(data); }
-		}
-		this.refresh();
-	}
-
-	private chat(width: number): string[] {
-		const lines = this.state.messages.flatMap((message, index) => {
-			const text = safeText(message.text);
-			if (this.transcriptCache[index]?.text !== text) this.transcriptCache[index] = { text, markdown: new Markdown(text, 0, 0, getMarkdownTheme()) };
-			const comments = message.annotations ?? [];
-			const label = comments.length ? [`[${comments.length} annotation${comments.length === 1 ? "" : "s"} · Draft ${comments[0].revision}]`] : [];
-			const details = this.expandedAnnotations ? comments.flatMap((comment) => wrapTextWithAnsi(safeText(annotationContext(comment)), width)) : [];
-			return [this.theme.fg("accent", message.role === "user" ? (message.author ? "Main agent" : "You") : "Checkpoint"), ...label, ...details, ...this.transcriptCache[index].markdown.render(width), ""];
-		});
-		this.transcriptCache.length = this.state.messages.length;
-		this.lastChatTop = this.chatTop === undefined ? Math.max(0, lines.length - this.contentHeight) : Math.min(this.chatTop, Math.max(0, lines.length - this.contentHeight));
-		return lines.slice(this.lastChatTop, this.lastChatTop + this.contentHeight);
-	}
-
-	private review(width: number): string[] {
-		const diff = this.diff();
-		if (!diff) return [this.theme.fg("muted", "No draft yet")];
-		const sent = this.state.messages.flatMap((message) => message.annotations ?? []);
-		const comments = [...sent, ...this.state.annotations].filter((comment) => comment.revision === diff.draft.revision);
-		const lines: string[] = [];
-		this.reviewStarts = [];
-		diff.lines.forEach((line, index) => {
-			this.reviewStarts.push(lines.length);
-			const matching = comments.map((comment, number) => ({ comment, number: number + 1 })).filter(({ comment }) => comment.side === (line.kind === "removed" ? "original" : "proposed") && comment.line === (line.kind === "removed" ? line.oldLine : line.newLine));
-			const number = line.kind === "removed" ? line.oldLine : line.newLine;
-			const marker = matching.length ? ` [${matching.map((item) => item.number).join(",")}]` : "";
-			lines.push(...wrapTextWithAnsi(`${index === this.selected ? "▶" : " "} ${number} ${diff.colored[index]}${marker}`, width));
-			for (const { comment } of matching) lines.push(...wrapTextWithAnsi(this.theme.fg("accent", `    └ You: ${safeText(comment.comment)}`), width));
-		});
-		this.reviewTop = Math.min(this.reviewTop, Math.max(0, lines.length - this.contentHeight));
-		return lines.slice(this.reviewTop, this.reviewTop + this.contentHeight);
-	}
-
-	private shortcuts(width: number): string {
-		const hide = `${shortcutLabel(this.focusShortcut)} Hide`;
-		if (this.state.activity) return ["Tab", ...(this.state.activity === "drafting" ? ["Ctrl+C Stop"] : []), "Alt+S Settings", hide].join(" · ");
-		if (this.tab === "review" && this.state.annotationEditor) return `Enter Save · Ctrl+C Cancel · Alt+S Settings · ${hide}`;
-		const primary = this.tab === "review" ? "Alt+K Comment" : this.state.draft ? "Ctrl+G Apply" : "Ctrl+R Refresh";
-		let hints = `Tab · ${primary} · Alt+S Settings · ${hide} · Alt+C Clear`;
-		const secondary = this.tab === "review" ? ["Ctrl+G Apply", "Ctrl+R Refresh"] : ["Ctrl+R Refresh", ...(this.state.messages.some((message) => message.annotations?.length) || this.state.annotations.length ? ["Alt+A Details"] : [])];
-		for (const hint of secondary) if (!hints.includes(hint) && visibleWidth(`${hints} · ${hint}`) <= width) hints += ` · ${hint}`;
-		return hints;
-	}
-
-	render(width: number): string[] {
-		const inside = Math.max(1, width - 2);
-		const height = Math.min(36, this.tui.terminal.rows);
-		const row = (text: string) => {
-			const clipped = truncateToWidth(text, inside, "…", true);
-			return this.theme.fg("border", "│") + clipped + " ".repeat(Math.max(0, inside - visibleWidth(clipped))) + this.theme.fg("border", "│");
-		};
-		const border = (left: string, right: string) => this.theme.fg("border", `${left}${"─".repeat(inside)}${right}`);
-		if (this.state.activity && !this.spinnerTimer) {
-			this.spinnerTimer = setInterval(() => { this.spinnerFrame = (this.spinnerFrame + 1) % 10; this.refresh(); }, 80);
-			this.spinnerTimer.unref?.();
-		} else if (!this.state.activity) this.dispose();
-		const spinner = this.state.activity ? `${["⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"][this.spinnerFrame]} ${activityLabel(this.state)}` : "";
-		const tab = (name: string, active: boolean) => this.theme.fg(active ? "accent" : "muted", active ? `[${name}]` : name);
-		const heading = this.theme.fg("mdHeading", "Streams Checkpoint") + `  ${tab("Chat", this.tab === "chat")}  ${tab(`Review${this.state.draft ? ` · ${this.state.draft.revision}` : ""}`, this.tab === "review")}`;
-		const header = heading + (spinner ? `  ${this.theme.fg("accent", spinner)}` : "");
-		this.syncInput();
-		this.input.focused = this.focused && !this.state.activity && (this.tab === "chat" || !!this.state.annotationEditor);
-		const editor = this.input.render(inside);
-		const composer = editor.length > Math.max(3, height - 8) ? [editor[0], ...editor.slice(-(Math.max(3, height - 8) - 1))] : editor;
-		const context: string[] = [];
-		if (this.confirmingClear) context.push(this.theme.fg("warning", "Discard pending chat and draft? y/n"));
-		else if (this.state.notice) context.push(this.theme.fg(this.state.notice.level === "info" ? "muted" : this.state.notice.level, safeText(this.state.notice.text)));
-		if (this.tab === "review" && this.state.annotationEditor) {
-			const anchor = this.state.annotationEditor.anchor;
-			context.push(`Comment · Draft ${anchor.revision} · ${anchor.side} line ${anchor.line}`);
-		} else if (this.tab === "chat" && this.state.annotations.length) {
-			context.push(`[${this.state.annotations.length} annotations · not sent] · Tab to review`);
-			if (this.expandedAnnotations) context.push(...this.state.annotations.flatMap((comment) => wrapTextWithAnsi(safeText(annotationContext(comment)), inside)));
-		}
-		const contextRows = context.slice(0, Math.max(0, height - composer.length - 6));
-		this.contentHeight = Math.max(0, height - composer.length - contextRows.length - 5);
-		const content = this.tab === "review" ? this.review(inside) : this.chat(inside);
-		const headerDivider = content.length || contextRows.length ? [border("├", "┤")] : [];
-		return [border("╭", "╮"), row(header), ...headerDivider, ...content.map(row), ...contextRows.map(row), ...composer.map(row), row(this.shortcuts(inside)), border("╰", "╯")];
-	}
+/** A small composer built around Pi's editor; unsent input survives close/reopen. */
+export async function compose(ctx: ExtensionContext, state: DiscussionState): Promise<string | undefined> {
+ return ctx.ui.custom<string | undefined>((tui, theme, _keys, done) => {
+  const editor = new Editor(tui, {borderColor: (text) => theme.fg("border", text), selectList: {selectedPrefix: (text) => theme.fg("accent", text), selectedText: (text) => theme.fg("accent", text), description: (text) => theme.fg("muted", text), scrollInfo: (text) => theme.fg("dim", text), noMatch: (text) => theme.fg("warning", text)}});
+  editor.setText(state.input);editor.onChange = (text) => {state.input = text;};
+  editor.onSubmit = (text) => {if (text.trim()) {state.input = text;done(text);}};
+  return {
+   get focused() {return editor.focused;}, set focused(value: boolean) {editor.focused = value;},
+   invalidate() {editor.invalidate();},
+   handleInput(data: string) {if (matchesKey(data, "escape") || matchesKey(data, "alt+p")) {state.input = editor.getExpandedText();done(undefined);} else editor.handleInput(data);},
+   render(width: number) {
+    const clean = (text: string) => text.replace(/[\x00-\x08\x0b-\x1f\x7f]/g, "");
+    const history = state.messages.flatMap((message) => wrapTextWithAnsi(`${message.role}: ${clean(message.text)}`, width));
+    return [truncateToWidth("Card discussion · Enter send · Shift+Enter newline · Esc/Alt+P back", width), ...history.slice(-Math.max(2, tui.terminal.rows - 12)), ...(state.error ? wrapTextWithAnsi(clean(state.error), width) : []), ...editor.render(width)];
+   },
+  };
+ });
+}
+async function referenceRows(ctx: ExtensionContext, field: string, edit: FieldEdit): Promise<void> {
+ const stream = edit.base.stream!;
+ const rows = structuredClone(edit.value as any[]);
+ for (;;) {
+  const action = await ctx.ui.select(`${field}: choose a row${edit.error ? `\n${edit.error}` : ""}`,  [...rows.map((row, i) => `${i + 1}. ${row.url ?? `${row.repository}@${row.ref}:${row.path}`} — ${row.description}`), "Add row", "Done"]);
+  if (!action || action === "Done") {edit.value = rows;return;}
+  if (action === "Add row" && field === "documents" && !Object.keys(stream.repositories).length) {ctx.ui.notify("No repository aliases are configured. Add a repository through the Streams CLI before adding a document.", "warning");continue;}
+  const index = action === "Add row" ? rows.length : Number(action.split(".")[0]) - 1;
+  const existing = rows[index];
+  if (existing) {const choice = await ctx.ui.select("Reference row", ["Edit", "Remove", "Back"]);if (choice === "Remove") {rows.splice(index, 1);continue;}if (choice !== "Edit") continue;}
+  const row: Record<string, string> = {...existing};
+  if (field === "documents") {
+   const alias = await ctx.ui.select("Existing repository alias", Object.keys(stream.repositories));if (!alias) continue;row.repository = alias;
+   const ref = await ctx.ui.editor("Repository ref", row.ref ?? "");if (ref === undefined) continue;row.ref = ref;
+   const path = await ctx.ui.editor("Portable relative document path", row.path ?? "");if (path === undefined) continue;row.path = path;
+  } else {const url = await ctx.ui.editor("HTTP(S) URL", row.url ?? "");if (url === undefined) continue;row.url = url;}
+  const description = await ctx.ui.editor("Description", row.description ?? "");if (description === undefined) continue;row.description = description;
+  rows[index] = row;edit.value = structuredClone(rows);
+  try {validateReferences(field, rows, stream);edit.error = undefined;} catch(error) {edit.error = String(error);ctx.ui.notify(edit.error, "error");}
+ }
+}
+export async function editField(ctx: ExtensionContext, cli: StreamCli, catalog: LocalContext, kind: "stream" | "session", field: string, state: CardState, receipt: (value: Receipt) => void): Promise<void> {
+ const key = `${kind}:${field}`;
+ let edit = state.edits.get(key);
+ if (!edit) {edit = new FieldEdit(kind, catalog, field);state.edits.set(key, edit);} else edit.refresh(catalog);
+ let editValue = !edit.dirty && !edit.error;
+ try {
+  for (;;) {
+   if (editValue) {
+    if (["documents", "issues", "prs"].includes(field)) await referenceRows(ctx, field, edit);
+    else if (field === "status" || field.endsWith("_mode")) {
+     const value = await ctx.ui.select(`${kind} ${field} · current: ${edit.value}${edit.error ? `\n${edit.error}` : ""}`, field === "status" ? statuses : ["automatic", "manual"]);if (value === undefined) return;edit.value = value;
+    } else if (field === "archived") edit.value = !edit.base.stream!.archived;
+    else {
+     const value = await ctx.ui.editor(`${kind} ${field}${edit.error ? `\n${edit.error}` : ""}`, String(edit.value ?? ""));
+     if (value === undefined) return;edit.value = ["goal", "goal_short", "state_short"].includes(field) && !value.trim() ? null : value;
+    }
+    editValue = false;
+   }
+   const action = await ctx.ui.select(`${edit.error ?? ""}\n${kind} ${field}: ${JSON.stringify(edit.value)}\nOnly this field will be submitted.`, ["Save field", "Edit again", "Keep input and close", "Discard input"]);
+   if (action === "Discard input") {state.edits.delete(key);return;}
+   if (!action || action === "Keep input and close") return;
+   if (action === "Edit again") {editValue = true;continue;}
+   try {await edit.save(cli, receipt);state.edits.delete(key);return;} catch(error) {ctx.ui.notify(String(error), "error");}
+  }
+ } finally {if (!edit.dirty && !edit.error) state.edits.delete(key);}
+}
+export async function openCard(ctx: ExtensionContext, cli: StreamCli, state: CardState, actions: {receipt(value: Receipt): void; discuss(): Promise<void>; settings(): Promise<void>; report(): void}): Promise<void> {
+ for (;;) {
+  const catalog = await cli.context(ctx.sessionManager.getSessionId(), process.env.STREAMS_STREAM_ID);
+  if (!catalog.stream) {ctx.ui.notify("No attached work card. Use select_stream or create_stream for initial attachment.", "info");return;}
+  const action = await ctx.ui.select(cardSummary(catalog), ["Whole effort — edit fields", ...(catalog.session ? ["This session — edit fields", "Finish this session"] : []), "Finish whole effort", catalog.stream.archived ? "Restore effort" : "Archive effort", "Discuss live card", "Report now", "Reporting settings", "Close"]);
+  if (!action || action === "Close") return;
+  if (action === "Discuss live card") {await actions.discuss();continue;}
+  if (action === "Reporting settings") {await actions.settings();continue;}
+  if (action === "Report now") {actions.report();continue;}
+  let kind: "stream" | "session" = action.startsWith("This session") || action === "Finish this session" ? "session" : "stream";
+  if (action.startsWith("Finish")) {
+   if (!await ctx.ui.confirm(action, kind === "session" ? "Finish only this contribution; the effort remains unchanged?" : "Mark the entire effort done? Other contributions are not automatically finished.")) continue;
+   const edit = new FieldEdit(kind, catalog, "status");edit.value = "done";
+   try {await edit.save(cli, actions.receipt);} catch(error) {state.edits.set(`${kind}:status`, edit);ctx.ui.notify(String(error), "error");}
+  } else if (action === "Archive effort" || action === "Restore effort") {
+   if (!await ctx.ui.confirm(action, "Change the whole effort archive flag?")) continue;
+   const edit = new FieldEdit("stream", catalog, "archived");edit.value = !catalog.stream.archived;
+   try {await edit.save(cli, actions.receipt);} catch(error) {state.edits.set("stream:archived", edit);ctx.ui.notify(String(error), "error");}
+  } else {
+   const options = fields[kind].filter((field) => field !== "archived" && !(kind === "stream" && field === "goal_short" && catalog.stream!.goal === null));
+   const field = await ctx.ui.select(`${kind === "stream" ? "Whole effort" : "This session"} · IDs, owner and membership are read-only`, options.map((field) => `${field}: ${JSON.stringify((catalog[kind] as any)[field])}${state.edits.has(`${kind}:${field}`) ? " · retained input" : ""}`));
+   if (field) await editField(ctx, cli, catalog, kind, field.split(":")[0], state, actions.receipt);
+  }
+ }
 }

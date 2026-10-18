@@ -1,66 +1,52 @@
-import { SettingsList, matchesKey, truncateToWidth, visibleWidth, wrapTextWithAnsi } from "@earendil-works/pi-tui";
-import type { Component, SettingItem, TUI } from "@earendil-works/pi-tui";
-import type { Theme } from "@earendil-works/pi-coding-agent";
-import type { CheckpointConfig } from "./core.ts";
-import { CHECKPOINT_PROMPTING, STREAM_PROMPTING } from "./policy.ts";
-import type { PromptingConfig } from "./policy.ts";
-
-/** Edits a local copy; only Save writes, and failures leave that copy available for retry. */
-export class CheckpointSettings implements Component {
-	focused = true;
-	private closed = false;
-	private error?: string;
-	private policy: PromptingConfig;
-	private list: SettingsList;
-
-	constructor(private tui: TUI, private theme: Theme, private config: CheckpointConfig, private save: (policy: PromptingConfig) => void, private done: (saved: boolean) => void) {
-		this.policy = { streamPrompting: config.streamPrompting, checkpointPrompting: config.checkpointPrompting };
-		const items: SettingItem[] = [
-			{ id: "streamPrompting", label: "Stream selection / creation", currentValue: config.streamPrompting, values: Object.keys(STREAM_PROMPTING), description: STREAM_PROMPTING[config.streamPrompting] },
-			{ id: "checkpointPrompting", label: "Checkpoint frequency", currentValue: config.checkpointPrompting, values: Object.keys(CHECKPOINT_PROMPTING), description: CHECKPOINT_PROMPTING[config.checkpointPrompting] },
-		];
-		this.list = new SettingsList(items, 2, {
-			label: (text, selected) => this.theme.fg(selected ? "accent" : "text", text),
-			value: (text) => this.theme.fg("success", text), description: (text) => this.theme.fg("muted", text),
-			cursor: this.theme.fg("accent", "▶ "), hint: (text) => this.theme.fg("dim", text),
-		}, (id, value) => {
-			if (id === "streamPrompting") this.policy.streamPrompting = value as PromptingConfig["streamPrompting"];
-			else this.policy.checkpointPrompting = value as PromptingConfig["checkpointPrompting"];
-			items[0].description = STREAM_PROMPTING[this.policy.streamPrompting];
-			items[1].description = CHECKPOINT_PROMPTING[this.policy.checkpointPrompting];
-			this.error = undefined;
-		}, () => this.finish(false));
-	}
-
-	private finish(saved: boolean): void { if (!this.closed) { this.closed = true; this.done(saved); } }
-	dispose(): void { this.closed = true; }
-	invalidate(): void { this.list.invalidate(); }
-	handleInput(data: string): void {
-		if (this.closed) return;
-		if (matchesKey(data, "ctrl+s")) {
-			try { this.save({ ...this.policy }); this.finish(true); }
-			catch (error) { this.error = String(error); }
-		} else this.list.handleInput(data);
-		this.tui.requestRender();
-	}
-
-	render(width: number): string[] {
-		const inside = Math.max(1, width - 2);
-		const row = (text: string) => {
-			const clipped = truncateToWidth(text, inside, "…", true);
-			return this.theme.fg("border", "│") + clipped + " ".repeat(Math.max(0, inside - visibleWidth(clipped))) + this.theme.fg("border", "│");
-		};
-		// Replace SettingsList's generic footer with explicit Save/Cancel controls.
-		const content = this.list.render(inside).slice(0, -2);
-		const error = this.error ? wrapTextWithAnsi(this.theme.fg("error", this.error.replace(/\p{Cc}/gu, "")), inside) : [];
-		const available = Math.max(0, Math.min(36, this.tui.terminal.rows) - 6);
-		return [
-			this.theme.fg("border", `╭${"─".repeat(inside)}╮`),
-			row(this.theme.fg("accent", "Checkpoint settings")),
-			row(this.theme.fg("muted", `Across sessions · ${this.config.agentTools ? "Next agent turn; no reload" : "Agent tools disabled"}`)),
-			...content.slice(0, Math.max(0, available - error.length)).map(row), ...error.slice(0, available).map(row),
-			row("↑↓ Select · Enter/Space Change"), row("Ctrl+S Save · Esc Cancel"),
-			this.theme.fg("border", `╰${"─".repeat(inside)}╯`),
-		];
-	}
+import { existsSync, mkdirSync, readFileSync, renameSync, writeFileSync } from "node:fs";
+import { join } from "node:path";
+import { randomUUID } from "node:crypto";
+import type { ExtensionContext } from "@earendil-works/pi-coding-agent";
+export type ReportingSettings = {reporting: "automatic" | "manual"; enrollment: "automatic" | "manual"; frequency: number; context: "trimmed" | "full"; model?: {provider: string; id: string}};
+export const defaults: ReportingSettings = {reporting: "automatic", enrollment: "automatic", frequency: 1, context: "trimmed"};
+const plainObject = (value: unknown): value is Record<string, unknown> => !!value && typeof value === "object" && (Object.getPrototypeOf(value) === Object.prototype || Object.getPrototypeOf(value) === null);
+function storedSettings(path: string): Record<string, unknown> {
+ if (!existsSync(path)) return {};
+ let value: unknown;
+ try {value = JSON.parse(readFileSync(path, "utf8"));} catch(error) {throw Error(`Cannot read reporting settings ${path}: ${String(error)}. Fix the JSON before saving.`);}
+ if (!plainObject(value)) throw Error(`Reporting settings ${path} must contain a JSON object`);
+ return value;
+}
+export function validateSettings(value: ReportingSettings): void {
+ if (!plainObject(value)) throw Error("Reporting settings must be a plain object");
+ if (!["automatic", "manual"].includes(value.reporting) || !["automatic", "manual"].includes(value.enrollment) || !["trimmed", "full"].includes(value.context) || !Number.isInteger(value.frequency) || value.frequency < 1) throw Error("Reporting settings require automatic/manual, trimmed/full and a positive integer response frequency");
+ if (value.model !== undefined && (!plainObject(value.model) || typeof value.model.provider !== "string" || !value.model.provider.trim() || typeof value.model.id !== "string" || !value.model.id.trim())) throw Error("Reporting model must be an object with nonempty string provider and model ID");
+}
+export function loadSettings(agentDir: string): ReportingSettings {
+ const path = join(agentDir, "stream-reporting.json");
+ if (!existsSync(path)) return {...defaults};
+ const value = {...defaults, ...storedSettings(path)};validateSettings(value);return value;
+}
+export function saveSettings(agentDir: string, value: ReportingSettings): void {
+ validateSettings(value);mkdirSync(agentDir, {recursive: true});
+ const path = join(agentDir, "stream-reporting.json"), temp = `${path}.${randomUUID()}.tmp`;
+ const saved: Record<string, unknown> = {...value, ...storedSettings(path)};
+ for (const key of ["reporting", "enrollment", "frequency", "context", "model"] as const) {
+  if (value[key] === undefined) delete saved[key];else saved[key] = value[key];
+ }
+ writeFileSync(temp, JSON.stringify(saved, null, 2) + "\n", {mode: 0o600});renameSync(temp, path);
+}
+export async function settingsDialog(ctx: ExtensionContext, settings: ReportingSettings, save: (value: ReportingSettings) => void): Promise<void> {
+ const value = structuredClone(settings);
+ for (;;) {
+  const action = await ctx.ui.select("Work card reporting settings", [`Reporting: ${value.reporting}`, `Enrollment: ${value.enrollment}`, `Response frequency: ${value.frequency}`, `Context: ${value.context}`, `Model: ${value.model ? `${value.model.provider}/${value.model.id}` : "current Pi model"}`, "Save", "Cancel"]);
+  if (!action || action === "Cancel") return;
+  if (action === "Save") {try {validateSettings(value);save(value);return;} catch(error) {ctx.ui.notify(String(error), "error");} continue;}
+  if (action.startsWith("Reporting:")) value.reporting = value.reporting === "automatic" ? "manual" : "automatic";
+  else if (action.startsWith("Enrollment:")) value.enrollment = value.enrollment === "automatic" ? "manual" : "automatic";
+  else if (action.startsWith("Context:")) value.context = value.context === "trimmed" ? "full" : "trimmed";
+  else if (action.startsWith("Response frequency:")) {
+   const input = await ctx.ui.input("Completed responses between automatic reports", String(value.frequency));
+   if (input !== undefined) {const frequency = Number(input);if (!Number.isInteger(frequency) || frequency < 1) ctx.ui.notify("Enter a positive integer", "error");else value.frequency = frequency;}
+  } else {
+   const mode = await ctx.ui.select("Reporting model", ["Current Pi model", "Provider/model ID"]);
+   if (mode === "Current Pi model") delete value.model;
+   else if (mode) {const provider = await ctx.ui.input("Provider", value.model?.provider);if (!provider?.trim()) continue;const id = await ctx.ui.input("Model ID", value.model?.id);if (id?.trim()) value.model = {provider, id};}
+  }
+ }
 }

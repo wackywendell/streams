@@ -1,7 +1,7 @@
 {
   "name": "pi-streams",
   "version": "0.1.0",
-  "description": "Pi checkpoint extension and skill for scratch-first AI coding streams",
+  "description": "Pi work-card extension and skill for durable Streams work records",
   "license": "MIT",
   "author": "Wendell Smith <wackywendell@gmail.com>",
   "keywords": ["pi-package"],
@@ -9,9 +9,6 @@
   "pi": {
     "extensions": ["./extensions/stream-checkpoint/index.ts"],
     "skills": ["./skills"]
-  },
-  "dependencies": {
-    "yaml": "^2.8.0"
   },
   "peerDependencies": {
     "@earendil-works/pi-agent-core": "*",
