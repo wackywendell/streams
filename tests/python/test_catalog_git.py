@@ -218,6 +218,39 @@ class GitCatalogTest(unittest.TestCase):
         self.assertEqual(self.a.sync().sharing, "confirmed")
         self.assertEqual(git(self.a.root, "rev-parse", "HEAD"), tip)
 
+    def test_stale_cross_record_input_retires_automatic_output_before_publication(self):
+        self.publish_initial()
+        self.a.save(contribution())
+        self.a.sync()
+        b = self.open("b", "server")
+        before = contribution().after
+        report = update("guarded-report", before, {"state": "Generated"}, actor="automatic",
+                        ownership_token="create", inputs=(effort(),))
+        self.assertEqual(self.a.save(report).domain.outcome, "changes")
+        pending = git(self.a.root, "show", "-s", "--format=%B", "HEAD") + "\n"
+        self.assertEqual(decode_operation(pending)[0], report)
+        b.save(update("new-goal", effort(), {"goal": "Different scope"}))
+        b.sync()
+        remote_tip = git(self.remote, "rev-parse", "refs/heads/main")
+        self.assertEqual(self.a.sync().sharing, "confirmed")
+        self.assertEqual(self.a.snapshot().catalog.session("laptop", "session").state, "")
+        self.assertEqual(git(self.remote, "rev-parse", "refs/heads/main"), remote_tip)
+
+    def test_guarded_report_inputs_survive_rebase_over_an_independent_remote_edit(self):
+        self.publish_initial()
+        self.a.save(contribution())
+        self.a.sync()
+        b = self.open("b", "server")
+        report = update("guarded-report", contribution().after, {"state": "Generated"}, actor="automatic",
+                        ownership_token="create", inputs=(effort(),))
+        self.a.save(report)
+        b.save(create(effort("other", host="server"), id="create-other"))
+        b.sync()
+        self.assertEqual(self.a.sync().sharing, "confirmed")
+        saved, _ = decode_operation(git(self.a.root, "show", "-s", "--format=%B", "HEAD") + "\n")
+        self.assertEqual(saved, report)
+        self.assertEqual(self.a.snapshot().catalog.session("laptop", "session").state, "Generated")
+
     def test_identical_remote_stream_with_different_creation_is_not_local_authority(self):
         b = self.open("b")
         self.a.save(create())

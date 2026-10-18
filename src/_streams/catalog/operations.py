@@ -5,7 +5,7 @@ from __future__ import annotations
 from dataclasses import dataclass, fields, replace
 from typing import Literal, Mapping
 
-from .model import Catalog, Document, Record, RecordKey, Session, Stream, ValidationError, choice, record_key, text
+from .model import Catalog, Document, Host, Record, RecordKey, Session, Stream, ValidationError, choice, record_key, text
 
 Actor = Literal["user", "automatic"]
 Outcome = Literal["changes", "no-change", "superseded", "conflict"]
@@ -45,11 +45,19 @@ class Operation:
     after: Record
     actor: Actor
     ownership_token: str | None = None
+    inputs: tuple[Record, ...] = ()
 
     def __post_init__(self) -> None:
         text(self.id, "operation.id")
+        if not isinstance(self.inputs, tuple) or any(not isinstance(item, (Stream, Session, Host)) for item in self.inputs):
+            raise ValidationError("operation.inputs must be a tuple of logical records")
+        keys = [record_key(item) for item in self.inputs]
+        if len(keys) != len(set(keys)):
+            raise ValidationError("operation.inputs contains duplicate record identities")
         choice(self.actor, "operation.actor", ("user", "automatic"))
         key = record_key(self.after)
+        if key in keys:
+            raise ValidationError("operation.inputs must not repeat the target record")
         if self.before is not None:
             if record_key(self.before) != key:
                 raise ValidationError("operations cannot change record identity")
@@ -88,7 +96,7 @@ class Operation:
 
 
 def update(id: str, before: Record, changes: Mapping[str, object], *, actor: Actor = "user",
-           ownership_token: str | None = None) -> Operation:
+           ownership_token: str | None = None, inputs: tuple[Record, ...] = ()) -> Operation:
     """Capture an edit's base, clearing display derivatives unless explicitly replaced.
 
     A changed goal invalidates goal_short. Changed state, remaining work or status
@@ -104,7 +112,7 @@ def update(id: str, before: Record, changes: Mapping[str, object], *, actor: Act
         after = replace(before, **changes)
     except TypeError as error:
         raise ValidationError(str(error)) from error
-    return Operation(id=id, before=before, after=after, actor=actor, ownership_token=ownership_token)
+    return Operation(id=id, before=before, after=after, actor=actor, ownership_token=ownership_token, inputs=inputs)
 
 
 @dataclass(frozen=True)
@@ -152,8 +160,9 @@ def reconcile(catalog: Catalog, operation: Operation, *, authority: Authority | 
     User edits combine at independent fields; descriptions and naming modes are
     guarded together. Reference additions combine by identity, but concurrent edits
     and removals conflict. Automatic inference guards the entire captured target
-    record. Evidence from other records or documents needs additional input guards;
-    a fresh persistence snapshot does not verify evidence gathered before inference.
+    record and any supplied logical input records. Integrations must separately
+    fence ephemeral conversation or document inputs; a fresh persistence snapshot
+    does not verify evidence gathered before inference.
 
     The coordinator supplies effective session Authority, not a pending owner field,
     persists accepted changes against this snapshot and retains operation identity.
@@ -162,6 +171,9 @@ def reconcile(catalog: Catalog, operation: Operation, *, authority: Authority | 
         outcome = "superseded" if superseded and operation.actor == "automatic" else "conflict"
         return Reconciliation(operation.id, outcome, conflicts=conflicts, reason=reason)
 
+    for captured in operation.inputs:
+        if catalog.get(record_key(captured)) != captured:
+            return refuse("captured catalog input changed", ("inputs",), superseded=True)
     after, before = operation.after, operation.before
     current = catalog.get(operation.target)
     if isinstance(after, Session):

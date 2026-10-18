@@ -1,0 +1,63 @@
+# Pi work cards backed by the catalog
+
+Status: agreed interaction direction; implementation in progress. Proposed defaults and implementation choices below are not an installed-runtime change.
+
+## Decision
+
+Replace the scratch-generating checkpoint workflow with automatic updates to durable Streams records. Keep Alt+P as a way to inspect, edit and discuss the work card. The card is a view of the catalog, not a separate document or another source of truth.
+
+The user chose automatic updates by default, with configurable automatic/manual mode, frequency, model and full versus trimmed context. Review remains available without making every progress report wait for approval. Plans and rationale stay in linked project documents rather than growing inside a checkpoint body.
+
+## Reporting and context
+
+The proposed defaults are automatic reporting after each completed response, the current Pi model and trimmed context. Frequency is a positive number of completed responses. Manual mode disables background reporting and enrollment; explicit requests still work. A configured model that cannot run fails visibly rather than falling back to a different model.
+
+A report captures Pi's active projected conversation, respecting compaction and context edits. Full mode preserves that projection, excluding incomplete tool batches; trimmed mode retains conversational content without tool calls, tool results or thinking. Do not silently truncate oversized inputs. Report failures leave recorded progress intact and do not interrupt the main agent.
+
+The helper receives captured catalog records and conversation evidence. It has no project-writing or shell tools and does not independently reread documents. Historical file contents in the conversation remain historical evidence, not a fresh verification claim. Include current names, goals and progress in its input so later reports can respect edits made through the card.
+
+Use a single background operation per Pi session. Coalesce newer evidence rather than queueing a report for every event. Before applying, check session identity, attachment and that the captured conversation remains on the active branch. Appending work does not invalidate an older captured prefix: save that report and schedule a follow-up. A rewind, branch switch or session replacement invalidates the result. Automatic updates cannot change stream lifecycle, archive state or protected naming modes.
+
+## Identity and initial enrollment
+
+A catalog session identifies one native Pi conversation on one host and belongs to one stream. Reopening that conversation reuses its record. A fork with a new native ID gets another session record.
+
+Resolve an existing session association before enrolling anything. A caller workspace's explicit stream association can supply the initial effort. With meaningful work but no association, automatic mode may enroll an effort and its first session. Avoid enrollment for greetings or other context that does not establish an effort. Explicit initial attachment is available for an unbound conversation.
+
+Once attached, Pi does not offer a switch-to-another-stream action. Moving or forking contributions needs a future explicit lifecycle command; changing a title must never silently change membership. Conflicting session and caller-workspace associations fail visibly rather than choosing one by guesswork.
+
+Shared workspace enrollment must converge on one stream identity even when several Pi conversations begin together. Native associations and absolute directories remain host-local. Enrollment does not open workspaces, launch agents or move focus.
+
+## Viewing, editing and discussion
+
+Alt+P opens the current work card even if no report or chat is running. It shows the stream's goal and references, the current session's progress and other recorded contributions. Report activity and failures are visible without stealing focus from the main conversation.
+
+The panel separates “Whole effort” from “This session”. The editor uses labelled fields rather than raw JSON or YAML: text editors for titles and descriptions, choices for valid statuses, and explicit archive/restore actions. IDs, ownership and membership are read-only. Finishing a contribution never implies finishing the effort.
+
+Changing a title or goal protects it as manual text. Show that protection beside the field, with an explicit way to return it to automatic management. Submit only dirty fields; opening or saving an unchanged form must not turn automatic text into manual text or erase compact derivatives. Background reports can refresh clean fields while dirty fields retain their captured base. Invalid or stale edits keep their input and show an actionable error.
+
+Scope reference editing to issue/PR URL-and-description rows and documents whose repository is chosen from existing aliases. Document paths must be relative; URLs and required fields are validated before save. Repository identity changes remain CLI operations rather than a nested free-form table.
+
+A direct edit is user intent. User-directed lifecycle edits are permitted, but background inference must never park, finish or archive an effort. Chat may discuss uncertainty without changing records. Separate a conversational reply, an automatic description refresh and an explicitly requested user edit; do not treat every chat turn as permission for management changes.
+
+Closing or minimizing the panel does not discard its unsent input or discussion. Reopening restores it for that native Pi conversation and catalog. Opening the panel alone neither starts a model request nor modifies the catalog. Only explicitly submitted edits or discussion run its agent.
+
+`/checkpoint` becomes an immediate report request, not an approval queue. Settings expose reporting mode, frequency, model and context selection. The extension and bundled skill describe the same record semantics; they do not retain scratch-format aliases or instructions.
+
+## Persistence boundary
+
+The Python CLI owns record validation, effective authority, persistence and publication scheduling. TypeScript exchanges structured requests and receipts with it; it never writes catalog YAML. Use persisted local records for report bases and execution authority, not refreshed display projections.
+
+A local-context CLI endpoint returns persisted records and effective authority without a fetch. A structured apply endpoint accepts stable operation IDs, the original captured target, allowlisted changes and other captured catalog inputs. It does not retake an edit's base after inference or force generated text into manual naming modes. Omit protected fields before constructing an automatic operation so a manual title does not discard an otherwise valid goal update.
+
+Domain reconciliation rejects changed inputs and ownership, including during publication replay, before an already-satisfied/no-change shortcut. Ordinary user edits retain field-level reconciliation. Generated output is parsed into an allowlisted update shape before it reaches persistence.
+
+Generate existing-session progress and stream metadata as separate target-scoped requests, capturing each request's inputs before its inference. This costs an additional model request when both need updating, but avoids making one write invalidate another operation from the same inference. Do not remove real input dependencies or substitute post-inference snapshots to make a stale operation apply. Initial enrollment may save a newly inferred stream and its session together as ordered, separately receipted saves.
+
+Keep record saves separate rather than promising a multi-record rollback transaction. If one save succeeds and a later step fails, return the accepted records and receipts. Publication failure must not turn an accepted local report into an apparent unsaved operation. Session progress never rewrites the stream merely to refresh its timestamp.
+
+## Scope and validation
+
+This slice ports the Pi package and bundled skill, not Work Cards' own storage/projection integration, cross-host handover, contribution moves or multi-tab reconstruction. It does not install packages, modify live catalogs or migrate scratch notes.
+
+Verify automatic/manual policy, cadence and coalescing, both context modes, configured models, enrollment identity, protected manual text, stale-input rejection, panel/chat persistence and partial-save receipts. Replace the two deferred real Pi/CLI contract tests with isolated catalog-backed cases, including operation outside a repository. Review code changes with Gemini Argon using the design-review skill before finalising the implementation commits.
