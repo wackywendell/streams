@@ -2,7 +2,7 @@
 
 Streams keeps a personal catalog of ongoing work. Each stream has a stable identity, an optional goal, a work status and links to project documents. Sessions describe their own current state and remaining work. Plans and design decisions stay in project repositories, not in scratch notes.
 
-This checkout includes the catalog CLI, Pi work-card extension and bundled agent skill. Published `v0.1.0` packages still use the scratch workflow; do not mix those packages with this CLI. The installed runtime is unchanged.
+This checkout includes the catalog CLI, Pi work-card extension and bundled agent skill. Published `v0.1.0` packages still use the scratch workflow; do not mix those packages with this CLI.
 
 ## Run from this checkout
 
@@ -37,7 +37,7 @@ streams config set frontend.mode auto
 
 The supported settings are `catalog.root` and `frontend.mode`. The defaults use `$XDG_DATA_HOME/streams/catalog` and `auto`. Configuration lives at `$XDG_CONFIG_HOME/streams/config.json`; unset XDG variables use `~/.local/share` and `~/.config`. Sync strategy, remote and branch belong to catalog setup, not these settings. Changing `catalog.root` selects another catalog; initialise it before use.
 
-There is no legacy-format compatibility or automatic migration. Start new streams or migrate old records manually.
+There is no legacy-format compatibility or automatic migration. Start new streams or migrate old records manually. An initialised catalog cannot currently change its sync strategy in place. Adding Git backing while preserving local records and identities is follow-on work.
 
 ## Create and find work
 
@@ -119,7 +119,7 @@ Session progress and effort metadata use separate inferences, so updating both t
 
 The menu refreshes on action or reopen, not while waiting for a selection. Discussion and unsent inputs survive closing and reopening the card in the same Pi process, not extension reload. Work Cards projections and native tab/title updates remain separate follow-on work.
 
-When testing, keep the CLI and extension from the same checkout, use isolated XDG/agent directories and do not also load the published scratch-based extension. No installation or live-catalog migration is part of this cutover. The [bundled skill](skills/streams/SKILL.md) covers record semantics and guarded reporting from other harnesses.
+When testing, keep the CLI and extension from the same checkout, use isolated XDG/agent directories and do not also load the published scratch-based extension. Restart running Pi sessions after updating the extension; existing processes retain their previously loaded code. The [bundled skill](skills/streams/SKILL.md) covers record semantics and guarded reporting from other harnesses.
 
 ## Open or resume work
 
