@@ -59,6 +59,78 @@ class RuntimeTest(unittest.TestCase):
     def open(self, sessions=(), **kwargs):
         return self.runtime.open(self.stream, sessions, authority=self.authority, **kwargs)
 
+    def test_automatic_pi_enrollment_matches_only_native_header_or_explicit_id(self):
+        path = self.root / 'filename-is-not-the-session-id.jsonl'
+        for native_id, kind in (('fork-uuid', 'path'), ('resumed-uuid', 'path'), ('explicit-uuid', 'id')):
+            with self.subTest(native_id=native_id, kind=kind):
+                path.write_text(json.dumps({'type': 'session', 'id': native_id}) + '\nnot a header\n')
+                self.herdr.command_result.side_effect = None
+                self.herdr.command_result.return_value = {'agent': {
+                    'pane_id': 'p1', 'workspace_id': 'w1', 'agent': 'pi',
+                    'agent_session': {'agent': 'pi', 'kind': kind,
+                                      'value': str(path) if kind == 'path' else native_id},
+                }}
+                with patch.dict(os.environ, {'HERDR_PANE_ID': 'p1'}):
+                    self.runtime.verify_automatic_enrollment('pi', native_id)
+                self.herdr.command_result.assert_called_with(['agent', 'get', 'p1'], 'agent_info')
+                self.assertFalse(self.runtime.state_dir.exists())
+
+    def test_automatic_pi_enrollment_fails_closed_on_native_metadata(self):
+        agent = {'pane_id': 'p1', 'workspace_id': 'w1', 'agent': 'pi',
+                 'agent_session': {'agent': 'pi', 'kind': 'id', 'value': 'parent'}}
+        invalid = [None, {}, {**agent, 'pane_id': 'other'}, {**agent, 'workspace_id': 'other'},
+                   {**agent, 'agent': 'codex'}, {**agent, 'agent_session': None}]
+        for session in ({}, {'agent': 'codex', 'kind': 'id', 'value': 'parent'},
+                        {'agent': 'pi', 'kind': 'title', 'value': 'parent'},
+                        {'agent': 'pi', 'kind': 'id', 'value': ''},
+                        {'agent': 'pi', 'kind': 'path', 'value': 'relative.jsonl'},
+                        {'agent': 'pi', 'kind': 'path', 'value': str(self.root / 'missing.jsonl')}):
+            invalid.append({**agent, 'agent_session': session})
+        invalid.append(agent)  # The helper's requested ID is not the parent's explicit ID.
+        self.herdr.command_result.side_effect = None
+        for metadata in invalid:
+            with self.subTest(metadata=metadata), patch.dict(os.environ, {'HERDR_PANE_ID': 'p1'}):
+                self.herdr.command_result.return_value = {'agent': metadata}
+                with self.assertRaisesRegex(StreamError, 'background helper cannot automatically enroll'):
+                    self.runtime.verify_automatic_enrollment('pi', 'helper')
+                self.assertFalse(self.runtime.state_dir.exists())
+        with patch.dict(os.environ, {'HERDR_PANE_ID': 'other'}):
+            with self.assertRaisesRegex(StreamError, 'exact Herdr caller pane'):
+                self.runtime.verify_automatic_enrollment('pi', 'parent')
+        self.herdr.current_pane.side_effect = StreamError('missing current pane')
+        with self.assertRaisesRegex(StreamError, 'background helper'):
+            self.runtime.verify_automatic_enrollment('pi', 'parent')
+
+    def test_automatic_pi_enrollment_reads_a_bounded_valid_first_session_header(self):
+        path = self.root / 'helper.jsonl'
+        self.herdr.command_result.side_effect = None
+        self.herdr.command_result.return_value = {'agent': {
+            'pane_id': 'p1', 'workspace_id': 'w1', 'agent': 'pi',
+            'agent_session': {'agent': 'pi', 'kind': 'path', 'value': str(path)},
+        }}
+        for content in (b'', b'{broken', b'[]', b'null', b'\xff',
+                        b'{"type":"message","id":"helper"}\n',
+                        b'{"type":"session"}\n', b'{"type":"session","id":null}\n',
+                        b'{"type":"session","id":"helper","id":"parent"}\n',
+                        b'{"type":"session","id":"parent"}\n',
+                        b'\n{"type":"session","id":"helper"}\n',
+                        b'{"type":"session","id":"helper","padding":"' + b'x' * 65536 + b'"}\n'):
+            with self.subTest(content=content[:80]), patch.dict(os.environ, {'HERDR_PANE_ID': 'p1'}):
+                path.write_bytes(content)
+                with self.assertRaisesRegex(StreamError, 'background helper'):
+                    self.runtime.verify_automatic_enrollment('pi', 'helper')
+                self.assertFalse(self.runtime.state_dir.exists())
+
+    def test_automatic_enrollment_guard_leaves_other_frontends_and_harnesses_alone(self):
+        for mode in (FrontendMode.NONE, FrontendMode.AUTO, FrontendMode.CMUX):
+            with self.subTest(mode=mode):
+                Runtime(self.root / 'state', 'local', mode).verify_automatic_enrollment('pi', 'helper')
+        self.runtime.verify_automatic_enrollment('codex', 'helper')
+        self.herdr.endpoint.assert_not_called()
+        self.herdr.current_pane.assert_not_called()
+        self.herdr.command_result.assert_not_called()
+        self.assertFalse(self.runtime.state_dir.exists())
+
     def test_reporting_context_reads_unbound_claimed_and_bound_workspaces_without_writes(self):
         self.assertIsNone(self.runtime.context_stream_id())
         self.assertFalse(self.runtime.state_dir.exists())

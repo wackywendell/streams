@@ -84,6 +84,73 @@ class CatalogAgentTest(unittest.TestCase):
         self.assertEqual(current["authority"]["host_id"], current["host_id"])
         self.assertEqual(len(self.call("list")[1]["streams"]), 1)
 
+    def test_herdr_helper_rejected_before_any_catalog_or_runtime_mutation_but_user_can_enroll(self):
+        from _streams.cli import runtime
+        from _streams.herdr import HerdrPane, HerdrWorkspace
+        from _streams.herdr_binding import HerdrEndpoint
+        source = self.context('helper')['catalog_source']
+        self.assertEqual(self.call('config', 'set', 'frontend.mode', 'herdr')[0], 0)
+        # A persisted helper session is real, but is not the session in the parent pane.
+        helper_path = self.root / 'helper.jsonl'
+        helper_path.write_text(json.dumps({'type': 'session', 'id': 'helper'}) + '\n')
+        parent_path = self.root / 'parent.jsonl'
+        parent_path.write_text(json.dumps({'type': 'session', 'id': 'parent'}) + '\n')
+        request = {'operation_id': 'helper-enroll', 'catalog_source': source, 'harness': 'pi',
+                   'harness_session_id': 'helper', 'stream': {'title': 'Helper investigation'},
+                   'session': {'title': 'Helper'}, 'actor': 'automatic', 'cwd': str(self.root)}
+        with patch('_streams.catalog_runtime.HerdrClient') as transport, patch.dict(os.environ, {
+            'HERDR_ENV': '1', 'HERDR_PANE_ID': 'wH:p1A',
+        }):
+            client = transport.return_value
+            client.endpoint.return_value = HerdrEndpoint('/test.sock', None)
+            client.current_pane.return_value = HerdrPane('wH:p1A', 'wH:t1', 'wH', '')
+            client.resolve_workspace.return_value = HerdrWorkspace('wH', 'Parent')
+            agent = {'pane_id': 'wH:p1A', 'workspace_id': 'wH', 'agent': 'pi',
+                     'agent_session': {'agent': 'pi', 'kind': 'path', 'value': str(parent_path)}}
+            client.command_result.return_value = {'agent': agent}
+            before = {path.relative_to(self.root): path.read_bytes()
+                      for path in self.root.rglob('*') if path.is_file()}
+            code, result, _ = self.call('agent', 'enroll', request=request)
+            self.assertEqual(code, 2, result)
+            self.assertIn('background helper cannot automatically enroll', result['error']['message'])
+            self.assertFalse(runtime().state_dir.exists())
+            self.assertEqual(before, {path.relative_to(self.root): path.read_bytes()
+                                      for path in self.root.rglob('*') if path.is_file()})
+            self.assertEqual(self.call('list')[1]['streams'], [])
+            self.assertIsNone(self.context('helper')['session'])
+            client.command_result.assert_called_once_with(['agent', 'get', 'wH:p1A'], 'agent_info')
+            client.command_result.reset_mock()
+            code, result, _ = self.call('agent', 'enroll', request={**request, 'actor': 'user'})
+            self.assertEqual(code, 0, result)
+            self.assertEqual(result['session']['harness_session_id'], 'helper')
+            client.command_result.assert_not_called()
+            client.run.assert_not_called()
+
+    def test_automatic_herdr_fork_and_resume_enroll_the_actual_pane_session(self):
+        from _streams.herdr import HerdrPane, HerdrWorkspace
+        from _streams.herdr_binding import HerdrEndpoint
+        self.assertEqual(self.call('config', 'set', 'frontend.mode', 'herdr')[0], 0)
+        path = self.root / 'original-filename.jsonl'
+        with patch('_streams.catalog_runtime.HerdrClient') as transport, patch.dict(os.environ, {
+            'HERDR_ENV': '1', 'HERDR_PANE_ID': 'wH:p1A',
+        }):
+            client = transport.return_value
+            client.endpoint.return_value = HerdrEndpoint('/test.sock', None)
+            client.current_pane.return_value = HerdrPane('wH:p1A', 'wH:t1', 'wH', '')
+            client.resolve_workspace.return_value = HerdrWorkspace('wH', 'Parent')
+            for native_id, kind in (('fork-uuid', 'path'), ('resumed-uuid', 'path'), ('explicit-uuid', 'id')):
+                with self.subTest(native_id=native_id):
+                    path.write_text(json.dumps({'type': 'session', 'id': native_id}) + '\n')
+                    client.command_result.return_value = {'agent': {
+                        'pane_id': 'wH:p1A', 'workspace_id': 'wH', 'agent': 'pi',
+                        'agent_session': {'agent': 'pi', 'kind': kind,
+                                          'value': str(path) if kind == 'path' else native_id},
+                    }}
+                    result = self.enroll(native_id)
+                    self.assertEqual(result['session']['harness_session_id'], native_id)
+            self.assertEqual(len(self.call('list')[1]['streams']), 1)
+            client.run.assert_not_called()
+
     def test_initial_explicit_attachment_keeps_manual_stream_title_but_accepts_generated_goal(self):
         _, created, _ = self.call("create", "Human title")
         enrolled = self.enroll(stream_id=created["stream"]["id"], stream=None)

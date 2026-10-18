@@ -175,6 +175,9 @@ def enroll(backend, runtime, source: str):
         if not _accepted(saved):
             raise StreamError("enrollment operation was not accepted; inspect its save receipt")
 
+    if data["actor"] == "automatic":
+        runtime.verify_automatic_enrollment(data["harness"], data["harness_session_id"])
+
     try:
         with _conversation_lock(runtime, data["harness"], data["harness_session_id"]), runtime.enrollment() as scope:
             current = context(backend, harness=data["harness"], native_id=data["harness_session_id"], stream_id=data.get("stream_id"))

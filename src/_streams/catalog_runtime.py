@@ -317,6 +317,46 @@ class Runtime:
                 raise StreamError('could not confirm exact CMUX caller workspace ID; no focused-workspace fallback')
         return workspace_id
 
+    def verify_automatic_enrollment(self, harness: str, native_id: str) -> None:
+        """Fence automatic Pi enrollment to the conversation registered in its pane."""
+        if harness != 'pi' or resolve_frontend(self.frontend_mode, None, os.environ).resolved != Frontend.HERDR:
+            return
+        try:
+            client, _ = self._transport(Frontend.HERDR)
+            pane = client.current_pane()
+            if (not _text(pane.id) or pane.id != os.environ.get('HERDR_PANE_ID')
+                    or not _text(pane.workspace_id)):
+                raise ValueError('could not confirm exact Herdr caller pane')
+            result = client.command_result(['agent', 'get', pane.id], 'agent_info')
+            agent = result.get('agent') if isinstance(result, dict) else None
+            if (not isinstance(agent, dict) or agent.get('pane_id') != pane.id
+                    or agent.get('workspace_id') != pane.workspace_id or agent.get('agent') != 'pi'):
+                raise ValueError('Herdr agent pane, workspace or harness mismatch')
+            session = agent.get('agent_session')
+            if not isinstance(session, dict) or session.get('agent') != 'pi' or not _text(session.get('value')):
+                raise ValueError('missing or invalid native Pi session metadata')
+            if session.get('kind') == 'id':
+                actual_id = session['value']
+            elif session.get('kind') == 'path':
+                path = Path(session['value'])
+                if not path.is_absolute():
+                    raise ValueError('native Pi session path must be absolute')
+                with path.open('rb') as handle:
+                    line = handle.readline(65537)
+                if len(line) > 65536:
+                    raise ValueError('native Pi session header exceeds 64 KiB')
+                header = json.loads(line.decode('utf-8'), object_pairs_hook=_object_pairs)
+                if not isinstance(header, dict) or header.get('type') != 'session' or not _text(header.get('id')):
+                    raise ValueError('invalid native Pi session header')
+                actual_id = header['id']
+            else:
+                raise ValueError('unknown native Pi session identity kind')
+            if actual_id != native_id:
+                raise ValueError('requested Pi session differs from the native pane session')
+        except (StreamError, OSError, ValueError) as exc:
+            raise StreamError(f'could not confirm automatic Pi enrollment: {exc}; '
+                              "a background helper cannot automatically enroll its parent's workspace") from exc
+
     @contextmanager
     def enrollment(self, frontend: str | None = None) -> Iterator[Enrollment]:
         """Serialize enrollment and catalog saves for the exact calling native workspace.
