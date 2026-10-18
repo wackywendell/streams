@@ -16,6 +16,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "src"))
 from _streams import catalog_config as config
 from _streams.catalog.storage import StorageError
 from _streams.catalog.sync import GitCatalog, LocalCatalog
+from _streams.catalog.sync.policy import Policy
 from _streams.errors import StreamError
 from _streams.frontend import FrontendMode
 
@@ -36,11 +37,13 @@ class CatalogConfigTest(unittest.TestCase):
         config.config_path().write_text(json.dumps(data))
 
     def test_defaults_and_reads_create_nothing(self):
-        self.assertEqual(config.CONFIG_KEYS, ("catalog.root", "frontend.mode"))
+        self.assertEqual(config.CONFIG_KEYS, ("catalog.root", "frontend.mode", "sync.stream_seconds", "sync.session_seconds"))
         self.assertEqual(config.config_path(), self.home / "config/streams/config.json")
         self.assertEqual(config.read_overrides(), {})
         self.assertEqual(config.load_config(), {"catalog": {"root": str(self.home / "data/streams/catalog")},
-                                               "frontend": {"mode": "auto"}})
+                                               "frontend": {"mode": "auto"},
+                                               "sync": {"stream_seconds": Policy().stream_seconds,
+                                                        "session_seconds": Policy().session_seconds}})
         self.assertEqual(config.get_frontend_mode(), FrontendMode.AUTO)
         state = config.runtime_state_dir()
         self.assertTrue(state.is_relative_to(self.home / "state/streams/catalogs"))
@@ -83,7 +86,64 @@ class CatalogConfigTest(unittest.TestCase):
         self.assertEqual(json.loads(target.read_text()), {"catalog": {"root": str(self.home / "my-catalog")},
                                                         "frontend": {"mode": "none"}})
 
+    def test_sync_file_values_are_strict_finite_nonnegative_numbers(self):
+        for name in ("stream_seconds", "session_seconds"):
+            for value in (0, 0.25, 12, 1e100):
+                self.write_config({"sync": {name: value}})
+                with self.subTest(name=name, value=value):
+                    self.assertEqual(config.load_config()["sync"][name], value)
+            for value in (True, False, None, "12", {}, [], -1, float("nan"),
+                          float("inf"), -float("inf"), 10 ** 400):
+                self.write_config({"sync": {name: value}})
+                with self.subTest(name=name, value=value), self.assertRaises(StreamError):
+                    config.load_config()
+        for data in ({"sync": []}, {"sync": {"cooldown_seconds": 1}},
+                     {"sync": {"timeout_seconds": 1}}, {"sync": {"attempts": 1}}):
+            self.write_config(data)
+            with self.subTest(data=data), self.assertRaises(StreamError):
+                config.load_config()
+
+    def test_sync_set_parses_text_and_rejects_before_atomic_write(self):
+        target = self.home / "dotfiles/config.json"
+        target.parent.mkdir()
+        target.write_text('{"frontend":{"mode":"none"}}')
+        config.config_path().parent.mkdir(parents=True)
+        config.config_path().symlink_to(target)
+        for key in ("sync.stream_seconds", "sync.session_seconds"):
+            for text, expected in (("0", 0), ("1.25", 1.25), ("2e2", 200), (" 3 ", 3)):
+                config.set_config(key, text)
+                section, name = key.split(".")
+                self.assertEqual(config.load_config()[section][name], expected)
+                self.assertEqual(json.loads(target.read_text())[section][name], expected)
+            before = target.read_bytes()
+            for text in ("", "no", "-1", "true", "false", "null", '"12"', "{}", "[]",
+                         "NaN", "Infinity", "-Infinity", "1e999", "9" * 400):
+                with self.subTest(key=key, text=text), self.assertRaises(StreamError):
+                    config.set_config(key, text)
+                self.assertEqual(target.read_bytes(), before)
+        config.set_config("catalog.root", "~/other-catalog")
+        self.assertEqual(config.load_config()["sync"], {"stream_seconds": 3, "session_seconds": 3})
+        self.assertEqual(config.load_config()["frontend"]["mode"], "none")
+        self.assertTrue(config.config_path().is_symlink())
+        self.assertEqual(list(target.parent.glob(".catalog-*.tmp")), [])
+
+    def test_sync_config_get_set_in_fresh_cli_processes(self):
+        env = dict(os.environ, PYTHONPATH=str(Path(__file__).resolve().parents[2] / "src"))
+        def cli(*args):
+            result = subprocess.run([sys.executable, "-m", "_streams.cli", "config", *args, "--json"],
+                                    env=env, capture_output=True, text=True, timeout=15)
+            self.assertEqual(result.returncode, 0, result.stderr)
+            return json.loads(result.stdout)
+        self.assertEqual(cli("get", "sync.session_seconds"), Policy().session_seconds)
+        self.assertEqual(list(self.home.iterdir()), [])
+        self.assertEqual(cli("set", "sync.stream_seconds", "0"), 0)
+        self.assertEqual(cli("set", "sync.session_seconds", "1.5"), 1.5)
+        self.assertEqual(cli("get", "sync.stream_seconds"), 0)
+        self.assertEqual(cli()["sync"], {"stream_seconds": 0, "session_seconds": 1.5})
+
     def test_local_initialization_is_explicit_stable_and_never_uses_git(self):
+        config.set_config("sync.stream_seconds", "0")
+        config.set_config("sync.session_seconds", "0")
         with patch("subprocess.run", side_effect=AssertionError("local invoked Git")):
             backend = config.initialize("none")
             self.assertIsInstance(backend, LocalCatalog)
@@ -241,6 +301,42 @@ class CatalogConfigTest(unittest.TestCase):
             tracked = subprocess.run(["git", "-C", str(config.catalog_root()), "ls-files"],
                                      capture_output=True, check=True).stdout
             self.assertEqual(tracked, b"")
+
+    def test_git_policy_is_configured_on_initialize_and_each_reopen(self):
+        gitconfig = self.home / "gitconfig"
+        gitconfig.write_text('[user]\n name = Test\n email = test@example.org\n[commit]\n gpgsign = false\n')
+        remote = self.home / "remote.git"
+        with patch.dict(os.environ, {"GIT_CONFIG_GLOBAL": str(gitconfig), "GIT_CONFIG_NOSYSTEM": "1"}):
+            subprocess.run(["git", "init", "--bare", str(remote)], capture_output=True, check=True)
+            config.set_config("sync.stream_seconds", "2.5")
+            config.set_config("sync.session_seconds", "10")
+            backend = config.initialize("git", remote=str(remote))
+            expected = Policy(stream_seconds=2.5, session_seconds=10)
+            self.assertEqual(backend.policy, expected)
+            self.assertEqual(config.initialize("git", remote=str(remote)).policy, expected)
+            reopened = config.open_catalog()
+            self.assertEqual(reopened.policy, expected)
+            reopened.clock = lambda: 100
+            self.assertEqual(reopened.read(refresh=True).freshness, "refreshed")
+            reopened.clock = lambda: 109
+            with patch.object(reopened, "_fetch", side_effect=AssertionError("read fetched too soon")):
+                self.assertEqual(reopened.read().freshness, "cached")
+            reopened.clock = lambda: 110
+            self.assertEqual(reopened.read().freshness, "refreshed")
+            config.set_config("sync.stream_seconds", "0")
+            config.set_config("sync.session_seconds", "0")
+            changed = config.open_catalog()
+            self.assertEqual(changed.policy, Policy(stream_seconds=0, session_seconds=0))
+            self.assertEqual(backend.policy, expected)
+            changed.clock = lambda: 110
+            self.assertEqual(changed.read().freshness, "refreshed")
+            env = dict(os.environ, PYTHONPATH=str(Path(__file__).resolve().parents[2] / "src"))
+            result = subprocess.run([sys.executable, "-c",
+                                     "from _streams.catalog_config import open_catalog; "
+                                     "p = open_catalog().policy; print(p.stream_seconds, p.session_seconds)"],
+                                    env=env, capture_output=True, text=True, timeout=15)
+            self.assertEqual(result.returncode, 0, result.stderr)
+            self.assertEqual(result.stdout.strip(), "0 0")
 
     def test_git_does_not_adopt_existing_unmarked_bookkeeping(self):
         root = config.catalog_root()

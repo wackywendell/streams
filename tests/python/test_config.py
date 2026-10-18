@@ -41,6 +41,7 @@ class ConfigTest(unittest.TestCase):
         self.assertEqual(json.loads(out), {
             "catalog": {"root": str(self.root / "data/streams/catalog")},
             "frontend": {"mode": "auto"},
+            "sync": {"stream_seconds": 300, "session_seconds": 3600},
         })
         self.assertFalse(self.path.exists())
         self.assertFalse(config.catalog_root().exists())

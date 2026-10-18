@@ -15,20 +15,27 @@ from .catalog.storage import StorageError
 from .catalog.sync import GitCatalog, LocalCatalog
 from .catalog.sync.envelope import load_json
 from .catalog.sync.local import State
+from .catalog.sync.policy import Policy
 from .catalog.yaml_store import YamlStore
 from .errors import StreamError
 from .frontend import FrontendMode
 
-CONFIG_KEYS = ("catalog.root", "frontend.mode")
+CONFIG_KEYS = ("catalog.root", "frontend.mode", "sync.stream_seconds", "sync.session_seconds")
 
 
 def config_path() -> Path:
     return Path(os.environ.get("XDG_CONFIG_HOME") or Path.home() / ".config") / "streams/config.json"
 
 
-def _value(key: str, value: object) -> str:
+def _value(key: str, value: object) -> str | int | float:
     if key not in CONFIG_KEYS:
         raise StreamError(f"unknown streams config key: {key}")
+    if key.startswith("sync."):
+        try:
+            Policy(**{key.split(".")[1]: value})
+        except (ValueError, OverflowError) as error:
+            raise StreamError(f"{key} must be a finite nonnegative number") from error
+        return value
     if not isinstance(value, str) or not value.strip() or "\x00" in value:
         raise StreamError(f"{key} must be a nonempty string without NUL characters")
     if key == "frontend.mode":
@@ -57,7 +64,7 @@ def read_overrides() -> dict:
     if not isinstance(data, dict):
         raise StreamError(f"{path} must contain a JSON object")
     for section, values in data.items():
-        if section not in {"catalog", "frontend"} or not isinstance(values, dict):
+        if section not in {"catalog", "frontend", "sync"} or not isinstance(values, dict):
             raise StreamError(f"{path}: invalid config section {section!r}")
         for name, value in values.items():
             values[name] = _value(f"{section}.{name}", value)
@@ -66,7 +73,9 @@ def read_overrides() -> dict:
 
 def load_config() -> dict:
     data_home = Path(os.environ.get("XDG_DATA_HOME") or Path.home() / ".local/share")
-    result = {"catalog": {"root": str(data_home / "streams/catalog")}, "frontend": {"mode": "auto"}}
+    policy = Policy()
+    result = {"catalog": {"root": str(data_home / "streams/catalog")}, "frontend": {"mode": "auto"},
+              "sync": {"stream_seconds": policy.stream_seconds, "session_seconds": policy.session_seconds}}
     for section, values in read_overrides().items():
         result[section].update(values)
     # Defaults cross the same validation boundary as explicit settings.
@@ -108,7 +117,13 @@ def _atomic_json(path: Path, data: dict) -> None:
 
 
 def set_config(key: str, text: str) -> None:
-    value = _value(key, text)
+    value = text
+    if key in CONFIG_KEYS and key.startswith("sync."):
+        try:
+            value = load_json(text)
+        except ValueError as error:
+            raise StreamError(f"{key} must be a finite nonnegative number") from error
+    value = _value(key, value)
     try:
         with _config_lock():
             data = read_overrides()
@@ -231,7 +246,8 @@ def _local_validate(backend: LocalCatalog) -> None:
 
 
 def open_catalog() -> LocalCatalog | GitCatalog:
-    root = catalog_root()
+    settings = load_config()
+    root = Path(settings["catalog"]["root"])
     try:
         marker = _marker(root)
         if marker is None:
@@ -244,7 +260,7 @@ def open_catalog() -> LocalCatalog | GitCatalog:
                 _local_validate(backend)
                 transaction.read()
             return backend
-        backend = GitCatalog(root, host_id=identity)
+        backend = GitCatalog(root, host_id=identity, policy=Policy(**settings["sync"]))
         backend.snapshot()
         return backend
     except (OSError, StorageError, ValueError) as error:
@@ -260,7 +276,8 @@ def initialize(strategy: str, *, remote: str | None = None, branch: str = "main"
         raise StreamError("Git initialization requires --remote")
     if not isinstance(branch, str) or not branch.strip() or "\x00" in branch:
         raise StreamError("branch must be a nonempty string without NUL characters")
-    root = catalog_root()
+    settings = load_config()
+    root = Path(settings["catalog"]["root"])
     try:
         with _config_lock():
             marker = _marker(root)
@@ -273,7 +290,8 @@ def initialize(strategy: str, *, remote: str | None = None, branch: str = "main"
                 if marker is None:
                     with YamlStore(root).transaction():
                         _empty_root(root)
-                backend = GitCatalog.initialize(root, remote=remote, host_id=identity, branch=branch)
+                backend = GitCatalog.initialize(root, remote=remote, host_id=identity, branch=branch,
+                                                policy=Policy(**settings["sync"]))
                 backend.snapshot()
                 if marker is None:
                     with backend.store.transaction():
