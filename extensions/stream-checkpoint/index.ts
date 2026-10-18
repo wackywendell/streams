@@ -66,7 +66,7 @@ export default function registerWorkCard(pi: ExtensionAPI, options: Options = {}
   panelOpen = true;
   try {
    const catalog = await cli(ctx).context(ctx.sessionManager.getSessionId(), process.env.STREAMS_STREAM_ID);
-   if (!catalog.stream) {ctx.ui.notify("No work card attached. Use /checkpoint:attach to choose or create an effort, or start meaningful work for automatic enrollment.", "info");return;}
+   if (!catalog.stream) {ctx.ui.notify("No work card attached. Use /streams attach to choose or create an effort, or start meaningful work for automatic enrollment.", "info");return;}
    const key = JSON.stringify([ctx.sessionManager.getSessionId(), catalog.catalog_source, catalog.stream.id]);
    let state = states.get(key);if (!state) {state = {discussion: {input: "", messages: []}, edits: new Map()};states.set(key, state);}
    await openCard(ctx, cli(ctx), state, {receipt, discuss: () => discussion(ctx, state!), settings: () => configure(ctx), report: () => reporter.request(ctx)});
@@ -78,9 +78,26 @@ export default function registerWorkCard(pi: ExtensionAPI, options: Options = {}
   if (before.session) return {status: "already-bound; membership moves/forks are not implemented", stream_id: before.session.stream_id};
   return reporter.exclusive((signal) => chooseInitial(ctx, cli(ctx), args, receipt, signal));
  }
- pi.registerCommand("checkpoint", {description: "Report progress directly to the durable work card now", handler: async (instructions, ctx) => {current = ctx;try {settings();reporter.request(ctx, true, instructions);} catch(error) {warning(String(error));}}});
- pi.registerCommand("checkpoint:settings", {description: "Configure automatic/manual reporting, cadence, context and model", handler: async (_args, ctx) => {current = ctx;try {await configure(ctx);} catch(error) {warning(String(error));}}});
- pi.registerCommand("checkpoint:attach", {description: "Initial work card attachment only; never switch an enrolled conversation", handler: async (_args, ctx) => {try {await attach(ctx, {});} catch(error) {warning(String(error));}}});
+ pi.registerCommand("streams", {
+  description: "Report progress now, configure reporting, or attach an initial work card",
+  getArgumentCompletions: (prefix) => {
+   if (/\s/.test(prefix)) return null;
+   const matches = ["report", "settings", "attach"].filter((command) => command.startsWith(prefix));
+   return matches.length ? matches.map((command) => ({value: command, label: command})) : null;
+  },
+  handler: async (args, ctx) => {
+   current = ctx;
+   const input = args.trim(), command = input.split(/\s+/, 1)[0], instructions = input.slice(command.length).trim();
+   if (!["", "report", "settings", "attach"].includes(command) || instructions && command !== "report") {
+    warning("Usage: /streams or /streams report [instructions]; /streams settings; /streams attach. Put report instructions after 'report'.");return;
+   }
+   try {
+    if (command === "settings") await configure(ctx);
+    else if (command === "attach") await attach(ctx, {});
+    else {settings();reporter.request(ctx, true, instructions);}
+   } catch(error) {warning(String(error));}
+  },
+ });
  pi.registerShortcut("alt+p", {description: "Inspect, edit or discuss the live work card", handler: show});
  pi.registerTool({name: "stream_read", label: "Read work card", description: "Read typed durable catalog state and recorded contributions from persisted local records. No fetch, scratch notes or pending drafts.", parameters: Type.Object({}), async execute(_id, _args, _signal, _update, ctx) {current = ctx;const {authority, ...catalog} = await cli(ctx).context(ctx.sessionManager.getSessionId(), process.env.STREAMS_STREAM_ID);return result({...catalog, reporting_authority: !!authority});}});
  pi.registerTool({name: "checkpoint", label: "Report work card", description: "Request an immediate durable progress report. Local saves and publication are separate; this is not an approval draft.", parameters: Type.Object({instructions: Type.Optional(Type.String())}), async execute(_id, args, _signal, _update, ctx) {current = ctx;settings();reporter.request(ctx, true, args.instructions);return result({status: "report-requested"});}});

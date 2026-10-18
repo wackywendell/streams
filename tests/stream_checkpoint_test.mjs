@@ -194,6 +194,63 @@ test('extension startup and Alt+P do not enroll or run a model; report uses comp
  assert.ok(handlers.has('agent_end'));assert.equal(handlers.has('before_agent_start'),false);
  assert.match(tools.get('checkpoint').description,/durable/);assert.match(tools.get('stream_read').description,/typed durable/);
 });
+function commandFixture(options={}) {
+ const commands=new Map(),tools=new Map(),handlers=new Map(),notices=[],requests=[],writes=[],receipts=[],activity=[],dialogs=[];
+ const catalog=options.catalog??context();let shortcut,reads=0;
+ const cli={context:async()=>{reads++;return structuredClone(catalog);},list:async()=>[stream],apply:async req=>{writes.push(req);return {save:{local:'persisted',sharing:'local-only',domain:{outcome:'changes'}}};},enroll:async req=>{writes.push(req);catalog.stream=stream;catalog.session=session;return {stream,session,saves:[]};}};
+ const ctx={mode:'tui',hasUI:true,cwd:'/repo',sessionManager:{getSessionId:()=> 'native',getLeafId:()=> 'leaf',getBranch:()=>[{id:'leaf'}],buildSessionProjection:()=>({messages:[]})},ui:{notify:(text,level)=>notices.push({text,level}),setStatus:(_key,text)=>activity.push(text),select:async(title,rows)=>{dialogs.push({title,rows});return options.select?.(title,rows)??'Cancel';},editor:async()=> 'Contribution',confirm:async()=>true}};
+ registerWorkCard({on:(name,fn)=>handlers.set(name,fn),registerCommand:(name,value)=>commands.set(name,value),registerTool:value=>tools.set(value.name,value),registerShortcut:(_key,value)=>{shortcut=value.handler;},appendEntry:(type,value)=>receipts.push({type,value})},{settings:{...defaults,reporting:'manual',enrollment:'manual'},cli,infer:async(_ctx,req)=>{requests.push(req);return options.infer?await options.infer(req):{changes:{}};}});
+ return {commands,tools,handlers,ctx,notices,requests,writes,receipts,activity,dialogs,reads:()=>reads,shortcut:()=>shortcut(ctx),run:args=>commands.get('streams').handler(args,ctx)};
+}
+test('only streams slash command registers; model checkpoint tool retains its interface',()=>{
+ const f=commandFixture();assert.deepEqual([...f.commands.keys()],['streams']);
+ for(const old of ['checkpoint','checkpoint:settings','checkpoint:attach','streams:settings','streams:attach'])assert.equal(f.commands.has(old),false);
+ assert.deepEqual([...f.tools.keys()],['stream_read','checkpoint','select_stream','create_stream']);
+ assert.ok(f.tools.get('checkpoint').parameters.properties.instructions);
+});
+test('streams completes subcommand prefixes but never report instructions or extra arguments',async()=>{
+ const complete=commandFixture().commands.get('streams').getArgumentCompletions;
+ assert.deepEqual(await complete(''),['report','settings','attach'].map(value=>({value,label:value})));
+ for(const [prefix,value] of [['r','report'],['se','settings'],['att','attach'],['report','report']])assert.deepEqual(await complete(prefix),[{value,label:value}]);
+ for(const prefix of ['unknown','report ','report settings','report\nattach','settings ','attach effort'])assert.equal(await complete(prefix),null);
+});
+for(const [args,instructions] of [['',undefined],['  \t ',undefined],['report',undefined],['  report  Keep the caveat\nand settings detail  ','Keep the caveat\nand settings detail']])test(`streams reports explicitly with ${JSON.stringify(args)}`,async()=>{
+ const f=commandFixture();await f.run(args);await until(()=>f.activity.length===2);
+ assert.deepEqual(f.requests.map(req=>req.type),['session','stream']);
+ assert.ok(f.requests.every(req=>req.instructions===instructions));assert.equal(f.dialogs.length,0);assert.equal(f.notices.length,0);
+});
+test('streams report and bare commands preserve pending instructions while helper is busy',async()=>{
+ let release;const f=commandFixture({infer:async()=>{if(f.requests.length===1)await new Promise(resolve=>{release=resolve;});return {changes:{}};}});
+ await f.run('report');await until(()=>f.requests.length===1);
+ await f.run('report Keep the deployment caveat');await f.run('');await f.run('report   ');
+ release();await until(()=>f.activity.length===4);
+ assert.deepEqual(f.requests.map(req=>req.instructions),[undefined,undefined,'Keep the deployment caveat','Keep the deployment caveat']);
+});
+test('invalid streams arguments show actionable usage without catalog, UI dialog, or model effects',async()=>{
+ const f=commandFixture();
+ for(const args of ['unknown','Keep the caveat','settings extra','attach effort','settings\nreport','report:now','--help']){
+  await f.run(args);const notice=f.notices.at(-1);assert.equal(notice.level,'warning');
+  assert.match(notice.text,/\/streams report \[instructions\]/);assert.match(notice.text,/\/streams settings/);assert.match(notice.text,/\/streams attach/);
+ }
+ await turn();assert.equal(f.notices.length,7);assert.equal(f.reads(),0);
+ for(const effects of [f.requests,f.writes,f.receipts,f.dialogs,f.activity])assert.deepEqual(effects,[]);
+});
+test('streams settings dispatches to the existing reporting dialog without reporting',async()=>{
+ const f=commandFixture();await f.run(' settings ');
+ assert.equal(f.dialogs.length,1);assert.match(f.dialogs[0].title,/reporting settings/);assert.ok(f.dialogs[0].rows.includes('Response frequency: 1'));
+ assert.equal(f.reads(),0);assert.deepEqual(f.requests,[]);assert.deepEqual(f.writes,[]);
+});
+test('streams attach enrolls an initial selection but never switches a bound conversation',async()=>{
+ const catalog=context();catalog.stream=null;catalog.session=null;catalog.sessions=[];
+ const f=commandFixture({catalog,select:(_title,rows)=>rows.find(row=>row.startsWith('effort ·'))});
+ await f.run('attach');assert.equal(f.writes.length,1);assert.equal(f.writes[0].stream_id,'effort');assert.equal(f.writes[0].actor,'user');assert.equal(f.receipts.length,1);
+ const dialogs=f.dialogs.length;await f.run('attach');assert.equal(f.dialogs.length,dialogs);assert.equal(f.writes.length,1);assert.deepEqual(f.requests,[]);
+});
+test('unattached card directs users to streams attach',async()=>{
+ const catalog=context();catalog.stream=null;catalog.session=null;
+ const f=commandFixture({catalog});await f.shortcut();assert.match(f.notices[0].text,/\/streams attach/);assert.doesNotMatch(f.notices[0].text,/\/checkpoint/);
+ assert.deepEqual(f.requests,[]);assert.deepEqual(f.writes,[]);
+});
 for(const inside of [true,false])test(`real checkout CLI enroll/context/guarded apply ${inside?'inside':'outside'} repository`,async()=>{
  const root=mkdtempSync(join(tmpdir(),'streams-pi-catalog-'));const checkout=fileURLToPath(new URL('..',import.meta.url));
  const cwd=inside?checkout:join(root,'outside');mkdirSync(cwd,{recursive:true});

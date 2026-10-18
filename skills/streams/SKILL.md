@@ -48,8 +48,9 @@ Use `--help` for each command's flags. `list` searches literal title/goal substr
 
 - Alt+P inspects or edits the card without starting inference. Whole-effort and session actions are separate. IDs, ownership and membership are read-only.
 - The extension reports automatically after completed responses by default. Settings control reporting, initial enrollment, response frequency, context and model. Do not duplicate those reports with shell writes.
-- `/checkpoint` or the `checkpoint` tool requests a report, not an approval draft. `/checkpoint:settings` edits reporting settings. No Apply/Clear step remains.
-- `select_stream` and `create_stream` are for initial attachment only. Once attached, do not try to switch the conversation to another effort; contribution moves/forks are not implemented.
+- `/streams` or `/streams report [instructions]` requests a report, not an approval draft. The model-callable `checkpoint` tool keeps its name and optional `instructions` argument. No Apply/Clear step remains.
+- `/streams settings` edits reporting settings. Tab completes `report`, `settings` and `attach`; free-text instructions must follow `report`. Unknown subcommands or extra arguments to `settings` or `attach` show usage without reporting or saving.
+- `/streams attach`, `select_stream` and `create_stream` are for initial attachment only. Once attached, do not try to switch the conversation to another effort; contribution moves/forks are not implemented.
 - Card discussion can answer without editing, refresh descriptions automatically, or carry out explicitly requested field/lifecycle edits. Uncertainty or a suggestion alone is not management permission.
 - Follow any session `stream_prompting_policy` governing agent-initiated creation, selection and checkpoints. Do not bypass manual policy with equivalent CLI writes or settings changes. User-invoked commands remain available.
 
