@@ -33,9 +33,13 @@ streams config
 streams config get catalog.root
 streams config set catalog.root ~/work-catalog
 streams config set frontend.mode auto
+streams config set sync.stream_seconds 300
+streams config set sync.session_seconds 3600
 ```
 
-The supported settings are `catalog.root` and `frontend.mode`. The defaults use `$XDG_DATA_HOME/streams/catalog` and `auto`. Configuration lives at `$XDG_CONFIG_HOME/streams/config.json`; unset XDG variables use `~/.local/share` and `~/.config`. Sync strategy, remote and branch belong to catalog setup, not these settings. Changing `catalog.root` selects another catalog; initialise it before use.
+The supported settings are `catalog.root`, `frontend.mode`, `sync.stream_seconds` and `sync.session_seconds`. Defaults are `$XDG_DATA_HOME/streams/catalog`, `auto`, 300 seconds (M) and 3,600 seconds (N). Intervals accept finite nonnegative numbers; zero makes every eligible event due. N also controls automatic read refresh.
+
+Configuration is host-local at `$XDG_CONFIG_HOME/streams/config.json`; each CLI process reads it anew. Unset XDG variables use `~/.local/share` and `~/.config`. Sync strategy, remote and branch belong to catalog setup, not these settings. Changing `catalog.root` selects another catalog; initialise it before use.
 
 There is no legacy-format compatibility or automatic migration. Start new streams or migrate old records manually. An initialised catalog cannot currently change its sync strategy in place. Adding Git backing while preserving local records and identities is follow-on work.
 
@@ -162,7 +166,9 @@ streams list --refresh
 streams show STREAM_ID --refresh --json
 ```
 
-The Git coordinator checks publication intervals after successful and no-change writes. Stream edits, starts and attachments use the 5-minute interval. Session reports use 60 minutes, or 5 minutes while stream edits are pending. Explicit `sync` bypasses those intervals. There is no background daemon in this CLI.
+The Git coordinator checks publication intervals after successful and no-change writes. Stream edits, starts and attachments use M, initially 5 minutes. Session reports use N, initially 60 minutes, or M while stream edits are pending. Explicit `sync` bypasses those intervals and the failed-attempt cooldown, not safety checks. There is no background daemon.
+
+Pi session startup runs `streams sync --event start --json`, respecting M and the cooldown. Shutdown cancels inference and awaits `streams sync --event shutdown --json`, bypassing timing without generating a summary. Both lifecycle calls have a 10-second total deadline covering the CLI and its child process group. Ordinary CLI commands retain their library timeouts. Failed or uncertain lifecycle syncs produce a warning and a durable `stream-catalog-sync` Pi entry; they do not undo local saves. A timeout can leave uncertain publication or interrupted adoption: run `streams sync` to inspect the outcome, and follow the [manual repair guidance](docs/catalog-sync-usage.md#inspecting-interrupted-saves-and-manual-changes) if required.
 
 `list` and `show` refresh shared state when the read interval expires, or when you pass `--refresh`. Reads never push. A refreshed view can combine confirmed remote changes with pending local edits without rewriting local records. Writes and runtime authority still use saved local state. Run `streams sync` before editing or opening a record visible only in that refreshed view.
 
@@ -177,7 +183,7 @@ npm --prefix integrations/herdr-work-cards ci --ignore-scripts
 mise run test
 ```
 
-Python tests cover the catalog, CLI, sync library, guarded agent API and runtime adapters. Node tests cover reporting, the guided card editor, discussion, settings and real checkout-CLI integration inside and outside a repository; neither contract case is skipped. Tests exercise Pi's local model-registry and context-projection APIs without credentialed inference. Native runtime effects remain mocked rather than opening real workspaces.
+Python tests cover the catalog, CLI, sync library, guarded agent API and runtime adapters. Node tests cover reporting, the card editor, discussion, settings and real checkout-CLI integration inside and outside a repository. An isolated two-host Git test covers Pi lifecycle hooks, guarded reports, second-host refresh, offline saves and fresh-process retry. The native deadline test checks that the CLI and a child process stop. Tests use no live credentials or model inference. Native workspace effects remain mocked.
 
 `mise run test:herdr` builds and runs the imported Work Cards regression suite; it also runs as part of `mise run test`. Its legacy storage and helper tests preserve prior coverage, not proof of a Streams-backed native adapter.
 

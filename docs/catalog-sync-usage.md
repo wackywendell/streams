@@ -81,6 +81,22 @@ Call `SyncCoordinator(catalog).maybe_sync(event)` after an event's related saves
 
 Defaults are M = 300 seconds, N = 3,600 seconds. Each Git subprocess has a 30-second timeout. A pass makes at most 3 competing-push attempts. Failed automatic attempts share a 60-second cooldown; shutdown and explicit/forced requests bypass it. These are caller-driven checks, not delivery deadlines or a scheduled task. A backward clock change conservatively delays interval-based attempts.
 
+### CLI settings and Pi lifecycle
+
+Set the intervals in host-local CLI configuration, not in shared catalog records:
+
+```sh
+streams config set sync.stream_seconds 300
+streams config set sync.session_seconds 3600
+streams config --json
+```
+
+Both settings accept finite nonnegative numbers. Zero removes that interval's delay, but not the failed-attempt cooldown or safety checks. Every CLI process reads the current values, including initialization and later opens. Direct library callers still pass their own `Policy`.
+
+Pi startup runs `streams sync --event start --json`. It respects M and the cooldown without enrolling a session or invoking a model. Shutdown cancels pending inference and awaits `streams sync --event shutdown --json`. This attempts publication regardless of timing; it does not generate a final report. Each lifecycle command has a 10-second total deadline, including the spawned CLI and its child process group. Ordinary CLI commands retain the library limits above.
+
+Failed results, transport errors and timeouts produce a warning and a durable `stream-catalog-sync` Pi entry. A timeout does not prove whether a push succeeded. Publication markers and retained commits remain available; interrupted adoption requires manual inspection. Run ordinary `streams sync` to establish publication or report repair before changing that evidence. Neither lifecycle hook undoes an accepted local save. Local-only catalogs invoke no Git or network commands.
+
 ### Scheduled and explicit read refresh
 
 List/show command handlers call `SyncCoordinator(catalog).read(refresh=False)`. A Git read fetches when N has elapsed since the last successful refresh; `refresh=True` requests an explicit blocking fetch. A successful fetch in any write sync counts toward this read clock, even if its later push fails. There is no daemon and no asynchronous refresh to wait for later.
@@ -108,6 +124,21 @@ A `Result` separates the domain outcome, local save and sharing state. In partic
 - `repair-required` is never permission to reset or overwrite the catalog
 
 Conflict details include operation ID, target, reason and available origin attribution. The session triggering sync need not resolve another session's decision. A user may keep remote intent or replace local intent, but that requires explicit repair and revalidation of dependent operations. Do not force-push a resolution.
+
+## Acceptance before activation
+
+The automated tests use isolated XDG directories, a temporary bare Git remote and unsigned test identities. They exercise guarded Pi reports through fresh CLI processes, M-gated startup, shutdown publication, second-host refresh, retained offline saves and retry after restart. A separate native process test checks that the lifecycle deadline stops both the CLI and a child. These tests do not establish that real host credentials or signing work.
+
+The setup steps below apply to a new Git catalog or another host joining it. An existing `none` catalog cannot switch strategies through `init git`. Activating local-only mode first therefore requires a later explicit import that preserves host IDs, stream/session IDs, authority provenance and retry receipts. That import is not implemented here. Do not replace a populated local catalog with a fresh empty directory to bypass this restriction.
+
+Before using a new Git catalog:
+
+1. Integrate matching CLI and Pi extension revisions. Do not mix in the published scratch-based extension.
+2. With approval, initialize the selected private catalog using the host's normal Git authentication and signing configuration.
+3. Create a test effort and report, then run `streams sync --json`. Confirm both the local save and publication outcomes.
+4. On a second host, initialize against the same remote and use `streams show STREAM_ID --refresh --json` to verify the report. This tests visibility, not ownership transfer.
+
+Installed-runtime changes and remote setup require separate approval. Ownership handover and cross-host session resumption remain outside this sync slice.
 
 ## Inspecting interrupted saves and manual changes
 
