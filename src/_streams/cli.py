@@ -199,6 +199,14 @@ def collection_changes(args, before):
             if old is None:
                 values.append(item)
         changes[field] = tuple(values)
+    documents = list(changes.get("documents", before.documents))
+    for repository, path, commit in args.document_added_at:
+        matches = [index for index, item in enumerate(documents) if item.identity == (repository, path)]
+        if not matches:
+            raise StreamError(f"no document matches repository/path: {repository}:{path}")
+        index = matches[0]
+        documents[index] = replace(documents[index], added_at=commit)
+        changes["documents"] = tuple(documents)
     return changes
 
 
@@ -431,7 +439,9 @@ def add_stream_fields(parser):
     parser.add_argument("--add-repository", nargs=2, metavar=("ALIAS", "URL"), action="append", default=[])
     parser.add_argument("--remove-repository", metavar="ALIAS", action="append", default=[])
     parser.add_argument("--add-document", nargs=4, metavar=("REPOSITORY", "REF", "PATH", "DESCRIPTION"), action="append", default=[])
-    parser.add_argument("--remove-document", nargs=3, metavar=("REPOSITORY", "REF", "PATH"), action="append", default=[])
+    parser.add_argument("--remove-document", nargs=2, metavar=("REPOSITORY", "PATH"), action="append", default=[])
+    parser.add_argument("--document-added-at", nargs=3, metavar=("REPOSITORY", "PATH", "COMMIT"), action="append", default=[],
+                        help="record a known commit for document recovery, not revision-pinned opening")
     for field in ("issue", "pr"):
         parser.add_argument("--add-" + field, nargs=2, metavar=("URL", "DESCRIPTION"), action="append", default=[])
         parser.add_argument("--remove-" + field, metavar="URL", action="append", default=[])

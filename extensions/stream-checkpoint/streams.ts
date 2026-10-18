@@ -3,7 +3,7 @@ import { spawn } from "node:child_process";
 export type Status = "active" | "waiting" | "blocked" | "parked" | "done";
 export type Mode = "automatic" | "manual";
 export type Link = { url: string; description: string };
-export type Document = { repository: string; ref: string; path: string; description: string };
+export type Document = { repository: string; ref: string; path: string; description: string; added_at?: string | null };
 export type StreamWire = { id: string; title: string; title_mode: Mode; goal: string | null; goal_short: string | null; goal_mode: Mode; status: Status; archived: boolean; owner: { host_id: string }; repositories: Record<string, { url: string }>; documents: Document[]; issues: Link[]; prs: Link[] };
 export type SessionWire = { id: string; host_id: string; stream_id: string; harness: string; harness_session_id: string; title: string; title_mode: Mode; status: Status; state: string; state_short: string | null; remaining: string; checkout: {repository: string; ref: string; directory_within_checkout: string} | null };
 export type LocalContext = { catalog_source: string; host_id: string; stream: StreamWire | null; session: SessionWire | null; sessions: SessionWire[]; authority: { host_id: string; token: string } | null };
@@ -25,7 +25,7 @@ const status = (value: unknown) => ["active", "waiting", "blocked", "parked", "d
 const nullableText = (value: unknown) => value === null || text(value);
 const link = (value: unknown) => object(value) && text(value.url) && text(value.description);
 function stream(value: unknown): value is StreamWire {
- return object(value) && text(value.id) && text(value.title) && mode(value.title_mode) && nullableText(value.goal) && nullableText(value.goal_short) && mode(value.goal_mode) && status(value.status) && typeof value.archived === "boolean" && object(value.owner) && text(value.owner.host_id) && object(value.repositories) && Object.values(value.repositories).every((repo) => object(repo) && text(repo.url)) && Array.isArray(value.documents) && value.documents.every((doc: unknown) => object(doc) && [doc.repository, doc.ref, doc.path, doc.description].every(text)) && Array.isArray(value.issues) && value.issues.every(link) && Array.isArray(value.prs) && value.prs.every(link);
+ return object(value) && text(value.id) && text(value.title) && mode(value.title_mode) && nullableText(value.goal) && nullableText(value.goal_short) && mode(value.goal_mode) && status(value.status) && typeof value.archived === "boolean" && object(value.owner) && text(value.owner.host_id) && object(value.repositories) && Object.values(value.repositories).every((repo) => object(repo) && text(repo.url)) && Array.isArray(value.documents) && value.documents.every((doc: unknown) => object(doc) && [doc.repository, doc.ref, doc.path, doc.description].every(text) && (doc.added_at === undefined || nullableText(doc.added_at))) && Array.isArray(value.issues) && value.issues.every(link) && Array.isArray(value.prs) && value.prs.every(link);
 }
 function session(value: unknown): value is SessionWire {
  return object(value) && [value.id, value.host_id, value.stream_id, value.harness, value.harness_session_id, value.title, value.state, value.remaining].every(text) && mode(value.title_mode) && status(value.status) && nullableText(value.state_short) && (value.checkout === null || object(value.checkout) && [value.checkout.repository, value.checkout.ref, value.checkout.directory_within_checkout].every(text));

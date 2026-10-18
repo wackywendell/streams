@@ -72,6 +72,8 @@ streams update STREAM_ID --clear-goal
 streams update STREAM_ID --status parked
 streams update STREAM_ID --add-repository streams https://github.com/wackywendell/streams
 streams update STREAM_ID --add-document streams lifecycle-design docs/design.md "Design decisions"
+streams update STREAM_ID --document-added-at streams docs/design.md COMMIT_ID
+streams update STREAM_ID --remove-document streams docs/design.md
 streams update STREAM_ID --add-issue https://example.org/issues/42 "Tracking issue"
 streams update STREAM_ID --add-pr https://example.org/pulls/43 "Implementation"
 streams archive STREAM_ID

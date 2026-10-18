@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import io
 import json
+from contextlib import chdir
 import os
 from pathlib import Path
 import subprocess
@@ -22,6 +23,7 @@ class CatalogCliTest(unittest.TestCase):
         self.temporary = tempfile.TemporaryDirectory()
         self.addCleanup(self.temporary.cleanup)
         self.root = Path(self.temporary.name)
+        self.enterContext(chdir(self.root))
         self.env = self.enterContext(patch.dict(os.environ, {
             "HOME": str(self.root), "XDG_CONFIG_HOME": str(self.root / "config"),
             "XDG_DATA_HOME": str(self.root / "data"), "XDG_STATE_HOME": str(self.root / "state"),
@@ -134,7 +136,26 @@ class CatalogCliTest(unittest.TestCase):
         self.assertEqual(self.cli("update", stream["id"], "--remove-repository", "main")[0], 2)
         unchanged = json.loads(self.cli("show", stream["id"], "--json")[1])["stream"]
         self.assertEqual(unchanged, current)
-        self.assertEqual(self.cli("update", stream["id"], "--remove-document", "main", "topic", "docs/design.md", "--remove-repository", "main")[0], 0)
+        self.assertEqual(self.cli("update", stream["id"], "--remove-document", "main", "docs/design.md", "--remove-repository", "main")[0], 0)
+
+    def test_document_provenance_and_identity_are_independent_of_recovery_ref(self):
+        self.initialize()
+        stream = self.create("Documents", "--add-repository", "code", "https://example.org/code",
+                             "--add-document", "code", "topic", "docs/design.md", "Design",
+                             "--document-added-at", "code", "docs/design.md", "commit:known")
+        document = stream["documents"][0]
+        self.assertEqual(document["added_at"], "commit:known")
+        self.assertEqual(self.cli("update", stream["id"], "--add-document", "code", "other",
+                                 "docs/design.md", "Design")[0], 2)
+        self.assertEqual(self.cli("update", stream["id"], "--document-added-at", "code",
+                                 "missing.md", "commit:known")[0], 2)
+        self.assertEqual(self.cli("update", stream["id"], "--remove-document", "code", "docs/design.md",
+                                 "--add-document", "code", "other", "docs/design.md", "Updated")[0], 0)
+        current = json.loads(self.cli("show", stream["id"], "--json")[1])["stream"]
+        self.assertEqual(current["documents"], [{"repository": "code", "ref": "other", "path": "docs/design.md",
+                                                "description": "Updated"}])
+        self.assertEqual(self.cli("update", stream["id"], "--remove-document", "code", "docs/design.md")[0], 0)
+        self.assertEqual(json.loads(self.cli("show", stream["id"], "--json")[1])["stream"]["documents"], [])
 
     def test_attach_session_show_and_update_separate_progress(self):
         self.initialize()

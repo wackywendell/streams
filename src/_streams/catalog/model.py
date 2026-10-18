@@ -70,20 +70,28 @@ class Link:
 
 @dataclass(frozen=True)
 class Document:
+    """Repository/path identity with a recovery ref and optional immutable commit provenance.
+
+    added_at identifies a known commit, not necessarily the document creation commit.
+    """
+
     repository: str
     ref: str
     path: str
     description: str
+    added_at: str | None = None
 
     def __post_init__(self) -> None:
         text(self.repository, "document.repository")
         text(self.ref, "document.ref")
         relative_path(self.path, "document.path")
         text(self.description, "document.description", empty=True)
+        if self.added_at is not None:
+            text(self.added_at, "document.added_at")
 
     @property
-    def identity(self) -> tuple[str, str, str]:
-        return self.repository, self.ref, self.path
+    def identity(self) -> tuple[str, str]:
+        return self.repository, self.path
 
 
 @dataclass(frozen=True)

@@ -154,7 +154,9 @@ test('reference validation rejects unknown repos, absolute/traversal paths, malf
  for(const url of ['not URL','file:///private','javascript:alert(1)'])assert.throws(()=>validateReferences('issues',[{url,description:''}],stream),/URL|HTTP/);
  assert.throws(()=>validateReferences('prs',[{url:'https://example.com/pr',description:'',extra:'no'}],stream),/labelled/);
  assert.throws(()=>validateReferences('issues',[{url:'https://example.com/1',description:''},{url:'https://example.com/1',description:'duplicate'}],stream),/Duplicate/);
- validateReferences('documents',[{repository:'repo',ref:'main',path:'docs/plan.md',description:'Plan'}],stream);
+ validateReferences('documents',[{repository:'repo',ref:'main',path:'docs/plan.md',description:'Plan',added_at:'commit:known'}],stream);
+ for(const added_at of ['', ' ', 42, false])assert.throws(()=>validateReferences('documents',[{repository:'repo',ref:'main',path:'docs/plan.md',description:'Plan',added_at}],stream),/added_at/);
+ assert.throws(()=>validateReferences('documents',[{repository:'repo',ref:'main',path:'docs/plan.md',description:'Plan'},{repository:'repo',ref:'other',path:'docs/plan.md',description:'Other',added_at:'commit:other'}],stream),/Duplicate/);
 });
 test('discussion composer preserves unsent text across close/reopen without model requests',async()=>{
  const state={input:'',messages:[{role:'assistant',text:'Previous discussion'}]};const renders=[];let first=true;

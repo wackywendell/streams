@@ -17,7 +17,8 @@ def _value(value: object) -> object:
     if isinstance(value, datetime):
         return value.isoformat()
     if is_dataclass(value):
-        return {field.name: _value(getattr(value, field.name)) for field in fields(value)}
+        return {field.name: _value(getattr(value, field.name)) for field in fields(value)
+                if not (isinstance(value, Document) and field.name == "added_at" and value.added_at is None)}
     if isinstance(value, Mapping):
         return {key: _value(item) for key, item in value.items()}
     if isinstance(value, tuple):

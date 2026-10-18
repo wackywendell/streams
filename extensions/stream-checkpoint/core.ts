@@ -33,13 +33,15 @@ export function validateReferences(field: string, rows: unknown, stream: StreamW
  for (const row of rows) {
   if (!row || typeof row !== "object" || Array.isArray(row)) throw Error("Invalid reference row");
   const keys = field === "documents" ? ["repository", "ref", "path", "description"] : ["url", "description"];
-  if (Object.keys(row).some((key) => !keys.includes(key)) || keys.some((key) => typeof row[key] !== "string" || row[key].includes("\0"))) throw Error("Reference rows require labelled text fields");
+  const allowed = field === "documents" ? [...keys, "added_at"] : keys;
+  if (Object.keys(row).some((key) => !allowed.includes(key)) || keys.some((key) => typeof row[key] !== "string" || row[key].includes("\0"))) throw Error("Reference rows require labelled text fields");
+  if (field === "documents" && row.added_at !== undefined && row.added_at !== null) nonempty(row.added_at, "added_at");
   let id: string;
   if (field === "documents") {
    if (!Object.hasOwn(stream.repositories, row.repository)) throw Error("Choose an existing repository alias");
    nonempty(row.ref, "ref");nonempty(row.path, "path");
    if (/^(\/|[a-z]:)/i.test(row.path) || row.path.includes("\\") || row.path.split("/").includes("..")) throw Error("Document path must be a portable relative path");
-   id = `${row.repository}\0${row.ref}\0${row.path}`;
+   id = `${row.repository}\0${row.path}`;
   } else {
    let url: URL;try {url = new URL(row.url);} catch {throw Error("Reference URL must be an absolute HTTP(S) URL");}
    if (!["http:", "https:"].includes(url.protocol)) throw Error("Reference URL must use HTTP(S)");

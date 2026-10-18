@@ -7,7 +7,7 @@ export type CardState = {discussion: DiscussionState; edits: Map<string, FieldEd
 export function cardSummary(catalog: LocalContext): string {
  const stream = catalog.stream, session = catalog.session;
  if (!stream) return "No work card attached";
- return [`Whole effort · ${stream.title} [${stream.title_mode}]`, `ID: ${stream.id} · owner: ${stream.owner.host_id}`, `${stream.status}${stream.archived ? " · archived" : ""}`, `Goal [${stream.goal_mode}]: ${stream.goal ?? "—"}`, ...stream.documents.map((row) => `Document: ${row.repository}@${row.ref}:${row.path} — ${row.description}`), ...[...stream.issues, ...stream.prs].map((row) => `${row.url} — ${row.description}`), "", "This session", session ? `${session.title} [${session.title_mode}] · ${session.status}\nID: ${session.id} · host: ${session.host_id} · membership: ${session.stream_id}\n${session.state}\nRemaining: ${session.remaining}` : "Not yet enrolled", "", "Other recorded contributions", ...catalog.sessions.filter((row) => row.id !== session?.id || row.host_id !== session?.host_id).map((row) => `${row.title} · ${row.host_id} · ${row.status}: ${row.state_short ?? row.state}`)].join("\n");
+ return [`Whole effort · ${stream.title} [${stream.title_mode}]`, `ID: ${stream.id} · owner: ${stream.owner.host_id}`, `${stream.status}${stream.archived ? " · archived" : ""}`, `Goal [${stream.goal_mode}]: ${stream.goal ?? "—"}`, ...stream.documents.map((row) => `Document: ${row.repository}:${row.path} — ${row.description}${row.added_at ? ` · added at ${row.added_at}` : ""} · recovery ref ${row.ref}`), ...[...stream.issues, ...stream.prs].map((row) => `${row.url} — ${row.description}`), "", "This session", session ? `${session.title} [${session.title_mode}] · ${session.status}\nID: ${session.id} · host: ${session.host_id} · membership: ${session.stream_id}\n${session.state}\nRemaining: ${session.remaining}` : "Not yet enrolled", "", "Other recorded contributions", ...catalog.sessions.filter((row) => row.id !== session?.id || row.host_id !== session?.host_id).map((row) => `${row.title} · ${row.host_id} · ${row.status}: ${row.state_short ?? row.state}`)].join("\n");
 }
 /** A small composer built around Pi's editor; unsent input survives close/reopen. */
 export async function compose(ctx: ExtensionContext, state: DiscussionState): Promise<string | undefined> {
@@ -31,17 +31,19 @@ async function referenceRows(ctx: ExtensionContext, field: string, edit: FieldEd
  const stream = edit.base.stream!;
  const rows = structuredClone(edit.value as any[]);
  for (;;) {
-  const action = await ctx.ui.select(`${field}: choose a row${edit.error ? `\n${edit.error}` : ""}`,  [...rows.map((row, i) => `${i + 1}. ${row.url ?? `${row.repository}@${row.ref}:${row.path}`} — ${row.description}`), "Add row", "Done"]);
+  const action = await ctx.ui.select(`${field}: choose a row${edit.error ? `\n${edit.error}` : ""}`,  [...rows.map((row, i) => `${i + 1}. ${row.url ?? `${row.repository}:${row.path}`} — ${row.description}`), "Add row", "Done"]);
   if (!action || action === "Done") {edit.value = rows;return;}
   if (action === "Add row" && field === "documents" && !Object.keys(stream.repositories).length) {ctx.ui.notify("No repository aliases are configured. Add a repository through the Streams CLI before adding a document.", "warning");continue;}
   const index = action === "Add row" ? rows.length : Number(action.split(".")[0]) - 1;
   const existing = rows[index];
-  if (existing) {const choice = await ctx.ui.select("Reference row", ["Edit", "Remove", "Back"]);if (choice === "Remove") {rows.splice(index, 1);continue;}if (choice !== "Edit") continue;}
+  if (existing) {const choice = await ctx.ui.select("Reference row", ["Edit", "Remove", "Back"]);if (choice === "Remove") {rows.splice(index, 1);edit.value = structuredClone(rows);try {validateReferences(field, rows, stream);edit.error = undefined;} catch(error) {edit.error = String(error);}continue;}if (choice !== "Edit") continue;}
   const row: Record<string, string> = {...existing};
   if (field === "documents") {
    const alias = await ctx.ui.select("Existing repository alias", Object.keys(stream.repositories));if (!alias) continue;row.repository = alias;
-   const ref = await ctx.ui.editor("Repository ref", row.ref ?? "");if (ref === undefined) continue;row.ref = ref;
+   const ref = await ctx.ui.editor("Recovery branch/bookmark (does not pin opening)", row.ref ?? "");if (ref === undefined) continue;row.ref = ref;
    const path = await ctx.ui.editor("Portable relative document path", row.path ?? "");if (path === undefined) continue;row.path = path;
+   const added = await ctx.ui.editor("Added-at commit (optional recovery context)", row.added_at ?? "");if (added === undefined) continue;
+   if (added.trim()) row.added_at = added;else delete row.added_at;
   } else {const url = await ctx.ui.editor("HTTP(S) URL", row.url ?? "");if (url === undefined) continue;row.url = url;}
   const description = await ctx.ui.editor("Description", row.description ?? "");if (description === undefined) continue;row.description = description;
   rows[index] = row;edit.value = structuredClone(rows);
