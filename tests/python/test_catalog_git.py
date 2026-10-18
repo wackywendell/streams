@@ -209,7 +209,7 @@ class GitCatalogTest(unittest.TestCase):
     def test_automatic_stale_update_is_retired_instead_of_retrying_forever(self):
         self.publish_initial()
         b = self.open("b", "server")
-        self.a.save(update("infer", effort(), {"title": "Generated title"}, actor="automatic"))
+        self.a.save(update("infer", effort(), {"title": "Generated title"}, actor="automatic", ownership_token="create"))
         b.save(update("human", effort(), {"title": "Human title", "title_mode": "manual"}))
         b.sync()
         self.assertEqual(self.a.sync().sharing, "confirmed")

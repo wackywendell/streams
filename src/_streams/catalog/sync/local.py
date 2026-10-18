@@ -130,12 +130,16 @@ def check_producer(operation: Operation, host_id: str):
         producer = record.host_id if isinstance(record, Session) else record.id
         if producer != host_id:
             raise ValidationError("cannot write another host's producer-owned record")
-    if isinstance(record, Stream) and operation.before is None and record.owner_host_id != host_id:
-        raise ValidationError("new streams must belong to the creating host")
+    if isinstance(record, Stream) and (operation.before is None or operation.actor == "automatic") and record.owner_host_id != host_id:
+        raise ValidationError("stream creation and inference require the owning host")
 
 
 def authority_for(operation: Operation, authorities: dict[str, Authority]) -> Authority | None:
-    return authorities.get(operation.after.stream_id) if isinstance(operation.after, Session) else None
+    if isinstance(operation.after, Session):
+        return authorities.get(operation.after.stream_id)
+    if isinstance(operation.after, Stream):
+        return authorities.get(operation.after.id)
+    return None
 
 
 class LocalCatalog:

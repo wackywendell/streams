@@ -43,7 +43,7 @@ class CatalogOperationsTest(unittest.TestCase):
     def test_agents_cannot_change_personal_lifecycle_or_manual_modes(self):
         for changes in ({"status": "done"}, {"archived": True}, {"title_mode": "manual"}):
             with self.subTest(changes=changes), self.assertRaises(ValidationError):
-                update("automatic", stream(), changes, actor="automatic")
+                update("automatic", stream(), changes, actor="automatic", ownership_token="term-1")
         with self.assertRaises(ValidationError):
             Operation(id="enroll", before=None, after=stream(status="parked"), actor="automatic")
 
@@ -53,7 +53,7 @@ class CatalogOperationsTest(unittest.TestCase):
                                 (session(title_mode="manual"), {"title": "Generated"})):
             with self.subTest(before=before):
                 op = update("auto", before, changes, actor="automatic",
-                            ownership_token=None if isinstance(before, Stream) else "term-1")
+                            ownership_token="term-1")
                 result = reconcile(Catalog(streams=(before,) if isinstance(before, Stream) else (stream(),),
                                            sessions=() if isinstance(before, Stream) else (before,)), op,
                                    authority=Authority(host_id="laptop", token="term-1"))
@@ -83,24 +83,27 @@ class CatalogOperationsTest(unittest.TestCase):
             for actor in ("user", "automatic"):
                 with self.subTest(old_goal=old_goal, new_goal=new_goal, actor=actor):
                     before = stream(goal=old_goal, goal_short="Old" if old_goal else None)
-                    op = update("goal", before, {"goal": new_goal}, actor=actor)
+                    op = update("goal", before, {"goal": new_goal}, actor=actor,
+                                ownership_token="term-1" if actor == "automatic" else None)
                     self.assertEqual(op.after.goal, new_goal)
                     self.assertIsNone(op.after.goal_short)
-                    result = reconcile(Catalog(streams=(before,)), op)
+                    authority = Authority("laptop", "term-1")
+                    result = reconcile(Catalog(streams=(before,)), op, authority=authority)
                     self.assertEqual((result.outcome, result.record), ("changes", op.after))
-                    self.assertEqual(reconcile(Catalog(streams=(result.record,)), op).outcome, "no-change")
+                    self.assertEqual(reconcile(Catalog(streams=(result.record,)), op, authority=authority).outcome, "no-change")
 
     def test_goal_transitions_protect_manual_goals_and_concurrent_overrides(self):
         for old_goal, new_goal in ((None, "Generated"), ("Existing outcome", None)):
             with self.subTest(old_goal=old_goal, new_goal=new_goal):
                 before = stream(goal=old_goal, goal_mode="manual")
-                op = update("automatic", before, {"goal": new_goal}, actor="automatic")
-                self.assertEqual(reconcile(Catalog(streams=(before,)), op).outcome, "superseded")
+                op = update("automatic", before, {"goal": new_goal}, actor="automatic", ownership_token="term-1")
+                self.assertEqual(reconcile(Catalog(streams=(before,)), op, authority=Authority("laptop", "term-1")).outcome, "superseded")
                 before = stream(goal=old_goal)
                 current = replace(before, goal_mode="manual")
                 for actor, outcome in (("user", "conflict"), ("automatic", "superseded")):
-                    op = update("goal", before, {"goal": new_goal}, actor=actor)
-                    self.assertEqual(reconcile(Catalog(streams=(current,)), op).outcome, outcome)
+                    op = update("goal", before, {"goal": new_goal}, actor=actor,
+                                ownership_token="term-1" if actor == "automatic" else None)
+                    self.assertEqual(reconcile(Catalog(streams=(current,)), op, authority=Authority("laptop", "term-1")).outcome, outcome)
                 current = replace(before, goal="Concurrent outcome")
                 op = update("goal", before, {"goal": new_goal})
                 result = reconcile(Catalog(streams=(current,)), op)

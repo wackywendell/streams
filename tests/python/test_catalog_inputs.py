@@ -35,9 +35,10 @@ class CapturedInputsTest(unittest.TestCase):
         effort, contribution = stream(), session()
         for actor, expected in (("automatic", "superseded"), ("user", "conflict")):
             with self.subTest(actor=actor):
-                operation = update("edit", effort, {"title": "New title"}, actor=actor, inputs=(contribution,))
+                operation = update("edit", effort, {"title": "New title"}, actor=actor, inputs=(contribution,),
+                                   ownership_token="term" if actor == "automatic" else None)
                 current = Catalog(streams=(operation.after,), sessions=(replace(contribution, state="Changed"),))
-                self.assertEqual(reconcile(current, operation).outcome, expected)
+                self.assertEqual(reconcile(current, operation, authority=Authority("laptop", "term")).outcome, expected)
 
     def test_missing_captured_record_does_not_become_an_unconditional_edit(self):
         effort = stream()

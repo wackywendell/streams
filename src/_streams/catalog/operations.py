@@ -67,10 +67,10 @@ class Operation:
                 for name in ("stream_id", "harness", "harness_session_id"):
                     if getattr(self.before, name) != getattr(self.after, name):
                         raise ValidationError(f"generic edits cannot change session.{name}")
-        if isinstance(self.after, Session):
-            text(self.ownership_token, "session operation ownership_token")
+        if isinstance(self.after, Session) or (isinstance(self.after, Stream) and self.before is not None and self.actor == "automatic"):
+            text(self.ownership_token, "operation ownership_token")
         elif self.ownership_token is not None:
-            raise ValidationError("only session operations carry an ownership token")
+            raise ValidationError("only session operations and stream inference carry an ownership token")
         if self.actor == "automatic":
             if self.before is None:
                 if isinstance(self.after, Stream) and (self.after.status != "active" or self.after.archived):
@@ -164,7 +164,7 @@ def reconcile(catalog: Catalog, operation: Operation, *, authority: Authority | 
     fence ephemeral conversation or document inputs; a fresh persistence snapshot
     does not verify evidence gathered before inference.
 
-    The coordinator supplies effective session Authority, not a pending owner field,
+    The coordinator supplies effective execution Authority, not a pending owner field,
     persists accepted changes against this snapshot and retains operation identity.
     """
     def refuse(reason: str, conflicts: tuple[str, ...] = (), *, superseded: bool = False) -> Reconciliation:
@@ -176,10 +176,11 @@ def reconcile(catalog: Catalog, operation: Operation, *, authority: Authority | 
             return refuse("captured catalog input changed", ("inputs",), superseded=True)
     after, before = operation.after, operation.before
     current = catalog.get(operation.target)
-    if isinstance(after, Session):
-        if catalog.stream(after.stream_id) is None:
-            return refuse("session stream does not exist", ("stream_id",))
-        if authority is None or authority.host_id != after.host_id or authority.token != operation.ownership_token:
+    if isinstance(after, Session) and catalog.stream(after.stream_id) is None:
+        return refuse("session stream does not exist", ("stream_id",))
+    if operation.ownership_token is not None:
+        host_id = after.host_id if isinstance(after, Session) else after.owner_host_id
+        if authority is None or authority.host_id != host_id or authority.token != operation.ownership_token:
             return refuse("effective ownership changed or is unavailable", ("ownership",), superseded=True)
     if before is None:
         if current is not None:
