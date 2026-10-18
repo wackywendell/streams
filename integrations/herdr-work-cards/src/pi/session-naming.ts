@@ -1,0 +1,75 @@
+import type { ExtensionAPI, ExtensionContext } from '@earendil-works/pi-coding-agent';
+
+export const sessionNamingEntry = 'work-cards.session-naming';
+type NamingAPI = Pick<ExtensionAPI, 'getSessionName' | 'setSessionName' | 'appendEntry'>;
+type Session = ExtensionContext['sessionManager'];
+type Provenance = { version: 1; sessionId: string; acceptedTitle?: string } & (
+  | { acceptedTitle: string; mode?: undefined; name?: never; sessionInfoId?: never }
+  | { mode: 'auto'; name: string; sessionInfoId: string }
+  | { mode: 'manual'; name: string; sessionInfoId?: string }
+);
+type State = { kind: 'absent' | 'malformed' } | { kind: 'valid' | 'foreign'; value: Provenance };
+function provenance(value: unknown): Provenance | undefined {
+  if (!value || typeof value !== 'object' || Array.isArray(value)) return;
+  const p = value as Record<string, unknown>;
+  if (p.version !== 1 || typeof p.sessionId !== 'string' || !p.sessionId) return;
+  if (p.acceptedTitle !== undefined && (typeof p.acceptedTitle !== 'string' || !p.acceptedTitle.trim())) return;
+  if (p.sessionInfoId !== undefined && (typeof p.sessionInfoId !== 'string' || !p.sessionInfoId)) return;
+  if (p.mode === undefined) return p.acceptedTitle !== undefined && p.name === undefined && p.sessionInfoId === undefined ? p as Provenance : undefined;
+  if ((p.mode === 'manual' || (p.mode === 'auto' && typeof p.sessionInfoId === 'string' && p.sessionInfoId)) && typeof p.name === 'string') return p as Provenance;
+}
+function latestState(manager: Session, sessionId: string): State {
+  const entry = manager.getEntries().filter(entry => entry.type === 'custom' && entry.customType === sessionNamingEntry).at(-1);
+  if (!entry) return { kind: 'absent' };
+  const value = entry.type === 'custom' ? provenance(entry.data) : undefined;
+  if (!value) return { kind: 'malformed' };
+  return { kind: value.sessionId === sessionId ? 'valid' : 'foreign', value };
+}
+function checkedState(manager: Session, sessionId: string): State {
+  const state = latestState(manager, sessionId);
+  if (state.kind === 'malformed') throw new Error('Malformed Pi naming state; automatic naming suspended');
+  return state;
+}
+export function sessionTitleReady(manager: Session, sessionId: string, title: string, titleMode: 'auto' | 'manual'): boolean {
+  const state = checkedState(manager, sessionId);
+  return !!title.trim() && (titleMode === 'manual' || (title !== 'Untitled task' && state.kind === 'valid' && state.value.acceptedTitle === title));
+}
+/** Source attribution is independent of Pi manual protection and native projection success. */
+export function acceptSessionTitle(pi: NamingAPI, manager: Session, sessionId: string, title: string, assertCurrent: () => void): void {
+  const state = checkedState(manager, sessionId);
+  const previous = state.kind === 'valid' ? state.value : undefined;
+  assertCurrent();
+  if (manager.getSessionId() !== sessionId) throw new Error('Stale Pi naming session');
+  if (previous?.acceptedTitle === title) return;
+  // A fork may accept its own source, but copied provenance grants no overwrite authority, even for an empty name.
+  const accepted: Provenance = state.kind === 'foreign'
+    ? { version: 1, sessionId, acceptedTitle: title, mode: 'manual', name: pi.getSessionName() ?? '' }
+    : { ...previous, version: 1, sessionId, acceptedTitle: title };
+  pi.appendEntry(sessionNamingEntry, accepted);
+}
+
+/** Session names are global across the entry tree, so their provenance follows file order too. */
+export function projectSessionName(pi: NamingAPI, manager: Session, sessionId: string, title: string, titleMode: 'auto' | 'manual', assertCurrent: () => void): 'renamed' | 'unchanged' | 'manual' | 'skipped' {
+  if (!sessionTitleReady(manager, sessionId, title, titleMode)) return 'skipped';
+  const entries = manager.getEntries();
+  const observedInfo = entries.filter(entry => entry.type === 'session_info').at(-1);
+  const state = checkedState(manager, sessionId);
+  const previous = state.kind === 'valid' ? state.value : undefined;
+  // No asynchronous work is allowed between observing the name, checking identity, and applying it.
+  const observed = pi.getSessionName() ?? '';
+  assertCurrent();
+  if (manager.getSessionId() !== sessionId) throw new Error('Stale Pi naming session');
+  if (previous?.mode === 'manual') return 'manual';
+  if ((previous?.mode === 'auto' && (previous.name !== observed || previous.sessionInfoId !== observedInfo?.id)) || (!previous?.mode && (observed !== '' || observedInfo !== undefined || state.kind === 'foreign'))) {
+    pi.appendEntry(sessionNamingEntry, { ...previous, version: 1, sessionId, mode: 'manual', name: observed } satisfies Provenance);
+    return 'manual';
+  }
+  if (previous?.mode === 'auto' && observed === title) return 'unchanged';
+  pi.setSessionName(title);
+  const applied = manager.getEntries().filter(entry => entry.type === 'session_info').at(-1);
+  assertCurrent();
+  if (manager.getSessionId() !== sessionId || pi.getSessionName() !== title || !applied?.id || applied.name !== title || applied.id === observedInfo?.id) throw new Error('Pi session name application was not acknowledged');
+  // A failed name write must never grant authority. A failed provenance write leaves an unproven name.
+  pi.appendEntry(sessionNamingEntry, { ...previous, version: 1, sessionId, mode: 'auto', name: title, sessionInfoId: applied.id } satisfies Provenance);
+  return 'renamed';
+}
