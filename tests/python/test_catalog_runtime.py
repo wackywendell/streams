@@ -59,6 +59,430 @@ class RuntimeTest(unittest.TestCase):
     def open(self, sessions=(), **kwargs):
         return self.runtime.open(self.stream, sessions, authority=self.authority, **kwargs)
 
+    def test_pending_enrollment_claim_blocks_explicit_open_after_interruption(self):
+        with self.runtime.enrollment() as scope:
+            scope.claim(self.stream.id)
+        with self.assertRaisesRegex(StreamError, 'claim|enrollment'):
+            self.open(cwd=self.cwd)
+        self.herdr.command_result.assert_not_called()
+        self.herdr.run.assert_not_called()
+
+    def test_claim_persistence_and_open_are_serialized_by_stream_lock(self):
+        entered = threading.Event()
+        release = threading.Event()
+        native_creation = threading.Event()
+        write = self.runtime._write
+        def paused_claim(path, data):
+            if 'enrollments' in path.parts:
+                entered.set()
+                self.assertTrue(release.wait(5))
+            return write(path, data)
+        def create(args, expected):
+            native_creation.set()
+            return self.herdr_result(args, expected)
+        def claim():
+            with self.runtime.enrollment() as scope:
+                scope.claim(self.stream.id)
+        self.herdr.command_result.side_effect = create
+        fresh = Runtime(self.root / 'state', 'local', FrontendMode.HERDR)
+        with patch.object(self.runtime, '_write', side_effect=paused_claim), ThreadPoolExecutor(max_workers=2) as pool:
+            one = pool.submit(claim)
+            self.assertTrue(entered.wait(5))
+            two = pool.submit(fresh.open, self.stream, (), authority=self.authority, cwd=self.cwd)
+            try:
+                self.assertFalse(native_creation.wait(0.2))
+            finally:
+                release.set()
+            one.result(timeout=5)
+            with self.assertRaisesRegex(StreamError, 'claim|enrollment'):
+                two.result(timeout=5)
+        self.herdr.command_result.assert_not_called()
+
+    def test_claim_and_bind_reject_same_stream_bound_to_another_workspace(self):
+        self.open(cwd=self.cwd)
+        self.herdr.current_pane.return_value = HerdrPane('p2', 't2', 'w2', '/irrelevant')
+        self.herdr.resolve_workspace.return_value = HerdrWorkspace('w2', 'Second')
+        with self.runtime.enrollment() as scope:
+            for action in (lambda: scope.claim(self.stream.id), lambda: scope.bind(self.stream, authority=self.authority)):
+                with self.assertRaisesRegex(StreamError, 'different|another|workspace'):
+                    action()
+        self.assertFalse(list(self.runtime.state_dir.rglob('enrollments/**/*.json')))
+
+    def test_claim_and_bind_reject_same_stream_claimed_by_another_workspace(self):
+        with self.runtime.enrollment() as scope:
+            scope.claim(self.stream.id)
+        self.herdr.current_pane.return_value = HerdrPane('p2', 't2', 'w2', '/irrelevant')
+        self.herdr.resolve_workspace.return_value = HerdrWorkspace('w2', 'Second')
+        with self.runtime.enrollment() as scope:
+            for action in (lambda: scope.claim(self.stream.id), lambda: scope.bind(self.stream, authority=self.authority)):
+                with self.assertRaisesRegex(StreamError, 'different|another|workspace'):
+                    action()
+        self.assertEqual(len(list(self.runtime.state_dir.rglob('enrollments/**/*.json'))), 1)
+
+    def test_claim_and_bind_reject_pending_native_open(self):
+        _, frontend_scope = self.runtime._transport(FrontendMode.HERDR)
+        with self.runtime._open_lock(frontend_scope, self.stream.id) as attempt:
+            self.runtime._write(attempt, {'stream_id': self.stream.id, 'session_id': None,
+                                         'command': None, 'cwd': str(self.cwd), 'workspace_id': None})
+        with self.runtime.enrollment() as scope:
+            for action in (lambda: scope.claim(self.stream.id), lambda: scope.bind(self.stream, authority=self.authority)):
+                with self.assertRaisesRegex(StreamError, 'pending|partial'):
+                    action()
+        self.assertFalse(list(self.runtime.state_dir.rglob('enrollments/**/*.json')))
+
+    def test_enrollment_does_not_retroactively_claim_open_created_workspace(self):
+        self.open(cwd=self.cwd)
+        with self.runtime.enrollment() as scope:
+            scope.claim(self.stream.id)
+            scope.bind(self.stream, authority=self.authority)
+        self.assertFalse(list(self.runtime.state_dir.rglob('enrollments/**/*.json')))
+        with self.assertRaisesRegex(StreamError, 'different session'):
+            self.open((self.session,))
+        self.assertEqual(self.herdr.command_result.call_count, 1)
+
+    def test_open_and_claim_fail_closed_on_all_claim_files(self):
+        with self.runtime.enrollment() as scope:
+            scope.claim('other-stream')
+        claim = next(self.runtime.state_dir.rglob('enrollments/**/*.json'))
+        original = claim.read_text()
+        self.herdr.current_pane.return_value = HerdrPane('p2', 't2', 'w2', '/irrelevant')
+        self.herdr.resolve_workspace.return_value = HerdrWorkspace('w2', 'Second')
+        for failure in ('corrupt', 'symlink', 'wrong-name'):
+            claim.write_text(original)
+            target = None
+            if failure == 'corrupt':
+                claim.write_text('{broken')
+            elif failure == 'symlink':
+                target = self.root / 'external.json'
+                claim.rename(target)
+                claim.symlink_to(target)
+            else:
+                target = claim
+                claim = claim.with_name('wrong-hash.json')
+                target.rename(claim)
+            try:
+                with self.subTest(failure=failure):
+                    with self.assertRaises(StreamError):
+                        self.open(cwd=self.cwd)
+                    with self.runtime.enrollment() as scope:
+                        with self.assertRaises(StreamError):
+                            scope.claim(self.stream.id)
+            finally:
+                if failure == 'symlink':
+                    claim.unlink()
+                    target.rename(claim)
+                elif failure == 'wrong-name':
+                    claim.rename(target)
+                    claim = target
+        self.herdr.command_result.assert_not_called()
+
+    def test_enrollment_binds_without_native_mutations_and_reuses_identity(self):
+        with self.runtime.enrollment() as scope:
+            self.assertIsNone(scope.stream_id)
+            scope.claim(self.stream.id)
+            self.assertEqual(scope.stream_id, self.stream.id)
+            scope.bind(self.stream, authority=self.authority)
+        fresh = Runtime(self.root / 'state', 'local', FrontendMode.HERDR)
+        with fresh.enrollment() as scope:
+            self.assertEqual(scope.stream_id, self.stream.id)
+            scope.bind(self.stream, authority=self.authority)
+        self.assertEqual(fresh.current_stream_id(), self.stream.id)
+        binding = next(fresh.state_dir.rglob('associations/**/*.json'))
+        self.assertEqual(json.loads(binding.read_text()), {
+            'version': 1, 'stream_id': self.stream.id, 'workspace_id': 'w1',
+            'session_id': None, 'command': None, 'ready': True,
+        })
+        self.herdr.command_result.assert_not_called()
+        self.herdr.run.assert_not_called()
+
+    def test_enrollment_requires_effective_authority_even_without_native_context(self):
+        for mode in (FrontendMode.HERDR, FrontendMode.NONE, FrontendMode.AUTO):
+            runtime = Runtime(self.root / str(mode), 'local', mode)
+            with runtime.enrollment() as scope:
+                for authority in (None, Authority('remote', 'epoch')):
+                    with self.assertRaisesRegex(StreamError, 'authority'):
+                        scope.bind(self.stream, authority=authority)
+                scope.bind(replace(self.stream, owner_host_id='remote'), authority=self.authority)
+
+    def test_enrollment_no_frontend_has_no_native_or_runtime_effects(self):
+        for mode in (FrontendMode.NONE, FrontendMode.AUTO):
+            runtime = Runtime(self.root / str(mode), 'local', mode)
+            with runtime.enrollment() as scope:
+                self.assertIsNone(scope.stream_id)
+                scope.claim(self.stream.id)
+                scope.bind(self.stream, authority=self.authority)
+            self.assertFalse(runtime.state_dir.exists())
+        self.herdr.endpoint.assert_not_called()
+        self.herdr.current_pane.assert_not_called()
+        self.herdr.run.assert_not_called()
+
+    def test_enrollment_explicit_identity_without_native_context_cannot_be_replaced(self):
+        runtime = Runtime(self.root / 'state', 'local', FrontendMode.NONE)
+        with patch.dict(os.environ, {'STREAMS_STREAM_ID': self.stream.id}):
+            with runtime.enrollment() as scope:
+                self.assertEqual(scope.stream_id, self.stream.id)
+                with self.assertRaisesRegex(StreamError, 'different|replace'):
+                    scope.claim('another')
+                scope.bind(self.stream, authority=self.authority)
+        self.assertFalse(runtime.state_dir.exists())
+
+    def test_enrollment_claim_requires_a_chosen_nonempty_identity(self):
+        with self.runtime.enrollment() as scope:
+            for invalid in (None, '', ' ', '\x00'):
+                with self.assertRaisesRegex(StreamError, 'nonempty'):
+                    scope.claim(invalid)
+            self.assertIsNone(scope.stream_id)
+
+    def test_enrollment_cross_process_lock_covers_claim_and_bind(self):
+        probe = '''import fcntl, sys
+with open(sys.argv[1]) as handle:
+    try:
+        fcntl.flock(handle, fcntl.LOCK_EX | fcntl.LOCK_NB)
+    except BlockingIOError:
+        sys.exit(0)
+sys.exit(1)
+'''
+        with self.runtime.enrollment() as scope:
+            lock = next(self.runtime.state_dir.rglob('enrollments/**/*.lock'))
+            for action in (lambda: None, lambda: scope.claim(self.stream.id),
+                           lambda: scope.bind(self.stream, authority=self.authority)):
+                action()
+                result = subprocess.run([sys.executable, '-c', probe, str(lock)], capture_output=True, text=True, timeout=5)
+                self.assertEqual(result.returncode, 0, result.stderr)
+        released = subprocess.run([sys.executable, '-c', probe, str(lock)], capture_output=True, text=True, timeout=5)
+        self.assertEqual(released.returncode, 1, released.stderr)
+
+    def test_enrollment_claim_survives_catalog_failure_and_rejects_replacement(self):
+        with self.assertRaisesRegex(ValueError, 'catalog failed'):
+            with self.runtime.enrollment() as scope:
+                scope.claim(self.stream.id)
+                raise ValueError('catalog failed')
+        fresh = Runtime(self.root / 'state', 'local', FrontendMode.HERDR)
+        with fresh.enrollment() as scope:
+            self.assertEqual(scope.stream_id, self.stream.id)
+            with self.assertRaisesRegex(StreamError, 'different|mismatch|replace'):
+                scope.claim('another')
+            with self.assertRaisesRegex(StreamError, 'different|mismatch|replace'):
+                scope.bind(replace(self.stream, id='another'), authority=self.authority)
+            scope.bind(self.stream, authority=self.authority)
+
+    def test_enrollment_unconfirmed_claim_durability_keeps_retry_identity(self):
+        with self.runtime.enrollment() as scope:
+            with patch.object(self.runtime, '_sync_directory', side_effect=OSError('sync failed')):
+                with self.assertRaisesRegex(StreamError, 'sync failed'):
+                    scope.claim(self.stream.id)
+        fresh = Runtime(self.root / 'state', 'local', FrontendMode.HERDR)
+        with fresh.enrollment() as scope:
+            self.assertEqual(scope.stream_id, self.stream.id)
+            scope.bind(self.stream, authority=self.authority)
+
+    def test_enrollment_claim_schema_and_symlinks_fail_closed(self):
+        with self.runtime.enrollment() as scope:
+            scope.claim(self.stream.id)
+        path = next(self.runtime.state_dir.rglob('enrollments/**/*.json'))
+        original = path.read_text()
+        data = json.loads(original)
+        for change in ({'stream_id': None}, {'workspace_id': 'wrong'}, {'extra': True}, {'version': True}):
+            path.write_text(json.dumps({**data, **change}))
+            with self.subTest(change=change), self.assertRaises(StreamError):
+                with self.runtime.enrollment():
+                    pass
+        path.write_text(original.replace('"version": 1', '"version": 1, "version": 1'))
+        with self.assertRaisesRegex(StreamError, 'duplicate JSON'):
+            with self.runtime.enrollment():
+                pass
+        target = self.root / 'external-claim.json'
+        path.rename(target)
+        path.symlink_to(target)
+        with self.assertRaisesRegex(StreamError, 'symlink'):
+            with self.runtime.enrollment():
+                pass
+
+    def test_enrollment_scope_is_exact_workspace_and_frontend_endpoint(self):
+        with self.runtime.enrollment() as first:
+            first.claim(self.stream.id)
+            self.herdr.endpoint.return_value = HerdrEndpoint('/another.sock', None)
+            with self.runtime.enrollment() as endpoint:
+                self.assertIsNone(endpoint.stream_id)
+                endpoint.claim('endpoint-stream')
+            self.herdr.endpoint.return_value = HerdrEndpoint('/herdr.sock', None)
+            self.herdr.current_pane.return_value = HerdrPane('p2', 't2', 'w2', '/irrelevant')
+            self.herdr.resolve_workspace.return_value = HerdrWorkspace('w2', 'Second')
+            with self.runtime.enrollment() as workspace:
+                self.assertIsNone(workspace.stream_id)
+                workspace.claim('workspace-stream')
+        self.herdr.current_pane.return_value = HerdrPane('p1', 't1', 'w1', '/irrelevant')
+        self.herdr.resolve_workspace.return_value = HerdrWorkspace('w1', 'Example')
+        with self.runtime.enrollment() as original:
+            self.assertEqual(original.stream_id, self.stream.id)
+
+    def test_enrollment_failed_bind_preserves_claim_for_explicit_retry(self):
+        write = self.runtime._write
+        def fail_binding(path, data):
+            if 'associations' in path.parts:
+                raise StreamError('disk failed')
+            return write(path, data)
+        with self.runtime.enrollment() as scope:
+            scope.claim(self.stream.id)
+            with patch.object(self.runtime, '_write', side_effect=fail_binding):
+                with self.assertRaisesRegex(StreamError, 'claim|retry|inspect'):
+                    scope.bind(self.stream, authority=self.authority)
+        fresh = Runtime(self.root / 'state', 'local', FrontendMode.HERDR)
+        with fresh.enrollment() as scope:
+            self.assertEqual(scope.stream_id, self.stream.id)
+            scope.bind(self.stream, authority=self.authority)
+
+    def test_enrollment_explicit_identity_detects_native_mismatch(self):
+        with self.runtime.enrollment() as scope:
+            scope.bind(self.stream, authority=self.authority)
+        with patch.dict(os.environ, {'STREAMS_STREAM_ID': 'another'}):
+            with self.assertRaisesRegex(StreamError, 'mismatch|different'):
+                with self.runtime.enrollment():
+                    self.fail('mismatched explicit identity accepted')
+        with patch.dict(os.environ, {'STREAMS_STREAM_ID': ''}):
+            with self.assertRaisesRegex(StreamError, 'STREAMS_STREAM_ID'):
+                with self.runtime.enrollment():
+                    pass
+
+    def test_enrollment_explicit_identity_is_available_without_binding(self):
+        with patch.dict(os.environ, {'STREAMS_STREAM_ID': self.stream.id}):
+            with self.runtime.enrollment() as scope:
+                self.assertEqual(scope.stream_id, self.stream.id)
+                with self.assertRaisesRegex(StreamError, 'different|mismatch|replace'):
+                    scope.bind(replace(self.stream, id='another'), authority=self.authority)
+                scope.bind(self.stream, authority=self.authority)
+
+    def test_enrollment_rejects_nonready_and_corrupt_associations(self):
+        with self.runtime.enrollment() as scope:
+            scope.bind(self.stream, authority=self.authority)
+        path = next(self.runtime.state_dir.rglob('associations/**/*.json'))
+        data = json.loads(path.read_text())
+        data['ready'] = False
+        path.write_text(json.dumps(data))
+        with self.assertRaisesRegex(StreamError, 'partial|ready'):
+            with self.runtime.enrollment():
+                pass
+        path.write_text('{broken')
+        with self.assertRaisesRegex(StreamError, 'runtime state'):
+            with self.runtime.enrollment():
+                pass
+
+    def test_enrollment_rejects_corrupt_or_conflicting_claim(self):
+        with self.runtime.enrollment() as scope:
+            scope.bind(self.stream, authority=self.authority)
+        path = next(self.runtime.state_dir.rglob('enrollments/**/*.json'))
+        data = json.loads(path.read_text())
+        data['stream_id'] = 'another'
+        path.write_text(json.dumps(data))
+        with self.assertRaisesRegex(StreamError, 'mismatch|different'):
+            with self.runtime.enrollment():
+                pass
+        data['workspace_id'] = 'another-workspace'
+        path.write_text(json.dumps(data))
+        with self.assertRaisesRegex(StreamError, 'identity'):
+            with self.runtime.enrollment():
+                pass
+        path.write_text('{broken')
+        with self.assertRaisesRegex(StreamError, 'runtime state'):
+            with self.runtime.enrollment():
+                pass
+
+    def test_enrollment_exact_herdr_confirmation_and_native_errors_fail_closed(self):
+        self.herdr.resolve_workspace.return_value = HerdrWorkspace('other', 'Other')
+        with self.assertRaisesRegex(StreamError, 'exact|mismatch'):
+            with self.runtime.enrollment():
+                pass
+        self.herdr.resolve_workspace.side_effect = StreamError('native unavailable')
+        with self.assertRaisesRegex(StreamError, 'native unavailable'):
+            with self.runtime.enrollment():
+                pass
+
+    def test_enrollment_auto_does_not_swallow_incomplete_or_ambiguous_context(self):
+        runtime = Runtime(self.root / 'state', 'local', FrontendMode.AUTO)
+        for env in ({'HERDR_ENV': '1'}, {'HERDR_ENV': '1', 'HERDR_PANE_ID': 'p', 'CMUX_WORKSPACE_ID': 'w'}):
+            with patch.dict(os.environ, env), self.assertRaises(StreamError):
+                with runtime.enrollment():
+                    pass
+        self.herdr.endpoint.assert_not_called()
+
+    def test_enrollment_explicit_identity_does_not_hide_native_errors(self):
+        self.herdr.current_pane.side_effect = StreamError('caller unavailable')
+        with patch.dict(os.environ, {'STREAMS_STREAM_ID': self.stream.id}):
+            with self.assertRaisesRegex(StreamError, 'caller unavailable'):
+                with self.runtime.enrollment():
+                    pass
+
+    def test_enrollment_cmux_requires_exact_caller_uuid(self):
+        runtime = Runtime(self.root / 'state', 'local', FrontendMode.CMUX)
+        with patch('_streams.catalog_runtime.CmuxClient') as transport:
+            client = transport.return_value
+            client.workspaces.return_value = [CmuxWorkspace({'id': 'uuid-1', 'ref': 'workspace:1', 'title': 'Example'})]
+            for workspace in (None, 'workspace:1', 'unknown'):
+                env = {} if workspace is None else {'CMUX_WORKSPACE_ID': workspace}
+                with patch.dict(os.environ, env), self.assertRaisesRegex(StreamError, 'exact|caller'):
+                    with runtime.enrollment():
+                        pass
+            with patch.dict(os.environ, {'CMUX_WORKSPACE_ID': 'uuid-1'}):
+                with runtime.enrollment() as scope:
+                    scope.bind(self.stream, authority=self.authority)
+            client.run.assert_not_called()
+            client.json_from_command.assert_not_called()
+
+    def test_enrollment_scopes_converge_while_lock_covers_catalog_callback(self):
+        entered = threading.Event()
+        release = threading.Event()
+        second_entered = threading.Event()
+        def first():
+            with self.runtime.enrollment() as scope:
+                scope.claim(self.stream.id)
+                entered.set()
+                self.assertTrue(release.wait(5))
+                scope.bind(self.stream, authority=self.authority)
+        def second():
+            fresh = Runtime(self.root / 'state', 'local', FrontendMode.HERDR)
+            with fresh.enrollment() as scope:
+                second_entered.set()
+                return scope.stream_id
+        with ThreadPoolExecutor(max_workers=2) as pool:
+            one = pool.submit(first)
+            self.assertTrue(entered.wait(5))
+            two = pool.submit(second)
+            try:
+                self.assertFalse(second_entered.wait(0.2))
+            finally:
+                release.set()
+            one.result(timeout=5)
+            self.assertEqual(two.result(timeout=5), self.stream.id)
+
+    def test_enrollment_scope_cannot_bind_after_exit(self):
+        with self.runtime.enrollment() as scope:
+            scope.claim(self.stream.id)
+        with self.assertRaisesRegex(StreamError, 'scope|closed'):
+            scope.bind(self.stream, authority=self.authority)
+
+    def test_enrolled_sessionless_workspace_open_only_focuses(self):
+        with self.runtime.enrollment() as scope:
+            scope.bind(self.stream, authority=self.authority)
+        result = self.open((self.session,), cwd=self.cwd)
+        self.assertTrue(result['reused'])
+        self.assertIsNone(result['session_id'])
+        self.herdr.command_result.assert_not_called()
+        self.herdr.run.assert_called_once_with(['workspace', 'focus', 'w1'])
+
+    def test_enrolled_sessionless_cmux_open_never_starts_selected_session(self):
+        runtime = Runtime(self.root / 'state', 'local', FrontendMode.CMUX)
+        with patch('_streams.catalog_runtime.CmuxClient') as transport:
+            client = transport.return_value
+            client.workspaces.return_value = [CmuxWorkspace({'id': 'uuid-1', 'title': 'Example'})]
+            with patch.dict(os.environ, {'CMUX_WORKSPACE_ID': 'uuid-1'}):
+                with runtime.enrollment() as scope:
+                    scope.bind(self.stream, authority=self.authority)
+            result = runtime.open(self.stream, (self.session,), authority=self.authority, cwd=self.cwd)
+            self.assertTrue(result['reused'])
+            self.assertIsNone(result['session_id'])
+            client.run.assert_called_once_with(['cmux', 'select-workspace', '--workspace', 'uuid-1'])
+            client.json_from_command.assert_not_called()
+
     def test_missing_mapping_requires_explicit_cwd(self):
         with self.assertRaisesRegex(StreamError, '--cwd'):
             self.open()
@@ -381,6 +805,7 @@ sys.exit(1)
     def test_current_herdr_uses_live_pane_workspace_not_environment_hint(self):
         self.open(cwd=self.cwd)
         self.herdr.current_pane.return_value = HerdrPane('p2', 't2', 'other', str(self.cwd))
+        self.herdr.resolve_workspace.return_value = HerdrWorkspace('other', 'Other')
         with patch.dict(os.environ, {'HERDR_WORKSPACE_ID': 'w1'}):
             with self.assertRaisesRegex(StreamError, 'association'):
                 self.runtime.current_stream_id()

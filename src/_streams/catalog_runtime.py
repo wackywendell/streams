@@ -14,6 +14,7 @@ import os
 import tempfile
 import uuid
 from pathlib import Path
+from typing import Iterator
 
 from .agent_sessions import Agent, AgentSessionCommand
 from .catalog.model import Session, Stream
@@ -39,6 +40,69 @@ def _object_pairs(pairs: list[tuple[str, object]]) -> dict:
             raise ValueError(f'duplicate JSON key {key!r}')
         data[key] = value
     return data
+
+
+class Enrollment:
+    """One caller-workspace enrollment, usable only while its scope is open."""
+
+    def __init__(self, runtime: Runtime, stream_id: str | None, workspace_id: str | None,
+                 claim_path: Path | None, association_path: Path | None, binding: dict | None,
+                 scope: str | None = None) -> None:
+        self._runtime = runtime
+        self._scope = scope
+        self._stream_id = stream_id
+        self._workspace_id = workspace_id
+        self._claim_path = claim_path
+        self._association_path = association_path
+        self._binding = binding
+        self._active = True
+
+    @property
+    def stream_id(self) -> str | None:
+        return self._stream_id
+
+    def claim(self, stream_id: str) -> None:
+        """Durably reserve the chosen identity before saving catalog records."""
+        if not self._active:
+            raise StreamError('enrollment scope is closed')
+        if not _text(stream_id):
+            raise StreamError('enrollment claim requires a nonempty stream ID')
+        if self.stream_id is not None and self.stream_id != stream_id:
+            raise StreamError(f'enrollment has a different stream identity {self.stream_id!r}; refusing replacement')
+        if self._claim_path is None:
+            self._stream_id = stream_id
+            return
+        # The workspace lock is already held. Never acquire it from open(),
+        # which takes only this per-stream lock and must see claims before launch.
+        with self._runtime._open_lock(self._scope, stream_id):
+            bindings = self._runtime._associations(self._scope)
+            claims = self._runtime._enrollment_claims(self._scope)
+            if any(record['stream_id'] == stream_id and record['workspace_id'] != self._workspace_id
+                   for record in (*bindings, *claims)):
+                raise StreamError(f'stream {stream_id!r} already has an association or claim in another workspace; inspect runtime state')
+            self._stream_id = stream_id
+            # An open-created binding is not evidence of automatic enrollment.
+            # Do not retroactively bypass its exact-session reuse guard.
+            if self._binding is not None and not any(record['workspace_id'] == self._workspace_id for record in claims):
+                return
+            self._runtime._write(self._claim_path, {'stream_id': stream_id, 'workspace_id': self._workspace_id})
+
+    def bind(self, stream: Stream, *, authority: Authority | None) -> None:
+        """Bind the claimed stream without starting, focusing or renaming native resources."""
+        if not self._active:
+            raise StreamError('enrollment scope is closed')
+        self._runtime._authorize(authority)
+        self.claim(stream.id)
+        if self._association_path is None or self._binding is not None:
+            return
+        binding = {'stream_id': stream.id, 'workspace_id': self._workspace_id,
+                   'session_id': None, 'command': None, 'ready': True}
+        try:
+            self._runtime._write(self._association_path, binding)
+        except StreamError as exc:
+            raise StreamError(f'enrollment bind failed; claim for {stream.id!r} retained at {self._claim_path}; '
+                              f'inspect state and retry this identity; no rollback: {exc}') from exc
+        self._binding = binding
 
 
 class Runtime:
@@ -101,6 +165,21 @@ class Runtime:
             yield attempt
         finally:
             os.close(descriptor)
+
+    @contextmanager
+    def _enrollment_lock(self, path: Path):
+        descriptor = None
+        try:
+            try:
+                path.parent.mkdir(parents=True, exist_ok=True)
+                descriptor = os.open(path.with_suffix('.lock'), os.O_CREAT | os.O_RDWR | os.O_NOFOLLOW, 0o600)
+                fcntl.flock(descriptor, fcntl.LOCK_EX)
+            except OSError as exc:
+                raise StreamError(f'could not lock enrollment state {path}: {exc}') from exc
+            yield
+        finally:
+            if descriptor is not None:
+                os.close(descriptor)
 
     def _directory_path(self, stream_id: str, session_id: str | None) -> Path:
         return self.state_dir / 'directories' / (_key(stream_id, session_id) + '.json')
@@ -203,6 +282,77 @@ class Runtime:
             raise StreamError(f'invalid association identity in runtime state: {path}')
         return data
 
+    def _associations(self, scope: str) -> list[dict]:
+        return [binding for path in (self.state_dir / 'associations' / scope).glob('*.json')
+                if (binding := self._association(path)) is not None]
+
+    def _enrollment_path(self, scope: str, workspace_id: str) -> Path:
+        return self.state_dir / 'enrollments' / scope / (_key(workspace_id) + '.json')
+
+    def _enrollment_claim(self, path: Path, workspace_id: str | None = None) -> dict | None:
+        claim = self._read(path, {'stream_id', 'workspace_id'})
+        if claim is not None and (not _text(claim['stream_id']) or not _text(claim['workspace_id'])
+                                  or path.name != _key(claim['workspace_id']) + '.json'
+                                  or (workspace_id is not None and claim['workspace_id'] != workspace_id)):
+            raise StreamError(f'invalid enrollment claim identity: {path}')
+        return claim
+
+    def _enrollment_claims(self, scope: str) -> list[dict]:
+        return [claim for path in (self.state_dir / 'enrollments' / scope).glob('*.json')
+                if (claim := self._enrollment_claim(path)) is not None]
+
+    def _caller_workspace(self, selected: Frontend, client) -> str:
+        if selected == Frontend.HERDR:
+            workspace_id = client.current_pane().workspace_id
+            if not _text(workspace_id) or client.resolve_workspace(workspace_id).id != workspace_id:
+                raise StreamError('could not confirm exact Herdr caller workspace ID; workspace mismatch')
+        else:
+            workspace_id = os.environ.get('CMUX_WORKSPACE_ID')
+            if not _text(workspace_id):
+                raise StreamError('current CMUX targeting requires exact caller workspace context')
+            matches = [w for w in client.workspaces() if w.id == workspace_id]
+            if len(matches) != 1:
+                raise StreamError('could not confirm exact CMUX caller workspace ID; no focused-workspace fallback')
+        return workspace_id
+
+    @contextmanager
+    def enrollment(self, frontend: str | None = None) -> Iterator[Enrollment]:
+        """Serialize enrollment and catalog saves for the exact calling native workspace.
+
+        Call claim(chosen_id) before creating catalog records, then bind() after
+        saves. A surviving claim is returned on retry even if no Stream was saved.
+        """
+        explicit = os.environ.get('STREAMS_STREAM_ID')
+        if explicit is not None and not _text(explicit):
+            raise StreamError('STREAMS_STREAM_ID must be a nonempty stream ID')
+        selected = resolve_frontend(self.frontend_mode, frontend, os.environ).resolved
+        if selected is None:
+            enrollment = Enrollment(self, explicit, None, None, None, None)
+            try:
+                yield enrollment
+            finally:
+                enrollment._active = False
+            return
+        client, scope = self._transport(selected)
+        workspace_id = self._caller_workspace(selected, client)
+        path = self._enrollment_path(scope, workspace_id)
+        with self._enrollment_lock(path):
+            association_path = self._association_path(scope, workspace_id)
+            binding = self._association(association_path)
+            if binding is not None and not binding['ready']:
+                raise StreamError(f'workspace {workspace_id} has a partial open; inspect native state before enrollment')
+            claim = self._enrollment_claim(path, workspace_id)
+            identities = {value for value in (explicit, binding['stream_id'] if binding else None,
+                                              claim['stream_id'] if claim else None) if value is not None}
+            if len(identities) > 1:
+                raise StreamError(f'enrollment identity mismatch for workspace {workspace_id}; '
+                                  f'inspect association and claim at {path}; refusing replacement')
+            enrollment = Enrollment(self, next(iter(identities), None), workspace_id, path, association_path, binding, scope)
+            try:
+                yield enrollment
+            finally:
+                enrollment._active = False
+
     def current_stream_id(self, *, frontend: str | None = None) -> str:
         if 'STREAMS_STREAM_ID' in os.environ:
             explicit = os.environ['STREAMS_STREAM_ID']
@@ -211,16 +361,7 @@ class Runtime:
             return explicit
         selected = self._frontend(frontend)
         client, scope = self._transport(selected)
-        if selected == Frontend.HERDR:
-            workspace_id = client.current_pane().workspace_id
-            client.resolve_workspace(workspace_id)
-        else:
-            workspace_id = os.environ.get('CMUX_WORKSPACE_ID')
-            if not workspace_id:
-                raise StreamError('current CMUX targeting requires exact caller workspace context')
-            matches = [w for w in client.workspaces() if w.id == workspace_id]
-            if len(matches) != 1:
-                raise StreamError('could not confirm exact CMUX caller workspace ID; no focused-workspace fallback')
+        workspace_id = self._caller_workspace(selected, client)
         binding = self._association(self._association_path(scope, workspace_id))
         if binding is None:
             raise StreamError(f'workspace {workspace_id} has no catalog association; open an explicit stream first')
@@ -235,11 +376,12 @@ class Runtime:
         selected = self._frontend(frontend)
         client, scope = self._transport(selected)
         with self._open_lock(scope, stream.id) as attempt_path:
-            bindings = []
-            for path in (self.state_dir / 'associations' / scope).glob('*.json'):
-                binding = self._association(path)
-                if binding is not None and binding['stream_id'] == stream.id:
-                    bindings.append(binding)
+            bindings = [binding for binding in self._associations(scope) if binding['stream_id'] == stream.id]
+            for claim in self._enrollment_claims(scope):
+                if claim['stream_id'] == stream.id and not any(binding['workspace_id'] == claim['workspace_id'] and binding['ready']
+                                                               for binding in bindings):
+                    raise StreamError(f'pending or unmatched enrollment claim for {stream.id!r} in workspace {claim["workspace_id"]}; '
+                                      'inspect runtime state and reconcile this identity; no automatic relaunch')
             if len(bindings) > 1:
                 raise StreamError('multiple native workspace associations for this stream; inspect runtime state before retrying')
             if bindings:
@@ -256,7 +398,11 @@ class Runtime:
                     raise StreamError(f'stale recorded workspace {workspace_id}: {exc}. Inspect native state and the local association; no automatic relaunch') from exc
                 if not binding['ready']:
                     raise StreamError(f'workspace {workspace_id} has a partial open; inspect native state before retrying; no automatic relaunch')
-                if binding['session_id'] != (session.id if session else None) or binding['command'] != (command.command_text if command else None):
+                claim = self._enrollment_claim(self._enrollment_path(scope, workspace_id), workspace_id)
+                if claim is not None and claim['stream_id'] != stream.id:
+                    raise StreamError('enrollment claim and workspace association identity mismatch; inspect runtime state')
+                enrolled_sessionless = binding['session_id'] is None and claim is not None
+                if not enrolled_sessionless and (binding['session_id'] != (session.id if session else None) or binding['command'] != (command.command_text if command else None)):
                     raise StreamError(f'workspace {workspace_id} has a different session; refusing to duplicate or replace it; inspect native state')
                 if cwd is not None:
                     self.remember_directory(stream.id, directory, session_id=session.id if session else None)
