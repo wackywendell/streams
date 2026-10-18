@@ -54,14 +54,15 @@ Initialization creates an empty bootstrap locally if the remote branch does not 
 from _streams.catalog.model import Session
 
 created = catalog.save(creation, origin={"session": "native-session-id"})
-if created.local == "committed" or (created.domain and created.domain.outcome == "no-change"):
+if created.accepted:
     authority = catalog.authority(stream.id)
     session = Session(id=str(uuid4()), host_id="laptop", stream_id=stream.id,
                       harness="pi", harness_session_id="native-session-id", title="Investigate indexing")
     joined = catalog.save(Operation(id=str(uuid4()), before=None, after=session,
                                     actor="automatic", ownership_token=authority.token))
     from _streams.catalog.sync import SyncCoordinator
-    publication = SyncCoordinator(catalog).maybe_sync("session")
+    if joined.accepted:
+        publication = SyncCoordinator(catalog).maybe_sync("session")
 ```
 
 The initial creation operation establishes local ownership without a push. Generic operations cannot transfer ownership or reattach a session. `handover()` explicitly raises `NotImplementedError`; the domain handover coordinator is a follow-on.
@@ -115,7 +116,9 @@ On a genuine domain conflict, the primary view remains the complete local catalo
 
 Reads do not change live record files, index, HEAD or pending publication markers. Pending projected state never grants ownership; authority still comes from validated confirmed history or genuine local creation provenance. Unsupported history or repair-required state fails closed rather than becoming an ordinary offline warning. `inspect_remote()` remains an unconditional low-level fetch returning only a confirmed snapshot; `confirmed_snapshot()` reads that snapshot without network access.
 
-A `Result` separates the domain outcome, local save and sharing state. In particular:
+A `Result` separates the domain outcome, local save and sharing state. `accepted` is true only for an accepted domain save without a local repair condition; a publication result alone is never an accepted save. `requires_repair` stops follow-on catalog writes. `needs_attention` also includes ordinary publication failures and uncertainty: these warn without undoing local acceptance. CLI receipts can therefore contain accepted saves and a repair-required publication result together. Callers must stop dependent effects while retaining every save receipt.
+
+In particular:
 
 - `committed` with `pending` is a successful local save, not a failed edit
 - `blocked` with conflict details means the entire outgoing push stopped; local commits remain available
@@ -156,7 +159,9 @@ git log --format=fuller
 git for-each-ref refs/catalog/retained/
 ```
 
-Read the marker files as JSON. Operation messages use the `Streams operation v1` header and can be decoded with `decode_operation(message)`. Compare the marker's starting commit, original operation, changed files, index and resulting commit. A valid record alone is insufficient: every operation commit must explain exactly its intended record change through domain reconciliation.
+Read the marker files as JSON. Existing configuration, timing and publication records are parsed into immutable supported shapes before effects. Malformed timing, an incomplete marker or an unknown phase is repair-required, not an ordinary offline result; access preserves the existing bookkeeping bytes. Do not repair such metadata by deleting the evidence or assigning a new retry baseline.
+
+Operation messages use the `Streams operation v1` header and can be decoded with `decode_operation(message)`. Compare the marker's starting commit, original operation, changed files, index and resulting commit. A valid record alone is insufficient: every operation commit must explain exactly its intended record change through domain reconciliation.
 
 If the original operation was fully committed, verify its envelope, parent and materialized record before clearing the leftover save marker. The next coordinated history read establishes missing retry receipts before any local operation can retire. Fetched operations are checked against those receipts before becoming the confirmed snapshot.
 

@@ -1,14 +1,14 @@
-# Catalog sync implementation handoff
+# Catalog sync implementation contract
 
-Design draft for the next implementation model. The [sync ADR](../docs/catalog-git-sync.md) owns the decisions and rationale. The [catalog ADR](../docs/durable-work-catalog.md) owns record meaning and lifecycle. This plan defines the first sync slice against `durable-catalog-foundation`; it does not authorise changing the installed runtime or creating a hosted repository.
+The [sync ADR](../docs/catalog-git-sync.md) owns the decisions and rationale; the [protocol-boundary ADR](../docs/catalog-protocol-boundaries.md) explains their structural enforcement. The [catalog ADR](../docs/durable-work-catalog.md) owns record meaning and lifecycle. This document records backend and integration contracts, not authority to change an installed catalog or create a hosted repository. The library, CLI coordinator and Pi lifecycle hooks are implemented; local-only import, handover and credentialed multi-host acceptance remain follow-on work.
 
 ## Scope and existing contracts
 
-Implement local-only coordination and a file-backed Git strategy. Keep policy, Git subprocess handling and domain reconciliation separate. Do not add a general backend framework, a daemon, automatic migration, frontend changes or agent inference.
+The backend provides local-only coordination and a file-backed Git strategy. Keep policy, Git subprocess handling and domain reconciliation separate. CLI and Pi integrations supply events; the backend does not perform agent inference or frontend actions. A general backend framework, daemon and automatic migration remain outside this scope.
 
 The foundation provides:
 
-- `catalog.operations.Operation`: stable ID, original before/after records, actor and session ownership precondition
+- `catalog.operations.Operation`: stable ID, original before/after records, actor, captured logical inputs and ownership precondition
 - `catalog.operations.reconcile`: pure changed/no-change/superseded/conflict results
 - `catalog.storage.Store.transaction`: a serialized scope, not rollback or a multi-record transaction
 - `catalog.storage.apply_operation`: reconciliation and single-record persistence within that scope
@@ -16,7 +16,7 @@ The foundation provides:
 
 Use one logical record per operation and operation commit initially. Keep the original operation even when reconciliation produces a record containing additional independent changes. Do not rebuild intent from the resulting file.
 
-The current operation guards cover target before/after state and session authority. Cross-record or document-based inference needs an additional captured-input contract from its domain/integration layer. Do not claim that a fresh read immediately before saving protects inputs captured earlier. This slice adds no inference path and must not invent source-guard fields in domain records.
+Operation guards cover target before/after state, captured logical records and effective authority. Pi integrations separately fence conversation lineage, catalog source and attachment through a shared capture boundary. A fresh read immediately before saving does not protect inputs captured earlier. Independently read documents still need captured-input support before such inference is enabled; do not invent source-guard fields in domain records.
 
 Physical path encoding belongs to the YAML adapter. If Git needs a managed-file inventory or record-to-path mapping, expose a small file-adapter capability rather than duplicate its private encoding or add paths to logical records. Keep `.catalog.lock` untracked and preserve its inode. Exclude `.catalog-staging/` and transport bookkeeping from commits. Orphan adapter staging files are not unexplained catalog edits.
 
@@ -27,10 +27,10 @@ Separate three concerns in results rather than overloading a single success bool
 | Concern | Examples |
 | --- | --- |
 | Domain result | changes, no-change, superseded, conflict |
-| Local save | persisted, committed, failed, repair-required |
+| Local save | unchanged, persisted, committed, repair-required |
 | Sharing | local-only, pending, confirmed, blocked, failed, uncertain |
 
-These are semantic distinctions, not prescribed class names. Return the operation ID and relevant revision references. Preserve origin host/session attribution where available so a conflict can be routed to the relevant contributor. Attribution is not authentication or authority.
+`Result.accepted` requires an accepted domain outcome and no local repair condition; a domain-free publication result is not save acceptance. `requires_repair` stops follow-on catalog effects. `needs_attention` includes publication warnings without undoing accepted saves. CLI receipts and Pi continuation checks preserve those distinctions. Return the operation ID and relevant revision references. Preserve origin host/session attribution where available so a conflict can be routed to the relevant contributor. Attribution is not authentication or authority.
 
 For `none`, apply the operation within the store transaction and report local-only persistence. The coordinator supplies a stable, locally persisted ownership-period token without requiring Git history. Do not call Git, require a remote, run timing gates or invent pending publication. Cross-host handover is unsupported, not a successful no-op. A local persistence error must not be presented as proof of rollback; report whether the resulting state could be verified.
 
@@ -39,6 +39,8 @@ For `git`, a successful effective save requires a verified local commit. Publica
 ## Minimal local save protection
 
 Do not implement automatic interrupted-save recovery. Detect the condition, preserve evidence and stop further catalog writes and publication until it is repaired.
+
+Backend-private state is parsed before effects. Immutable timing and configuration values and phase-specific publication records reject malformed existing metadata as repair-required without rewriting evidence or cooldowns. An adoption record requires both source and destination revisions and blocks normal writes. Missing timing state establishes defaults; malformed timing state does not.
 
 Backend-private state contains a durable save marker. It records a version, the original operation, origin when known and the starting local commit. This is an in-flight marker, not another queue of record copies. Local commits hold completed pending operations.
 
@@ -62,6 +64,8 @@ Manual repair is sufficient for this slice. No recovery wizard, automatic reset,
 Use a versioned JSON envelope in each operation commit message, with a readable subject. The envelope carries the original domain operation and optional origin attribution. The domain record codec supplies record encoding; sync must round-trip every operation input, including its ownership precondition.
 
 Git commit hashes may change when unpublished operations are replayed. Operation IDs and original payloads do not. Durable local receipt fingerprints preserve retry protection after operations are satisfied or superseded and leave active history; local-only saves need that protection too. These are accepted-intent receipts, not another queue of record copies. The same ID with a different operation payload is corruption or unsupported manual modification, not a retry. A simple catalog-initialisation commit is permitted separately from operation commits; it must not invent prior domain actions or authority transfers.
+
+Validated history is immutable, including attribution, and the bounded cache retains requested tips rather than every intermediate commit. Validate changed paths before decoding the one changed canonical record through the adapter. Compare reconstructed logical records with domain reconciliation; caching must not weaken descendant validation.
 
 Validate the configured history and catalog before publishing. Operation envelopes must explain their commits' materialized changes when reconciled against their parents; a valid-looking record alone is insufficient. Unsupported envelopes, invalid records, unexpected tracked transport files and unexpected replacement of confirmed remote history stop sync. A normal user-editable Git repository is not the intended input. Manual changes need explicit repair or adoption through validated operations, not an automatic `git add --all`.
 
@@ -88,7 +92,9 @@ A fetch-only inspection records freshness separately and does not reset the publ
 
 Keep retries small and bounded. Use timed Git calls, at most three competing-push attempts in one pass, and a shared short cooldown after failed automatic attempts. Exact timeout and cooldown defaults may be chosen during implementation and documented; they must not create an unbounded loop or one retry storm per session. Explicit requests may bypass the cooldown, but not repair-required or unresolved in-flight-publication checks.
 
-No timer service runs when Streams has no callers. Session integrations provide events; the sync engine does not import Pi or a frontend. M/N are eligibility thresholds, not maximum delivery latency.
+No timer service runs when Streams has no callers. Session integrations provide events; the sync engine does not import Pi or a frontend. M/N are eligibility thresholds, not maximum delivery latency. Host-local CLI settings validate and apply both intervals on every catalog open.
+
+Pi startup awaits the start event without enrollment or inference. Shutdown retires pending inference and earlier lifecycle completions, then awaits one best-effort sync without a final report. Its 10-second command deadline kills the CLI process group, including Git children; timeout remains uncertain publication rather than proof of failure. Ordinary library Git calls retain their separate bounded limits.
 
 ## Publication pass
 
@@ -162,11 +168,11 @@ Use temporary directories and local bare Git remotes. Do not depend on GitHub, r
 14. Invalid records, changed operation payloads under the same ID, tracked local lock files and unexpected remote history replacement fail visibly.
 15. Reads fetch at N or explicit refresh, never push and preserve pending local intent. Successful write fetches count for read freshness, even before a failed push. Read refresh and its failure cooldown do not postpone publication. Concurrent due readers share one fetch; cached conflict and failure diagnostics remain visible.
 
-## Implementation order and handoff constraints
+## Implementation boundaries and follow-ons
 
-Build the common outcomes, local-only coordinator and pure timing policy first. Next add operation encoding and protected local Git saves. Then add candidate reconciliation, publication and uncertain-result handling. Test each slice before adding CLI or session hooks.
+Keep common outcomes, local-only coordination and timing independent of Git effects. CLI and session hooks consume the same save and publication results rather than adding a second timing policy.
 
-The current test entry point is `mise run test:python` (`uv run python -m unittest discover tests/python`); read the current project configuration before running it. Tests for Git can use the executable against temporary repositories without making the Streams source checkout a Git test fixture.
+`mise run test` covers the Python backend/CLI and Pi contracts; `mise run test:python` and `mise run test:pi` run each part. Read the current project configuration before running them. Git tests use temporary repositories without making the Streams source checkout a Git test fixture.
 
 Implementation may add narrow file-adapter capabilities or operation codecs needed for composition. It must not redefine lifecycle permission, introduce a session counter into domain YAML, infer authority from pending owner edits or collapse save/publication outcomes. Domain handover is a separate follow-on; do not implement it inside transport.
 

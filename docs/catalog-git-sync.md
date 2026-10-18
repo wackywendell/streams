@@ -1,6 +1,6 @@
 # ADR: Streams-managed storage and optional Git sync
 
-Status: accepted, with local-only and Git coordinators used by the CLI. Handover coordination remains incomplete. This ADR defines save, publication and authority guarantees, not deployment status; the [README](../README.md) owns current setup and commands. The [native Herdr ADR](native-herdr-work-cards.md) governs frontend projection.
+Status: accepted, with local-only and Git coordinators used by the CLI and Pi lifecycle integration. This ADR defines save, publication and authority guarantees, not deployment status; the [README](../README.md) owns current setup and commands. Import from local-only storage and validated handover remain follow-on work. The [protocol-boundary ADR](catalog-protocol-boundaries.md) records the structural refinements; the [native Herdr ADR](native-herdr-work-cards.md) governs frontend projection.
 
 ## Context and decision
 
@@ -8,7 +8,7 @@ Move catalog management from the Obsidian-managed notes workflow to the `streams
 
 The Git strategy uses a dedicated private repository with one shared branch and a managed local copy on each host. Save changes as local commits and publish them according to their urgency. The user should not need to manage commits, pulls or pushes during ordinary work. These Git mechanics are not requirements of every storage backend.
 
-The former Streams format combined work metadata and a Markdown scratch body under a configurable notes root. It also used local repository paths and Obsidian note links. Merely putting that directory in Git would preserve the wrong persistence model. The [durable work catalog ADR](durable-work-catalog.md) replaces scratch notes with structured records: the stream's goal and references, and each session's progress description. There is no second stored aggregate progress summary. Substantive plans and decisions belong in project repositories.
+The previous scratch-based format combined work metadata and a Markdown body under a configurable notes root. It also used local repository paths and Obsidian note links. Merely putting that directory in Git would have preserved the wrong persistence model. The [durable work catalog ADR](durable-work-catalog.md) replaces scratch notes with structured records: the stream's goal and references, and each session's progress description. There is no second stored aggregate progress summary. Substantive plans and decisions belong in project repositories.
 
 Git makes the catalog readable, inspectable and recoverable from published history. It is also the meeting point between hosts: one host commits and pushes, and another fetches when it next needs the catalog. The design does not require live cross-host communication, an always-running service, transcript synchronisation or project-checkout backup.
 
@@ -112,7 +112,7 @@ Use this publication protocol:
 
 Store the original operation in a versioned JSON envelope in its commit message. Include its stable ID, exact intent and preconditions, plus producer attribution when available. One effective save creates one operation commit in the initial implementation. This preserves replay information without a second queue of record copies. Record serialization remains the physical adapter's responsibility; the operation codec must preserve all domain inputs without interpreting them differently.
 
-A replayed commit retains the operation ID and original intent even if its hash or materialized record changes. Deduplicate by operation identity and payload, not current field equality. Reusing an ID with different intent is an error. A no-change save needs no commit; reconciliation that finds existing satisfaction must distinguish that result from proving a particular earlier push succeeded.
+A replayed commit retains the operation ID and original intent even if its hash or materialized record changes. Deduplicate by operation identity and payload, not current field equality. Reusing an ID with different intent is an error. Durable local receipts retain that protection after satisfied or superseded operations leave active history, including in local-only mode. A no-change save needs no commit; reconciliation that finds existing satisfaction must distinguish that result from proving a particular earlier push succeeded.
 
 Independent reference additions and unrelated changes may combine when the domain permits them. Competing lifecycle decisions do not become last-writer-wins updates. Git ancestry orders committed session updates; replay preserves their logical order and stable operation identities. Captured-input and base-state guards prevent stale asynchronous results from overwriting newer updates. An increment-at-save counter would not provide those guards, and sync does not require one in the domain record.
 
@@ -130,7 +130,7 @@ Do not force-push or rewrite published catalog history. Local unpublished commit
 
 ## Distinguish save, publication and authority
 
-Results distinguish local save from publication: pending, confirmed, conflicting, failed or uncertain. Include operation identity, local revision and known remote revision so callers can reconcile rather than repeat an action blindly.
+Results distinguish domain acceptance, local persistence and publication. A publication result cannot prove save acceptance, and confirmed publication can coexist with local repair-required adoption. Include operation identity, local revision and known remote revision so callers can reconcile rather than repeat an action blindly. The protocol-boundary ADR explains why these facts have shared interpretation rather than separate status tests in each caller.
 
 A lost push response is not proof that the remote rejected the update. Before retrying, fetch and check whether the recorded candidate is in the remote history or its operation identities have already been published. If the remote still has the recorded base and there are no later local saves, retrying the same candidate is safe. Otherwise reconcile the remaining operations, including later local saves, against the fetched base before making another candidate. An uncertain push must not cause those later saves to be lost during local adoption. Only normal, non-forced pushes are allowed; a competing late attempt cannot overwrite a different accepted history.
 
@@ -154,7 +154,7 @@ Prepare the new store outside the Obsidian vault. For Git, configure and verify 
 
 Switch the CLI and integrations only when their catalog replacements are ready. Retire old catalog writers, including scratch-generating checkpoints, at that explicit cutover. Thereafter the old notes are retained material, not a second live account to keep in sync. Unrelated Obsidian notes and configuration are unaffected.
 
-A failed setup leaves the existing notes intact. Implementation and tests use isolated stores; they do not switch the installed runtime. Returning to the old workflow after new catalog edits is an explicit recovery choice, never an automatic fallback.
+A failed setup leaves the existing notes intact. Implementation and tests use isolated stores; they do not themselves switch the installed runtime. Local-only activation does not depend on Git readiness. A later Git import must preserve the initialized host and record identities, creation authority and retry receipts; `init git` does not perform that conversion. Returning to the old workflow after new catalog edits is an explicit recovery choice, never an automatic fallback.
 
 ## Alternatives and consequences
 
@@ -168,6 +168,6 @@ Session and host snapshots replace current files, but their earlier versions rem
 
 ## Implementation boundary
 
-The [sync implementation plan](../plans/catalog-sync.md) tracks concrete failure checks and acceptance scenarios separately from this decision. Use M = 5 minutes and N = 60 minutes as configurable initial defaults. Hosting, credential provisioning and installed-runtime cutover are deployment choices, not permission for implementation to change live services.
+The [implementation contract](../plans/catalog-sync.md) records concrete states, failure checks and acceptance scenarios. Host-local settings default to M = 5 minutes and N = 60 minutes. Hosting, credential provisioning, import and activation of Git remain separate rollout choices, not permission for implementation to change live services.
 
 Automatic save repair, partial publication past a domain conflict, legacy-format compatibility and automatic migration are outside the first implementation. Record schemas, producer identities, lifecycle permissions and resume selection remain governed by the durable work catalog ADR. Handover requires that domain's validated coordination; the transport must not bypass its generic-operation restrictions.
