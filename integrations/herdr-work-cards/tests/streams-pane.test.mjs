@@ -82,7 +82,8 @@ for (const [mode, key] of [['unready', 'q'], ['unready', '\x03'], ['mismatch', '
     assert.equal(closed, ${mode === 'unready' || mode === 'mismatch' ? 0 : 1});
     assert.equal(projected, ${mode === 'caption-changed' ? 1 : 0});
     assert.equal(raw, false); assert.equal(restored, true);
-    assert.ok(!(await readdir(${JSON.stringify(root)})).some(n => n.endsWith('.lock')));
+    // Crash-released locks retain their inode after the protected callback exits.
+    assert.equal((await readdir(${JSON.stringify(root)})).filter(n => n.endsWith('.lock')).length, ${['unready', 'mismatch', 'close-failure'].includes(mode) ? 0 : 1});
     assert.equal(process.listenerCount('SIGHUP'), 0); assert.equal(process.listenerCount('SIGTERM'), 0);
     if (${JSON.stringify(mode === 'unready' || mode === 'mismatch' || mode === 'close-failure')}) assert.match(errors, /retained.*inspect/);
     else assert.equal(errors, '');

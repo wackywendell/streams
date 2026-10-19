@@ -86,7 +86,7 @@ test('automatic enrolled owner opens an isolated pair; reused display has no dup
   assert.ok(vars.includes(`HERDR_SOCKET_PATH=${f.socket}`));
   assert.ok(vars.includes('STREAMS_CARDS_READ_ENV={}'));
   assert.ok(!f.calls.some(a => a[0] === 'workspace' && ['open', 'launch', 'create'].includes(a[1])));
-  assert.deepEqual(await readdir(f.root), ['checkout-1', 'checkout-2', 'state']);
+  assert.deepEqual((await readdir(f.root)).filter(name => !/^\.work-cards-[a-f0-9]{64}\.lock$/.test(name)), ['checkout-1', 'checkout-2', 'state']);
 });
 for (const [workspace_naming, tab_naming] of [[true, false], [false, true], [false, false], [true, true]]) test(`manual startup projects independent names ${workspace_naming}/${tab_naming} and summaries without a card`, async t => {
   const f = await fixture(t), a = await f.owner(1); f.workspaces[0].label = 'Shared stream';
