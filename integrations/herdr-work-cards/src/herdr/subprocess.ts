@@ -11,12 +11,12 @@ export function runProcess(command: string, args: string[], options: {
   }
   return new Promise((resolve, reject) => {
     const child = spawn(command, args, { cwd: options.cwd, env: options.env, detached: true, stdio: ['ignore', 'pipe', 'pipe'] });
-    let stdout = '', stderr = '', bytes = 0, failure: Error | undefined;
+    let stdout = '', stderr = '', bytes = 0, failure: Error | undefined, terminationFailure: Error | undefined;
     const terminate = (error: Error) => {
       failure ??= error;
       if (child.pid) {
         try { process.kill(-child.pid, 'SIGKILL'); }
-        catch (cause) { if ((cause as NodeJS.ErrnoException).code !== 'ESRCH') failure = cause as Error; }
+        catch (cause) { if ((cause as NodeJS.ErrnoException).code !== 'ESRCH') terminationFailure ??= cause as Error; }
       }
     };
     const abort = () => terminate(signal?.reason instanceof Error ? signal.reason : new Error('Process aborted'));
@@ -35,7 +35,9 @@ export function runProcess(command: string, args: string[], options: {
     child.on('error', error => { failure ??= error; });
     child.on('close', (code, exitSignal) => {
       clearTimeout(timer); signal?.removeEventListener('abort', abort);
-      if (failure) reject(failure);
+      if (failure && terminationFailure) reject(new AggregateError([failure, terminationFailure],
+        `${failure.message}; process group termination failed: ${terminationFailure.message}; effects may be partial`, { cause: failure }));
+      else if (failure) reject(failure);
       else if (code !== 0) reject(new Error(`${command} failed (${code ?? exitSignal}): ${stderr}`));
       else resolve(stdout);
     });
