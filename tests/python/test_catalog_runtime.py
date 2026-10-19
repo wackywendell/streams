@@ -35,7 +35,11 @@ class RuntimeTest(unittest.TestCase):
         self.stream = Stream('../arbitrary/id', 'Example', 'Goal', 'local')
         self.authority = Authority('local', 'epoch')
         self.session = Session('../session/id', 'local', self.stream.id, 'pi', 'native id', 'Implementation')
-        env = patch.dict(os.environ, {}, clear=True)
+        self.saved = self.root.resolve() / 'pi' / 'sessions' / 'native id.jsonl'
+        self.saved.parent.mkdir(parents=True)
+        self.saved.write_text(json.dumps({'type': 'session', 'id': 'native id'}) + '\n')
+        self.running = False
+        env = patch.dict(os.environ, {'PI_CODING_AGENT_DIR': str(self.root / 'pi')}, clear=True)
         env.start()
         self.addCleanup(env.stop)
         transport = patch('_streams.catalog_runtime.HerdrClient')
@@ -47,11 +51,19 @@ class RuntimeTest(unittest.TestCase):
         self.herdr.command_result.side_effect = self.herdr_result
 
     def herdr_result(self, args, expected):
+        if args == ['api', 'snapshot']:
+            pane = {'pane_id': 'p1', 'terminal_id': 'term1', 'tab_id': 't1', 'workspace_id': 'w1'}
+            agent = {**pane, 'agent': 'pi', 'agent_session': {'agent': 'pi', 'kind': 'path', 'value': str(self.saved)}}
+            return {'snapshot': {'workspaces': [{'workspace_id': 'w1', 'label': 'Example'}],
+                                 'tabs': [{'tab_id': 't1', 'workspace_id': 'w1', 'label': '1', 'number': 1}],
+                                 'panes': [pane], 'layouts': [{'tab_id': 't1', 'workspace_id': 'w1', 'panes': [{'pane_id': 'p1'}]}],
+                                 'agents': [agent] if self.running else []}}
         if args[:2] == ['workspace', 'create']:
             return {'workspace': {'workspace_id': 'w1', 'label': 'Example'},
                     'tab': {'tab_id': 't1', 'workspace_id': 'w1'},
                     'root_pane': {'pane_id': 'p1', 'tab_id': 't1', 'workspace_id': 'w1', 'cwd': str(self.cwd)}}
         if args[:2] == ['agent', 'start']:
+            self.running = True
             return {'agent': {'pane_id': 'p1', 'tab_id': 't1', 'workspace_id': 'w1',
                               'name': args[2], 'agent': 'pi', 'interactive_ready': True}}
         raise AssertionError(args)
@@ -244,9 +256,9 @@ class RuntimeTest(unittest.TestCase):
             scope.claim(self.stream.id)
             scope.bind(self.stream, authority=self.authority)
         self.assertFalse(list(self.runtime.state_dir.rglob('enrollments/**/*.json')))
-        with self.assertRaisesRegex(StreamError, 'different session'):
-            self.open((self.session,))
-        self.assertEqual(self.herdr.command_result.call_count, 1)
+        self.assertTrue(self.open((self.session,))['reused'])
+        effects = [call for call in self.herdr.command_result.call_args_list if call.args[0] != ['api', 'snapshot']]
+        self.assertEqual(len(effects), 1)
 
     def test_open_and_claim_fail_closed_on_all_claim_files(self):
         with self.runtime.enrollment() as scope:
@@ -312,14 +324,15 @@ class RuntimeTest(unittest.TestCase):
                         scope.bind(self.stream, authority=authority)
                 scope.bind(replace(self.stream, owner_host_id='remote'), authority=self.authority)
 
-    def test_enrollment_no_frontend_has_no_native_or_runtime_effects(self):
+    def test_enrollment_no_frontend_has_only_a_stream_lock(self):
         for mode in (FrontendMode.NONE, FrontendMode.AUTO):
             runtime = Runtime(self.root / str(mode), 'local', mode)
             with runtime.enrollment() as scope:
                 self.assertIsNone(scope.stream_id)
                 scope.claim(self.stream.id)
                 scope.bind(self.stream, authority=self.authority)
-            self.assertFalse(runtime.state_dir.exists())
+            self.assertEqual(len(list(runtime.state_dir.glob('stream-locks/*.lock'))), 1)
+            self.assertFalse(list(runtime.state_dir.rglob('*.json')))
         self.herdr.endpoint.assert_not_called()
         self.herdr.current_pane.assert_not_called()
         self.herdr.run.assert_not_called()
@@ -332,7 +345,8 @@ class RuntimeTest(unittest.TestCase):
                 with self.assertRaisesRegex(StreamError, 'different|replace'):
                     scope.claim('another')
                 scope.bind(self.stream, authority=self.authority)
-        self.assertFalse(runtime.state_dir.exists())
+        self.assertEqual(len(list(runtime.state_dir.glob('stream-locks/*.lock'))), 1)
+        self.assertFalse(list(runtime.state_dir.rglob('*.json')))
 
     def test_enrollment_claim_requires_a_chosen_nonempty_identity(self):
         with self.runtime.enrollment() as scope:
@@ -574,7 +588,7 @@ sys.exit(1)
         result = self.open((self.session,), cwd=self.cwd)
         self.assertTrue(result['reused'])
         self.assertIsNone(result['session_id'])
-        self.herdr.command_result.assert_not_called()
+        self.herdr.command_result.assert_called_once_with(['api', 'snapshot'], 'session_snapshot')
         self.herdr.run.assert_called_once_with(['workspace', 'focus', 'w1'])
 
     def test_enrolled_sessionless_cmux_open_never_starts_selected_session(self):
@@ -595,7 +609,6 @@ sys.exit(1)
         with self.assertRaisesRegex(StreamError, '--cwd'):
             self.open()
         self.herdr.command_result.assert_not_called()
-        self.herdr.endpoint.assert_not_called()
 
     def test_directory_persistence_arbitrary_ids_and_symlinks(self):
         link = self.root / 'link'
@@ -631,19 +644,22 @@ sys.exit(1)
         result = self.open(others + (self.session,))
         self.assertEqual(result['session_id'], self.session.id)
         args = self.herdr.command_result.call_args_list[-1].args[0]
-        self.assertEqual(args[-3:], ['--', '--session', 'native id'])
-        self.assertEqual(self.herdr.command_result.call_args_list[0].args[0][3], str(session_cwd.resolve()))
+        self.assertEqual(args[-3:], ['--', '--session', str(self.saved)])
+        create = next(call for call in self.herdr.command_result.call_args_list if call.args[0][:2] == ['workspace', 'create'])
+        self.assertEqual(create.args[0][3], str(session_cwd.resolve()))
 
     def test_ambiguity_and_reference_precedence(self):
         second = replace(self.session, id='second', title=self.session.id)
-        with self.assertRaisesRegex(StreamError, '--session'):
-            self.open((self.session, second), cwd=self.cwd)
-        selected = self.open((self.session, second), session_ref=self.session.id, cwd=self.cwd)
-        self.assertEqual(selected['session_id'], self.session.id)
+        ambiguous = self.open((self.session, second), cwd=self.cwd)
+        self.assertIsNone(ambiguous['session_id'])
+        self.assertIn('--session', ambiguous['needs_attention'][0])
+        self.herdr.command_result.assert_called_once()
+        self.assertEqual(self.runtime._select_session(self.stream, (self.session, second), self.session.id), self.session)
 
     def test_title_reference_and_case_insensitive_substring(self):
         two = replace(self.session, id='second', title='Implementation followup')
         for index, reference in enumerate(('Implementation', 'PLEMENTATION')):
+            self.running = False
             runtime = Runtime(self.root / f'state-{index}', 'local', FrontendMode.HERDR)
             with self.subTest(reference=reference):
                 result = runtime.open(self.stream, (self.session,), authority=self.authority,
@@ -665,22 +681,22 @@ sys.exit(1)
         fresh = Runtime(self.root / 'state', 'local', FrontendMode.HERDR)
         result = fresh.open(self.stream, (self.session,), authority=self.authority)
         self.assertTrue(result['reused'])
-        self.herdr.command_result.assert_not_called()
+        self.herdr.command_result.assert_called_once_with(['api', 'snapshot'], 'session_snapshot')
         self.herdr.run.assert_called_with(['workspace', 'focus', 'w1'])
         self.assertEqual(fresh.current_stream_id(), self.stream.id)
 
     def test_reused_workspace_does_not_launch_different_session(self):
         self.open(cwd=self.cwd)
-        with self.assertRaisesRegex(StreamError, 'different|session'):
-            self.open((self.session,))
-        self.assertEqual(self.herdr.command_result.call_count, 1)
+        self.assertTrue(self.open((self.session,))['reused'])
+        effects = [call for call in self.herdr.command_result.call_args_list if call.args[0] != ['api', 'snapshot']]
+        self.assertEqual(len(effects), 1)
 
     def test_stale_workspace_never_relaunched(self):
         self.open(cwd=self.cwd)
-        self.herdr.resolve_workspace.side_effect = StreamError('missing workspace')
-        with self.assertRaisesRegex(StreamError, 'stale|Inspect'):
+        self.herdr.command_result.side_effect = StreamError('snapshot timed out')
+        with self.assertRaisesRegex(StreamError, 'timed out'):
             self.open()
-        self.assertEqual(self.herdr.command_result.call_count, 1)
+        self.assertEqual(self.herdr.command_result.call_count, 2)
 
     def test_current_explicit_environment_and_no_heuristic(self):
         with patch.dict(os.environ, {'STREAMS_STREAM_ID': 'exact id'}):
@@ -780,6 +796,128 @@ sys.exit(1)
             self.assertTrue(second.result(timeout=5)['reused'])
         self.assertEqual(len(native_calls), 1)
 
+    def test_other_scope_ready_cmux_binding_blocks_herdr_open_resume_and_claim(self):
+        with patch('_streams.catalog_runtime.CmuxClient'):
+            from _streams.frontend import Frontend
+            _, scope = self.runtime._transport(Frontend.CMUX)
+        path = self.runtime._association_path(scope, 'cmux-workspace')
+        self.runtime._write(path, {'stream_id': self.stream.id, 'workspace_id': 'cmux-workspace',
+                                   'session_id': self.session.id, 'command': 'pi --resume saved', 'ready': True})
+        with patch.object(self.runtime, '_exec_session') as execute:
+            with self.assertRaisesRegex(StreamError, 'another scope'):
+                self.open((self.session,), cwd=self.cwd)
+            with self.assertRaisesRegex(StreamError, 'another scope'):
+                self.runtime.resume(self.stream, (self.session,), authority=self.authority, cwd=self.cwd)
+            with self.runtime.enrollment() as enrollment:
+                with self.assertRaisesRegex(StreamError, 'another scope'):
+                    enrollment.claim(self.stream.id)
+            execute.assert_not_called()
+        self.assertTrue(path.exists())
+        self.herdr.command_result.assert_not_called()
+        self.herdr.run.assert_not_called()
+
+    def test_other_scope_attempt_and_claim_block_open_resume_and_enrollment(self):
+        from _streams.catalog_runtime import _key
+        for collection in ('attempts', 'enrollments'):
+            with self.subTest(collection=collection):
+                if collection == 'attempts':
+                    path = self.runtime.state_dir / collection / 'other-endpoint' / (_key(self.stream.id) + '.json')
+                    record = {'stream_id': self.stream.id, 'session_id': None, 'command': None,
+                              'cwd': str(self.cwd), 'workspace_id': None}
+                else:
+                    path = self.runtime._enrollment_path('other-endpoint', 'w1')
+                    record = {'stream_id': self.stream.id, 'workspace_id': 'w1'}
+                self.runtime._write(path, record)
+                with patch.object(self.runtime, '_exec_session') as execute:
+                    for mode in (FrontendMode.HERDR, FrontendMode.NONE):
+                        runtime = Runtime(self.root / 'state', 'local', mode)
+                        with self.assertRaises(StreamError):
+                            runtime.resume(self.stream, (self.session,), authority=self.authority, cwd=self.cwd)
+                    with self.assertRaises(StreamError):
+                        self.open(cwd=self.cwd)
+                    with self.runtime.enrollment() as enrollment:
+                        with self.assertRaises(StreamError):
+                            enrollment.claim(self.stream.id)
+                    execute.assert_not_called()
+                self.assertTrue(path.exists())
+                path.unlink()
+        self.herdr.command_result.assert_not_called()
+        self.herdr.run.assert_not_called()
+
+    def test_other_scope_malformed_attempt_is_not_silently_skipped(self):
+        from _streams.catalog_runtime import _key
+        path = self.runtime.state_dir / 'attempts' / 'other' / (_key(self.stream.id) + '.json')
+        self.runtime._write(path, {'stream_id': 'wrong-identity', 'session_id': None, 'command': None,
+                                  'cwd': str(self.cwd), 'workspace_id': None})
+        with self.assertRaisesRegex(StreamError, 'invalid open attempt identity'):
+            self.open(cwd=self.cwd)
+        path.write_text('{broken')
+        with self.assertRaisesRegex(StreamError, 'invalid open attempt'):
+            self.open(cwd=self.cwd)
+        self.herdr.command_result.assert_not_called()
+
+    def test_cmux_open_serializes_with_herdr_open_on_global_stream_lock(self):
+        entered, release, attempted = threading.Event(), threading.Event(), threading.Event()
+        cmux = Runtime(self.root / 'state', 'local', FrontendMode.CMUX)
+        def create(args):
+            entered.set()
+            self.assertTrue(release.wait(5))
+            return {'workspace_id': 'c1'}
+        def open_herdr():
+            attempted.set()
+            return self.open(cwd=self.cwd)
+        with patch('_streams.catalog_runtime.CmuxClient') as transport:
+            transport.return_value.json_from_command.side_effect = create
+            with ThreadPoolExecutor(max_workers=2) as pool:
+                first = pool.submit(cmux.open, self.stream, (), authority=self.authority, cwd=self.cwd)
+                self.assertTrue(entered.wait(5))
+                second = pool.submit(open_herdr)
+                self.assertTrue(attempted.wait(5))
+                try:
+                    self.assertFalse(second.done())
+                    self.herdr.command_result.assert_not_called()
+                finally:
+                    release.set()
+                self.assertFalse(first.result(timeout=5)['reused'])
+                with self.assertRaisesRegex(StreamError, 'another scope'):
+                    second.result(timeout=5)
+            transport.return_value.json_from_command.assert_called_once()
+        self.assertEqual(len(list(self.runtime.state_dir.glob('stream-locks/*.lock'))), 1)
+        self.herdr.command_result.assert_not_called()
+
+    def test_cmux_claim_serializes_with_herdr_open_on_global_stream_lock(self):
+        entered, release, attempted = threading.Event(), threading.Event(), threading.Event()
+        write = self.runtime._write
+        def pause(path, data):
+            if 'enrollments' in path.parts:
+                entered.set()
+                self.assertTrue(release.wait(5))
+            return write(path, data)
+        cmux = Runtime(self.root / 'state', 'local', FrontendMode.CMUX)
+        def claim():
+            with cmux.enrollment() as enrollment:
+                enrollment.claim(self.stream.id)
+        def open_herdr():
+            attempted.set()
+            return self.open(cwd=self.cwd)
+        with patch('_streams.catalog_runtime.CmuxClient') as transport, patch.dict(os.environ, {'CMUX_WORKSPACE_ID': 'c1'}):
+            transport.return_value.workspaces.return_value = [CmuxWorkspace({'id': 'c1', 'title': 'Example'})]
+            with patch.object(cmux, '_write', side_effect=pause), ThreadPoolExecutor(max_workers=2) as pool:
+                first = pool.submit(claim)
+                self.assertTrue(entered.wait(5))
+                second = pool.submit(open_herdr)
+                self.assertTrue(attempted.wait(5))
+                try:
+                    self.assertFalse(second.done())
+                    self.herdr.command_result.assert_not_called()
+                finally:
+                    release.set()
+                first.result(timeout=5)
+                with self.assertRaisesRegex(StreamError, 'another scope'):
+                    second.result(timeout=5)
+        self.assertEqual(len(list(self.runtime.state_dir.glob('stream-locks/*.lock'))), 1)
+        self.herdr.command_result.assert_not_called()
+
     def test_active_creation_holds_a_cross_process_lock(self):
         probe = '''import fcntl, sys
 with open(sys.argv[1]) as handle:
@@ -792,7 +930,7 @@ sys.exit(1)
         locks = []
         def create(args, expected):
             if args[:2] == ['workspace', 'create']:
-                locks.extend(self.runtime.state_dir.rglob('*.lock'))
+                locks.extend((self.runtime.state_dir / 'stream-locks').glob('*.lock'))
                 self.assertEqual(len(locks), 1)
                 result = subprocess.run([sys.executable, '-c', probe, str(locks[0])], capture_output=True, text=True, timeout=5)
                 self.assertEqual(result.returncode, 0, result.stderr)
@@ -852,7 +990,7 @@ sys.exit(1)
         self.addCleanup(os.chdir, original)
         with patch('_streams.catalog_runtime.os.execvp') as execute:
             self.runtime.resume(self.stream, (self.session,), authority=self.authority, cwd=self.cwd)
-        execute.assert_called_once_with('pi', ['pi', '--session', 'native id'])
+        execute.assert_called_once_with('pi', ['pi', '--session', str(self.saved)])
         self.assertEqual(Path.cwd(), self.cwd.resolve())
         self.assertEqual(os.environ['STREAMS_STREAM_ID'], self.stream.id)
 
@@ -895,7 +1033,8 @@ sys.exit(1)
         path.write_text(json.dumps(data))
         with self.assertRaisesRegex(StreamError, 'identity'):
             self.open()
-        path.write_text(original.replace('"version": 1', '"version": 1, "version": 1'))
+        version = data['version']
+        path.write_text(original.replace(f'"version": {version}', f'"version": {version}, "version": {version}'))
         with self.assertRaisesRegex(StreamError, 'duplicate JSON'):
             self.open()
 
@@ -928,7 +1067,7 @@ sys.exit(1)
         with self.assertRaises(StreamError):
             self.open((self.session,), cwd=self.cwd)
         self.herdr.command_result.reset_mock()
-        with self.assertRaisesRegex(StreamError, 'partial open'):
+        with self.assertRaisesRegex(StreamError, 'pending|partial open'):
             self.open((self.session,))
         self.herdr.command_result.assert_not_called()
 
@@ -940,7 +1079,8 @@ sys.exit(1)
             client.workspaces.return_value = [CmuxWorkspace({'id': 'uuid-1', 'title': 'anything'})]
             runtime.open(self.stream, (self.session,), authority=self.authority, cwd=self.cwd)
             args = client.json_from_command.call_args.args[0]
-            self.assertEqual(args[args.index('--command') + 1], "pi --session 'native id'")
+            import shlex
+            self.assertEqual(args[args.index('--command') + 1], shlex.join(['pi', '--session', str(self.saved)]))
             self.assertIn('STREAMS_STREAM_ID=' + self.stream.id, args)
             runtime.open(self.stream, (self.session,), authority=self.authority)
             client.json_from_command.assert_called_once()
@@ -972,7 +1112,7 @@ sys.exit(1)
         second = Stream('a_b', 'Second', 'Goal', 'local')
         session = replace(self.session, id='x_y', stream_id='a_b')
         self.runtime.open(second, (session,), authority=self.authority)
-        args = self.herdr.command_result.call_args_list[0].args[0]
+        args = next(call.args[0] for call in self.herdr.command_result.call_args_list if call.args[0][:2] == ['workspace', 'create'])
         self.assertEqual(args[3], str(second_cwd.resolve()))
 
     def test_open_and_current_need_no_scratch_catalog_or_lookup(self):

@@ -1,6 +1,6 @@
 # ADR: Durable streams without scratch notes
 
-Status: accepted. The catalog, CLI and Pi integration implement these record boundaries. Native Herdr adaptation is governed by the [work-card projection ADR](native-herdr-work-cards.md); handover and multi-session reconstruction remain incomplete. Examples describe the domain, not a storage API.
+Status: accepted. The catalog, CLI and Pi integration implement these record boundaries. Native Herdr adaptation is governed by the [work-card projection ADR](native-herdr-work-cards.md); handover remains incomplete. Host-local arrangement restoration is governed by that same native ADR. Examples describe the domain, not a storage API.
 
 ## Decision and rationale
 
@@ -144,7 +144,7 @@ Ownership governs execution and reporting, not where the user may manage the cat
 
 This is authority over accepted reports, not a distributed process lock. An unreachable old host may still be running. Handover must expose that uncertainty; it cannot claim to have stopped the old processes. Once the old host learns of the transfer, it stops stream-owned automatic effects. Returning ownership to it requires reattachment under the new ownership.
 
-Resumption should reconstruct the previous working arrangement where practical, not always select the last recorded session. Tools expose known tabs, sessions and recovery options so the user or advisor can restore the set, choose a subset or start replacements. Reuse a verified live workspace or saved sessions on the owning host. After cross-host handover, start fresh sessions from the stream's goal and references, its sessions' descriptions, and the last pushed branches or bookmarks. Session titles and descriptions explain each contribution's context.
+Opening an effort should reconstruct the previous working arrangement where practical, not always select the last recorded session. The lower-level `resume` operation runs one conversation in the invoking terminal. Tools expose known tabs, sessions and recovery options so the user or advisor can restore the set or choose a subset; unavailable conversations never silently become replacements. Reuse a verified live workspace or saved sessions on the owning host. After cross-host handover, start fresh sessions from the stream's goal and references, its sessions' descriptions, and the last pushed branches or bookmarks. Session titles and descriptions explain each contribution's context.
 
 Recovery does not promise uncommitted edits, synchronised transcripts or exact pane geometry. Launch results must identify what actually opened, including partial failures, rather than encouraging retries that duplicate resources.
 

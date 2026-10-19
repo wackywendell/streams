@@ -185,6 +185,11 @@ def host_id(*, create: bool = False) -> str:
         raise StreamError(f"could not create host identity: {error}") from error
 
 
+def checkout_state_dir() -> Path:
+    state_home = Path(os.environ.get("XDG_STATE_HOME") or Path.home() / ".local/state")
+    return state_home / "streams/checkouts"
+
+
 def runtime_state_dir() -> Path:
     digest = hashlib.sha256(str(catalog_root().resolve()).encode()).hexdigest()
     state_home = Path(os.environ.get("XDG_STATE_HOME") or Path.home() / ".local/state")

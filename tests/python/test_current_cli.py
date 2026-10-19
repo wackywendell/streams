@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import io
 import json
+from contextlib import chdir
 import os
 from pathlib import Path
 import sys
@@ -67,6 +68,10 @@ class CurrentCliTest(unittest.TestCase):
         temporary = tempfile.TemporaryDirectory()
         self.addCleanup(temporary.cleanup)
         self.root = Path(temporary.name)
+        self.enterContext(chdir(self.root))
+        self.session_file = self.root / '.pi/agent/sessions/project/conversation_native session.jsonl'
+        self.session_file.parent.mkdir(parents=True)
+        self.session_file.write_text(json.dumps({'type': 'session', 'id': 'native session'}) + '\n')
         self.enterContext(patch.dict(os.environ, {
             "HOME": str(self.root), "XDG_CONFIG_HOME": str(self.root / "config"),
             "XDG_DATA_HOME": str(self.root / "data"), "XDG_STATE_HOME": str(self.root / "state"),
@@ -77,6 +82,13 @@ class CurrentCliTest(unittest.TestCase):
         self.herdr.endpoint.return_value = HerdrEndpoint("/actual/herdr.sock", None)
         self.herdr.resolve_workspace.return_value = HerdrWorkspace("live-workspace", "Stale title", str(self.root))
         self.herdr.current_pane.return_value = HerdrPane("live-pane", "live-tab", "live-workspace", str(self.root))
+        self.herdr.command_result.side_effect = lambda args, kind: {'snapshot': {
+            'workspaces': [{'workspace_id': 'live-workspace'}],
+            'tabs': [{'tab_id': 'live-tab', 'workspace_id': 'live-workspace', 'label': '1'}],
+            'panes': [{'pane_id': 'live-pane', 'tab_id': 'live-tab', 'workspace_id': 'live-workspace', 'terminal_id': 'terminal'}],
+            'layouts': [{'tab_id': 'live-tab', 'workspace_id': 'live-workspace', 'panes': [{'pane_id': 'live-pane'}]}],
+            'agents': [],
+        }} if args == ['api', 'snapshot'] else self.herdr.command_result.return_value
         self.herdr.command_result.return_value = {
             "workspace": {"workspace_id": "live-workspace", "label": "New"},
             "tab": {"tab_id": "live-tab", "workspace_id": "live-workspace"},
@@ -171,8 +183,8 @@ class CurrentCliTest(unittest.TestCase):
         self.assertEqual(view["stream"]["status"], "active")
 
     def test_current_association_survives_title_update_and_native_labels(self):
-        stream = self.create()
         for frontend, context in (("cmux", CMUX), ("herdr", HERDR)):
+            stream = self.create()
             with self.subTest(frontend=frontend), patch.dict(os.environ, context):
                 self.open(stream, frontend)
                 self.assertEqual(self.cli("update", stream["id"], "--title", f"Renamed {frontend}")[0], 0)
@@ -211,8 +223,9 @@ class CurrentCliTest(unittest.TestCase):
                 patch("_streams.catalog_runtime.os.execvp") as execute:
             self.assertEqual(self.cli("resume", stream["id"])[0], 0)
         chdir.assert_called_once_with(self.root.resolve())
-        execute.assert_called_once_with("pi", ["pi", "--session", "native session"])
-        self.herdr.endpoint.assert_not_called()
+        execute.assert_called_once_with("pi", ["pi", "--session", str(self.session_file.resolve())])
+        self.herdr.command_result.assert_called_with(["api", "snapshot"], "session_snapshot")
+        self.herdr.run.assert_not_called()
         self.cmux.workspaces.assert_not_called()
 
     def test_resume_current_uses_association_not_native_label(self):
@@ -222,7 +235,7 @@ class CurrentCliTest(unittest.TestCase):
         with patch.dict(os.environ, HERDR), patch("_streams.catalog_runtime.os.chdir"), \
                 patch("_streams.catalog_runtime.os.execvp") as execute:
             self.assertEqual(self.cli("resume", "--current", "-f", "herdr")[0], 0)
-        execute.assert_called_once_with("pi", ["pi", "--session", "native session"])
+        execute.assert_called_once_with("pi", ["pi", "--session", str(self.session_file.resolve())])
 
 
 if __name__ == "__main__":

@@ -29,6 +29,8 @@ def output_data(value):
         return record_to_data(value)
     if isinstance(value, Enum):
         return value.value
+    if isinstance(value, Path):
+        return str(value)
     if is_dataclass(value):
         return {field.name: output_data(getattr(value, field.name)) for field in fields(value)}
     if isinstance(value, Mapping):
@@ -48,7 +50,7 @@ def emit(value: object, args: argparse.Namespace) -> None:
 
 def runtime():
     from .catalog_runtime import Runtime
-    return Runtime(config.runtime_state_dir(), config.host_id(), config.get_frontend_mode())
+    return Runtime(config.runtime_state_dir(), config.host_id(), config.get_frontend_mode(), checkout_dir=config.checkout_state_dir())
 
 
 def resolve(records, ref: str):
@@ -331,6 +333,60 @@ def command_sync(args):
     return 2 if result.needs_attention else 0
 
 
+def command_checkout(args):
+    config.open_catalog()  # Host identity requires explicit catalog setup.
+    registry = runtime().checkouts
+    if args.checkout_command == "list":
+        value = {"checkouts": registry.list()}
+    elif args.checkout_command == "register":
+        value = {"checkout": registry.register(Path(args.directory), repository_url=args.repository)}
+    elif args.checkout_command == "show":
+        value = {"checkout": registry.get(args.checkout_id)}
+    elif args.checkout_command == "move":
+        value = {"checkout": registry.move(args.checkout_id, Path(args.directory))}
+    elif args.checkout_command == "default":
+        registry.set_default(args.repository, args.checkout_id)
+        value = {"repository": args.repository, "checkout_id": args.checkout_id}
+    else:
+        value = {"checkout": registry.resolve(args.repository)}
+    emit(value, args)
+    return 0
+
+
+def command_workspace(args):
+    backend = config.open_catalog()
+    catalog = backend.snapshot().catalog
+    stream = target_stream(catalog, args, local=True)
+    sessions = tuple(item for item in catalog.sessions if item.stream_id == stream.id)
+    layout = runtime().capture_arrangement(stream, sessions, authority=backend.authority(stream.id), frontend=args.frontend)
+    emit({"stream_id": stream.id, "arrangement": layout}, args)
+    return 0
+
+
+def session_directory(args, backend, catalog):
+    session = resolve(catalog.sessions, args.ref)
+    if session.host_id != backend.host_id:
+        raise StreamError("directory selection requires a Session belonging to this host")
+    local = runtime()
+    if args.within is not None and args.checkout_id is None:
+        raise StreamError("--within requires --checkout")
+    if args.repository is not None and args.cwd is None and args.checkout_id is None:
+        raise StreamError("--repository requires --cwd or --checkout")
+    if args.cwd is not None or args.checkout_id is not None:
+        stream = catalog.stream(session.stream_id)
+        alias = args.repository or (session.checkout.repository if session.checkout else None)
+        if alias is not None and alias not in stream.repositories:
+            raise StreamError(f"unknown repository alias: {alias!r}")
+        if args.repository is not None and session.checkout is not None and alias != session.checkout.repository:
+            raise StreamError("selected repository differs from the Session's portable checkout")
+        directory = local.checkouts.directory(args.checkout_id, args.within or ".") if args.checkout_id else Path(args.cwd)
+        local.remember_directory(stream.id, directory, session_id=session.id, checkout_id=args.checkout_id,
+                                 repository_url=stream.repositories[alias].url if alias else None)
+    emit({"session_id": session.id, "host_id": session.host_id,
+          "directory": local.locations.read(session.stream_id, session.id)}, args)
+    return 0
+
+
 def command_runtime(args):
     backend = config.open_catalog()
     catalog = backend.snapshot().catalog
@@ -343,6 +399,7 @@ def command_runtime(args):
         result = local.open(stream, sessions, frontend=args.frontend, **kwargs)
         publication = maybe_sync(backend, "start")
         emit({"stream_id": stream.id, "runtime": result, "publication": result_data(publication)}, args)
+        return 2 if result.get("needs_attention") or publication.needs_attention else 0
     else:
         # Resume replaces this process, so perform the event check before exec.
         maybe_sync(backend, "start")
@@ -360,8 +417,12 @@ def command_session(args):
     if args.session_command == "show":
         emit({"session": record_to_data(resolve(catalog.sessions, args.ref))}, args)
         return 0
+    if args.session_command == "directory":
+        return session_directory(args, backend, catalog)
     if args.session_command == "attach":
         stream = target_stream(catalog, args, local=True)
+        if args.repository is not None and args.repository not in stream.repositories:
+            raise StreamError(f"unknown repository alias: {args.repository!r}")
         authority = backend.authority(stream.id)
         checkout = Checkout(args.repository, args.vcs_ref, args.directory_within_checkout) if args.repository else None
         if args.repository is None and (args.vcs_ref is not None or args.directory_within_checkout != "."):
@@ -381,7 +442,8 @@ def command_session(args):
     extra = None
     if args.session_command == "attach" and saved.accepted:
         try:
-            runtime().remember_directory(stream.id, Path(args.cwd or Path.cwd()), session_id=session.id)
+            runtime().remember_directory(stream.id, Path(args.cwd or Path.cwd()), session_id=session.id,
+                                         repository_url=stream.repositories[args.repository].url if args.repository else None)
         except (StreamError, OSError) as error:
             extra = {"runtime": {"error": str(error), "detail": "session saved; pass --cwd when resuming"}}
     return finish(backend, operation, saved, event="attach" if args.session_command == "attach" else "session", args=args, extra=extra)
@@ -391,8 +453,17 @@ def command_agent(args):
     from . import catalog_agent
     backend = config.open_catalog()
     if args.agent_command == "context":
-        emit(catalog_agent.context(backend, harness=args.harness, native_id=args.session_id, stream_id=args.stream_id,
-                                   workspace_stream_id=runtime().context_stream_id()), args)
+        local = runtime()
+        context = catalog_agent.context(backend, harness=args.harness, native_id=args.session_id, stream_id=args.stream_id,
+                                        workspace_stream_id=local.context_stream_id())
+        context.update(checkouts=[], document_locations=[])
+        if context["stream"] is not None and context["session"] is not None:
+            context.update(local.locations.document_context(context["stream"], context["session"]))
+        if args.attest:
+            if context["stream"] is None or context["session"] is None:
+                raise StreamError("native projection requires an enrolled Stream and Session")
+            context["native"] = local.attest_context(context["stream"], context["session"], authority=context["authority"])
+        emit(context, args)
         return 0
     source = sys.stdin.read()
     if args.agent_command == "apply":
@@ -506,8 +577,28 @@ def build_parser():
     sync.add_argument("--event", choices=("explicit", "start", "shutdown"), default="explicit",
                       help="lifecycle trigger; start respects the stream interval, shutdown bypasses timing")
     sync.set_defaults(func=command_sync)
+    checkouts = sub.add_parser("checkout", help="manage exact host-local checkout identities and repository defaults")
+    checkout_sub = checkouts.add_subparsers(dest="checkout_command", required=True)
+    for name in ("list", "register", "show", "move", "default", "resolve"):
+        child = checkout_sub.add_parser(name, allow_abbrev=False)
+        if name in ("show", "move", "default"):
+            child.add_argument("checkout_id")
+        if name in ("register", "move"):
+            child.add_argument("directory")
+        if name == "register":
+            child.add_argument("--repository", help="explicit repository URL binding; never inferred from remotes")
+        elif name in ("default", "resolve"):
+            child.add_argument("repository", help="exact repository URL")
+        child.set_defaults(func=command_checkout)
+        add_output(child)
+    workspaces = sub.add_parser("workspace", help="record the verified host-local working arrangement")
+    workspace_sub = workspaces.add_subparsers(dest="workspace_command", required=True)
+    capture = workspace_sub.add_parser("capture", allow_abbrev=False)
+    add_target(capture)
+    add_output(capture)
+    capture.set_defaults(func=command_workspace)
     for name in ("open", "resume"):
-        native = sub.add_parser(name, help="open a workspace" if name == "open" else "resume one recorded conversation in this terminal")
+        native = sub.add_parser(name, help="restore or focus the effort workspace" if name == "open" else "resume one recorded conversation in this terminal")
         add_target(native)
         native.add_argument("--session", help="select a session by ID/title when more than one is eligible")
         native.add_argument("--cwd", help="use and remember an explicit local directory")
@@ -527,6 +618,13 @@ def build_parser():
     attach.add_argument("--repository", help="stream repository alias for this checkout")
     attach.add_argument("--ref", dest="vcs_ref", help="portable VCS branch/bookmark reference")
     attach.add_argument("--directory-within-checkout", default=".")
+    directory = session_sub.add_parser("directory", allow_abbrev=False, help="read or select this Session\'s host-local cwd")
+    directory.add_argument("ref")
+    selection = directory.add_mutually_exclusive_group()
+    selection.add_argument("--cwd")
+    selection.add_argument("--checkout", dest="checkout_id", help="select a registered checkout ID")
+    directory.add_argument("--within", help="relative cwd within --checkout (default: .)")
+    directory.add_argument("--repository", help="explicit primary stream repository alias")
     session_update = session_sub.add_parser("update", allow_abbrev=False)
     session_update.add_argument("ref")
     session_update.add_argument("--title")
@@ -534,7 +632,7 @@ def build_parser():
     session_update.add_argument("--status", choices=STATUSES)
     add_text(session_update, "state")
     add_text(session_update, "remaining")
-    for child in (session_list, session_show, attach, session_update):
+    for child in (session_list, session_show, attach, session_update, directory):
         child.set_defaults(func=command_session)
         add_output(child)
     agents = sub.add_parser("agent", help="local captured-record integration for agent harnesses")
@@ -543,13 +641,14 @@ def build_parser():
     context.add_argument("--harness", choices=("pi", "codex", "claude"), required=True)
     context.add_argument("--session-id", required=True)
     context.add_argument("--stream-id", help="exact stream identity; never switches an attached conversation")
+    context.add_argument("--attest", action="store_true", help="require the exact native Pi caller and ready Herdr Stream association")
     enroll = agent_sub.add_parser("enroll", allow_abbrev=False, help="enroll the caller from a structured stdin request")
     apply = agent_sub.add_parser("apply", allow_abbrev=False, help="apply a captured-record update from stdin")
     for child in (context, enroll, apply):
         child.set_defaults(func=command_agent)
         add_output(child)
     for name, child in sub.choices.items():
-        if name not in ("frontend", "session", "agent"):
+        if name not in ("frontend", "session", "agent", "checkout", "workspace"):
             add_output(child)
     return parser
 

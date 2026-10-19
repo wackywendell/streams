@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import io
 import json
+from contextlib import chdir
 import os
 from pathlib import Path
 import sys
@@ -20,6 +21,7 @@ class ConfigTest(unittest.TestCase):
         temporary = tempfile.TemporaryDirectory()
         self.addCleanup(temporary.cleanup)
         self.root = Path(temporary.name)
+        self.enterContext(chdir(self.root))
         self.enterContext(patch.dict(os.environ, {
             "HOME": str(self.root), "XDG_CONFIG_HOME": str(self.root / "config"),
             "XDG_DATA_HOME": str(self.root / "data"), "XDG_STATE_HOME": str(self.root / "state"),
