@@ -57,12 +57,12 @@ export function editRequest(context: LocalContext, kind: "stream" | "session", c
  const identity = (kind: "stream" | "session", record: StreamWire | SessionWire) => JSON.stringify([kind, kind === "session" ? (record as SessionWire).host_id : null, record.id]);
  const seen = new Set([identity(kind, before)]);
  const inputs: ApplyRequest["inputs"] = [];
- if (guardInputs) {
+ if (guardInputs && kind === "stream") {
   const add = (kind: "stream" | "session", record: StreamWire | SessionWire | null) => {
    if (!record || seen.has(identity(kind, record))) return;
    seen.add(identity(kind, record));inputs.push({kind, record});
   };
-  add("stream", context.stream);add("session", context.session);
+  add("session", context.session);
   context.sessions.forEach((record) => add("session", record));
  }
  return structuredClone({catalog_source: context.catalog_source, operation_id: operationId, kind, actor, before, changes, ownership_token: kind === "stream" && actor === "user" ? null : context.authority!.token, inputs});
@@ -76,6 +76,7 @@ export class FieldEdit {
  }
  get dirty(): boolean {return JSON.stringify(this.value) !== JSON.stringify((this.base[this.kind] as any)?.[this.field]);}
  refresh(context: LocalContext): void {if (!this.dirty && !this.error) {Object.assign(this.base, structuredClone(context));this.value = structuredClone((context[this.kind] as any)?.[this.field]);}}
+ rebase(context: LocalContext): void {Object.assign(this.base, structuredClone(context));this.error = undefined;}
  async save(cli: {apply(request: ApplyRequest): Promise<Receipt>}, onReceipt?: (receipt: Receipt) => void): Promise<Receipt | undefined> {
   try {
    if (!this.dirty) return;

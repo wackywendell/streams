@@ -67,6 +67,13 @@ class CatalogOperationsTest(unittest.TestCase):
         result = reconcile(Catalog(streams=(stream(),), sessions=(current,)), op,
                            authority=Authority(host_id="laptop", token="term-1"))
         self.assertEqual(result.outcome, "superseded")
+        # Automatic Stream updates guard title/goal fields, not unrelated reference additions or lifecycle.
+        effort = stream(goal="Initial")
+        stream_op = update("infer-stream", effort, {"goal": "Refined"}, actor="automatic", ownership_token="term-1")
+        with_issue = replace(effort, issues=(Link(url="https://example.org/1", description="Issue"),))
+        merged = reconcile(Catalog(streams=(with_issue,)), stream_op,
+                           authority=Authority(host_id="laptop", token="term-1"))
+        self.assertEqual((merged.outcome, merged.record), ("changes", replace(with_issue, goal="Refined")))
 
     def test_changing_description_sources_clears_or_replaces_compact_derivatives(self):
         before = stream(goal_short="Old goal")

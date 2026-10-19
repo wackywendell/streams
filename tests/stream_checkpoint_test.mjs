@@ -54,11 +54,12 @@ test('automatic fields omit protected names and all lifecycle and identity field
  assert.deepEqual(automaticFields('stream',stream),['goal','goal_short']);
  assert.deepEqual(automaticFields('session',session),['title','status','state','state_short','remaining']);
 });
-test('request freezes original target and dependencies; target never duplicated in inputs',()=>{
+test('request freezes original target and stream dependencies; session progress does not guard siblings or stream',()=>{
  const captured=context(); const req=editRequest(captured,'session',{state:'Done'},'automatic');
+ const streamReq=editRequest(captured,'stream',{goal:'Updated'},'automatic');
  captured.session.state='later';captured.stream.goal='later';
- assert.equal(req.before.state,''); assert.equal(req.inputs[0].record.goal,'Goal');assert.equal(req.ownership_token,'owner');
- assert.equal(req.inputs[0].kind,'stream');assert.equal(req.actor,'automatic');
+ assert.equal(req.before.state,''); assert.deepEqual(req.inputs,[]);assert.equal(req.ownership_token,'owner');
+ assert.equal(streamReq.inputs[0].kind,'session');assert.equal(streamReq.inputs[0].record.state,'');assert.equal(req.actor,'automatic');
  assert.throws(()=>editRequest(context(),'stream',{status:'done'},'automatic'),/allowed/);
 });
 test('dirty field retains base and failed input while clean values refresh',async()=>{
@@ -325,7 +326,7 @@ test('background inference never rebases changed catalog inputs and serializes d
  const f=reporterFixture();f.reporter.response(f.ctx);await until(()=>f.inferences.length===1);f.catalog.stream.goal='Edited during inference';
  let entered=false;const discussion=f.reporter.exclusive(async()=>{entered=true;assert.equal(f.saves.length,2);return 'talk';});
  assert.equal(entered,false);f.release();await discussion;
- assert.equal(f.saves[0].inputs[0].record.goal,'Goal');assert.equal(f.saves[1].before.goal,'Edited during inference');
+ assert.deepEqual(f.saves[0].inputs,[]);assert.equal(f.saves[1].before.goal,'Edited during inference');
 });
 
 test('bound chooser never lists or switches, and live card offers no switch/create actions',async()=>{
@@ -525,9 +526,11 @@ for(const inside of [true,false])test(`real checkout CLI enroll/context/guarded 
   const fresh=await cli.context('native');assert.ok(!automaticFields('stream',fresh.stream).includes('title'));
   const goal=await cli.apply(editRequest(fresh,'stream',{goal:'New automatic goal'},'automatic'));assert.equal(goal.stream.title,'Human title');assert.equal(goal.stream.goal_mode,'automatic');
   await cli.enroll({catalog_source:empty.catalog_source,operation_id:randomUUID(),harness:'pi',harness_session_id:'sibling-native',stream_id:captured.stream.id,session:{title:'Sibling contribution'},actor:'user',cwd});
-  const withSibling=await cli.context('native');const guarded=editRequest(withSibling,'session',{state:'Based on all contributions'},'automatic');
+  const withSibling=await cli.context('native');const guardedSession=editRequest(withSibling,'session',{state:'Own progress unaffected by sibling'},'automatic');
+  const guardedStream=editRequest(withSibling,'stream',{goal:'Based on all contributions'},'automatic');
   const siblingContext=await cli.context('sibling-native');await cli.apply(editRequest(siblingContext,'session',{state:'Changed sibling evidence'},'user'));
-  const superseded=await cli.apply(guarded);assert.equal(superseded.save.domain.outcome,'superseded');
+  const sessionSaved=await cli.apply(guardedSession);assert.equal(sessionSaved.save.domain.outcome,'changes');
+  const superseded=await cli.apply(guardedStream);assert.equal(superseded.save.domain.outcome,'superseded');
   const independent=await cli.apply(editRequest(withSibling,'session',{title:'Independent manual edit'},'user'));assert.equal(independent.save.domain.outcome,'changes');
   const blocked=await cli.apply(editRequest(await cli.context('native'),'session',{status:'blocked'},'automatic'));assert.equal(blocked.session.status,'blocked');
   const invalid=await run(['agent','apply','--json'],'{"operation_id":"bad","kind":"stream","changes":{"repositories":{}}}');assert.equal(invalid.code,2);
@@ -552,11 +555,11 @@ test('bare or whitespace checkpoint preserves queued explicit report instruction
  f.reporter.request(f.ctx,true,'  Keep the deployment caveat  ');f.reporter.request(f.ctx,true,'');f.reporter.request(f.ctx,true,'  ');
  f.release();await f.reporter.idle();assert.equal(f.inferences[2].req.instructions,'Keep the deployment caveat');
 });
-test('generated guards include every visible sibling, deduplicate own session and exclude target',()=>{
+test('generated stream guards include every visible sibling while session guards only its own target',()=>{
  const catalog=context();const sibling={...session,id:'sibling',host_id:'other-host',state:'Original sibling'};
  catalog.sessions.push(structuredClone(session),sibling);
  const progress=editRequest(catalog,'session',{state:'Progress'},'automatic');
- assert.deepEqual(progress.inputs.map(input=>[input.kind,input.record.id]),[['stream','effort'],['session','sibling']]);
+ assert.deepEqual(progress.inputs,[]);
  const metadata=editRequest(catalog,'stream',{goal:'Goal'},'user',randomUUID(),true);
  assert.deepEqual(metadata.inputs.map(input=>[input.kind,input.record.id]),[['session','session'],['session','sibling']]);
  sibling.state='Changed after capture';assert.equal(metadata.inputs[1].record.state,'Original sibling');
@@ -658,4 +661,15 @@ test('concurrent sibling updates that supersede an in-flight report retry agains
  assert.deepEqual(updates,['update']);assert.deepEqual(reclaims,[]);
  reporter.reset(f.ctx,true);await reporter.idle();
  assert.deepEqual(reclaims,['reclaim']);assert.deepEqual(updates,['update']);
+});
+test('failed manual field edit can rebase onto updated live catalog and save retained input',async()=>{
+ const state={discussion:{input:'',messages:[]},edits:new Map()},live=context();
+ const edit=new FieldEdit('session',context(),'state');edit.value='My retained edit';edit.error='Edit conflict';
+ state.edits.set('session:state',edit);
+ live.session.state='Concurrent update';
+ let savedReq;
+ await editField({ui:{editor:()=>assert.fail('must not reopen editor'),select:async(_title,rows)=>{assert.ok(rows.includes('Rebase on live field & save'));return 'Rebase on live field & save';},notify:assert.fail}},{apply:async req=>{savedReq=req;return {operation_id:req.operation_id,save:{local:'persisted',sharing:'local-only',domain:{outcome:'changes'}}};}},live,'session','state',state,()=>{});
+ assert.equal(savedReq.before.state,'Concurrent update');
+ assert.equal(savedReq.changes.state,'My retained edit');
+ assert.equal(state.edits.size,0);
 });

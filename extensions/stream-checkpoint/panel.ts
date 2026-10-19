@@ -69,10 +69,12 @@ export async function editField(ctx: ExtensionContext, cli: StreamCli, catalog: 
     }
     editValue = false;
    }
-   const action = await ctx.ui.select(`${edit.error ?? ""}\n${kind} ${field}: ${JSON.stringify(edit.value)}\nOnly this field will be submitted.`, ["Save field", "Edit again", "Keep input and close", "Discard input"]);
+   const canRebase = Boolean(edit.error && JSON.stringify(edit.base[kind]) !== JSON.stringify(catalog[kind]));
+   const action = await ctx.ui.select(`${edit.error ?? ""}\n${kind} ${field}: ${JSON.stringify(edit.value)}\nOnly this field will be submitted.`, [...(canRebase ? ["Rebase on live field & save"] : []), "Save field", "Edit again", "Keep input and close", "Discard input"]);
    if (action === "Discard input") {state.edits.delete(key);return;}
    if (!action || action === "Keep input and close") return;
    if (action === "Edit again") {editValue = true;continue;}
+   if (action === "Rebase on live field & save") edit.rebase(catalog);
    try {await edit.save(cli, receipt);state.edits.delete(key);return;} catch(error) {ctx.ui.notify(String(error), "error");}
   }
  } finally {if (!edit.dirty && !edit.error) state.edits.delete(key);}

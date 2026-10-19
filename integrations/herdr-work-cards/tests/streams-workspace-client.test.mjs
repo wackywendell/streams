@@ -526,3 +526,18 @@ test('openDisplay resizes split immediately after launch and absent pair reconci
   assert.equal((await a.open('explicit')).kind, 'paired');
   assert.ok(!(await readdir(f.stateDirectory)).includes(`${key}.json.pending`));
 });
+test('openDisplay self-heals a half-stamped reserved pair without launching a duplicate card', async t => {
+  const f = await fixture(t), a = await f.owner(1), controller = new AbortController();
+  f.hook((args, output) => {
+    if (args[1] === 'report-metadata' && args.includes('strm_role=card')) controller.abort();
+    return output;
+  });
+  await assert.rejects(a.open('automatic', controller.signal));
+  f.hook(undefined);
+  assert.equal(launches(f).length, 1);
+  assert.ok(!f.panes[0].tokens.strm_role);
+  const recovered = await a.open('automatic');
+  assert.equal(recovered.kind, 'paired');
+  assert.equal(launches(f).length, 1);
+  assert.equal(f.panes[0].tokens.strm_role, 'agent');
+});

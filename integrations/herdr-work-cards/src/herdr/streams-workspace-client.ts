@@ -166,13 +166,45 @@ export class StreamsWorkspaceClient extends HerdrTransport {
     if (plugins.length) check(plugins[0]);
     else { await verify(); check((await this.result(['plugin', 'link', manifest], config, 'plugin_linked', signal)).plugin); }
   }
+  private async recoverHalfStamped(source: Source, context: StreamsNativeContext, config: WorkCardsConfig, signal?: AbortSignal): Promise<PairState | null> {
+    const saved = await source.read(signal), snapshot = await this.snapshot(config, signal);
+    const owner = snapshot.panes.find(p => p.pane_id === saved.native.pane_id);
+    if (!owner || pairKeys.some(k => Object.hasOwn(owner.tokens, k))) return null;
+    const identity = streamsDigest(saved.scope), key = streamsDigest([context.socket, saved.scope, tuple(owner)]);
+    const state = this.state(context), attempt = await state.read(key);
+    if (!attempt || attempt.phase !== 'pending' || !attempt.paneId || !attempt.terminalId || !attempt.tabId) return null;
+    const card = snapshot.panes.find(p => p.pane_id === attempt.paneId && p.terminal_id === attempt.terminalId && p.tab_id === attempt.tabId);
+    if (!card || card.tab_id !== owner.tab_id || card.workspace_id !== owner.workspace_id) return null;
+    const markers = { strm_agent: identity, strm_nonce: attempt.nonce, strm_pi: owner.terminal_id, strm_card: card.terminal_id, strm_native: saved.scope.nativeSessionId };
+    const expectedCard: Record<string, string> = { ...markers, strm_role: 'card' };
+    if (pairKeys.some(k => card.tokens[k] !== expectedCard[k])) return null;
+    if (snapshot.panes.some(p => p !== card && (p.tokens.strm_agent === identity || p.tokens.strm_pi === owner.terminal_id))) return null;
+    const workspace = snapshot.workspaces.find(w => w.workspace_id === context.workspaceId)!;
+    this.owners.set(context, { scope: { ...saved.scope }, tuple: tuple(owner), binding: workspace.tokens.strm_binding });
+    await this.stampReserved(source, context, owner, { ...markers, strm_role: 'agent' }, config, signal);
+    const v = await this.guard(source, context, config, signal);
+    if (v.pair.kind !== 'paired' || v.pair.nonce !== attempt.nonce) throw new Error('Recovered pair did not round-trip; evidence retained');
+    await state.write({ version: 1, key: v.key, phase: 'ready', nonce: attempt.nonce, paneId: card.pane_id, terminalId: card.terminal_id, tabId: card.tab_id });
+    return v.pair;
+  }
   async openDisplay(source: Source, context: StreamsNativeContext, config: WorkCardsConfig, signal?: AbortSignal, mode: 'automatic' | 'explicit' = 'automatic'): Promise<PairState | { kind: 'suppressed' }> {
-    const observed = await this.guard(source, context, config, signal);
-    if (observed.caller.terminal_id !== observed.owner.terminal_id) throw new Error('Only the attested Pi owner may open a display');
-    const attempt = await this.evidence(observed, context);
-    if (observed.pair.kind === 'paired') { this.bound(observed, context); return observed.pair; }
-    if (mode === 'automatic' && (attempt || observed.pair.kind === 'absent')) return { kind: 'suppressed' };
+    let observed: Verified | undefined;
+    try {
+      observed = await this.guard(source, context, config, signal);
+    } catch (error) {
+      if (!(error instanceof Error) || error.message !== 'Conflicting duplicate live owners') throw error;
+    }
+    if (observed) {
+      if (observed.caller.terminal_id !== observed.owner.terminal_id) throw new Error('Only the attested Pi owner may open a display');
+      const attempt = await this.evidence(observed, context);
+      if (observed.pair.kind === 'paired') { this.bound(observed, context); return observed.pair; }
+      if (mode === 'automatic' && (attempt || observed.pair.kind === 'absent')) return { kind: 'suppressed' };
+    }
     return withWorkspaceLock(context.socket, context.workspaceId, async () => {
+      if (!observed) {
+        const recovered = await this.recoverHalfStamped(source, context, config, signal);
+        if (recovered) return recovered;
+      }
       let v = await this.guard(source, context, config, signal);
       if (v.caller.terminal_id !== v.owner.terminal_id) throw new Error('Only the attested Pi owner may open a display');
       const state = this.state(context), attempt = await this.evidence(v, context);
@@ -309,12 +341,16 @@ export class StreamsWorkspaceClient extends HerdrTransport {
     if (observed.snapshot.workspaces.find(w => w.workspace_id === context.workspaceId)!.tokens.strm_binding
       && !Object.keys(this.summaryChanges(observed, context, 'workspace')).length && !Object.keys(this.summaryChanges(observed, context, 'pane')).length) return;
     await withWorkspaceLock(context.socket, context.workspaceId, async () => {
+      let v: Verified | undefined;
       for (const kind of ['workspace', 'pane'] as const) {
-        const v = await this.projectionProof(source, context, config, signal);
+        v ??= await this.projectionProof(source, context, config, signal);
         if (v.caller.terminal_id !== v.owner.terminal_id) throw new Error('Only the owning Pi may publish Session progress');
         const target = kind === 'pane' ? v.owner : v.snapshot.workspaces.find(w => w.workspace_id === context.workspaceId)!;
         const changed = this.summaryChanges(v, context, kind);
-        if (Object.keys(changed).length) await this.stamp(source, context, target, changed, config, signal, v.saved);
+        if (Object.keys(changed).length) {
+          await this.stamp(source, context, target, changed, config, signal, v.saved);
+          v = undefined;
+        }
       }
     }, { signal, waitMs: config.herdr_timeout_ms });
   }
@@ -333,8 +369,6 @@ export class StreamsWorkspaceClient extends HerdrTransport {
         await this.stamp(source, context, v.pair.card, { strm_caption_manual: '1' }, config, signal, v.saved); return;
       }
       if (v.pair.card.label === name) return;
-      const fresh = await this.marked(source, context, config, signal);
-      if (!isDeepStrictEqual(fresh.pair, v.pair) || fresh.saved.stream.title !== name) throw new Error('Caption target changed');
       signal?.throwIfAborted();
       const renamed = nativePane((await this.result(['pane', 'rename', v.pair.card.pane_id, name], config, 'pane_info', signal)).pane);
       if (!isDeepStrictEqual(tuple(renamed), tuple(v.pair.card)) || renamed.label !== name) throw new Error('Caption acknowledgement tuple mismatch');

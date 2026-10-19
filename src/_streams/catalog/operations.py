@@ -221,7 +221,9 @@ def reconcile(catalog: Catalog, operation: Operation, *, authority: Authority | 
                     return refuse("manual text is protected", (mode,), superseded=True)
             if current == after:
                 return Reconciliation(operation.id, "no-change")
-            if current != before:
+            guarded = ({"title", "title_mode", "goal", "goal_short", "goal_mode"}
+                       if isinstance(after, Stream) else {field.name for field in fields(after)})
+            if any(getattr(current, name) != getattr(before, name) for name in guarded):
                 return refuse("generated description inputs changed", ("inputs",), superseded=True)
         # A concurrent mode change fences pending text, even if normalization
         # selected the same mode. An already-applied edit still remains a no-op.
