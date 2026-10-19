@@ -1,6 +1,22 @@
 [tools]
 node = "26"
 uv = "latest"
+rust = "1.95.0"
+
+[env]
+# Temper has its own toolchain file; use one compiler for the entire Cargo graph.
+RUSTUP_TOOLCHAIN = "1.95.0"
+
+[tasks."test:rust"]
+description = "Run Rust catalog and Temper verification tests (requires Z3 and libclang)"
+run = 'RUSTC=$(rustup which rustc) RUSTDOC=$(rustup which rustdoc) cargo test --locked --all-targets'
+
+[tasks."test:differential"]
+description = "Compare Python and Rust durable catalog traces"
+run = [
+  'RUSTC=$(rustup which rustc) RUSTDOC=$(rustup which rustdoc) cargo build --locked --example catalog_trace',
+  "uv run python -m unittest discover -s tests/python -p test_rust_differential.py",
+]
 
 [tasks."test:python"]
 description = "Run streams CLI unit tests"
@@ -16,4 +32,4 @@ run = "npm --prefix integrations/herdr-work-cards test"
 
 [tasks.test]
 description = "Run all tests"
-depends = ["test:python", "test:pi", "test:herdr"]
+depends = ["test:rust", "test:differential", "test:python", "test:pi", "test:herdr"]

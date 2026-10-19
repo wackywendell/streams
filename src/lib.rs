@@ -1,0 +1,8 @@
+//! Durable catalog, pure reconciliation, and Temper-backed persistence protocols.
+
+pub mod codec;
+pub mod model;
+pub mod operations;
+pub mod storage;
+pub mod sync;
+pub mod yaml_store;

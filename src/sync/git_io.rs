@@ -1,0 +1,396 @@
+//! Bounded Git subprocesses and object/index operations for a managed repository.
+
+use std::collections::{BTreeMap, BTreeSet};
+use std::io::{self, Read, Write};
+use std::os::fd::AsRawFd;
+use std::os::unix::process::CommandExt;
+use std::path::{Path, PathBuf};
+use std::process::{Child, Command, Stdio};
+use std::sync::{Arc, Mutex};
+use std::time::{Duration, Instant};
+
+use crate::storage::StorageError;
+
+use super::history::History;
+
+#[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
+#[error("{message}")]
+pub struct GitError {
+    pub message: String,
+    pub code: Option<i32>,
+    pub uncertain: bool,
+}
+
+impl GitError {
+    pub fn new(message: impl Into<String>, code: Option<i32>) -> Self {
+        Self {
+            message: message.into(),
+            code,
+            uncertain: code.is_none(),
+        }
+    }
+}
+
+pub type GitHook = Arc<
+    Mutex<
+        dyn FnMut(&Git, &[&str], Option<&[u8]>, Option<&Path>) -> Option<Result<Vec<u8>, GitError>>
+            + Send,
+    >,
+>;
+
+type HistoryCache = Vec<(Option<String>, History)>;
+
+#[derive(Clone)]
+pub struct Git {
+    root: PathBuf,
+    pub timeout: f64,
+    pub(crate) histories: Arc<Mutex<HistoryCache>>,
+    blobs: Arc<Mutex<BTreeMap<String, Vec<u8>>>>,
+    hook: Option<GitHook>,
+}
+
+impl std::fmt::Debug for Git {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("Git").field("root", &self.root).finish()
+    }
+}
+
+// Limit each turn so a continuously writable/readable pipe cannot starve the deadline.
+fn drain(pipe: &mut Option<impl Read>, output: &mut Vec<u8>) -> io::Result<()> {
+    let Some(reader) = pipe.as_mut() else {
+        return Ok(());
+    };
+    let mut buf = [0; 8192];
+    for _ in 0..8 {
+        match reader.read(&mut buf) {
+            Ok(0) => {
+                *pipe = None;
+                break;
+            }
+            Ok(n) => output.extend_from_slice(&buf[..n]),
+            Err(e) if e.kind() == io::ErrorKind::WouldBlock => break,
+            Err(e) if e.kind() == io::ErrorKind::Interrupted => continue,
+            Err(e) => return Err(e),
+        }
+    }
+    Ok(())
+}
+
+fn nonblocking(pipe: &impl AsRawFd) -> io::Result<()> {
+    // These descriptors are owned pipes; retain their existing status flags.
+    let flags = unsafe { libc::fcntl(pipe.as_raw_fd(), libc::F_GETFL) };
+    if flags == -1
+        || unsafe { libc::fcntl(pipe.as_raw_fd(), libc::F_SETFL, flags | libc::O_NONBLOCK) } == -1
+    {
+        return Err(io::Error::last_os_error());
+    }
+    Ok(())
+}
+
+fn terminate(child: &mut Child, mut message: String) -> GitError {
+    // The group remains addressable even if Git exited before a descendant closed its pipes.
+    if unsafe { libc::kill(-(child.id() as libc::pid_t), libc::SIGKILL) } == -1 {
+        let error = io::Error::last_os_error();
+        if error.raw_os_error() != Some(libc::ESRCH) {
+            message.push_str(&format!("; terminating Git process group failed: {error}"));
+        }
+    }
+    if let Err(error) = child.wait() {
+        message.push_str(&format!("; reaping Git failed: {error}"));
+    }
+    GitError::new(message, None)
+}
+
+impl Git {
+    fn deadline(&self, args: &[&str]) -> Result<Instant, GitError> {
+        if args.is_empty() {
+            return Err(GitError::new("Git requires at least one argument", None));
+        }
+        let timeout = Duration::try_from_secs_f64(self.timeout)
+            .ok()
+            .filter(|timeout| !timeout.is_zero());
+        timeout
+            .and_then(|timeout| Instant::now().checked_add(timeout))
+            .ok_or_else(|| {
+                GitError::new(
+                    "Git timeout must be finite, positive, and representable",
+                    None,
+                )
+            })
+    }
+
+    pub fn new(root: impl AsRef<Path>, timeout: f64) -> Self {
+        Self {
+            root: root.as_ref().to_path_buf(),
+            timeout,
+            histories: Arc::new(Mutex::new(Vec::new())),
+            blobs: Arc::new(Mutex::new(BTreeMap::new())),
+            hook: None,
+        }
+    }
+
+    pub fn root(&self) -> &Path {
+        &self.root
+    }
+
+    pub fn with_hook(mut self, hook: GitHook) -> Self {
+        self.hook = Some(hook);
+        self
+    }
+
+    pub fn run_raw(
+        &self,
+        args: &[&str],
+        input: Option<&[u8]>,
+        index: Option<&Path>,
+        allowed: &[i32],
+    ) -> Result<Vec<u8>, GitError> {
+        let deadline = self.deadline(args)?;
+        let mut cmd = Command::new("git");
+        cmd.process_group(0);
+        cmd.arg("-C").arg(&self.root).args(args);
+        cmd.env_clear();
+        for (k, v) in std::env::vars_os() {
+            let k_str = k.to_string_lossy();
+            if !k_str.starts_with("GIT_")
+                || matches!(
+                    k_str.as_ref(),
+                    "GIT_CONFIG_GLOBAL" | "GIT_CONFIG_SYSTEM" | "GIT_CONFIG_NOSYSTEM"
+                )
+            {
+                cmd.env(k, v);
+            }
+        }
+        cmd.env("GIT_TERMINAL_PROMPT", "0");
+        cmd.env("GIT_LITERAL_PATHSPECS", "1");
+        if let Some(idx) = index {
+            cmd.env("GIT_INDEX_FILE", idx);
+        }
+        if input.is_some() {
+            cmd.stdin(Stdio::piped());
+        } else {
+            cmd.stdin(Stdio::null());
+        }
+        cmd.stdout(Stdio::piped()).stderr(Stdio::piped());
+        let mut child = cmd
+            .spawn()
+            .map_err(|e| GitError::new(format!("Git {} could not complete: {e}", args[0]), None))?;
+        let result = (|| -> io::Result<_> {
+            let mut stdin = child.stdin.take();
+            let mut stdout = child.stdout.take();
+            let mut stderr = child.stderr.take();
+            if let Some(pipe) = &stdin {
+                nonblocking(pipe)?;
+            }
+            nonblocking(stdout.as_ref().unwrap())?;
+            nonblocking(stderr.as_ref().unwrap())?;
+            let mut remaining = input.unwrap_or_default();
+            let mut out = Vec::new();
+            let mut err = Vec::new();
+            let mut status = None;
+            loop {
+                if Instant::now() >= deadline {
+                    return Err(io::Error::new(
+                        io::ErrorKind::TimedOut,
+                        "configured Git timeout elapsed",
+                    ));
+                }
+                drain(&mut stdout, &mut out)?;
+                drain(&mut stderr, &mut err)?;
+                if let Some(writer) = stdin.as_mut() {
+                    if !remaining.is_empty() {
+                        let len = remaining.len().min(65536);
+                        match writer.write(&remaining[..len]) {
+                            Ok(0) => return Err(io::ErrorKind::WriteZero.into()),
+                            Ok(n) => remaining = &remaining[n..],
+                            Err(e) if e.kind() == io::ErrorKind::BrokenPipe => remaining = &[],
+                            Err(e)
+                                if matches!(
+                                    e.kind(),
+                                    io::ErrorKind::WouldBlock | io::ErrorKind::Interrupted
+                                ) => {}
+                            Err(e) => return Err(e),
+                        }
+                    }
+                    if remaining.is_empty() {
+                        stdin = None;
+                    }
+                }
+                if status.is_none() {
+                    status = child.try_wait()?;
+                }
+                if let Some(status) = status {
+                    stdin = None;
+                    if stdout.is_none() && stderr.is_none() {
+                        return Ok((status, out, err));
+                    }
+                }
+                std::thread::sleep(
+                    Duration::from_millis(2)
+                        .min(deadline.saturating_duration_since(Instant::now())),
+                );
+            }
+        })();
+        let (status, stdout, stderr) = result.map_err(|e| {
+            terminate(
+                &mut child,
+                format!("Git {} could not complete: {e}", args[0]),
+            )
+        })?;
+        let code = status.code();
+        if !code.is_some_and(|code| allowed.contains(&code)) {
+            let stderr = String::from_utf8_lossy(&stderr).trim().to_string();
+            return Err(GitError::new(
+                format!("Git {} failed ({status}): {stderr}", args[0]),
+                code,
+            ));
+        }
+        Ok(stdout)
+    }
+
+    pub fn run(
+        &self,
+        args: &[&str],
+        input: Option<&[u8]>,
+        index: Option<&Path>,
+        allowed: &[i32],
+    ) -> Result<Vec<u8>, GitError> {
+        self.deadline(args)?;
+        if let Some(ref hook) = self.hook {
+            let intercepted = {
+                let mut guard = hook.lock().unwrap();
+                guard(self, args, input, index)
+            };
+            if let Some(res) = intercepted {
+                return res;
+            }
+        }
+        self.run_raw(args, input, index, allowed)
+    }
+
+    pub fn text(
+        &self,
+        args: &[&str],
+        input: Option<&[u8]>,
+        index: Option<&Path>,
+        allowed: &[i32],
+    ) -> Result<String, GitError> {
+        let out = self.run(args, input, index, allowed)?;
+        Ok(String::from_utf8_lossy(&out).trim().to_string())
+    }
+
+    pub fn head(&self) -> Result<String, GitError> {
+        self.text(&["rev-parse", "--verify", "HEAD"], None, None, &[0])
+    }
+
+    pub fn ancestor(&self, before: &str, after: &str) -> Result<bool, GitError> {
+        let out = self.text(&["merge-base", before, after], None, None, &[0, 1])?;
+        Ok(out == before)
+    }
+
+    pub fn files(&self, revision: &str) -> Result<BTreeMap<String, Vec<u8>>, StorageError> {
+        let raw = self
+            .run(
+                &["ls-tree", "-rz", "--full-tree", revision],
+                None,
+                None,
+                &[0],
+            )
+            .map_err(|e| StorageError::new(e.message, e.uncertain))?;
+        let mut paths = BTreeMap::new();
+        for entry in raw.split(|&b| b == 0) {
+            if entry.is_empty() {
+                continue;
+            }
+            let Some(tab_pos) = entry.iter().position(|&b| b == b'\t') else {
+                return Err(StorageError::new("invalid ls-tree entry", false));
+            };
+            let desc = std::str::from_utf8(&entry[..tab_pos])
+                .map_err(|e| StorageError::new(e.to_string(), false))?;
+            let path = std::str::from_utf8(&entry[tab_pos + 1..])
+                .map_err(|e| StorageError::new(e.to_string(), false))?;
+            let parts: Vec<&str> = desc.split_whitespace().collect();
+            if parts.len() != 3 || parts[0] != "100644" || parts[1] != "blob" {
+                return Err(StorageError::new(
+                    "catalog history contains a non-regular record",
+                    false,
+                ));
+            }
+            paths.insert(path.to_string(), parts[2].to_string());
+        }
+        let missing: Vec<String> = {
+            let blobs = self.blobs.lock().unwrap();
+            let unique_oids: BTreeSet<String> = paths.values().cloned().collect();
+            unique_oids
+                .into_iter()
+                .filter(|oid| !blobs.contains_key(oid))
+                .collect()
+        };
+        if !missing.is_empty() {
+            let batch_in = format!("{}\n", missing.join("\n"));
+            let output = self
+                .run(
+                    &["cat-file", "--batch"],
+                    Some(batch_in.as_bytes()),
+                    None,
+                    &[0],
+                )
+                .map_err(|e| StorageError::new(e.message, e.uncertain))?;
+            let mut offset = 0usize;
+            let mut blobs = self.blobs.lock().unwrap();
+            for expected in &missing {
+                let Some(rel_end) = output[offset..].iter().position(|&b| b == b'\n') else {
+                    return Err(StorageError::new("invalid Git blob batch response", false));
+                };
+                let end = offset + rel_end;
+                let header = std::str::from_utf8(&output[offset..end])
+                    .map_err(|e| StorageError::new(e.to_string(), false))?;
+                let parts: Vec<&str> = header.split_whitespace().collect();
+                if parts.len() != 3 || parts[0] != expected || parts[1] != "blob" {
+                    return Err(StorageError::new("invalid Git blob batch response", false));
+                }
+                let size: usize = parts[2]
+                    .parse()
+                    .map_err(|_| StorageError::new("invalid Git blob batch response", false))?;
+                offset = end + 1;
+                if offset + size > output.len() {
+                    return Err(StorageError::new("invalid Git blob batch response", false));
+                }
+                blobs.insert(expected.clone(), output[offset..offset + size].to_vec());
+                offset += size + 1;
+            }
+        }
+        let blobs = self.blobs.lock().unwrap();
+        let mut out = BTreeMap::new();
+        for (path, oid) in paths {
+            let Some(bytes) = blobs.get(&oid) else {
+                return Err(StorageError::new("missing cached Git blob", false));
+            };
+            out.insert(path, bytes.clone());
+        }
+        Ok(out)
+    }
+
+    pub fn commit(
+        &self,
+        tree: &str,
+        message: &str,
+        parent: Option<&str>,
+    ) -> Result<String, GitError> {
+        let mut args = vec!["commit-tree", tree];
+        if let Some(p) = parent {
+            args.push("-p");
+            args.push(p);
+        }
+        let signed = self.text(
+            &["config", "--bool", "--get", "commit.gpgsign"],
+            None,
+            None,
+            &[0, 1],
+        )?;
+        if signed == "true" {
+            args.push("-S");
+        }
+        self.text(&args, Some(message.as_bytes()), None, &[0])
+    }
+}
