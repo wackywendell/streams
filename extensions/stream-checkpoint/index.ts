@@ -106,8 +106,13 @@ export default function registerWorkCard(pi: ExtensionAPI, options: Options = {}
   description: "Report progress, configure reporting, attach an initial work card, or open/close its native pane",
   getArgumentCompletions: (prefix) => {
    if (/\s/.test(prefix)) return null;
-   const matches = ["report", "settings", "attach", "pane"].filter((command) => command.startsWith(prefix));
-   return matches.length ? matches.map((command) => ({value: command, label: command})) : null;
+   const matches = [
+    {value: "report", label: "report", description: "Save a progress update"},
+    {value: "settings", label: "settings", description: "Configure reporting"},
+    {value: "attach", label: "attach", description: "Attach an initial work card"},
+    {value: "pane", label: "pane", description: "Open native pane; 'pane close' hides it"},
+   ].filter((item) => item.value.startsWith(prefix));
+   return matches.length ? matches : null;
   },
   handler: async (args, ctx) => {
    scope.use(ctx);

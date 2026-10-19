@@ -137,6 +137,18 @@ test('model inference uses actual supported registry API, typed calls, no tools 
  ctx.modelRegistry.complete=async()=>({stopReason:'toolUse',content:[{type:'toolCall',name:'record_card',arguments:{changes:{title_mode:'manual'}}}]});
  await assert.rejects(infer(ctx,{type:'session',catalog:context(),messages:[]},new AbortController().signal),/invalid structured/);
 });
+test('session progress uses the agreed brevity prompt without hard limits or changes to other helper tasks',async()=>{
+ const guidance='Write state as a brief orientation for someone returning to the work: what meaningfully changed and where things stand. Use one or two short sentences, normally under 35 words; shorter is better. Do not enumerate completed steps, test counts, commit hashes, rollout inventories, or other specific details unless essential to understanding the result. Put unfinished scope and blockers in remaining. This is to provide the user a quick update/reminder of the current status, not a completion report.';
+ const state=Array(40).fill('context').join(' ');const prompts={};
+ for(const type of ['session','stream','enroll','discussion']){
+  const answer=type==='session'?{changes:{state,remaining:'Resolve the blocker'}}:type==='enroll'?{meaningful:false}:type==='discussion'?{reply:'Discuss only'}:{changes:{}};
+  const ctx={model:{contextWindow:100000},modelRegistry:{complete:async(_model,payload)=>{prompts[type]=payload.systemPrompt;return {stopReason:'toolUse',content:[{type:'toolCall',name:'record_card',arguments:answer}]};}}};
+  assert.deepEqual(await infer(ctx,{type,catalog:context(),messages:[]},new AbortController().signal),answer);
+ }
+ assert.equal(prompts.session,`${prompts.stream}\n\n${guidance}`);
+ assert.equal(prompts.enroll,prompts.stream);assert.equal(prompts.discussion,prompts.stream);
+ assert.ok(!prompts.stream.includes(guidance));
+});
 test('actual local Pi runtime registry and projected compaction work without live credentials',async()=>{
  const root=mkdtempSync(join(tmpdir(),'pi-runtime-card-'));
  try {
@@ -253,10 +265,17 @@ test('only streams slash command registers; model checkpoint tool retains its in
  assert.deepEqual([...f.tools.keys()],['stream_read','checkpoint','select_stream','create_stream']);
  assert.ok(f.tools.get('checkpoint').parameters.properties.instructions);
 });
-test('streams completes subcommand prefixes but never report instructions or extra arguments',async()=>{
+test('streams completes subcommand prefixes with short descriptions but never report instructions or extra arguments',async()=>{
  const complete=commandFixture().commands.get('streams').getArgumentCompletions;
- assert.deepEqual(await complete(''),['report','settings','attach','pane'].map(value=>({value,label:value})));
- for(const [prefix,value] of [['r','report'],['se','settings'],['att','attach'],['report','report']])assert.deepEqual(await complete(prefix),[{value,label:value}]);
+ const items=[
+  {value:'report',label:'report',description:'Save a progress update'},
+  {value:'settings',label:'settings',description:'Configure reporting'},
+  {value:'attach',label:'attach',description:'Attach an initial work card'},
+  {value:'pane',label:'pane',description:"Open native pane; 'pane close' hides it"},
+ ];
+ assert.deepEqual(await complete(''),items);
+ for(const item of items){assert.ok(item.description.length<=40);assert.doesNotMatch(item.description,/[\r\n]/);}
+ for(const [prefix,value] of [['r','report'],['se','settings'],['att','attach'],['p','pane'],['report','report']])assert.deepEqual(await complete(prefix),items.filter(item=>item.value===value));
  for(const prefix of ['unknown','report ','report settings','report\nattach','settings ','attach effort'])assert.equal(await complete(prefix),null);
 });
 for(const [args,instructions] of [['',undefined],['  \t ',undefined],['report',undefined],['  report  Keep the caveat\nand settings detail  ','Keep the caveat\nand settings detail']])test(`streams reports explicitly with ${JSON.stringify(args)}`,async()=>{
