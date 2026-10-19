@@ -49,7 +49,7 @@ export function acceptSessionTitle(pi: NamingAPI, manager: Session, sessionId: s
 }
 
 /** Session names are global across the entry tree, so their provenance follows file order too. */
-export function projectSessionName(pi: NamingAPI, manager: Session, sessionId: string, title: string, titleMode: 'auto' | 'manual', assertCurrent: () => void): 'renamed' | 'unchanged' | 'manual' | 'skipped' {
+export function projectSessionName(pi: NamingAPI, manager: Session, sessionId: string, title: string, titleMode: 'auto' | 'manual', assertCurrent: () => void, intent: 'automatic' | 'explicit' = 'automatic'): 'renamed' | 'unchanged' | 'manual' | 'skipped' {
   if (!sessionTitleReady(manager, sessionId, title, titleMode)) return 'skipped';
   const entries = manager.getEntries();
   const observedInfo = entries.filter(entry => entry.type === 'session_info').at(-1);
@@ -59,12 +59,12 @@ export function projectSessionName(pi: NamingAPI, manager: Session, sessionId: s
   const observed = pi.getSessionName() ?? '';
   assertCurrent();
   if (manager.getSessionId() !== sessionId) throw new Error('Stale Pi naming session');
-  if (previous?.mode === 'manual') return 'manual';
-  if ((previous?.mode === 'auto' && (previous.name !== observed || previous.sessionInfoId !== observedInfo?.id)) || (!previous?.mode && (observed !== '' || observedInfo !== undefined || state.kind === 'foreign'))) {
+  if (intent !== 'explicit' && previous?.mode === 'manual') return 'manual';
+  if (intent !== 'explicit' && ((previous?.mode === 'auto' && (previous.name !== observed || previous.sessionInfoId !== observedInfo?.id)) || (!previous?.mode && (observed !== '' || observedInfo !== undefined || state.kind === 'foreign')))) {
     pi.appendEntry(sessionNamingEntry, { ...previous, version: 1, sessionId, mode: 'manual', name: observed } satisfies Provenance);
     return 'manual';
   }
-  if (previous?.mode === 'auto' && observed === title) return 'unchanged';
+  if (previous?.mode === 'auto' && observed === title && previous.name === observed && previous.sessionInfoId === observedInfo?.id) return 'unchanged';
   pi.setSessionName(title);
   const applied = manager.getEntries().filter(entry => entry.type === 'session_info').at(-1);
   assertCurrent();

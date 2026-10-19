@@ -9,8 +9,8 @@ import { SessionScope, captureInputs } from "./session-scope.ts";
 import type { SessionFence } from "./session-scope.ts";
 import type { ReportingSettings } from "./settings.ts";
 
-type Options = {scope?: SessionScope; cli(ctx: ExtensionContext): StreamCli; settings(): ReportingSettings; infer?: typeof modelInfer; notice(text: string): void; receipt(value: Receipt): void; activity?(text?: string): void};
-type Pending = {ctx: ExtensionContext; force: boolean; instructions?: string; reset?: boolean};
+type Options = {scope?: SessionScope; cli(ctx: ExtensionContext): StreamCli; settings(): ReportingSettings; infer?: typeof modelInfer; notice(text: string): void; receipt(value: Receipt): void; activity?(text?: string): void; onReclaimNames?(): Promise<void> | void};
+type Pending = {ctx: ExtensionContext; force: boolean; instructions?: string; reset?: boolean; auto?: boolean};
 export class Reporter {
  readonly scope: SessionScope;
  private count = 0;
@@ -26,11 +26,11 @@ export class Reporter {
   this.scope.use(ctx);
   if (++this.count % this.options.settings().frequency === 0) this.request(ctx, false);
  }
- reset(ctx: ExtensionContext): void {this.request(ctx, true, undefined, true);}
- request(ctx: ExtensionContext, force = true, instructions?: string, reset = false): void {
+ reset(ctx: ExtensionContext, auto = false): void {this.request(ctx, true, undefined, true, auto);}
+ request(ctx: ExtensionContext, force = true, instructions?: string, reset = false, auto = false): void {
   if (this.scope.stopped) return;
   this.scope.use(ctx);
-  this.pending = {ctx, force: force || !!this.pending?.force, instructions: instructions?.trim() || this.pending?.instructions, reset: Boolean(reset || this.pending?.reset)};
+  this.pending = {ctx, force: force || !!this.pending?.force, instructions: instructions?.trim() || this.pending?.instructions, reset: Boolean(reset || this.pending?.reset), auto: Boolean(auto || this.pending?.auto)};
   this.start();
  }
  invalidate(): void {this.scope.invalidate();}
@@ -61,7 +61,7 @@ export class Reporter {
  private async generate(ctx: ExtensionContext, request: Inference, signal: AbortSignal): Promise<Inferred> {
   return (this.options.infer ?? modelInfer)(ctx, request, signal, this.options.settings().model);
  }
- private async report({ctx, force, instructions, reset}: Pending, fence: SessionFence): Promise<void> {
+ private async report({ctx, force, instructions, reset, auto}: Pending, fence: SessionFence): Promise<void> {
   const cli = this.options.cli(ctx), signal = fence.signal;
   const captureNow = () => captureInputs(ctx, cli, this.options.settings().context, fence);
   let capture = await captureNow();
@@ -81,6 +81,23 @@ export class Reporter {
    if (capture.catalog.catalog_source !== enrollmentSource) throw Error("Catalog source changed after enrollment; no further report was attempted");
    if (!capture.catalog.session || !capture.valid() || signal.aborted) return;
   }
+  if (reset && auto) {
+   const source = capture.catalog.catalog_source, sessionId = capture.catalog.session.id, streamId = capture.catalog.stream?.id;
+   for (const kind of ["session", "stream"] as const) {
+    const target = capture.catalog[kind];
+    if (!target || kind === "stream" && !capture.catalog.authority) continue;
+    const changes: Record<string, unknown> = {};
+    if (target.title_mode === "manual") changes.title_mode = "automatic";
+    if (kind === "stream" && capture.catalog.stream!.goal_mode === "manual") changes.goal_mode = "automatic";
+    if (!Object.keys(changes).length) continue;
+    if (signal.aborted || !await capture.attached()) return;
+    const receipt = await cli.apply(editRequest(capture.catalog, kind, changes, "user", randomUUID(), true));
+    if (fence.live()) this.options.receipt(receipt);
+    if (!capture.valid() || !receiptCanContinue(receipt)) return;
+    capture = await captureNow();
+    if (!capture.valid() || capture.catalog.catalog_source !== source || capture.catalog.session?.id !== sessionId || capture.catalog.stream?.id !== streamId) throw Error("Attachment changed during naming reset");
+   }
+  }
   // A Session write is its own inference and guarded target; it never timestamps the effort.
   const sessionOperation = randomUUID();
   const progress = await this.generate(ctx, {type: "session", catalog: capture.catalog, messages: capture.evidence.messages, instructions, reset}, signal);
@@ -96,7 +113,8 @@ export class Reporter {
   const sessionBase = capture.catalog;
   capture = await captureNow();
   if (capture.catalog.catalog_source !== sessionBase.catalog_source || capture.catalog.stream?.id !== sessionBase.stream?.id || capture.catalog.session?.id !== sessionBase.session?.id) throw Error("Catalog source or attachment changed; metadata report cancelled");
-  if (!capture.catalog.stream || !capture.valid() || signal.aborted || !automaticFields("stream", capture.catalog.stream).length) return;
+  if (!capture.valid() || signal.aborted) return;
+  if (!capture.catalog.stream || !automaticFields("stream", capture.catalog.stream).length) {if (auto) await this.options.onReclaimNames?.();return;}
   const streamOperation = randomUUID();
   const metadata = await this.generate(ctx, {type: "stream", catalog: capture.catalog, messages: capture.evidence.messages, instructions, reset}, signal);
   if (signal.aborted || !await capture.attached()) return;
@@ -104,6 +122,8 @@ export class Reporter {
   if (metadata.changes && Object.keys(metadata.changes).length) {
    const receipt = await cli.apply(editRequest(capture.catalog, "stream", metadata.changes, "automatic", streamOperation, true));
    if (fence.live()) this.options.receipt(receipt);
+   if (!receiptCanContinue(receipt)) return;
   }
+  if (auto && capture.valid()) await this.options.onReclaimNames?.();
  }
 }

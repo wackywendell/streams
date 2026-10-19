@@ -38,6 +38,16 @@ test('unproven existing names and later external renames remain manually protect
   assert.equal(h.manager.getSessionName(), 'Own task'); assert.equal(h.sets(), 1);
 });
 
+test('explicit reclaim replaces manual provenance and resumes automatic tracking', () => {
+  const h = fixture(), id = h.manager.getSessionId();
+  h.manager.appendSessionInfo('Manual name'); assert.equal(h.apply(), 'manual');
+  acceptSessionTitle(h.pi, h.manager, id, 'New lane', () => {});
+  assert.equal(projectSessionName(h.pi, h.manager, id, 'New lane', 'auto', () => {}, 'explicit'), 'renamed');
+  assert.equal(h.manager.getSessionName(), 'New lane');
+  assert.equal(h.manager.getEntries().filter(e => e.type === 'custom').at(-1).data.mode, 'auto');
+  acceptSessionTitle(h.pi, h.manager, id, 'Later lane', () => {});
+  assert.equal(h.apply('Later lane', {titleMode: 'auto'}), 'renamed');
+});
 test('same-text manual session-info writes revoke automatic authority', () => {
   const h = fixture(); h.apply(); h.manager.appendSessionInfo('Own task');
   assert.equal(h.apply('New task'), 'manual'); assert.equal(h.manager.getSessionName(), 'Own task');

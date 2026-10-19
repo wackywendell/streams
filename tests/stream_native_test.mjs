@@ -29,8 +29,8 @@ function fixture(t, options = {}) {
   read:async signal => {if (options.readSignal) await options.readSignal(signal);return source.read();}, bootstrap:async signal => {events.push('bootstrap');if (options.bootstrap) await options.bootstrap(signal);return {socket:'/socket', paneId:'pane', terminalId:'terminal', tabId:'tab', workspaceId:'workspace'};},
   open:async (_context, signal, mode) => {events.push(`open:${mode}`);if (options.open) await options.open(signal);if (mode === 'explicit') closed = false;return {kind:closed ? 'suppressed' : 'paired'};},
   close:async () => {events.push('close');closed = true;},
-  summaries:async () => {events.push('summaries');}, names:async () => {events.push('names');},
-  sessionName:(snapshot, check) => {events.push('sessionName');naming.acceptSessionTitle(pi, ctx.sessionManager, id, snapshot.session.title, check);naming.projectSessionName(pi, ctx.sessionManager, id, snapshot.session.title, snapshot.session.title_mode === 'automatic' ? 'auto' : 'manual', check);},
+  summaries:async () => {events.push('summaries');}, names:async (_context, _signal, intent) => {events.push('names');options.names?.(intent);},
+  sessionName:(snapshot, check, intent) => {events.push('sessionName');naming.acceptSessionTitle(pi, ctx.sessionManager, id, snapshot.session.title, check);naming.projectSessionName(pi, ctx.sessionManager, id, snapshot.session.title, snapshot.session.title_mode === 'automatic' ? 'auto' : 'manual', check, intent);},
  };
  let loads = 0, captured;
  const factory = async input => {loads++;captured = input;return adapter;};
@@ -40,6 +40,15 @@ function fixture(t, options = {}) {
  return {id, ctx, pi, saved, entries, adapter, controller, events, notices, factory, capture, loads:() => loads, captured:() => captured, name:() => name};
 }
 
+test('explicit naming reclaim shares the effect lane without reopening the display', async t => {
+ environment(t);const intents=[],f=fixture(t,{sessionNaming:false,names:intent=>intents.push(intent)});
+ f.controller.start();await f.controller.idle();f.pi.setSessionName('Manual name');
+ const before=f.events.length;
+ await f.controller.reclaimNames();
+ assert.equal(intents.at(-1),'explicit');assert.equal(f.name(),'Saved title');
+ assert.ok(!f.events.slice(before).some(event=>event.startsWith('open:')));
+ assert.equal(f.entries.filter(entry=>entry.customType===naming.sessionNamingEntry).at(-1).data.mode,'auto');
+});
 test('discovery and controller construction have no effects; only gated session_start loads', async t => {
  environment(t);const f = fixture(t);await turn();assert.equal(f.loads(), 0);assert.deepEqual(f.events, []);
  f.controller.start();await f.controller.idle();assert.equal(f.loads(), 1);

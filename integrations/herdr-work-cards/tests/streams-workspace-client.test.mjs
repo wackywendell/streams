@@ -378,17 +378,30 @@ for (const terminal of [undefined, 'foreign']) test(`card rejects missing/wrong 
   for (const method of ['verifyDisplay', 'projectCaption', 'closeDisplay']) await assert.rejects(c[method](a.s, context, config), /exact owned/);
   assert.equal(effects(f).length, before);
 });
-test('matching custom tab is manual, not proof of automatic naming', async t => {
-  const f = await fixture(t), a = await f.owner(1); f.tabs[0].label = 'Task 1';
+test('explicit naming reclaims manual workspace and tab even with naming disabled', async t => {
+  const f = await fixture(t), a = await f.owner(1);
+  f.workspaces[0].label = 'Manual workspace'; f.tabs[0].label = 'Manual tab';
+  await a.c.projectNames(a.s, a.context, config);
   assert.equal((await a.c.projectNames(a.s, a.context, config)).tab, 'manual');
-  f.contexts[0].session.title = 'Changed'; assert.equal((await a.c.projectNames(a.s, a.context, config)).tab, 'manual'); assert.equal(f.tabs[0].label, 'Task 1');
+  const disabled = {...config, workspace_naming: false, tab_naming: false};
+  const reclaimed = await a.c.projectNames(a.s, a.context, disabled, undefined, 'explicit');
+  assert.equal(reclaimed.tab, 'renamed'); assert.equal(reclaimed.workspace, 'renamed');
+  assert.equal(f.tabs[0].label, 'Task 1');
+  f.contexts[0].session.title = 'Later';
+  assert.equal((await a.c.projectNames(a.s, a.context, config)).tab, 'renamed');
+  assert.equal(f.tabs[0].label, 'Later');
 });
-test('tab rename followed by provenance failure pins matching text as manual on retry', async t => {
+test('matching tab is adopted and tracks future automatic titles', async t => {
+  const f = await fixture(t), a = await f.owner(1); f.tabs[0].label = 'Task 1';
+  assert.equal((await a.c.projectNames(a.s, a.context, config)).tab, 'unchanged');
+  f.contexts[0].session.title = 'Changed'; assert.equal((await a.c.projectNames(a.s, a.context, config)).tab, 'renamed'); assert.equal(f.tabs[0].label, 'Changed');
+});
+test('tab rename followed by provenance failure adopts matching text on retry', async t => {
   const f = await fixture(t), a = await f.owner(1), write = NameStore.prototype.write;
   NameStore.prototype.write = async function(scope, ...args) { if (scope.kind === 'tab') throw Error('name save failed'); return write.call(this, scope, ...args); };
   try { await assert.rejects(a.c.projectNames(a.s, a.context, config), /name save failed/); } finally { NameStore.prototype.write = write; }
-  assert.equal(f.tabs[0].label, 'Task 1'); assert.equal((await a.c.projectNames(a.s, a.context, config)).tab, 'manual');
-  f.contexts[0].session.title = 'Later'; await a.c.projectNames(a.s, a.context, config); assert.equal(f.tabs[0].label, 'Task 1');
+  assert.equal(f.tabs[0].label, 'Task 1'); assert.equal((await a.c.projectNames(a.s, a.context, config)).tab, 'unchanged');
+  f.contexts[0].session.title = 'Later'; await a.c.projectNames(a.s, a.context, config); assert.equal(f.tabs[0].label, 'Later');
 });
 test('editor and later first-pane owner share the same tab naming provenance scope', async t => {
   const f = await fixture(t), a = await f.owner(1); await a.open(); const snapshot = await a.s.read(), target = renderStreamsCard(snapshot, 100, 10).documents.get('a');

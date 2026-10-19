@@ -1,4 +1,5 @@
-import { Editor, matchesKey, truncateToWidth, wrapTextWithAnsi } from "@earendil-works/pi-tui";
+import { Editor, SelectList, matchesKey, truncateToWidth, wrapTextWithAnsi } from "@earendil-works/pi-tui";
+import { getSelectListTheme } from "@earendil-works/pi-coding-agent";
 import type { ExtensionContext } from "@earendil-works/pi-coding-agent";
 import type { LocalContext, Receipt, StreamCli } from "./streams.ts";
 import { FieldEdit, fields, statuses, validateReferences } from "./core.ts";
@@ -76,14 +77,45 @@ export async function editField(ctx: ExtensionContext, cli: StreamCli, catalog: 
   }
  } finally {if (!edit.dirty && !edit.error) state.edits.delete(key);}
 }
-export async function openCard(ctx: ExtensionContext, cli: StreamCli, state: CardState, actions: {receipt(value: Receipt): void; discuss(): Promise<void>; settings(): Promise<void>; report(): void}): Promise<void> {
+export async function openCard(ctx: ExtensionContext, cli: StreamCli, state: CardState, actions: {receipt(value: Receipt): void; discuss(): Promise<void>; settings(): Promise<void>; report(): void; reset?(auto: boolean): void}): Promise<void> {
+ let selectedIndex = 0;
  for (;;) {
   const catalog = await cli.context(ctx.sessionManager.getSessionId(), process.env.STREAMS_STREAM_ID);
   if (!catalog.stream) {ctx.ui.notify("No attached work card. Use select_stream or create_stream for initial attachment.", "info");return;}
-  const action = await ctx.ui.select(cardSummary(catalog), ["Whole effort — edit fields", ...(catalog.session ? ["This session — edit fields", "Finish this session"] : []), "Finish whole effort", catalog.stream.archived ? "Restore effort" : "Archive effort", "Discuss live card", "Report now", "Reporting settings", "Close"]);
+  const rows = ["Report now", "Reset generated fields", "Re-enable automatic naming & reset", "Discuss live card", "Whole effort — edit fields", ...(catalog.session ? ["This session — edit fields", "Finish this session"] : []), "Finish whole effort", catalog.stream.archived ? "Restore effort" : "Archive effort", "Reporting & Herdr settings", "Close"];
+  const action = ctx.ui.custom ? await ctx.ui.custom<string | undefined>((tui, theme, _keys, done) => {
+   const list = new SelectList(rows.map((value) => ({value, label: value})), Math.max(1, Math.min(10, Math.floor(tui.terminal.rows / 2))), getSelectListTheme());
+   list.setSelectedIndex(selectedIndex);
+   list.onSelectionChange = (item) => {selectedIndex = rows.indexOf(item.value);};
+   list.onSelect = (item) => done(item.value);list.onCancel = () => done(undefined);
+   return {
+    invalidate() {list.invalidate();},
+    handleInput(data: string) {if (matchesKey(data, "alt+p")) done(undefined);else list.handleInput(data);tui.requestRender();},
+    render(width: number) {
+     const clean = (text: string) => text.replace(/[\x00-\x1f\x7f]/g, " ");
+     const stream = catalog.stream!, session = catalog.session;
+     const section = (text: string) => theme.fg("accent", theme.bold(text));
+     const line = (text: string, limit = 2) => wrapTextWithAnsi(clean(text), width).slice(0, limit);
+     const summary = [
+      section("Whole effort"), ...line(stream.title, 1),
+      theme.fg("muted", truncateToWidth(clean(`${stream.id} · ${stream.status}${stream.archived ? " · archived" : ""} · title ${stream.title_mode} · goal ${stream.goal_mode}`), width)),
+      ...line(`Goal: ${stream.goal ?? "—"}`),
+      section("This session"), ...line(session?.title ?? "Not yet enrolled", 1),
+      ...(session ? [
+       theme.fg("muted", truncateToWidth(clean(`${session.id} · ${session.status} · title ${session.title_mode}`), width)),
+       ...line(`State: ${session.state || "—"}`), ...line(`Remaining: ${session.remaining || "—"}`),
+      ] : []),
+     ];
+     const controls = list.render(width);
+     const budget = Math.max(0, tui.terminal.rows - controls.length - 2);
+     return [...summary.slice(0, budget), "", ...controls];
+    },
+   };
+  }) : await ctx.ui.select("Work card", rows);
   if (!action || action === "Close") return;
   if (action === "Discuss live card") {await actions.discuss();continue;}
-  if (action === "Reporting settings") {await actions.settings();continue;}
+  if (action === "Reset generated fields" || action === "Re-enable automatic naming & reset") {actions.reset?.(action === "Re-enable automatic naming & reset");continue;}
+  if (action === "Reporting & Herdr settings") {await actions.settings();continue;}
   if (action === "Report now") {actions.report();continue;}
   let kind: "stream" | "session" = action.startsWith("This session") || action === "Finish this session" ? "session" : "stream";
   if (action.startsWith("Finish")) {

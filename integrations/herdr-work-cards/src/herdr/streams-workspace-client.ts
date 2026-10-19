@@ -365,13 +365,13 @@ export class StreamsWorkspaceClient extends HerdrTransport {
     signal?.throwIfAborted();
     return result;
   }
-  async projectNames(source: Source, context: StreamsNativeContext, config: WorkCardsConfig, signal?: AbortSignal): Promise<Record<'workspace' | 'tab', string>> {
-    const unchanged = await this.unchangedNames(source, context, config, signal);
+  async projectNames(source: Source, context: StreamsNativeContext, config: WorkCardsConfig, signal?: AbortSignal, intent: 'automatic' | 'explicit' = 'automatic'): Promise<Record<'workspace' | 'tab', string>> {
+    const unchanged = intent === 'automatic' ? await this.unchangedNames(source, context, config, signal) : null;
     if (unchanged) return unchanged;
     return withWorkspaceLock(context.socket, context.workspaceId, async () => {
       const result = { workspace: 'disabled', tab: 'disabled' };
       for (const kind of ['workspace', 'tab'] as const) {
-        if (!namingEnabled(config, kind)) continue;
+        if (intent === 'automatic' && !namingEnabled(config, kind)) continue;
         const read = async () => {
           const v = await this.projectionProof(source, context, config, signal);
           if (v.caller.terminal_id !== v.owner.terminal_id) throw new Error('Only owning Pi may name agent surfaces');
@@ -388,12 +388,12 @@ export class StreamsWorkspaceClient extends HerdrTransport {
         // Initial adoption never overwrites an arbitrary label, even on explicit open.
         // The imported pure policy handles later overrides independently per surface.
         let decision;
-        if (!prior && kind === 'workspace') {
+        if (!prior && intent === 'automatic' && (kind === 'workspace' || before.surface.label === before.desired)) {
           const record: NameProvenance = before.surface.label === before.desired
             ? { version: 1, scope, mode: 'auto', owner, lastApplied: before.desired }
             : { version: 1, scope, mode: 'manual', owner: null, lastApplied: null };
           decision = before.surface.label === before.desired ? { kind: 'adopt' as const, afterSuccess: record } : { kind: 'manual' as const, provenance: record };
-        } else decision = decideName({ scope, provenance: prior?.record ?? null, owner, currentLabel: before.surface.label, desiredName: before.desired,
+        } else decision = decideName({ scope, intent, provenance: prior?.record ?? null, owner, currentLabel: before.surface.label, desiredName: before.desired,
           defaultLabelProven: kind === 'tab' && before.surface.label === String(before.v.snapshot.tabs.filter(t => t.workspace_id === context.workspaceId).findIndex(t => t.tab_id === context.tabId) + 1) });
         if (decision.kind === 'rename') {
           signal?.throwIfAborted();
