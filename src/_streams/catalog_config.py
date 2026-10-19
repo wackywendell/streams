@@ -261,8 +261,8 @@ def initialize(strategy: str, *, remote: str | None = None, branch: str = "main"
         raise StreamError("sync strategy must be none or git")
     if strategy == "none" and remote is not None:
         raise StreamError("--remote requires --sync git")
-    if strategy == "git" and (not isinstance(remote, str) or not remote.strip() or "\x00" in remote):
-        raise StreamError("Git initialization requires --remote")
+    if remote is not None and (not isinstance(remote, str) or not remote.strip() or "\x00" in remote):
+        raise StreamError("Git remote must be a nonempty string without NUL characters")
     if not isinstance(branch, str) or not branch.strip() or "\x00" in branch:
         raise StreamError("branch must be a nonempty string without NUL characters")
     settings = load_config()
@@ -303,3 +303,23 @@ def initialize(strategy: str, *, remote: str | None = None, branch: str = "main"
             return backend
     except (OSError, StorageError, ValueError) as error:
         raise StreamError(f"cannot initialize catalog: {error}") from error
+
+
+def adopt_local_git(*, branch: str = "main") -> tuple[GitCatalog, str]:
+    from .catalog.sync.adoption import adopt_local
+    if not isinstance(branch, str) or not branch.strip() or "\x00" in branch:
+        raise StreamError("branch must be a nonempty string without NUL characters")
+    settings = load_config()
+    root = Path(settings["catalog"]["root"])
+    try:
+        with _config_lock():
+            marker = _marker(root)
+            if marker is None:
+                raise StreamError("adoption requires an already initialized local-only catalog")
+            identity = _host(create=False)
+            _check_host(marker, identity)
+            backend = GitCatalog(root, host_id=identity, policy=Policy(**settings["sync"]))
+            revision = adopt_local(backend, branch=branch)
+            return backend, revision
+    except (OSError, StorageError, ValueError) as error:
+        raise StreamError(f"cannot adopt catalog into local Git: {error}") from error

@@ -83,3 +83,16 @@ class Git:
         if signed == "true":
             args.append("-S")
         return self.text(*args, input=message.encode())
+
+    def signing_profile(self) -> dict:
+        """Compare the effective identity/policy across an in-place Git install."""
+        raw = self.run("config", "--null", "--get-regexp",
+                       r"^(user\.|author\.|committer\.|commit\.gpgsign$|gpg\.)", allowed=(0, 1))
+        policy = {}
+        for entry in raw.split(b"\0"):
+            if entry:
+                key, _, value = entry.decode().partition("\n")
+                policy[key] = value
+        return {"author": self.text("var", "GIT_AUTHOR_IDENT").rsplit(" ", 2)[0],
+                "committer": self.text("var", "GIT_COMMITTER_IDENT").rsplit(" ", 2)[0],
+                "policy": policy}

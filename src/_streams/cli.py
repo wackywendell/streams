@@ -213,8 +213,15 @@ def collection_changes(args, before):
 
 
 def command_init(args):
-    backend = config.initialize(args.sync, remote=args.remote, branch=args.branch)
-    emit({"catalog": str(config.catalog_root()), "sync": args.sync, "host_id": backend.host_id}, args)
+    if args.adopt:
+        if args.sync != "git" or args.remote is not None:
+            raise StreamError("--adopt requires --sync git and no --remote")
+        backend, revision = config.adopt_local_git(branch=args.branch)
+        setup = {"baseline_revision": revision}
+    else:
+        backend = config.initialize(args.sync, remote=args.remote, branch=args.branch)
+        setup = {}
+    emit({"catalog": str(config.catalog_root()), "sync": args.sync, "host_id": backend.host_id, **setup}, args)
     return 0
 
 
@@ -525,6 +532,7 @@ def build_parser():
     init.add_argument("--sync", choices=("none", "git"), required=True)
     init.add_argument("--remote")
     init.add_argument("--branch", default="main")
+    init.add_argument("--adopt", action="store_true", help="adopt an initialized local-only catalog into local Git")
     init.set_defaults(func=command_init)
     settings = sub.add_parser("config", help="read or change catalog location and frontend settings")
     settings.set_defaults(func=command_config)

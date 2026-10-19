@@ -220,3 +220,35 @@ test('Pi/CLI reports publish across two isolated Git catalogs, remain saved offl
  assert.equal((await command(b,'show',enrollment.stream.id,'--refresh')).sessions[0].state,'Saved while offline');
  assert.notEqual(git(remote,'rev-parse','main'),published);
 });
+
+test('Pi/CLI adopts populated local state and keeps captured membership valid without a remote', {timeout:120000}, async t=>{
+ const root=mkdtempSync(join(tmpdir(),'streams-local-git-acceptance-'));t.after(()=>rmSync(root,{recursive:true,force:true}));
+ const checkout=fileURLToPath(new URL('..',import.meta.url)), home=join(root,'home');mkdirSync(home);
+ const gitconfig=join(root,'gitconfig');writeFileSync(gitconfig,'[user]\n name = Local Acceptance\n email = local@example.org\n[commit]\n gpgsign = false\n');
+ const env={...process.env,HOME:home,XDG_CONFIG_HOME:join(home,'config'),XDG_DATA_HOME:join(home,'data'),XDG_STATE_HOME:join(home,'state'),GIT_CONFIG_GLOBAL:gitconfig,GIT_CONFIG_NOSYSTEM:'1',GIT_TERMINAL_PROMPT:'0'};
+ for(const key of Object.keys(env))if(key.startsWith('STREAMS_') || key.startsWith('HERDR_') || key.startsWith('CMUX_') || key.startsWith('GIT_')&&!['GIT_CONFIG_GLOBAL','GIT_CONFIG_NOSYSTEM','GIT_TERMINAL_PROMPT'].includes(key))delete env[key];
+ const run=(args,input)=>new Promise((resolve,reject)=>{
+  const child=spawn('uv',['run','--offline','--no-sync','--project',checkout,'streams',...args],{cwd:checkout,env,stdio:['pipe','pipe','pipe']});let stdout='',stderr='';
+  child.stdout.on('data',chunk=>stdout+=chunk);child.stderr.on('data',chunk=>stderr+=chunk);child.on('error',reject);child.on('close',code=>resolve({code,stdout,stderr}));child.stdin.on('error',error=>{if(error.code!=='EPIPE')reject(error);});child.stdin.end(input);
+ });
+ const command=async(...args)=>{const result=await run([...args,'--json']);assert.equal(result.code,0,result.stderr||result.stdout);return JSON.parse(result.stdout);};
+ await command('config','set','frontend.mode','none');
+ const initialized=await command('init','--sync','none');
+ let cli=new StreamCli(checkout,run);const empty=await cli.context('native');
+ const enrollment=await cli.enroll({catalog_source:empty.catalog_source,operation_id:'local-enrollment',harness:'pi',harness_session_id:'native',stream:{title:'Existing effort'},session:{title:'Continue work'},actor:'automatic',cwd:checkout});
+ assert.equal(enrollment.publication.sharing,'local-only');assert.ok(enrollment.saves.every(item=>item.save.local==='persisted'));
+ const captured=await cli.context('native');
+ const adopted=await command('init','--sync','git','--adopt');
+ assert.equal(adopted.host_id,initialized.host_id);assert.equal(adopted.catalog,initialized.catalog);
+ const after=await cli.context('native');assert.equal(after.catalog_source,captured.catalog_source);assert.deepEqual(after.session,captured.session);assert.deepEqual(after.authority,captured.authority);
+ const report=await cli.apply(editRequest(captured,'session',{state:'Reported after adoption'},'automatic'));
+ assert.equal(report.save.local,'committed');assert.equal(report.save.sharing,'local-only');assert.equal(report.publication.sharing,'local-only');
+ const git=(...args)=>execFileSync('git',['-C',adopted.catalog,...args],{env,encoding:'utf8',stdio:['ignore','pipe','pipe']}).trim();
+ assert.equal(git('rev-parse','HEAD^'),adopted.baseline_revision);assert.equal(git('remote'),'');
+ assert.equal(JSON.parse(readFileSync(join(adopted.catalog,'.catalog-sync/config.json'),'utf8')).remote,null);
+ cli=new StreamCli(checkout,run);const f=hooks(cli);await f.handlers.get('session_start')({},f.ctx);await f.handlers.get('session_shutdown')({reason:'quit'},f.ctx);
+ assert.deepEqual(f.warnings,[]);assert.deepEqual(f.entries,[]);
+ const shown=await command('show',enrollment.stream.id,'--refresh');assert.equal(shown.sessions[0].id,enrollment.session.id);assert.equal(shown.sessions[0].state,'Reported after adoption');
+ assert.equal((await command('sync')).sharing,'local-only');assert.equal((await command('init','--sync','git','--adopt')).baseline_revision,adopted.baseline_revision);
+ for(const name of ['sync.json','publication.json'])assert.throws(()=>readFileSync(join(adopted.catalog,'.catalog-sync',name)),{code:'ENOENT'});
+});

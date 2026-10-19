@@ -267,7 +267,7 @@ class CatalogConfigTest(unittest.TestCase):
             path.unlink()
 
     def test_strategy_and_remote_validation_precedes_initialization(self):
-        for strategy, kwargs in (("invalid", {}), ("none", {"remote": "remote"}), ("git", {}),
+        for strategy, kwargs in (("invalid", {}), ("none", {"remote": "remote"}), ("git", {"remote": False}),
                                  ("git", {"remote": ""})):
             with self.subTest(strategy=strategy), self.assertRaises(StreamError):
                 config.initialize(strategy, **kwargs)
