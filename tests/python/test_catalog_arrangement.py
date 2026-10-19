@@ -397,7 +397,17 @@ class ArrangementTest(unittest.TestCase):
             self.runtime.remember_directory(self.stream.id, directory, session_id=session.id)
         original_cwd = Path.cwd()
         self.close()
-        result = self.open()
+        selected = {'XDG_CONFIG_HOME': '/owner/config', 'XDG_DATA_HOME': '/owner/data',
+                    'XDG_STATE_HOME': '/owner/state', 'PI_CODING_AGENT_DIR': '/owner/pi', 'PATH': '/owner/bin'}
+        with patch.dict(os.environ, selected):
+            result = self.open()
+        creates = [*self.effects(['workspace', 'create']), *self.effects(['tab', 'create']), *self.effects(['pane', 'split'])]
+        self.assertEqual(len(creates), 3)
+        for args in creates:
+            values = dict(value.split('=', 1) for index, value in enumerate(args) if args[index - 1] == '--env')
+            self.assertEqual({key: values[key] for key in selected}, selected)
+            self.assertEqual(values['STREAMS_STREAM_ID'], self.stream.id)
+            self.assertNotIn('HERDR_PANE_ID', values)
         self.assertEqual(result['restored'], ['c', 'a', 'b'])
         self.assertEqual(Path.cwd(), original_cwd)
         self.assertEqual([t['label'] for t in self.snapshot['tabs']], ['Review notes', 'Implementation'])

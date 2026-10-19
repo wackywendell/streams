@@ -16,12 +16,38 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[2] / 'src'))
 
 from _streams.catalog.model import Session, Stream
 from _streams.catalog.operations import Authority
-from _streams.catalog_runtime import Runtime
+from _streams.catalog_runtime import Runtime, _native_environment
 from _streams.cmux import CmuxWorkspace
 from _streams.errors import StreamError
 from _streams.frontend import FrontendMode
 from _streams.herdr import HerdrPane, HerdrWorkspace
 from _streams.herdr_binding import HerdrEndpoint
+
+
+class NativeEnvironmentTest(unittest.TestCase):
+    @staticmethod
+    def values():
+        args = _native_environment('stream')
+        return dict(args[index + 1].split('=', 1) for index in range(0, len(args), 2))
+
+    def test_missing_selectors_pin_caller_defaults_not_server_environment(self):
+        with patch.dict(os.environ, {'HOME': '/owner-home'}, clear=True):
+            self.assertEqual(self.values(), {
+                'STREAMS_STREAM_ID': 'stream', 'HOME': '/owner-home',
+                'XDG_CONFIG_HOME': '/owner-home/.config', 'XDG_DATA_HOME': '/owner-home/.local/share',
+                'XDG_STATE_HOME': '/owner-home/.local/state', 'PI_CODING_AGENT_DIR': '/owner-home/.pi/agent',
+                'CODEX_HOME': '/owner-home/.codex', 'CLAUDE_CONFIG_DIR': '/owner-home/.claude',
+                'PATH': os.defpath, 'HERDR_BIN_PATH': 'herdr',
+            })
+
+    def test_custom_selectors_are_bounded_without_credentials_or_caller_panes(self):
+        selected = {'HOME': '/owner', 'XDG_CONFIG_HOME': '/config', 'XDG_DATA_HOME': '/data',
+                    'XDG_STATE_HOME': '/state', 'PI_CODING_AGENT_DIR': '/pi', 'CODEX_HOME': '/codex',
+                    'CLAUDE_CONFIG_DIR': '/claude', 'PATH': '/tools', 'HERDR_BIN_PATH': '/tools/herdr',
+                    'HERDR_SOCKET_PATH': '/socket', 'PI_OFFLINE': '1'}
+        with patch.dict(os.environ, {**selected, 'API_KEY': 'secret', 'HERDR_PANE_ID': 'old-pane',
+                                     'CMUX_WORKSPACE_ID': 'old-workspace'}, clear=True):
+            self.assertEqual(self.values(), {'STREAMS_STREAM_ID': 'stream', **selected})
 
 
 class RuntimeTest(unittest.TestCase):
@@ -1082,6 +1108,8 @@ sys.exit(1)
             import shlex
             self.assertEqual(args[args.index('--command') + 1], shlex.join(['pi', '--session', str(self.saved)]))
             self.assertIn('STREAMS_STREAM_ID=' + self.stream.id, args)
+            self.assertIn('HOME=' + str(Path.home()), args)
+            self.assertIn('PI_CODING_AGENT_DIR=' + (os.environ.get('PI_CODING_AGENT_DIR') or str(Path.home() / '.pi/agent')), args)
             runtime.open(self.stream, (self.session,), authority=self.authority)
             client.json_from_command.assert_called_once()
             client.run.assert_called_once_with(['cmux', 'select-workspace', '--workspace', 'uuid-1'])

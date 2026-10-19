@@ -37,6 +37,28 @@ def _text(value: object) -> bool:
     return isinstance(value, str) and bool(value.strip()) and '\x00' not in value
 
 
+def _native_environment(stream_id: str) -> list[str]:
+    # GUI-created terminals inherit the server environment, not this CLI's.
+    # Pin selection paths (including defaults), never credentials or caller panes.
+    home = Path.home()
+    values = {
+        'STREAMS_STREAM_ID': stream_id,
+        'HOME': str(home),
+        'XDG_CONFIG_HOME': os.environ.get('XDG_CONFIG_HOME') or str(home / '.config'),
+        'XDG_DATA_HOME': os.environ.get('XDG_DATA_HOME') or str(home / '.local/share'),
+        'XDG_STATE_HOME': os.environ.get('XDG_STATE_HOME') or str(home / '.local/state'),
+        'PI_CODING_AGENT_DIR': os.environ.get('PI_CODING_AGENT_DIR') or str(home / '.pi/agent'),
+        'CODEX_HOME': os.environ.get('CODEX_HOME', str(home / '.codex')),
+        'CLAUDE_CONFIG_DIR': os.environ.get('CLAUDE_CONFIG_DIR', str(home / '.claude')),
+        'PATH': os.environ.get('PATH', os.defpath),
+        'HERDR_BIN_PATH': os.environ.get('HERDR_BIN_PATH') or 'herdr',
+    }
+    for key in ('HERDR_SOCKET_PATH', 'PI_OFFLINE'):
+        if key in os.environ:
+            values[key] = os.environ[key]
+    return [argument for key, value in values.items() for argument in ('--env', f'{key}={value}')]
+
+
 def _object_pairs(pairs: list[tuple[str, object]]) -> dict:
     data = {}
     for key, value in pairs:
@@ -636,7 +658,7 @@ class Runtime:
                     attempt['effects'].append({'kind': 'workspace_create'})
                     self._write(attempt_path, attempt)
                     created = client.command_result(['workspace', 'create', '--cwd', str(directory), '--label', stream.title,
-                                                     '--env', f'STREAMS_STREAM_ID={stream.id}', '--focus'], 'workspace_created')
+                                                     *_native_environment(stream.id), '--focus'], 'workspace_created')
                     for field, key in (('workspace', 'workspace_id'), ('tab', 'tab_id'), ('root_pane', 'pane_id')):
                         if isinstance(created.get(field), dict) and _text(created[field].get(key)):
                             resources.append(created[field][key])
@@ -668,7 +690,7 @@ class Runtime:
                             client.run(['tab', 'rename', pane.tab_id, group['label']])
                     else:
                         args = ['tab', 'create', '--workspace', workspace_id, '--cwd', str(entries[0]['cwd']),
-                                '--env', f'STREAMS_STREAM_ID={stream.id}', '--no-focus']
+                                *_native_environment(stream.id), '--no-focus']
                         if group['label'] is not None:
                             args.extend(['--label', group['label']])
                         attempt['effects'].append({'kind': 'tab_create'})
@@ -685,7 +707,7 @@ class Runtime:
                             attempt['effects'].append({'kind': 'pane_split', 'pane_id': pane.id})
                             self._write(attempt_path, attempt)
                             split = client.command_result(['pane', 'split', '--pane', pane.id, '--direction', 'right',
-                                                           '--cwd', str(entry['cwd']), '--env', f'STREAMS_STREAM_ID={stream.id}', '--no-focus'], 'pane_split')
+                                                           '--cwd', str(entry['cwd']), *_native_environment(stream.id), '--no-focus'], 'pane_split')
                             attempt['effects'][-1]['returned'] = split
                             self._write(attempt_path, attempt)
                             new_pane = HerdrPane.parse(split.get('pane'))
@@ -793,7 +815,7 @@ class Runtime:
             try:
                 if selected == Frontend.HERDR:
                     created = client.command_result(['workspace', 'create', '--cwd', str(directory), '--label', stream.title,
-                                                     '--env', f'STREAMS_STREAM_ID={stream.id}', '--focus'], 'workspace_created')
+                                                     *_native_environment(stream.id), '--focus'], 'workspace_created')
                     for field, key, label in (('workspace', 'workspace_id', 'workspace'), ('tab', 'tab_id', 'tab'), ('root_pane', 'pane_id', 'pane')):
                         resource = created.get(field)
                         if isinstance(resource, dict) and _text(resource.get(key)):
@@ -801,7 +823,7 @@ class Runtime:
                     workspace_id = HerdrWorkspace.parse(created.get('workspace')).id
                 else:
                     args = ['cmux', '--json', '--id-format', 'uuids', 'new-workspace', '--name', stream.title,
-                            '--cwd', str(directory), '--env', f'STREAMS_STREAM_ID={stream.id}', '--focus', 'true']
+                            '--cwd', str(directory), *_native_environment(stream.id), '--focus', 'true']
                     if command:
                         args.extend(['--command', command.command_text])
                     created = client.json_from_command(args)
