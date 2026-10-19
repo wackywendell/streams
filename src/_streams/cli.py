@@ -327,11 +327,20 @@ def command_archive(args):
 
 
 def command_check(args):
+    from .catalog_check import check_all
     backend = config.open_catalog()
     catalog = backend.snapshot().catalog
-    stream = resolve(catalog.streams, args.ref) if args.ref is not None else None
-    emit({"valid": True, "streams": 1 if stream else len(catalog.streams), "sessions": sum(item.stream_id == stream.id for item in catalog.sessions) if stream else len(catalog.sessions)}, args)
-    return 0
+    stream = target_stream(catalog, args) if (args.ref is not None or getattr(args, "current", False)) else None
+    result = check_all(
+        backend,
+        runtime(),
+        stream=stream,
+        pane_id=getattr(args, "pane", None),
+        frontend=getattr(args, "frontend", None),
+        fix=getattr(args, "fix", False),
+    )
+    emit(result, args)
+    return 0 if result["valid"] else 2
 
 
 def command_sync(args):
@@ -578,8 +587,10 @@ def build_parser():
         lifecycle = sub.add_parser(name, help="change visibility without changing work status or closing runtimes")
         add_target(lifecycle)
         lifecycle.set_defaults(func=command_archive)
-    check = sub.add_parser("check", help="validate saved catalog records and relationships")
-    check.add_argument("ref", nargs="?")
+    check = sub.add_parser("check", help="validate saved catalog records, runtime state, and native work-card invariants")
+    add_target(check)
+    check.add_argument("--pane", help="inspect a specific Herdr pane ID (for example wH:p1)")
+    check.add_argument("--fix", action="store_true", help="repair recoverable host-local and native work-card markers")
     check.set_defaults(func=command_check)
     sync = sub.add_parser("sync", help="attempt explicit publication and reconciliation now")
     sync.add_argument("--event", choices=("explicit", "start", "shutdown"), default="explicit",

@@ -236,6 +236,59 @@ class CatalogCliTest(unittest.TestCase):
         self.assertEqual(result.returncode, 0, result.stderr)
         self.assertEqual(json.loads(result.stdout)["stream"]["id"], stream["id"])
 
+    def test_check_detects_and_fixes_stale_agent_owner_markers(self):
+        self.initialize()
+        stream = self.create()
+        session = json.loads(self.cli("session", "attach", stream["id"], "--harness", "pi", "--session-id", "01a154ad-a5fc-7180-a631-bd34e8c4c093", "--title", "Core", "--json")[1])["session"]
+        transcript = self.root / "session.jsonl"
+        transcript.write_text(json.dumps({"type": "session", "version": 3, "id": "01a154ad-a5fc-7180-a631-bd34e8c4c093"}) + "\n")
+        from _streams import catalog_config as config
+        from _streams.catalog_runtime import Runtime, _key
+        from _streams.herdr_binding import HerdrEndpoint
+        rt = Runtime(config.runtime_state_dir(), config.host_id(), config.get_frontend_mode(), checkout_dir=config.checkout_state_dir())
+        socket = str(self.root / "config/herdr/herdr.sock")
+        scope = _key("herdr", socket, "default")
+        rt._write(rt._association_path(scope, "wH"), {"stream_id": stream["id"], "workspace_id": "wH", "session_id": None, "command": None, "ready": True})
+        pane_tokens = {
+            "strm_agent": "stale-digest",
+            "strm_card": "term_closed_card",
+            "strm_native": "01a13be3-6101-75b6-9a2e-6908f53c89bc",
+            "strm_nonce": "nonce-1",
+            "strm_pi": "term_1",
+            "strm_role": "agent",
+        }
+        snapshot = {
+            "workspaces": [{"workspace_id": "wH", "tokens": {}}],
+            "panes": [{
+                "pane_id": "wH:p1",
+                "terminal_id": "term_1",
+                "tab_id": "wH:t1",
+                "workspace_id": "wH",
+                "agent": "pi",
+                "agent_session": {"agent": "pi", "kind": "path", "value": str(transcript)},
+                "tokens": pane_tokens,
+            }],
+        }
+        runs = []
+        with patch("_streams.catalog_check.HerdrClient.endpoint", return_value=HerdrEndpoint(socket=socket, session="default")), \
+             patch("_streams.catalog_check.HerdrClient.command_result", return_value={"type": "session_snapshot", "snapshot": snapshot}), \
+             patch("_streams.catalog_check.HerdrClient.run", side_effect=lambda args: runs.append(args)):
+            code, out, _ = self.cli("check", "--pane", "wH:p1", "--json")
+            self.assertEqual(code, 2)
+            report = json.loads(out)
+            self.assertFalse(report["valid"])
+            self.assertEqual(report["issues"][0]["kind"], "stale-agent-owner-markers")
+            self.assertEqual(report["issues"][0]["pane_id"], "wH:p1")
+            self.assertEqual(runs, [])
+
+            code, out, _ = self.cli("check", "--pane", "wH:p1", "--fix", "--json")
+            self.assertEqual(code, 0)
+            fixed = json.loads(out)
+            self.assertTrue(fixed["valid"])
+            self.assertEqual(fixed["fixed"][0]["kind"], "stale-agent-owner-markers-cleared")
+            self.assertEqual(len(runs), 1)
+            self.assertEqual(runs[0][:5], ["pane", "report-metadata", "wH:p1", "--source", "streams-work-cards"])
+
 
 if __name__ == "__main__":
     unittest.main()
