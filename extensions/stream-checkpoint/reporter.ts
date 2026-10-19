@@ -10,7 +10,7 @@ import type { SessionFence } from "./session-scope.ts";
 import type { ReportingSettings } from "./settings.ts";
 
 type Options = {scope?: SessionScope; cli(ctx: ExtensionContext): StreamCli; settings(): ReportingSettings; infer?: typeof modelInfer; notice(text: string): void; receipt(value: Receipt): void; activity?(text?: string): void};
-type Pending = {ctx: ExtensionContext; force: boolean; instructions?: string};
+type Pending = {ctx: ExtensionContext; force: boolean; instructions?: string; reset?: boolean};
 export class Reporter {
  readonly scope: SessionScope;
  private count = 0;
@@ -26,10 +26,11 @@ export class Reporter {
   this.scope.use(ctx);
   if (++this.count % this.options.settings().frequency === 0) this.request(ctx, false);
  }
- request(ctx: ExtensionContext, force = true, instructions?: string): void {
+ reset(ctx: ExtensionContext): void {this.request(ctx, true, undefined, true);}
+ request(ctx: ExtensionContext, force = true, instructions?: string, reset = false): void {
   if (this.scope.stopped) return;
   this.scope.use(ctx);
-  this.pending = {ctx, force: force || !!this.pending?.force, instructions: instructions?.trim() || this.pending?.instructions};
+  this.pending = {ctx, force: force || !!this.pending?.force, instructions: instructions?.trim() || this.pending?.instructions, reset: Boolean(reset || this.pending?.reset)};
   this.start();
  }
  invalidate(): void {this.scope.invalidate();}
@@ -60,12 +61,13 @@ export class Reporter {
  private async generate(ctx: ExtensionContext, request: Inference, signal: AbortSignal): Promise<Inferred> {
   return (this.options.infer ?? modelInfer)(ctx, request, signal, this.options.settings().model);
  }
- private async report({ctx, force, instructions}: Pending, fence: SessionFence): Promise<void> {
+ private async report({ctx, force, instructions, reset}: Pending, fence: SessionFence): Promise<void> {
   const cli = this.options.cli(ctx), signal = fence.signal;
   const captureNow = () => captureInputs(ctx, cli, this.options.settings().context, fence);
   let capture = await captureNow();
   if (!capture.valid() || signal.aborted) return;
   if (!capture.catalog.session) {
+   if (reset) {this.options.notice("Reset requires an attached work card. Use /streams attach first.");return;}
    if (!force && this.options.settings().enrollment !== "automatic") return;
    const operationId = randomUUID();
    const result = await this.generate(ctx, {type: "enroll", catalog: capture.catalog, messages: capture.evidence.messages, instructions}, signal);
@@ -81,8 +83,9 @@ export class Reporter {
   }
   // A Session write is its own inference and guarded target; it never timestamps the effort.
   const sessionOperation = randomUUID();
-  const progress = await this.generate(ctx, {type: "session", catalog: capture.catalog, messages: capture.evidence.messages, instructions}, signal);
+  const progress = await this.generate(ctx, {type: "session", catalog: capture.catalog, messages: capture.evidence.messages, instructions, reset}, signal);
   if (signal.aborted || !await capture.attached()) return;
+  if (reset && capture.catalog.session.state_short !== null && progress.changes && !Object.hasOwn(progress.changes, "state_short")) progress.changes.state_short = null;
   if (progress.changes && Object.keys(progress.changes).length) {
    const receipt = await cli.apply(editRequest(capture.catalog, "session", progress.changes, "automatic", sessionOperation, true));
    if (fence.live()) this.options.receipt(receipt);
@@ -95,8 +98,9 @@ export class Reporter {
   if (capture.catalog.catalog_source !== sessionBase.catalog_source || capture.catalog.stream?.id !== sessionBase.stream?.id || capture.catalog.session?.id !== sessionBase.session?.id) throw Error("Catalog source or attachment changed; metadata report cancelled");
   if (!capture.catalog.stream || !capture.valid() || signal.aborted || !automaticFields("stream", capture.catalog.stream).length) return;
   const streamOperation = randomUUID();
-  const metadata = await this.generate(ctx, {type: "stream", catalog: capture.catalog, messages: capture.evidence.messages, instructions}, signal);
+  const metadata = await this.generate(ctx, {type: "stream", catalog: capture.catalog, messages: capture.evidence.messages, instructions, reset}, signal);
   if (signal.aborted || !await capture.attached()) return;
+  if (reset && capture.catalog.stream.goal_mode === "automatic" && capture.catalog.stream.goal_short !== null && metadata.changes && !Object.hasOwn(metadata.changes, "goal_short")) metadata.changes.goal_short = null;
   if (metadata.changes && Object.keys(metadata.changes).length) {
    const receipt = await cli.apply(editRequest(capture.catalog, "stream", metadata.changes, "automatic", streamOperation, true));
    if (fence.live()) this.options.receipt(receipt);

@@ -149,6 +149,41 @@ test('session progress uses the agreed brevity prompt without hard limits or cha
  assert.equal(prompts.enroll,prompts.stream);assert.equal(prompts.discussion,prompts.stream);
  assert.ok(!prompts.stream.includes(guidance));
 });
+test('inference prompt requires short handles rather than work descriptions',async()=>{
+ let prompt;
+ const ctx={model:{contextWindow:100000},modelRegistry:{complete:async(_model,payload)=>{prompt=payload.systemPrompt;return {stopReason:'toolUse',content:[{type:'toolCall',name:'record_card',arguments:{changes:{}}}]};}}};
+ await infer(ctx,{type:'session',catalog:context(),messages:[]},new AbortController().signal);
+ for(const rule of [/short, recognizable handles for the sidebar and tab bar/,/descriptions belong in goal and state/,/stream.title.*1–3 words \(target <= 20 chars\)/,/subject, project, or system/,/Never name the objective or use a sentence/,/session.title.*1–2 words, 3 max \(target <= 18 chars\)/,/specific lane, topic, or role/,/never repeat words from the effort title in the session title/,/Investigate, Implement, Explore, Disable, Fix, Organize/,/Integration, Implementation, Work, Task/,/X & Y compound lists/])assert.match(prompt,rule);
+});
+test('reset inference scrubs only target automatic text without mutating captured catalog or field modes',async()=>{
+ for(const type of ['session','stream'])for(const sessionMode of ['automatic','manual'])for(const titleMode of ['automatic','manual'])for(const goalMode of ['automatic','manual']) {
+  const catalog=context();Object.assign(catalog.session,{title_mode:sessionMode,state:'Prior state',state_short:'Prior short state',remaining:'Prior remaining'});
+  Object.assign(catalog.stream,{title_mode:titleMode,goal_mode:goalMode,goal_short:'Prior short goal'});
+  catalog.sessions=[structuredClone(catalog.session),{...catalog.session,host_id:'other-host'},{...catalog.session,id:'sibling'}];
+  const before=structuredClone(catalog);let payload;
+  const ctx={model:{contextWindow:100000},modelRegistry:{complete:async(_model,value)=>{payload=value;return {stopReason:'toolUse',content:[{type:'toolCall',name:'record_card',arguments:{changes:{}}}]};}}};
+  await infer(ctx,{type,catalog,messages:[],reset:true},new AbortController().signal);
+  const sent=JSON.parse(payload.messages.at(-1).content),visible=sent.catalog;
+  assert.match(sent.reset,/all allowed automatic fields fresh from conversation evidence/);assert.match(sent.reset,/fresh short-handle title/);assert.match(sent.reset,/empty no-change delta/);
+  for(const record of [visible.session,visible.sessions[0]]) {
+   assert.equal(record.title,sessionMode==='automatic'?'':before.session.title);assert.equal(record.title_mode,sessionMode);
+   assert.equal(record.state,'');assert.equal(record.state_short,null);assert.equal(record.remaining,'');
+  }
+  assert.deepEqual(visible.sessions.slice(1),before.sessions.slice(1));
+  assert.deepEqual(visible.stream,{...before.stream,...(type==='stream'?{...(titleMode==='automatic'?{title:''}:{}),...(goalMode==='automatic'?{goal:null,goal_short:null}:{})}:{})});
+  const properties=payload.tools[0].parameters.properties.changes.properties;
+  assert.equal(Object.hasOwn(properties,'title'),(type==='session'?sessionMode:titleMode)==='automatic');
+  if(type==='stream')assert.equal(Object.hasOwn(properties,'goal'),goalMode==='automatic');
+  assert.equal(Object.hasOwn(properties,'title_mode'),false);assert.equal(Object.hasOwn(properties,'goal_mode'),false);
+  assert.deepEqual(catalog,before);
+ }
+});
+test('ordinary inference retains the visible generated text and has no reset instruction',async()=>{
+ const catalog=context();catalog.session.state='Prior state';catalog.session.state_short='Prior short';let sent;
+ const ctx={model:{contextWindow:100000},modelRegistry:{complete:async(_model,payload)=>{sent=JSON.parse(payload.messages.at(-1).content);return {stopReason:'toolUse',content:[{type:'toolCall',name:'record_card',arguments:{changes:{}}}]};}}};
+ await infer(ctx,{type:'session',catalog,messages:[]},new AbortController().signal);
+ assert.deepEqual(sent.catalog.session,catalog.session);assert.deepEqual(sent.catalog.sessions,catalog.sessions);assert.equal(sent.reset,undefined);
+});
 test('actual local Pi runtime registry and projected compaction work without live credentials',async()=>{
  const root=mkdtempSync(join(tmpdir(),'pi-runtime-card-'));
  try {
@@ -269,19 +304,64 @@ test('streams completes subcommand prefixes with short descriptions but never re
  const complete=commandFixture().commands.get('streams').getArgumentCompletions;
  const items=[
   {value:'report',label:'report',description:'Save a progress update'},
-  {value:'settings',label:'settings',description:'Configure reporting'},
+  {value:'reset',label:'reset',description:'Regenerate automatic fields'},
+   {value:'settings',label:'settings',description:'Configure reporting'},
   {value:'attach',label:'attach',description:'Attach an initial work card'},
   {value:'pane',label:'pane',description:"Open native pane; 'pane close' hides it"},
  ];
  assert.deepEqual(await complete(''),items);
  for(const item of items){assert.ok(item.description.length<=40);assert.doesNotMatch(item.description,/[\r\n]/);}
- for(const [prefix,value] of [['r','report'],['se','settings'],['att','attach'],['p','pane'],['report','report']])assert.deepEqual(await complete(prefix),items.filter(item=>item.value===value));
+ for(const [prefix,value] of [['rep','report'],['se','settings'],['att','attach'],['p','pane'],['report','report']])assert.deepEqual(await complete(prefix),items.filter(item=>item.value===value));
  for(const prefix of ['unknown','report ','report settings','report\nattach','settings ','attach effort'])assert.equal(await complete(prefix),null);
 });
 for(const [args,instructions] of [['',undefined],['  \t ',undefined],['report',undefined],['  report  Keep the caveat\nand settings detail  ','Keep the caveat\nand settings detail']])test(`streams reports explicitly with ${JSON.stringify(args)}`,async()=>{
  const f=commandFixture();await f.run(args);await until(()=>f.activity.length===2);
  assert.deepEqual(f.requests.map(req=>req.type),['session','stream']);
  assert.ok(f.requests.every(req=>req.instructions===instructions));assert.equal(f.dialogs.length,0);assert.equal(f.notices.length,0);
+});
+test('streams reset dispatches fresh inference for both targets without changing manual modes',async()=>{
+ const catalog=context();catalog.session.title_mode='manual';catalog.stream.goal_mode='manual';
+ const f=commandFixture({catalog});await f.run(' reset ');await until(()=>f.activity.length===2);
+ assert.deepEqual(f.requests.map(req=>req.type),['session']);
+ assert.equal(f.requests[0].reset,true);assert.equal(f.requests[0].catalog.session.title_mode,'manual');
+ assert.equal(f.requests[0].catalog.stream.title_mode,'manual');assert.equal(f.requests[0].catalog.stream.goal_mode,'manual');
+ assert.deepEqual(f.writes,[]);assert.deepEqual(f.notices,[]);
+ const automatic=context();automatic.stream.title_mode='automatic';
+ const fresh=commandFixture({catalog:automatic});await fresh.run('reset');await until(()=>fresh.activity.length===2);
+ assert.deepEqual(fresh.requests.map(req=>req.type),['session','stream']);assert.ok(fresh.requests.every(req=>req.reset===true));
+});
+test('streams reset on an unattached conversation warns without inference, writes or enrollment',async()=>{
+ for(const associated of [true,false]) {
+  const catalog=context();catalog.session=null;catalog.sessions=[];if(!associated)catalog.stream=null;
+  const f=commandFixture({catalog});await f.run('reset');await until(()=>f.activity.length===2);
+  assert.deepEqual(f.notices,[{text:'Work card: Reset requires an attached work card. Use /streams attach first.',level:'warning'}]);
+  assert.deepEqual(f.requests,[]);assert.deepEqual(f.writes,[]);assert.deepEqual(f.receipts,[]);assert.deepEqual(f.dialogs,[]);
+ }
+});
+test('streams reset clears omitted short state and automatic short goal but preserves fresh or manual text',async()=>{
+ for(const reset of [false,true])for(const goalMode of ['automatic','manual'])for(const freshShort of [false,true])for(const updateGoal of [false,true]) {
+  const catalog=context();catalog.session.state_short='Stale status';catalog.stream.goal_short='Stale goal';catalog.stream.goal_mode=goalMode;catalog.stream.title_mode='automatic';
+  const f=commandFixture({catalog,infer:async req=>({changes:req.type==='session'?{state:'Fresh state',...(freshShort?{state_short:'Fresh status'}:{})}:{...(goalMode==='automatic'?{...(updateGoal?{goal:'Fresh goal'}:{}),...(freshShort?{goal_short:'Fresh goal summary'}:{})}:{})}})});
+  await f.run(reset?'reset':'report');await until(()=>f.activity.length===2);
+  const progress=f.writes.find(req=>req.kind==='session'),metadata=f.writes.find(req=>req.kind==='stream');
+  assert.equal(progress.before.state_short,'Stale status');assert.equal(progress.changes.state_short,freshShort?'Fresh status':reset?null:undefined);
+  assert.equal(metadata?.changes.goal_short,goalMode==='manual'?undefined:freshShort?'Fresh goal summary':reset?null:undefined);
+  for(const write of f.writes){assert.equal(write.actor,'automatic');assert.equal(Object.hasOwn(write.changes,'title_mode'),false);assert.equal(Object.hasOwn(write.changes,'goal_mode'),false);}
+  assert.ok(f.notices.every(notice=>notice.level==='info'));
+ }
+});
+test('streams reset extra rejects arguments before reading the catalog or running a model',async()=>{
+ const f=commandFixture();await f.run('reset extra');await turn();
+ assert.deepEqual(f.notices,[{text:"Work card: Usage: /streams or /streams report [instructions]; /streams reset; /streams settings; /streams attach; /streams pane [close]. Put report instructions after 'report'.",level:'warning'}]);
+ assert.equal(f.reads(),0);for(const effects of [f.requests,f.writes,f.receipts,f.dialogs,f.activity])assert.deepEqual(effects,[]);
+});
+test('streams reset stays pending when reports coalesce while the helper is busy',async()=>{
+ let release;const f=commandFixture({infer:async()=>{if(f.requests.length===1)await new Promise(resolve=>{release=resolve;});return {changes:{}};}});
+ await f.run('report');await until(()=>f.requests.length===1);
+ await f.run('reset');await f.run('report Keep the caveat');await f.run('');
+ release();await until(()=>f.activity.length===4);
+ assert.deepEqual(f.requests.map(req=>req.reset),[false,false,true,true]);
+ assert.deepEqual(f.requests.slice(2).map(req=>req.instructions),['Keep the caveat','Keep the caveat']);
 });
 test('streams report and bare commands preserve pending instructions while helper is busy',async()=>{
  let release;const f=commandFixture({infer:async()=>{if(f.requests.length===1)await new Promise(resolve=>{release=resolve;});return {changes:{}};}});

@@ -112,11 +112,12 @@ export default function registerWorkCard(pi: ExtensionAPI, options: Options = {}
   return reporter.exclusive((signal) => chooseInitial(ctx, cli(ctx), args, receipt, signal));
  }
  pi.registerCommand("streams", {
-  description: "Report progress, configure reporting, attach an initial work card, or open/close its native pane",
+  description: "Report or reset progress, configure reporting, attach an initial work card, or open/close its native pane",
   getArgumentCompletions: (prefix) => {
    if (/\s/.test(prefix)) return null;
    const matches = [
     {value: "report", label: "report", description: "Save a progress update"},
+    {value: "reset", label: "reset", description: "Regenerate automatic fields"},
     {value: "settings", label: "settings", description: "Configure reporting"},
     {value: "attach", label: "attach", description: "Attach an initial work card"},
     {value: "pane", label: "pane", description: "Open native pane; 'pane close' hides it"},
@@ -127,14 +128,15 @@ export default function registerWorkCard(pi: ExtensionAPI, options: Options = {}
    scope.use(ctx);
    const paneFence = scope.fence();
    const input = args.trim(), command = input.split(/\s+/, 1)[0], instructions = input.slice(command.length).trim();
-   if (!["", "report", "settings", "attach", "pane"].includes(command) || instructions && command !== "report" && !(command === "pane" && instructions === "close")) {
-    warning("Usage: /streams or /streams report [instructions]; /streams settings; /streams attach; /streams pane [close]. Put report instructions after 'report'.");return;
+   if (!["", "report", "reset", "settings", "attach", "pane"].includes(command) || instructions && command !== "report" && !(command === "pane" && instructions === "close")) {
+    warning("Usage: /streams or /streams report [instructions]; /streams reset; /streams settings; /streams attach; /streams pane [close]. Put report instructions after 'report'.");return;
    }
    try {
     if (command === "pane") {
      if (!native) throw Error("Native work cards require session startup in an interactive Herdr pane.");
      if (instructions === "close") await native.close();else await native.open();
     }
+    else if (command === "reset") reporter.reset(ctx);
     else if (command === "settings") await configure(ctx);
     else if (command === "attach") await attach(ctx, {});
     else {settings();reporter.request(ctx, true, instructions);}
