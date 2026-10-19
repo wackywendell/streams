@@ -270,9 +270,9 @@ export class StreamsWorkspaceClient extends HerdrTransport {
         const v = await this.projectionProof(source, context, config, signal);
         if (v.caller.terminal_id !== v.owner.terminal_id) throw new Error('Only the owning Pi may publish Session progress');
         const target = kind === 'pane' ? v.owner : v.snapshot.workspaces.find(w => w.workspace_id === context.workspaceId)!;
-        const values = kind === 'pane' ? { strm_status: v.saved.session.status, strm_now: v.saved.session.state, strm_state_short: v.saved.session.state_short ?? '' }
-          : { strm_goal: v.saved.stream.goal ?? '', strm_goal_short: v.saved.stream.goal_short ?? '' };
-        const changed = Object.fromEntries(Object.entries(values).filter(([k, value]) => target.tokens[k] !== value));
+        const values = kind === 'pane' ? { strm_status: v.saved.session.status, strm_now: v.saved.session.state || null, strm_state_short: v.saved.session.state_short || null }
+          : { strm_goal: v.saved.stream.goal || null, strm_goal_short: v.saved.stream.goal_short || null };
+        const changed = Object.fromEntries(Object.entries(values).filter(([k, value]) => (target.tokens[k] ?? null) !== value));
         if (Object.keys(changed).length) await this.stamp(source, context, target, changed, config, signal, v.saved);
       }
     }, { signal, waitMs: config.herdr_timeout_ms });

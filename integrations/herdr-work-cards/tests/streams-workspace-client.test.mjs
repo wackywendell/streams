@@ -44,7 +44,7 @@ async function fixture(t) {
     else if (args[0] === 'pane' && args[1] === 'current') output = result('pane_current', { pane: panes.find(p => p.terminal_id === terminal) });
     else if (args[1] === 'report-metadata') {
       const target = (args[0] === 'pane' ? panes : workspaces).find(p => (p.pane_id ?? p.workspace_id) === args[2]);
-      for (let i = 5; i < args.length; i += 2) { const [key, ...v] = args[i + 1].split('='); if (args[i] === '--clear-token') delete target.tokens[key]; else target.tokens[key] = v.join('='); }
+      for (let i = 5; i < args.length; i += 2) { const [key, ...v] = args[i + 1].split('='); if (args[i] === '--clear-token' || !v.join('=')) delete target.tokens[key]; else target.tokens[key] = v.join('='); }
       output = '';
     } else if (args[0] === 'plugin' && args[1] === 'list') output = result('plugin_list', { plugins: registration ? [registration] : [] });
     else if (args[0] === 'plugin' && args[1] === 'link') { registration = plugin(); output = result('plugin_linked', { plugin: registration }); }
@@ -100,6 +100,31 @@ for (const [workspace_naming, tab_naming] of [[true, false], [false, true], [fal
   assert.ok(!(await readdir(f.stateDirectory)).some(n => n.endsWith('.pending') || /^[a-f0-9]{64}\.json$/.test(n)));
   if (workspace_naming) { f.contexts[0].stream.title = 'Next shared'; assert.equal((await a.c.projectNames(a.s, a.context, manual)).workspace, 'renamed'); }
   if (tab_naming) { f.contexts[0].session.title = 'Next own'; assert.equal((await a.c.projectNames(a.s, a.context, manual)).tab, 'renamed'); }
+});
+test('absent compact summaries do not prevent full summaries or subsequent naming', async t => {
+  const f = await fixture(t), a = await f.owner(1);
+  f.contexts[0].stream.goal_short = f.contexts[0].session.state_short = null;
+  await a.c.projectSummaries(a.s, a.context, config);
+  assert.equal(f.workspaces[0].tokens.strm_goal, 'Shared purpose');
+  assert.equal(f.panes[0].tokens.strm_now, 'Own progress 1');
+  assert.ok(!Object.hasOwn(f.workspaces[0].tokens, 'strm_goal_short'));
+  assert.ok(!Object.hasOwn(f.panes[0].tokens, 'strm_state_short'));
+  assert.equal((await a.c.projectNames(a.s, a.context, config)).tab, 'renamed');
+});
+for (const missing of [null, '']) test(`empty summaries clear native tokens and remain idempotent (${String(missing)})`, async t => {
+  const f = await fixture(t), a = await f.owner(1);
+  await a.c.projectSummaries(a.s, a.context, config);
+  f.contexts[0].stream.goal = f.contexts[0].session.state = '';
+  f.contexts[0].stream.goal_short = f.contexts[0].session.state_short = missing;
+  Object.assign(f.workspaces[0].tokens, { strm_goal: 'Old goal', strm_goal_short: 'Old compact goal' });
+  Object.assign(f.panes[0].tokens, { strm_now: 'Old progress', strm_state_short: 'Old compact progress' });
+  await a.c.projectSummaries(a.s, a.context, config);
+  for (const key of ['strm_goal', 'strm_goal_short']) assert.ok(!Object.hasOwn(f.workspaces[0].tokens, key));
+  for (const key of ['strm_now', 'strm_state_short']) assert.ok(!Object.hasOwn(f.panes[0].tokens, key));
+  assert.equal(f.panes[0].tokens.strm_status, 'active');
+  const before = effects(f).length;
+  await a.c.projectSummaries(a.s, a.context, config);
+  assert.equal(effects(f).length, before);
 });
 for (const change of ['partial', 'legacy', 'pending', 'live-unowned', 'conflicting-binding', 'binding-save']) test(`empty-pair projections fail closed on ${change}`, async t => {
   const f = await fixture(t), a = await f.owner(1);
