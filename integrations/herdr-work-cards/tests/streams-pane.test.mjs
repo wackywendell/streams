@@ -90,6 +90,89 @@ for (const [mode, key] of [['unready', 'q'], ['unready', '\x03'], ['mismatch', '
   `;
   await promisify(execFile)(process.execPath, ['--input-type=module', '-e', script], { timeout: 5000 });
 });
+for (const stage of ['idle', 'refresh', 'bootstrap', 'verify', 'caption', 'document', 'key']) test(`resize repaints cached content during ${stage} without observation or native effects`, async t => {
+  const root = await realpath(await mkdtemp(join(tmpdir(), 'streams-pane-resize-'))); t.after(() => rm(root, { recursive: true, force: true }));
+  const config = join(root, 'config.json');
+  await writeFile(config, JSON.stringify({ pane_poll_interval_ms: 60000 }));
+  const module = name => new URL(`../dist/herdr/${name}.js`, import.meta.url).href;
+  const script = `
+    import assert from 'node:assert/strict';
+    import { EventEmitter } from 'node:events';
+    import { runStreamsPane } from ${JSON.stringify(module('streams-pane'))};
+    import { StreamsCardSource } from ${JSON.stringify(module('streams-source'))};
+    import { StreamsWorkspaceClient } from ${JSON.stringify(module('streams-workspace-client'))};
+    import { StreamsCardView, renderStreamsCard } from ${JSON.stringify(module('streams-view'))};
+    const stage = ${JSON.stringify(stage)};
+    const deferred = () => { let resolve; const promise = new Promise(r => { resolve = r; }); return { promise, resolve }; };
+    const entered = deferred(), release = deferred(), firstFrame = deferred();
+    const input = new EventEmitter(), output = new EventEmitter(), writes = [], calls = [];
+    let armed = stage === 'bootstrap', reads = 0, opens = 0, paints = 0, active = 0, maxActive = 0, nextFrame;
+    Object.assign(input, { isTTY: true, isRaw: false, setRawMode() {}, resume() {}, pause() {} });
+    Object.assign(output, { isTTY: true, columns: 100, rows: 12, write(value) {
+      writes.push(value);
+      if (value.startsWith('\\x1b[2J')) { firstFrame.resolve(); nextFrame?.resolve(); }
+    } });
+    Object.defineProperty(process, 'stdin', { value: input }); Object.defineProperty(process, 'stdout', { value: output });
+    const snapshot = { scope: ${JSON.stringify(scope)}, stream: { ...${JSON.stringify(wire.stream)},
+      goal: 'Unicode 界😀é content wrapping and grid reflow '.repeat(4), repositories: { lib: { url: 'https://example.com/lib' } },
+      documents: [{ repository: 'lib', ref: 'topic', path: 'docs/design.md', description: '' }] },
+      session: ${JSON.stringify(session)}, native: ${JSON.stringify(owner)}, checkouts: [{ repository: 'lib', checkout_id: 'lib', root: '/code/lib' }],
+      documentLocations: [{ repository: 'lib', path: 'docs/design.md', checkout_id: 'lib', root: '/code/lib', file: '/code/lib/docs/design.md', error: null }] };
+    const context = { socket: '/test/socket', paneId: 'w:p2', terminalId: 'term2', workspaceId: 'w', tabId: 'w:t1' };
+    async function operation(name, result) {
+      calls.push(name); maxActive = Math.max(maxActive, ++active);
+      try {
+        if (armed && (stage === name || stage === 'key' && name === 'refresh' && reads === 3)) {
+          entered.resolve(); await release.promise;
+        }
+        return result;
+      } finally { active--; }
+    }
+    StreamsCardSource.prototype.read = async () => { reads++; return operation('refresh', snapshot); };
+    StreamsWorkspaceClient.prototype.bootstrap = () => operation('bootstrap', context);
+    StreamsWorkspaceClient.prototype.verifyDisplay = () => operation('verify', { agent: { terminal_id: 'term1' },
+      card: { terminal_id: 'term2', label: armed && stage === 'caption' ? 'Old' : 'Shared', tokens: { strm_caption: 'Shared' } }, nonce: 'nonce' });
+    StreamsWorkspaceClient.prototype.projectCaption = () => operation('caption');
+    StreamsWorkspaceClient.prototype.openDocument = async (_source, actualContext, saved, target) => {
+      opens++; assert.equal(actualContext, context); assert.equal(saved, snapshot); assert.equal(target.file, '/code/lib/docs/design.md');
+      await operation('document');
+    };
+    StreamsWorkspaceClient.prototype.closeDisplay = () => { throw Error('external stop must not self-close'); };
+    const originalRender = StreamsCardView.prototype.render;
+    StreamsCardView.prototype.render = function (...args) { paints++; return originalRender.apply(this, args); };
+    const running = runStreamsPane({ ...${JSON.stringify(launcher)}, STREAMS_CARDS_CONFIG: ${JSON.stringify(config)} });
+    if (stage !== 'bootstrap') {
+      await firstFrame.promise; armed = true;
+      if (stage === 'idle') entered.resolve();
+      else input.emit('data', Buffer.from(stage === 'document' || stage === 'key' ? 'a' : '1'));
+    }
+    await entered.promise;
+    const beforeCalls = [...calls], beforePaints = paints, beforeFrames = writes.filter(v => v.startsWith('\\x1b[2J')).length;
+    for (const [columns, rows] of [[70, 10], [40, 8], [24, 6]]) {
+      output.columns = columns; output.rows = rows; output.emit('resize');
+    }
+    // An event-loop barrier, not a timer: any blocked operation is still unresolved.
+    await new Promise(setImmediate);
+    assert.deepEqual(calls, beforeCalls); assert.equal(active, stage === 'idle' ? 0 : 1); assert.equal(paints, beforePaints + 1);
+    const frames = writes.filter(v => v.startsWith('\\x1b[2J'));
+    assert.equal(frames.length, beforeFrames + 1);
+    assert.equal(frames.at(-1), '\\x1b[2J\\x1b[H' + renderStreamsCard(snapshot, 24, 6).text);
+    if (stage === 'key') {
+      nextFrame = deferred(); release.resolve(); await nextFrame.promise;
+      assert.equal(opens, 0); assert.match(writes.at(-1), /redraw|Document/);
+      input.emit('end');
+    } else {
+      // Leave one repaint queued when stopping, then finish the blocked work.
+      output.columns = 25; output.emit('resize'); input.emit('end'); release.resolve();
+    }
+    await running; await new Promise(setImmediate);
+    const cleanup = writes.findIndex(v => v.includes('\\x1b[?1049l'));
+    assert.ok(cleanup >= 0); assert.equal(cleanup, writes.length - 1);
+    assert.equal(opens, stage === 'document' ? 1 : 0); assert.equal(maxActive, 1);
+    assert.equal(input.listenerCount('data'), 0); assert.equal(output.listenerCount('resize'), 0);
+  `;
+  await promisify(execFile)(process.execPath, ['--input-type=module', '-e', script], { timeout: 5000 });
+});
 test('noninteractive pane rejects without acquiring native/catalog resources', async () => {
   if (!process.stdin.isTTY || !process.stdout.isTTY) await assert.rejects(runStreamsPane({}), /interactive Herdr terminal/);
 });

@@ -29,15 +29,27 @@ export async function runStreamsPane(env: NodeJS.ProcessEnv = process.env): Prom
   const input = process.stdin, output = process.stdout;
   if (!input.isTTY || !output.isTTY) throw new Error('Streams card requires an interactive Herdr terminal');
   const source = streamsPaneSource(env), client = new StreamsWorkspaceClient({ env, stateDirectory: env.STREAMS_CARDS_STATE_DIR });
-  const view = new StreamsCardView(source), parser = new KeyInput();
-  const config = await loadConfig(env.STREAMS_CARDS_CONFIG || configPath(env));
   const controller = new AbortController();
+  const view = new StreamsCardView({ read: () => source.read(controller.signal) }), parser = new KeyInput();
+  const config = await loadConfig(env.STREAMS_CARDS_CONFIG || configPath(env));
   let context: StreamsNativeContext | undefined, stopped = false, closeRequested = false, selfClosing = false, wake: (() => void) | undefined;
-  let keys: string[] = [], previous = '';
+  let keys: string[] = [], previous = '', repaintQueued = false;
+  const render = () => {
+    repaintQueued = false;
+    if (stopped) return;
+    const columns = output.columns || 80, rows = output.rows || 24, rendered = view.render(columns, rows);
+    const frame = `${columns}:${rows}:${rendered}`;
+    if (frame !== previous) { output.write(`\x1b[2J\x1b[H${rendered}`); previous = frame; }
+  };
   const originalRaw = input.isRaw;
   const stop = () => { if (selfClosing) return; stopped = true; controller.abort(); wake?.(); };
   const data = (bytes: Buffer) => { keys.push(...parser.feed(bytes)); wake?.(); };
-  const resize = () => wake?.();
+  // Reflow cached content without entering the observation/native-effect lane.
+  const resize = () => {
+    if (stopped || repaintQueued) return;
+    repaintQueued = true;
+    queueMicrotask(() => { if (repaintQueued) render(); });
+  };
   const signals: NodeJS.Signals[] = ['SIGTERM', 'SIGINT', 'SIGHUP'];
   try {
     input.setRawMode(true); input.resume();
@@ -48,7 +60,7 @@ export async function runStreamsPane(env: NodeJS.ProcessEnv = process.env): Prom
       const saved = await view.refresh(); if (stopped) break;
       let ready = false;
       try {
-        context ??= await client.bootstrap(config);
+        context ??= await client.bootstrap(config, controller.signal);
         if (saved) {
           const pair = await client.verifyDisplay(source, context, config, controller.signal);
           if (pair.agent.terminal_id !== env.STREAMS_CARDS_OWNER_TERMINAL || pair.card.terminal_id !== context.terminalId || pair.nonce !== env.STREAMS_CARDS_NONCE) throw new Error('Launcher owner/card/nonce mismatch');
@@ -76,9 +88,7 @@ export async function runStreamsPane(env: NodeJS.ProcessEnv = process.env): Prom
           keys = []; break;
         }
       }
-      const columns = output.columns || 80, rows = output.rows || 24, rendered = view.render(columns, rows);
-      const frame = `${columns}:${rows}:${rendered}`;
-      if (frame !== previous) { output.write(`\x1b[2J\x1b[H${rendered}`); previous = frame; }
+      render();
       if (stopped) break;
       if (!keys.length) await new Promise<void>(resolve => {
         const timer = setTimeout(done, config.pane_poll_interval_ms);
@@ -87,6 +97,7 @@ export async function runStreamsPane(env: NodeJS.ProcessEnv = process.env): Prom
       });
     }
   } finally {
+    stopped = true;
     controller.abort();
     input.off('data', data); input.off('end', stop); output.off('resize', resize);
     try {
