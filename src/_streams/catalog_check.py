@@ -10,6 +10,7 @@ from typing import Any
 
 from .catalog.model import Catalog, Session, Stream
 from .catalog_agent import source_id
+from .catalog_checkouts import infer_checkout_repository_urls
 from .catalog_conversations import native_identity
 from .catalog_runtime import Runtime, _key
 from .errors import StreamError
@@ -436,7 +437,29 @@ def _check_herdr_live(
 
         stream_record = catalog.stream(session.stream_id)
         if stream_record is not None and stream_record.documents:
-            for loc in local.locations.document_context(stream_record, session)["document_locations"]:
+            doc_locs = local.locations.document_context(stream_record, session)["document_locations"]
+            if fix and any(loc["error"] is not None and "no repository binding" in loc["error"] for loc in doc_locs):
+                try:
+                    selected = local.locations.read(stream_record.id, session.id)
+                    if selected is not None and selected.checkout_id is not None:
+                        chk = local.checkouts.get(selected.checkout_id)
+                        if not chk.repository_urls:
+                            inferred = infer_checkout_repository_urls(Path(chk.directory), local.checkouts)
+                            if inferred:
+                                for url in inferred:
+                                    local.checkouts.register(Path(chk.directory), repository_url=url)
+                                fixed.append({
+                                    "kind": "session-checkout-repository-bound",
+                                    "pane_id": p_id,
+                                    "session_id": session.id,
+                                    "checkout_id": chk.id,
+                                    "directory": chk.directory,
+                                    "repository_urls": list(inferred),
+                                })
+                                doc_locs = local.locations.document_context(stream_record, session)["document_locations"]
+                except StreamError:
+                    pass
+            for loc in doc_locs:
                 if loc["error"] is not None:
                     issues.append({
                         "kind": "unresolved-session-document",

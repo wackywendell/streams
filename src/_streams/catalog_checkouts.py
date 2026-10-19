@@ -389,3 +389,43 @@ class CheckoutRegistry:
         checkout = self.resolve(repository_url, selected_checkout_id=selected_checkout_id,
                                 selected_repository_url=selected_repository_url)
         return checkout, self._contained(checkout, path, directory=False)
+
+
+def infer_checkout_repository_urls(directory: Path, checkouts: CheckoutRegistry) -> tuple[str, ...]:
+    """Discover repository URLs from a jj backing checkout or origin remote for enrollment/repair."""
+    found = inspect_directory(directory)
+    if found is None:
+        return ()
+    root = found[0]
+    urls: list[str] = []
+    jj_repo = root / ".jj" / "repo"
+    try:
+        if jj_repo.is_file():
+            pointer = jj_repo.read_text(encoding="utf-8").strip()
+            if pointer:
+                backing_repo = (jj_repo.parent / Path(pointer)).resolve(strict=True)
+                if backing_repo.name == "repo" and backing_repo.parent.name == ".jj":
+                    backing_checkout = checkouts.find(backing_repo.parent.parent)
+                    if backing_checkout is not None:
+                        for url in backing_checkout.repository_urls:
+                            if url not in urls:
+                                urls.append(url)
+    except (OSError, StreamError, ValueError):
+        pass
+    try:
+        origin = _run(["git", "config", "--get", "remote.origin.url"], root).strip()
+        if origin and origin not in urls:
+            urls.append(origin)
+    except StreamError:
+        pass
+    if not urls and (jj_repo.is_dir() or jj_repo.is_file()):
+        try:
+            output = _run(["jj", "--ignore-working-copy", "--at-operation=@", "git", "remote", "list"], root)
+            for line in output.splitlines():
+                parts = line.split(None, 1)
+                if len(parts) == 2 and parts[0] == "origin" and parts[1].strip() and parts[1].strip() not in urls:
+                    urls.append(parts[1].strip())
+        except StreamError:
+            pass
+    return tuple(urls)
+

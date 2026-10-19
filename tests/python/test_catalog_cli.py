@@ -289,6 +289,55 @@ class CatalogCliTest(unittest.TestCase):
             self.assertEqual(len(runs), 1)
             self.assertEqual(runs[0][:5], ["pane", "report-metadata", "wH:p1", "--source", "streams-work-cards"])
 
+    def test_check_fix_binds_unbound_session_checkout_from_origin_remote(self):
+        self.initialize()
+        repo = self.root / "worktree"
+        subprocess.run(["git", "init", "--quiet", str(repo)], check=True, capture_output=True, timeout=30)
+        subprocess.run(["git", "-C", str(repo), "remote", "add", "origin", "git@github.com:example/streams.git"], check=True, capture_output=True, timeout=30)
+        (repo / "doc.md").write_text("hello\n")
+        stream = json.loads(self.cli(
+            "create", "RepoTest", "--cwd", str(repo),
+            "--add-repository", "streams", "git@github.com:example/streams.git",
+            "--add-document", "streams", "main", "doc.md", "Doc", "--json",
+        )[1])["stream"]
+        session = json.loads(self.cli(
+            "session", "attach", stream["id"], "--harness", "pi",
+            "--session-id", "01a1556b-8410-75b9-851d-778193659ea0", "--title", "Temper", "--cwd", str(repo), "--json",
+        )[1])["session"]
+        transcript = self.root / "temper.jsonl"
+        transcript.write_text(json.dumps({"type": "session", "version": 3, "id": "01a1556b-8410-75b9-851d-778193659ea0"}) + "\n")
+        from _streams import catalog_config as config
+        from _streams.catalog_runtime import Runtime, _key
+        from _streams.herdr_binding import HerdrEndpoint
+        rt = Runtime(config.runtime_state_dir(), config.host_id(), config.get_frontend_mode(), checkout_dir=config.checkout_state_dir())
+        socket = str(self.root / "config/herdr/herdr.sock")
+        scope = _key("herdr", socket, "default")
+        rt._write(rt._association_path(scope, "wH"), {"stream_id": stream["id"], "workspace_id": "wH", "session_id": None, "command": None, "ready": True})
+        snapshot = {
+            "workspaces": [{"workspace_id": "wH", "tokens": {}}],
+            "panes": [{
+                "pane_id": "wH:p2E",
+                "terminal_id": "term_2",
+                "tab_id": "wH:tS",
+                "workspace_id": "wH",
+                "agent": "pi",
+                "agent_session": {"agent": "pi", "kind": "path", "value": str(transcript)},
+                "tokens": {},
+            }],
+        }
+        with patch("_streams.catalog_check.HerdrClient.endpoint", return_value=HerdrEndpoint(socket=socket, session="default")), \
+             patch("_streams.catalog_check.HerdrClient.command_result", return_value={"type": "session_snapshot", "snapshot": snapshot}):
+            code, out, _ = self.cli("check", "--pane", "wH:p2E", "--json")
+            self.assertEqual(code, 2)
+            self.assertEqual(json.loads(out)["issues"][0]["kind"], "unresolved-session-document")
+
+            code, out, _ = self.cli("check", "--pane", "wH:p2E", "--fix", "--json")
+            self.assertEqual(code, 0)
+            fixed = json.loads(out)
+            self.assertTrue(fixed["valid"])
+            self.assertEqual(fixed["fixed"][0]["kind"], "session-checkout-repository-bound")
+            self.assertEqual(fixed["fixed"][0]["repository_urls"], ["git@github.com:example/streams.git"])
+
 
 if __name__ == "__main__":
     unittest.main()

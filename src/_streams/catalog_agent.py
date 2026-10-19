@@ -21,6 +21,7 @@ from .catalog.model import Session, Stream, ValidationError, choice, text
 from .catalog.operations import Operation, filter_automatic_changes, normalize_changes, update
 from .catalog.storage import StorageError
 from .catalog.sync.envelope import load_json
+from .catalog_checkouts import infer_checkout_repository_urls
 from .errors import StreamError
 
 
@@ -201,7 +202,12 @@ def enroll(backend, runtime, source: str):
                 persist(Operation(data["operation_id"] + ":session", None, session, data["actor"], ownership_token=authority.token))
             payload.update(stream=stream, session=session, authority=authority)
             runtime.remember_directory(stream.id, directory, if_missing=True)
-            runtime.remember_directory(stream.id, directory, session_id=session.id, if_missing=True)
+            binding = runtime.remember_directory(stream.id, directory, session_id=session.id, if_missing=True)
+            if binding is not None and binding.checkout_id is not None:
+                checkout = runtime.checkouts.get(binding.checkout_id)
+                if not checkout.repository_urls:
+                    for url in infer_checkout_repository_urls(Path(checkout.directory), runtime.checkouts):
+                        runtime.checkouts.register(Path(checkout.directory), repository_url=url)
             scope.bind(stream, authority=authority)
     except (StreamError, StorageError, OSError, ValueError) as error:
         if not payload["saves"] and payload.get("session") is None:
