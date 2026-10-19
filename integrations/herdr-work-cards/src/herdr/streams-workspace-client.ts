@@ -19,6 +19,12 @@ const pairKeys = ['strm_agent', 'strm_nonce', 'strm_pi', 'strm_card', 'strm_role
 const tuple = (p: Pane) => [p.pane_id, p.terminal_id, p.workspace_id, p.tab_id];
 const contextTuple = (c: StreamsNativeContext) => [c.paneId, c.terminalId, c.workspaceId, c.tabId];
 const pluginId = 'streams-work-cards';
+// Herdr trims, removes controls and caps tokens at 80 Unicode scalar values.
+// An optional native hint must preserve the catalog text, not invent a shorter summary.
+function compactToken(value: string | null): string | null {
+  return value && Array.from(value).length <= 80 && !/[\p{Cc}\p{Cs}]/u.test(value)
+    && !/^\p{White_Space}|\p{White_Space}$/u.test(value) ? value : null;
+}
 const pluginPanes = [
   { id: 'card', title: 'Streams work card', placement: 'split', command: ['node', 'dist/herdr/streams-pane.js'] },
   { id: 'document', title: 'Document', placement: 'tab', command: ['/bin/sh', 'bin/open-document.sh'] },
@@ -270,8 +276,9 @@ export class StreamsWorkspaceClient extends HerdrTransport {
         const v = await this.projectionProof(source, context, config, signal);
         if (v.caller.terminal_id !== v.owner.terminal_id) throw new Error('Only the owning Pi may publish Session progress');
         const target = kind === 'pane' ? v.owner : v.snapshot.workspaces.find(w => w.workspace_id === context.workspaceId)!;
-        const values = kind === 'pane' ? { strm_status: v.saved.session.status, strm_now: v.saved.session.state || null, strm_state_short: v.saved.session.state_short || null }
-          : { strm_goal: v.saved.stream.goal || null, strm_goal_short: v.saved.stream.goal_short || null };
+        // Clear obsolete full-text tokens: narratives belong in the catalog and card.
+        const values = kind === 'pane' ? { strm_status: v.saved.session.status, strm_now: null, strm_state_short: compactToken(v.saved.session.state_short) }
+          : { strm_goal: null, strm_goal_short: compactToken(v.saved.stream.goal_short) };
         const changed = Object.fromEntries(Object.entries(values).filter(([k, value]) => (target.tokens[k] ?? null) !== value));
         if (Object.keys(changed).length) await this.stamp(source, context, target, changed, config, signal, v.saved);
       }

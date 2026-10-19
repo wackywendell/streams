@@ -28,6 +28,8 @@ Closing with `q` remains display-only. It must not stop catalog reporting, delet
 
 Native workspace names and card captions project `stream.title`; Pi and eligible agent-tab names project `session.title`; editor names come from exact document identity. Compact purpose and progress use `goal_short` and `state_short`, not another inference or text truncation. Preserve the imported naming policy's independent switches, manual protection and actual-first-pane rule. Manual catalog text and manual native labels are separate decisions.
 
+Native metadata is a bounded hint, not another copy of the narrative. [Herdr's token contract](https://github.com/herdrdev/herdr/blob/v0.9.5/src/app/api_helpers.rs#L244-L279) trims values, removes controls and caps text at 80 Unicode scalar values. Publish an existing compact summary only when Herdr retains it unchanged. Otherwise clear the hint; keep the full text in the catalog and card. Do not truncate or infer a replacement just to fill a native field.
+
 Native effects are not a transaction with catalog persistence. Verify current scope and acknowledgements, report partial effects and preserve recovery evidence. A successfully saved title is not proof that a native name changed.
 
 A GUI-created terminal inherits the frontend server's environment, not the invoking CLI's. Launches explicitly carry the caller's catalog, host-state, checkout-registry and harness-selection paths, including effective defaults. The card subprocess separately captures the owning agent's bounded read environment. Neither boundary forwards the caller's full environment or credentials; otherwise a workspace or card could silently read another catalog despite carrying the same Stream ID.

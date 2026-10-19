@@ -101,15 +101,57 @@ for (const [workspace_naming, tab_naming] of [[true, false], [false, true], [fal
   if (workspace_naming) { f.contexts[0].stream.title = 'Next shared'; assert.equal((await a.c.projectNames(a.s, a.context, manual)).workspace, 'renamed'); }
   if (tab_naming) { f.contexts[0].session.title = 'Next own'; assert.equal((await a.c.projectNames(a.s, a.context, manual)).tab, 'renamed'); }
 });
-test('absent compact summaries do not prevent full summaries or subsequent naming', async t => {
+test('absent compact summaries leave full narratives in the card and do not block naming', async t => {
   const f = await fixture(t), a = await f.owner(1);
   f.contexts[0].stream.goal_short = f.contexts[0].session.state_short = null;
   await a.c.projectSummaries(a.s, a.context, config);
-  assert.equal(f.workspaces[0].tokens.strm_goal, 'Shared purpose');
-  assert.equal(f.panes[0].tokens.strm_now, 'Own progress 1');
-  assert.ok(!Object.hasOwn(f.workspaces[0].tokens, 'strm_goal_short'));
-  assert.ok(!Object.hasOwn(f.panes[0].tokens, 'strm_state_short'));
+  for (const key of ['strm_goal', 'strm_goal_short']) assert.ok(!Object.hasOwn(f.workspaces[0].tokens, key));
+  for (const key of ['strm_now', 'strm_state_short']) assert.ok(!Object.hasOwn(f.panes[0].tokens, key));
+  assert.equal((await a.s.read()).stream.goal, 'Shared purpose');
+  assert.equal((await a.s.read()).session.state, 'Own progress 1');
   assert.equal((await a.c.projectNames(a.s, a.context, config)).tab, 'renamed');
+});
+test('long full narratives clear obsolete tokens without altering catalog text or replacing compact summaries', async t => {
+  const f = await fixture(t), a = await f.owner(1);
+  await a.c.projectSummaries(a.s, a.context, config);
+  f.contexts[0].stream.goal = 'Full shared goal\n'.repeat(20);
+  f.contexts[0].session.state = 'Full own progress\n'.repeat(20);
+  f.workspaces[0].tokens.strm_goal = 'Old truncated goal';
+  f.panes[0].tokens.strm_now = 'Old truncated progress';
+  const before = structuredClone(f.contexts);
+  await a.c.projectSummaries(a.s, a.context, config);
+  assert.ok(!Object.hasOwn(f.workspaces[0].tokens, 'strm_goal'));
+  assert.ok(!Object.hasOwn(f.panes[0].tokens, 'strm_now'));
+  assert.equal(f.workspaces[0].tokens.strm_goal_short, 'Shared');
+  assert.equal(f.panes[0].tokens.strm_state_short, 'Own 1');
+  assert.deepEqual(f.contexts, before);
+  assert.ok(!f.calls.some(args => args.includes('--token') && args.some(arg => arg.startsWith('strm_goal=') || arg.startsWith('strm_now='))));
+});
+for (const [label, value, expected] of [
+  ['80 ASCII scalars', 'x'.repeat(80), 'x'.repeat(80)],
+  ['80 supplementary scalars', '😀'.repeat(80), '😀'.repeat(80)],
+  ['internal spaces', 'Keep  both spaces', 'Keep  both spaces'],
+  ['Unicode format characters', 'Keep\u200dformat', 'Keep\u200dformat'],
+  ['81 ASCII scalars', 'x'.repeat(81), null],
+  ['81 supplementary scalars', '😀'.repeat(81), null],
+  ['controls', 'Do not\njoin words', null],
+  ['leading whitespace', ' leading', null],
+  ['trailing Unicode whitespace', 'trailing\u00a0', null],
+  ['unpaired surrogate', '\ud800', null],
+]) test(`compact native hints preserve exact representable text or clear the hint (${label})`, async t => {
+  const f = await fixture(t), a = await f.owner(1);
+  await a.c.projectSummaries(a.s, a.context, config);
+  f.contexts[0].stream.goal_short = f.contexts[0].session.state_short = value;
+  f.workspaces[0].tokens.strm_goal_short = f.panes[0].tokens.strm_state_short = 'Stale hint';
+  const before = structuredClone(f.contexts);
+  await a.c.projectSummaries(a.s, a.context, config);
+  assert.equal(f.workspaces[0].tokens.strm_goal_short ?? null, expected);
+  assert.equal(f.panes[0].tokens.strm_state_short ?? null, expected);
+  assert.equal(f.panes[0].tokens.strm_status, 'active');
+  assert.deepEqual(f.contexts, before);
+  const count = effects(f).length;
+  await a.c.projectSummaries(a.s, a.context, config);
+  assert.equal(effects(f).length, count);
 });
 for (const missing of [null, '']) test(`empty summaries clear native tokens and remain idempotent (${String(missing)})`, async t => {
   const f = await fixture(t), a = await f.owner(1);
@@ -158,7 +200,7 @@ test('Sessions A and B coexist in one shared Stream workspace with independent p
   const f = await fixture(t), a = await f.owner(1), b = await f.owner(2); await a.open(); await b.open();
   await a.c.projectSummaries(a.s, a.context, config); await b.c.projectSummaries(b.s, b.context, config);
   assert.equal(f.workspaces[0].tokens.strm_stream, 'shared'); assert.equal(f.workspaces[0].tokens.strm_goal_short, 'Shared');
-  assert.equal(f.panes[0].tokens.strm_now, 'Own progress 1'); assert.equal(f.panes[1].tokens.strm_now, 'Own progress 2');
+  assert.equal(f.panes[0].tokens.strm_state_short, 'Own 1'); assert.equal(f.panes[1].tokens.strm_state_short, 'Own 2');
   for (const agent of [a, b]) {
     const snapshot = await agent.s.read(), target = renderStreamsCard(snapshot, 100, 10).documents.get('a');
     await agent.c.openDocument(agent.s, agent.context, snapshot, target, config);
