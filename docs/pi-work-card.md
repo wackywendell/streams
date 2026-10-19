@@ -16,7 +16,7 @@ A report captures Pi's active projected conversation, respecting compaction and 
 
 The helper receives captured catalog records and conversation evidence. It has no project-writing or shell tools and does not independently reread documents. Historical file contents in the conversation remain historical evidence, not a fresh verification claim. Include current names, goals and progress in its input so later reports can respect edits made through the card.
 
-Use a single background operation per Pi session. Coalesce newer evidence rather than queueing a report for every event. Before applying, check session identity, attachment and that the captured conversation remains on the active branch. Appending work does not invalidate an older captured prefix: save that report and schedule a follow-up. A rewind, branch switch or session replacement invalidates the result. Automatic updates may report session status but cannot change stream lifecycle, archive state or protected naming modes.
+Use a single background operation per Pi session. Coalesce newer evidence rather than queueing a report for every event. Before applying, check session identity, attachment and that the captured conversation remains on the active branch. Appending work does not invalidate an older captured prefix: save that report and schedule a follow-up. A rewind, branch switch or session replacement invalidates the result. Automatic updates transition `session.status` (`active`, `waiting`, `blocked`, `parked`, `done`) from conversation evidence—including when the user indicates the session is done, paused, waiting or blocked—while whole-effort `stream.status`, archive state and protected naming modes remain manual-only.
 
 ## Identity and initial enrollment
 
