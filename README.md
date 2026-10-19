@@ -114,14 +114,14 @@ For a portable checkout reference, add `--repository ALIAS --ref BRANCH` when at
 
 The checkout's Pi extension maintains catalog records instead of generating scratch drafts. By default it reports after each completed response, using the current Pi model and trimmed conversation context. Meaningful work can enroll an effort and its first session automatically; greetings alone do not. Existing caller-workspace associations are reused without launching agents or moving focus.
 
-- Alt+P opens the card without running a model. Edit labelled fields, choose valid statuses and manage reference rows. Whole-effort actions are separate from session actions; IDs, ownership and membership are read-only.
+- `/streams` or `/streams card` opens the card without running a model. Edit labelled fields, choose valid statuses and manage reference rows. Whole-effort actions are separate from session actions; IDs, ownership and membership are read-only.
 - Editing a title or goal makes it manual. Change its mode back to automatic to allow refinement. Invalid or conflicting edits retain their input; unchanged fields are not submitted.
 - Card discussion can answer without edits, refresh descriptions, or carry out an explicitly requested edit. User direction is approval; uncertain intent produces a question rather than a management action.
-- `/streams` or `/streams report` requests a report now, not a draft awaiting Apply. Use `/streams report [instructions]` to give reporting direction. Explicit reporting can enroll an unbound conversation. The model-callable `checkpoint` tool remains unchanged.
+- `/streams report` requests a report now, not a draft awaiting Apply. Use `/streams report [instructions]` to give reporting direction. Explicit reporting can enroll an unbound conversation. `/streams reset [--auto]` regenerates automatic fields (and with `--auto`, restores automatic title/goal modes and reclaims Pi/Herdr names). The model-callable `checkpoint` tool remains unchanged.
 - `/streams attach` offers initial selection or creation; attached conversations cannot switch efforts.
-- `/streams settings` controls automatic/manual reporting, initial enrollment, completed responses between reports, context and model. Manual reporting disables background requests, not explicit commands.
+- `/streams settings` controls automatic/manual reporting, initial enrollment, completed responses between reports, context, model and Herdr startup/naming. Manual reporting disables background requests, not explicit commands.
 - `/streams pane` opens the native Herdr card; `/streams pane close` closes only its display. Neither requests a report or changes membership.
-- Tab completes `report`, `settings`, `attach` and `pane`. Unknown subcommands or invalid management arguments show usage without reporting or saving. Free-text instructions must follow `report`.
+- Tab completes `card`, `report`, `reset`, `settings`, `attach` and `pane`. Unknown subcommands or invalid management arguments show usage without reporting or saving. Free-text instructions must follow `report`.
 
 Settings live in `$PI_CODING_AGENT_DIR/stream-reporting.json`, defaulting to `~/.pi/agent/stream-reporting.json`. The defaults are:
 

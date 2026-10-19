@@ -151,7 +151,7 @@ function registration(t, f, cli = {}) {
 test('extension reload/start replaces stale lifetime and pane commands do not report or attach', async t => {
  environment(t);const f = fixture(t), r = registration(t, f);assert.equal(f.loads(), 0);
  await r.handlers.get('session_start')({}, f.ctx);await until(() => f.events.includes('capture:stream'));
- assert.deepEqual([...r.commands.keys()], ['streams']);assert.deepEqual([...r.shortcuts.keys()], ['alt+p']);
+ assert.deepEqual([...r.commands.keys()], ['streams']);assert.deepEqual([...r.shortcuts.keys()], []);
  await r.run('pane close');await r.run('pane');assert.ok(f.events.includes('close'));assert.ok(f.events.includes('open:explicit'));
  const before = f.events.length;await r.run('pane close extra');assert.equal(f.events.length, before);assert.match(f.notices.at(-1), /pane \[close\]/);
  await r.handlers.get('session_shutdown')({}, f.ctx);await r.handlers.get('session_start')({}, f.ctx);await until(() => f.loads() === 2);await turn();
@@ -164,7 +164,7 @@ test('successful guided edits refresh from persisted source immediately; existin
  f.ctx.ui.select = async () => {assert.ok(menu < 4, f.notices.join('\n'));return ['This session — edit fields', 'state: "Saved state"', 'Save field', 'Close'][menu++];};
  f.ctx.ui.editor = async () => 'Manually saved';
  await r.handlers.get('session_start')({}, f.ctx);await until(() => f.events.includes('capture:stream'));const initial = f.events.filter(event => event === 'capture:stream').length;
- await r.shortcuts.get('alt+p').handler(f.ctx);await until(() => f.events.filter(event => event === 'capture:stream').length > initial);
+ await r.run('card');await until(() => f.events.filter(event => event === 'capture:stream').length > initial);
  assert.deepEqual(f.entries.filter(entry => entry.customType === 'stream-catalog-receipt').map(entry => entry.data), [receipt]);assert.equal(f.loads(), 1);
 });
 test('tree changes reject queued explicit actions instead of replaying them on a later branch', async t => {

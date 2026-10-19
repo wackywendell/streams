@@ -41,14 +41,18 @@ export async function settingsDialog(ctx: ExtensionContext, settings: ReportingS
  const models = (ctx.modelRegistry?.getAvailable?.() ?? ctx.modelRegistry?.getAll?.() ?? []).map((model) => ({value: `${model.provider}/${model.id}`, label: `${model.provider}/${model.id}`})).sort((a, b) => a.value.localeCompare(b.value));
  const modelRows = [{value: "current Pi model", label: "current Pi model"}, ...models];
  const items: SettingItem[] = [
-  {id: "reporting", label: "Reporting", currentValue: value.reporting, values: ["automatic", "manual"]},
-  {id: "enrollment", label: "Enrollment", currentValue: value.enrollment, values: ["automatic", "manual"]},
-  {id: "frequency", label: "Response frequency", currentValue: String(value.frequency), values: ["1", "2", "3", "5", "10"]},
-  {id: "context", label: "Context", currentValue: value.context, values: ["trimmed", "full"]},
-  {id: "model", label: "Model", currentValue: value.model ? `${value.model.provider}/${value.model.id}` : "current Pi model"},
+  {id: "reporting", label: "Reporting", currentValue: value.reporting, description: "Automatically summarize your progress into the work card after agent responses, or only when you run /streams report.", values: ["automatic", "manual"]},
+  {id: "enrollment", label: "Enrollment", currentValue: value.enrollment, description: "Automatically attach new Pi chats to a work card once meaningful work starts, or wait until you run /streams attach.", values: ["automatic", "manual"]},
+  {id: "frequency", label: "Response frequency", currentValue: String(value.frequency), description: "How many completed agent responses to wait between automatic work-card updates.", values: ["1", "2", "3", "5", "10"]},
+  {id: "context", label: "Context", currentValue: value.context, description: "What conversation history the summary model reads: 'trimmed' uses dialogue and compaction summaries; 'full' also includes tool calls and outputs.", values: ["trimmed", "full"]},
+  {id: "model", label: "Model", currentValue: value.model ? `${value.model.provider}/${value.model.id}` : "current Pi model", description: "Model used to summarize progress and generate short titles. Press Enter to search and pick from available models."},
   ...(nativePath ? [
-   {id: "workspace_startup", label: "Herdr workspace startup", currentValue: String(native.workspace_startup ?? "automatic"), values: ["automatic", "manual"]},
-   ...["workspace_naming", "tab_naming", "session_naming"].map((id) => ({id, label: `Herdr ${id.replace("_", " ")}`, currentValue: native[id] == null ? "inherit" : native[id] ? "enabled" : "disabled", values: ["inherit", "enabled", "disabled"]})),
+   {id: "workspace_startup", label: "Herdr workspace startup", currentValue: String(native.workspace_startup ?? "automatic"), description: "Automatically open the side-by-side Herdr work-card pane when a chat is attached, or only when you run /streams pane.", values: ["automatic", "manual"]},
+   ...Object.entries({
+    workspace_naming: "Sync the Herdr workspace name with the effort's short title ('inherit' follows Herdr workspace startup; manual renames in Herdr stay protected).",
+    tab_naming: "Sync this Herdr tab's name with this session's short title ('inherit' follows Herdr workspace startup; manual renames stay protected).",
+    session_naming: "Sync the Pi session name (/name) with this session's short title ('inherit' follows Herdr workspace startup).",
+   }).map(([id, description]) => ({id, description, label: `Herdr ${id.replace("_", " ")}`, currentValue: native[id] == null ? "inherit" : native[id] ? "enabled" : "disabled", values: ["inherit", "enabled", "disabled"]})),
   ] : []),
  ];
  function change(id: string, next: string): void {
@@ -102,7 +106,7 @@ export async function settingsDialog(ctx: ExtensionContext, settings: ReportingS
     },
    };
   };
-  const list = new SettingsList(items, Math.max(1, Math.min(items.length, tui.terminal.rows - 7)), getSettingsListTheme(), (id, next) => {
+  const list = new SettingsList(items, Math.max(1, Math.min(items.length, tui.terminal.rows - 10)), getSettingsListTheme(), (id, next) => {
    const previous = savedValues.get(id)!;
    try {change(id, next);savedValues.set(id, next);list.updateValue(id, next);} catch(error) {list.updateValue(id, previous);ctx.ui.notify(String(error), "error");}
    tui.requestRender();

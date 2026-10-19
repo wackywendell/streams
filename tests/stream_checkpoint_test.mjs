@@ -146,6 +146,30 @@ test('settings change in place, pick searchable models, and preserve Herdr confi
   assert.equal(factories,1);
  }finally{rmSync(root,{recursive:true,force:true});}
 });
+test('all settings explain their effects and leave description room on short terminals',async()=>{
+ const root=mkdtempSync(join(tmpdir(),'card-settings-descriptions-'));
+ try {
+  await settingsDialog({modelRegistry:{getAvailable:()=>[]},ui:{custom:async factory=>{
+   const component=factory({terminal:{rows:16},requestRender(){}},{fg:(_color,text)=>text,bold:text=>text},{},()=>{});
+   for(const description of [
+    'Automatically summarize your progress into the work card',
+    'Automatically attach new Pi chats to a work card',
+    'How many completed agent responses to wait',
+    'What conversation history the summary model reads',
+    'Model used to summarize progress and generate short titles.',
+    'Automatically open the side-by-side Herdr work-card pane',
+    "Sync the Herdr workspace name with the effort's short title",
+    "Sync this Herdr tab's name with this session's short title",
+    "Sync the Pi session name (/name) with this session's short title",
+   ]) {
+    const lines=component.render(100);assert.ok(lines.length<=16,lines.join('\n'));
+    assert.ok(lines.join(' ').includes(description),lines.join('\n'));
+    component.handleInput('\x1b[B');
+   }
+   component.handleInput('\x1b');
+  }}},{...defaults},()=>assert.fail('viewing settings must not save'),root);
+ }finally{rmSync(root,{recursive:true,force:true});}
+});
 test('automatic reset unlocks manual names before fresh inference and keeps lifecycle',async()=>{
  const catalog=context();catalog.session.title_mode='manual';catalog.stream.goal_mode='manual';
  const f=commandFixture({catalog,infer:async req=>({changes:req.type==='session'?{title:'Fresh lane',state:'Fresh state'}:{title:'Fresh effort',goal:'Fresh goal'}})});
@@ -175,6 +199,41 @@ test('model inference uses actual supported registry API, typed calls, no tools 
  await assert.rejects(infer(ctx,{type:'session',catalog:context(),messages:[]},new AbortController().signal),/structured/);
  ctx.modelRegistry.complete=async()=>({stopReason:'toolUse',content:[{type:'toolCall',name:'record_card',arguments:{changes:{title_mode:'manual'}}}]});
  await assert.rejects(infer(ctx,{type:'session',catalog:context(),messages:[]},new AbortController().signal),/invalid structured/);
+});
+for(const failure of ['throw','response'])test(`inference retries transient gateway ${failure} and succeeds`,async()=>{
+ let attempts=0;
+ const ctx={model:{id:'current'},modelRegistry:{complete:async()=>{
+  if(++attempts===1) {
+   const errorMessage='ai-gw-openai API error (503): 503 upstream connect error or disconnect/reset before headers. reset reason: connection termination';
+   if(failure==='throw')throw Error(errorMessage);
+   return {stopReason:'error',errorMessage};
+  }
+  return {stopReason:'toolUse',content:[{type:'toolCall',name:'record_card',arguments:{changes:{state:'Recovered'}}}]};
+ }}};
+ assert.deepEqual(await infer(ctx,{type:'session',catalog:context(),messages:[]},new AbortController().signal),{changes:{state:'Recovered'}});
+ assert.equal(attempts,2);
+});
+for(const failure of ['throw','response'])for(const transient of [false,true])test(`inference bounds ${transient?'transient':'permanent'} ${failure} failures`,async()=>{
+ let attempts=0;const errorMessage=transient?'503 upstream connect error':'401 unauthorized';
+ const ctx={model:{id:'current'},modelRegistry:{complete:async()=>{
+  attempts++;if(failure==='throw')throw Error(errorMessage);
+  return {stopReason:'error',errorMessage};
+ }}};
+ await assert.rejects(infer(ctx,{type:'session',catalog:context(),messages:[]},new AbortController().signal),new RegExp(errorMessage));
+ assert.equal(attempts,transient?3:1);
+});
+for(const when of ['before','during','delay','response'])test(`inference aborts ${when} without retrying`,async()=>{
+ let attempts=0;const controller=new AbortController();
+ if(when==='before')controller.abort();
+ const ctx={model:{id:'current'},modelRegistry:{complete:async()=>{
+  attempts++;
+  if(when==='during')controller.abort();
+  if(when==='delay')setImmediate(()=>controller.abort());
+  if(when==='response')return {stopReason:'aborted'};
+  throw Error('503 upstream connect error');
+ }}};
+ await assert.rejects(infer(ctx,{type:'session',catalog:context(),messages:[]},controller.signal),/cancelled|aborted/i);
+ assert.equal(attempts,when==='before'?0:1);
 });
 test('session progress uses the agreed brevity prompt without hard limits or changes to other helper tasks',async()=>{
  const guidance='Write state as a brief orientation for someone returning to the work: what meaningfully changed and where things stand. Use one or two short sentences, normally under 35 words; shorter is better. Do not enumerate completed steps, test counts, commit hashes, rollout inventories, or other specific details unless essential to understanding the result. Put unfinished scope and blockers in remaining. This is to provide the user a quick update/reminder of the current status, not a completion report.';
@@ -278,24 +337,24 @@ test('bound chooser never lists or switches, and live card offers no switch/crea
  assert.ok(calls[0].rows.every(row=>! /switch|create|attach/i.test(row)));assert.match(cardSummary(context()),/owner: host/);
 });
 for(const intent of ['reply','automatic','user'])test(`card discussion ${intent} has typed intent and no redundant confirmation`,async()=>{
- const handlers=new Map(),receipts=[],writes=[],history=[];let shortcut,submitted=false;const menu=['Discuss live card','Close'];
+ const handlers=new Map(),receipts=[],writes=[],history=[];let openPanel,submitted=false;const menu=['Discuss live card','Close'];
  const visible=context();visible.sessions.push({...session,id:'sibling',host_id:'other-host'});
  const cli={sync:localSync,context:async()=>structuredClone(visible),apply:async req=>{writes.push(req);return {operation_id:req.operation_id,save:{local:'persisted',sharing:'local-only',domain:{outcome:'changes'}}};}};
  const edit=intent==='reply'?undefined:{kind:'stream',actor:intent,changes:intent==='user'?{status:'parked'}:{goal:'Current descriptive goal'}};
- registerWorkCard({on:(name,fn)=>handlers.set(name,fn),registerCommand:()=>{},registerTool:()=>{},registerShortcut:(_key,options)=>{shortcut=options.handler;},appendEntry:(type,value)=>receipts.push({type,value})},{settings:{...defaults,reporting:'manual'},cli,infer:async(_ctx,req)=>{assert.equal(req.type,'discussion');assert.match(req.discussion.at(-1).text,/card question/);return {reply:'Discussed without assuming extra intent',...(edit?{edit}:{})};}});
+ registerWorkCard({on:(name,fn)=>handlers.set(name,fn),registerCommand:(_name,options)=>{openPanel=ctx=>options.handler('card',ctx);},registerTool:()=>{},registerShortcut:()=>assert.fail('no shortcuts'),appendEntry:(type,value)=>receipts.push({type,value})},{settings:{...defaults,reporting:'manual'},cli,infer:async(_ctx,req)=>{assert.equal(req.type,'discussion');assert.match(req.discussion.at(-1).text,/card question/);return {reply:'Discussed without assuming extra intent',...(edit?{edit}:{})};}});
  const ctx={mode:'tui',hasUI:true,cwd:'/repo',sessionManager:{getSessionId:()=> 'native',getLeafId:()=> 'leaf',getBranch:()=>[{id:'leaf'}],buildSessionProjection:()=>({messages:[]})},ui:{select:async()=>menu.shift(),confirm:()=>assert.fail('explicit direction needs no second confirmation'),notify:()=>{},setStatus:()=>{},custom:async factory=>new Promise(resolve=>{const component=factory({terminal:{rows:30},requestRender(){}},{fg:(_color,text)=>text,bold:text=>text},{},resolve);if(component.render(80).join("\n").includes("Whole effort")){const action=menu.shift();if(action==="Discuss live card"){for(let i=0;i<3;i++)component.handleInput("\x1b[B");component.handleInput("\r");}else component.handleInput("\x1b");return;}history.push(component.render(80).join('\n'));if(!submitted){submitted=true;component.handleInput('card question');component.handleInput('\r');}else component.handleInput('\x1b');})}};
- await handlers.get('session_start')({},ctx);await shortcut(ctx);
+ await handlers.get('session_start')({},ctx);await openPanel(ctx);
  assert.equal(writes.length,intent==='reply'?0:1);assert.match(history.at(-1),/Discussed without assuming extra intent/);
  if(intent!=='reply'){assert.equal(writes[0].actor,intent);assert.equal(writes[0].catalog_source,'source-a');assert.equal(writes[0].ownership_token,intent==='user'?null:'owner');assert.equal(receipts.length,1);assert.equal(writes[0].before.status,'active');assert.deepEqual(writes[0].inputs.map(input=>input.record.id),['session','sibling']);}
 });
 for(const failure of ['throw','abort','invalid','branch','cwd','source','attachment','shutdown','conflict','superseded','repair','completion'])test(`discussion ${failure} retains composer/history and isolates replacement source`,async()=>{
- const handlers=new Map(),renders=[],notices=[],receipts=[];let shortcut,submitted=false,menuCount=0,leaf='leaf';const catalog=context();
+ const handlers=new Map(),renders=[],notices=[],receipts=[];let openPanel,submitted=false,menuCount=0,leaf='leaf';const catalog=context();
  const saveFailure=['conflict','superseded','repair','completion'].includes(failure);
  const cli={sync:localSync,context:async()=>structuredClone(catalog),apply:async req=>{
   assert.equal(saveFailure,true,'cancelled discussion must not write');
   return {operation_id:req.operation_id,save:{local:'persisted',sharing:'local-only',domain:{outcome:['conflict','superseded'].includes(failure)?failure:'changes'}},...(failure==='repair'?{publication:{local:'repair-required',sharing:'confirmed',domain:null}}:{}),...(failure==='completion'?{completion_error:{message:'Incomplete'}}:{})};
  }};
- registerWorkCard({on:(name,fn)=>handlers.set(name,fn),registerCommand:()=>{},registerTool:()=>{},registerShortcut:(_key,options)=>{shortcut=options.handler;},appendEntry:(type,value)=>{assert.equal(saveFailure,true,'no receipt');receipts.push({type,value});}},{settings:{...defaults,reporting:'manual'},cli,infer:async(_ctx,req,signal)=>{
+ registerWorkCard({on:(name,fn)=>handlers.set(name,fn),registerCommand:(_name,options)=>{openPanel=ctx=>options.handler('card',ctx);},registerTool:()=>{},registerShortcut:()=>assert.fail('no shortcuts'),appendEntry:(type,value)=>{assert.equal(saveFailure,true,'no receipt');receipts.push({type,value});}},{settings:{...defaults,reporting:'manual'},cli,infer:async(_ctx,req,signal)=>{
   assert.deepEqual(req.discussion,[{role:'user',text:'retry question'}]);
   if(failure==='throw')throw Error('Model unavailable');
   if(failure==='abort') {handlers.get('session_tree')({}, {...ctx});assert.equal(signal.aborted,true);throw Error('Aborted discussion');}
@@ -307,31 +366,31 @@ for(const failure of ['throw','abort','invalid','branch','cwd','source','attachm
   return failure==='invalid'?{reply:42}:{reply:'Unexpected committed reply',edit:{kind:'session',actor:'automatic',changes:{state:'Must not write'}}};
  }});
  const ctx={mode:'tui',hasUI:true,cwd:'/repo',sessionManager:{getSessionId:()=> 'native',getLeafId:()=>leaf,getBranch:()=>[{id:leaf}],buildSessionProjection:()=>({messages:[]})},ui:{select:async()=>menuCount++%2===0?'Discuss live card':'Close',notify:text=>notices.push(text),setStatus:()=>{},custom:async factory=>new Promise(resolve=>{const component=factory({terminal:{rows:30},requestRender(){}},{fg:(_color,text)=>text,bold:text=>text},{},resolve);if(component.render(100).join("\n").includes("Whole effort")){if(menuCount++%2===0){for(let i=0;i<3;i++)component.handleInput("\x1b[B");component.handleInput("\r");}else component.handleInput("\x1b");return;}renders.push(component.render(100).join('\n'));if(!submitted){submitted=true;component.handleInput('retry question');component.handleInput('\r');}else component.handleInput('\x1b');})}};
- await handlers.get('session_start')({},ctx);await shortcut(ctx);
+ await handlers.get('session_start')({},ctx);await openPanel(ctx);
  assert.equal(receipts.length,saveFailure?1:0);
  if(saveFailure)assert.ok(notices.some(text=>text.includes('input and save receipt retained')));
  else if(!['throw','invalid'].includes(failure))assert.deepEqual(notices,[]);
  if(failure==='shutdown') {assert.equal(renders.length,1);await handlers.get('session_start')({}, {...ctx});}
  // Reopen the original attachment after a cancelled source/attachment change.
  catalog.catalog_source='source-a';catalog.stream.id='effort';
- await shortcut(ctx);assert.match(renders.at(-1),/retry question/);assert.doesNotMatch(renders.at(-1),/user: retry question|Unexpected committed reply/);
- catalog.catalog_source='replacement-source';await shortcut(ctx);assert.doesNotMatch(renders.at(-1),/retry question|Model unavailable|cancelled|typed reply/);
+ await openPanel(ctx);assert.match(renders.at(-1),/retry question/);assert.doesNotMatch(renders.at(-1),/user: retry question|Unexpected committed reply/);
+ catalog.catalog_source='replacement-source';await openPanel(ctx);assert.doesNotMatch(renders.at(-1),/retry question|Model unavailable|cancelled|typed reply/);
 });
-test('extension startup and Alt+P do not enroll or run a model; report uses completed response event',async()=>{
- const handlers=new Map(),commands=new Map(),tools=new Map();let shortcut;const contexts=[];
- registerWorkCard({on:(name,fn)=>handlers.set(name,fn),registerCommand:(name,options)=>commands.set(name,options),registerTool:tool=>tools.set(tool.name,tool),registerShortcut:(_key,options)=>{shortcut=options.handler;},appendEntry:()=>{}},{settings:{...defaults,reporting:'manual'},cli:{sync:localSync,context:async()=>{contexts.push(1);return context();}},infer:()=>assert.fail('no model on view')});
+test('extension startup and card commands do not enroll or run a model; report uses completed response event',async()=>{
+ const handlers=new Map(),commands=new Map(),tools=new Map();const contexts=[];
+ registerWorkCard({on:(name,fn)=>handlers.set(name,fn),registerCommand:(name,options)=>commands.set(name,options),registerTool:tool=>tools.set(tool.name,tool),registerShortcut:()=>assert.fail('no shortcuts'),appendEntry:()=>{}},{settings:{...defaults,reporting:'manual'},cli:{sync:localSync,context:async()=>{contexts.push(1);return context();}},infer:()=>assert.fail('no model on view')});
  const ctx={mode:'tui',hasUI:true,sessionManager:{getSessionId:()=> 'native'},ui:{select:async()=> 'Close',notify:()=>{},setStatus:()=>{}}};
- await handlers.get('session_start')({},ctx);assert.equal(contexts.length,0);await shortcut(ctx);assert.equal(contexts.length,2);
+ await handlers.get('session_start')({},ctx);assert.equal(contexts.length,0);await commands.get('streams').handler('',ctx);await commands.get('streams').handler('card',ctx);assert.equal(contexts.length,4);
  assert.ok(handlers.has('agent_end'));assert.equal(handlers.has('before_agent_start'),false);
  assert.match(tools.get('checkpoint').description,/durable/);assert.match(tools.get('stream_read').description,/typed durable/);
 });
 function commandFixture(options={}) {
  const commands=new Map(),tools=new Map(),handlers=new Map(),notices=[],requests=[],writes=[],receipts=[],activity=[],dialogs=[];
- const catalog=options.catalog??context();let shortcut,reads=0;
+ const catalog=options.catalog??context();let reads=0;
  const cli={context:async()=>{reads++;return structuredClone(catalog);},list:async()=>[stream],apply:async req=>{writes.push(req);Object.assign(catalog[req.kind],req.changes);return {save:{local:'persisted',sharing:'local-only',domain:{outcome:'changes'}}};},enroll:async req=>{writes.push(req);catalog.stream=stream;catalog.session=session;return {stream,session,saves:[]};}};
- const ctx={mode:'tui',hasUI:true,cwd:'/repo',sessionManager:{getSessionId:()=> 'native',getLeafId:()=> 'leaf',getBranch:()=>[{id:'leaf'}],buildSessionProjection:()=>({messages:[]})},ui:{notify:(text,level)=>notices.push({text,level}),setStatus:(_key,text)=>activity.push(text),select:async(title,rows)=>{dialogs.push({title,rows});return options.select?.(title,rows)??'Cancel';},editor:async()=> 'Contribution',confirm:async()=>true}};
- registerWorkCard({on:(name,fn)=>handlers.set(name,fn),registerCommand:(name,value)=>commands.set(name,value),registerTool:value=>tools.set(value.name,value),registerShortcut:(_key,value)=>{shortcut=value.handler;},appendEntry:(type,value)=>receipts.push({type,value})},{settings:{...defaults,reporting:'manual',enrollment:'manual'},cli,infer:async(_ctx,req)=>{requests.push(req);return options.infer?await options.infer(req):{changes:{}};}});
- return {commands,tools,handlers,ctx,notices,requests,writes,receipts,activity,dialogs,reads:()=>reads,shortcut:()=>shortcut(ctx),run:args=>commands.get('streams').handler(args,ctx)};
+ const ctx={mode:'tui',hasUI:true,cwd:'/repo',sessionManager:{getSessionId:()=> 'native',getLeafId:()=> 'leaf',getBranch:()=>[{id:'leaf'}],buildSessionProjection:()=>({messages:[]})},ui:{notify:(text,level)=>notices.push({text,level}),setStatus:(_key,text)=>activity.push(text),select:async(title,rows)=>{dialogs.push({title,rows});return options.select?.(title,rows)??'Close';},editor:async()=> 'Contribution',confirm:async()=>true}};
+ registerWorkCard({on:(name,fn)=>handlers.set(name,fn),registerCommand:(name,value)=>commands.set(name,value),registerTool:value=>tools.set(value.name,value),registerShortcut:()=>assert.fail('no shortcuts'),appendEntry:(type,value)=>receipts.push({type,value})},{settings:{...defaults,reporting:'manual',enrollment:'manual'},cli,infer:async(_ctx,req)=>{requests.push(req);return options.infer?await options.infer(req):{changes:{}};}});
+ return {commands,tools,handlers,ctx,notices,requests,writes,receipts,activity,dialogs,reads:()=>reads,run:args=>commands.get('streams').handler(args,ctx)};
 }
 test('only streams slash command registers; model checkpoint tool retains its interface',()=>{
  const f=commandFixture();assert.deepEqual([...f.commands.keys()],['streams']);
@@ -342,6 +401,7 @@ test('only streams slash command registers; model checkpoint tool retains its in
 test('streams completes subcommand prefixes with short descriptions but never report instructions or extra arguments',async()=>{
  const complete=commandFixture().commands.get('streams').getArgumentCompletions;
  const items=[
+  {value:'card',label:'card',description:'Open the work card panel'},
   {value:'report',label:'report',description:'Save a progress update'},
   {value:'reset',label:'reset',description:'Regenerate automatic fields'},
    {value:'settings',label:'settings',description:'Configure reporting'},
@@ -350,15 +410,22 @@ test('streams completes subcommand prefixes with short descriptions but never re
  ];
  assert.deepEqual(await complete(''),items);
  for(const item of items){assert.ok(item.description.length<=40);assert.doesNotMatch(item.description,/[\r\n]/);}
- for(const [prefix,value] of [['rep','report'],['se','settings'],['att','attach'],['p','pane'],['report','report']])assert.deepEqual(await complete(prefix),items.filter(item=>item.value===value));
+ for(const [prefix,value] of [['ca','card'],['rep','report'],['se','settings'],['att','attach'],['p','pane'],['report','report']])assert.deepEqual(await complete(prefix),items.filter(item=>item.value===value));
  assert.deepEqual(await complete('reset '),[{value:'reset --auto',label:'--auto',description:'Re-enable automatic naming and reset'}]);
  assert.deepEqual(await complete('reset --a'),await complete('reset '));
  for(const prefix of ['unknown','report ','report settings','report\nattach','settings ','attach effort','reset extra'])assert.equal(await complete(prefix),null);
 });
-for(const [args,instructions] of [['',undefined],['  \t ',undefined],['report',undefined],['  report  Keep the caveat\nand settings detail  ','Keep the caveat\nand settings detail']])test(`streams reports explicitly with ${JSON.stringify(args)}`,async()=>{
+for(const [args,instructions] of [['report',undefined],['  report  Keep the caveat\nand settings detail  ','Keep the caveat\nand settings detail']])test(`streams reports explicitly with ${JSON.stringify(args)}`,async()=>{
  const f=commandFixture();await f.run(args);await until(()=>f.activity.length===2);
  assert.deepEqual(f.requests.map(req=>req.type),['session','stream']);
  assert.ok(f.requests.every(req=>req.instructions===instructions));assert.equal(f.dialogs.length,0);assert.equal(f.notices.length,0);
+});
+for(const args of ['', '  \t ', 'card', ' card '])for(const attached of [false,true])test(`streams ${JSON.stringify(args)} only views the ${attached?'attached':'unattached'} card`,async()=>{
+ const catalog=context();if(!attached){catalog.stream=null;catalog.session=null;catalog.sessions=[];}
+ const f=commandFixture({catalog});await f.run(args);
+ assert.deepEqual(f.requests,[]);assert.deepEqual(f.writes,[]);assert.deepEqual(f.receipts,[]);assert.deepEqual(f.activity,[]);
+ assert.equal(f.dialogs.length,attached?1:0);
+ if(attached)assert.equal(f.dialogs[0].title,'Work card');else assert.match(f.notices[0].text,/\/streams attach/);
 });
 test('streams reset dispatches fresh inference for both targets without changing manual modes',async()=>{
  const catalog=context();catalog.session.title_mode='manual';catalog.stream.goal_mode='manual';
@@ -393,7 +460,7 @@ test('streams reset clears omitted short state and automatic short goal but pres
 });
 test('streams reset extra rejects arguments before reading the catalog or running a model',async()=>{
  const f=commandFixture();await f.run('reset extra');await turn();
- assert.deepEqual(f.notices,[{text:"Work card: Usage: /streams or /streams report [instructions]; /streams reset [--auto]; /streams settings; /streams attach; /streams pane [close]. Put report instructions after 'report'.",level:'warning'}]);
+ assert.deepEqual(f.notices,[{text:"Work card: Usage: /streams [card]; /streams report [instructions]; /streams reset [--auto]; /streams settings; /streams attach; /streams pane [close]. Put report instructions after 'report'.",level:'warning'}]);
  assert.equal(f.reads(),0);for(const effects of [f.requests,f.writes,f.receipts,f.dialogs,f.activity])assert.deepEqual(effects,[]);
 });
 test('streams reset stays pending when reports coalesce while the helper is busy',async()=>{
@@ -404,7 +471,7 @@ test('streams reset stays pending when reports coalesce while the helper is busy
  assert.deepEqual(f.requests.map(req=>req.reset),[false,false,true,true]);
  assert.deepEqual(f.requests.slice(2).map(req=>req.instructions),['Keep the caveat','Keep the caveat']);
 });
-test('streams report and bare commands preserve pending instructions while helper is busy',async()=>{
+test('streams report preserves pending instructions while helper is busy',async()=>{
  let release;const f=commandFixture({infer:async()=>{if(f.requests.length===1)await new Promise(resolve=>{release=resolve;});return {changes:{}};}});
  await f.run('report');await until(()=>f.requests.length===1);
  await f.run('report Keep the deployment caveat');await f.run('');await f.run('report   ');
@@ -413,11 +480,11 @@ test('streams report and bare commands preserve pending instructions while helpe
 });
 test('invalid streams arguments show actionable usage without catalog, UI dialog, or model effects',async()=>{
  const f=commandFixture();
- for(const args of ['unknown','Keep the caveat','settings extra','attach effort','settings\nreport','report:now','--help']){
+ for(const args of ['unknown','Keep the caveat','settings extra','attach effort','settings\nreport','report:now','--help','card extra']){
   await f.run(args);const notice=f.notices.at(-1);assert.equal(notice.level,'warning');
   assert.match(notice.text,/\/streams report \[instructions\]/);assert.match(notice.text,/\/streams settings/);assert.match(notice.text,/\/streams attach/);
  }
- await turn();assert.equal(f.notices.length,7);assert.equal(f.reads(),0);
+ await turn();assert.equal(f.notices.length,8);assert.equal(f.reads(),0);
  for(const effects of [f.requests,f.writes,f.receipts,f.dialogs,f.activity])assert.deepEqual(effects,[]);
 });
 test('streams settings dispatches to the existing reporting dialog without reporting',async()=>{
@@ -433,7 +500,7 @@ test('streams attach enrolls an initial selection but never switches a bound con
 });
 test('unattached card directs users to streams attach',async()=>{
  const catalog=context();catalog.stream=null;catalog.session=null;
- const f=commandFixture({catalog});await f.shortcut();assert.match(f.notices[0].text,/\/streams attach/);assert.doesNotMatch(f.notices[0].text,/\/checkpoint/);
+ const f=commandFixture({catalog});await f.run('card');assert.match(f.notices[0].text,/\/streams attach/);assert.doesNotMatch(f.notices[0].text,/\/checkpoint/);
  assert.deepEqual(f.requests,[]);assert.deepEqual(f.writes,[]);
 });
 for(const inside of [true,false])test(`real checkout CLI enroll/context/guarded apply ${inside?'inside':'outside'} repository`,async()=>{

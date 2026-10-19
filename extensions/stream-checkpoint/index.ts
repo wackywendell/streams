@@ -47,7 +47,7 @@ export default function registerWorkCard(pi: ExtensionAPI, options: Options = {}
   scope.context?.ui.notify(text, receiptHasWarning(value) ? "warning" : "info");
   if (receiptCanContinue(value)) native?.update();
  };
- const reporter = new Reporter({scope, cli, settings, infer: options.infer, notice: warning, receipt, onReclaimNames: () => native?.reclaimNames(), activity: (text) => scope.context?.ui.setStatus("stream-reporting", text ? `Work card · ${text} · Alt+P` : undefined)});
+ const reporter = new Reporter({scope, cli, settings, infer: options.infer, notice: warning, receipt, onReclaimNames: () => native?.reclaimNames(), activity: (text) => scope.context?.ui.setStatus("stream-reporting", text ? `Work card · ${text}` : undefined)});
  async function sync(ctx: ExtensionContext, event: "start" | "shutdown"): Promise<void> {
   const fence = scope.fence();
   let failure: {event: string; result?: unknown; error?: string} | undefined;
@@ -94,7 +94,7 @@ export default function registerWorkCard(pi: ExtensionAPI, options: Options = {}
  }
  async function show(ctx: ExtensionContext): Promise<void> {
   scope.use(ctx);
-  if (!ctx.hasUI || ctx.mode !== "tui") {warning("Alt+P requires the interactive Pi terminal");return;}
+  if (!ctx.hasUI || ctx.mode !== "tui") {warning("The work card panel requires the interactive Pi terminal");return;}
   if (panelOpen) return;
   panelOpen = true;
   try {
@@ -112,11 +112,12 @@ export default function registerWorkCard(pi: ExtensionAPI, options: Options = {}
   return reporter.exclusive((signal) => chooseInitial(ctx, cli(ctx), args, receipt, signal));
  }
  pi.registerCommand("streams", {
-  description: "Report or reset progress, configure reporting, attach an initial work card, or open/close its native pane",
+  description: "Open the work card, report or reset progress, configure reporting, attach a card, or open/close its native pane",
   getArgumentCompletions: (prefix) => {
    if (prefix.startsWith("reset ")) return "--auto".startsWith(prefix.slice(6)) ? [{value: "reset --auto", label: "--auto", description: "Re-enable automatic naming and reset"}] : null;
    if (/\s/.test(prefix)) return null;
    const matches = [
+    {value: "card", label: "card", description: "Open the work card panel"},
     {value: "report", label: "report", description: "Save a progress update"},
     {value: "reset", label: "reset", description: "Regenerate automatic fields"},
     {value: "settings", label: "settings", description: "Configure reporting"},
@@ -129,25 +130,25 @@ export default function registerWorkCard(pi: ExtensionAPI, options: Options = {}
    scope.use(ctx);
    const paneFence = scope.fence();
    const input = args.trim(), command = input.split(/\s+/, 1)[0], instructions = input.slice(command.length).trim();
-   if (!["", "report", "reset", "settings", "attach", "pane"].includes(command) || instructions && command !== "report" && !(command === "pane" && instructions === "close") && !(command === "reset" && instructions === "--auto")) {
-    warning("Usage: /streams or /streams report [instructions]; /streams reset [--auto]; /streams settings; /streams attach; /streams pane [close]. Put report instructions after 'report'.");return;
+   if (!["", "card", "report", "reset", "settings", "attach", "pane"].includes(command) || instructions && command !== "report" && !(command === "pane" && instructions === "close") && !(command === "reset" && instructions === "--auto")) {
+    warning("Usage: /streams [card]; /streams report [instructions]; /streams reset [--auto]; /streams settings; /streams attach; /streams pane [close]. Put report instructions after 'report'.");return;
    }
    try {
-    if (command === "pane") {
+    if (command === "" || command === "card") await show(ctx);
+    else if (command === "pane") {
      if (!native) throw Error("Native work cards require session startup in an interactive Herdr pane.");
      if (instructions === "close") await native.close();else await native.open();
     }
     else if (command === "reset") reporter.reset(ctx, instructions === "--auto");
     else if (command === "settings") await configure(ctx);
     else if (command === "attach") await attach(ctx, {});
-    else {settings();reporter.request(ctx, true, instructions);}
+    else if (command === "report") {settings();reporter.request(ctx, true, instructions);}
    } catch(error) {
     if (command === "pane" && !paneFence.current()) return;
     warning(String(error));
    }
   },
  });
- pi.registerShortcut("alt+p", {description: "Inspect, edit or discuss the live work card", handler: show});
  pi.registerTool({name: "stream_read", label: "Read work card", description: "Read typed durable catalog state and recorded contributions from persisted local records. No fetch, scratch notes or pending drafts.", parameters: Type.Object({}), async execute(_id, _args, _signal, _update, ctx) {scope.use(ctx);const {authority, ...catalog} = await cli(ctx).context(ctx.sessionManager.getSessionId(), process.env.STREAMS_STREAM_ID);return result({...catalog, reporting_authority: !!authority});}});
  pi.registerTool({name: "checkpoint", label: "Report work card", description: "Request an immediate durable progress report. Local saves and publication are separate; this is not an approval draft.", parameters: Type.Object({instructions: Type.Optional(Type.String())}), async execute(_id, args, _signal, _update, ctx) {scope.use(ctx);settings();reporter.request(ctx, true, args.instructions);return result({status: "report-requested"});}});
  pi.registerTool({name: "select_stream", label: "Attach initial effort", description: "Ask the user to attach this unbound Pi conversation to an exact catalog stream ID. An enrolled conversation cannot switch; membership moves/forks are not implemented.", parameters: Type.Object({stream_id: Type.Optional(Type.String()), reason: Type.String()}), async execute(_id, args, _signal, _update, ctx) {return result(await attach(ctx, {streamId: args.stream_id, reason: args.reason}));}});

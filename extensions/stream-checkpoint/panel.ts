@@ -19,11 +19,11 @@ export async function compose(ctx: ExtensionContext, state: DiscussionState): Pr
   return {
    get focused() {return editor.focused;}, set focused(value: boolean) {editor.focused = value;},
    invalidate() {editor.invalidate();},
-   handleInput(data: string) {if (matchesKey(data, "escape") || matchesKey(data, "alt+p")) {state.input = editor.getExpandedText();done(undefined);} else editor.handleInput(data);},
+   handleInput(data: string) {if (matchesKey(data, "escape")) {state.input = editor.getExpandedText();done(undefined);} else editor.handleInput(data);},
    render(width: number) {
     const clean = (text: string) => text.replace(/[\x00-\x08\x0b-\x1f\x7f]/g, "");
     const history = state.messages.flatMap((message) => wrapTextWithAnsi(`${message.role}: ${clean(message.text)}`, width));
-    return [truncateToWidth("Card discussion · Enter send · Shift+Enter newline · Esc/Alt+P back", width), ...history.slice(-Math.max(2, tui.terminal.rows - 12)), ...(state.error ? wrapTextWithAnsi(clean(state.error), width) : []), ...editor.render(width)];
+    return [truncateToWidth("Card discussion · Enter send · Shift+Enter newline · Esc back", width), ...history.slice(-Math.max(2, tui.terminal.rows - 12)), ...(state.error ? wrapTextWithAnsi(clean(state.error), width) : []), ...editor.render(width)];
    },
   };
  });
@@ -90,7 +90,7 @@ export async function openCard(ctx: ExtensionContext, cli: StreamCli, state: Car
    list.onSelect = (item) => done(item.value);list.onCancel = () => done(undefined);
    return {
     invalidate() {list.invalidate();},
-    handleInput(data: string) {if (matchesKey(data, "alt+p")) done(undefined);else list.handleInput(data);tui.requestRender();},
+    handleInput(data: string) {list.handleInput(data);tui.requestRender();},
     render(width: number) {
      const clean = (text: string) => text.replace(/[\x00-\x1f\x7f]/g, " ");
      const stream = catalog.stream!, session = catalog.session;

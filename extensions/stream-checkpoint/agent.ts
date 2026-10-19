@@ -1,4 +1,5 @@
 import { convertToLlm, estimateTokens } from "@earendil-works/pi-coding-agent";
+import { setTimeout } from "node:timers/promises";
 import { Type } from "typebox";
 import { Check } from "typebox/value";
 import type { ExtensionContext } from "@earendil-works/pi-coding-agent";
@@ -64,6 +65,21 @@ Effort title (stream.title): 1–3 words (target <= 20 chars) naming the subject
 Session title (session.title): 1–2 words, 3 max (target <= 18 chars) naming this session's specific lane, topic, or role relative to the effort, e.g. Lifecycle, Sync, Sync Review, Advisor, Pi Timing, Blackhole Compaction.
 No repetition or filler: never repeat words from the effort title in the session title. Omit leading task verbs (Investigate, Implement, Explore, Disable, Fix, Organize), generic filler (Integration, Implementation, Work, Task), and X & Y compound lists when one anchor word is clear.`;
 const sessionProgressPrompt = `Write state as a brief orientation for someone returning to the work: what meaningfully changed and where things stand. Use one or two short sentences, normally under 35 words; shorter is better. Do not enumerate completed steps, test counts, commit hashes, rollout inventories, or other specific details unless essential to understanding the result. Put unfinished scope and blockers in remaining. This is to provide the user a quick update/reminder of the current status, not a completion report.`;
+const transientError = /(?:\b(?:429|502|503|504)\b|upstream connect error|disconnect\/reset before headers|connection termination|overloaded|ECONNRESET|ETIMEDOUT)/i;
+async function completeWithRetry<T extends {stopReason: string; errorMessage?: string}>(complete: () => Promise<T>, signal: AbortSignal): Promise<T> {
+ for (let attempt = 0; ; attempt++) {
+  if (signal.aborted) throw Error("Reporting cancelled");
+  try {
+   const response = await complete();
+   if (response.stopReason === "error") throw Error(response.errorMessage ?? "Reporting model failed");
+   return response;
+  } catch(error) {
+   if (signal.aborted) throw Error("Reporting cancelled");
+   if (attempt >= 2 || !transientError.test(String(error))) throw error;
+  }
+  await setTimeout(150 * (attempt + 1), undefined, {signal});
+ }
+}
 export async function infer(ctx: ExtensionContext, request: Inference, signal: AbortSignal, configured?: {provider: string; id: string}): Promise<Inferred> {
  const model = configured ? ctx.modelRegistry.find(configured.provider, configured.id) : ctx.model;
  if (!model) throw Error("Configured reporting model is unavailable. Choose an available provider/model; no fallback was used.");
@@ -93,9 +109,8 @@ export async function infer(ctx: ExtensionContext, request: Inference, signal: A
  messages.push({role: "user", content: JSON.stringify({task: request.type, catalog: visibleCatalog, instructions: request.instructions, reset, discussion: request.discussion}), timestamp: Date.now()});
  const prompt = request.type === "session" ? `${systemPrompt}\n\n${sessionProgressPrompt}` : systemPrompt;
  assertContextFits(model, prompt + JSON.stringify(schema), messages);
- const response = await ctx.modelRegistry.complete(model, {systemPrompt: prompt, messages, tools: [{name: "record_card", description: "Return the structured report or discussion response", parameters: schema}]}, {signal});
+ const response = await completeWithRetry(() => ctx.modelRegistry.complete(model, {systemPrompt: prompt, messages, tools: [{name: "record_card", description: "Return the structured report or discussion response", parameters: schema}]}, {signal}), signal);
  if (signal.aborted || response.stopReason === "aborted") throw Error("Reporting cancelled");
- if (response.stopReason === "error") throw Error(response.errorMessage ?? "Reporting model failed");
  const calls = response.content.filter((block) => block.type === "toolCall");
  if (calls.length !== 1 || calls[0].name !== "record_card") throw Error("Reporting model must return exactly one structured record_card call");
  if (!Check(schema, calls[0].arguments)) throw Error("Reporting model returned invalid structured card fields; nothing was saved");
