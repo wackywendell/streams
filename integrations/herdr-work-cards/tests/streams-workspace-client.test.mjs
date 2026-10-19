@@ -9,6 +9,7 @@ import { renderStreamsCard } from '../dist/herdr/streams-view.js';
 import { NameStore } from '../dist/herdr/name-provenance.js';
 import { StreamsNativeState, streamsDigest } from '../dist/herdr/streams-native-state.js';
 import { DEFAULT_CONFIG } from '../dist/config.js';
+import { withWorkspaceLock } from '../dist/herdr/workspace-lock.js';
 const config = { ...DEFAULT_CONFIG, herdr_timeout_ms: 500 };
 const native = n => `12345678-1234-4234-8234-123456789ab${n}`;
 async function fixture(t) {
@@ -100,6 +101,23 @@ for (const [workspace_naming, tab_naming] of [[true, false], [false, true], [fal
   assert.ok(!(await readdir(f.stateDirectory)).some(n => n.endsWith('.pending') || /^[a-f0-9]{64}\.json$/.test(n)));
   if (workspace_naming) { f.contexts[0].stream.title = 'Next shared'; assert.equal((await a.c.projectNames(a.s, a.context, manual)).workspace, 'renamed'); }
   if (tab_naming) { f.contexts[0].session.title = 'Next own'; assert.equal((await a.c.projectNames(a.s, a.context, manual)).tab, 'renamed'); }
+});
+test('unchanged verified display, names, summaries and caption bypass an occupied effect lock', async t => {
+  const f = await fixture(t), a = await f.owner(1);
+  await a.open(); await a.c.projectNames(a.s, a.context, config); await a.c.projectSummaries(a.s, a.context, config); await a.c.projectCaption(a.s, a.context, config);
+  const before = effects(f).length;
+  await withWorkspaceLock(f.socket, 'w', async () => {
+    assert.equal((await a.open()).kind, 'paired');
+    assert.deepEqual(await a.c.projectNames(a.s, a.context, config), { workspace: 'manual', tab: 'unchanged' });
+    await a.c.projectSummaries(a.s, a.context, config);
+    await a.c.projectCaption(a.s, a.context, config);
+    assert.equal(effects(f).length, before);
+    f.contexts[0].session.state_short = 'Changed';
+    await assert.rejects(a.c.projectSummaries(a.s, a.context, { ...config, herdr_timeout_ms: 20 }), /lock.*timed out/);
+    assert.equal(f.panes[0].tokens.strm_state_short, 'Own 1');
+  });
+  await a.c.projectSummaries(a.s, a.context, config);
+  assert.equal(f.panes[0].tokens.strm_state_short, 'Changed');
 });
 test('absent compact summaries leave full narratives in the card and do not block naming', async t => {
   const f = await fixture(t), a = await f.owner(1);
@@ -250,6 +268,82 @@ for (const change of ['owner pane', 'owner terminal', 'owner tab', 'stream', 'UU
 test('cancelled caller has no native effects and does not reserve a launch', async t => {
   const f = await fixture(t), a = await f.owner(1), controller = new AbortController(); controller.abort();
   await assert.rejects(a.open('automatic', controller.signal)); assert.equal(effects(f).length, 0); assert.equal(launches(f).length, 0);
+});
+for (const scenario of ['empty-new', 'empty-closed', 'absent-closed', 'absent-ready', 'editor-new', 'editor-ready']) test(`cancelled completed reservation restores ${scenario} evidence before any dispatch`, async t => {
+  const f = await fixture(t), a = await f.owner(1), controller = new AbortController(), state = new StreamsNativeState(f.stateDirectory);
+  const editor = scenario.startsWith('editor');
+  let painted, target;
+  if (scenario !== 'empty-new') await a.open();
+  if (editor) {
+    painted = await a.s.read(); target = renderStreamsCard(painted, 100, 10).documents.get('a');
+    if (scenario === 'editor-ready') {
+      await a.c.openDocument(a.s, a.context, painted, target, config);
+      const pane = f.panes.find(p => p.tokens.strm_doc);
+      f.panes.splice(f.panes.indexOf(pane), 1); f.tabs.splice(f.tabs.findIndex(t => t.tab_id === pane.tab_id), 1);
+    }
+  } else if (scenario !== 'empty-new') {
+    if (scenario.endsWith('closed')) await a.c.closeDisplay(a.s, a.context, config);
+    else f.panes.splice(f.panes.findIndex(p => p.tokens.strm_role === 'card'), 1);
+    if (scenario.startsWith('empty')) f.panes[0].tokens = {};
+  }
+  const launch = signal => editor ? a.c.openDocument(a.s, a.context, painted, target, config, signal) : a.open('explicit', signal);
+  const before = launches(f).length, write = StreamsNativeState.prototype.write;
+  let pending, previous, release, entered;
+  const reserved = new Promise(resolve => { entered = resolve; });
+  StreamsNativeState.prototype.write = async function(value) {
+    if (value.phase !== 'pending' || value.paneId) return write.call(this, value);
+    previous = await this.read(value.key); await write.call(this, value); pending = value;
+    entered(); await new Promise(resolve => { release = resolve; });
+  };
+  try {
+    const operation = launch(controller.signal), rejected = assert.rejects(operation, /abort/i);
+    await reserved; controller.abort(); release(); await rejected;
+  } finally { release?.(); StreamsNativeState.prototype.write = write; }
+  assert.equal(launches(f).length, before);
+  assert.deepEqual(await state.read(pending.key), previous);
+  assert.ok(!(await readdir(f.stateDirectory)).includes(`${pending.key}.json.pending`));
+  await launch(); await launch(); assert.equal(launches(f).length, before + 1);
+});
+test('cancellation inside absent marker guard restores prior closed proof without clearing markers', async t => {
+  const f = await fixture(t), a = await f.owner(1), controller = new AbortController(); await a.open(); await a.c.closeDisplay(a.s, a.context, config);
+  const write = StreamsNativeState.prototype.write, read = a.s.read.bind(a.s), before = effects(f).length;
+  let reserved = false, pending, previous;
+  StreamsNativeState.prototype.write = async function(value) {
+    previous = await this.read(value.key); await write.call(this, value); pending = value; reserved = true;
+  };
+  a.s.read = async signal => { if (reserved) { controller.abort(); signal.throwIfAborted(); } return read(signal); };
+  try { await assert.rejects(a.open('explicit', controller.signal), /abort/i); }
+  finally { StreamsNativeState.prototype.write = write; a.s.read = read; }
+  assert.equal(effects(f).length, before);
+  assert.deepEqual(await new StreamsNativeState(f.stateDirectory).read(pending.key), previous);
+  await a.open('explicit'); assert.equal(launches(f).length, 2);
+});
+test('cancellation after absent marker dispatch retains uncertainty and blocks duplicate attempts', async t => {
+  const f = await fixture(t), a = await f.owner(1), controller = new AbortController(); await a.open(); await a.c.closeDisplay(a.s, a.context, config);
+  f.hook((args, output) => { if (args.includes('--clear-token')) controller.abort(); return output; });
+  await assert.rejects(a.open('explicit', controller.signal), /abort/i); f.hook(undefined);
+  await assert.rejects(a.open('explicit'), /Uncertain/); assert.equal(launches(f).length, 1);
+});
+test('partial reservation write failure is never rolled back even before native dispatch', async t => {
+  const f = await fixture(t), a = await f.owner(1), write = StreamsNativeState.prototype.write;
+  StreamsNativeState.prototype.write = async function(value) { await write.call(this, value); throw Error('reservation fsync failed'); };
+  try { await assert.rejects(a.open(), /reservation fsync failed/); } finally { StreamsNativeState.prototype.write = write; }
+  await assert.rejects(a.open('explicit'), /Uncertain/); assert.equal(launches(f).length, 0);
+});
+test('failed unlaunched rollback stays pending and never dispatches or permits retry', async t => {
+  const f = await fixture(t), a = await f.owner(1), controller = new AbortController();
+  const write = StreamsNativeState.prototype.write, discard = StreamsNativeState.prototype.discardUnlaunched;
+  StreamsNativeState.prototype.write = async function(value) { await write.call(this, value); controller.abort(); };
+  StreamsNativeState.prototype.discardUnlaunched = async () => { throw Error('rollback unavailable'); };
+  try { await assert.rejects(a.open('automatic', controller.signal), /rollback unavailable/); }
+  finally { StreamsNativeState.prototype.write = write; StreamsNativeState.prototype.discardUnlaunched = discard; }
+  await assert.rejects(a.open('explicit'), /Uncertain/); assert.equal(launches(f).length, 0);
+});
+test('unlaunched rollback refuses another nonce and retains the uncertainty gate', async t => {
+  const f = await fixture(t), state = new StreamsNativeState(f.stateDirectory), key = streamsDigest('rollback');
+  const pending = { version:1, key, phase:'pending', nonce:'current' }; await state.write(pending);
+  await assert.rejects(state.discardUnlaunched({ ...pending, nonce:'old' }, null), /reservation changed/);
+  assert.deepEqual(await state.read(key), pending); assert.ok((await readdir(f.stateDirectory)).includes(`${key}.json.pending`));
 });
 test('wrong/disabled registration requires explicit link; never repoints legacy registration', async t => {
   const f = await fixture(t), a = await f.owner(1); f.registration({ ...f.plugin(), plugin_id: 'work-cards' });

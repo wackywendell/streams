@@ -49,7 +49,26 @@ export class StreamsNativeState {
       return pending ? { ...value, phase: 'pending' } : value;
     } finally { await file.close(); }
   }
-  async write(value: StreamsAttempt): Promise<void> {
+  async discardUnlaunched(expected: StreamsAttempt, previous: StreamsAttempt | null): Promise<void> {
+    if (expected.phase !== 'pending' || previous && (previous.key !== expected.key || previous.phase === 'pending')
+      || !isDeepStrictEqual(await this.read(expected.key), expected)) throw new Error('Native reservation changed; unlaunched rollback refused');
+    const path = this.path(expected.key), directory = await open(this.directory, constants.O_RDONLY);
+    try {
+      // Keep the independent uncertainty gate until the prior record (or absence) is durable.
+      if (previous) await this.replace(previous, true);
+      else { await unlink(path); await directory.sync(); }
+      try {
+        await unlink(`${path}.pending`);
+        await directory.sync();
+      } catch (error) {
+        // A failed final sync must not authorize retry from an uncertain rollback.
+        await this.write(expected);
+        throw error;
+      }
+    } finally { await directory.close(); }
+  }
+  async write(value: StreamsAttempt): Promise<void> { await this.replace(value); }
+  private async replace(value: StreamsAttempt, retainGate = false): Promise<void> {
     await this.prepare();
     const current = await this.read(value.key);
     if (isDeepStrictEqual(current, value)) return;
@@ -69,7 +88,7 @@ export class StreamsNativeState {
       await rename(temporary, path);
       const directory = await open(this.directory, constants.O_RDONLY);
       try { await directory.sync(); } finally { await directory.close(); }
-      if (value.phase === 'ready') {
+      if (value.phase === 'ready' && !retainGate) {
         try { await unlink(`${path}.pending`); } catch (error) { if ((error as NodeJS.ErrnoException).code !== 'ENOENT') throw error; }
         // A crash may restore the gate and conservatively suspend a proven launch;
         // it cannot lose the already-synced ready record and authorize duplicates.

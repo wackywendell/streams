@@ -1,4 +1,4 @@
-import { execFile } from 'node:child_process';
+import { runProcess } from './subprocess.js';
 import { isAbsolute, normalize } from 'node:path';
 import type { CardStatus } from '../records/schema.js';
 
@@ -97,7 +97,7 @@ function context(value: unknown, nativeSessionId: string): StreamsCardSnapshot {
 export interface StreamsCardSourceOptions {
   nativeSessionId: string;
   expectedScope?: StreamsCardScope;
-  readContext: (nativeSessionId: string) => Promise<unknown>;
+  readContext: (nativeSessionId: string, signal?: AbortSignal) => Promise<unknown>;
 }
 export class StreamsCardSource {
   private captured?: StreamsCardScope;
@@ -108,9 +108,12 @@ export class StreamsCardSource {
     this.options = { ...options };
     this.captured = options.expectedScope && { ...options.expectedScope };
   }
-  async read(): Promise<StreamsCardSnapshot> {
+  async read(signal?: AbortSignal): Promise<StreamsCardSnapshot> {
+    signal?.throwIfAborted();
     if (this.switched) throw new Error('Streams scope changed; create a new source for the new attachment');
-    const fresh = context(await this.options.readContext(this.options.nativeSessionId), this.options.nativeSessionId);
+    const value = await this.options.readContext(this.options.nativeSessionId, signal);
+    signal?.throwIfAborted();
+    const fresh = context(value, this.options.nativeSessionId);
     if (this.captured && !sameStreamsScope(this.captured, fresh.scope)) {
       this.switched = true;
       throw new Error('Streams scope changed; create a new source for the new attachment');
@@ -125,21 +128,19 @@ export interface StreamsContextReaderOptions {
   owner?: StreamsNativeOwner;
 }
 /** Owner-targeted read-only app boundary. Native effects separately verify live tuples. */
-export function createStreamsContextReader(options: StreamsContextReaderOptions = {}): (nativeSessionId: string) => Promise<unknown> {
+export function createStreamsContextReader(options: StreamsContextReaderOptions = {}): (nativeSessionId: string, signal?: AbortSignal) => Promise<unknown> {
   const { cwd, timeoutMs = 5000, maxBuffer = 1024 * 1024, owner } = options;
   const env = { ...(options.env ?? process.env), ...(owner ? {
     HERDR_PANE_ID: owner.pane_id, HERDR_TAB_ID: owner.tab_id, HERDR_WORKSPACE_ID: owner.workspace_id,
   } : {}) };
   if (!Number.isSafeInteger(timeoutMs) || timeoutMs <= 0 || !Number.isSafeInteger(maxBuffer) || maxBuffer <= 0) throw new Error('Streams CLI timeout and output limit must be positive integers');
-  return async nativeSessionId => {
+  return async (nativeSessionId, signal) => {
     if (!uuid(nativeSessionId)) throw new Error('A native Pi session UUID is required');
-    const output = await new Promise<string>((resolve, reject) => {
-      execFile('streams', ['agent', 'context', '--harness', 'pi', '--session-id', nativeSessionId, '--attest', '--json'],
-        { cwd, env, timeout: timeoutMs, maxBuffer, encoding: 'utf8', shell: false }, (error, stdout, stderr) => {
-          if (error) reject(new Error(`Streams context read failed: ${error.message}${stderr ? `; ${stderr}` : ''}`));
-          else resolve(stdout);
-        });
-    });
+    let output: string;
+    try {
+      output = await runProcess('streams', ['agent', 'context', '--harness', 'pi', '--session-id', nativeSessionId, '--attest', '--json'],
+        { cwd, env, timeoutMs, maxBuffer, signal });
+    } catch (error) { throw new Error(`Streams context read failed: ${(error as Error).message}`, { cause: error }); }
     let value: unknown;
     try { value = JSON.parse(output); } catch { throw new Error('Streams context returned malformed JSON'); }
     const saved = context(value, nativeSessionId);
