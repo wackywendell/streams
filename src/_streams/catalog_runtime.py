@@ -481,7 +481,8 @@ class Runtime:
     def _capture_arrangement(self, stream, sessions, scope, binding, snapshot) -> dict:
         if not binding['ready'] or binding['stream_id'] != stream.id:
             raise StreamError('capture requires a ready workspace association for this Stream')
-        plan = arrangement.capture(snapshot, binding['workspace_id'], stream, sessions, self.host_id)
+        verified = arrangement.workspace_inventory(snapshot, binding['workspace_id'])
+        plan = arrangement.capture(verified, binding['workspace_id'], stream, sessions, self.host_id)
         if plan['tabs']:
             self._write(self._arrangement_path(scope, stream.id), plan)
         return plan
@@ -498,7 +499,7 @@ class Runtime:
             bindings = [b for b in self._associations(scope) if b['stream_id'] == stream.id]
             if len(bindings) != 1:
                 raise StreamError('capture requires one ready bound workspace')
-            return self._capture_arrangement(stream, sessions, scope, bindings[0], arrangement.inventory(client))
+            return self._capture_arrangement(stream, sessions, scope, bindings[0], arrangement.structural_inventory(client))
 
     def _archive_closed(self, scope, binding, claim) -> None:
         # Persist the complete evidence first. An interruption can leave both
@@ -589,12 +590,13 @@ class Runtime:
                 raise StreamError('workspace has a partial open; inspect native state before retrying; no automatic relaunch')
             snapshot = None
             if binding is not None:
-                # Only a complete positive inventory proves an intentional close.
-                snapshot = arrangement.inventory(client)
+                # Focusing a bound workspace needs complete topology, not host-wide identity.
+                snapshot = arrangement.structural_inventory(client)
                 claim = self._enrollment_claim(self._enrollment_path(scope, binding['workspace_id']), binding['workspace_id'])
                 if claim is not None and claim['stream_id'] != stream.id:
                     raise StreamError('enrollment claim and workspace association identity mismatch')
                 if not any(w['workspace_id'] == binding['workspace_id'] for w in snapshot['workspaces']):
+                    snapshot = arrangement.verified_inventory(snapshot)
                     self._archive_closed(scope, binding, claim)
                     binding = None
             plan = self._saved_arrangement(scope, stream.id)
@@ -602,6 +604,8 @@ class Runtime:
             if binding is not None:
                 workspace_id = binding['workspace_id']
                 target = self._select_session(stream, sessions, session_ref) if session_ref is not None else None
+                if target is not None:
+                    snapshot = arrangement.verified_inventory(snapshot)
                 if cwd is not None:
                     # Remember a choice, but never claim to chdir a live terminal.
                     remembered = target

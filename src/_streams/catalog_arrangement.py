@@ -16,9 +16,14 @@ def _id(record, field):
     return value
 
 
-def inventory(client) -> dict:
+def structural_inventory(client) -> dict:
+    """Read complete host topology without opening conversation files."""
     result = client.command_result(['api', 'snapshot'], 'session_snapshot')
-    snapshot = result.get('snapshot') if isinstance(result, dict) else None
+    return parse_topology(result.get('snapshot') if isinstance(result, dict) else None)
+
+
+def parse_topology(snapshot: object) -> dict:
+    """Validate all native ownership/layout relationships, not conversation identity."""
     if not isinstance(snapshot, dict):
         raise StreamError('invalid Herdr snapshot; complete positive inventory required')
     for field in ('workspaces', 'tabs', 'panes', 'layouts', 'agents'):
@@ -56,13 +61,18 @@ def inventory(client) -> dict:
             layout_panes.append(pane_id)
     if len(set(layout_panes)) != len(layout_panes) or set(layout_panes) != set(indexed['panes']):
         raise StreamError('incomplete Herdr snapshot pane inventory')
-    agents = []
-    seen = set()
     for agent in snapshot['agents']:
         pane_id = _id(agent, 'pane_id')
         pane = indexed['panes'].get(pane_id)
         if pane is None or any(_id(agent, key) != pane[key] for key in ('workspace_id', 'tab_id', 'terminal_id')):
             raise StreamError('invalid Herdr snapshot agent ownership')
+    return snapshot
+
+
+def _verified_agents(agents) -> list[dict]:
+    verified = []
+    seen = set()
+    for agent in agents:
         harness = agent.get('agent')
         if harness not in ('pi', 'codex', 'claude'):
             continue
@@ -70,8 +80,24 @@ def inventory(client) -> dict:
         if (harness, identity) in seen:
             raise StreamError('ambiguous live native conversation identity')
         seen.add((harness, identity))
-        agents.append({**agent, 'native_id': identity, 'locator': locator})
-    return {**snapshot, 'agents': agents}
+        verified.append({**agent, 'native_id': identity, 'locator': locator})
+    return verified
+
+
+def verified_inventory(topology: dict) -> dict:
+    """Enrich every supported host conversation; unresolved or duplicate IDs fail closed."""
+    return {**topology, 'agents': _verified_agents(topology['agents'])}
+
+
+def workspace_inventory(topology: dict, workspace_id: str) -> dict:
+    """Enrich all target-workspace conversations or fail, never return a partial subset."""
+    agents = [a for a in topology['agents'] if a['workspace_id'] == workspace_id]
+    return {**topology, 'agents': _verified_agents(agents)}
+
+
+def inventory(client) -> dict:
+    """Read structurally complete, identity-verified host inventory for duplicate guards."""
+    return verified_inventory(structural_inventory(client))
 
 
 def capture(snapshot: dict, workspace_id: str, stream, sessions, host_id: str) -> dict:

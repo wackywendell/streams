@@ -16,7 +16,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[2] / 'src'))
 
 from _streams.catalog.model import Session, Stream
 from _streams.catalog.operations import Authority
-from _streams.catalog_arrangement import inventory, validate_plan
+from _streams.catalog_arrangement import inventory, parse_topology, validate_plan
 from _streams.catalog_conversations import conversation_file, file_identity, native_identity
 from _streams.catalog_runtime import Runtime
 from _streams.errors import StreamError
@@ -171,6 +171,116 @@ class ArrangementTest(unittest.TestCase):
         self.assertEqual(path.read_bytes(), saved)
         self.close()
         self.assertEqual(self.open()['restored'], [plan['tabs'][0]['sessions'][0]['session_id']])
+
+    def test_unrelated_unresolved_conversation_allows_capture_and_default_focus(self):
+        self.bind()
+        self.live(self.a, 'original')
+        self.snapshot['workspaces'].append({'workspace_id': 'other', 'label': 'other'})
+        self.live(self.b, 'other')
+        path = self.root / 'pi/sessions/b.jsonl'
+        for content in (None, b'', b'{"type":"session","id":'):
+            with self.subTest(content=content):
+                if content is None:
+                    path.unlink()
+                else:
+                    path.write_bytes(content)
+                plan = self.capture()
+                self.assertEqual([e['session_id'] for t in plan['tabs'] for e in t['sessions']], ['a'])
+                result = self.open()
+                self.assertTrue(result['reused'])
+                self.assertEqual(result['needs_attention'], [])
+                self.client.run.assert_called_with(['workspace', 'focus', 'original'])
+        self.assertFalse(self.effects(['agent', 'start']))
+        self.assertFalse(self.effects(['workspace', 'create']))
+
+    def test_partial_target_capture_preserves_exact_two_session_plan(self):
+        scope = self.bind()
+        a = self.live(self.a, 'original')
+        self.live(self.b, 'original', tab=a['tab_id'])
+        self.capture()
+        saved_path = self.runtime._arrangement_path(scope, self.stream.id)
+        saved = saved_path.read_bytes()
+        path = self.root / 'pi/sessions/b.jsonl'
+        for content in (None, b'', b'{"type":"session","id":'):
+            with self.subTest(content=content):
+                if content is None:
+                    path.unlink()
+                else:
+                    path.write_bytes(content)
+                with self.assertRaises(StreamError):
+                    self.capture()
+                self.assertEqual(saved_path.read_bytes(), saved)
+                result = self.open()
+                self.assertTrue(result['reused'])
+                self.assertIn('capture unavailable', result['needs_attention'][0])
+                self.assertEqual(saved_path.read_bytes(), saved)
+        self.assertFalse(self.effects(['agent', 'start']))
+
+    def test_initial_capture_does_not_save_verified_subset_during_header_flush(self):
+        self.bind()
+        self.live(self.a, 'original')
+        self.live(self.b, 'original')
+        path = self.root / 'pi/sessions/b.jsonl'
+        for content in (b'', b'{"type":"session","id":'):
+            with self.subTest(content=content):
+                path.write_bytes(content)
+                with self.assertRaises(StreamError):
+                    self.capture()
+                self.assertFalse(list(self.runtime.state_dir.glob('arrangements/*/*.json')))
+        path.write_text('{"type":"session","id":"b"}\n')
+        self.assertEqual(len(self.capture()['tabs']), 2)
+
+    def test_unresolved_host_conversation_blocks_targeted_open_launch_and_resume(self):
+        self.bind()
+        self.live(self.a, 'original')
+        self.snapshot['workspaces'].append({'workspace_id': 'other', 'label': 'other'})
+        self.live(self.b, 'other')
+        (self.root / 'pi/sessions/b.jsonl').unlink()
+        for session_id in ('a', 'c'):
+            with self.subTest(session_id=session_id), self.assertRaises(StreamError):
+                self.open(session_ref=session_id)
+        with patch.object(self.runtime, '_exec_session') as execute:
+            with self.assertRaises(StreamError):
+                self.runtime.resume(self.stream, self.sessions, authority=self.authority, session_ref='c')
+            execute.assert_not_called()
+        # An unbound Stream's initial launch must use the same host-wide guard.
+        self.runtime = Runtime(self.root / 'unbound-state', 'host', FrontendMode.HERDR)
+        self.runtime.remember_directory(self.stream.id, self.cwd)
+        with self.assertRaises(StreamError):
+            self.open((self.c,))
+        self.assertFalse(self.effects(['agent', 'start']))
+        self.assertFalse(self.effects(['workspace', 'create']))
+
+    def test_structural_parser_validates_all_agents_without_reading_headers(self):
+        self.bind()
+        self.live(self.a, 'original')
+        self.snapshot['workspaces'].append({'workspace_id': 'other', 'label': 'other'})
+        other = self.live(self.b, 'other')
+        (self.root / 'pi/sessions/b.jsonl').unlink()
+        with patch('_streams.catalog_arrangement.native_identity') as identity:
+            self.assertEqual(parse_topology(self.snapshot), self.snapshot)
+            identity.assert_not_called()
+        for harness in ('pi', 'unsupported'):
+            with self.subTest(harness=harness):
+                other.update(agent=harness, terminal_id='wrong')
+                with self.assertRaisesRegex(StreamError, 'ownership'):
+                    self.capture()
+        self.assertFalse(list(self.runtime.state_dir.glob('arrangements/*/*.json')))
+
+    def test_verified_duplicate_headers_block_host_launch_and_resume(self):
+        self.bind()
+        self.live(self.a, 'original')
+        self.snapshot['workspaces'].append({'workspace_id': 'other', 'label': 'other'})
+        self.live(self.b, 'other')
+        (self.root / 'pi/sessions/b.jsonl').write_text('{"type":"session","id":"a"}\n')
+        # The different filenames neither prove nor disprove native identity.
+        with self.assertRaisesRegex(StreamError, 'ambiguous'):
+            self.open(session_ref='c')
+        with patch.object(self.runtime, '_exec_session') as execute:
+            with self.assertRaisesRegex(StreamError, 'ambiguous'):
+                self.runtime.resume(self.stream, self.sessions, authority=self.authority, session_ref='c')
+            execute.assert_not_called()
+        self.assertFalse(self.effects(['agent', 'start']))
 
     def test_saved_plan_rejects_malformed_workspace_tabs_labels_and_native_identity(self):
         self.bind()
