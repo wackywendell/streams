@@ -9,8 +9,8 @@ type NativeContext = {socket: string; paneId: string; terminalId: string; worksp
 export type NativeAdapter = {
  automatic: boolean;
  sessionNaming: boolean;
- read(): Promise<NativeSnapshot>;
- bootstrap(): Promise<NativeContext>;
+ read(signal?: AbortSignal): Promise<NativeSnapshot>;
+ bootstrap(signal?: AbortSignal): Promise<NativeContext>;
  open(context: NativeContext, signal: AbortSignal, mode: "automatic" | "explicit"): Promise<unknown>;
  close(context: NativeContext, signal: AbortSignal): Promise<unknown>;
  summaries(context: NativeContext, signal: AbortSignal): Promise<unknown>;
@@ -32,7 +32,7 @@ export const loadNative: NativeFactory = async ({pi, ctx, sessionId, cwd, env}) 
  const client = new StreamsWorkspaceClient({env});
  return {
   automatic: config.workspace_startup === "automatic", sessionNaming: namingEnabled(config, "session"),
-  read: () => source.read(), bootstrap: () => client.bootstrap(config),
+  read: (signal) => source.read(signal), bootstrap: (signal) => client.bootstrap(config, signal),
   open: (context, signal, mode) => client.openDisplay(source, context, config, signal, mode),
   close: (context, signal) => client.closeDisplay(source, context, config, signal),
   summaries: (context, signal) => client.projectSummaries(source, context, config, signal),
@@ -61,7 +61,7 @@ export class NativeController {
  private timer?: ReturnType<typeof setTimeout>;
  private retries = 0;
  private readonly warnings = new Set<string>();
- constructor(private readonly options: {pi: ExtensionAPI; ctx: ExtensionContext; current?: () => ExtensionContext | undefined; factory?: NativeFactory; capture?: (streamId: string) => Promise<unknown>; warning: (text: string) => void}) {
+ constructor(private readonly options: {pi: ExtensionAPI; ctx: ExtensionContext; current?: () => ExtensionContext | undefined; factory?: NativeFactory; capture?: (streamId: string, signal?: AbortSignal) => Promise<unknown>; warning: (text: string) => void}) {
   this.sessionId = options.ctx.sessionManager.getSessionId();this.cwd = options.ctx.cwd;
  }
  private eligible(): boolean {
@@ -104,8 +104,10 @@ export class NativeController {
    const action = this.actions.shift(), signal = this.controller.signal;
    if (!action) this.pending = false;
    try {
-    await this.refresh(action?.kind, signal);action?.resolve();
-    clearTimeout(this.timer);this.timer = undefined;
+    const snapshot = await this.refresh(action?.kind, signal);
+    this.retries = 0;clearTimeout(this.timer);this.timer = undefined;
+    if (snapshot) await this.capture(snapshot, signal);
+    action?.resolve();
    } catch (error) {
     action?.reject(error);
     if (signal.aborted || this.stopped) continue;
@@ -121,12 +123,24 @@ export class NativeController {
    }
   }
  }
- private async refresh(action: Action["kind"] | undefined, signal: AbortSignal): Promise<void> {
+ // Capture is best effort and recovers on the next actual update, not by replaying native effects.
+ private async capture(snapshot: NativeSnapshot, signal: AbortSignal): Promise<void> {
+  this.assertCurrent(signal);
+  try {
+   await this.options.capture?.(snapshot.scope.streamId, signal);
+  } catch (error) {
+   this.assertCurrent(signal);
+   const message = `Arrangement capture deferred; last saved layout retained: ${String(error)}`;
+   if (!this.warnings.has(message)) {this.warnings.add(message);this.options.warning(message);}
+  }
+  this.assertCurrent(signal);
+ }
+ private async refresh(action: Action["kind"] | undefined, signal: AbortSignal): Promise<NativeSnapshot | undefined> {
   const check = () => this.assertCurrent(signal);check();
   this.adapter ??= (this.options.factory ?? loadNative)({pi: this.options.pi, ctx: this.options.ctx, sessionId: this.sessionId, cwd: this.cwd, env: {...this.env}});
   const adapter = await this.adapter;check();
   const read = async () => {
-   const snapshot = await adapter.read();check();
+   const snapshot = await adapter.read(signal);check();
    if (snapshot.scope.nativeSessionId !== this.sessionId || snapshot.native.pane_id !== this.env.HERDR_PANE_ID
     || this.env.HERDR_TAB_ID && snapshot.native.tab_id !== this.env.HERDR_TAB_ID
     || this.env.HERDR_WORKSPACE_ID && snapshot.native.workspace_id !== this.env.HERDR_WORKSPACE_ID) throw Error("Native attestation does not match captured Pi pane tuple");
@@ -135,7 +149,7 @@ export class NativeController {
   };
   await read();
   if (!this.context) {
-   const context = await adapter.bootstrap();check();
+   const context = await adapter.bootstrap(signal);check();
    if (context.paneId !== this.env.HERDR_PANE_ID || this.env.HERDR_SOCKET_PATH && context.socket !== this.env.HERDR_SOCKET_PATH) throw Error("Native frontend endpoint changed");
    this.context = context;
   }
@@ -148,6 +162,6 @@ export class NativeController {
   if (adapter.sessionNaming) adapter.sessionName(snapshot, check);
   check();
   // Capture only the attested existing association, never receipt/model text or membership.
-  await this.options.capture?.(snapshot.scope.streamId);check();
+  return snapshot;
  }
 }

@@ -28,6 +28,15 @@ export default function registerWorkCard(pi: ExtensionAPI, options: Options = {}
  let panelOpen = false;
  let shutdown: Promise<void> | undefined;
  let native: NativeController | undefined;
+ let nativeRetirement: Promise<void> | undefined;
+ function retireNative(): Promise<void> | undefined {
+  const previous = native;native = undefined;
+  if (previous) {
+   previous.stop();
+   nativeRetirement = Promise.all([nativeRetirement, previous.idle()]).then(() => {});
+  }
+  return nativeRetirement;
+ }
  const states = new Map<string, CardState>();
  const cli = (ctx: ExtensionContext) => options.cli ?? new StreamCli(ctx.cwd);
  const warning = (text: string) => {scope.context?.ui.notify(`Work card: ${text}`, "warning");};
@@ -131,7 +140,7 @@ export default function registerWorkCard(pi: ExtensionAPI, options: Options = {}
     else {settings();reporter.request(ctx, true, instructions);}
    } catch(error) {
     if (command === "pane" && !paneFence.current()) return;
-    warning(command === "pane" ? `${String(error)}. Verify enrollment and a ready Stream workspace; use /streams attach for initial enrollment, or /reload after a native identity change.` : String(error));
+    warning(String(error));
    }
   },
  });
@@ -141,10 +150,13 @@ export default function registerWorkCard(pi: ExtensionAPI, options: Options = {}
  pi.registerTool({name: "select_stream", label: "Attach initial effort", description: "Ask the user to attach this unbound Pi conversation to an exact catalog stream ID. An enrolled conversation cannot switch; membership moves/forks are not implemented.", parameters: Type.Object({stream_id: Type.Optional(Type.String()), reason: Type.String()}), async execute(_id, args, _signal, _update, ctx) {return result(await attach(ctx, {streamId: args.stream_id, reason: args.reason}));}});
  pi.registerTool({name: "create_stream", label: "Create initial effort", description: "Ask the user to create an initial durable effort and enroll this conversation. Never switches existing membership or launches workspaces.", parameters: Type.Object({title: Type.String(), reason: Type.String()}), async execute(_id, args, _signal, _update, ctx) {return result(await attach(ctx, args));}});
  pi.on("session_start", async (_event, ctx) => {
-  native?.stop();shutdown = undefined;scope.reset(ctx);
-  const client = cli(ctx) as StreamCli & {captureArrangement?: (streamId: string) => Promise<unknown>};
+  const retired = retireNative();shutdown = undefined;scope.reset(ctx);
+  const fence = scope.fence();
+  if (retired) await retired;
+  if (!fence.current()) return;
+  const client = cli(ctx) as StreamCli & {captureArrangement?: (streamId: string, signal?: AbortSignal) => Promise<unknown>};
   native = new NativeController({pi, ctx, current: () => scope.context, factory: options.native, warning,
-   capture: client.captureArrangement ? (streamId) => client.captureArrangement!(streamId) : undefined});
+   capture: client.captureArrangement ? (streamId, signal) => client.captureArrangement!(streamId, signal) : undefined});
   native.start();
   await sync(ctx, "start");
  });
@@ -156,11 +168,11 @@ export default function registerWorkCard(pi: ExtensionAPI, options: Options = {}
  });
  pi.on("session_tree", () => {scope.invalidate();native?.invalidate();});
  pi.on("session_shutdown", (_event, ctx) => shutdown ??= (async () => {
-  native?.stop();
+  const retired = retireNative();
   scope.reset(ctx, true);
   const fence = scope.fence();
   // Flush already-saved catalog changes only, never infer a final summary.
-  await sync(ctx, "shutdown");
+  await Promise.all([sync(ctx, "shutdown"), retired]);
   if (fence.live()) scope.context = undefined;
  })());
 }

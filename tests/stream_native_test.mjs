@@ -26,7 +26,7 @@ function fixture(t, options = {}) {
  const source = new StreamsCardSource({nativeSessionId:id, readContext:async () => {events.push('read');if (options.read) await options.read();return structuredClone(saved);}});
  const adapter = {
   automatic:options.automatic ?? true, sessionNaming:options.sessionNaming ?? true,
-  read:() => source.read(), bootstrap:async () => {events.push('bootstrap');return {socket:'/socket', paneId:'pane', terminalId:'terminal', tabId:'tab', workspaceId:'workspace'};},
+  read:async signal => {if (options.readSignal) await options.readSignal(signal);return source.read();}, bootstrap:async signal => {events.push('bootstrap');if (options.bootstrap) await options.bootstrap(signal);return {socket:'/socket', paneId:'pane', terminalId:'terminal', tabId:'tab', workspaceId:'workspace'};},
   open:async (_context, signal, mode) => {events.push(`open:${mode}`);if (options.open) await options.open(signal);if (mode === 'explicit') closed = false;return {kind:closed ? 'suppressed' : 'paired'};},
   close:async () => {events.push('close');closed = true;},
   summaries:async () => {events.push('summaries');}, names:async () => {events.push('names');},
@@ -34,7 +34,7 @@ function fixture(t, options = {}) {
  };
  let loads = 0, captured;
  const factory = async input => {loads++;captured = input;return adapter;};
- const capture = async streamId => {events.push(`capture:${streamId}`);};
+ const capture = async (streamId, signal) => {events.push(`capture:${streamId}`);if (options.capture) return options.capture(streamId, signal);};
  const controller = new NativeController({pi, ctx, factory, capture, warning:text => notices.push(text)});
  t.after(() => controller.stop());
  return {id, ctx, pi, saved, entries, adapter, controller, events, notices, factory, capture, loads:() => loads, captured:() => captured, name:() => name};
@@ -167,7 +167,9 @@ test('tree changes reject queued explicit actions instead of replaying them on a
 test('a reload retires pending old startup responses before they can project or capture', async t => {
  environment(t);let release;const f = fixture(t, {read:async () => {if (!release) await new Promise(resolve => {release = resolve;});}}), r = registration(t, f);
  await r.handlers.get('session_start')({}, f.ctx);await until(() => !!release);
- await r.handlers.get('session_start')({}, f.ctx);await until(() => f.events.includes('capture:stream'));release();await turn();await turn();
+ let settled = false;const replacement = r.handlers.get('session_start')({}, f.ctx).then(() => {settled = true;});
+ await turn();assert.equal(settled, false);assert.equal(f.loads(), 1);
+ release();await replacement;await until(() => f.events.includes('capture:stream'));
  assert.equal(f.loads(), 2);assert.equal(f.events.filter(event => event === 'bootstrap').length, 1);assert.equal(f.events.filter(event => event === 'capture:stream').length, 1);
 });
 test('normal attach receipts immediately recover native projection without another model response', async t => {
@@ -183,8 +185,55 @@ test('normal attach receipts immediately recover native projection without anoth
 test('retired explicit pane failures do not notify a replacement lifetime', async t => {
  environment(t);let release;const f = fixture(t, {automatic:false, open:async () => {await new Promise(resolve => {release = resolve;});}}), r = registration(t, f);
  await r.handlers.get('session_start')({}, f.ctx);await until(() => f.events.includes('capture:stream'));
- const command = r.run('pane');await until(() => !!release);await r.handlers.get('session_start')({}, f.ctx);release();await command;await turn();
+ const command = r.run('pane');await until(() => !!release);
+ const replacement = r.handlers.get('session_start')({}, f.ctx);release();await replacement;await command;await turn();
  assert.deepEqual(f.notices, []);
+});
+test('capture failure defers recovery to a real update without retrying native projection', async t => {
+ environment(t);t.mock.timers.enable({apis:['setTimeout']});let fail = true;
+ const f = fixture(t, {capture:async () => {if (fail) throw Error('workspace lock timed out');}});
+ f.controller.start();await f.controller.idle();
+ const before = [...f.events];assert.match(f.notices[0], /Arrangement capture deferred.*workspace lock timed out/);
+ t.mock.timers.tick(90000);await f.controller.idle();assert.deepEqual(f.events, before);
+ // Explicit pane success is not falsely reported as failure merely because capture deferred.
+ await f.controller.open();assert.equal(f.events.filter(event => event === 'open:explicit').length, 1);
+ assert.equal(f.notices.length, 1);
+ fail = false;f.controller.update();await f.controller.idle();
+ assert.equal(f.events.filter(event => event === 'capture:stream').length, 3);
+ assert.equal(f.events.filter(event => event === 'open:automatic').length, 2);
+ assert.equal(f.loads(), 1);assert.equal(f.events.filter(event => event === 'bootstrap').length, 1);
+ const recovered = [...f.events];t.mock.timers.tick(90000);await f.controller.idle();assert.deepEqual(f.events, recovered);
+});
+test('successful projection resets the bounded native retry budget even when capture fails', async t => {
+ environment(t);t.mock.timers.enable({apis:['setTimeout']});let fail = true;
+ const f = fixture(t, {open:async () => {if (fail) throw Error('workspace lock timed out');}, capture:async () => {throw Error('capture unavailable');}});
+ f.controller.start();await f.controller.idle();
+ for (let i = 0; i < 4; i++) {t.mock.timers.tick(15000);await f.controller.idle();}
+ assert.equal(f.events.filter(event => event === 'open:automatic').length, 5);
+ t.mock.timers.tick(15000);await f.controller.idle();assert.equal(f.events.filter(event => event === 'open:automatic').length, 5);
+ fail = false;f.controller.update();await f.controller.idle();
+ fail = true;f.controller.update();await f.controller.idle();
+ for (let i = 0; i < 4; i++) {t.mock.timers.tick(15000);await f.controller.idle();}
+ assert.equal(f.events.filter(event => event === 'open:automatic').length, 11);
+});
+for (const stage of ['read', 'bootstrap', 'capture']) test(`shutdown awaits retired ${stage} while sync runs independently`, async t => {
+ environment(t);let release, signal, syncFinished = false;t.after(() => release?.());
+ const gate = async value => {signal = value;await new Promise(resolve => {release = resolve;});};
+ const f = fixture(t, {[stage === 'read' ? 'readSignal' : stage]:stage === 'capture' ? (_streamId, signal) => gate(signal) : gate});
+ const r = registration(t, f, {sync:async event => {if (event === 'shutdown') syncFinished = true;return {local:'unchanged', sharing:'local-only', domain:null};}});
+ await r.handlers.get('session_start')({}, f.ctx);await until(() => !!release);
+ let settled = false;const shutdown = r.handlers.get('session_shutdown')({}, f.ctx).then(() => {settled = true;});
+ await turn();assert.equal(signal.aborted, true);assert.equal(syncFinished, true);assert.equal(settled, false);
+ release();await shutdown;assert.equal(settled, true);assert.equal(f.events.includes('close'), false);
+ if (stage !== 'capture') assert.equal(f.events.some(event => event.startsWith('capture:')), false);
+ assert.deepEqual(f.notices, []);
+});
+test('pane effect errors propagate without misleading enrollment instructions', async t => {
+ environment(t);const f = fixture(t, {automatic:false, open:async () => {throw Error('workspace lock timed out');}}), r = registration(t, f);
+ await r.handlers.get('session_start')({}, f.ctx);await until(() => f.events.includes('capture:stream'));
+ await r.run('pane');assert.match(f.notices.at(-1), /workspace lock timed out/);
+ assert.doesNotMatch(f.notices.at(-1), /attach|enrollment|reload/);
+ assert.equal(f.events.filter(event => event === 'capture:stream').length, 1);
 });
 test('old injected CLI without arrangement capture remains supported', async t => {
  environment(t);const f = fixture(t), r = registration(t, f, {captureArrangement:undefined});

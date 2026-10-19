@@ -135,6 +135,34 @@ test('native lifecycle deadline kills the CLI and its child processes', {timeout
  }
 });
 
+test('native capture forwards cancellation and never starts a pre-aborted request', async()=>{
+ const calls=[], controller=new AbortController();
+ const cli=new StreamCli('/tmp',async(...args)=>{calls.push(args);return {code:0,stdout:'{}',stderr:''};});
+ await cli.captureArrangement('effort',controller.signal);
+ assert.deepEqual(calls[0],[['workspace','capture','effort','--json'],undefined,{timeout:10000,signal:controller.signal}]);
+ controller.abort();await assert.rejects(cli.captureArrangement('effort',controller.signal),/abort/i);
+ assert.equal(calls.length,1);
+});
+
+test('native capture abort settles only after CLI and descendants stop', {timeout:10000}, async t=>{
+ const root=mkdtempSync(join(tmpdir(),'streams-capture-abort-'));t.after(()=>rmSync(root,{recursive:true,force:true}));
+ const bin=join(root,'bin');mkdirSync(bin);const pidfile=join(root,'pids.json');
+ const shim=join(bin,'streams');
+ writeFileSync(shim,`#!${process.execPath}\nconst {spawn}=require('node:child_process');const fs=require('node:fs');process.on('SIGTERM',()=>{});const child=spawn(process.execPath,['-e','process.on("SIGTERM",()=>{});setInterval(()=>{},1000)'],{stdio:'inherit'});fs.writeFileSync(${JSON.stringify(pidfile)},JSON.stringify([process.pid,child.pid]));setInterval(()=>{},1000);\n`);chmodSync(shim,0o755);
+ const before=process.env.PATH;process.env.PATH=`${bin}:${before}`;t.after(()=>{process.env.PATH=before;});
+ const controller=new AbortController(), pending=new StreamCli(root).captureArrangement('effort',controller.signal);
+ const rejected=assert.rejects(pending,/abort/i), deadline=performance.now()+5000;
+ while(true) {
+  try {readFileSync(pidfile);break;} catch(error) {if(error.code!=='ENOENT'||performance.now()>deadline)throw error;}
+  await new Promise(resolve=>setTimeout(resolve,5));
+ }
+ controller.abort();await rejected;
+ for(const pid of JSON.parse(readFileSync(pidfile,'utf8'))) {
+  let state='';try {state=execFileSync('ps',['-p',String(pid),'-o','stat='],{encoding:'utf8',stdio:['ignore','pipe','pipe']}).trim();} catch(error) {assert.equal(error.status,1);}
+  assert.ok(!state || state.startsWith('Z'),`native capture process ${pid} still running: ${state}`);
+ }
+});
+
 test('Pi/CLI reports publish across two isolated Git catalogs, remain saved offline and retry after restart', {timeout:120000}, async t=>{
  const root=mkdtempSync(join(tmpdir(),'streams-sync-acceptance-'));t.after(()=>rmSync(root,{recursive:true,force:true}));
  const checkout=fileURLToPath(new URL('..',import.meta.url)), remote=join(root,'remote.git'), unavailable=join(root,'offline.git');
