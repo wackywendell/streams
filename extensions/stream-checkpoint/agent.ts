@@ -113,8 +113,24 @@ export async function infer(ctx: ExtensionContext, request: Inference, signal: A
  if (signal.aborted || response.stopReason === "aborted") throw Error("Reporting cancelled");
  const calls = response.content.filter((block) => block.type === "toolCall");
  if (calls.length !== 1 || calls[0].name !== "record_card") throw Error("Reporting model must return exactly one structured record_card call");
- if (!Check(schema, calls[0].arguments)) throw Error("Reporting model returned invalid structured card fields; nothing was saved");
- const result = calls[0].arguments as Inferred;
+ const rawArgs = structuredClone(calls[0].arguments);
+ if ((request.type === "session" || request.type === "stream") && rawArgs && typeof rawArgs === "object" && !Array.isArray(rawArgs) && rawArgs.changes && typeof rawArgs.changes === "object" && !Array.isArray(rawArgs.changes)) {
+  const before = request.catalog[request.type]!, allowed = automaticFields(request.type, before), changes = rawArgs.changes as Record<string, unknown>;
+  for (const [key, value] of Object.entries(changes)) {
+   if (!allowed.includes(key) && !key.endsWith("_mode") && Object.hasOwn(before, key)) {delete changes[key];continue;}
+   if ((key === "state" || key === "remaining") && value === null) changes[key] = "";
+   else if (key === "title" && typeof value === "string" && !value.trim()) delete changes[key];
+   else if (["goal", "goal_short", "state_short"].includes(key) && typeof value === "string") {
+    const cleaned = key === "goal" ? value.trim() : Array.from(value.replace(/[\r\n\t]+/g, " ").trim()).slice(0, 80).join("").trim();
+    changes[key] = cleaned || null;
+   }
+  }
+  if (request.type === "stream" && Object.hasOwn(changes, "goal_short") && changes.goal_short !== null && (Object.hasOwn(changes, "goal") ? changes.goal : request.catalog.stream!.goal) === null) {
+   changes.goal_short = null;
+  }
+ }
+ if (!Check(schema, rawArgs)) throw Error("Reporting model returned invalid structured card fields; nothing was saved");
+ const result = rawArgs as Inferred;
  if (result.edit) validateChanges(result.edit.kind, request.catalog[result.edit.kind]!, result.edit.changes, result.edit.actor);
  if (request.type === "session" || request.type === "stream") {
   if (!result.changes || typeof result.changes !== "object" || Array.isArray(result.changes)) throw Error("Invalid structured changes");

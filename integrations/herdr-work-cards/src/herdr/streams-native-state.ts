@@ -88,7 +88,7 @@ export class StreamsNativeState {
       await rename(temporary, path);
       const directory = await open(this.directory, constants.O_RDONLY);
       try { await directory.sync(); } finally { await directory.close(); }
-      if (value.phase === 'ready' && !retainGate) {
+      if ((value.phase === 'ready' || value.phase === 'closed') && !retainGate) {
         try { await unlink(`${path}.pending`); } catch (error) { if ((error as NodeJS.ErrnoException).code !== 'ENOENT') throw error; }
         // A crash may restore the gate and conservatively suspend a proven launch;
         // it cannot lose the already-synced ready record and authorize duplicates.

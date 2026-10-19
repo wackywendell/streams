@@ -630,3 +630,32 @@ test('trimmed projection excludes tools/thinking; full retains only complete val
  assert.equal(full.messages.filter(m=>m.role==='toolResult').length,1);
  messages[1].content='mutation';assert.equal(trimmed.messages[1].content,'Work');
 });
+test('infer normalizes null remaining/state, empty nullable fields, overlong short hints, and echoed non-automatic fields',async()=>{
+ const ctx=changes=>({model:{contextWindow:100000},modelRegistry:{complete:async()=>({stopReason:'toolUse',content:[{type:'toolCall',name:'record_card',arguments:{changes}}]})}});
+ const sessionResult=await infer(ctx({title:'  ',state:null,state_short:`${'x'.repeat(90)}\nline`,remaining:null}),{type:'session',catalog:context(),messages:[],reset:true},new AbortController().signal);
+ assert.deepEqual(sessionResult,{changes:{state:'',state_short:'x'.repeat(80),remaining:''}});
+ const streamCatalog=context();streamCatalog.stream.goal=null;
+ const streamResult=await infer(ctx({title:'Echoed manual',status:'active',goal:'   ',goal_short:'Orphan short'}),{type:'stream',catalog:streamCatalog,messages:[],reset:true},new AbortController().signal);
+ assert.deepEqual(streamResult,{changes:{goal:null,goal_short:null}});
+});
+test('concurrent sibling updates that supersede an in-flight report retry against the fresh catalog and coalesce native updates once',async()=>{
+ const catalog=context(),sibling={...session,id:'sibling',harness_session_id:'sibling-native',state:'Before'};
+ catalog.sessions.push(sibling);
+ const receipts=[],updates=[],reclaims=[];let sessionAttempts=0;
+ const f=reporterFixture();
+ const cli={context:async()=>structuredClone(catalog),apply:async req=>{
+  if(req.kind==='session'&&++sessionAttempts===1){
+   sibling.state='Concurrent sibling progress';
+   return {operation_id:req.operation_id,save:{local:'unchanged',sharing:'local-only',domain:{outcome:'superseded',conflicts:['inputs'],reason:'captured catalog input changed'}}};
+  }
+  Object.assign(catalog[req.kind],req.changes);
+  return {operation_id:req.operation_id,save:{local:'persisted',sharing:'local-only',domain:{outcome:'changes'}}};
+ }};
+ const reporter=new Reporter({cli:()=>cli,settings:()=>defaults,infer:async(_ctx,req)=>({changes:req.type==='session'?{state:'Recovered progress'}:{goal:'Updated goal'}}),notice:text=>assert.fail(text),receipt:(value,defer)=>receipts.push({value,defer}),onUpdateNative:()=>updates.push('update'),onReclaimNames:()=>reclaims.push('reclaim')});
+ reporter.request(f.ctx);await reporter.idle();
+ assert.equal(sessionAttempts,2);
+ assert.equal(receipts.length,2);assert.ok(receipts.every(item=>item.defer===true));
+ assert.deepEqual(updates,['update']);assert.deepEqual(reclaims,[]);
+ reporter.reset(f.ctx,true);await reporter.idle();
+ assert.deepEqual(reclaims,['reclaim']);assert.deepEqual(updates,['update']);
+});

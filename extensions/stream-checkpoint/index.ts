@@ -40,14 +40,14 @@ export default function registerWorkCard(pi: ExtensionAPI, options: Options = {}
  const states = new Map<string, CardState>();
  const cli = (ctx: ExtensionContext) => options.cli ?? new StreamCli(ctx.cwd);
  const warning = (text: string) => {scope.context?.ui.notify(`Work card: ${text}`, "warning");};
- const receipt = (value: Receipt) => {
+ const receipt = (value: Receipt, deferNative = false) => {
   const text = receiptText(value);
   // Receipts do not enter model context or count as fresh user work.
   pi.appendEntry("stream-catalog-receipt", value);
   scope.context?.ui.notify(text, receiptHasWarning(value) ? "warning" : "info");
-  if (receiptCanContinue(value)) native?.update();
+  if (!deferNative && receiptCanContinue(value)) native?.update();
  };
- const reporter = new Reporter({scope, cli, settings, infer: options.infer, notice: warning, receipt, onReclaimNames: () => native?.reclaimNames(), activity: (text) => scope.context?.ui.setStatus("stream-reporting", text ? `Work card · ${text}` : undefined)});
+ const reporter = new Reporter({scope, cli, settings, infer: options.infer, notice: warning, receipt, onUpdateNative: () => native?.update(), onReclaimNames: () => native?.reclaimNames().catch(() => {}), activity: (text) => scope.context?.ui.setStatus("stream-reporting", text ? `Work card · ${text}` : undefined)});
  async function sync(ctx: ExtensionContext, event: "start" | "shutdown"): Promise<void> {
   const fence = scope.fence();
   let failure: {event: string; result?: unknown; error?: string} | undefined;

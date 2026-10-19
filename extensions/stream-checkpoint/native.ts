@@ -115,7 +115,7 @@ export class NativeController {
     // Missing/unready enrollment and inherited helper environments are normal at startup.
     // Surface unexpected failures once, but keep explicit commands actionable on every attempt.
     const message = String(error);
-    if (!action && !/unbound|context read failed|attestation|exact host\/pi\/native|exact Stream and Session/i.test(message) && !this.warnings.has(message)) {
+    if ((!action || action.kind === "reclaim") && !/unbound|context read failed|attestation|exact host\/pi\/native|exact Stream and Session/i.test(message) && !this.warnings.has(message)) {
      this.warnings.add(message);this.options.warning(`Native pane: ${message}`);
     }
     if (!action && this.retries++ < 4 && !this.timer) {

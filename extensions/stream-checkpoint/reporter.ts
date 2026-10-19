@@ -9,7 +9,7 @@ import { SessionScope, captureInputs } from "./session-scope.ts";
 import type { SessionFence } from "./session-scope.ts";
 import type { ReportingSettings } from "./settings.ts";
 
-type Options = {scope?: SessionScope; cli(ctx: ExtensionContext): StreamCli; settings(): ReportingSettings; infer?: typeof modelInfer; notice(text: string): void; receipt(value: Receipt): void; activity?(text?: string): void; onReclaimNames?(): Promise<void> | void};
+type Options = {scope?: SessionScope; cli(ctx: ExtensionContext): StreamCli; settings(): ReportingSettings; infer?: typeof modelInfer; notice(text: string): void; receipt(value: Receipt, deferNative?: boolean): void; activity?(text?: string): void; onUpdateNative?(): void; onReclaimNames?(): Promise<void> | void};
 type Pending = {ctx: ExtensionContext; force: boolean; instructions?: string; reset?: boolean; auto?: boolean};
 export class Reporter {
  readonly scope: SessionScope;
@@ -64,66 +64,78 @@ export class Reporter {
  private async report({ctx, force, instructions, reset, auto}: Pending, fence: SessionFence): Promise<void> {
   const cli = this.options.cli(ctx), signal = fence.signal;
   const captureNow = () => captureInputs(ctx, cli, this.options.settings().context, fence);
-  let capture = await captureNow();
+  let capture = await captureNow(), savedAny = false, reclaimReady = false;
   if (!capture.valid() || signal.aborted) return;
-  if (!capture.catalog.session) {
-   if (reset) {this.options.notice("Reset requires an attached work card. Use /streams attach first.");return;}
-   if (!force && this.options.settings().enrollment !== "automatic") return;
-   const operationId = randomUUID();
-   const result = await this.generate(ctx, {type: "enroll", catalog: capture.catalog, messages: capture.evidence.messages, instructions}, signal);
-   if (signal.aborted || !await capture.attached() || (!result.meaningful && !force)) return;
-   if (!result.session?.title?.trim() || (!capture.catalog.stream && !result.stream?.title?.trim())) throw Error("Enrollment requires meaningful effort and session titles");
-   const receipt = await cli.enroll({catalog_source: capture.catalog.catalog_source, operation_id: operationId, harness: "pi", harness_session_id: capture.native, ...(capture.catalog.stream ? {stream_id: capture.catalog.stream.id} : {stream: result.stream}), session: result.session, actor: "automatic", cwd: capture.cwd});
-   if (fence.live()) this.options.receipt(receipt);
-   if (!capture.valid() || !receiptCanContinue(receipt)) return;
-   const enrollmentSource = capture.catalog.catalog_source;
-   capture = await captureNow();
-   if (capture.catalog.catalog_source !== enrollmentSource) throw Error("Catalog source changed after enrollment; no further report was attempted");
-   if (!capture.catalog.session || !capture.valid() || signal.aborted) return;
-  }
-  if (reset && auto) {
-   const source = capture.catalog.catalog_source, sessionId = capture.catalog.session.id, streamId = capture.catalog.stream?.id;
-   for (const kind of ["session", "stream"] as const) {
-    const target = capture.catalog[kind];
-    if (!target || kind === "stream" && !capture.catalog.authority) continue;
-    const changes: Record<string, unknown> = {};
-    if (target.title_mode === "manual") changes.title_mode = "automatic";
-    if (kind === "stream" && capture.catalog.stream!.goal_mode === "manual") changes.goal_mode = "automatic";
-    if (!Object.keys(changes).length) continue;
-    if (signal.aborted || !await capture.attached()) return;
-    const receipt = await cli.apply(editRequest(capture.catalog, kind, changes, "user", randomUUID(), true));
-    if (fence.live()) this.options.receipt(receipt);
-    if (!capture.valid() || !receiptCanContinue(receipt)) return;
-    capture = await captureNow();
-    if (!capture.valid() || capture.catalog.catalog_source !== source || capture.catalog.session?.id !== sessionId || capture.catalog.stream?.id !== streamId) throw Error("Attachment changed during naming reset");
+  const inferAndApply = async (kind: "session" | "stream"): Promise<boolean> => {
+   for (let attempt = 0; ; attempt++) {
+    const inferred = await this.generate(ctx, {type: kind, catalog: capture.catalog, messages: capture.evidence.messages, instructions, reset}, signal);
+    if (signal.aborted || !await capture.attached()) return false;
+    if (kind === "session" && reset && capture.catalog.session!.state_short !== null && inferred.changes && !Object.hasOwn(inferred.changes, "state_short")) inferred.changes.state_short = null;
+    if (kind === "stream" && reset && capture.catalog.stream!.goal_mode === "automatic" && capture.catalog.stream!.goal_short !== null && inferred.changes && !Object.hasOwn(inferred.changes, "goal_short")) inferred.changes.goal_short = null;
+    if (!inferred.changes || !Object.keys(inferred.changes).length) return true;
+    const receipt = await cli.apply(editRequest(capture.catalog, kind, inferred.changes, "automatic", randomUUID(), true));
+    if (attempt < 2 && receipt.save?.domain?.outcome === "superseded" && receipt.save.local === "unchanged" && !receipt.completion_error && receipt.publication?.local !== "repair-required") {
+     const fresh = await captureNow();
+     if (fresh.valid() && fresh.catalog.catalog_source === capture.catalog.catalog_source && fresh.catalog.stream?.id === capture.catalog.stream?.id && fresh.catalog.session?.id === capture.catalog.session?.id && JSON.stringify(fresh.catalog) !== JSON.stringify(capture.catalog)) {
+      capture = fresh;
+      if (kind === "stream" && (!capture.catalog.stream || !automaticFields("stream", capture.catalog.stream).length)) return true;
+      continue;
+     }
+    }
+    if (fence.live()) this.options.receipt(receipt, true);
+    if (receiptCanContinue(receipt)) {savedAny = true;return true;}
+    return false;
    }
+  };
+  try {
+   if (!capture.catalog.session) {
+    if (reset) {this.options.notice("Reset requires an attached work card. Use /streams attach first.");return;}
+    if (!force && this.options.settings().enrollment !== "automatic") return;
+    const operationId = randomUUID();
+    const result = await this.generate(ctx, {type: "enroll", catalog: capture.catalog, messages: capture.evidence.messages, instructions}, signal);
+    if (signal.aborted || !await capture.attached() || (!result.meaningful && !force)) return;
+    if (!result.session?.title?.trim() || (!capture.catalog.stream && !result.stream?.title?.trim())) throw Error("Enrollment requires meaningful effort and session titles");
+    const receipt = await cli.enroll({catalog_source: capture.catalog.catalog_source, operation_id: operationId, harness: "pi", harness_session_id: capture.native, ...(capture.catalog.stream ? {stream_id: capture.catalog.stream.id} : {stream: result.stream}), session: result.session, actor: "automatic", cwd: capture.cwd});
+    if (fence.live()) this.options.receipt(receipt, true);
+    if (receiptCanContinue(receipt)) savedAny = true;
+    if (!capture.valid() || !receiptCanContinue(receipt)) return;
+    const enrollmentSource = capture.catalog.catalog_source;
+    capture = await captureNow();
+    if (capture.catalog.catalog_source !== enrollmentSource) throw Error("Catalog source changed after enrollment; no further report was attempted");
+    if (!capture.catalog.session || !capture.valid() || signal.aborted) return;
+   }
+   if (reset && auto) {
+    const source = capture.catalog.catalog_source, sessionId = capture.catalog.session.id, streamId = capture.catalog.stream?.id;
+    for (const kind of ["session", "stream"] as const) {
+     const target = capture.catalog[kind];
+     if (!target || kind === "stream" && !capture.catalog.authority) continue;
+     const changes: Record<string, unknown> = {};
+     if (target.title_mode === "manual") changes.title_mode = "automatic";
+     if (kind === "stream" && capture.catalog.stream!.goal_mode === "manual") changes.goal_mode = "automatic";
+     if (!Object.keys(changes).length) continue;
+     if (signal.aborted || !await capture.attached()) return;
+     const receipt = await cli.apply(editRequest(capture.catalog, kind, changes, "user", randomUUID(), false));
+     if (fence.live()) this.options.receipt(receipt, true);
+     if (receiptCanContinue(receipt)) savedAny = true;
+     if (!capture.valid() || !receiptCanContinue(receipt)) return;
+     capture = await captureNow();
+     if (!capture.valid() || capture.catalog.catalog_source !== source || capture.catalog.session?.id !== sessionId || capture.catalog.stream?.id !== streamId) throw Error("Attachment changed during naming reset");
+    }
+   }
+   // A Session write is its own inference and guarded target; it never timestamps the effort.
+   if (!await inferAndApply("session")) return;
+   // Capture AGAIN before metadata inference, never after it or to make an old result fit.
+   if (!capture.valid()) return;
+   const sessionBase = capture.catalog;
+   capture = await captureNow();
+   if (capture.catalog.catalog_source !== sessionBase.catalog_source || capture.catalog.stream?.id !== sessionBase.stream?.id || capture.catalog.session?.id !== sessionBase.session?.id) throw Error("Catalog source or attachment changed; metadata report cancelled");
+   if (!capture.valid() || signal.aborted) return;
+   if (!capture.catalog.stream || !automaticFields("stream", capture.catalog.stream).length) {reclaimReady = Boolean(auto && capture.valid());return;}
+   if (!await inferAndApply("stream")) return;
+   reclaimReady = Boolean(auto && capture.valid());
+  } finally {
+   if (reclaimReady && fence.live()) await this.options.onReclaimNames?.();
+   else if (savedAny && fence.live()) this.options.onUpdateNative?.();
   }
-  // A Session write is its own inference and guarded target; it never timestamps the effort.
-  const sessionOperation = randomUUID();
-  const progress = await this.generate(ctx, {type: "session", catalog: capture.catalog, messages: capture.evidence.messages, instructions, reset}, signal);
-  if (signal.aborted || !await capture.attached()) return;
-  if (reset && capture.catalog.session.state_short !== null && progress.changes && !Object.hasOwn(progress.changes, "state_short")) progress.changes.state_short = null;
-  if (progress.changes && Object.keys(progress.changes).length) {
-   const receipt = await cli.apply(editRequest(capture.catalog, "session", progress.changes, "automatic", sessionOperation, true));
-   if (fence.live()) this.options.receipt(receipt);
-   if (!receiptCanContinue(receipt)) return;
-  }
-  // Capture AGAIN before metadata inference, never after it or to make an old result fit.
-  if (!capture.valid()) return;
-  const sessionBase = capture.catalog;
-  capture = await captureNow();
-  if (capture.catalog.catalog_source !== sessionBase.catalog_source || capture.catalog.stream?.id !== sessionBase.stream?.id || capture.catalog.session?.id !== sessionBase.session?.id) throw Error("Catalog source or attachment changed; metadata report cancelled");
-  if (!capture.valid() || signal.aborted) return;
-  if (!capture.catalog.stream || !automaticFields("stream", capture.catalog.stream).length) {if (auto) await this.options.onReclaimNames?.();return;}
-  const streamOperation = randomUUID();
-  const metadata = await this.generate(ctx, {type: "stream", catalog: capture.catalog, messages: capture.evidence.messages, instructions, reset}, signal);
-  if (signal.aborted || !await capture.attached()) return;
-  if (reset && capture.catalog.stream.goal_mode === "automatic" && capture.catalog.stream.goal_short !== null && metadata.changes && !Object.hasOwn(metadata.changes, "goal_short")) metadata.changes.goal_short = null;
-  if (metadata.changes && Object.keys(metadata.changes).length) {
-   const receipt = await cli.apply(editRequest(capture.catalog, "stream", metadata.changes, "automatic", streamOperation, true));
-   if (fence.live()) this.options.receipt(receipt);
-   if (!receiptCanContinue(receipt)) return;
-  }
-  if (auto && capture.valid()) await this.options.onReclaimNames?.();
  }
 }

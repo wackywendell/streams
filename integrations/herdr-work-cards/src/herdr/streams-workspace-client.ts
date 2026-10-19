@@ -88,9 +88,9 @@ export class StreamsWorkspaceClient extends HerdrTransport {
       || pair.nonce !== this.env.STREAMS_CARDS_NONCE || pair.card.tokens.strm_native !== saved.scope.nativeSessionId
       || this.env.STREAMS_CARDS_OWNER_TERMINAL !== owner.terminal_id)) throw new Error('Caller is not the exact owned Streams card');
     const latest = await source.read(signal);
-    if (!isDeepStrictEqual(latest, saved)) throw new Error('Streams context changed during native verification');
+    if (!sameStreamsScope(latest.scope, saved.scope) || !isDeepStrictEqual(latest.native, saved.native)) throw new Error('Streams context changed during native verification');
     signal?.throwIfAborted();
-    return { saved, snapshot, caller, owner, identity, key, binding, pair };
+    return { saved: latest, snapshot, caller, owner, identity, key, binding, pair };
   }
   private bound(v: Verified, context: StreamsNativeContext): string {
     const w = v.snapshot.workspaces.find(w => w.workspace_id === context.workspaceId)!;
@@ -99,7 +99,13 @@ export class StreamsWorkspaceClient extends HerdrTransport {
   }
   private async evidence(v: Verified, context: StreamsNativeContext): Promise<StreamsAttempt | null> {
     const attempt = await this.state(context).read(v.key);
-    if (attempt && attempt.phase === 'pending') throw new Error('Uncertain Streams launch retained; inspect native launch evidence before retrying');
+    if (attempt && attempt.phase === 'pending') {
+      if (v.pair.kind === 'absent' && attempt.nonce === v.pair.nonce && attempt.terminalId === v.pair.agent.tokens.strm_card
+        && !v.snapshot.panes.some(p => p.terminal_id === attempt.terminalId || p.pane_id === attempt.paneId)) {
+        return { ...attempt, phase: 'closed' };
+      }
+      throw new Error('Uncertain Streams launch retained; inspect native launch evidence before retrying');
+    }
     if (attempt && v.pair.kind === 'empty' && v.snapshot.panes.some(p => p.terminal_id === attempt.terminalId || p.pane_id === attempt.paneId)) throw new Error('Recorded card is still live without verified ownership; no duplicate or cleanup permitted');
     if (v.pair.kind !== 'empty' && (!attempt || v.pair.nonce !== attempt.nonce || v.pair.agent.tokens.strm_card !== attempt.terminalId
       || ('card' in v.pair && (v.pair.card.pane_id !== attempt.paneId || v.pair.card.terminal_id !== attempt.terminalId || v.pair.card.tab_id !== attempt.tabId)))) throw new Error('Pair does not match durable native launch evidence');
@@ -136,7 +142,7 @@ export class StreamsWorkspaceClient extends HerdrTransport {
   /** Every metadata effect re-reads both app attestation and the exact native target. */
   private async stamp(source: Source, context: StreamsNativeContext, target: Pane | NativeSnapshot['workspaces'][number], values: Record<string, string | null>, config: WorkCardsConfig, signal?: AbortSignal, expected?: StreamsCardSnapshot, beforeEffect?: () => void): Promise<void> {
     const v = await this.guard(source, context, config, signal);
-    if (expected && !isDeepStrictEqual(v.saved, expected)) throw new Error('Streams projection source changed before native effect');
+    if (expected && (!sameStreamsScope(v.saved.scope, expected.scope) || !isDeepStrictEqual(v.saved.native, expected.native))) throw new Error('Streams projection source changed before native effect');
     const kind = 'pane_id' in target ? 'pane' : 'workspace', targetId = 'pane_id' in target ? target.pane_id : target.workspace_id;
     const live = kind === 'pane' ? v.snapshot.panes.find(p => p.pane_id === targetId) : v.snapshot.workspaces.find(w => w.workspace_id === targetId);
     if (!live || !isDeepStrictEqual(live, target)) throw new Error('Native metadata target changed');
@@ -178,10 +184,12 @@ export class StreamsWorkspaceClient extends HerdrTransport {
       await this.ensureStreamsPlugin(config, () => this.guard(source, context, config, signal), signal);
       v = await this.guard(source, context, config, signal);
       const workspace = v.snapshot.workspaces.find(w => w.workspace_id === context.workspaceId)!;
-      if (!workspace.tokens.strm_binding) await this.stamp(source, context, workspace, { ...v.binding, strm_binding: randomUUID() }, config, signal);
-      v = await this.guard(source, context, config, signal); this.bound(v, context);
+      if (!workspace.tokens.strm_binding) {
+        await this.stamp(source, context, workspace, { ...v.binding, strm_binding: randomUUID() }, config, signal);
+        v = await this.guard(source, context, config, signal);
+      }
+      this.bound(v, context);
       const nonce = randomUUID(), root = await realpath(this.pluginRoot);
-      v = await this.guard(source, context, config, signal);
       if (v.pair.kind !== 'empty' && v.pair.kind !== 'absent') throw new Error('Pair changed before launch');
       const vars: Record<string, string> = {
         STREAMS_CARDS_SCOPE: JSON.stringify(v.saved.scope), STREAMS_CARDS_OWNER: JSON.stringify(v.saved.native),
@@ -210,24 +218,22 @@ export class StreamsWorkspaceClient extends HerdrTransport {
       const info = object(opened.plugin_pane, 'Streams launch'), returned = nativePane(info.pane);
       if (info.plugin_id !== pluginId || info.entrypoint !== 'card' || returned.workspace_id !== context.workspaceId || returned.tab_id !== context.tabId
         || v.snapshot.panes.some(p => p.pane_id === returned.pane_id || p.terminal_id === returned.terminal_id)) throw new Error('Unexpected/replayed native card response; launch evidence retained');
+      await state.write({ version: 1, key: v.key, phase: 'pending', nonce, paneId: returned.pane_id, terminalId: returned.terminal_id, tabId: returned.tab_id });
+      if (config.pane_height_fraction !== 0.5) {
+        const target = config.pane_height_fraction < 0.5 ? v.owner : returned;
+        const resized = await this.result(['pane', 'resize', '--pane', target.pane_id, '--direction', config.pane_height_fraction < 0.5 ? 'down' : 'up', '--amount', String(Math.abs(0.5 - config.pane_height_fraction))], config, 'pane_resize', signal);
+        if (resized.resize?.pane_id !== target.pane_id) throw new Error('Initial sizing acknowledgement mismatch; display retained and sizing will not retry');
+      }
       v = await this.guard(source, context, config, signal);
       const card = locateTerminal(v.snapshot, returned.terminal_id);
       if (!isDeepStrictEqual(card, returned) || pairKeys.some(k => Object.hasOwn(card.tokens, k))) throw new Error('New card identity changed; launch evidence retained');
       const markers = { strm_agent: v.identity, strm_nonce: nonce, strm_pi: v.owner.terminal_id, strm_card: card.terminal_id, strm_native: v.saved.scope.nativeSessionId };
-      await state.write({ version: 1, key: v.key, phase: 'pending', nonce, paneId: card.pane_id, terminalId: card.terminal_id, tabId: card.tab_id });
       // Card first is temporarily incomplete. Validate only this durable reservation.
       await this.stampReserved(source, context, card, { ...markers, strm_role: 'card' }, config, signal);
       await this.stampReserved(source, context, v.owner, { ...markers, strm_role: 'agent' }, config, signal);
       v = await this.guard(source, context, config, signal);
       if (v.pair.kind !== 'paired' || v.pair.nonce !== nonce) throw new Error('New pair did not round-trip; evidence retained');
       await state.write({ version: 1, key: v.key, phase: 'ready', nonce, paneId: card.pane_id, terminalId: card.terminal_id, tabId: card.tab_id });
-      if (config.pane_height_fraction !== 0.5) {
-        const ready = await this.marked(source, context, config, signal);
-        if (!isDeepStrictEqual(ready.pair, v.pair)) throw new Error('Pair changed before initial sizing; display retained');
-        const target = config.pane_height_fraction < 0.5 ? v.pair.agent : v.pair.card;
-        const resized = await this.result(['pane', 'resize', '--pane', target.pane_id, '--direction', config.pane_height_fraction < 0.5 ? 'down' : 'up', '--amount', String(Math.abs(0.5 - config.pane_height_fraction))], config, 'pane_resize', signal);
-        if (resized.resize?.pane_id !== target.pane_id) throw new Error('Initial sizing acknowledgement mismatch; display retained and sizing will not retry');
-      }
       return v.pair;
     }, { signal, waitMs: config.herdr_timeout_ms });
   }
@@ -256,7 +262,8 @@ export class StreamsWorkspaceClient extends HerdrTransport {
       const w = snapshot.workspaces.find(w => w.workspace_id === context.workspaceId)!;
       if (!captured.binding || w.tokens.strm_binding !== captured.binding || w.tokens.strm_catalog !== streamsDigest(saved.scope.catalogSource)
         || w.tokens.strm_host !== saved.scope.hostId || w.tokens.strm_stream !== saved.scope.streamId) throw new Error('Reserved binding changed');
-      if (!isDeepStrictEqual(await source.read(signal), saved)) throw new Error('App context changed during pair reservation verification');
+      const latest = await source.read(signal);
+      if (!sameStreamsScope(latest.scope, saved.scope) || !isDeepStrictEqual(latest.native, saved.native)) throw new Error('App context changed during pair reservation verification');
       signal?.throwIfAborted();
       return snapshot.panes.find(p => p.pane_id === target.pane_id);
     };
@@ -282,7 +289,7 @@ export class StreamsWorkspaceClient extends HerdrTransport {
       const pair = v.pair;
       const closed = await this.result(['plugin', 'pane', 'close', pair.card.pane_id], config, 'plugin_pane_closed', signal);
       const saved = await source.read(signal), after = await this.snapshot(config, signal), owner = locateTerminal(after, v.owner.terminal_id);
-      if (closed.pane_id !== v.pair.card.pane_id || !isDeepStrictEqual(saved, v.saved) || !isDeepStrictEqual(owner, v.owner)
+      if (closed.pane_id !== v.pair.card.pane_id || !sameStreamsScope(saved.scope, v.saved.scope) || !isDeepStrictEqual(saved.native, v.saved.native) || !isDeepStrictEqual(owner, v.owner)
         || after.panes.some(p => p.terminal_id === pair.card.terminal_id || p.pane_id === pair.card.pane_id)
         || after.workspaces.find(w => w.workspace_id === context.workspaceId)?.tokens.strm_binding !== this.bound(v, context)) throw new Error('Close acknowledgement/owner changed; effect may be partial and markers retained');
       // Keep exact owner markers as durable absent/suppression evidence. Never clear
@@ -384,7 +391,7 @@ export class StreamsWorkspaceClient extends HerdrTransport {
         const scope = await names.scope({ socket: context.socket, workspaceId: context.workspaceId, bindingNonce: this.bound(before.v, context), kind, surfaceId: kind === 'workspace' ? context.workspaceId : context.tabId });
         const prior = await names.read(scope), owner = { terminalId: before.v.owner.terminal_id, nonce: before.v.pair.kind === 'empty' ? before.v.saved.scope.nativeSessionId : before.v.pair.nonce };
         const fresh = await read();
-        if (!isDeepStrictEqual(fresh, before)) throw new Error('Naming source/owner/label changed');
+        if (fresh.desired !== before.desired || !isDeepStrictEqual(fresh.surface, before.surface) || !isDeepStrictEqual(fresh.v.owner, before.v.owner) || !isDeepStrictEqual(fresh.v.pair, before.v.pair)) throw new Error('Naming source/owner/label changed');
         // Initial adoption never overwrites an arbitrary label, even on explicit open.
         // The imported pure policy handles later overrides independently per surface.
         let decision;
@@ -478,7 +485,8 @@ export class StreamsWorkspaceClient extends HerdrTransport {
         const scope = await names.scope({ socket: context.socket, workspaceId: context.workspaceId,
           bindingNonce: this.bound(before.fresh.v, context), kind: 'tab', surfaceId: pane.tab_id });
         const prior = await names.read(scope), name = this.title(target.path);
-        if (!isDeepStrictEqual(await read(), before)) throw new Error('Editor naming source changed');
+        const currentNaming = await read();
+        if (!isDeepStrictEqual(currentNaming.tab, before.tab) || !isDeepStrictEqual(currentNaming.p, before.p)) throw new Error('Editor naming source changed');
         const decision = decideName({ scope, provenance: prior?.record ?? null, owner: { terminalId: pane.terminal_id, nonce },
           currentLabel: before.tab.label, desiredName: name, defaultLabelProven: before.tab.label === String(before.fresh.v.snapshot.tabs.filter(t => t.workspace_id === context.workspaceId).findIndex(t => t.tab_id === pane.tab_id) + 1) });
         if (decision.kind === 'rename') {

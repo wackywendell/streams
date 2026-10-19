@@ -56,22 +56,30 @@ export async function runStreamsPane(env: NodeJS.ProcessEnv = process.env): Prom
     input.on('data', data); input.on('end', stop); output.on('resize', resize);
     for (const signal of signals) process.on(signal, stop);
     output.write('\x1b[?1049h\x1b[?25l\x1b[?7l\x1b[?2004h');
+    let startupRetries = 0;
     while (!stopped) {
       const saved = await view.refresh(); if (stopped) break;
-      let ready = false;
+      let ready = false, quickRetry = false;
       try {
         context ??= await client.bootstrap(config, controller.signal);
         if (saved) {
           const pair = await client.verifyDisplay(source, context, config, controller.signal);
           if (pair.agent.terminal_id !== env.STREAMS_CARDS_OWNER_TERMINAL || pair.card.terminal_id !== context.terminalId || pair.nonce !== env.STREAMS_CARDS_NONCE) throw new Error('Launcher owner/card/nonce mismatch');
-          ready = true;
+          ready = true; startupRetries = 3;
           if (pair.card.tokens.strm_caption_manual !== '1'
             && (pair.card.label !== saved.stream.title || pair.card.tokens.strm_caption !== saved.stream.title)) {
             await client.projectCaption(source, context, config, controller.signal);
           }
           view.clearNotice('projection');
         }
-      } catch (error) { view.setNotice('projection', `Herdr projection unavailable: ${(error as Error).message}`); }
+      } catch (error) {
+        const message = (error as Error).message;
+        if (startupRetries < 3 && /exact owned Streams card|paired or absent owner markers|Incomplete|Conflicting duplicate live owners/i.test(message)) {
+          startupRetries++; quickRetry = true;
+        } else {
+          view.setNotice('projection', `Herdr projection unavailable: ${message}`);
+        }
+      }
       if (stopped) break;
       const pending = keys; keys = [];
       for (const key of pending) {
@@ -91,7 +99,7 @@ export async function runStreamsPane(env: NodeJS.ProcessEnv = process.env): Prom
       render();
       if (stopped) break;
       if (!keys.length) await new Promise<void>(resolve => {
-        const timer = setTimeout(done, config.pane_poll_interval_ms);
+        const timer = setTimeout(done, quickRetry ? Math.min(150, config.pane_poll_interval_ms) : config.pane_poll_interval_ms);
         function done() { clearTimeout(timer); wake = undefined; resolve(); }
         wake = done;
       });

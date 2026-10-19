@@ -499,8 +499,30 @@ test('a different checkout ID at the same canonical file cannot reuse an older e
   snapshot = await a.s.read(); target = renderStreamsCard(snapshot, 100, 10).documents.get('a'); await a.c.openDocument(a.s, a.context, snapshot, target, config);
   assert.equal(launches(f).filter(a => a.includes('document')).length, 2);
 });
-test('a source edit during native snapshot revalidation prevents summary publication', async t => {
-  const f = await fixture(t), a = await f.owner(1); await a.open(); const before = effects(f).length; let once = true;
+test('a narrative progress edit during native snapshot revalidation succeeds while a native owner change rejects', async t => {
+  const f = await fixture(t), a = await f.owner(1); await a.open();
+  let once = true;
   f.hook((args, output) => { if (once && args[0] === 'api') { once = false; f.contexts[0].session.state = 'New progress'; } return output; });
-  await assert.rejects(a.c.projectSummaries(a.s, a.context, config), /context changed/); assert.equal(effects(f).length, before);
+  await a.c.projectSummaries(a.s, a.context, config);
+  assert.equal(f.panes[0].tokens.strm_state_short, 'Own 1');
+  const before = effects(f).length; once = true;
+  f.hook((args, output) => { if (once && args[0] === 'api') { once = false; f.contexts[0].native.tab_id = 'w:t2'; } return output; });
+  await assert.rejects(a.c.projectSummaries(a.s, a.context, config), /context changed/);
+  assert.equal(effects(f).length, before);
+});
+test('openDisplay resizes split immediately after launch and absent pair reconciles a stale pending gate', async t => {
+  const f = await fixture(t), a = await f.owner(1), pair = await a.open();
+  const openIdx = f.calls.findIndex(args => args[0] === 'plugin' && args[2] === 'open');
+  const resizeIdx = f.calls.findIndex(args => args[0] === 'pane' && args[1] === 'resize');
+  const cardStampIdx = f.calls.findIndex(args => args[1] === 'report-metadata' && args.includes('strm_role=card'));
+  assert.ok(openIdx >= 0 && resizeIdx > openIdx && resizeIdx < cardStampIdx);
+  // Simulate a card that finished stamping both panes before crashing prior to ready, and was later closed.
+  const state = new StreamsNativeState(f.stateDirectory);
+  const saved = await a.s.read(), key = streamsDigest([f.socket, saved.scope, ['w:p1', 'term1', 'w', 'w:t1']]);
+  await state.write({ version: 1, key, phase: 'pending', nonce: pair.nonce, paneId: pair.card.pane_id, terminalId: pair.card.terminal_id, tabId: pair.card.tab_id });
+  f.panes.splice(f.panes.findIndex(p => p.terminal_id === pair.card.terminal_id), 1);
+  await a.c.projectSummaries(a.s, a.context, config);
+  assert.equal((await a.open('automatic')).kind, 'suppressed');
+  assert.equal((await a.open('explicit')).kind, 'paired');
+  assert.ok(!(await readdir(f.stateDirectory)).includes(`${key}.json.pending`));
 });
