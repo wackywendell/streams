@@ -255,7 +255,7 @@ test('only streams slash command registers; model checkpoint tool retains its in
 });
 test('streams completes subcommand prefixes but never report instructions or extra arguments',async()=>{
  const complete=commandFixture().commands.get('streams').getArgumentCompletions;
- assert.deepEqual(await complete(''),['report','settings','attach'].map(value=>({value,label:value})));
+ assert.deepEqual(await complete(''),['report','settings','attach','pane'].map(value=>({value,label:value})));
  for(const [prefix,value] of [['r','report'],['se','settings'],['att','attach'],['report','report']])assert.deepEqual(await complete(prefix),[{value,label:value}]);
  for(const prefix of ['unknown','report ','report settings','report\nattach','settings ','attach effort'])assert.equal(await complete(prefix),null);
 });

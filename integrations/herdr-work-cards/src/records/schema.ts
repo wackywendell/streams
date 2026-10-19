@@ -82,7 +82,7 @@ export function absolute(value: unknown): string {
   if (!isAbsolute(path) || normalize(path) !== path) throw new Error('Expected normalized absolute path');
   return path;
 }
-function relativePath(value: unknown): string {
+export function relativeDocumentPath(value: unknown): string {
   const p = text(value, true);
   if (isAbsolute(p) || p.includes('\\') || p.split('/').some(p => !p || p === '.' || p === '..')) throw new Error('Invalid relative document path');
   return p;
@@ -108,7 +108,7 @@ function status(value: unknown): CardStatus {
   return value as CardStatus;
 }
 export function documentIdentity(value: unknown): DocumentIdentity {
-  const v = object(value, ['checkout', 'path']); return { checkout: opaque(v.checkout), path: relativePath(v.path) };
+  const v = object(value, ['checkout', 'path']); return { checkout: opaque(v.checkout), path: relativeDocumentPath(v.path) };
 }
 function document(value: unknown): WorkspaceDocument {
   const v = object(value, ['checkout', 'path', 'description']);

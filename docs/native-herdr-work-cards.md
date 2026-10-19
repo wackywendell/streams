@@ -1,6 +1,6 @@
 # ADR: Native Herdr work cards as Streams projections
 
-Status: accepted; implementation is under review in this checkout. Native acceptance and activation remain pending. The imported implementation retains its original history. This decision replaces its separate catalog and membership model, not its presentation design.
+Status: accepted; the Streams-backed projection and restoration support are implemented and reviewed in this checkout. Native acceptance and activation remain pending. The imported implementation retains its original history. This decision replaces its separate catalog and membership model, not its presentation design.
 
 ## Context and decision
 
@@ -29,6 +29,8 @@ Closing with `q` remains display-only. It must not stop catalog reporting, delet
 Native workspace names and card captions project `stream.title`; Pi and eligible agent-tab names project `session.title`; editor names come from exact document identity. Compact purpose and progress use `goal_short` and `state_short`, not another inference or text truncation. Preserve the imported naming policy's independent switches, manual protection and actual-first-pane rule. Manual catalog text and manual native labels are separate decisions.
 
 Native effects are not a transaction with catalog persistence. Verify current scope and acknowledgements, report partial effects and preserve recovery evidence. A successfully saved title is not proof that a native name changed.
+
+A GUI-created terminal inherits the frontend server's environment, not the invoking CLI's. Launches explicitly carry the caller's catalog, host-state, checkout-registry and harness-selection paths, including effective defaults. The card subprocess separately captures the owning agent's bounded read environment. Neither boundary forwards the caller's full environment or credentials; otherwise a workspace or card could silently read another catalog despite carrying the same Stream ID.
 
 ## Documents open in the viewing session
 

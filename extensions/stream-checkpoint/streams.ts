@@ -92,6 +92,7 @@ export class StreamCli {
   if (!Array.isArray(rows) || !rows.every(stream)) throw new StreamsCliError("Invalid catalog list");
   return rows;
  }
+ async captureArrangement(streamId: string): Promise<unknown> {return this.run(["workspace", "capture", streamId, "--json"]);}
  async sync(event: "start" | "shutdown"): Promise<PublicationResult> {return this.run(["sync", "--event", event, "--json"], undefined, "publication");}
  async enroll(request: unknown): Promise<Receipt> {return this.run(["agent", "enroll", "--json"], request, "save");}
  async apply(request: ApplyRequest): Promise<Receipt> {return this.run(["agent", "apply", "--json"], request, "save");}

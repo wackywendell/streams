@@ -6,7 +6,7 @@ import { isDeepStrictEqual } from 'node:util';
 import { homedir } from 'node:os';
 import { parseDocument, stringify } from 'yaml';
 import {
-  absolute, applyOwnUpdate, applyReferenceRemoval, applySharedAdditions, assertAgentAuthority, documentIdentity, object, opaque, referenceIdentity, sameAgentMembership,
+  absolute, applyOwnUpdate, applyReferenceRemoval, applySharedAdditions, assertAgentAuthority, documentIdentity, object, opaque, referenceIdentity, relativeDocumentPath, sameAgentMembership,
   text, validateAgent, validateBoundary, validateMembership, validateReferenceIdentity, validateSharedReferenceUpdate, validateWorkspace, parseWorkspaceV1, serializeWorkspaceV1, unevaluatedGoal, transitionGoal,
   type AgentRecord, type Authority, type DocumentIdentity, type Goal, type OwnUpdate, type ReferenceBoundary,
   type ReferenceIdentity, type ReferenceSelection, type SharedReferenceUpdate, type Snapshot, type WorkspaceRecord,
@@ -433,15 +433,21 @@ export async function resolveWorkspaceDocument(workspace: WorkspaceRecord, ident
   const ref = documentIdentity(identity);
   const checkout = workspace.checkouts[ref.checkout];
   if (!checkout) throw new Error('Unknown checkout');
+  return resolveCheckoutDocument(checkout.directory, ref.path);
+}
+
+/** Shared by both catalog adapters; the caller supplies an already selected checkout. */
+export async function resolveCheckoutDocument(directory: string, path: string): Promise<string> {
+  const selected = absolute(directory), document = relativeDocumentPath(path);
   // Do not silently relocate a registered checkout after it is replaced by a symlink.
-  const root = await realpath(checkout.directory);
-  if (root !== checkout.directory) throw new Error('Checkout canonical directory changed');
-  const target = await realpath(resolve(root, ref.path));
+  const root = await realpath(selected);
+  if (root !== selected) throw new Error('Checkout canonical directory changed');
+  const target = await realpath(resolve(root, document));
   const local = relative(root, target);
   if (local === '..' || local.startsWith(`..${sep}`) || isAbsolute(local)) {
-    throw new Error(`Document ${ref.path} resolves outside the checkout ${root}`);
+    throw new Error(`Document ${document} resolves outside the checkout ${root}`);
   }
-  if (!(await stat(target)).isFile()) throw new Error(`Document ${ref.path} must be a regular file`);
+  if (!(await stat(target)).isFile()) throw new Error(`Document ${document} must be a regular file`);
   return target;
 }
 

@@ -33,4 +33,6 @@ jobs:
       - uses: actions/checkout@v7
       - uses: jdx/mise-action@v5
       - run: uv build
+      - run: npm ci
+      - run: npm --prefix integrations/herdr-work-cards ci --ignore-scripts
       - run: npm pack --dry-run

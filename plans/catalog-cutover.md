@@ -24,7 +24,9 @@ Work Cards' native side panes, naming and short-description projections have not
 
 The original Work Cards history through `e7d74ce2` is merged under `integrations/herdr-work-cards/` without squashing or rewriting the source commits. The import was verified byte-for-byte with executable modes, and its 864 tests and typecheck passed before adaptation. Its old Pi entrypoint and writer are not activated. Root `mise run test` now includes the imported regression suite.
 
-The [native projection ADR](../docs/native-herdr-work-cards.md) preserves the per-session pane, renderer, navigation and naming policies while replacing catalog and membership authority. The concrete unresolved boundary is mapping portable repository/ref/path document references to exact local checkouts; a display-only port must not be presented as the completed UI.
+The [native projection ADR](../docs/native-herdr-work-cards.md) preserves the per-session pane, renderer, navigation and naming policies while replacing catalog and membership authority. Document opening now has an agreed rule: use the viewing agent/tab's checkout and current working file, not another tab's jj workspace or the recorded ref. Missing files remain visible errors without fallback or reference deletion. The exact session-scoped checkout-binding interface is still unimplemented; a display-only port must not be presented as the completed UI.
+
+A and B are two tabs/jj workspaces inside one Herdr workspace. Keep the runtime's one-native-workspace membership rule unchanged. Scope checkout bindings and editor reuse to the exact viewing session; a native-workspace-wide map would conflate its agents' checkouts.
 
 The Pi slash-command family is now `/streams`, `/streams report [instructions]`, `/streams settings` and `/streams attach`, with subcommand completion. The model-callable `checkpoint` tool is unchanged. The canonical installed checkout is advanced on local `main`; its Pi tests pass and the live catalog still validates with 20 streams and 32 sessions. Participating Pi sessions need a reload for the command rename. The native adapter remains inactive.
 

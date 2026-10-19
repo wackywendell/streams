@@ -5,7 +5,20 @@
   "license": "MIT",
   "author": "Wendell Smith <wackywendell@gmail.com>",
   "keywords": ["pi-package"],
-  "files": ["extensions", "skills"],
+  "files": [
+    "extensions", "skills",
+    "integrations/herdr-work-cards/package.json",
+    "integrations/herdr-work-cards/dist",
+    "integrations/herdr-work-cards/bin",
+    "integrations/herdr-work-cards/streams-herdr-plugin.toml"
+  ],
+  "scripts": {
+    "prepack": "npm --prefix integrations/herdr-work-cards run build"
+  },
+  "dependencies": {
+    "string-width": "^8.3.0",
+    "yaml": "^2.8.1"
+  },
   "pi": {
     "extensions": ["./extensions/stream-checkpoint/index.ts"],
     "skills": ["./skills"]

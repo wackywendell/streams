@@ -113,7 +113,8 @@ The checkout's Pi extension maintains catalog records instead of generating scra
 - `/streams` or `/streams report` requests a report now, not a draft awaiting Apply. Use `/streams report [instructions]` to give reporting direction. Explicit reporting can enroll an unbound conversation. The model-callable `checkpoint` tool remains unchanged.
 - `/streams attach` offers initial selection or creation; attached conversations cannot switch efforts.
 - `/streams settings` controls automatic/manual reporting, initial enrollment, completed responses between reports, context and model. Manual reporting disables background requests, not explicit commands.
-- Tab completes `report`, `settings` and `attach`. Unknown subcommands and extra arguments to `settings` or `attach` show usage without reporting or saving. Free-text instructions must follow `report`.
+- `/streams pane` opens the native Herdr card; `/streams pane close` closes only its display. Neither requests a report or changes membership.
+- Tab completes `report`, `settings`, `attach` and `pane`. Unknown subcommands or invalid management arguments show usage without reporting or saving. Free-text instructions must follow `report`.
 
 Settings live in `$PI_CODING_AGENT_DIR/stream-reporting.json`, defaulting to `~/.pi/agent/stream-reporting.json`. The defaults are:
 
@@ -125,7 +126,7 @@ Add `"model": {"provider": "PROVIDER", "id": "MODEL_ID"}` to select a helper mod
 
 Session progress and effort metadata use separate inferences, so updating both takes two helper requests. Reports preserve captured records, ownership and conversation-lineage guards. They may update session status, but cannot park, finish or archive the whole effort. Historical conversation is evidence, not fresh verification of files or remote services.
 
-The menu refreshes on action or reopen, not while waiting for a selection. Discussion and unsent inputs survive closing and reopening the card in the same Pi process, not extension reload. Work Cards projections and native tab/title updates remain separate follow-on work.
+The menu refreshes on action or reopen, not while waiting for a selection. Discussion and unsent inputs survive closing and reopening the card in the same Pi process, not extension reload. The native Herdr card reads the same saved records; it does not run another summarizer.
 
 When testing, keep the CLI and extension from the same checkout, use isolated XDG/agent directories and do not also load the published scratch-based extension. Restart running Pi sessions after updating the extension; existing processes retain their previously loaded code. The [bundled skill](skills/streams/SKILL.md) covers record semantics and guarded reporting from other harnesses.
 
@@ -133,7 +134,29 @@ When testing, keep the CLI and extension from the same checkout, use isolated XD
 
 The original Work Cards source, tests and design documents are imported under [`integrations/herdr-work-cards`](integrations/herdr-work-cards), with its original commit history intact through `e7d74ce22f95893fa8eed570ef2e6a14d61f74bd`. The [native projection decision](docs/native-herdr-work-cards.md) identifies which behavior carries forward and which legacy authority is superseded.
 
-The import is not an activated catalog adapter. Do not load its old Pi entrypoint or follow its standalone installation steps: that runtime writes a separate Work Cards catalog. Streams remains the only writable catalog. Exact document-checkout resolution and Streams-backed native ownership must be completed before activating the pane.
+This checkout adds a read-only Streams adapter and Pi lifecycle wiring. Native acceptance and installed-runtime activation are still pending. Do not load the imported package's old Pi entrypoint or standalone runtime: that writes a separate Work Cards catalog. The root Streams extension loads only the projection and naming modules after exact Herdr/Pi attestation.
+
+Native presentation settings remain in `$PI_CODING_AGENT_DIR/work-cards.json`, separate from reporting settings. `workspace_startup` selects automatic or manual pane startup. `workspace_naming`, `tab_naming` and `session_naming` independently enable naming; `null` follows the startup mode. Manual native names remain protected. `document_command` selects a trusted editor command, otherwise `$EDITOR` or `less` is used. Legacy inference settings in that file do not start a second summarizer.
+
+Closing with `q` or `/streams pane close` is display-only and suppresses automatic reopening, including after reload. `/streams pane` explicitly reopens it. An uncertain launch remains blocked for inspection, even after an explicit request.
+
+### Select local checkouts
+
+Register exact Git or jj roots and their repository URLs explicitly:
+
+```sh
+streams checkout register ~/code/project --repository https://github.com/you/project.git
+streams checkout list
+streams session directory SESSION_RECORD_ID --checkout CHECKOUT_ID --repository code
+streams session directory SESSION_RECORD_ID --checkout CHECKOUT_ID --within src --repository code
+streams checkout default CHECKOUT_ID https://github.com/you/project.git
+streams checkout resolve https://github.com/you/project.git
+streams checkout move CHECKOUT_ID ~/code/project-moved
+```
+
+`--repository` on `checkout register` is an exact URL; on `session directory` it is the Stream's repository alias. A Session's selected checkout wins for its repository. Set a default explicitly for documents in other repositories. Reads never infer bindings from Git remotes, create checkouts or change defaults. A moved checkout keeps its ID; `session directory --cwd PATH` can replace an obsolete directory selection.
+
+Documents open at the viewing Session's current working file, including local edits, not the source agent's checkout or recorded revision. The optional `added_at` commit is provenance. Missing files or mappings are visible errors; the pane never opens another checkout or removes the shared reference. Host-local checkout registrations live under `$XDG_STATE_HOME/streams/checkouts`.
 
 ## Open or resume work
 
@@ -150,9 +173,13 @@ streams resume --current
 
 `start` creates a stream and opens it. If opening fails, the stream remains saved and the result reports its ID. Retry `open` with that ID instead of creating another stream.
 
-`open` creates or reuses a native workspace through Herdr or CMUX. With no attached session, it leaves a shell. `resume` replaces the current terminal process with one recorded Pi, Codex or Claude conversation. More than one eligible session requires `--session`; Streams does not guess the latest one. Full multi-tab reconstruction is not implemented.
+Herdr `open` focuses an existing verified workspace, or restores the last recorded agent-tab arrangement after it closes. It preserves grouping, order and manual labels, excluding done and parked Sessions by default. `--session` explicitly selects a conversation, including done or parked work. Existing tabs and agents are never closed automatically. Without a saved arrangement, a sole unfinished local Session is restored; several candidates produce a shell and a request to choose.
 
-`--current` uses the invoking session or workspace's explicit association. It never infers a stream from a title, working directory or another client's GUI focus. `--frontend` chooses an adapter independently of the target. A stale native binding or partial open requires inspection; Streams does not automatically relaunch or roll back native resources. If a creation response is lost, a saved pending-attempt file blocks another launch. Keep that evidence until you have reconciled native state.
+`resume` replaces the current terminal process with one recorded Pi, Codex or Claude conversation. Multiple eligible Sessions require `--session`; it does not reconstruct or focus a workspace. Both paths refuse a duplicate live conversation and validate saved files. Missing or ambiguous files are reported, not replaced with fresh conversations. CMUX supports single-session opening, not arrangement reconstruction.
+
+Capture the current verified Herdr arrangement with `streams workspace capture STREAM_ID`. Pi also captures after an attested native refresh. Capture does not enroll conversations or save progress. Restoration does not recreate unrelated shell/editor tabs or exact pane geometry.
+
+`--current` uses the invoking session or workspace's explicit association. It never infers a stream from a title, working directory or another client's GUI focus. `--frontend` chooses an adapter independently of the target. An association on another frontend endpoint or a partial open requires inspection; Streams does not automatically relaunch or roll back native resources. If a creation response is lost, a saved pending-attempt file blocks another launch. Keep that evidence until you have reconciled native state.
 
 An explicit `--cwd` updates the selected session's local directory mapping, including on resume and workspace reuse. Reusing a workspace does not change an existing terminal's working directory.
 
@@ -187,7 +214,7 @@ mise run test
 
 Python tests cover the catalog, CLI, sync library, guarded agent API and runtime adapters. Node tests cover reporting, the card editor, discussion, settings and real checkout-CLI integration inside and outside a repository. An isolated two-host Git test covers Pi lifecycle hooks, guarded reports, second-host refresh, offline saves and fresh-process retry. The native deadline test checks that the CLI and a child process stop. Tests use no live credentials or model inference. Native workspace effects remain mocked.
 
-`mise run test:herdr` builds and runs the imported Work Cards regression suite; it also runs as part of `mise run test`. Its legacy storage and helper tests preserve prior coverage, not proof of a Streams-backed native adapter.
+`mise run test:herdr` builds and runs the imported Work Cards regression suite; it also runs as part of `mise run test`. It covers the Streams adapter as well as the preserved renderer, naming and legacy helpers. Native effects use mocked protocols; run isolated native acceptance before activating changed launch code.
 
 The Python package requires Python 3.11 or newer. See the [durable catalog decision](docs/durable-work-catalog.md), [sync decision](docs/catalog-git-sync.md) and temporary [cutover plan](plans/catalog-cutover.md) for scope and remaining integration work.
 
