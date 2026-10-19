@@ -24,23 +24,25 @@ Work Cards' native side panes, naming and short-description projections have not
 
 The original Work Cards history through `e7d74ce2` is merged under `integrations/herdr-work-cards/` without squashing or rewriting the source commits. The import was verified byte-for-byte with executable modes, and its 864 tests and typecheck passed before adaptation. Its old Pi entrypoint and writer are not activated. Root `mise run test` now includes the imported regression suite.
 
-The [native projection ADR](../docs/native-herdr-work-cards.md) preserves the per-session pane, renderer, navigation and naming policies while replacing catalog and membership authority. Document opening now has an agreed rule: use the viewing agent/tab's checkout and current working file, not another tab's jj workspace or the recorded ref. Missing files remain visible errors without fallback or reference deletion. The exact session-scoped checkout-binding interface is still unimplemented; a display-only port must not be presented as the completed UI.
+The [native projection ADR](../docs/native-herdr-work-cards.md) preserves the per-session pane, renderer, navigation and naming policies while replacing catalog and membership authority. The Streams-backed projection, session-scoped checkout resolution, attested native effects and Pi lifecycle wiring are implemented and approved by Gemini Argon. The full checkout suite passes 651 Python, 103 Pi and 1,032 native Herdr tests, with no skips. Document navigation uses the viewing Session's registered checkout and current working file; missing files remain errors without fallback or reference deletion.
+
+Isolated native acceptance on 18 October launched the exact saved Pi conversation in a disposable catalog and Herdr workspace, then restored the caller's focus. Card acceptance remains blocked: Herdr recognises the Pi process but exposes no `agent_session` identity, including after the managed reporter receives an acknowledgement. Streams rejects attestation before opening a card or projecting names. The disposable workspace was closed and its catalog, launch evidence and diagnostics retained locally. Per-session card rendering, native document navigation and multi-session restoration therefore remain unverified against the real frontend. No installed-runtime activation occurred.
 
 A and B are two tabs/jj workspaces inside one Herdr workspace. Keep the runtime's one-native-workspace membership rule unchanged. Scope checkout bindings and editor reuse to the exact viewing session; a native-workspace-wide map would conflate its agents' checkouts.
 
-The Pi slash-command family is now `/streams`, `/streams report [instructions]`, `/streams settings` and `/streams attach`, with subcommand completion. The model-callable `checkpoint` tool is unchanged. The canonical installed checkout is advanced on local `main`; its Pi tests pass and the live catalog still validates with 20 streams and 32 sessions. Participating Pi sessions need a reload for the command rename. The native adapter remains inactive.
+The Pi slash-command family includes `/streams`, `/streams report [instructions]`, `/streams settings`, `/streams attach`, `/streams pane` and `/streams pane close`, with subcommand completion. The model-callable `checkpoint` tool is unchanged. The command rename is active in the canonical checkout; the native pane commands and adapter remain confined to this reviewed checkout pending acceptance and activation.
 
 ## Follow-on slices
 
 - implement handover and reattachment coordination with confirmed authority separate from pending proposals
-- connect Work Cards projections to the logical records
+- resolve the native Herdr session-reporting blocker and complete isolated card, document and restoration acceptance before activation
 - add captured document inputs before enabling inference that independently reads documents; the Pi helper currently uses conversation evidence and guarded catalog records
-- extend single-session opening/resumption to advisor-guided multi-session and tab reconstruction
+- consider advisor-guided restoration beyond the implemented last-recorded agent-tab arrangement; closed editor tabs and exact pane geometry are not reconstructed
 - add dedicated conflict-resolution and interrupted-save repair commands; current code detects and preserves these conditions rather than repairing them automatically
 - add an in-place local-only-to-Git transition preserving catalog records and host identity
 - separately approve package publication and run live Git/multi-machine acceptance
 
-Git backing and runtime publication integration are independent follow-on work; they do not block local use.
+Git backing and runtime publication integration are implemented in this checkout and covered by isolated tests. The installed catalog remains local-only; native activation and live Git/multi-machine acceptance are separate steps.
 
 Start and attachment events check the shared M interval; explicit sync and shutdown bypass timing. Successful/no-change commands check once after all related saves. CLI commands are caller-driven; there is no background sync service.
 
