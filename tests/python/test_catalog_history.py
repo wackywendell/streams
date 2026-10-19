@@ -16,7 +16,8 @@ from _streams.catalog.codec import record_to_data
 from _streams.catalog.model import Catalog, Checkout, Repository, record_key
 from _streams.catalog.operations import Authority, update
 from _streams.catalog.storage import StorageError
-from _streams.catalog.sync.envelope import BOOTSTRAP, decode_operation, encode_operation
+from _streams.catalog.sync.baseline import Baseline, encode_baseline
+from _streams.catalog.sync.envelope import BOOTSTRAP, decode_operation, encode_operation, operation_digest
 from _streams.catalog.sync.git_io import Git
 from _streams.catalog.sync.history import History, read_history
 from _streams.catalog.sync.local import RepairRequired
@@ -214,6 +215,75 @@ class CatalogHistoryTest(unittest.TestCase):
         files = {**self.files, "streams/work.yaml": encoded(replace(operation.after, repositories={}))}
         tip = self.commit(files, encode_operation(operation), parent)
         with self.assertRaisesRegex(RepairRequired, "unknown checkout repository"):
+            read_history(self.git, tip)
+
+    def baseline_root(self):
+        operation = create()
+        current = replace(operation.after, title="Adopted title")
+        retired = update("retired", effort(), {"status": "parked"})
+        self.files = {"streams/work.yaml": encoded(current)}
+        baseline = Baseline("laptop", {"work": encode_operation(operation, origin={"session": "original"})},
+                            {op.id: operation_digest(op) for op in (operation, retired)})
+        self.tip = self.commit(self.files, encode_baseline(baseline))
+        return self.tip, baseline, current, retired
+
+    def test_baseline_history_is_clone_independent_without_synthetic_operations(self):
+        root, baseline, current, _ = self.baseline_root()
+        history = read_history(self.git, root)
+        self.assertEqual(history.baseline, baseline)
+        self.assertEqual(history.root, root)
+        self.assertEqual(history.catalog.stream("work"), current)
+        self.assertEqual(history.operations, {})
+        self.assertEqual(history.fingerprints, baseline.fingerprints)
+        self.assertEqual(history.authorities, {"work": Authority("laptop", "create")})
+        temporary = tempfile.TemporaryDirectory()
+        self.addCleanup(temporary.cleanup)
+        clone = Path(temporary.name) / "clone"
+        # Copy only the object database through a local clone; no private receipts exist.
+        self.git.run("update-ref", "refs/heads/main", root)
+        subprocess.run(["git", "clone", "--no-checkout", str(self.root), str(clone)],
+                       capture_output=True, check=True)
+        self.assertFalse((clone / ".catalog-sync").exists())
+        restored = read_history(Git(clone, timeout=10), root)
+        self.assertEqual(restored, history)
+
+    def test_baseline_post_root_operations_guards_and_cache(self):
+        root, baseline, current, _ = self.baseline_root()
+        with patch.object(YamlStore, "decode_snapshot", wraps=YamlStore.decode_snapshot) as snapshot:
+            initial = read_history(self.git, root)
+            self.assertEqual(snapshot.call_count, 1)
+            first = self.append(contribution())
+            with patch.object(YamlStore, "decode_record", wraps=YamlStore.decode_record) as decode:
+                joined = read_history(self.git, first)
+                self.assertEqual(decode.call_count, 1)
+            self.assertEqual(snapshot.call_count, 1)
+        self.assertEqual(set(joined.operations), {"join"})
+        self.assertEqual(joined.fingerprints, {**baseline.fingerprints, "join": operation_digest(contribution())})
+        with patch.object(self.git, "run", side_effect=AssertionError("cached tip rebuilt")):
+            self.assertIs(read_history(self.git, root), initial)
+            self.assertIs(read_history(self.git, first), joined)
+        for operation in (replace(contribution(), id="bad-token", ownership_token="other"),
+                          update("guarded", current, {"goal": "Inference"}, actor="automatic",
+                                 ownership_token="create", inputs=(replace(contribution().after, state="stale"),))):
+            files = {**self.files, YamlStore.record_path(operation.target).as_posix(): encoded(operation.after)}
+            tip = self.commit(files, encode_operation(operation), first)
+            with self.subTest(operation=operation.id), self.assertRaises(RepairRequired):
+                read_history(self.git, tip)
+        valid = update("inferred", current, {"goal": "Inference"}, actor="automatic",
+                       ownership_token="create", inputs=(contribution().after,))
+        tip = self.append(valid)
+        self.assertEqual(read_history(self.git, tip).catalog.stream("work"), valid.after)
+
+    def test_baseline_rejects_reused_retired_operation_ids_and_non_root_manifest(self):
+        root, baseline, current, retired = self.baseline_root()
+        read_history(self.git, root)
+        for operation in (retired, update(retired.id, current, {"status": "done"})):
+            files = {"streams/work.yaml": encoded(operation.after)}
+            tip = self.commit(files, encode_operation(operation), root)
+            with self.subTest(operation=operation), self.assertRaisesRegex(RepairRequired, "duplicate operation ID"):
+                read_history(self.git, tip)
+        tip = self.commit(self.files, encode_baseline(baseline), root)
+        with self.assertRaises(RepairRequired):
             read_history(self.git, tip)
 
     def test_empty_bootstrap_and_linear_history_are_required(self):

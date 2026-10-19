@@ -115,9 +115,13 @@ class TypedStateTest(TransportFixture):
         with self.assertRaises(FrozenInstanceError):
             config.branch = "elsewhere"
         baseline = {"version": 1, **asdict(config)}
+        local = replace(config, remote=None)
+        self.state.write_config(local)
+        self.assertEqual(self.state.config(), local)
         cases = ({**baseline, "host": True}, {**baseline, "branch": " "},
-                 {**baseline, "remote": None}, {**baseline, "extra": 1},
-                 {key: value for key, value in baseline.items() if key != "host"})
+                 {**baseline, "remote": ""}, {**baseline, "extra": 1},
+                 {key: value for key, value in baseline.items() if key != "host"},
+                 {key: value for key, value in baseline.items() if key != "remote"})
         for data in cases:
             with self.subTest(data=data):
                 self.persist(self.state, "config.json", data)

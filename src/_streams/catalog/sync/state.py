@@ -1,7 +1,6 @@
 """Durable transport state: parse supported records before making effects."""
 
 from dataclasses import asdict, dataclass
-import hashlib
 import math
 import os
 from pathlib import Path
@@ -11,7 +10,7 @@ from typing import ClassVar
 from ..model import text
 from ..operations import Operation
 from ..storage import StorageError
-from .envelope import encode_operation, load_json
+from .envelope import decode_fingerprints, load_json, operation_digest
 
 
 class RepairRequired(StorageError):
@@ -58,12 +57,14 @@ class SyncMetadata:
 
 @dataclass(frozen=True)
 class GitConfig:
-    remote: str
+    remote: str | None
     branch: str
     host: str
 
     def __post_init__(self):
-        for name in ("remote", "branch", "host"):
+        if self.remote is not None:
+            text(self.remote, "remote")
+        for name in ("branch", "host"):
             text(getattr(self, name), name)
 
 
@@ -204,42 +205,37 @@ class State:
         finally:
             os.close(descriptor)
 
-    def _receipts(self) -> dict:
+    def fingerprints(self) -> dict[str, str]:
         data = self.read("receipts.json") or {"operations": {}}
-        operations = data.get("operations")
-        if (set(data) - {"version", "operations"} or not isinstance(operations, dict) or
-                any(not isinstance(key, str) or not isinstance(value, str) or len(value) != 64
-                    or any(c not in "0123456789abcdef" for c in value) for key, value in operations.items())):
-            raise RepairRequired("invalid operation retry receipts")
-        return operations
+        try:
+            if set(data) - {"version", "operations"}:
+                raise ValueError("unexpected retry receipt fields")
+            return decode_fingerprints(data.get("operations"))
+        except ValueError as error:
+            raise RepairRequired(f"invalid operation retry receipts: {error}") from error
 
     @staticmethod
     def _digest(operation: Operation) -> str:
-        return hashlib.sha256(encode_operation(operation).encode()).hexdigest()
+        return operation_digest(operation)
 
     def seen(self, operation: Operation) -> bool:
-        digest = self._receipts().get(operation.id)
+        digest = self.fingerprints().get(operation.id)
         if digest is not None and digest != self._digest(operation):
             raise RepairRequired(f"operation ID reused with different intent: {operation.id}")
         return digest is not None
 
     def remember(self, operation: Operation):
-        self.validate_operations((operation,), remember=True)
+        self.validate_fingerprints({operation.id: self._digest(operation)}, remember=True)
 
-    def validate_operations(self, intents, *, remember: bool = False):
-        """Compare a validated history in one pass before accepting or retiring it."""
-        operations = self._receipts()
-        changed = False
-        for operation in intents:
-            digest = self._digest(operation)
-            previous = operations.get(operation.id)
-            if previous is not None and previous != digest:
-                raise RepairRequired(f"operation ID reused with different intent: {operation.id}")
-            if previous is None:
-                operations[operation.id] = digest
-                changed = True
-        if remember and changed:
-            self.write("receipts.json", {"operations": operations})
+    def validate_fingerprints(self, fingerprints, *, remember: bool = False):
+        """Compare all history claims before persisting any missing retry evidence."""
+        incoming = decode_fingerprints(dict(fingerprints))
+        operations = self.fingerprints()
+        for identity, digest in incoming.items():
+            if identity in operations and operations[identity] != digest:
+                raise RepairRequired(f"operation ID reused with different intent: {identity}")
+        if remember and incoming.keys() - operations.keys():
+            self.write("receipts.json", {"operations": {**operations, **incoming}})
 
     def check_save(self):
         marker = self.read("save.json")
@@ -247,8 +243,7 @@ class State:
             raise RepairRequired(f"interrupted save; inspect {self.root / 'save.json'} before further writes")
 
     def check_local(self):
-        self._directory()
+        self.check_save()
         if any(path.name not in {"cli.json", "local.json", "receipts.json", "save.json"} for path in self.root.iterdir()):
             raise RepairRequired("unexpected local catalog bookkeeping; strategy cannot be switched")
-        self.check_save()
-        self._receipts()
+        self.fingerprints()

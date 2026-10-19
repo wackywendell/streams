@@ -32,14 +32,15 @@ class GitCatalog:
         self.git = Git(self.root, self.policy.timeout_seconds)
 
     @classmethod
-    def initialize(cls, root: Path, *, remote: str, host_id: str, branch: str = "main", **kwargs):
+    def initialize(cls, root: Path, *, remote: str | None = None, host_id: str, branch: str = "main", **kwargs):
         """Explicit setup only. Requires normal Git author/signing configuration.
 
         Existing managed catalogs can be reopened; arbitrary repositories cannot
         be adopted implicitly. A failed setup is preserved for manual inspection.
         """
         catalog = cls(root, host_id=host_id, **kwargs)
-        text(remote, "remote")
+        if remote is not None:
+            text(remote, "remote")
         text(branch, "branch")
         with catalog.store.transaction():
             config = catalog.state.config()
@@ -55,9 +56,10 @@ class GitCatalog:
             catalog.state.write("save.json", {"setup": True, "remote": remote, "branch": branch})
             catalog.git.run("init", "--initial-branch=" + branch)
             catalog.git.run("check-ref-format", "refs/heads/" + branch)
-            catalog.git.run("remote", "add", "origin", remote)
+            if remote is not None:
+                catalog.git.run("remote", "add", "origin", remote)
             catalog.state.write_config(GitConfig(remote=remote, branch=branch, host=host_id))
-            remote_tip = catalog._fetch()
+            remote_tip = catalog._fetch() if remote is not None else None
             if remote_tip is None:
                 tree = catalog.git.text("write-tree")
                 tip = catalog._commit(tree, BOOTSTRAP)
@@ -76,22 +78,28 @@ class GitCatalog:
         branch, remote = config.branch, config.remote
         if self.git.text("symbolic-ref", "--quiet", "HEAD") != "refs/heads/" + branch:
             raise RepairRequired("managed catalog branch was changed")
-        if self.git.text("remote", "get-url", "origin") != remote:
+        if remote is None:
+            if self.git.text("remote"):
+                raise RepairRequired("local Git catalog has an unexpected remote; inspect before continuing")
+        elif self.git.text("remote", "get-url", "origin") != remote:
             raise RepairRequired("managed catalog remote was changed")
         return config
 
     def _ready(self):
+        self.state.check_save()
         if (self.root / ".git").is_symlink() or not (self.root / ".git").is_dir():
             raise RepairRequired("catalog must use its own Git directory")
-        self.state.check_save()
         config = self._config()
-        self.state.metadata()
+        metadata = self.state.metadata()
         publication = self.state.publication()
+        if config.remote is None and (metadata != SyncMetadata() or publication is not None):
+            raise RepairRequired("local Git catalog has remote synchronization state; inspect before continuing")
         if publication is not None and (publication.branch, publication.remote) != (config.branch, config.remote):
             raise RepairRequired("publication marker does not match the configured remote and branch")
         if isinstance(publication, AdoptingAttempt):
             raise RepairRequired("interrupted local adoption; inspect publication.json and retained refs")
         self._clean()
+        return config
 
     def _clean(self):
         for name in (".catalog.lock", ".catalog-staging", ".catalog-sync"):
@@ -113,17 +121,20 @@ class GitCatalog:
         history = read_history(self.git, self.git.head())
         # A manually verified/repaired commit may predate its receipt write.
         # Establish retry protection before any history can leave the live tip.
-        self.state.validate_operations((op for op, _ in history.operations.values()), remember=True)
+        self.state.validate_fingerprints(history.fingerprints, remember=True)
         return history
+
+    def _saved(self, transaction):
+        history = self._history()
+        snapshot = transaction.read()
+        if records(snapshot.catalog) != records(history.catalog):
+            raise RepairRequired("working records disagree with supported history")
+        return history, snapshot
 
     def snapshot(self) -> Snapshot:
         with self.store.transaction() as transaction:
             self._ready()
-            history = self._history()
-            snapshot = transaction.read()
-            if records(snapshot.catalog) != records(history.catalog):
-                raise RepairRequired("working records disagree with supported history")
-            return snapshot
+            return self._saved(transaction)[1]
 
     def _authorities(self, local: History):
         remote = read_history(self.git, self._metadata().confirmed)
@@ -138,8 +149,11 @@ class GitCatalog:
     def save(self, operation: Operation, *, origin: dict[str, str] | None = None) -> Result:
         check_producer(operation, self.host_id)
         message = encode_operation(operation, origin={"host": self.host_id, **(origin or {})})
+        sharing = "blocked"
         try:
             with self.store.transaction() as transaction:
+                config = self.state.config()
+                sharing = "local-only" if config is not None and config.remote is None else "pending"
                 self._ready()
                 history = self._history()
                 previous = history.operations.get(operation.id)
@@ -147,14 +161,14 @@ class GitCatalog:
                 if previous is not None or remembered:
                     if previous is not None and previous[0] != operation:
                         raise RepairRequired(f"operation ID reused with different intent: {operation.id}")
-                    return Result("pending", domain=Reconciliation(operation.id, "no-change", reason="operation already saved"),
+                    return Result(sharing, domain=Reconciliation(operation.id, "no-change", reason="operation already saved"),
                                   local_revision=history.tip)
                 snapshot = transaction.read()
                 result = reconcile(snapshot.catalog, operation, authority=authority_for(operation, self._authorities(history)))
                 if result.outcome != "changes":
                     if result.outcome == "no-change":
                         self.state.remember(operation)
-                    return Result("pending", domain=result, local_revision=history.tip)
+                    return Result(sharing, domain=result, local_revision=history.tip)
                 self.state.write("save.json", {"start": history.tip, "operation": message})
                 transaction.save(result.record, expected=snapshot)
                 path = self.store.record_path(operation.target).as_posix()
@@ -166,15 +180,17 @@ class GitCatalog:
                 read_history(self.git, commit)
                 self.state.remember(operation)
                 self.state.clear("save.json")
-                return Result("pending", local="committed", domain=result, local_revision=commit)
+                return Result(sharing, local="committed", domain=result, local_revision=commit)
         except (OSError, ValueError, StorageError) as error:
-            return Result("blocked", local="repair-required", detail=str(error))
+            return Result("local-only" if sharing == "local-only" else "blocked", local="repair-required", detail=str(error))
 
     def _metadata(self) -> SyncMetadata:
         return self.state.metadata()
 
     def _fetch(self) -> str | None:
         config = self._config()
+        if config.remote is None:
+            raise RepairRequired("local Git catalog has no remote to fetch")
         ref = "refs/heads/" + config.branch
         found = self.git.text("ls-remote", "--heads", "origin", ref)
         tip = None
@@ -187,7 +203,7 @@ class GitCatalog:
         if previous is not None and (tip is None or not self.git.ancestor(previous, tip)):
             raise RepairRequired("confirmed remote history was removed or replaced")
         if tip is not None:
-            self.state.validate_operations((op for op, _ in history.operations.values()), remember=True)
+            self.state.validate_fingerprints(history.fingerprints, remember=True)
         self.state.write_metadata(replace(metadata, confirmed=tip, fetched_at=self.clock(),
                                           refresh_retry_after=0, refresh_error=""))
         return tip
@@ -197,9 +213,10 @@ class GitCatalog:
         from .coordinator import ReadResult
         from .replay import replay
         with self.store.transaction() as transaction:
-            self._ready()
-            local = self._history()
-            snapshot = transaction.read()
+            config = self._ready()
+            local, snapshot = self._saved(transaction)
+            if config.remote is None:
+                return ReadResult(snapshot.catalog, snapshot, None, "local-only")
             metadata = self._metadata()
             freshness = "cached"
             if self.policy.read_due(fetched_at=metadata.fetched_at, now=self.clock(),
@@ -223,7 +240,9 @@ class GitCatalog:
     def inspect_remote(self) -> Snapshot:
         """Fetch-only inspection never advances the publication gate or adopts files."""
         with self.store.transaction():
-            self._ready()
+            config = self._ready()
+            if config.remote is None:
+                raise RepairRequired("local Git catalog has no remote to inspect")
             tip = self._fetch()
             return YamlStore.decode_snapshot(read_history(self.git, tip).files)
 
@@ -306,10 +325,15 @@ class GitCatalog:
     def sync(self, *, event: str = "explicit") -> Result:
         # Validate event even if the checkout is broken or the policy skips it.
         self.policy.due(event, Timing(), now=self.clock())
+        sharing = "blocked"
         try:
-            with self.store.transaction():
+            with self.store.transaction() as transaction:
+                config = self.state.config()
+                sharing = "local-only" if config is not None and config.remote is None else "pending"
                 self._ready()
-                local = self._history()
+                local, _ = self._saved(transaction)
+                if sharing == "local-only":
+                    return Result("local-only", local_revision=local.tip)
                 metadata = self._metadata()
                 timing = Timing(metadata.last_sync, metadata.last_push, metadata.retry_after)
                 remote_known = read_history(self.git, metadata.confirmed)
@@ -383,8 +407,10 @@ class GitCatalog:
                 self._failure()
                 return Result("failed", detail="competing-push retry budget exhausted")
         except RepairRequired as error:
-            return Result("blocked", local="repair-required", detail=str(error))
+            return Result("local-only" if sharing == "local-only" else "blocked", local="repair-required", detail=str(error))
         except (ValueError, StorageError, OSError) as error:
+            if sharing == "local-only":
+                return Result("local-only", local="repair-required", detail=str(error))
             try:
                 self._failure()
             except (StorageError, OSError):

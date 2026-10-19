@@ -4,6 +4,7 @@ from dataclasses import dataclass
 
 from ..model import Catalog, Record, Stream
 from ..operations import Authority, Operation, Reconciliation, reconcile
+from .envelope import operation_digest
 from .history import History
 from .local import RepairRequired, authority_for
 
@@ -16,13 +17,16 @@ class Replay:
 
 
 def replay(local: History, remote: History) -> Replay:
+    if local.baseline is not None or remote.baseline is not None:
+        if local.baseline is None or remote.baseline is None or local.root is None or local.root != remote.root:
+            raise RepairRequired("baseline replay requires an identical shared root")
     catalog = remote.catalog
     authorities = dict(remote.authorities)
     changes = []
     for operation, origin in local.operations.values():
-        published = remote.operations.get(operation.id)
+        published = remote.fingerprints.get(operation.id)
         if published is not None:
-            if published[0] != operation:
+            if published != operation_digest(operation):
                 raise RepairRequired(f"remote operation ID has different intent: {operation.id}")
             continue
         # Field equality cannot turn another creation into local ownership.

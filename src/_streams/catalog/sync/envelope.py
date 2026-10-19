@@ -1,9 +1,11 @@
 """Original intent in a versioned commit message, independent of commit hashes."""
 
+import hashlib
 import json
+import re
 
 from ..codec import object_fields, record_from_data, record_to_data
-from ..model import ValidationError
+from ..model import ValidationError, text
 from ..operations import Operation
 
 PREFIX = "Streams operation v1\n\n"
@@ -40,6 +42,22 @@ def encode_operation(operation: Operation, *, origin: dict[str, str] | None = No
     if operation.inputs:
         data["inputs"] = [{"kind": record_key(item).kind, "record": record_to_data(item)} for item in operation.inputs]
     return PREFIX + json.dumps(data, sort_keys=True, separators=(",", ":"), ensure_ascii=False) + "\n"
+
+
+def operation_digest(operation: Operation) -> str:
+    return hashlib.sha256(encode_operation(operation).encode()).hexdigest()
+
+
+def decode_fingerprints(value: object) -> dict[str, str]:
+    if not isinstance(value, dict):
+        raise ValidationError("fingerprints must be an object")
+    result = {}
+    for id, digest in value.items():
+        text(id, "operation ID")
+        if not isinstance(digest, str) or re.fullmatch(r"[0-9a-f]{64}", digest) is None:
+            raise ValidationError("operation fingerprint must be a lowercase SHA256 digest")
+        result[id] = digest
+    return result
 
 
 def decode_operation(message: str) -> tuple[Operation, dict[str, str]]:

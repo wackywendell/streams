@@ -37,6 +37,7 @@ class LocalCatalog:
         self.state = State(store.root)
 
     def _ready(self) -> dict[str, Authority]:
+        self.state.check_save()
         allowed = {".catalog.lock", ".catalog-sync", ".catalog-staging", "streams", "sessions", "hosts"}
         if any(path.name not in allowed for path in self.store.root.iterdir()):
             raise RepairRequired("unexpected contents in local catalog; inspect before continuing")

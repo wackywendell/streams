@@ -8,7 +8,8 @@ from ..model import Catalog, Stream, record_key
 from ..operations import Authority, Operation, reconcile
 from ..yaml_store import YamlStore
 from ..storage import StorageError
-from .envelope import BOOTSTRAP, decode_operation
+from .baseline import BASELINE, Baseline, decode_baseline
+from .envelope import BOOTSTRAP, decode_fingerprints, decode_operation, operation_digest
 from .git_io import Git
 from .local import RepairRequired, authority_for
 
@@ -25,8 +26,23 @@ class History:
     files: Mapping[str, bytes] = field(default_factory=dict)
     authorities: Mapping[str, Authority] = field(default_factory=dict)
     operations: Mapping[str, tuple[Operation, Mapping[str, str]]] = field(default_factory=dict)
+    baseline: Baseline | None = None
+    fingerprints: Mapping[str, str] = field(default_factory=dict)
 
     def __post_init__(self) -> None:
+        fingerprints = dict(self.baseline.fingerprints) if self.baseline is not None else {}
+        for id, digest in decode_fingerprints(dict(self.fingerprints)).items():
+            if id in fingerprints and fingerprints[id] != digest:
+                raise ValueError(f"inconsistent operation fingerprint: {id}")
+            fingerprints[id] = digest
+        for id, (operation, _) in self.operations.items():
+            if id != operation.id:
+                raise ValueError("history operation key must match its ID")
+            digest = operation_digest(operation)
+            if id in fingerprints and fingerprints[id] != digest:
+                raise ValueError(f"inconsistent operation fingerprint: {id}")
+            fingerprints[id] = digest
+        object.__setattr__(self, "fingerprints", MappingProxyType(fingerprints))
         object.__setattr__(self, "files", MappingProxyType(dict(self.files)))
         object.__setattr__(self, "authorities", MappingProxyType(dict(self.authorities)))
         object.__setattr__(self, "operations", MappingProxyType({
@@ -64,14 +80,21 @@ def _read_history(git: Git, tip: str | None) -> History:
         files = git.files(revision)
         message = raw_message.rstrip() + "\n"
         if previous is None:
-            if parents or files or message != BOOTSTRAP:
-                raise RepairRequired("catalog history must start with an empty Streams catalog v1 commit")
-            history = History(tip=revision, root=revision, files=files)
+            if parents:
+                raise RepairRequired("catalog history root must have no parents")
+            if message.startswith(BASELINE):
+                baseline, catalog, authorities = decode_baseline(message, files)
+                history = History(tip=revision, root=revision, files=files, baseline=baseline,
+                                  catalog=catalog, authorities=authorities)
+            elif message == BOOTSTRAP and not files:
+                history = History(tip=revision, root=revision, files=files)
+            else:
+                raise RepairRequired("catalog history must start with an empty bootstrap or validated baseline")
         else:
             if parents != [previous]:
                 raise RepairRequired("catalog history must be linear and non-merged")
             operation, origin = decode_operation(message)
-            if operation.id in history.operations:
+            if operation.id in history.fingerprints:
                 raise RepairRequired(f"duplicate operation ID in history: {operation.id}")
             result = reconcile(history.catalog, operation, authority=authority_for(operation, history.authorities))
             if result.outcome != "changes":
