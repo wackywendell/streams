@@ -21,10 +21,11 @@ Both storage modes require explicit setup. Choose one:
 
 ```sh
 streams init --sync none
+streams init --sync git
 streams init --sync git --remote git@github.com:you/work-catalog.git --branch main
 ```
 
-The Git remote must already exist. Its branch must be empty or contain a supported Streams catalog, not arbitrary Git files. Streams uses one shared branch. Setup records its sync strategy and a persistent local host identity. Ordinary commands never initialise a catalog or fall back to another storage mode.
+Git without `--remote` records local commits without fetching or pushing. If you select a remote, it must already exist. Its branch must be empty or contain a supported Streams catalog, not arbitrary Git files. Setup records its strategy and a persistent local host identity. Ordinary commands never initialise a catalog or fall back to another storage mode.
 
 Inspect or change the everyday settings:
 
@@ -41,7 +42,13 @@ The supported settings are `catalog.root`, `frontend.mode`, `sync.stream_seconds
 
 Configuration is host-local at `$XDG_CONFIG_HOME/streams/config.json`; each CLI process reads it anew. Unset XDG variables use `~/.local/share` and `~/.config`. Sync strategy, remote and branch belong to catalog setup, not these settings. Changing `catalog.root` selects another catalog; initialise it before use.
 
-There is no legacy-format compatibility or automatic migration. Start new streams or migrate old records manually. An initialised catalog cannot currently change its sync strategy in place. Adding Git backing while preserving local records and identities is follow-on work.
+There is no legacy-format compatibility or automatic migration. Start new streams or migrate old scratch material manually. An existing `none` catalog can explicitly adopt local Git backing in place:
+
+```sh
+streams init --sync git --adopt --json
+```
+
+This preserves record bytes, identities, ownership evidence, retry protection and host-local bindings. It creates a snapshot baseline, not invented historical operations. It does not configure a remote. Ordinary initialization still refuses to convert an existing catalog. Coordinate a live adoption window first; see the [adoption contract](docs/catalog-local-git-adoption.md) and [acceptance guidance](docs/catalog-sync-usage.md#acceptance-before-activation).
 
 ## Create and find work
 
@@ -195,7 +202,9 @@ streams list --refresh
 streams show STREAM_ID --refresh --json
 ```
 
-The Git coordinator checks publication intervals after successful and no-change writes. Stream edits, starts and attachments use M, initially 5 minutes. Session reports use N, initially 60 minutes, or M while stream edits are pending. Explicit `sync` bypasses those intervals and the failed-attempt cooldown, not safety checks. There is no background daemon.
+Without a remote, Git saves report `local="committed"` and `sharing="local-only"`. Reads and lifecycle syncs stay local, report freshness `local-only` and create no publication clocks. Adding a Git remote outside Streams fails closed; it does not enable publication.
+
+With a configured remote, the Git coordinator checks publication intervals after successful and no-change writes. Stream edits, starts and attachments use M, initially 5 minutes. Session reports use N, initially 60 minutes, or M while stream edits are pending. Explicit `sync` bypasses those intervals and the failed-attempt cooldown, not safety checks. There is no background daemon.
 
 Pi session startup runs `streams sync --event start --json`, respecting M and the cooldown. Shutdown cancels inference and awaits `streams sync --event shutdown --json`, bypassing timing without generating a summary. Both lifecycle calls have a 10-second total deadline covering the CLI and its child process group. Ordinary CLI commands retain their library timeouts. Failed or uncertain lifecycle syncs produce a warning and a durable `stream-catalog-sync` Pi entry; they do not undo local saves. A timeout can leave uncertain publication or interrupted adoption: run `streams sync` to inspect the outcome, and follow the [manual repair guidance](docs/catalog-sync-usage.md#inspecting-interrupted-saves-and-manual-changes) if required.
 

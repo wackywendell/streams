@@ -1,12 +1,12 @@
 # ADR: Streams-managed storage and optional Git sync
 
-Status: accepted, with local-only and Git coordinators used by the CLI and Pi lifecycle integration. This ADR defines save, publication and authority guarantees, not deployment status; the [README](../README.md) owns current setup and commands. Import from local-only storage and validated handover remain follow-on work. The [protocol-boundary ADR](catalog-protocol-boundaries.md) records the structural refinements; the [native Herdr ADR](native-herdr-work-cards.md) governs frontend projection.
+Status: accepted, with local-only and Git coordinators used by the CLI and Pi lifecycle integration. This ADR defines save, publication and authority guarantees, not deployment status; the [README](../README.md) owns current setup and commands. The [local Git adoption ADR](catalog-local-git-adoption.md) adds snapshot import and explicit no-remote Git backing. Validated handover and remote activation after adoption remain follow-on work. The [protocol-boundary ADR](catalog-protocol-boundaries.md) records the structural refinements; the [native Herdr ADR](native-herdr-work-cards.md) governs frontend projection.
 
 ## Context and decision
 
 Move catalog management from the Obsidian-managed notes workflow to the `streams` CLI. Keep the logical model, agent integrations, frontends, physical storage and synchronisation separate. Support local-only operation with sync set to `none`; choose `git` for sharing the catalog across hosts.
 
-The Git strategy uses a dedicated private repository with one shared branch and a managed local copy on each host. Save changes as local commits and publish them according to their urgency. The user should not need to manage commits, pulls or pushes during ordinary work. These Git mechanics are not requirements of every storage backend.
+The Git strategy records local commits in a managed repository. Without a remote it stays network-free and reports local-only sharing. With a configured destination, it uses a dedicated private repository with one shared branch and a managed local copy on each host. Save changes as local commits and publish them according to their urgency. The user should not need to manage commits, pulls or pushes during ordinary work. These Git mechanics are not requirements of every storage backend.
 
 The previous scratch-based format combined work metadata and a Markdown body under a configurable notes root. It also used local repository paths and Obsidian note links. Merely putting that directory in Git would have preserved the wrong persistence model. The [durable work catalog ADR](durable-work-catalog.md) replaces scratch notes with structured records: the stream's goal and references, and each session's progress description. There is no second stored aggregate progress summary. Substantive plans and decisions belong in project repositories.
 
@@ -154,7 +154,7 @@ Prepare the new store outside the Obsidian vault. For Git, configure and verify 
 
 Switch the CLI and integrations only when their catalog replacements are ready. Retire old catalog writers, including scratch-generating checkpoints, at that explicit cutover. Thereafter the old notes are retained material, not a second live account to keep in sync. Unrelated Obsidian notes and configuration are unaffected.
 
-A failed setup leaves the existing notes intact. Implementation and tests use isolated stores; they do not themselves switch the installed runtime. Local-only activation does not depend on Git readiness. A later Git import must preserve the initialized host and record identities, creation authority and retry receipts; `init git` does not perform that conversion. Returning to the old workflow after new catalog edits is an explicit recovery choice, never an automatic fallback.
+A failed setup leaves the existing notes intact. Implementation and tests use isolated stores; they do not themselves switch the installed runtime. Local-only activation does not depend on Git readiness. Explicit `streams init --sync git --adopt` preserves the initialized host and record identities, creation authority and retry receipts without configuring a remote. Its snapshot baseline marks the start of verifiable Git history; it does not reconstruct missing past operations. Ordinary initialization does not convert existing catalogs. Returning to the old workflow after new catalog edits is an explicit recovery choice, never an automatic fallback.
 
 ## Alternatives and consequences
 

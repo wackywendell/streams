@@ -1,6 +1,6 @@
 # Catalog sync implementation contract
 
-The [sync ADR](../docs/catalog-git-sync.md) owns the decisions and rationale; the [protocol-boundary ADR](../docs/catalog-protocol-boundaries.md) explains their structural enforcement. The [catalog ADR](../docs/durable-work-catalog.md) owns record meaning and lifecycle. This document records backend and integration contracts, not authority to change an installed catalog or create a hosted repository. The library, CLI coordinator and Pi lifecycle hooks are implemented; local-only import, handover and credentialed multi-host acceptance remain follow-on work.
+The [sync ADR](../docs/catalog-git-sync.md) owns the decisions and rationale; the [protocol-boundary ADR](../docs/catalog-protocol-boundaries.md) explains their structural enforcement. The [catalog ADR](../docs/durable-work-catalog.md) owns record meaning and lifecycle. This document records backend and integration contracts, not authority to change an installed catalog or create a hosted repository. The library, CLI coordinator and Pi lifecycle hooks are implemented. The [local Git adoption contract](../docs/catalog-local-git-adoption.md) adds explicit snapshot import and no-remote Git backing. Handover and credentialed multi-host acceptance remain follow-on work.
 
 ## Scope and existing contracts
 
@@ -34,7 +34,7 @@ Separate three concerns in results rather than overloading a single success bool
 
 For `none`, apply the operation within the store transaction and report local-only persistence. The coordinator supplies a stable, locally persisted ownership-period token without requiring Git history. Do not call Git, require a remote, run timing gates or invent pending publication. Cross-host handover is unsupported, not a successful no-op. A local persistence error must not be presented as proof of rollback; report whether the resulting state could be verified.
 
-For `git`, a successful effective save requires a verified local commit. Publication can remain pending or fail separately. A no-change result needs no commit.
+For `git`, a successful effective save requires a verified local commit. A no-change result needs no commit. With a configured remote, publication can remain pending or fail separately. With explicit null remote configuration, all outcomes report local-only sharing; reads return validated saved state and sync writes no remote clocks or cooldowns. An omitted configuration key is not equivalent to explicit null.
 
 ## Minimal local save protection
 
@@ -63,7 +63,7 @@ Manual repair is sufficient for this slice. No recovery wizard, automatic reset,
 
 Use a versioned JSON envelope in each operation commit message, with a readable subject. The envelope carries the original domain operation and optional origin attribution. The domain record codec supplies record encoding; sync must round-trip every operation input, including its ownership precondition.
 
-Git commit hashes may change when unpublished operations are replayed. Operation IDs and original payloads do not. Durable local receipt fingerprints preserve retry protection after operations are satisfied or superseded and leave active history; local-only saves need that protection too. These are accepted-intent receipts, not another queue of record copies. The same ID with a different operation payload is corruption or unsupported manual modification, not a retry. A simple catalog-initialisation commit is permitted separately from operation commits; it must not invent prior domain actions or authority transfers.
+Git commit hashes may change when unpublished operations are replayed. Operation IDs and original payloads do not. Durable local receipt fingerprints preserve retry protection after operations are satisfied or superseded and leave active history; local-only saves need that protection too. These are accepted-intent receipts, not another queue of record copies. The same ID with a different operation payload is corruption or unsupported manual modification, not a retry. An empty catalog-initialisation commit or a validated snapshot baseline is permitted separately from operation commits. A baseline carries original creation evidence and retired operation fingerprints without inventing prior actions or authority transfers. Its immutable history ledger rejects duplicate committed IDs while allowing same-digest save retries without reapplication. Replay involving a baseline requires the same baseline root.
 
 Validated history is immutable, including attribution, and the bounded cache retains requested tips rather than every intermediate commit. Validate changed paths before decoding the one changed canonical record through the adapter. Compare reconstructed logical records with domain reconciliation; caching must not weaken descendant validation.
 
