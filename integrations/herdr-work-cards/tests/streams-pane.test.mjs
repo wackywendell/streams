@@ -43,7 +43,7 @@ test('pane CLI uses owner selector snapshot and removes stale server selectors',
     STREAMS_CARDS_READ_ENV: JSON.stringify(captured), RESPONSE: JSON.stringify(wire) };
   assert.deepEqual((await streamsPaneSource(env).read()).scope, scope);
 });
-for (const [mode, key] of [['unready', 'q'], ['unready', '\x03'], ['mismatch', 'q'], ['close-failure', 'q'], ['self-close', 'q']]) test(`pane exit ${mode}/${JSON.stringify(key)} retains proof gates and releases locks before signal cleanup`, async t => {
+for (const [mode, key] of [['unready', 'q'], ['unready', '\x03'], ['mismatch', 'q'], ['close-failure', 'q'], ['self-close', 'q'], ['caption-unchanged', 'q'], ['caption-changed', 'q'], ['caption-manual', 'q']]) test(`pane exit ${mode}/${JSON.stringify(key)} retains proof gates and releases locks before signal cleanup`, async t => {
   const root = await realpath(await mkdtemp(join(tmpdir(), 'streams-pane-loop-'))); t.after(() => rm(root, { recursive: true, force: true }));
   const module = name => new URL(`../dist/herdr/${name}.js`, import.meta.url).href;
   const script = `
@@ -54,7 +54,7 @@ for (const [mode, key] of [['unready', 'q'], ['unready', '\x03'], ['mismatch', '
     import { StreamsCardSource } from ${JSON.stringify(module('streams-source'))};
     import { StreamsWorkspaceClient } from ${JSON.stringify(module('streams-workspace-client'))};
     import { withWorkspaceLock } from ${JSON.stringify(module('workspace-lock'))};
-    const input = new EventEmitter(), output = new EventEmitter(); let raw = false, closed = 0, restored = false, errors = '';
+    const input = new EventEmitter(), output = new EventEmitter(); let raw = false, closed = 0, projected = 0, restored = false, errors = '';
     Object.assign(input, { isTTY: true, isRaw: false, setRawMode(v) { raw = v; }, resume() {}, pause() {} });
     Object.assign(output, { isTTY: true, columns: 80, rows: 24, write(v) { if (v.includes('\\x1b[?1049l')) restored = true; } });
     Object.defineProperty(process, 'stdin', { value: input }); Object.defineProperty(process, 'stdout', { value: output });
@@ -65,9 +65,9 @@ for (const [mode, key] of [['unready', 'q'], ['unready', '\x03'], ['mismatch', '
     StreamsWorkspaceClient.prototype.verifyDisplay = async () => {
       input.emit('data', Buffer.from(${JSON.stringify(key)}));
       if (${JSON.stringify(mode)} === 'unready') throw Error('not ready');
-      return { agent: { terminal_id: ${JSON.stringify(mode === 'mismatch' ? 'wrong' : 'term1')} }, card: { terminal_id: 'term2' }, nonce: 'nonce' };
+      return { agent: { terminal_id: ${JSON.stringify(mode === 'mismatch' ? 'wrong' : 'term1')} }, card: { terminal_id: 'term2', label: ${JSON.stringify(mode === 'caption-changed' ? 'Old' : 'Shared')}, tokens: { strm_caption: ${JSON.stringify(mode === 'caption-changed' ? 'Old' : 'Shared')}, strm_caption_manual: ${JSON.stringify(mode === 'caption-manual' ? '1' : undefined)} } }, nonce: 'nonce' };
     };
-    StreamsWorkspaceClient.prototype.projectCaption = async () => {};
+    StreamsWorkspaceClient.prototype.projectCaption = async () => { projected++; };
     StreamsWorkspaceClient.prototype.closeDisplay = async () => {
       closed++; assert.equal(raw, false); assert.equal(restored, true);
       if (${JSON.stringify(mode)} === 'close-failure') throw Error('final close proof failed');
@@ -80,10 +80,12 @@ for (const [mode, key] of [['unready', 'q'], ['unready', '\x03'], ['mismatch', '
     };
     await runStreamsPane({ ...${JSON.stringify(launcher)}, STREAMS_CARDS_CONFIG: ${JSON.stringify(join(root, 'missing-config.json'))} });
     assert.equal(closed, ${mode === 'unready' || mode === 'mismatch' ? 0 : 1});
+    assert.equal(projected, ${mode === 'caption-changed' ? 1 : 0});
     assert.equal(raw, false); assert.equal(restored, true);
     assert.ok(!(await readdir(${JSON.stringify(root)})).some(n => n.endsWith('.lock')));
     assert.equal(process.listenerCount('SIGHUP'), 0); assert.equal(process.listenerCount('SIGTERM'), 0);
-    if (${JSON.stringify(mode)} !== 'self-close') assert.match(errors, /retained.*inspect/);
+    if (${JSON.stringify(mode === 'unready' || mode === 'mismatch' || mode === 'close-failure')}) assert.match(errors, /retained.*inspect/);
+    else assert.equal(errors, '');
   `;
   await promisify(execFile)(process.execPath, ['--input-type=module', '-e', script], { timeout: 5000 });
 });

@@ -53,7 +53,11 @@ export async function runStreamsPane(env: NodeJS.ProcessEnv = process.env): Prom
           const pair = await client.verifyDisplay(source, context, config, controller.signal);
           if (pair.agent.terminal_id !== env.STREAMS_CARDS_OWNER_TERMINAL || pair.card.terminal_id !== context.terminalId || pair.nonce !== env.STREAMS_CARDS_NONCE) throw new Error('Launcher owner/card/nonce mismatch');
           ready = true;
-          await client.projectCaption(source, context, config, controller.signal); view.clearNotice('projection');
+          if (pair.card.tokens.strm_caption_manual !== '1'
+            && (pair.card.label !== saved.stream.title || pair.card.tokens.strm_caption !== saved.stream.title)) {
+            await client.projectCaption(source, context, config, controller.signal);
+          }
+          view.clearNotice('projection');
         }
       } catch (error) { view.setNotice('projection', `Herdr projection unavailable: ${(error as Error).message}`); }
       if (stopped) break;
