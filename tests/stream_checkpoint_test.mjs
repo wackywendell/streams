@@ -136,10 +136,11 @@ test('settings change in place, pick searchable models, and preserve Herdr confi
     for(let i=0;i<4;i++)press('\x1b[B');press('\r');press('a/first');press('\r');
     assert.deepEqual(saved.at(-1).model,{provider:'a',id:'first'});
     press('\x1b[B');press('\r'); // workspace startup
-    press('\x1b[B');press('\r'); // workspace naming: inherit -> enabled
+    press('\x1b[B');press('\r'); // workspace naming: enabled -> disabled
     const native=JSON.parse(readFileSync(join(root,'work-cards.json'),'utf8'));
-    assert.equal(native.workspace_startup,'manual');assert.equal(native.workspace_naming,true);
+    assert.equal(native.workspace_startup,'manual');assert.equal(native.workspace_naming,false);
     assert.equal(native.tab_naming,false);assert.equal(native.show_refresh_spinner,true);
+    assert.match(component.render(100).join('\n'),/Pi session naming/);
     assert.match(component.render(100).join('\n'),/Work card & Herdr settings/);press('\x1b');
    });
   }}};
@@ -412,8 +413,9 @@ test('streams completes subcommand prefixes with short descriptions but never re
  assert.deepEqual(await complete(''),items);
  for(const item of items){assert.ok(item.description.length<=40);assert.doesNotMatch(item.description,/[\r\n]/);}
  for(const [prefix,value] of [['ca','card'],['rep','report'],['se','settings'],['att','attach'],['p','pane'],['report','report']])assert.deepEqual(await complete(prefix),items.filter(item=>item.value===value));
- assert.deepEqual(await complete('reset '),[{value:'reset --auto',label:'--auto',description:'Re-enable automatic naming and reset'}]);
- assert.deepEqual(await complete('reset --a'),await complete('reset '));
+ assert.deepEqual(await complete('reset --a'),[{value:'reset --auto',label:'--auto',description:'Re-enable automatic naming and reset'}]);
+ assert.equal((await complete('reset ')).length,7);
+ assert.deepEqual(await complete('reset session '),[{value:'reset session --auto',label:'session --auto',description:'Re-enable session auto-naming & reset'}]);
  for(const prefix of ['unknown','report ','report settings','report\nattach','settings ','attach effort','reset extra'])assert.equal(await complete(prefix),null);
 });
 for(const [args,instructions] of [['report',undefined],['  report  Keep the caveat\nand settings detail  ','Keep the caveat\nand settings detail']])test(`streams reports explicitly with ${JSON.stringify(args)}`,async()=>{
@@ -461,8 +463,29 @@ test('streams reset clears omitted short state and automatic short goal but pres
 });
 test('streams reset extra rejects arguments before reading the catalog or running a model',async()=>{
  const f=commandFixture();await f.run('reset extra');await turn();
- assert.deepEqual(f.notices,[{text:"Work card: Usage: /streams [card]; /streams report [instructions]; /streams reset [--auto]; /streams settings; /streams attach; /streams pane [close]. Put report instructions after 'report'.",level:'warning'}]);
+ assert.deepEqual(f.notices,[{text:"Work card: Usage: /streams [card]; /streams report [instructions]; /streams reset [session|stream|all] [--auto]; /streams settings; /streams attach; /streams pane [close]. Put report instructions after 'report'.",level:'warning'}]);
  assert.equal(f.reads(),0);for(const effects of [f.requests,f.writes,f.receipts,f.dialogs,f.activity])assert.deepEqual(effects,[]);
+});
+test('streams reset session and stream scopes unlock and infer only the targeted scope',async()=>{
+ const sessionCatalog=context();sessionCatalog.session.title_mode='manual';sessionCatalog.stream.title_mode='manual';sessionCatalog.stream.goal_mode='manual';
+ const s=commandFixture({catalog:sessionCatalog,infer:async req=>({changes:{title:'Fresh session',state:'Fresh state'}})});
+ await s.run('reset session --auto');await until(()=>s.activity.length===2);
+ assert.deepEqual(s.requests.map(req=>req.type),['session']);
+ assert.deepEqual(s.writes.map(req=>({kind:req.kind,actor:req.actor,changes:req.changes})),[
+  {kind:'session',actor:'user',changes:{title_mode:'automatic'}},
+  {kind:'session',actor:'automatic',changes:{title:'Fresh session',state:'Fresh state'}},
+ ]);
+ assert.equal(sessionCatalog.stream.title_mode,'manual');assert.equal(sessionCatalog.stream.goal_mode,'manual');
+
+ const streamCatalog=context();streamCatalog.session.title_mode='manual';streamCatalog.stream.title_mode='manual';streamCatalog.stream.goal_mode='manual';
+ const st=commandFixture({catalog:streamCatalog,infer:async req=>({changes:{title:'Fresh effort',goal:'Fresh goal'}})});
+ await st.run('reset stream --auto');await until(()=>st.activity.length===2);
+ assert.deepEqual(st.requests.map(req=>req.type),['stream']);
+ assert.deepEqual(st.writes.map(req=>({kind:req.kind,actor:req.actor,changes:req.changes})),[
+  {kind:'stream',actor:'user',changes:{title_mode:'automatic',goal_mode:'automatic'}},
+  {kind:'stream',actor:'automatic',changes:{title:'Fresh effort',goal:'Fresh goal'}},
+ ]);
+ assert.equal(streamCatalog.session.title_mode,'manual');
 });
 test('streams reset stays pending when reports coalesce while the helper is busy',async()=>{
  let release;const f=commandFixture({infer:async()=>{if(f.requests.length===1)await new Promise(resolve=>{release=resolve;});return {changes:{}};}});
@@ -672,4 +695,22 @@ test('failed manual field edit can rebase onto updated live catalog and save ret
  assert.equal(savedReq.before.state,'Concurrent update');
  assert.equal(savedReq.changes.state,'My retained edit');
  assert.equal(state.edits.size,0);
+});
+test('receiptText formats human-readable summaries on success and background reports show Updated in the status bar without chat spam',async()=>{
+ assert.equal(receiptText({operation_id:'op',save:{local:'persisted',sharing:'local-only',domain:{outcome:'changes'}},session:{...session,title:'Card UX',state:'Detailed state',state_short:'UX fixes deployed'}}),'Work card updated (Card UX): UX fixes deployed');
+ assert.equal(receiptText({operation_id:'op',save:{local:'persisted',sharing:'local-only',domain:{outcome:'changes'}},stream:{...stream,title:'Streams',goal:'Full goal',goal_short:'Compact goal'}}),'Work card effort updated (Streams): Compact goal');
+ assert.equal(receiptText({operation_id:'op',save:{local:'unchanged',sharing:'local-only',domain:{outcome:'no-change'}}}),'Work card up to date (no changes)');
+ const handlers=new Map(),notices=[],statuses=[];const catalog=context();
+ registerWorkCard({on:(name,fn)=>handlers.set(name,fn),registerCommand:()=>{},registerTool:()=>{},registerShortcut:()=>{},appendEntry:()=>{}},{
+  settings:{...defaults,reporting:'automatic',frequency:1},
+  cli:{sync:localSync,context:async()=>structuredClone(catalog),apply:async req=>{Object.assign(catalog[req.kind],req.changes);return {operation_id:req.operation_id,save:{local:'persisted',sharing:'local-only',domain:{outcome:'changes'}},[req.kind]:structuredClone(catalog[req.kind])};}},
+  infer:async(_ctx,req)=>({changes:req.type==='session'?{state:'Auto progress',state_short:'Auto short'}:{goal:'Auto goal'}}),
+ });
+ const ctx={mode:'tui',hasUI:true,cwd:'/repo',sessionManager:{getSessionId:()=> 'native',getLeafId:()=> 'leaf',getBranch:()=>[{id:'leaf'}],buildSessionProjection:()=>({messages:[{role:'user',content:'Work'},{role:'assistant',content:[{type:'text',text:'Done'}],stopReason:'stop'}]})},ui:{notify:(text,level)=>notices.push({text,level}),setStatus:(_k,text)=>statuses.push(text),theme:{fg:(_c,t)=>`<green>${t}</green>`}}};
+ await handlers.get('session_start')({},ctx);
+ handlers.get('agent_end')({messages:[{role:'assistant',stopReason:'stop'}]},ctx);
+ await until(()=>statuses.some(s=>s&&s.includes('Updated')));
+ assert.equal(notices.length,0);
+ assert.equal(statuses.at(-1),'Work card · <green>✓</green> Updated');
+ await handlers.get('session_shutdown')({},ctx);
 });

@@ -98,16 +98,18 @@ test('a replacement startup retires an old shutdown completion but tree changes 
 });
 
 test('distinct event contexts share the live inference scope and route receipt warnings to the latest UI',async()=>{
- for(const [sharing,level] of [['local-only','info'],['failed','warning'],['blocked','warning'],['uncertain','warning']]) {
+ for(const [sharing,level] of [['local-only',null],['failed','warning'],['blocked','warning'],['uncertain','warning']]) {
  let release,entered;const started=new Promise(resolve=>entered=resolve), writes=[];
  const catalog={catalog_source:'source',host_id:'host',stream:{id:'effort',title:'Manual',title_mode:'manual',goal:'Manual goal',goal_mode:'manual'},session:{id:'session',harness_session_id:'native',stream_id:'effort',title:'Session',state:''},sessions:[],authority:{token:'owner'}};
  const f=hooks({sync:async()=>local,context:async()=>structuredClone(catalog),apply:async request=>{writes.push(request);return {save:{local:'persisted',sharing:'local-only',domain:{outcome:'changes'}},publication:{local:'unchanged',sharing,domain:null}};}},async()=>{entered();await new Promise(resolve=>release=resolve);return {changes:{state:'Reported'}};});
  await f.handlers.get('session_start')({}, {...f.ctx});
  f.handlers.get('agent_end')({messages:[{role:'assistant',stopReason:'stop'}]}, {...f.ctx});await started;
- const notices=[];const latest={...f.ctx,ui:{...f.ctx.ui,notify:(text,level)=>notices.push({text,level})}};
+ const notices=[],statuses=[];const latest={...f.ctx,ui:{...f.ctx.ui,notify:(text,level)=>notices.push({text,level}),setStatus:(_k,text)=>statuses.push(text)}};
  f.handlers.get('agent_end')({messages:[]},latest);
- release();for(let i=0;i<100&&!notices.length;i++)await new Promise(resolve=>setImmediate(resolve));
- assert.equal(writes.length,1);assert.equal(f.warnings.length,0);assert.equal(notices.length,1);assert.equal(notices[0].level,level);
+ release();for(let i=0;i<100&&(level?!notices.length:!statuses.some(s=>s&&s.includes('Updated')));i++)await new Promise(resolve=>setImmediate(resolve));
+ assert.equal(writes.length,1);assert.equal(f.warnings.length,0);
+ if(level){assert.equal(notices.length,1);assert.equal(notices[0].level,level);}
+ else{assert.equal(notices.length,0);assert.match(statuses.at(-1),/Updated/);}
  }
 });
 

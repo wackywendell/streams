@@ -79,12 +79,12 @@ export async function editField(ctx: ExtensionContext, cli: StreamCli, catalog: 
   }
  } finally {if (!edit.dirty && !edit.error) state.edits.delete(key);}
 }
-export async function openCard(ctx: ExtensionContext, cli: StreamCli, state: CardState, actions: {receipt(value: Receipt): void; discuss(): Promise<void>; settings(): Promise<void>; report(): void; reset?(auto: boolean): void}): Promise<void> {
+export async function openCard(ctx: ExtensionContext, cli: StreamCli, state: CardState, actions: {receipt(value: Receipt): void; discuss(): Promise<void>; settings(): Promise<void>; report(): void; reset?(auto: boolean, target?: "all" | "session" | "stream"): void}): Promise<void> {
  let selectedIndex = 0;
  for (;;) {
   const catalog = await cli.context(ctx.sessionManager.getSessionId(), process.env.STREAMS_STREAM_ID);
   if (!catalog.stream) {ctx.ui.notify("No attached work card. Use select_stream or create_stream for initial attachment.", "info");return;}
-  const rows = ["Report now", "Reset generated fields", "Re-enable automatic naming & reset", "Discuss live card", "Whole effort — edit fields", ...(catalog.session ? ["This session — edit fields", "Finish this session"] : []), "Finish whole effort", catalog.stream.archived ? "Restore effort" : "Archive effort", "Reporting & Herdr settings", "Close"];
+  const rows = ["Report now", "Reset generated fields", "Re-enable automatic naming & reset", "Discuss live card", ...(catalog.session ? ["Reset this session only", "Re-enable session auto-naming & reset"] : []), "Reset whole effort only", "Re-enable effort auto-naming & reset", "Whole effort — edit fields", ...(catalog.session ? ["This session — edit fields", "Finish this session"] : []), "Finish whole effort", catalog.stream.archived ? "Restore effort" : "Archive effort", "Reporting & Herdr settings", "Close"];
   const action = ctx.ui.custom ? await ctx.ui.custom<string | undefined>((tui, theme, _keys, done) => {
    const list = new SelectList(rows.map((value) => ({value, label: value})), Math.max(1, Math.min(10, Math.floor(tui.terminal.rows / 2))), getSelectListTheme());
    list.setSelectedIndex(selectedIndex);
@@ -116,7 +116,9 @@ export async function openCard(ctx: ExtensionContext, cli: StreamCli, state: Car
   }) : await ctx.ui.select("Work card", rows);
   if (!action || action === "Close") return;
   if (action === "Discuss live card") {await actions.discuss();continue;}
-  if (action === "Reset generated fields" || action === "Re-enable automatic naming & reset") {actions.reset?.(action === "Re-enable automatic naming & reset");continue;}
+  if (action === "Reset generated fields" || action === "Re-enable automatic naming & reset") {actions.reset?.(action === "Re-enable automatic naming & reset", "all");continue;}
+  if (action === "Reset this session only" || action === "Re-enable session auto-naming & reset") {actions.reset?.(action === "Re-enable session auto-naming & reset", "session");continue;}
+  if (action === "Reset whole effort only" || action === "Re-enable effort auto-naming & reset") {actions.reset?.(action === "Re-enable effort auto-naming & reset", "stream");continue;}
   if (action === "Reporting & Herdr settings") {await actions.settings();continue;}
   if (action === "Report now") {actions.report();continue;}
   let kind: "stream" | "session" = action.startsWith("This session") || action === "Finish this session" ? "session" : "stream";

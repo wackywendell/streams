@@ -20,6 +20,16 @@ import type { NativeFactory } from "./native.ts";
 
 type Options = {agentDir?: string; cli?: StreamCli; infer?: typeof infer; settings?: ReportingSettings; native?: NativeFactory};
 const result = (details: unknown) => ({content: [{type: "text" as const, text: JSON.stringify(details)}], details});
+function parseResetArgs(instructions: string): {auto: boolean; target: "all" | "session" | "stream"} | null {
+ if (!instructions) return {auto: false, target: "all"};
+ let auto = false, target: "all" | "session" | "stream" | undefined;
+ for (const token of instructions.split(/\s+/)) {
+  if (token === "--auto" && !auto) auto = true;
+  else if ((token === "all" || token === "session" || token === "stream") && !target) target = token;
+  else return null;
+ }
+ return {auto, target: target ?? "all"};
+}
 export default function registerWorkCard(pi: ExtensionAPI, options: Options = {}): void {
  const agentDir = options.agentDir ?? process.env.PI_CODING_AGENT_DIR ?? join(homedir(), ".pi", "agent");
  let config = options.settings;
@@ -29,6 +39,8 @@ export default function registerWorkCard(pi: ExtensionAPI, options: Options = {}
  let shutdown: Promise<void> | undefined;
  let native: NativeController | undefined;
  let nativeRetirement: Promise<void> | undefined;
+ let statusTimer: ReturnType<typeof setTimeout> | undefined;
+ const clearStatusTimer = () => {if (statusTimer) {clearTimeout(statusTimer);statusTimer = undefined;}};
  function retireNative(): Promise<void> | undefined {
   const previous = native;native = undefined;
   if (previous) {
@@ -40,14 +52,29 @@ export default function registerWorkCard(pi: ExtensionAPI, options: Options = {}
  const states = new Map<string, CardState>();
  const cli = (ctx: ExtensionContext) => options.cli ?? new StreamCli(ctx.cwd);
  const warning = (text: string) => {scope.context?.ui.notify(`Work card: ${text}`, "warning");};
- const receipt = (value: Receipt, deferNative = false) => {
-  const text = receiptText(value);
+ const receipt = (value: Receipt, deferNative = false, quiet = false) => {
+  const text = receiptText(value), hasWarning = receiptHasWarning(value);
   // Receipts do not enter model context or count as fresh user work.
   pi.appendEntry("stream-catalog-receipt", value);
-  scope.context?.ui.notify(text, receiptHasWarning(value) ? "warning" : "info");
+  if (!quiet || hasWarning) scope.context?.ui.notify(text, hasWarning ? "warning" : "info");
   if (!deferNative && receiptCanContinue(value)) native?.update();
  };
- const reporter = new Reporter({scope, cli, settings, infer: options.infer, notice: warning, receipt, onUpdateNative: () => native?.update(), onReclaimNames: () => native?.reclaimNames().catch(() => {}), activity: (text) => scope.context?.ui.setStatus("stream-reporting", text ? `Work card · ${text}` : undefined)});
+ const reporter = new Reporter({
+  scope, cli, settings, infer: options.infer, notice: warning, receipt,
+  onUpdateNative: () => native?.update(),
+  onReclaimNames: (target) => native?.reclaimNames(target).catch(() => {}),
+  activity: (text) => {
+   clearStatusTimer();
+   scope.context?.ui.setStatus("stream-reporting", text ? `Work card · ${text}` : undefined);
+  },
+  onBackgroundSuccess: () => {
+   clearStatusTimer();
+   const check = (scope.context?.ui as any)?.theme?.fg?.("success", "✓") ?? "\x1b[32m✓\x1b[0m";
+   scope.context?.ui.setStatus("stream-reporting", `Work card · ${check} Updated`);
+   statusTimer = setTimeout(() => {statusTimer = undefined;scope.context?.ui.setStatus("stream-reporting", undefined);}, 4000);
+   statusTimer.unref?.();
+  },
+ });
  async function sync(ctx: ExtensionContext, event: "start" | "shutdown"): Promise<void> {
   const fence = scope.fence();
   let failure: {event: string; result?: unknown; error?: string} | undefined;
@@ -102,7 +129,7 @@ export default function registerWorkCard(pi: ExtensionAPI, options: Options = {}
    if (!catalog.stream) {ctx.ui.notify("No work card attached. Use /streams attach to choose or create an effort, or start meaningful work for automatic enrollment.", "info");return;}
    const key = JSON.stringify([ctx.sessionManager.getSessionId(), catalog.catalog_source, catalog.stream.id]);
    let state = states.get(key);if (!state) {state = {discussion: {input: "", messages: []}, edits: new Map()};states.set(key, state);}
-   await openCard(ctx, cli(ctx), state, {receipt, discuss: () => discussion(ctx, state!), settings: () => configure(ctx), report: () => reporter.request(ctx), reset: (auto) => reporter.reset(ctx, auto)});
+   await openCard(ctx, cli(ctx), state, {receipt, discuss: () => discussion(ctx, state!), settings: () => configure(ctx), report: () => reporter.request(ctx), reset: (auto, target) => reporter.reset(ctx, auto, target)});
   } catch(error) {warning(String(error));} finally {panelOpen = false;}
  }
  async function attach(ctx: ExtensionContext, args: {streamId?: string; title?: string; reason?: string}) {
@@ -114,7 +141,19 @@ export default function registerWorkCard(pi: ExtensionAPI, options: Options = {}
  pi.registerCommand("streams", {
   description: "Open the work card, report or reset progress, configure reporting, attach a card, or open/close its native pane",
   getArgumentCompletions: (prefix) => {
-   if (prefix.startsWith("reset ")) return "--auto".startsWith(prefix.slice(6)) ? [{value: "reset --auto", label: "--auto", description: "Re-enable automatic naming and reset"}] : null;
+   if (prefix.startsWith("reset ")) {
+    const rest = prefix.slice(6);
+    const resetItems = [
+     {value: "reset --auto", label: "--auto", description: "Re-enable automatic naming and reset"},
+     {value: "reset session", label: "session", description: "Reset only this session's fields"},
+     {value: "reset session --auto", label: "session --auto", description: "Re-enable session auto-naming & reset"},
+     {value: "reset stream", label: "stream", description: "Reset only the effort's fields"},
+     {value: "reset stream --auto", label: "stream --auto", description: "Re-enable effort auto-naming & reset"},
+     {value: "reset all", label: "all", description: "Reset both session and effort fields"},
+     {value: "reset all --auto", label: "all --auto", description: "Re-enable all auto-naming and reset"},
+    ].filter((item) => item.label.startsWith(rest));
+    return resetItems.length ? resetItems : null;
+   }
    if (/\s/.test(prefix)) return null;
    const matches = [
     {value: "card", label: "card", description: "Open the work card panel"},
@@ -130,8 +169,9 @@ export default function registerWorkCard(pi: ExtensionAPI, options: Options = {}
    scope.use(ctx);
    const paneFence = scope.fence();
    const input = args.trim(), command = input.split(/\s+/, 1)[0], instructions = input.slice(command.length).trim();
-   if (!["", "card", "report", "reset", "settings", "attach", "pane"].includes(command) || instructions && command !== "report" && !(command === "pane" && instructions === "close") && !(command === "reset" && instructions === "--auto")) {
-    warning("Usage: /streams [card]; /streams report [instructions]; /streams reset [--auto]; /streams settings; /streams attach; /streams pane [close]. Put report instructions after 'report'.");return;
+   const resetParsed = command === "reset" ? parseResetArgs(instructions) : null;
+   if (!["", "card", "report", "reset", "settings", "attach", "pane"].includes(command) || instructions && command !== "report" && !(command === "pane" && instructions === "close") && !(command === "reset" && resetParsed)) {
+    warning("Usage: /streams [card]; /streams report [instructions]; /streams reset [session|stream|all] [--auto]; /streams settings; /streams attach; /streams pane [close]. Put report instructions after 'report'.");return;
    }
    try {
     if (command === "" || command === "card") await show(ctx);
@@ -139,7 +179,7 @@ export default function registerWorkCard(pi: ExtensionAPI, options: Options = {}
      if (!native) throw Error("Native work cards require session startup in an interactive Herdr pane.");
      if (instructions === "close") await native.close();else await native.open();
     }
-    else if (command === "reset") reporter.reset(ctx, instructions === "--auto");
+    else if (command === "reset") reporter.reset(ctx, resetParsed!.auto, resetParsed!.target);
     else if (command === "settings") await configure(ctx);
     else if (command === "attach") await attach(ctx, {});
     else if (command === "report") {settings();reporter.request(ctx, true, instructions);}
@@ -154,6 +194,7 @@ export default function registerWorkCard(pi: ExtensionAPI, options: Options = {}
  pi.registerTool({name: "select_stream", label: "Attach initial effort", description: "Ask the user to attach this unbound Pi conversation to an exact catalog stream ID. An enrolled conversation cannot switch; membership moves/forks are not implemented.", parameters: Type.Object({stream_id: Type.Optional(Type.String()), reason: Type.String()}), async execute(_id, args, _signal, _update, ctx) {return result(await attach(ctx, {streamId: args.stream_id, reason: args.reason}));}});
  pi.registerTool({name: "create_stream", label: "Create initial effort", description: "Ask the user to create an initial durable effort and enroll this conversation. Never switches existing membership or launches workspaces.", parameters: Type.Object({title: Type.String(), reason: Type.String()}), async execute(_id, args, _signal, _update, ctx) {return result(await attach(ctx, args));}});
  pi.on("session_start", async (_event, ctx) => {
+  clearStatusTimer();
   const retired = retireNative();shutdown = undefined;scope.reset(ctx);
   const fence = scope.fence();
   if (retired) await retired;
@@ -170,8 +211,9 @@ export default function registerWorkCard(pi: ExtensionAPI, options: Options = {}
   if (!event.messages.some((message) => message.role === "assistant" && ["stop", "length"].includes(message.stopReason))) return;
   try {reporter.response(ctx);} catch(error) {warning(String(error));}
  });
- pi.on("session_tree", () => {scope.invalidate();native?.invalidate();});
+ pi.on("session_tree", () => {clearStatusTimer();scope.invalidate();native?.invalidate();});
  pi.on("session_shutdown", (_event, ctx) => shutdown ??= (async () => {
+  clearStatusTimer();
   const retired = retireNative();
   scope.reset(ctx, true);
   const fence = scope.fence();

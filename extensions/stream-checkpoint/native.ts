@@ -14,7 +14,7 @@ export type NativeAdapter = {
  open(context: NativeContext, signal: AbortSignal, mode: "automatic" | "explicit"): Promise<unknown>;
  close(context: NativeContext, signal: AbortSignal): Promise<unknown>;
  summaries(context: NativeContext, signal: AbortSignal): Promise<unknown>;
- names(context: NativeContext, signal: AbortSignal, intent?: 'automatic' | 'explicit'): Promise<unknown>;
+ names(context: NativeContext, signal: AbortSignal, intent?: 'automatic' | 'explicit' | 'explicit-tab' | 'explicit-workspace'): Promise<unknown>;
  sessionName(snapshot: NativeSnapshot, assertCurrent: () => void, intent?: 'automatic' | 'explicit'): void;
 };
 export type NativeFactory = (input: {pi: ExtensionAPI; ctx: ExtensionContext; sessionId: string; cwd: string; env: NodeJS.ProcessEnv}) => Promise<NativeAdapter>;
@@ -28,15 +28,16 @@ export const loadNative: NativeFactory = async ({pi, ctx, sessionId, cwd, env}) 
   import("../../integrations/herdr-work-cards/dist/pi/session-naming.js"),
  ]);
  let config = await loadConfig(configPath(env));
+ const effectiveConfig = () => ({...config, workspace_naming: config.workspace_naming ?? true, tab_naming: config.tab_naming ?? true, session_naming: config.session_naming ?? true});
  const source = new StreamsCardSource({nativeSessionId: sessionId, readContext: createStreamsContextReader({cwd, env})});
  const client = new StreamsWorkspaceClient({env});
  return {
-  get automatic() {return config.workspace_startup === "automatic";}, get sessionNaming() {return namingEnabled(config, "session");},
-  read: async (signal) => {config = await loadConfig(configPath(env));return source.read(signal);}, bootstrap: (signal) => client.bootstrap(config, signal),
-  open: (context, signal, mode) => client.openDisplay(source, context, config, signal, mode),
-  close: (context, signal) => client.closeDisplay(source, context, config, signal),
-  summaries: (context, signal) => client.projectSummaries(source, context, config, signal),
-  names: (context, signal, intent) => client.projectNames(source, context, config, signal, intent),
+  get automatic() {return config.workspace_startup === "automatic";}, get sessionNaming() {return namingEnabled(effectiveConfig(), "session");},
+  read: async (signal) => {config = await loadConfig(configPath(env));return source.read(signal);}, bootstrap: (signal) => client.bootstrap(effectiveConfig(), signal),
+  open: (context, signal, mode) => client.openDisplay(source, context, effectiveConfig(), signal, mode),
+  close: (context, signal, ) => client.closeDisplay(source, context, effectiveConfig(), signal),
+  summaries: (context, signal) => client.projectSummaries(source, context, effectiveConfig(), signal),
+  names: (context, signal, intent) => client.projectNames(source, context, effectiveConfig(), signal, intent),
   sessionName: (snapshot, assertCurrent, intent) => {
    naming.acceptSessionTitle(pi, ctx.sessionManager, sessionId, snapshot.session.title, assertCurrent);
    naming.projectSessionName(pi, ctx.sessionManager, sessionId, snapshot.session.title, snapshot.session.title_mode === "automatic" ? "auto" : "manual", assertCurrent, intent);
@@ -44,7 +45,7 @@ export const loadNative: NativeFactory = async ({pi, ctx, sessionId, cwd, env}) 
  };
 };
 const environmentKeys = ["HERDR_ENV", "HERDR_PANE_ID", "HERDR_TAB_ID", "HERDR_WORKSPACE_ID", "HERDR_SOCKET_PATH", "HERDR_BIN_PATH", "STREAMS_STREAM_ID", "XDG_CONFIG_HOME", "XDG_DATA_HOME", "XDG_STATE_HOME", "PI_CODING_AGENT_DIR", "HOME"];
-type Action = {kind: "open" | "close" | "reclaim"; resolve: () => void; reject: (error: unknown) => void};
+type Action = {kind: "open" | "close" | "reclaim"; target?: "all" | "session" | "stream"; resolve: () => void; reject: (error: unknown) => void};
 
 /** One pinned source and one serial effect lane per native Pi lifetime. */
 export class NativeController {
@@ -75,10 +76,10 @@ export class NativeController {
  }
  open(): Promise<void> {return this.action("open");}
  close(): Promise<void> {return this.action("close");}
- reclaimNames(): Promise<void> {return this.eligible() ? this.action("reclaim") : Promise.resolve();}
- private action(kind: Action["kind"]): Promise<void> {
+ reclaimNames(target: "all" | "session" | "stream" = "all"): Promise<void> {return this.eligible() ? this.action("reclaim", target) : Promise.resolve();}
+ private action(kind: Action["kind"], target?: Action["target"]): Promise<void> {
   if (this.stopped || !this.eligible()) return Promise.reject(Error("Native work cards require an interactive Pi session in its exact Herdr pane."));
-  return new Promise((resolve, reject) => {this.actions.push({kind, resolve, reject});this.drain();});
+  return new Promise((resolve, reject) => {this.actions.push({kind, target, resolve, reject});this.drain();});
  }
  invalidate(): void {
   this.controller.abort();this.controller = new AbortController();
@@ -105,7 +106,7 @@ export class NativeController {
    const action = this.actions.shift(), signal = this.controller.signal;
    if (!action) this.pending = false;
    try {
-    const snapshot = await this.refresh(action?.kind, signal);
+    const snapshot = await this.refresh(action, signal);
     this.retries = 0;clearTimeout(this.timer);this.timer = undefined;
     if (snapshot) await this.capture(snapshot, signal);
     action?.resolve();
@@ -136,7 +137,8 @@ export class NativeController {
   }
   this.assertCurrent(signal);
  }
- private async refresh(action: Action["kind"] | undefined, signal: AbortSignal): Promise<NativeSnapshot | undefined> {
+ private async refresh(action: Action | undefined, signal: AbortSignal): Promise<NativeSnapshot | undefined> {
+  const kind = action?.kind;
   const check = () => this.assertCurrent(signal);check();
   this.adapter ??= (this.options.factory ?? loadNative)({pi: this.options.pi, ctx: this.options.ctx, sessionId: this.sessionId, cwd: this.cwd, env: {...this.env}});
   const adapter = await this.adapter;check();
@@ -155,12 +157,14 @@ export class NativeController {
    this.context = context;
   }
   await read();check();
-  if (action === "close") {await adapter.close(this.context, signal);check();return;}
-  if (action === "open" || !action && adapter.automatic) {await adapter.open(this.context, signal, action ? "explicit" : "automatic");check();}
+  if (kind === "close") {await adapter.close(this.context, signal);check();return;}
+  if (kind === "open" || !kind && adapter.automatic) {await adapter.open(this.context, signal, kind ? "explicit" : "automatic");check();}
   await adapter.summaries(this.context, signal);check();
-  await adapter.names(this.context, signal, action === "reclaim" ? "explicit" : "automatic");check();
+  const nameIntent = kind === "reclaim" ? (action?.target === "session" ? "explicit-tab" : action?.target === "stream" ? "explicit-workspace" : "explicit") : "automatic";
+  await adapter.names(this.context, signal, nameIntent);check();
   const snapshot = await read();
-  if (adapter.sessionNaming || action === "reclaim") adapter.sessionName(snapshot, check, action === "reclaim" ? "explicit" : "automatic");
+  const sessionIntent = kind === "reclaim" && action?.target !== "stream" ? "explicit" : "automatic";
+  if (adapter.sessionNaming || sessionIntent === "explicit") adapter.sessionName(snapshot, check, sessionIntent);
   check();
   // Capture only the attested existing association, never receipt/model text or membership.
   return snapshot;

@@ -9,8 +9,9 @@ import { SessionScope, captureInputs } from "./session-scope.ts";
 import type { SessionFence } from "./session-scope.ts";
 import type { ReportingSettings } from "./settings.ts";
 
-type Options = {scope?: SessionScope; cli(ctx: ExtensionContext): StreamCli; settings(): ReportingSettings; infer?: typeof modelInfer; notice(text: string): void; receipt(value: Receipt, deferNative?: boolean): void; activity?(text?: string): void; onUpdateNative?(): void; onReclaimNames?(): Promise<void> | void};
-type Pending = {ctx: ExtensionContext; force: boolean; instructions?: string; reset?: boolean; auto?: boolean};
+export type ResetTarget = "all" | "session" | "stream";
+type Options = {scope?: SessionScope; cli(ctx: ExtensionContext): StreamCli; settings(): ReportingSettings; infer?: typeof modelInfer; notice(text: string): void; receipt(value: Receipt, deferNative?: boolean, quiet?: boolean): void; activity?(text?: string): void; onBackgroundSuccess?(): void; onUpdateNative?(): void; onReclaimNames?(target: ResetTarget): Promise<void> | void};
+type Pending = {ctx: ExtensionContext; force: boolean; instructions?: string; reset?: boolean; auto?: boolean; target?: ResetTarget};
 export class Reporter {
  readonly scope: SessionScope;
  private count = 0;
@@ -26,11 +27,12 @@ export class Reporter {
   this.scope.use(ctx);
   if (++this.count % this.options.settings().frequency === 0) this.request(ctx, false);
  }
- reset(ctx: ExtensionContext, auto = false): void {this.request(ctx, true, undefined, true, auto);}
- request(ctx: ExtensionContext, force = true, instructions?: string, reset = false, auto = false): void {
+ reset(ctx: ExtensionContext, auto = false, target: ResetTarget = "all"): void {this.request(ctx, true, undefined, true, auto, target);}
+ request(ctx: ExtensionContext, force = true, instructions?: string, reset = false, auto = false, target?: ResetTarget): void {
   if (this.scope.stopped) return;
   this.scope.use(ctx);
-  this.pending = {ctx, force: force || !!this.pending?.force, instructions: instructions?.trim() || this.pending?.instructions, reset: Boolean(reset || this.pending?.reset), auto: Boolean(auto || this.pending?.auto)};
+  const nextTarget = reset ? (this.pending?.reset && this.pending.target && this.pending.target !== (target ?? "all") ? "all" : (target ?? "all")) : this.pending?.target;
+  this.pending = {ctx, force: force || !!this.pending?.force, instructions: instructions?.trim() || this.pending?.instructions, reset: Boolean(reset || this.pending?.reset), auto: Boolean(auto || this.pending?.auto), target: nextTarget};
   this.start();
  }
  invalidate(): void {this.scope.invalidate();}
@@ -53,19 +55,25 @@ export class Reporter {
   while (this.pending && !this.suspended) {
    const pending = this.pending;this.pending = undefined;
    const fence = this.scope.fence();
+   let completed = false;
    this.options.activity?.("Reporting");
-   try {await this.report(pending, fence);} catch (error) {if (fence.current()) this.options.notice(String(error));}
-   finally {if (fence.live()) this.options.activity?.();}
+   try {completed = await this.report(pending, fence);} catch (error) {if (fence.current()) this.options.notice(String(error));}
+   finally {
+    if (fence.live()) {
+     this.options.activity?.();
+     if (!pending.force && completed && !this.pending) this.options.onBackgroundSuccess?.();
+    }
+   }
   }
  }
  private async generate(ctx: ExtensionContext, request: Inference, signal: AbortSignal): Promise<Inferred> {
   return (this.options.infer ?? modelInfer)(ctx, request, signal, this.options.settings().model);
  }
- private async report({ctx, force, instructions, reset, auto}: Pending, fence: SessionFence): Promise<void> {
-  const cli = this.options.cli(ctx), signal = fence.signal;
+ private async report({ctx, force, instructions, reset, auto, target = "all"}: Pending, fence: SessionFence): Promise<boolean> {
+  const cli = this.options.cli(ctx), signal = fence.signal, quiet = !force;
   const captureNow = () => captureInputs(ctx, cli, this.options.settings().context, fence);
   let capture = await captureNow(), savedAny = false, reclaimReady = false;
-  if (!capture.valid() || signal.aborted) return;
+  if (!capture.valid() || signal.aborted) return false;
   const inferAndApply = async (kind: "session" | "stream"): Promise<boolean> => {
    for (let attempt = 0; ; attempt++) {
     const inferred = await this.generate(ctx, {type: kind, catalog: capture.catalog, messages: capture.evidence.messages, instructions, reset}, signal);
@@ -82,59 +90,64 @@ export class Reporter {
       continue;
      }
     }
-    if (fence.live()) this.options.receipt(receipt, true);
+    if (fence.live()) this.options.receipt(receipt, true, quiet);
     if (receiptCanContinue(receipt)) {savedAny = true;return true;}
     return false;
    }
   };
   try {
    if (!capture.catalog.session) {
-    if (reset) {this.options.notice("Reset requires an attached work card. Use /streams attach first.");return;}
-    if (!force && this.options.settings().enrollment !== "automatic") return;
+    if (reset) {this.options.notice("Reset requires an attached work card. Use /streams attach first.");return false;}
+    if (!force && this.options.settings().enrollment !== "automatic") return false;
     const operationId = randomUUID();
     const result = await this.generate(ctx, {type: "enroll", catalog: capture.catalog, messages: capture.evidence.messages, instructions}, signal);
-    if (signal.aborted || !await capture.attached() || (!result.meaningful && !force)) return;
+    if (signal.aborted || !await capture.attached() || (!result.meaningful && !force)) return false;
     if (!result.session?.title?.trim() || (!capture.catalog.stream && !result.stream?.title?.trim())) throw Error("Enrollment requires meaningful effort and session titles");
     const receipt = await cli.enroll({catalog_source: capture.catalog.catalog_source, operation_id: operationId, harness: "pi", harness_session_id: capture.native, ...(capture.catalog.stream ? {stream_id: capture.catalog.stream.id} : {stream: result.stream}), session: result.session, actor: "automatic", cwd: capture.cwd});
-    if (fence.live()) this.options.receipt(receipt, true);
+    if (fence.live()) this.options.receipt(receipt, true, quiet);
     if (receiptCanContinue(receipt)) savedAny = true;
-    if (!capture.valid() || !receiptCanContinue(receipt)) return;
+    if (!capture.valid() || !receiptCanContinue(receipt)) return false;
     const enrollmentSource = capture.catalog.catalog_source;
     capture = await captureNow();
     if (capture.catalog.catalog_source !== enrollmentSource) throw Error("Catalog source changed after enrollment; no further report was attempted");
-    if (!capture.catalog.session || !capture.valid() || signal.aborted) return;
+    if (!capture.catalog.session || !capture.valid() || signal.aborted) return false;
    }
+   const resetTargets: readonly ("session" | "stream")[] = !reset || target === "all" ? ["session", "stream"] : [target];
    if (reset && auto) {
     const source = capture.catalog.catalog_source, sessionId = capture.catalog.session.id, streamId = capture.catalog.stream?.id;
-    for (const kind of ["session", "stream"] as const) {
-     const target = capture.catalog[kind];
-     if (!target || kind === "stream" && !capture.catalog.authority) continue;
+    for (const kind of resetTargets) {
+     const record = capture.catalog[kind];
+     if (!record || kind === "stream" && !capture.catalog.authority) continue;
      const changes: Record<string, unknown> = {};
-     if (target.title_mode === "manual") changes.title_mode = "automatic";
+     if (record.title_mode === "manual") changes.title_mode = "automatic";
      if (kind === "stream" && capture.catalog.stream!.goal_mode === "manual") changes.goal_mode = "automatic";
      if (!Object.keys(changes).length) continue;
-     if (signal.aborted || !await capture.attached()) return;
+     if (signal.aborted || !await capture.attached()) return false;
      const receipt = await cli.apply(editRequest(capture.catalog, kind, changes, "user", randomUUID(), false));
-     if (fence.live()) this.options.receipt(receipt, true);
+     if (fence.live()) this.options.receipt(receipt, true, quiet);
      if (receiptCanContinue(receipt)) savedAny = true;
-     if (!capture.valid() || !receiptCanContinue(receipt)) return;
+     if (!capture.valid() || !receiptCanContinue(receipt)) return false;
      capture = await captureNow();
      if (!capture.valid() || capture.catalog.catalog_source !== source || capture.catalog.session?.id !== sessionId || capture.catalog.stream?.id !== streamId) throw Error("Attachment changed during naming reset");
     }
    }
-   // A Session write is its own inference and guarded target; it never timestamps the effort.
-   if (!await inferAndApply("session")) return;
-   // Capture AGAIN before metadata inference, never after it or to make an old result fit.
-   if (!capture.valid()) return;
-   const sessionBase = capture.catalog;
-   capture = await captureNow();
-   if (capture.catalog.catalog_source !== sessionBase.catalog_source || capture.catalog.stream?.id !== sessionBase.stream?.id || capture.catalog.session?.id !== sessionBase.session?.id) throw Error("Catalog source or attachment changed; metadata report cancelled");
-   if (!capture.valid() || signal.aborted) return;
-   if (!capture.catalog.stream || !automaticFields("stream", capture.catalog.stream).length) {reclaimReady = Boolean(auto && capture.valid());return;}
-   if (!await inferAndApply("stream")) return;
+   if (resetTargets.includes("session")) {
+    // A Session write is its own inference and guarded target; it never timestamps the effort.
+    if (!await inferAndApply("session")) return false;
+    if (!resetTargets.includes("stream")) {reclaimReady = Boolean(auto && capture.valid());return savedAny;}
+    // Capture AGAIN before metadata inference, never after it or to make an old result fit.
+    if (!capture.valid()) return false;
+    const sessionBase = capture.catalog;
+    capture = await captureNow();
+    if (capture.catalog.catalog_source !== sessionBase.catalog_source || capture.catalog.stream?.id !== sessionBase.stream?.id || capture.catalog.session?.id !== sessionBase.session?.id) throw Error("Catalog source or attachment changed; metadata report cancelled");
+    if (!capture.valid() || signal.aborted) return false;
+   }
+   if (!capture.catalog.stream || !automaticFields("stream", capture.catalog.stream).length) {reclaimReady = Boolean(auto && capture.valid());return savedAny;}
+   if (!await inferAndApply("stream")) return false;
    reclaimReady = Boolean(auto && capture.valid());
+   return savedAny;
   } finally {
-   if (reclaimReady && fence.live()) await this.options.onReclaimNames?.();
+   if (reclaimReady && fence.live()) await this.options.onReclaimNames?.(target);
    else if (savedAny && fence.live()) this.options.onUpdateNative?.();
   }
  }

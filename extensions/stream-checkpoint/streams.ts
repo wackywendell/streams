@@ -108,5 +108,22 @@ export class StreamCli {
 }
 export function receiptText(value: Receipt): string {
  const saves = value.saves ?? (value.save ? [{operation_id: value.operation_id ?? "", save: value.save}] : []);
- return (saves.length ? saves.map(({operation_id, save}) => `${operation_id}: ${save.domain?.outcome ?? "not reconciled; save outcome uncertain — inspect catalog repair state before another write"}; local=${save.local}; sharing=${save.sharing}${save.detail ? `; ${save.detail}` : ""}`).join("\n") : "Already enrolled; no new local saves") + (value.publication ? `\nPublication: ${JSON.stringify(value.publication)}` : "") + (value.completion_error ? `\nSaved receipt retained; completion problem: ${JSON.stringify(value.completion_error)}. Do not blindly retry.` : "");
+ if (!saves.length) return "Already enrolled; no new local saves";
+ if (receiptHasWarning(value)) {
+  return saves.map(({operation_id, save}) => `${operation_id}: ${save.domain?.outcome ?? "not reconciled; save outcome uncertain — inspect catalog repair state before another write"}; local=${save.local}; sharing=${save.sharing}${save.detail ? `; ${save.detail}` : ""}`).join("\n") + (value.publication ? `\nPublication: ${JSON.stringify(value.publication)}` : "") + (value.completion_error ? `\nSaved receipt retained; completion problem: ${JSON.stringify(value.completion_error)}. Do not blindly retry.` : "");
+ }
+ if (value.saves) {
+  const label = [value.stream?.title, value.session?.title].filter(Boolean).join(" / ");
+  return label ? `Work card enrolled: ${label}` : "Work card enrolled";
+ }
+ if (value.save?.domain?.outcome === "no-change") return "Work card up to date (no changes)";
+ if (value.session) {
+  const summary = value.session.state_short || value.session.state;
+  return `Work card updated (${value.session.title})${summary ? `: ${summary}` : ""}`;
+ }
+ if (value.stream) {
+  const summary = value.stream.goal_short || value.stream.goal;
+  return `Work card effort updated (${value.stream.title})${summary ? `: ${summary}` : ""}`;
+ }
+ return "Work card updated";
 }

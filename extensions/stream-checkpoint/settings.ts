@@ -49,16 +49,16 @@ export async function settingsDialog(ctx: ExtensionContext, settings: ReportingS
   ...(nativePath ? [
    {id: "workspace_startup", label: "Herdr workspace startup", currentValue: String(native.workspace_startup ?? "automatic"), description: "Automatically open the side-by-side Herdr work-card pane when a chat is attached, or only when you run /streams pane.", values: ["automatic", "manual"]},
    ...Object.entries({
-    workspace_naming: "Sync the Herdr workspace name with the effort's short title ('inherit' follows Herdr workspace startup; manual renames in Herdr stay protected).",
-    tab_naming: "Sync this Herdr tab's name with this session's short title ('inherit' follows Herdr workspace startup; manual renames stay protected).",
-    session_naming: "Sync the Pi session name (/name) with this session's short title ('inherit' follows Herdr workspace startup).",
-   }).map(([id, description]) => ({id, description, label: `Herdr ${id.replace("_", " ")}`, currentValue: native[id] == null ? "inherit" : native[id] ? "enabled" : "disabled", values: ["inherit", "enabled", "disabled"]})),
+    workspace_naming: ["Herdr workspace naming", "Sync the Herdr workspace name with the effort's short title (manual renames in Herdr stay protected)."],
+    tab_naming: ["Herdr tab naming", "Sync this Herdr tab's name with this session's short title (manual renames stay protected)."],
+    session_naming: ["Pi session naming", "Sync the Pi session name (/name) with this session's short title."],
+   }).map(([id, [label, description]]) => ({id, description, label, currentValue: native[id] === false ? "disabled" : "enabled", values: ["enabled", "disabled"]})),
   ] : []),
  ];
  function change(id: string, next: string): void {
   if (id === "workspace_startup" || id.endsWith("_naming")) {
    if (!nativePath || !agentDir) return;
-   const updated = {...storedSettings(nativePath), [id]: id === "workspace_startup" ? next : next === "inherit" ? null : next === "enabled"};
+   const updated = {...storedSettings(nativePath), [id]: id === "workspace_startup" ? next : next === "enabled"};
    mkdirSync(agentDir, {recursive: true});
    const temp = `${nativePath}.${randomUUID()}.tmp`;
    writeFileSync(temp, JSON.stringify(updated, null, 2) + "\n", {mode: 0o600});renameSync(temp, nativePath);
