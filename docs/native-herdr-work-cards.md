@@ -1,6 +1,6 @@
 # ADR: Native Herdr work cards as Streams projections
 
-Status: accepted; the Streams-backed projection and restoration support are implemented and reviewed in this checkout. Native acceptance and activation remain pending. The imported implementation retains its original history. This decision replaces its separate catalog and membership model, not its presentation design.
+Status: accepted; implemented, reviewed, verified in native Herdr and active in the local runtime. The imported implementation retains its original history. This decision replaces its separate catalog and membership model, not its presentation design.
 
 ## Context and decision
 
@@ -33,6 +33,20 @@ Native metadata is a bounded hint, not another copy of the narrative. [Herdr's t
 Native effects are not a transaction with catalog persistence. Verify current scope and acknowledgements, report partial effects and preserve recovery evidence. A successfully saved title is not proof that a native name changed.
 
 A GUI-created terminal inherits the frontend server's environment, not the invoking CLI's. Launches explicitly carry the caller's catalog, host-state, checkout-registry and harness-selection paths, including effective defaults. The card subprocess separately captures the owning agent's bounded read environment. Neither boundary forwards the caller's full environment or credentials; otherwise a workspace or card could silently read another catalog despite carrying the same Stream ID.
+
+## Separate display, observation and effect recovery
+
+The accepted recovery follow-up separates local painting, conversation verification and native effects. A missing transcript during startup does not prove that its conversation disappeared. Pi may advertise a path before saving its first message, or briefly expose an incomplete header while rewriting it. Capture validates the complete host topology, then verifies every supported conversation in the target workspace. If any cannot be verified, preserve the previous arrangement rather than save a partial subset. Launch, resume and session-targeted focus retain host-wide identity and duplicate checks.
+
+Resizing repaints the current snapshot without waiting for catalog reads or native effects. That snapshot remains display data, never authority for navigation or mutation. Refresh and effects stay serialized; a resize invalidates shortcuts selected against an older painted frame. Failed capture retries on the next actual update, without replaying successful display and naming effects.
+
+Unchanged projections need no effect lock. Fresh attestation, ownership and naming-provenance reads may establish that nothing needs changing. Any effect still acquires the workspace lock and repeats its authority checks. This reduces contention without allowing a cached card to authorize a rename or launch.
+
+Workspace exclusion must survive process death without stale-lock theft. Retain a descriptor to a persistent, version-marked lock inode and use the operating system's advisory lock. A short isolated Python helper acquires through an inherited descriptor; Node retains the lock after the helper exits. Descriptor closure or process death releases ownership. This requires Python 3 with `fcntl` and adds interpreter startup cost when acquiring a lock. It avoids native-addon packaging and does not depend on asynchronous unlink cleanup.
+
+New-format lock files remain after release. Never delete them to make progress. Legacy or unrecognized files require inspected recovery with old clients quiescent; they cannot be treated as available by guessing whether a recorded PID is alive. Cancellation stops subprocess groups and awaits closure. Shutdown and replacement drain retired native work before their lifetimes end. A complete reservation may be rolled back only when this invocation knows that no native effect was dispatched. Uncertain dispatched effects retain their launch evidence rather than permit duplicates.
+
+These decisions are accepted; the [cutover plan](../plans/catalog-cutover.md) records review and activation separately from the already active native base.
 
 ## Documents open in the viewing session
 
