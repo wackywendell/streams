@@ -10,7 +10,7 @@ import { withWorkspaceLock } from './workspace-lock.js';
 import { resolveStreamsDocument } from './streams-documents.js';
 import { STREAMS_READ_ENV_KEYS, sameStreamsScope, type StreamsCardSnapshot, type StreamsCardSource } from './streams-source.js';
 import type { StreamsDocumentTarget } from './streams-view.js';
-import { StreamsNativeState, streamsDigest, type StreamsAttempt } from './streams-native-state.js';
+import { StreamsNativeState, streamsDigest, isReservedStreamsAttempt, type StreamsAttempt, type ReservedStreamsAttempt, type UnlaunchedStreamsAttempt } from './streams-native-state.js';
 
 export interface StreamsNativeContext { socket: string; paneId: string; terminalId: string; workspaceId: string; tabId: string }
 export interface StreamsWorkspaceOptions extends ClientOptions { stateDirectory?: string }
@@ -89,10 +89,11 @@ export class StreamsWorkspaceClient extends HerdrTransport {
     if (!w.tokens.strm_binding || Object.entries(v.binding).some(([k, value]) => w.tokens[k] !== value)) throw new Error('Verified native Stream binding required');
     return w.tokens.strm_binding;
   }
-  private async evidence(v: Verified, context: StreamsNativeContext): Promise<StreamsAttempt | null> {
+  private async evidence(v: Verified, context: StreamsNativeContext): Promise<(StreamsAttempt & { phase: 'ready' | 'closed' }) | null> {
     if (v.pair.kind === 'card-only') throw new Error('Uncertain Streams launch retained; owner must complete the reserved pair');
     const attempt = await this.state(context).read(v.key);
     if (attempt && attempt.phase === 'pending') {
+      if (!isReservedStreamsAttempt(attempt)) throw new Error('Uncertain Streams launch retained; inspect native launch evidence before retrying');
       if (v.pair.kind === 'absent' && attempt.nonce === v.pair.nonce && attempt.terminalId === v.pair.agent.tokens.strm_card
         && !v.snapshot.panes.some(p => p.terminal_id === attempt.terminalId || p.pane_id === attempt.paneId)) {
         return { ...attempt, phase: 'closed' };
@@ -170,7 +171,7 @@ export class StreamsWorkspaceClient extends HerdrTransport {
     await verify(); check((await this.result(['plugin', 'link', manifest], config, 'plugin_linked', signal)).plugin);
     return true;
   }
-  private async reservation(v: Verified, context: StreamsNativeContext, expected: StreamsAttempt): Promise<Pane> {
+  private async reservation(v: Verified, context: StreamsNativeContext, expected: ReservedStreamsAttempt): Promise<Pane> {
     this.bound(v, context);
     if (v.caller.terminal_id !== v.owner.terminal_id || expected.key !== v.key || expected.phase !== 'pending'
       || !isDeepStrictEqual(await this.state(context).read(v.key), expected)) throw new Error('Reserved pair identity or durable evidence changed');
@@ -183,7 +184,7 @@ export class StreamsWorkspaceClient extends HerdrTransport {
       || !isDeepStrictEqual(v.pair.card, card)) throw new Error('Conflicting reserved pair publisher');
     return card;
   }
-  private async completeReservation(source: Source, context: StreamsNativeContext, config: WorkCardsConfig, v: Verified, attempt: StreamsAttempt, signal?: AbortSignal): Promise<PairState> {
+  private async completeReservation(source: Source, context: StreamsNativeContext, config: WorkCardsConfig, v: Verified, attempt: ReservedStreamsAttempt, signal?: AbortSignal): Promise<PairState> {
     const card = await this.reservation(v, context, attempt);
     const markers = { strm_agent: v.identity, strm_nonce: attempt.nonce, strm_pi: v.owner.terminal_id, strm_card: card.terminal_id, strm_native: v.saved.scope.nativeSessionId };
     const verify = (fresh: Verified) => this.reservation(fresh, context, attempt);
@@ -208,7 +209,7 @@ export class StreamsWorkspaceClient extends HerdrTransport {
       const state = this.state(context);
       if (v.pair.kind === 'empty' || v.pair.kind === 'card-only') {
         const pending = await state.read(v.key);
-        if (pending?.phase === 'pending' && pending.paneId && pending.terminalId && pending.tabId) return this.completeReservation(source, context, config, v, pending, signal);
+        if (pending && isReservedStreamsAttempt(pending)) return this.completeReservation(source, context, config, v, pending, signal);
       }
       const attempt = await this.evidence(v, context);
       if (v.pair.kind === 'paired') { this.bound(v, context); await state.write(attempt!); return v.pair; }
@@ -235,7 +236,7 @@ export class StreamsWorkspaceClient extends HerdrTransport {
         STREAMS_CARDS_STATE_DIR: state.directory, STREAMS_CARDS_CONFIG: this.env.STREAMS_CARDS_CONFIG || configPath(this.env), EDITOR: this.env.EDITOR ?? '',
         ...(this.env.PATH === undefined ? {} : { PATH: this.env.PATH }),
       };
-      const pending: StreamsAttempt = { version: 1, key: v.key, phase: 'pending', nonce };
+      const pending: UnlaunchedStreamsAttempt = { version: 1, key: v.key, phase: 'pending', nonce };
       let effectStarted = false, opened;
       // A failed reservation write may leave only its gate: never roll that back.
       await state.write(pending);
@@ -253,7 +254,7 @@ export class StreamsWorkspaceClient extends HerdrTransport {
       const info = object(opened.plugin_pane, 'Streams launch'), returned = nativePane(info.pane);
       if (info.plugin_id !== pluginId || info.entrypoint !== 'card' || returned.workspace_id !== context.workspaceId || returned.tab_id !== context.tabId
         || v.snapshot.panes.some(p => p.pane_id === returned.pane_id || p.terminal_id === returned.terminal_id)) throw new Error('Unexpected/replayed native card response; launch evidence retained');
-      const reserved: StreamsAttempt = { version: 1, key: v.key, phase: 'pending', nonce, paneId: returned.pane_id, terminalId: returned.terminal_id, tabId: returned.tab_id };
+      const reserved: ReservedStreamsAttempt = { version: 1, key: v.key, phase: 'pending', nonce, paneId: returned.pane_id, terminalId: returned.terminal_id, tabId: returned.tab_id };
       await state.write(reserved);
       if (config.pane_height_fraction !== 0.5) {
         const target = config.pane_height_fraction < 0.5 ? v.owner : returned;
@@ -443,7 +444,7 @@ export class StreamsWorkspaceClient extends HerdrTransport {
       const command = documentCommand(config, this.env), root = await realpath(this.pluginRoot);
       current = await verify();
       if (matching(current.v)) throw new Error('Editor appeared during preparation; retry after redraw');
-      const nonce = randomUUID(), pending: StreamsAttempt = { version: 1, key: evidenceKey, phase: 'pending', nonce };
+      const nonce = randomUUID(), pending: UnlaunchedStreamsAttempt = { version: 1, key: evidenceKey, phase: 'pending', nonce };
       let effectStarted = false, opened;
       await state.write(pending);
       try {

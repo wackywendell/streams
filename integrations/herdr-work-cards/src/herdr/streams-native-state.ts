@@ -5,10 +5,17 @@ import { join, resolve } from 'node:path';
 import { isDeepStrictEqual } from 'node:util';
 
 export const streamsDigest = (value: unknown): string => createHash('sha256').update(JSON.stringify(value)).digest('hex');
-export interface StreamsAttempt {
-  version: 1; key: string; phase: 'pending' | 'ready' | 'closed'; nonce: string;
-  paneId?: string; terminalId?: string; tabId?: string;
-}
+interface StreamsAttemptIdentity { version: 1; key: string; nonce: string }
+export interface ResourceTuple { paneId: string; terminalId: string; tabId: string }
+export type UnlaunchedStreamsAttempt = StreamsAttemptIdentity & {
+  phase: 'pending'; paneId?: never; terminalId?: never; tabId?: never;
+};
+export type ReservedStreamsAttempt = StreamsAttemptIdentity & ResourceTuple & { phase: 'pending' };
+export type StreamsAttempt = UnlaunchedStreamsAttempt | ReservedStreamsAttempt
+  | (StreamsAttemptIdentity & ResourceTuple & { phase: 'ready' })
+  | (StreamsAttemptIdentity & ResourceTuple & { phase: 'closed' });
+export const isReservedStreamsAttempt = (attempt: StreamsAttempt): attempt is ReservedStreamsAttempt =>
+  attempt.phase === 'pending' && attempt.paneId !== undefined;
 /** Host-local launch evidence, never a catalog. Caller holds the native workspace lock.
  * Pending evidence is published and synced BEFORE launching, and is never automatically
  * discarded on uncertain failures. Even an explicit retry cannot duplicate that launch.
@@ -35,11 +42,15 @@ export class StreamsNativeState {
     try {
       if (!(await file.stat()).isFile()) throw new Error('Native evidence must be a regular file');
       const source = await file.readFile('utf8');
-      const value = JSON.parse(source) as StreamsAttempt;
-      if (!value || typeof value !== 'object' || Array.isArray(value) || value.version !== 1 || value.key !== key || !['pending', 'ready', 'closed'].includes(value.phase)
-        || typeof value.nonce !== 'string' || !/^[A-Za-z0-9_-]+$/.test(value.nonce) || ['paneId', 'terminalId', 'tabId'].some(k => value[k as keyof StreamsAttempt] !== undefined && typeof value[k as keyof StreamsAttempt] !== 'string')) throw new Error('Malformed native launch evidence');
-      if (value.phase !== 'pending' && ![value.paneId, value.terminalId, value.tabId].every(v => typeof v === 'string' && v.length > 0)) throw new Error('Incomplete native launch evidence');
-      return value;
+      const parsed: unknown = JSON.parse(source);
+      if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) throw new Error('Malformed native launch evidence');
+      const value = parsed as Record<string, unknown>;
+      if (value.version !== 1 || value.key !== key || !['pending', 'ready', 'closed'].includes(value.phase as string)
+        || typeof value.nonce !== 'string' || !/^[A-Za-z0-9_-]+$/.test(value.nonce)) throw new Error('Malformed native launch evidence');
+      const resources = [value.paneId, value.terminalId, value.tabId];
+      if (!resources.every(v => typeof v === 'string' && v.length > 0)
+        && !(value.phase === 'pending' && resources.every(v => v === undefined))) throw new Error('Incomplete native launch evidence');
+      return parsed as StreamsAttempt;
     } finally { await file.close(); }
   }
   async discardUnlaunched(expected: StreamsAttempt, previous: StreamsAttempt | null): Promise<void> {
