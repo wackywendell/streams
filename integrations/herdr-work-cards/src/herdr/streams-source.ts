@@ -152,8 +152,11 @@ export function createStreamsContextReader(options: StreamsContextReaderOptions 
     HERDR_PANE_ID: owner.pane_id, HERDR_TAB_ID: owner.tab_id, HERDR_WORKSPACE_ID: owner.workspace_id,
   } : {}) };
   if (!Number.isSafeInteger(timeoutMs) || timeoutMs <= 0 || !Number.isSafeInteger(maxBuffer) || maxBuffer <= 0) throw new Error('Streams CLI timeout and output limit must be positive integers');
+  let cached: { id: string; at: number; value: unknown } | undefined;
   return async (nativeSessionId, signal) => {
+    signal?.throwIfAborted();
     if (!uuid(nativeSessionId)) throw new Error('A native Pi session UUID is required');
+    if (cached && cached.id === nativeSessionId && Date.now() - cached.at < 1500) return cached.value;
     let output: string;
     try {
       output = await runProcess('streams', ['agent', 'context', '--harness', 'pi', '--session-id', nativeSessionId, '--attest', '--json'],
@@ -163,6 +166,7 @@ export function createStreamsContextReader(options: StreamsContextReaderOptions 
     try { value = JSON.parse(output); } catch { throw new Error('Streams context returned malformed JSON'); }
     const saved = context(value, nativeSessionId);
     if (owner && (saved.native.pane_id !== owner.pane_id || saved.native.tab_id !== owner.tab_id || saved.native.workspace_id !== owner.workspace_id)) throw new Error('App attestation does not match the exact requested owner tuple');
+    cached = { id: nativeSessionId, at: Date.now(), value };
     return value;
   };
 }

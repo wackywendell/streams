@@ -32,7 +32,7 @@ from .model import Catalog, Host, Record, RecordKey, Session, Stream, Validation
 from .storage import RevisionConflict, Snapshot, StorageError
 
 
-class _StrictLoader(yaml.SafeLoader):
+class _StrictLoader(getattr(yaml, "CSafeLoader", yaml.SafeLoader)):
     pass
 
 
