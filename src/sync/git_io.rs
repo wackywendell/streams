@@ -5,13 +5,12 @@
 //! triggers group termination and reaping; an error does not prove no effect occurred.
 
 use std::collections::{BTreeMap, BTreeSet};
-use std::io::{self, Read, Write};
-use std::os::fd::AsRawFd;
-use std::os::unix::process::CommandExt;
 use std::path::{Path, PathBuf};
-use std::process::{Child, Command, Stdio};
+use std::process::Command;
 use std::sync::{Arc, Mutex};
-use std::time::{Duration, Instant};
+use std::time::Instant;
+
+use crate::process;
 
 use crate::storage::StorageError;
 
@@ -73,68 +72,12 @@ impl std::fmt::Debug for Git {
     }
 }
 
-// Limit each turn so a continuously writable/readable pipe cannot starve the deadline.
-fn drain(pipe: &mut Option<impl Read>, output: &mut Vec<u8>) -> io::Result<()> {
-    let Some(reader) = pipe.as_mut() else {
-        return Ok(());
-    };
-    let mut buf = [0; 8192];
-    for _ in 0..8 {
-        match reader.read(&mut buf) {
-            Ok(0) => {
-                *pipe = None;
-                break;
-            }
-            Ok(n) => output.extend_from_slice(&buf[..n]),
-            Err(e) if e.kind() == io::ErrorKind::WouldBlock => break,
-            Err(e) if e.kind() == io::ErrorKind::Interrupted => continue,
-            Err(e) => return Err(e),
-        }
-    }
-    Ok(())
-}
-
-fn nonblocking(pipe: &impl AsRawFd) -> io::Result<()> {
-    // These descriptors are owned pipes; retain their existing status flags.
-    let flags = unsafe { libc::fcntl(pipe.as_raw_fd(), libc::F_GETFL) };
-    if flags == -1
-        || unsafe { libc::fcntl(pipe.as_raw_fd(), libc::F_SETFL, flags | libc::O_NONBLOCK) } == -1
-    {
-        return Err(io::Error::last_os_error());
-    }
-    Ok(())
-}
-
-fn terminate(child: &mut Child, mut message: String) -> GitError {
-    // The group remains addressable even if Git exited before a descendant closed its pipes.
-    if unsafe { libc::kill(-(child.id() as libc::pid_t), libc::SIGKILL) } == -1 {
-        let error = io::Error::last_os_error();
-        if error.raw_os_error() != Some(libc::ESRCH) {
-            message.push_str(&format!("; terminating Git process group failed: {error}"));
-        }
-    }
-    if let Err(error) = child.wait() {
-        message.push_str(&format!("; reaping Git failed: {error}"));
-    }
-    GitError::new(message, None)
-}
-
 impl Git {
     fn deadline(&self, args: &[&str]) -> Result<Instant, GitError> {
         if args.is_empty() {
             return Err(GitError::new("Git requires at least one argument", None));
         }
-        let timeout = Duration::try_from_secs_f64(self.timeout)
-            .ok()
-            .filter(|timeout| !timeout.is_zero());
-        timeout
-            .and_then(|timeout| Instant::now().checked_add(timeout))
-            .ok_or_else(|| {
-                GitError::new(
-                    "Git timeout must be finite, positive, and representable",
-                    None,
-                )
-            })
+        process::deadline(self.timeout, "Git").map_err(|e| GitError::new(e.message, None))
     }
 
     /// Binds empty caches to `root`; repository access and timeout checks are deferred.
@@ -174,7 +117,6 @@ impl Git {
     ) -> Result<Vec<u8>, GitError> {
         let deadline = self.deadline(args)?;
         let mut cmd = Command::new("git");
-        cmd.process_group(0);
         cmd.arg("-C").arg(&self.root).args(args);
         cmd.env_clear();
         for (k, v) in std::env::vars_os() {
@@ -193,77 +135,13 @@ impl Git {
         if let Some(idx) = index {
             cmd.env("GIT_INDEX_FILE", idx);
         }
-        if input.is_some() {
-            cmd.stdin(Stdio::piped());
-        } else {
-            cmd.stdin(Stdio::null());
-        }
-        cmd.stdout(Stdio::piped()).stderr(Stdio::piped());
-        let mut child = cmd
-            .spawn()
-            .map_err(|e| GitError::new(format!("Git {} could not complete: {e}", args[0]), None))?;
-        let result = (|| -> io::Result<_> {
-            let mut stdin = child.stdin.take();
-            let mut stdout = child.stdout.take();
-            let mut stderr = child.stderr.take();
-            if let Some(pipe) = &stdin {
-                nonblocking(pipe)?;
-            }
-            nonblocking(stdout.as_ref().unwrap())?;
-            nonblocking(stderr.as_ref().unwrap())?;
-            let mut remaining = input.unwrap_or_default();
-            let mut out = Vec::new();
-            let mut err = Vec::new();
-            let mut status = None;
-            loop {
-                if Instant::now() >= deadline {
-                    return Err(io::Error::new(
-                        io::ErrorKind::TimedOut,
-                        "configured Git timeout elapsed",
-                    ));
-                }
-                drain(&mut stdout, &mut out)?;
-                drain(&mut stderr, &mut err)?;
-                if let Some(writer) = stdin.as_mut() {
-                    if !remaining.is_empty() {
-                        let len = remaining.len().min(65536);
-                        match writer.write(&remaining[..len]) {
-                            Ok(0) => return Err(io::ErrorKind::WriteZero.into()),
-                            Ok(n) => remaining = &remaining[n..],
-                            Err(e) if e.kind() == io::ErrorKind::BrokenPipe => remaining = &[],
-                            Err(e)
-                                if matches!(
-                                    e.kind(),
-                                    io::ErrorKind::WouldBlock | io::ErrorKind::Interrupted
-                                ) => {}
-                            Err(e) => return Err(e),
-                        }
-                    }
-                    if remaining.is_empty() {
-                        stdin = None;
-                    }
-                }
-                if status.is_none() {
-                    status = child.try_wait()?;
-                }
-                if let Some(status) = status {
-                    stdin = None;
-                    if stdout.is_none() && stderr.is_none() {
-                        return Ok((status, out, err));
-                    }
-                }
-                std::thread::sleep(
-                    Duration::from_millis(2)
-                        .min(deadline.saturating_duration_since(Instant::now())),
-                );
-            }
-        })();
-        let (status, stdout, stderr) = result.map_err(|e| {
-            terminate(
-                &mut child,
-                format!("Git {} could not complete: {e}", args[0]),
-            )
-        })?;
+        let output = process::execute(&mut cmd, input, deadline, &format!("Git {}", args[0]))
+            .map_err(|e| GitError::new(e.message, None))?;
+        let process::ProcessOutput {
+            status,
+            stdout,
+            stderr,
+        } = output;
         let code = status.code();
         if !code.is_some_and(|code| allowed.contains(&code)) {
             let stderr = String::from_utf8_lossy(&stderr).trim().to_string();

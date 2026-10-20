@@ -1,6 +1,9 @@
 //! Strict physical field mapping shared by JSON-compatible encoders and YAML.
 
 use std::collections::BTreeSet;
+use std::fmt;
+
+use serde::de::{self, DeserializeSeed, MapAccess, SeqAccess, Visitor};
 
 use serde_json::{Map, Value};
 
@@ -49,4 +52,97 @@ pub fn record_from_data(kind: RecordKind, value: &Value) -> Result<Record, Valid
     }
     .map_err(|error| ValidationError::new(error.to_string()))?;
     record.validated()
+}
+
+struct StrictJsonSeed;
+
+impl<'de> DeserializeSeed<'de> for StrictJsonSeed {
+    type Value = Value;
+
+    fn deserialize<D>(self, deserializer: D) -> Result<Self::Value, D::Error>
+    where
+        D: serde::Deserializer<'de>,
+    {
+        struct StrictVisitor;
+
+        impl<'de> Visitor<'de> for StrictVisitor {
+            type Value = Value;
+
+            fn expecting(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+                formatter.write_str("any valid JSON value without duplicate object keys")
+            }
+
+            fn visit_bool<E>(self, value: bool) -> Result<Value, E> {
+                Ok(Value::Bool(value))
+            }
+
+            fn visit_i64<E>(self, value: i64) -> Result<Value, E> {
+                Ok(Value::Number(value.into()))
+            }
+
+            fn visit_u64<E>(self, value: u64) -> Result<Value, E> {
+                Ok(Value::Number(value.into()))
+            }
+
+            fn visit_f64<E>(self, value: f64) -> Result<Value, E>
+            where
+                E: de::Error,
+            {
+                serde_json::Number::from_f64(value)
+                    .map(Value::Number)
+                    .ok_or_else(|| de::Error::custom("non-finite float in JSON"))
+            }
+
+            fn visit_str<E>(self, value: &str) -> Result<Value, E> {
+                Ok(Value::String(value.to_owned()))
+            }
+
+            fn visit_string<E>(self, value: String) -> Result<Value, E> {
+                Ok(Value::String(value))
+            }
+
+            fn visit_unit<E>(self) -> Result<Value, E> {
+                Ok(Value::Null)
+            }
+
+            fn visit_seq<A>(self, mut seq: A) -> Result<Value, A::Error>
+            where
+                A: SeqAccess<'de>,
+            {
+                let mut vec = Vec::new();
+                while let Some(elem) = seq.next_element_seed(StrictJsonSeed)? {
+                    vec.push(elem);
+                }
+                Ok(Value::Array(vec))
+            }
+
+            fn visit_map<A>(self, mut map: A) -> Result<Value, A::Error>
+            where
+                A: MapAccess<'de>,
+            {
+                let mut values = Map::new();
+                while let Some(key) = map.next_key::<String>()? {
+                    if values.contains_key(&key) {
+                        return Err(de::Error::custom(format!("duplicate JSON field: {key}")));
+                    }
+                    let val = map.next_value_seed(StrictJsonSeed)?;
+                    values.insert(key, val);
+                }
+                Ok(Value::Object(values))
+            }
+        }
+
+        deserializer.deserialize_any(StrictVisitor)
+    }
+}
+
+/// Parse JSON without silently accepting duplicate keys, including in nested objects.
+pub fn load_json(value: &str) -> Result<Value, ValidationError> {
+    let mut de = serde_json::Deserializer::from_str(value);
+    let parsed = StrictJsonSeed
+        .deserialize(&mut de)
+        .map_err(|e| ValidationError::new(format!("invalid JSON: {e}")))?;
+    de.end()
+        .map_err(|e| ValidationError::new(format!("invalid JSON: {e}")))?;
+    Ok(parsed)
 }

@@ -4,10 +4,9 @@ use serde::Deserialize;
 use serde_json::{Map, Value};
 
 use crate::{
-    codec::record_from_data,
+    codec::{load_json, record_from_data},
     model::{RecordKind, ValidationError, check_text},
     operations::{Actor, Operation, filter_automatic_changes, update},
-    sync::envelope::load_json,
 };
 
 #[derive(Deserialize)]
