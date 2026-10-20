@@ -10,6 +10,7 @@ import { createJiti } from 'jiti';
 const jiti = createJiti(import.meta.url);
 const load = (name) => jiti.import(new URL(`../extensions/stream-checkpoint/${name}.ts`, import.meta.url).pathname);
 const { StreamCli, StreamsCliError, receiptText } = await load('streams');
+const { parseStreamsCardContext } = await jiti.import(new URL('../integrations/herdr-work-cards/src/herdr/streams-source.ts', import.meta.url).pathname);
 const { automaticFields, editRequest, FieldEdit } = await load('core');
 const { checkpointContext, infer, changesSchema } = await load('agent');
 const { chooseInitial } = await load('chooser');
@@ -49,6 +50,44 @@ test('CLI rejects invalid payload and nonreceipt failures',async()=>{
   const cli=new StreamCli('/tmp',async()=>({code:2,stdout,stderr:'failed'}));
   await assert.rejects(cli.apply({}),StreamsCliError);
  }
+});
+test('extension and native consumers share strict catalog fields and nullable document provenance',async()=>{
+ const initial=context(), id=randomUUID();
+ initial.session.harness_session_id=id;
+ initial.stream.documents=[{repository:'repo',ref:'main',path:'design.md',description:'Design'}];
+ initial.native={frontend:'herdr',pane_id:'pane',tab_id:'tab',workspace_id:'workspace'};
+ initial.checkouts=[{repository:'repo',checkout_id:'checkout',root:'/checkout'}];
+ initial.document_locations=[{kind:'local',repository:'repo',path:'design.md',checkout_id:'checkout',root:'/checkout',file:'/checkout/design.md',error:null}];
+ const read=value=>new StreamCli('/tmp',async()=>({code:0,stdout:JSON.stringify(value),stderr:''})).context(id);
+ for(const provenance of [{},{commit:'abc',source_session_id:'origin'},{commit:null,source_session_id:null}]) {
+  const value=structuredClone(initial);Object.assign(value.stream.documents[0],provenance);
+  const app=await read(value), native=parseStreamsCardContext(value,id);
+  assert.deepEqual(app.stream,native.stream);assert.deepEqual(app.session,native.session);
+ }
+ for(const change of [
+  value=>{value.session.title_mode='other';},
+  value=>{value.stream.goal_mode='other';},
+  value=>{value.stream.status=['active'];},
+  value=>{value.host_id='';},
+  value=>{value.stream.documents[0].commit='';},
+  value=>{value.stream.documents[0].source_session_id=42;},
+  value=>{value.stream.documents.push({...value.stream.documents[0],ref:'other'});},
+  value=>{value.stream.repositories={};},
+  value=>{delete value.session.checkout;},
+  value=>{delete value.stream.owner;},
+ ]) {
+  const value=structuredClone(initial);change(value);
+  await assert.rejects(read(value),StreamsCliError);
+  assert.throws(()=>parseStreamsCardContext(value,id));
+ }
+});
+test('catalog list accepts only the current object contract',async()=>{
+ for(const value of [[],[stream],null,{}, {streams:[{...stream,title_mode:'other'}]}]) {
+  const cli=new StreamCli('/tmp',async()=>({code:0,stdout:JSON.stringify(value),stderr:''}));
+  await assert.rejects(cli.list(),StreamsCliError);
+ }
+ const cli=new StreamCli('/tmp',async()=>({code:0,stdout:JSON.stringify({streams:[stream]}),stderr:''}));
+ assert.deepEqual(await cli.list(),[stream]);
 });
 test('automatic fields omit protected names and all lifecycle and identity fields',()=>{
  assert.deepEqual(automaticFields('stream',stream),['goal','goal_short']);
@@ -126,7 +165,7 @@ test('manual mode does not report automatically but explicit checkpoint does',as
 test('settings change in place, pick searchable models, and preserve Herdr config keys',async()=>{
  const root=mkdtempSync(join(tmpdir(),'card-settings-ui-'));let factories=0;const saved=[];
  try {
-  writeFileSync(join(root,'work-cards.json'),JSON.stringify({show_refresh_spinner:true,tab_naming:false}));
+  writeFileSync(join(root,'work-cards.json'),JSON.stringify({document_command:'vim',tab_naming:false}));
   const ctx={modelRegistry:{getAvailable:()=>[{provider:'z',id:'last'},{provider:'a',id:'first'}]},ui:{notify:text=>assert.fail(text),custom:async factory=>{
    factories++;return new Promise(resolve=>{
     const component=factory({terminal:{rows:30},requestRender(){}},{fg:(_color,text)=>text,bold:text=>text},{},resolve);
@@ -139,13 +178,38 @@ test('settings change in place, pick searchable models, and preserve Herdr confi
     press('\x1b[B');press('\r'); // workspace naming: enabled -> disabled
     const native=JSON.parse(readFileSync(join(root,'work-cards.json'),'utf8'));
     assert.equal(native.workspace_startup,'manual');assert.equal(native.workspace_naming,false);
-    assert.equal(native.tab_naming,false);assert.equal(native.show_refresh_spinner,true);
+    assert.equal(native.tab_naming,false);assert.equal(native.document_command,'vim');
     assert.match(component.render(100).join('\n'),/Pi session naming/);
     assert.match(component.render(100).join('\n'),/Work card & Herdr settings/);press('\x1b');
    });
   }}};
   await settingsDialog(ctx,{...defaults},value=>saved.push(structuredClone(value)),root);
   assert.equal(factories,1);
+ }finally{rmSync(root,{recursive:true,force:true});}
+});
+test('native settings use the integration config validator before viewing or saving invalid files',async()=>{
+ const root=mkdtempSync(join(tmpdir(),'card-settings-validation-'));
+ try {
+  for(const value of [{workspace_naming:null},{workspace_startup:'other'},{show_refresh_spinner:true}]) {
+   const path=join(root,'work-cards.json'),bytes=JSON.stringify(value);writeFileSync(path,bytes);
+   await assert.rejects(settingsDialog({ui:{custom:()=>assert.fail('invalid config must not open')}},{...defaults},()=>assert.fail('no save'),root));
+   assert.equal(readFileSync(path,'utf8'),bytes);
+  }
+ }finally{rmSync(root,{recursive:true,force:true});}
+});
+test('settings revalidate concurrent native config changes before saving',async()=>{
+ const root=mkdtempSync(join(tmpdir(),'card-settings-race-')),notices=[];
+ try {
+  await settingsDialog({ui:{notify:text=>notices.push(text),custom:async factory=>new Promise(done=>{
+   const component=factory({terminal:{rows:30},requestRender(){}},{fg:(_color,text)=>text,bold:text=>text},{},done);
+   const path=join(root,'work-cards.json'),bytes=JSON.stringify({workspace_startup:'invalid'});
+   writeFileSync(path,bytes);
+   for(let i=0;i<6;i++)component.handleInput('\x1b[B');
+   component.handleInput('\r');
+   assert.equal(readFileSync(path,'utf8'),bytes);
+   assert.match(notices[0],/workspace_startup must be automatic or manual/);
+   component.handleInput('\x1b');
+  })}},{...defaults},()=>assert.fail('no reporting save'),root);
  }finally{rmSync(root,{recursive:true,force:true});}
 });
 test('all settings explain their effects and leave description room on short terminals',async()=>{

@@ -1,17 +1,14 @@
 import { isAbsolute, normalize } from 'node:path';
 import { resolveStreamsBin } from '../streams-bin.js';
 import { runProcess } from './subprocess.js';
-import type { CardStatus } from './view.js';
+import { parseLocalContext, type Document, type StreamWire, type SessionWire } from '../streams-context.js';
 
 export const STREAMS_READ_ENV_KEYS = ['HOME', 'XDG_CONFIG_HOME', 'XDG_DATA_HOME', 'XDG_STATE_HOME', 'PI_CODING_AGENT_DIR', 'HERDR_BIN_PATH', 'STREAMS_BIN_PATH', 'PATH'] as const;
 
 export interface StreamsCardScope {
   catalogSource: string; hostId: string; streamId: string; sessionId: string; nativeSessionId: string;
 }
-export interface StreamsDocument {
-  repository: string; ref: string; path: string; description: string;
-  commit?: string; source_session_id?: string;
-}
+export type StreamsDocument = Document;
 export interface StreamsCheckoutBinding { repository: string; checkout_id: string; root: string }
 export type StreamsDocumentDescriptor =
   | { kind: 'local' | 'origin'; checkout_id: string; root: string; file: string; revision?: never }
@@ -22,17 +19,8 @@ export type StreamsDocumentLocation = {
 } & ((StreamsDocumentDescriptor & { error: null })
   | { kind: null; checkout_id: string | null; root: string | null; file: null; revision?: never; error: string });
 export interface StreamsNativeOwner { frontend: 'herdr'; pane_id: string; tab_id: string; workspace_id: string }
-export interface StreamsStream {
-  id: string; title: string; title_mode: string; goal: string | null; goal_short: string | null;
-  repositories: Record<string, { url: string }>;
-  documents: StreamsDocument[];
-  issues: { url: string; description: string }[];
-  prs: { url: string; description: string }[];
-}
-export interface StreamsSession {
-  id: string; host_id: string; stream_id: string; harness: string; harness_session_id: string;
-  title: string; title_mode: string; status: CardStatus; state: string; state_short: string | null; remaining: string;
-}
+export type StreamsStream = StreamWire;
+export type StreamsSession = SessionWire;
 export interface StreamsCardSnapshot {
   scope: StreamsCardScope; stream: StreamsStream; session: StreamsSession; native: StreamsNativeOwner;
   checkouts: readonly StreamsCheckoutBinding[]; documentLocations: readonly StreamsDocumentLocation[];
@@ -42,33 +30,13 @@ const text = (value: unknown): value is string => typeof value === 'string' && !
 const identity = (value: unknown): value is string => text(value) && value.trim().length > 0;
 const absolute = (value: unknown): value is string => identity(value) && isAbsolute(value) && normalize(value) === value;
 const uuid = (value: unknown): value is string => typeof value === 'string' && /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(value);
-const statuses = ['active', 'waiting', 'blocked', 'parked', 'done'];
 const scopeKeys = ['catalogSource', 'hostId', 'streamId', 'sessionId', 'nativeSessionId'] as const;
 export function sameStreamsScope(left: StreamsCardScope, right: StreamsCardScope): boolean {
   return scopeKeys.every(key => left[key] === right[key]);
 }
-function session(value: unknown): value is StreamsSession {
-  return object(value) && [value.id, value.host_id, value.stream_id, value.harness, value.harness_session_id].every(identity)
-    && [value.title, value.title_mode, value.state, value.remaining].every(text) && (value.state_short === null || text(value.state_short))
-    && typeof value.status === 'string' && statuses.includes(value.status);
-}
-function stream(value: unknown): value is StreamsStream {
-  const link = (item: unknown) => object(item) && text(item.url) && text(item.description);
-  if (!object(value) || !identity(value.id) || ![value.title, value.title_mode].every(text) || !(value.goal_short === null || text(value.goal_short))
-    || !(value.goal === null || text(value.goal)) || !object(value.repositories)
-    || !Object.entries(value.repositories).every(([alias, repo]) => identity(alias) && object(repo) && identity(repo.url))
-    || !Array.isArray(value.documents) || !value.documents.every(doc => object(doc)
-      && [doc.repository, doc.ref, doc.path].every(identity) && text(doc.description)
-      && (doc.commit === undefined || identity(doc.commit))
-      && (doc.source_session_id === undefined || identity(doc.source_session_id))
-      && Object.hasOwn(value.repositories as object, doc.repository as string))
-    || !Array.isArray(value.issues) || !value.issues.every(link) || !Array.isArray(value.prs) || !value.prs.every(link)) return false;
-  return new Set(value.documents.map(doc => JSON.stringify([doc.repository, doc.path]))).size === value.documents.length;
-}
-function context(value: unknown, nativeSessionId: string): StreamsCardSnapshot {
-  if (!object(value) || Object.hasOwn(value, 'error') || !identity(value.catalog_source) || !identity(value.host_id)
-    || !stream(value.stream) || !session(value.session) || !Array.isArray(value.sessions) || !value.sessions.every(session)
-    || !(value.authority === null || object(value.authority) && identity(value.authority.host_id) && identity(value.authority.token))) {
+export function parseStreamsCardContext(raw: unknown, nativeSessionId: string): StreamsCardSnapshot {
+  const value = parseLocalContext(raw);
+  if (!value.stream || !value.session) {
     throw new Error('Invalid or unbound Streams context; exact Stream and Session records are required');
   }
   const own = value.session;
@@ -118,7 +86,7 @@ function context(value: unknown, nativeSessionId: string): StreamsCardSnapshot {
 export interface StreamsCardSourceOptions {
   nativeSessionId: string;
   expectedScope?: StreamsCardScope;
-  readContext: (nativeSessionId: string, signal?: AbortSignal) => Promise<unknown>;
+  readSnapshot: (nativeSessionId: string, signal?: AbortSignal) => Promise<StreamsCardSnapshot>;
 }
 export class StreamsCardSource {
   private captured?: StreamsCardScope;
@@ -132,10 +100,10 @@ export class StreamsCardSource {
   async read(signal?: AbortSignal): Promise<StreamsCardSnapshot> {
     signal?.throwIfAborted();
     if (this.switched) throw new Error('Streams scope changed; create a new source for the new attachment');
-    const value = await this.options.readContext(this.options.nativeSessionId, signal);
+    const fresh = await this.options.readSnapshot(this.options.nativeSessionId, signal);
     signal?.throwIfAborted();
-    const fresh = context(value, this.options.nativeSessionId);
-    if (this.captured && !sameStreamsScope(this.captured, fresh.scope)) {
+    if (fresh.scope.nativeSessionId !== this.options.nativeSessionId
+      || this.captured && !sameStreamsScope(this.captured, fresh.scope)) {
       this.switched = true;
       throw new Error('Streams scope changed; create a new source for the new attachment');
     }
@@ -149,7 +117,7 @@ export interface StreamsContextReaderOptions {
   owner?: StreamsNativeOwner;
 }
 /** Owner-targeted read-only app boundary. Native effects separately verify live tuples. */
-export function createStreamsContextReader(options: StreamsContextReaderOptions = {}): (nativeSessionId: string, signal?: AbortSignal) => Promise<unknown> {
+export function createStreamsSnapshotReader(options: StreamsContextReaderOptions = {}): (nativeSessionId: string, signal?: AbortSignal) => Promise<StreamsCardSnapshot> {
   const { cwd, timeoutMs = 15000, maxBuffer = 1024 * 1024, owner } = options;
   const env = { ...(options.env ?? process.env), ...(owner ? {
     HERDR_PANE_ID: owner.pane_id, HERDR_TAB_ID: owner.tab_id, HERDR_WORKSPACE_ID: owner.workspace_id,
@@ -165,8 +133,8 @@ export function createStreamsContextReader(options: StreamsContextReaderOptions 
     } catch (error) { throw new Error(`Streams context read failed: ${(error as Error).message}`, { cause: error }); }
     let value: unknown;
     try { value = JSON.parse(output); } catch { throw new Error('Streams context returned malformed JSON'); }
-    const saved = context(value, nativeSessionId);
+    const saved = parseStreamsCardContext(value, nativeSessionId);
     if (owner && (saved.native.pane_id !== owner.pane_id || saved.native.tab_id !== owner.tab_id || saved.native.workspace_id !== owner.workspace_id)) throw new Error('App attestation does not match the exact requested owner tuple');
-    return value;
+    return saved;
   };
 }

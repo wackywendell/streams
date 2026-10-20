@@ -5,7 +5,7 @@ import { createJiti } from 'jiti';
 const jiti = createJiti(import.meta.url);
 const { NativeController } = await jiti.import(new URL('../extensions/stream-checkpoint/native.ts', import.meta.url).pathname);
 const { default: register } = await jiti.import(new URL('../extensions/stream-checkpoint/index.ts', import.meta.url).pathname);
-const { StreamsCardSource } = await jiti.import(new URL('../integrations/herdr-work-cards/src/herdr/streams-source.ts', import.meta.url).pathname);
+const { StreamsCardSource, parseStreamsCardContext } = await jiti.import(new URL('../integrations/herdr-work-cards/src/herdr/streams-source.ts', import.meta.url).pathname);
 const naming = await jiti.import(new URL('../integrations/herdr-work-cards/src/pi/session-naming.ts', import.meta.url).pathname);
 const { defaults } = await jiti.import(new URL('../extensions/stream-checkpoint/settings.ts', import.meta.url).pathname);
 const turn = () => new Promise(resolve => setImmediate(resolve));
@@ -19,11 +19,11 @@ function environment(t, changes = {}) {
 function fixture(t, options = {}) {
  const id = randomUUID(), events = [], notices = [], entries = [];
  let name, count = 0, closed = false;
- const session = {id:'session', host_id:'host', stream_id:'stream', harness:'pi', harness_session_id:id, title:'Saved title', title_mode:'automatic', status:'active', state:'Saved state', state_short:null, remaining:''};
+ const session = {id:'session', host_id:'host', stream_id:'stream', harness:'pi', harness_session_id:id, title:'Saved title', title_mode:'automatic', status:'active', state:'Saved state', state_short:null, remaining:'', checkout:null};
  const saved = {catalog_source:'catalog', host_id:'host', authority:{host_id:'host', token:'owner'}, stream:{id:'stream', title:'Effort', title_mode:'automatic', goal:null, goal_short:null, goal_mode:'automatic', owner:{host_id:'host'}, status:'active', archived:false, repositories:{}, documents:[], issues:[], prs:[]}, session, sessions:[session], native:{frontend:'herdr', pane_id:'pane', tab_id:'tab', workspace_id:'workspace'}, checkouts:[], document_locations:[]};
  const ctx = {hasUI:true, mode:'tui', cwd:'/repo', sessionManager:{getSessionId:() => id, getEntries:() => entries, getLeafId:() => 'leaf', getBranch:() => [{id:'leaf'}], buildSessionProjection:() => ({messages:[]})}, ui:{notify:text => notices.push(text), setStatus:() => {}, select:async () => 'Close'}};
  const pi = {getSessionName:() => name, setSessionName:value => {name = value;entries.push({id:`name-${++count}`, type:'session_info', name:value});}, appendEntry:(customType, data) => entries.push({type:'custom', customType, data})};
- const source = new StreamsCardSource({nativeSessionId:id, readContext:async () => {events.push('read');if (options.read) await options.read();return structuredClone(saved);}});
+ const source = new StreamsCardSource({nativeSessionId:id, readSnapshot:async () => {events.push('read');if (options.read) await options.read();return parseStreamsCardContext(saved, id);}});
  const adapter = {
   automatic:options.automatic ?? true, sessionNaming:options.sessionNaming ?? true,
   read:async signal => {if (options.readSignal) await options.readSignal(signal);return source.read();}, bootstrap:async signal => {events.push('bootstrap');if (options.bootstrap) await options.bootstrap(signal);return {socket:'/socket', paneId:'pane', terminalId:'terminal', tabId:'tab', workspaceId:'workspace'};},

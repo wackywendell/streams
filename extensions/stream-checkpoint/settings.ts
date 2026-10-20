@@ -1,6 +1,7 @@
 import { existsSync, mkdirSync, readFileSync, renameSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { randomUUID } from "node:crypto";
+import { parseConfig } from "../../integrations/herdr-work-cards/src/config.ts";
 import { DynamicBorder, getSettingsListTheme, getSelectListTheme } from "@earendil-works/pi-coding-agent";
 import type { ExtensionContext } from "@earendil-works/pi-coding-agent";
 import { Container, Text, Input, SettingsList, SelectList, fuzzyFilter, matchesKey } from "@earendil-works/pi-tui";
@@ -37,7 +38,7 @@ export function saveSettings(agentDir: string, value: ReportingSettings): void {
 export async function settingsDialog(ctx: ExtensionContext, settings: ReportingSettings, save: (value: ReportingSettings) => void, agentDir?: string): Promise<void> {
  const value = structuredClone(settings);
  const nativePath = agentDir ? join(agentDir, "work-cards.json") : undefined;
- const native = nativePath ? storedSettings(nativePath) : {};
+ const native: Record<string, unknown> = nativePath ? {...parseConfig(storedSettings(nativePath))} : {};
  const models = (ctx.modelRegistry?.getAvailable?.() ?? ctx.modelRegistry?.getAll?.() ?? []).map((model) => ({value: `${model.provider}/${model.id}`, label: `${model.provider}/${model.id}`})).sort((a, b) => a.value.localeCompare(b.value));
  const modelRows = [{value: "current Pi model", label: "current Pi model"}, ...models];
  const items: SettingItem[] = [
@@ -47,7 +48,7 @@ export async function settingsDialog(ctx: ExtensionContext, settings: ReportingS
   {id: "context", label: "Context", currentValue: value.context, description: "What conversation history the summary model reads: 'trimmed' uses dialogue and compaction summaries; 'full' also includes tool calls and outputs.", values: ["trimmed", "full"]},
   {id: "model", label: "Model", currentValue: value.model ? `${value.model.provider}/${value.model.id}` : "current Pi model", description: "Model used to summarize progress and generate short titles. Press Enter to search and pick from available models."},
   ...(nativePath ? [
-   {id: "workspace_startup", label: "Herdr workspace startup", currentValue: String(native.workspace_startup ?? "automatic"), description: "Automatically open the side-by-side Herdr work-card pane when a chat is attached, or only when you run /streams pane.", values: ["automatic", "manual"]},
+   {id: "workspace_startup", label: "Herdr workspace startup", currentValue: String(native.workspace_startup), description: "Automatically open the side-by-side Herdr work-card pane when a chat is attached, or only when you run /streams pane.", values: ["automatic", "manual"]},
    ...Object.entries({
     workspace_naming: ["Herdr workspace naming", "Sync the Herdr workspace name with the effort's short title (manual renames in Herdr stay protected)."],
     tab_naming: ["Herdr tab naming", "Sync this Herdr tab's name with this session's short title (manual renames stay protected)."],
@@ -59,6 +60,7 @@ export async function settingsDialog(ctx: ExtensionContext, settings: ReportingS
   if (id === "workspace_startup" || id.endsWith("_naming")) {
    if (!nativePath || !agentDir) return;
    const updated = {...storedSettings(nativePath), [id]: id === "workspace_startup" ? next : next === "enabled"};
+   parseConfig(updated);
    mkdirSync(agentDir, {recursive: true});
    const temp = `${nativePath}.${randomUUID()}.tmp`;
    writeFileSync(temp, JSON.stringify(updated, null, 2) + "\n", {mode: 0o600});renameSync(temp, nativePath);
@@ -89,19 +91,19 @@ export async function settingsDialog(ctx: ExtensionContext, settings: ReportingS
   items.find((item) => item.id === "model")!.submenu = (current, close) => {
    const input = new Input();
    input.focused = true;
-   let list: SelectList;
    const rebuild = () => {
-    list = new SelectList(fuzzyFilter(modelRows, input.getValue(), (row) => row.label), Math.max(1, Math.min(10, tui.terminal.rows - 9)), getSelectListTheme());
+    const list = new SelectList(fuzzyFilter(modelRows, input.getValue(), (row) => row.label), Math.max(1, Math.min(10, tui.terminal.rows - 9)), getSelectListTheme());
     list.onSelect = (item) => close(item.value);list.onCancel = () => close();
+    return list;
    };
-   rebuild();list.setSelectedIndex(Math.max(0, modelRows.findIndex((row) => row.value === current)));
+   let list = rebuild();list.setSelectedIndex(Math.max(0, modelRows.findIndex((row) => row.value === current)));
    return {
     get focused() {return input.focused;}, set focused(focus: boolean) {input.focused = focus;},
     render(width: number) {return [...input.render(width), ...list.render(width)];},
     invalidate() {input.invalidate();list.invalidate();},
     handleInput(data: string) {
-     if (["up", "down", "enter", "escape"].some((key) => matchesKey(data, key))) list.handleInput(data);
-     else {input.handleInput(data);rebuild();}
+     if ((["up", "down", "enter", "escape"] as const).some((key) => matchesKey(data, key))) list.handleInput(data);
+     else {input.handleInput(data);list = rebuild();}
      tui.requestRender();
     },
    };

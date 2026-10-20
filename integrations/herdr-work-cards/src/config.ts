@@ -40,6 +40,29 @@ export function configPath(env: NodeJS.ProcessEnv = process.env): string {
   return join(env.PI_CODING_AGENT_DIR || join(env.HOME || homedir(), '.pi', 'agent'), 'work-cards.json');
 }
 
+export function parseConfig(input: unknown): WorkCardsConfig {
+  if (!input || typeof input !== 'object' || Array.isArray(input)) throw new Error('expected a JSON object');
+  for (const [key, value] of Object.entries(input)) {
+    if (!Object.hasOwn(DEFAULT_CONFIG, key)) throw new Error(`unknown field ${key}`);
+    if (key === 'workspace_startup') {
+      if (value !== 'automatic' && value !== 'manual') throw new Error('workspace_startup must be automatic or manual');
+    } else if (key === 'workspace_naming' || key === 'tab_naming' || key === 'session_naming') {
+      if (typeof value !== 'boolean') throw new Error(`${key} must be a boolean`);
+    } else if (key === 'document_command') {
+      if (value !== null) validateDocumentCommand(value, key);
+    } else if (key === 'pane_height_fraction') {
+      if (typeof value !== 'number' || !Number.isFinite(value) || value <= 0 || value >= 1) {
+        throw new Error('pane_height_fraction must be a finite number strictly between 0 and 1');
+      }
+    } else {
+      if (typeof value !== 'number' || !Number.isSafeInteger(value) || value < 1 || value > 2147483647) {
+        throw new Error(`${key} must be an integer between 1 and 2147483647 (Node timer maximum)`);
+      }
+    }
+  }
+  return { ...DEFAULT_CONFIG, ...input };
+}
+
 export async function loadConfig(path = configPath()): Promise<WorkCardsConfig> {
   let raw: string;
   try { raw = await readFile(path, 'utf8'); }
@@ -47,29 +70,8 @@ export async function loadConfig(path = configPath()): Promise<WorkCardsConfig> 
     if ((error as NodeJS.ErrnoException).code === 'ENOENT') return { ...DEFAULT_CONFIG };
     throw new Error(`Cannot read work-cards config ${path}: ${(error as Error).message}`, { cause: error });
   }
-  try {
-    const input: unknown = JSON.parse(raw);
-    if (!input || typeof input !== 'object' || Array.isArray(input)) throw new Error('expected a JSON object');
-    for (const [key, value] of Object.entries(input)) {
-      if (!Object.hasOwn(DEFAULT_CONFIG, key)) throw new Error(`unknown field ${key}`);
-      if (key === 'workspace_startup') {
-        if (value !== 'automatic' && value !== 'manual') throw new Error('workspace_startup must be automatic or manual');
-      } else if (key === 'workspace_naming' || key === 'tab_naming' || key === 'session_naming') {
-        if (typeof value !== 'boolean') throw new Error(`${key} must be a boolean`);
-      } else if (key === 'document_command') {
-        if (value !== null) validateDocumentCommand(value, key);
-      } else if (key === 'pane_height_fraction') {
-        if (typeof value !== 'number' || !Number.isFinite(value) || value <= 0 || value >= 1) {
-          throw new Error('pane_height_fraction must be a finite number strictly between 0 and 1');
-        }
-      } else {
-        if (typeof value !== 'number' || !Number.isSafeInteger(value) || value < 1 || value > 2147483647) {
-          throw new Error(`${key} must be an integer between 1 and 2147483647 (Node timer maximum)`);
-        }
-      }
-    }
-    return { ...DEFAULT_CONFIG, ...input };
-  } catch (error) {
+  try { return parseConfig(JSON.parse(raw)); }
+  catch (error) {
     throw new Error(`Invalid work-cards config ${path}: ${(error as Error).message}`, { cause: error });
   }
 }

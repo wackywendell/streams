@@ -10,9 +10,9 @@ const native = '12345678-1234-4234-8234-123456789abc';
 const scope = { catalogSource: 'catalog', hostId: 'host', streamId: 'shared', sessionId: 'session', nativeSessionId: native };
 const owner = { frontend: 'herdr', pane_id: 'w:p1', tab_id: 'w:t1', workspace_id: 'w' };
 const session = { id: 'session', host_id: 'host', stream_id: 'shared', harness: 'pi', harness_session_id: native,
-  title: 'Own', title_mode: 'manual', status: 'active', state: 'Own state', state_short: null, remaining: '' };
+  title: 'Own', title_mode: 'manual', status: 'active', state: 'Own state', state_short: null, remaining: '', checkout: null };
 const wire = { catalog_source: 'catalog', host_id: 'host', authority: null, native: owner, session, sessions: [session],
-  stream: { id: 'shared', title: 'Shared', title_mode: 'manual', goal: null, goal_short: null, repositories: {}, documents: [], issues: [], prs: [] }, checkouts: [], document_locations: [] };
+  stream: { id: 'shared', title: 'Shared', title_mode: 'manual', goal: null, goal_short: null, goal_mode: 'automatic', status: 'active', archived: false, owner: { host_id: 'host' }, repositories: {}, documents: [], issues: [], prs: [] }, checkouts: [], document_locations: [] };
 const launcher = { STREAMS_CARDS_SCOPE: JSON.stringify(scope), STREAMS_CARDS_OWNER: JSON.stringify(owner),
   STREAMS_CARDS_READ_ENV: '{}', STREAMS_CARDS_OWNER_TERMINAL: 'term1', STREAMS_CARDS_NONCE: 'nonce', STREAMS_CARDS_STATE_DIR: '/native/state' };
 test('pane refuses absent/malformed launcher scope, owner, nonce and native UUID before reading anything', () => {

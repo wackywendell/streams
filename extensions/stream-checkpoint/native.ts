@@ -21,14 +21,14 @@ export type NativeFactory = (input: {pi: ExtensionAPI; ctx: ExtensionContext; se
 
 // Compiled dependencies are deliberately resolved only inside a gated session lifetime.
 export const loadNative: NativeFactory = async ({pi, ctx, sessionId, cwd, env}) => {
- const [{loadConfig, configPath}, {StreamsCardSource, createStreamsContextReader}, {StreamsWorkspaceClient}, naming] = await Promise.all([
+ const [{loadConfig, configPath}, {StreamsCardSource, createStreamsSnapshotReader}, {StreamsWorkspaceClient}, naming] = await Promise.all([
   import(new URL("../../integrations/herdr-work-cards/dist/config.js", import.meta.url).href),
   import(new URL("../../integrations/herdr-work-cards/dist/herdr/streams-source.js", import.meta.url).href),
   import(new URL("../../integrations/herdr-work-cards/dist/herdr/streams-workspace-client.js", import.meta.url).href),
   import(new URL("../../integrations/herdr-work-cards/dist/pi/session-naming.js", import.meta.url).href),
  ]);
  let config = await loadConfig(configPath(env));
- const source = new StreamsCardSource({nativeSessionId: sessionId, readContext: createStreamsContextReader({cwd, env})});
+ const source = new StreamsCardSource({nativeSessionId: sessionId, readSnapshot: createStreamsSnapshotReader({cwd, env})});
  const client = new StreamsWorkspaceClient({env});
  return {
   get automatic() {return config.workspace_startup === "automatic";}, get sessionNaming() {return config.session_naming;},

@@ -4,7 +4,7 @@ import { mkdtemp, mkdir, writeFile, realpath, rm, readdir, readFile } from 'node
 import { join } from 'node:path';
 import { tmpdir } from 'node:os';
 import { StreamsWorkspaceClient } from '../dist/herdr/streams-workspace-client.js';
-import { StreamsCardSource } from '../dist/herdr/streams-source.js';
+import { StreamsCardSource, parseStreamsCardContext } from '../dist/herdr/streams-source.js';
 import { renderStreamsCard } from '../dist/herdr/streams-view.js';
 import { NameStore } from '../dist/herdr/name-provenance.js';
 import { StreamsNativeState, streamsDigest } from '../dist/herdr/streams-native-state.js';
@@ -22,10 +22,10 @@ async function fixture(t) {
   const contexts = [];
   for (let n = 1; n <= 2; n++) {
     const checkout = join(root, `checkout-${n}`); await mkdir(join(checkout, 'docs'), { recursive: true }); await writeFile(join(checkout, 'docs/design.md'), `Session ${n} edits`);
-    const session = { id: `session-${n}`, host_id: 'host', stream_id: 'shared', harness: 'pi', harness_session_id: native(n), title: `Task ${n}`, title_mode: 'manual', status: 'active', state: `Own progress ${n}`, state_short: `Own ${n}`, remaining: `Todo ${n}` };
+    const session = { id: `session-${n}`, host_id: 'host', stream_id: 'shared', harness: 'pi', harness_session_id: native(n), title: `Task ${n}`, title_mode: 'manual', status: 'active', state: `Own progress ${n}`, state_short: `Own ${n}`, remaining: `Todo ${n}`, checkout: null };
     contexts.push({ catalog_source: 'catalog', host_id: 'host', authority: null, session, sessions: [session],
       native: { frontend: 'herdr', pane_id: `w:p${n}`, tab_id: `w:t${n}`, workspace_id: 'w' },
-      stream: { id: 'shared', title: 'Shared stream', title_mode: 'manual', goal: 'Shared purpose', goal_short: 'Shared',
+      stream: { id: 'shared', title: 'Shared stream', title_mode: 'manual', goal: 'Shared purpose', goal_short: 'Shared', goal_mode: 'manual', status: 'active', archived: false, owner: { host_id: 'host' },
         repositories: { main: { url: 'https://example.com/repo' } }, documents: [{ repository: 'main', path: 'docs/design.md', ref: 'recovery', commit: 'abcdef012345', description: 'Design' }], issues: [], prs: [] },
       checkouts: [{ repository: 'main', checkout_id: `checkout-${n}`, root: checkout }],
       document_locations: [{ kind: 'local', repository: 'main', path: 'docs/design.md', checkout_id: `checkout-${n}`, root: checkout, file: join(checkout, 'docs/design.md'), error: null }],
@@ -66,7 +66,7 @@ async function fixture(t) {
     else throw new Error(`Unexpected native call ${args.join(' ')}`);
     return hook ? await hook(args, output) : output;
   };
-  const source = n => new StreamsCardSource({ nativeSessionId: native(n), readContext: async () => contexts[n - 1] });
+  const source = n => new StreamsCardSource({ nativeSessionId: native(n), readSnapshot: async id => parseStreamsCardContext(contexts[n - 1], id) });
   const client = (terminal, extra = {}) => {
     const p = panes.find(p => p.terminal_id === terminal);
     return new StreamsWorkspaceClient({ env: { HERDR_ENV: '1', HERDR_SOCKET_PATH: socket, HERDR_PANE_ID: p.pane_id, HERDR_TAB_ID: p.tab_id, HERDR_WORKSPACE_ID: 'w', ...extra }, pluginRoot: root, stateDirectory, run: run(terminal) });
@@ -547,6 +547,42 @@ for (const interruption of ['before-stamping', 'before-ready']) test(`openDispla
   const records = (await readdir(f.stateDirectory)).filter(name => name.endsWith('.json'));
   assert.equal(records.length, 1);
   assert.equal((await state.read(records[0].slice(0, -5))).phase, 'ready');
+});
+for (const changed of [false, true]) test(`recovery preserves unknown evidence fields and fences concurrent changes: ${changed}`, async t => {
+  const f = await fixture(t), a = await f.owner(1);
+  f.hook((args, output) => { if (args[1] === 'resize') throw Error('interrupted'); return output; });
+  await assert.rejects(a.open(), /interrupted/); f.hook(undefined);
+  const record = (await readdir(f.stateDirectory)).find(name => name.endsWith('.json'));
+  const path = join(f.stateDirectory, record), state = new StreamsNativeState(f.stateDirectory), key = record.slice(0, -5);
+  const original = { ...await state.read(key), extension: { nested: ['preserved'] } };
+  await writeFile(path, JSON.stringify(original));
+  const count = effects(f).length, read = StreamsNativeState.prototype.read;
+  let reads = 0;
+  if (changed) StreamsNativeState.prototype.read = async function(k) {
+    const value = await read.call(this, k);
+    if (k === key && ++reads === 2) await writeFile(path, JSON.stringify({ ...original, extension: { nested: ['changed'] } }));
+    return value;
+  };
+  try {
+    if (changed) await assert.rejects(a.open(), /durable evidence changed/);
+    else assert.equal((await a.open()).kind, 'paired');
+  } finally { StreamsNativeState.prototype.read = read; }
+  assert.deepEqual(await state.read(key), { ...original, phase: changed ? 'pending' : 'ready', extension: { nested: [changed ? 'changed' : 'preserved'] } });
+  if (changed) assert.equal(effects(f).length, count);
+  assert.equal(launches(f).length, 1);
+});
+for (const absent of [false, true]) test(`unlaunched pending evidence never adopts an observed pair (absent: ${absent})`, async t => {
+  const f = await fixture(t), a = await f.owner(1), pair = await a.open();
+  const record = (await readdir(f.stateDirectory)).find(name => name.endsWith('.json')), path = join(f.stateDirectory, record);
+  const prior = JSON.parse(await readFile(path, 'utf8'));
+  const bytes = JSON.stringify({ version: 1, key: prior.key, phase: 'pending', nonce: prior.nonce });
+  await writeFile(path, bytes);
+  if (absent) f.panes.splice(f.panes.findIndex(p => p.pane_id === pair.card.pane_id), 1);
+  const before = structuredClone(f.snapshot()), count = effects(f).length;
+  await assert.rejects(a.open('explicit'), /Uncertain Streams launch/);
+  await assert.rejects(a.c.projectSummaries(a.s, a.context, config), /Uncertain Streams launch/);
+  assert.equal(await readFile(path, 'utf8'), bytes);
+  assert.deepEqual(f.snapshot(), before); assert.equal(effects(f).length, count);
 });
 test('duplicate owners reject immediately without entering recovery or performing native effects', async t => {
   const f = await fixture(t), a = await f.owner(1);

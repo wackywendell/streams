@@ -1,13 +1,8 @@
 import { spawn } from "node:child_process";
 import { resolveStreamsBin } from "../../integrations/herdr-work-cards/src/streams-bin.ts";
 
-export type Status = "active" | "waiting" | "blocked" | "parked" | "done";
-export type Mode = "automatic" | "manual";
-export type Link = { url: string; description: string };
-export type Document = { repository: string; ref: string; path: string; description: string; commit?: string | null; source_session_id?: string | null };
-export type StreamWire = { id: string; title: string; title_mode: Mode; goal: string | null; goal_short: string | null; goal_mode: Mode; status: Status; archived: boolean; owner: { host_id: string }; repositories: Record<string, { url: string }>; documents: Document[]; issues: Link[]; prs: Link[] };
-export type SessionWire = { id: string; host_id: string; stream_id: string; harness: string; harness_session_id: string; title: string; title_mode: Mode; status: Status; state: string; state_short: string | null; remaining: string; checkout: {repository: string; ref: string; directory_within_checkout: string} | null };
-export type LocalContext = { catalog_source: string; host_id: string; stream: StreamWire | null; session: SessionWire | null; sessions: SessionWire[]; authority: { host_id: string; token: string } | null };
+import { parseLocalContext, isStream as stream, isSession as session, type StreamWire, type SessionWire, type LocalContext } from "../../integrations/herdr-work-cards/src/streams-context.ts";
+export type { Status, Mode, Link, Document, StreamWire, SessionWire, LocalContext } from "../../integrations/herdr-work-cards/src/streams-context.ts";
 export type LocalStatus = "unchanged" | "persisted" | "committed" | "repair-required";
 export type SharingStatus = "local-only" | "pending" | "confirmed" | "blocked" | "failed" | "uncertain";
 export type Result = { local: LocalStatus; sharing: SharingStatus; domain: { outcome: "changes" | "no-change" | "superseded" | "conflict"; [key: string]: unknown } | null; detail?: string; [key: string]: unknown };
@@ -21,16 +16,6 @@ export class StreamsCliError extends Error {
 }
 const object = (value: unknown): value is Record<string, any> => !!value && typeof value === "object" && !Array.isArray(value);
 const text = (value: unknown): value is string => typeof value === "string" && !value.includes("\0");
-const mode = (value: unknown) => value === "automatic" || value === "manual";
-const status = (value: unknown) => ["active", "waiting", "blocked", "parked", "done"].includes(String(value));
-const nullableText = (value: unknown) => value === null || text(value);
-const link = (value: unknown) => object(value) && text(value.url) && text(value.description);
-function stream(value: unknown): value is StreamWire {
- return object(value) && text(value.id) && text(value.title) && mode(value.title_mode) && nullableText(value.goal) && nullableText(value.goal_short) && mode(value.goal_mode) && status(value.status) && typeof value.archived === "boolean" && object(value.owner) && text(value.owner.host_id) && object(value.repositories) && Object.values(value.repositories).every((repo) => object(repo) && text(repo.url)) && Array.isArray(value.documents) && value.documents.every((doc: unknown) => object(doc) && [doc.repository, doc.ref, doc.path, doc.description].every(text) && (doc.commit === undefined || nullableText(doc.commit)) && (doc.source_session_id === undefined || nullableText(doc.source_session_id))) && Array.isArray(value.issues) && value.issues.every(link) && Array.isArray(value.prs) && value.prs.every(link);
-}
-function session(value: unknown): value is SessionWire {
- return object(value) && [value.id, value.host_id, value.stream_id, value.harness, value.harness_session_id, value.title, value.state, value.remaining].every(text) && mode(value.title_mode) && status(value.status) && nullableText(value.state_short) && (value.checkout === null || object(value.checkout) && [value.checkout.repository, value.checkout.ref, value.checkout.directory_within_checkout].every(text));
-}
 const result = (v: unknown): v is Result => object(v) && ["unchanged", "persisted", "committed", "repair-required"].includes(v.local) && ["local-only", "pending", "confirmed", "blocked", "failed", "uncertain"].includes(v.sharing) && (v.domain === null || object(v.domain) && ["changes", "no-change", "superseded", "conflict"].includes(v.domain.outcome));
 function receipt(value: unknown): value is Receipt {
  if (!object(value) || value.publication !== undefined && (!result(value.publication) || value.publication.domain !== null)) return false;
@@ -93,12 +78,11 @@ export class StreamCli {
  }
  async context(sessionId: string, streamId?: string): Promise<LocalContext> {
   const value = await this.run(["agent", "context", "--session-id", sessionId, "--harness", "pi", ...(streamId ? ["--stream-id", streamId] : []), "--json"]);
-  if (!object(value) || typeof value.catalog_source !== "string" || !value.catalog_source || typeof value.host_id !== "string" || !(value.stream === null || stream(value.stream)) || !(value.session === null || session(value.session)) || !Array.isArray(value.sessions) || !value.sessions.every(session) || !(value.authority === null || (object(value.authority) && text(value.authority.host_id) && text(value.authority.token)))) throw new StreamsCliError("Invalid local catalog context");
-  return value as LocalContext;
+  try {return parseLocalContext(value);} catch {throw new StreamsCliError("Invalid local catalog context");}
  }
  async list(): Promise<StreamWire[]> {
   const value = await this.run(["list", "--json"]);
-  const rows = Array.isArray(value) ? value : value.streams;
+  const rows = value?.streams;
   if (!Array.isArray(rows) || !rows.every(stream)) throw new StreamsCliError("Invalid catalog list");
   return rows;
  }

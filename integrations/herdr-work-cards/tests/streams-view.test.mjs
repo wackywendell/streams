@@ -1,7 +1,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import stringWidth from 'string-width';
-import { StreamsCardSource } from '../dist/herdr/streams-source.js';
+import { StreamsCardSource, parseStreamsCardContext } from '../dist/herdr/streams-source.js';
 import { renderStreamsCard, StreamsCardView } from '../dist/herdr/streams-view.js';
 import { renderDisplayCard } from '../dist/herdr/view.js';
 
@@ -9,20 +9,20 @@ const native = '12345678-1234-4234-8234-123456789abc';
 const plain = text => text.replace(/\x1b\[[\d;]*m/g, '').replace(/\x1b\]8;;[^\x1b]*\x1b\\/g, '');
 function fixture() {
   const session = { id: 'own', host_id: 'host', stream_id: 'shared', harness: 'pi', harness_session_id: native,
-    title: 'Own assignment', title_mode: 'manual', state_short: 'Implement', status: 'active', state: 'Implement | verify', remaining: '界😀é | release' };
+    title: 'Own assignment', title_mode: 'manual', state_short: 'Implement', status: 'active', state: 'Implement | verify', remaining: '界😀é | release', checkout: null };
   const value = { catalog_source: 'catalog', host_id: 'host', session, sessions: [session], authority: null,
     native: { frontend: 'herdr', pane_id: 'w:p1', tab_id: 'w:t1', workspace_id: 'w' },
-    stream: { id: 'shared', title: 'Shared', title_mode: 'manual', goal_short: 'Ship library', goal: 'Ship library | client', repositories: { lib: { url: 'https://example.com/lib' } },
+    stream: { id: 'shared', title: 'Shared', title_mode: 'manual', goal_short: 'Ship library', goal: 'Ship library | client', goal_mode: 'manual', status: 'active', archived: false, owner: { host_id: 'host' }, repositories: { lib: { url: 'https://example.com/lib' } },
       documents: [{ repository: 'lib', ref: 'topic', path: 'docs/design.md', description: 'Design' }],
       issues: [{ url: 'https://example.com/org/repo/issues/42', description: 'Track work' }],
       prs: [{ url: 'https://example.com/org/repo/pull/51', description: 'Review' }] } };
   let roots = { lib: '/code/library' }, fail = false;
-  const source = new StreamsCardSource({ nativeSessionId: native, readContext: async () => {
+  const source = new StreamsCardSource({ nativeSessionId: native, readSnapshot: async id => {
     if (fail) throw Error('Malformed record');
     value.checkouts = Object.entries(roots).map(([repository, root]) => ({ repository, checkout_id: repository, root }));
     value.document_locations = value.stream.documents.map(({ repository, path }) => ({ kind: roots[repository] ? 'local' : null, repository, path, checkout_id: roots[repository] ? repository : null,
       root: roots[repository] ?? null, file: roots[repository] ? `${roots[repository]}/${path}` : null, error: roots[repository] ? null : 'No checkout binding' }));
-    return value;
+    return parseStreamsCardContext(value, id);
   } });
   const view = new StreamsCardView(source);
   return { value, view, source, roots: next => { roots = next; }, fail: next => { fail = next; } };
@@ -38,7 +38,7 @@ test('two exact sessions share goal and references, never progress; baseline ren
     documents: [{ label: 'docs/design.md', target }], issues: snapshot.stream.issues, prs: snapshot.stream.prs }, 100, 12).text);
   const otherNative = '12345678-1234-4234-8234-123456789abd';
   const other = { ...value.session, id: 'other', harness_session_id: otherNative, title: 'Other', state: 'Other stage', remaining: 'Other todo', status: 'blocked' };
-  const otherSource = new StreamsCardSource({ nativeSessionId: otherNative, readContext: async () => ({ ...value, session: other, sessions: [value.session, other] }) });
+  const otherSource = new StreamsCardSource({ nativeSessionId: otherNative, readSnapshot: async id => parseStreamsCardContext({ ...value, session: other, sessions: [value.session, other] }, id) });
   const second = plain(renderStreamsCard(await otherSource.read(), 100, 12).text);
   for (const text of [plain(rendered.text), second]) {
     assert.match(text, /Ship library \| client/); assert.match(text, /docs\/design.md/);
@@ -67,11 +67,11 @@ test('commit provenance is labelled as added or commit, never as a revision pin 
 
 test('Shift+letter opens inline footer chooser for document alternates and 1..9 selects target', async () => {
   const session = { id: 'own', host_id: 'host', stream_id: 'shared', harness: 'pi', harness_session_id: native,
-    title: 'Own', title_mode: 'manual', state_short: 'Implement', status: 'active', state: 'Now', remaining: 'Next' };
+    title: 'Own', title_mode: 'manual', state_short: 'Implement', status: 'active', state: 'Now', remaining: 'Next', checkout: null };
   const value = {
     catalog_source: 'catalog', host_id: 'host', session, sessions: [session], authority: null,
     native: { frontend: 'herdr', pane_id: 'w:p1', tab_id: 'w:t1', workspace_id: 'w' },
-    stream: { id: 'shared', title: 'Shared', title_mode: 'manual', goal_short: null, goal: null,
+    stream: { id: 'shared', title: 'Shared', title_mode: 'manual', goal_short: null, goal: null, goal_mode: 'manual', status: 'active', archived: false, owner: { host_id: 'host' },
       repositories: { lib: { url: 'https://example.com/lib' } },
       documents: [{ repository: 'lib', ref: 'topic', path: 'docs/design.md', description: 'Design', commit: '12345678abcdef00', source_session_id: 'other' }],
       issues: [], prs: [] },
@@ -89,7 +89,7 @@ test('Shift+letter opens inline footer chooser for document alternates and 1..9 
       ],
     }],
   };
-  const source = new StreamsCardSource({ nativeSessionId: native, readContext: async () => value });
+  const source = new StreamsCardSource({ nativeSessionId: native, readSnapshot: async id => parseStreamsCardContext(value, id) });
   const view = new StreamsCardView(source);
   await view.refresh();
   view.render(120, 8);

@@ -1,7 +1,7 @@
 import { pathToFileURL } from 'node:url';
 import { configPath, loadConfig } from '../config.js';
 import { KeyInput, plain } from './view.js';
-import { STREAMS_READ_ENV_KEYS, createStreamsContextReader, StreamsCardSource, type StreamsCardScope, type StreamsNativeOwner } from './streams-source.js';
+import { STREAMS_READ_ENV_KEYS, createStreamsSnapshotReader, StreamsCardSource, type StreamsCardScope, type StreamsNativeOwner } from './streams-source.js';
 import { StreamsCardView } from './streams-view.js';
 import { StreamsWorkspaceClient, type StreamsNativeContext } from './streams-workspace-client.js';
 
@@ -21,7 +21,7 @@ export function streamsPaneSetup(env: NodeJS.ProcessEnv): { source: StreamsCardS
   for (const key of STREAMS_READ_ENV_KEYS) delete readerEnv[key];
   Object.assign(readerEnv, captured);
   return { env: readerEnv, source: new StreamsCardSource({ nativeSessionId: scope.nativeSessionId, expectedScope: scope,
-    readContext: createStreamsContextReader({ env: readerEnv, owner }) }) };
+    readSnapshot: createStreamsSnapshotReader({ env: readerEnv, owner }) }) };
 }
 
 /** Imported terminal loop: viewport/Unicode/keyboard behavior remains in the shared view. */
