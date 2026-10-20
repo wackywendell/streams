@@ -41,8 +41,15 @@ export function assertContextFits(model: {contextWindow?: number}, systemPrompt:
  const tokens = Math.ceil(systemPrompt.length / 4) + messages.reduce((total, message) => total + estimateTokens(message), 0);
  if (model.contextWindow && tokens > model.contextWindow * 0.9) throw Error(`Report input exceeds the model context budget (${tokens} tokens). Compact the main conversation or choose a larger model. No history was dropped.`);
 }
-export type Inference = {type: "enroll" | "session" | "stream" | "discussion"; catalog: LocalContext; messages: any[]; instructions?: string; reset?: boolean; discussion?: {role: "user" | "assistant"; text: string}[]};
-export type Inferred = {meaningful?: boolean; stream?: {title: string; goal?: string; goal_short?: string}; session?: {title: string}; changes?: Record<string, unknown>; reply?: string; edit?: {kind: "stream" | "session"; actor: "automatic" | "user"; changes: Record<string, unknown>}};
+type InferenceInput = {catalog: LocalContext; messages: any[]; instructions?: string};
+type EnrollmentInference = InferenceInput & {type: "enroll"};
+type ReportInference = InferenceInput & {type: "session" | "stream"; reset?: boolean};
+type DiscussionInference = InferenceInput & {type: "discussion"; discussion?: {role: "user" | "assistant"; text: string}[]};
+export type Inference = EnrollmentInference | ReportInference | DiscussionInference;
+type EnrollmentResult = {meaningful: boolean; stream?: {title: string; goal?: string; goal_short?: string}; session?: {title: string}};
+type ReportResult = {changes: Record<string, unknown>};
+type DiscussionResult = {reply: string; edit?: {kind: "stream" | "session"; actor: "automatic" | "user"; changes: Record<string, unknown>}};
+export type Inferred = EnrollmentResult | ReportResult | DiscussionResult;
 export function changesSchema(kind: "stream" | "session", catalog: LocalContext, actor: "automatic" | "user", allowEmpty = true) {
  const before = catalog[kind];if (!before) return Type.Object({}, {additionalProperties: false});
  const link = Type.Object({url: Type.String(), description: Type.String()}, {additionalProperties: false});
@@ -82,6 +89,9 @@ async function completeWithRetry<T extends {stopReason: string; errorMessage?: s
   await setTimeout(150 * (attempt + 1), undefined, {signal});
  }
 }
+export function infer(ctx: ExtensionContext, request: EnrollmentInference, signal: AbortSignal, configured?: {provider: string; id: string}): Promise<EnrollmentResult>;
+export function infer(ctx: ExtensionContext, request: ReportInference, signal: AbortSignal, configured?: {provider: string; id: string}): Promise<ReportResult>;
+export function infer(ctx: ExtensionContext, request: DiscussionInference, signal: AbortSignal, configured?: {provider: string; id: string}): Promise<DiscussionResult>;
 export async function infer(ctx: ExtensionContext, request: Inference, signal: AbortSignal, configured?: {provider: string; id: string}): Promise<Inferred> {
  const model = configured ? ctx.modelRegistry.find(configured.provider, configured.id) : ctx.model;
  if (!model) throw Error("Configured reporting model is unavailable. Choose an available provider/model; no fallback was used.");
@@ -94,7 +104,8 @@ export async function infer(ctx: ExtensionContext, request: Inference, signal: A
  }
  const messages = convertToLlm(request.messages);
  const {authority: _authority, catalog_source: _source, ...visibleCatalog} = structuredClone(request.catalog);
- if (request.reset) {
+ const resetting = "reset" in request && request.reset;
+ if (resetting) {
   if (visibleCatalog.session) {
    const target = visibleCatalog.session;
    for (const session of [target, ...visibleCatalog.sessions.filter((session) => session.id === target.id && session.host_id === target.host_id)]) {
@@ -107,8 +118,8 @@ export async function infer(ctx: ExtensionContext, request: Inference, signal: A
    if (visibleCatalog.stream.goal_mode === "automatic") {visibleCatalog.stream.goal = null;visibleCatalog.stream.goal_short = null;}
   }
  }
- const reset = request.reset ? "Infer all allowed automatic fields fresh from conversation evidence, including a fresh short-handle title when title is an allowed automatic field. Do not anchor on the prior card or return an empty no-change delta. Respect manual fields and their modes." : undefined;
- messages.push({role: "user", content: JSON.stringify({task: request.type, catalog: visibleCatalog, instructions: request.instructions, reset, discussion: request.discussion}), timestamp: Date.now()});
+ const reset = resetting ? "Infer all allowed automatic fields fresh from conversation evidence, including a fresh short-handle title when title is an allowed automatic field. Do not anchor on the prior card or return an empty no-change delta. Respect manual fields and their modes." : undefined;
+ messages.push({role: "user", content: JSON.stringify({task: request.type, catalog: visibleCatalog, instructions: request.instructions, reset, discussion: request.type === "discussion" ? request.discussion : undefined}), timestamp: Date.now()});
  const prompt = request.type === "session" ? `${systemPrompt}\n\n${sessionProgressPrompt}` : systemPrompt;
  assertContextFits(model, prompt + JSON.stringify(schema), messages);
  const response = await completeWithRetry(() => ctx.modelRegistry.complete(model, {systemPrompt: prompt, messages, tools: [{name: "record_card", description: "Return the structured report or discussion response", parameters: schema}]}, {signal}), signal);
@@ -132,11 +143,12 @@ export async function infer(ctx: ExtensionContext, request: Inference, signal: A
   }
  }
  if (!Check(schema, rawArgs)) throw Error("Reporting model returned invalid structured card fields; nothing was saved");
- const result = rawArgs as Inferred;
- if (result.edit) validateChanges(result.edit.kind, request.catalog[result.edit.kind]!, result.edit.changes, result.edit.actor);
- if (request.type === "session" || request.type === "stream") {
-  if (!result.changes || typeof result.changes !== "object" || Array.isArray(result.changes)) throw Error("Invalid structured changes");
+ if (request.type === "discussion") {
+  const result = rawArgs as DiscussionResult;
+  if (result.edit) validateChanges(result.edit.kind, request.catalog[result.edit.kind]!, result.edit.changes, result.edit.actor);
+ } else if (request.type === "session" || request.type === "stream") {
+  const result = rawArgs as ReportResult;
   if (Object.keys(result.changes).length) validateChanges(request.type, request.catalog[request.type]!, result.changes, "automatic");
  }
- return result;
+ return rawArgs as Inferred;
 }

@@ -1,7 +1,6 @@
 import { randomUUID } from "node:crypto";
 import type { ExtensionContext } from "@earendil-works/pi-coding-agent";
 import { infer as modelInfer } from "./agent.ts";
-import type { Inference, Inferred } from "./agent.ts";
 import { automaticFields, editRequest } from "./core.ts";
 import { receiptCanContinue } from "./streams.ts";
 import type { Receipt, StreamCli } from "./streams.ts";
@@ -66,21 +65,19 @@ export class Reporter {
    }
   }
  }
- private async generate(ctx: ExtensionContext, request: Inference, signal: AbortSignal): Promise<Inferred> {
-  return (this.options.infer ?? modelInfer)(ctx, request, signal, this.options.settings().model);
- }
  private async report({ctx, force, instructions, reset, auto, target = "all"}: Pending, fence: SessionFence): Promise<boolean> {
   const cli = this.options.cli(ctx), signal = fence.signal, quiet = !force;
+  const generate = this.options.infer ?? modelInfer;
   const captureNow = () => captureInputs(ctx, cli, this.options.settings().context, fence);
   let capture = await captureNow(), savedAny = false, reclaimReady = false;
   if (!capture.valid() || signal.aborted) return false;
   const inferAndApply = async (kind: "session" | "stream"): Promise<boolean> => {
    for (let attempt = 0; ; attempt++) {
-    const inferred = await this.generate(ctx, {type: kind, catalog: capture.catalog, messages: capture.evidence.messages, instructions, reset}, signal);
+    const inferred = await generate(ctx, {type: kind, catalog: capture.catalog, messages: capture.evidence.messages, instructions, reset}, signal, this.options.settings().model);
     if (signal.aborted || !await capture.attached()) return false;
-    if (kind === "session" && reset && capture.catalog.session!.state_short !== null && inferred.changes && !Object.hasOwn(inferred.changes, "state_short")) inferred.changes.state_short = null;
-    if (kind === "stream" && reset && capture.catalog.stream!.goal_mode === "automatic" && capture.catalog.stream!.goal_short !== null && inferred.changes && !Object.hasOwn(inferred.changes, "goal_short")) inferred.changes.goal_short = null;
-    if (!inferred.changes || !Object.keys(inferred.changes).length) return true;
+    if (kind === "session" && reset && capture.catalog.session!.state_short !== null && !Object.hasOwn(inferred.changes, "state_short")) inferred.changes.state_short = null;
+    if (kind === "stream" && reset && capture.catalog.stream!.goal_mode === "automatic" && capture.catalog.stream!.goal_short !== null && !Object.hasOwn(inferred.changes, "goal_short")) inferred.changes.goal_short = null;
+    if (!Object.keys(inferred.changes).length) return true;
     const receipt = await cli.apply(editRequest(capture.catalog, kind, inferred.changes, "automatic", randomUUID(), true));
     if (attempt < 2 && receipt.save?.domain?.outcome === "superseded" && receipt.save.local === "unchanged" && !receipt.completion_error && receipt.publication?.local !== "repair-required") {
      const fresh = await captureNow();
@@ -100,7 +97,7 @@ export class Reporter {
     if (reset) {this.options.notice("Reset requires an attached work card. Use /streams attach first.");return false;}
     if (!force && this.options.settings().enrollment !== "automatic") return false;
     const operationId = randomUUID();
-    const result = await this.generate(ctx, {type: "enroll", catalog: capture.catalog, messages: capture.evidence.messages, instructions}, signal);
+    const result = await generate(ctx, {type: "enroll", catalog: capture.catalog, messages: capture.evidence.messages, instructions}, signal, this.options.settings().model);
     if (signal.aborted || !await capture.attached() || (!result.meaningful && !force)) return false;
     if (!result.session?.title?.trim() || (!capture.catalog.stream && !result.stream?.title?.trim())) throw Error("Enrollment requires meaningful effort and session titles");
     const receipt = await cli.enroll({catalog_source: capture.catalog.catalog_source, operation_id: operationId, harness: "pi", harness_session_id: capture.native, ...(capture.catalog.stream ? {stream_id: capture.catalog.stream.id} : {stream: result.stream}), session: result.session, actor: "automatic", cwd: capture.cwd});
