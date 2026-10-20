@@ -109,6 +109,14 @@ class LocalCatalog:
         except (KeyError, AttributeError, ValueError) as error:
             raise RepairRequired(f"invalid local creation receipts: {error}") from error
 
+    def inspect(self) -> tuple[Snapshot, dict[str, Authority]]:
+        """Validate one locked snapshot without creating or repairing catalog state."""
+        with self.store.transaction(read_only=True) as transaction:
+            if self.state.root.is_symlink() or not self.state.root.is_dir():
+                raise RepairRequired("read-only inspection requires initialized catalog state; initialize or repair outside capture")
+            authorities = self._ready()
+            return transaction.read(), authorities
+
     def snapshot(self) -> Snapshot:
         with self.store.transaction() as transaction:
             self._ready()

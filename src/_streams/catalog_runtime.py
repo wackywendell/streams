@@ -403,6 +403,10 @@ class Runtime:
         return [binding for path in (self.state_dir / 'associations' / scope).glob('*.json')
                 if (binding := self._association(path)) is not None]
 
+    def association_inventory(self, scope: str) -> list[dict]:
+        """Read exact workspace bindings for one transport scope without native effects."""
+        return self._associations(scope)
+
     def _enrollment_path(self, scope: str, workspace_id: str) -> Path:
         return self.state_dir / 'enrollments' / scope / (_key(workspace_id) + '.json')
 

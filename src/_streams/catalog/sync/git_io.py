@@ -25,7 +25,7 @@ class Git:
         # into the caller's source repository. Keep explicit test/global config.
         env = {key: value for key, value in os.environ.items()
                if not key.startswith("GIT_") or key in ("GIT_CONFIG_GLOBAL", "GIT_CONFIG_SYSTEM", "GIT_CONFIG_NOSYSTEM")}
-        env.update(GIT_TERMINAL_PROMPT="0", GIT_LITERAL_PATHSPECS="1")
+        env.update(GIT_TERMINAL_PROMPT="0", GIT_LITERAL_PATHSPECS="1", GIT_OPTIONAL_LOCKS="0")
         if index is not None:
             env["GIT_INDEX_FILE"] = str(index)
         try:

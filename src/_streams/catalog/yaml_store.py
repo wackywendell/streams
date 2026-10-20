@@ -122,7 +122,7 @@ class YamlStore:
             raise StorageError(f"cannot read catalog: {error}") from error
 
     @contextmanager
-    def transaction(self):
+    def transaction(self, *, read_only: bool = False):
         """Hold the common process lock across read, reconciliation, save and composition.
 
         Do not nest scopes or pass a transaction to another thread. A Git adapter
@@ -131,14 +131,15 @@ class YamlStore:
         while the store is in use; replacing its inode would split coordination.
         """
         try:
-            _directory(self.root, create=True)
+            _directory(self.root, create=not read_only)
             lock = self.root / ".catalog.lock"
-            descriptor = os.open(lock, os.O_CREAT | os.O_RDWR | os.O_NOFOLLOW, 0o600)
+            flags = os.O_RDONLY if read_only else os.O_CREAT | os.O_RDWR
+            descriptor = os.open(lock, flags | os.O_NOFOLLOW, 0o600)
         except OSError as error:
             raise StorageError(f"cannot open catalog lock: {error}") from error
-        transaction = _YamlTransaction(self.root)
+        transaction = _YamlTransaction(self.root, read_only=read_only)
         try:
-            fcntl.flock(descriptor, fcntl.LOCK_EX)
+            fcntl.flock(descriptor, fcntl.LOCK_SH if read_only else fcntl.LOCK_EX)
             yield transaction
         finally:
             transaction.active = False
@@ -146,8 +147,9 @@ class YamlStore:
 
 
 class _YamlTransaction:
-    def __init__(self, root: Path):
+    def __init__(self, root: Path, *, read_only: bool = False):
         self.root = root
+        self.read_only = read_only
         self.active = True
         self._last_read: Snapshot | None = None
 
@@ -267,6 +269,8 @@ class _YamlTransaction:
 
     def save(self, record: Record, *, expected: Snapshot) -> Snapshot:
         self._check_active()
+        if self.read_only:
+            raise StorageError("cannot save in a read-only catalog transaction")
         current = self._last_read if self._last_read is expected else self.read()
         if current.revisions != expected.revisions:
             raise RevisionConflict("catalog changed since the captured snapshot")

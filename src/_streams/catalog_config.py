@@ -236,10 +236,14 @@ def _empty_root(root: Path) -> None:
         raise StreamError("initialization requires empty catalog bookkeeping; inspect existing state")
 
 
-def open_catalog(*, validate_records: bool = True) -> LocalCatalog | GitCatalog:
+def open_catalog(*, validate_records: bool = True, read_only: bool = False) -> LocalCatalog | GitCatalog:
     settings = load_config()
     root = Path(settings["catalog"]["root"])
     try:
+        if read_only:
+            _check_root(root)
+            if not (root / ".catalog-sync").is_dir():
+                raise StreamError("read-only inspection requires initialized catalog state; initialize or repair outside capture")
         marker = _marker(root)
         if marker is None:
             raise StreamError("catalog is not initialized; run streams init")
@@ -249,7 +253,10 @@ def open_catalog(*, validate_records: bool = True) -> LocalCatalog | GitCatalog:
             backend = LocalCatalog(YamlStore(root), host_id=identity)
         else:
             backend = GitCatalog(root, host_id=identity, policy=Policy(**settings["sync"]))
-        if validate_records:
+        if read_only:
+            if validate_records:
+                backend.inspect()
+        elif validate_records:
             backend.snapshot()
         else:
             with backend.store.transaction():

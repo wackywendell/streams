@@ -117,19 +117,28 @@ class GitCatalog:
     def _commit(self, tree: str, message: str, parent: str | None = None) -> str:
         return self.git.commit(tree, message, parent)
 
-    def _history(self) -> History:
+    def _history(self, *, remember: bool = True) -> History:
         history = read_history(self.git, self.git.head())
         # A manually verified/repaired commit may predate its receipt write.
         # Establish retry protection before any history can leave the live tip.
-        self.state.validate_fingerprints(history.fingerprints, remember=True)
+        self.state.validate_fingerprints(history.fingerprints, remember=remember)
         return history
 
-    def _saved(self, transaction):
-        history = self._history()
+    def _saved(self, transaction, *, remember: bool = True):
+        history = self._history(remember=remember)
         snapshot = transaction.read()
         if records(snapshot.catalog) != records(history.catalog):
             raise RepairRequired("working records disagree with supported history")
         return history, snapshot
+
+    def inspect(self) -> tuple[Snapshot, dict[str, Authority]]:
+        """Validate records, history and receipts without remembering missing evidence."""
+        with self.store.transaction(read_only=True) as transaction:
+            if self.state.root.is_symlink() or not self.state.root.is_dir():
+                raise RepairRequired("read-only inspection requires initialized catalog state; initialize or repair outside capture")
+            self._ready()
+            history, snapshot = self._saved(transaction, remember=False)
+            return snapshot, self._authorities(history)
 
     def snapshot(self) -> Snapshot:
         with self.store.transaction() as transaction:

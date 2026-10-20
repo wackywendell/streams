@@ -477,6 +477,13 @@ def command_session(args):
     return finish(backend, operation, saved, event="attach" if args.session_command == "attach" else "session", args=args, extra=extra)
 
 
+def command_capture_inputs(args):
+    from .catalog_capture import capture_inputs
+    backend = config.open_catalog(validate_records=False, read_only=True)
+    emit(capture_inputs(backend, runtime(), stream_id=args.stream_id, workspace_id=args.workspace_id), args)
+    return 0
+
+
 def command_agent(args):
     from . import catalog_agent
     backend = config.open_catalog(validate_records=args.agent_command != "context")
@@ -678,6 +685,12 @@ def build_parser():
     context.add_argument("--stream-id", help="exact stream identity; never switches an attached conversation")
     context.add_argument("--attest", action="store_true", help="require the exact native Pi caller and ready Herdr Stream association")
     context.add_argument("--native-inventory", action="store_true", help="include verified native conversation identities for owner handover (requires --attest)")
+    capture_inputs = agent_sub.add_parser("capture-inputs", allow_abbrev=False, help="read frozen replay input inventory without attaching or fetching")
+    selector = capture_inputs.add_mutually_exclusive_group()
+    selector.add_argument("--stream-id", help="exact catalog stream ID")
+    selector.add_argument("--workspace-id", help="exact observed Herdr workspace ID")
+    capture_inputs.set_defaults(func=command_capture_inputs)
+    add_output(capture_inputs)
     enroll = agent_sub.add_parser("enroll", allow_abbrev=False, help="enroll the caller from a structured stdin request")
     apply = agent_sub.add_parser("apply", allow_abbrev=False, help="apply a captured-record update from stdin")
     for child in (context, enroll, apply):
