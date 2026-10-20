@@ -59,7 +59,7 @@ export function locateTerminal(snapshot: NativeSnapshot, terminal: string): Pane
 }
 export const pairKeys = ['strm_agent', 'strm_nonce', 'strm_pi', 'strm_card', 'strm_role', 'strm_native'];
 export interface LivePair { kind: 'paired' | 'separated'; agent: Pane; card: Pane; identity: string; nonce: string }
-export type PairState = LivePair | { kind: 'empty' } | { kind: 'absent'; agent: Pane; identity: string; nonce: string };
+export type PairState = LivePair | { kind: 'empty' } | { kind: 'card-only'; card: Pane; identity: string; nonce: string } | { kind: 'absent'; agent: Pane; identity: string; nonce: string };
 export function classifyPair(s: NativeSnapshot, identity: string, terminal: string): PairState {
   const caller = locateTerminal(s, terminal);
   if (s.panes.some(p => p.tokens.strm_pi === terminal && p.tokens.strm_agent !== identity)) throw new Error('Foreign or incomplete agent owner markers');
@@ -73,7 +73,13 @@ export function classifyPair(s: NativeSnapshot, identity: string, terminal: stri
   }
   const agents = marked.filter(p => p.tokens.strm_role === 'agent');
   const cards = marked.filter(p => p.tokens.strm_role === 'card');
-  if (agents.length !== 1 || cards.length > 1) throw new Error('Conflicting duplicate live owners');
+  if (agents.length > 1 || cards.length > 1) throw new Error('Conflicting duplicate live owners');
+  if (!agents.length) {
+    const card = cards[0];
+    if (!card || pairKeys.some(k => Object.hasOwn(caller.tokens, k)) || card.tokens.strm_pi !== terminal
+      || card.terminal_id !== card.tokens.strm_card || card.workspace_id !== caller.workspace_id || card.tab_id !== caller.tab_id) throw new Error('Foreign or incomplete reserved card markers');
+    return { kind: 'card-only', card, identity, nonce: card.tokens.strm_nonce };
+  }
   const agent = agents[0], a = agent.tokens;
   if (agent.terminal_id !== a.strm_pi || (terminal !== a.strm_pi && terminal !== a.strm_card)) throw new Error('Foreign agent terminal');
   const referenced = s.panes.find(p => p.terminal_id === a.strm_card);

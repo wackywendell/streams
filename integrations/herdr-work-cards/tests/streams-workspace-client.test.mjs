@@ -8,6 +8,7 @@ import { StreamsCardSource } from '../dist/herdr/streams-source.js';
 import { renderStreamsCard } from '../dist/herdr/streams-view.js';
 import { NameStore } from '../dist/herdr/name-provenance.js';
 import { StreamsNativeState, streamsDigest } from '../dist/herdr/streams-native-state.js';
+import { classifyPair } from '../dist/herdr/workspace-ownership.js';
 import { DEFAULT_CONFIG } from '../dist/config.js';
 import { withWorkspaceLock } from '../dist/herdr/workspace-lock.js';
 const config = { ...DEFAULT_CONFIG, herdr_timeout_ms: 500 };
@@ -547,14 +548,14 @@ for (const interruption of ['before-stamping', 'before-ready']) test(`openDispla
   assert.equal(records.length, 1);
   assert.equal((await state.read(records[0].slice(0, -5))).phase, 'ready');
 });
-test('unrecoverable duplicate owners rethrow without a redundant verification or native effects', async t => {
+test('duplicate owners reject immediately without entering recovery or performing native effects', async t => {
   const f = await fixture(t), a = await f.owner(1);
   await a.open();
   f.panes.push({ ...structuredClone(f.panes[0]), pane_id: 'w:p99', terminal_id: 'term99' });
   const before = structuredClone(f.snapshot());
   f.calls.length = 0;
   await assert.rejects(a.open(), /Conflicting duplicate live owners/);
-  assert.equal(f.calls.filter(args => args[0] === 'api').length, 3);
+  assert.equal(f.calls.filter(args => args[0] === 'api').length, 1);
   assert.equal(effects(f).length, 0);
   assert.deepEqual(f.snapshot(), before);
 });
@@ -571,11 +572,33 @@ test('card callers cannot recover a half-stamped reservation on behalf of the Pi
   const context = await c.bootstrap(config), before = structuredClone(f.snapshot()), count = effects(f).length;
   const record = (await readdir(f.stateDirectory)).find(name => name.endsWith('.json'));
   const contents = await readFile(join(f.stateDirectory, record), 'utf8');
-  await assert.rejects(c.openDisplay(a.s, context, config), /duplicate live owners|attested Pi owner/);
+  await assert.rejects(c.openDisplay(a.s, context, config), /Caller is not the exact owned Streams card/);
   assert.deepEqual(f.snapshot(), before);
   assert.equal(effects(f).length, count);
   assert.equal(await readFile(join(f.stateDirectory, record), 'utf8'), contents);
   assert.equal((await a.open()).kind, 'paired');
+  assert.equal(launches(f).length, 1);
+});
+for (const corruption of ['missing', 'ready', 'nonce', 'tuple']) test(`card-only observation cannot authorize recovery with ${corruption} evidence`, async t => {
+  const f = await fixture(t), a = await f.owner(1), controller = new AbortController();
+  f.hook((args, output) => {
+    if (args[1] === 'report-metadata' && args.includes('strm_role=card')) controller.abort();
+    return output;
+  });
+  await assert.rejects(a.open('automatic', controller.signal));
+  f.hook(undefined);
+  const record = (await readdir(f.stateDirectory)).find(name => name.endsWith('.json'));
+  const path = join(f.stateDirectory, record), attempt = JSON.parse(await readFile(path, 'utf8'));
+  if (corruption === 'missing') await rm(path);
+  else await writeFile(path, JSON.stringify({ ...attempt, ...(corruption === 'ready' ? { phase: 'ready' } : corruption === 'nonce' ? { nonce: 'different' } : { terminalId: 'different' }) }));
+  const before = structuredClone(f.snapshot()), count = effects(f).length;
+  const bytes = corruption === 'missing' ? null : await readFile(path, 'utf8');
+  await assert.rejects(a.c.projectSummaries(a.s, a.context, config), /Uncertain Streams launch/);
+  await assert.rejects(a.open(), /Uncertain Streams launch|Reserved|Conflicting reserved/);
+  assert.deepEqual(f.snapshot(), before);
+  assert.equal(effects(f).length, count);
+  if (bytes !== null) assert.equal(await readFile(path, 'utf8'), bytes);
+  else await assert.rejects(readFile(path), { code: 'ENOENT' });
   assert.equal(launches(f).length, 1);
 });
 test('openDisplay self-heals a half-stamped reserved pair without launching a duplicate card', async t => {
@@ -588,6 +611,12 @@ test('openDisplay self-heals a half-stamped reserved pair without launching a du
   f.hook(undefined);
   assert.equal(launches(f).length, 1);
   assert.ok(!f.panes[0].tokens.strm_role);
+  const observation = classifyPair(f.snapshot(), f.panes.find(p => p.tokens.strm_role === 'card').tokens.strm_agent, 'term1');
+  assert.equal(observation.kind, 'card-only');
+  assert.equal(observation.card.tokens.strm_role, 'card');
+  const count = effects(f).length;
+  await assert.rejects(a.c.projectNames(a.s, a.context, config), /Uncertain Streams launch/);
+  assert.equal(effects(f).length, count);
   const recovered = await a.open('automatic');
   assert.equal(recovered.kind, 'paired');
   assert.equal(launches(f).length, 1);

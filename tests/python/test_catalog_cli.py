@@ -273,6 +273,28 @@ class CatalogCliTest(unittest.TestCase):
         self.assertEqual(result.returncode, 0, result.stderr)
         self.assertEqual(json.loads(result.stdout)["stream"]["id"], stream["id"])
 
+    def test_check_ignores_workspace_lock_contents_without_mutation(self):
+        self.initialize()
+        from _streams.herdr import HerdrEndpoint
+        socket = self.root / "herdr/herdr.sock"
+        socket.parent.mkdir()
+        lock = socket.parent / (".work-cards-" + "a" * 64 + ".lock")
+        snapshot = {"workspaces": [], "panes": []}
+        with patch("_streams.catalog_check.HerdrClient.endpoint", return_value=HerdrEndpoint(str(socket), "default")), \
+             patch("_streams.catalog_check.HerdrClient.command_result", return_value={"snapshot": snapshot}), \
+             patch("_streams.catalog_check.HerdrClient.run", side_effect=AssertionError("native mutation")):
+            for contents in ("", "work-cards workspace lock v1\n", "arbitrary contents"):
+                lock.write_text(contents)
+                identity = lock.stat()
+                for fix in ((), ("--fix",)):
+                    with self.subTest(contents=contents, fix=fix):
+                        code, out, err = self.cli("check", *fix, "--json")
+                        self.assertEqual((code, err), (0, ""), out)
+                        self.assertTrue(json.loads(out)["valid"])
+                        self.assertEqual(lock.read_text(), contents)
+                        self.assertEqual((lock.stat().st_dev, lock.stat().st_ino),
+                                         (identity.st_dev, identity.st_ino))
+
     def test_check_detects_and_fixes_stale_agent_owner_markers(self):
         self.initialize()
         stream = self.create()

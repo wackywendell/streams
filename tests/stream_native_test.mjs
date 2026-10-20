@@ -30,7 +30,7 @@ function fixture(t, options = {}) {
   open:async (_context, signal, mode) => {events.push(`open:${mode}`);if (options.open) await options.open(signal);if (mode === 'explicit') closed = false;return {kind:closed ? 'suppressed' : 'paired'};},
   close:async () => {events.push('close');closed = true;},
   summaries:async () => {events.push('summaries');}, names:async (_context, _signal, intent) => {events.push('names');options.names?.(intent);},
-  sessionName:(snapshot, check, intent) => {events.push('sessionName');naming.acceptSessionTitle(pi, ctx.sessionManager, id, snapshot.session.title, check);naming.projectSessionName(pi, ctx.sessionManager, id, snapshot.session.title, snapshot.session.title_mode === 'automatic' ? 'auto' : 'manual', check, intent);},
+  sessionName:(snapshot, check, intent) => {events.push('sessionName');naming.projectSessionName(pi, ctx.sessionManager, id, snapshot.session.title, check, intent);},
  };
  let loads = 0, captured;
  const factory = async input => {loads++;captured = input;return adapter;};
@@ -55,6 +55,9 @@ test('discovery and controller construction have no effects; only gated session_
  assert.equal(f.captured().sessionId, f.id);assert.equal(f.captured().cwd, '/repo');assert.notEqual(f.captured().env, process.env);
  assert.ok(f.events.indexOf('read') < f.events.indexOf('bootstrap'));assert.ok(f.events.includes('open:automatic'));
  assert.equal(f.name(), 'Saved title');assert.equal(f.events.at(-1), 'capture:stream');
+ assert.equal(f.entries.filter(entry => entry.customType === naming.sessionNamingEntry).length, 1);
+ f.controller.update();await f.controller.idle();
+ assert.equal(f.entries.filter(entry => entry.customType === naming.sessionNamingEntry).length, 1);
 });
 for (const [label, env, ctx] of [
  ['headless', {}, {hasUI:false}], ['rpc', {}, {mode:'rpc'}], ['outside Herdr', {HERDR_ENV:undefined}, {}], ['no exact pane', {HERDR_PANE_ID:undefined}, {}],

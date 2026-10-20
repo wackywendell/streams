@@ -4,7 +4,7 @@ import { mkdtemp, rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { SessionManager } from '@earendil-works/pi-coding-agent';
-import { projectSessionName, sessionNamingEntry, acceptSessionTitle, sessionTitleReady } from '../dist/pi/session-naming.js';
+import { projectSessionName, sessionNamingEntry } from '../dist/pi/session-naming.js';
 
 function fixture(manager = SessionManager.inMemory()) {
   let sets = 0, writes = 0;
@@ -13,7 +13,7 @@ function fixture(manager = SessionManager.inMemory()) {
     setSessionName: name => { sets++; manager.appendSessionInfo(name); },
     appendEntry: (type, data) => { writes++; manager.appendCustomEntry(type, data); },
   };
-  const apply = (title = 'Own task', options = {}) => projectSessionName(pi, manager, manager.getSessionId(), title, options.titleMode ?? 'manual', options.guard ?? (() => {}));
+  const apply = (title = 'Own task', options = {}) => projectSessionName(pi, manager, manager.getSessionId(), title, options.guard ?? (() => {}), options.intent);
   return { manager, pi, apply, sets: () => sets, writes: () => writes };
 }
 
@@ -41,12 +41,10 @@ test('unproven existing names and later external renames remain manually protect
 test('explicit reclaim replaces manual provenance and resumes automatic tracking', () => {
   const h = fixture(), id = h.manager.getSessionId();
   h.manager.appendSessionInfo('Manual name'); assert.equal(h.apply(), 'manual');
-  acceptSessionTitle(h.pi, h.manager, id, 'New lane', () => {});
-  assert.equal(projectSessionName(h.pi, h.manager, id, 'New lane', 'auto', () => {}, 'explicit'), 'renamed');
+  assert.equal(projectSessionName(h.pi, h.manager, id, 'New lane', () => {}, 'explicit'), 'renamed');
   assert.equal(h.manager.getSessionName(), 'New lane');
   assert.equal(h.manager.getEntries().filter(e => e.type === 'custom').at(-1).data.mode, 'auto');
-  acceptSessionTitle(h.pi, h.manager, id, 'Later lane', () => {});
-  assert.equal(h.apply('Later lane', {titleMode: 'auto'}), 'renamed');
+  assert.equal(h.apply('Later lane'), 'renamed');
 });
 test('same-text manual session-info writes revoke automatic authority', () => {
   const h = fixture(); h.apply(); h.manager.appendSessionInfo('Own task');
@@ -66,23 +64,19 @@ test('same-session reload and tree navigation retain authority, copied fork entr
   const other = fixture(fork); assert.equal(other.apply('Fork task'), 'manual'); assert.equal(other.sets(), 0);
 });
 
-test('real persisted session resume recovers accepted source and name authority; SDK fork does not', async t => {
+test('real persisted session resume recovers name authority; SDK fork does not', async t => {
   const directory = await mkdtemp(join(tmpdir(), 'wc-session-naming-'));
   t.after(() => rm(directory, { recursive: true, force: true }));
   const manager = SessionManager.create(directory, directory);
   manager.appendMessage({ role: 'user', content: 'Assignment evidence', timestamp: Date.now() });
   const h = fixture(manager), id = manager.getSessionId();
-  acceptSessionTitle(h.pi, manager, id, 'Accepted task', () => {});
-  h.apply('Accepted task', { titleMode: 'auto' });
+  h.apply('Accepted task');
   const resumed = fixture(SessionManager.open(manager.getSessionFile()));
   assert.equal(resumed.manager.getSessionId(), id);
-  assert.equal(sessionTitleReady(resumed.manager, id, 'Accepted task', 'auto'), true);
-  assert.equal(resumed.apply('Accepted task', { titleMode: 'auto' }), 'unchanged');
-  acceptSessionTitle(resumed.pi, resumed.manager, id, 'New accepted title', () => {});
-  assert.equal(resumed.apply('New accepted title', { titleMode: 'auto' }), 'renamed');
+  assert.equal(resumed.apply('Accepted task'), 'unchanged');
+  assert.equal(resumed.apply('New title'), 'renamed');
   resumed.manager.createBranchedSession(resumed.manager.getLeafId());
   assert.notEqual(resumed.manager.getSessionId(), id);
-  assert.equal(sessionTitleReady(resumed.manager, resumed.manager.getSessionId(), 'New accepted title', 'auto'), false);
   assert.equal(resumed.apply('Fork title'), 'manual');
 });
 
@@ -98,78 +92,67 @@ test('impossible naming states suspend rather than acquire source or overwrite a
   for (const fields of [
     { mode: 'auto', sessionInfoId: 'info' },
     { mode: 'auto', name: 'Task' },
+    { acceptedTitle: 'Task' },
     { acceptedTitle: 'Task', name: 'Applied name' },
     { acceptedTitle: 'Task', sessionInfoId: 'info' },
     { mode: 'manual', name: '', sessionInfoId: 123 },
   ]) {
     h.manager.appendCustomEntry(sessionNamingEntry, { version: 1, sessionId, ...fields });
-    assert.throws(() => acceptSessionTitle(h.pi, h.manager, sessionId, 'Accepted task', () => {}), /malformed.*suspended/i);
     assert.throws(() => h.apply('Task'), /malformed.*suspended/i);
   }
   assert.equal(h.sets(), 0); assert.equal(h.writes(), 0);
 });
 
-test('accepting a title preserves valid manual protection fields', () => {
-  const h = fixture(), sessionId = h.manager.getSessionId();
-  const manual = { version: 1, sessionId, mode: 'manual', name: '', sessionInfoId: 'previous-auto-info' };
-  h.manager.appendCustomEntry(sessionNamingEntry, manual);
-  acceptSessionTitle(h.pi, h.manager, sessionId, 'Accepted task', () => {});
-  assert.deepEqual(h.manager.getEntries().at(-1).data, { ...manual, acceptedTitle: 'Accepted task' });
-  assert.equal(h.apply('Accepted task', { titleMode: 'auto' }), 'manual');
+test('old acceptedTitle extras on auto/manual entries do not control projection or add writes', () => {
+  const h = fixture(); h.apply();
+  const previous = h.manager.getEntries().at(-1).data;
+  h.manager.appendCustomEntry(sessionNamingEntry, { ...previous, acceptedTitle: 'Old title' });
+  assert.equal(h.apply(), 'unchanged'); assert.equal(h.writes(), 1);
+  assert.equal(h.apply('New title'), 'renamed'); assert.equal(h.writes(), 2);
+  assert.equal(Object.hasOwn(h.manager.getEntries().at(-1).data, 'acceptedTitle'), false);
+  h.manager.appendCustomEntry(sessionNamingEntry, { version: 1, sessionId: h.manager.getSessionId(), mode: 'manual', name: '', sessionInfoId: previous.sessionInfoId, acceptedTitle: 'Old title' });
+  assert.equal(h.apply('Another title'), 'manual'); assert.equal(h.writes(), 2);
 });
 
-test('accepting a title cannot erase malformed state or a manually cleared Pi name', () => {
+test('projection cannot erase malformed state or a manually cleared Pi name', () => {
   const h = fixture(), id = h.manager.getSessionId();
   h.manager.appendSessionInfo('My manual name'); assert.equal(h.apply('Task'), 'manual');
   h.manager.appendSessionInfo('');
   h.manager.appendCustomEntry(sessionNamingEntry, { version: 999, sessionId: id });
   const entries = h.manager.getEntries().length;
-  assert.throws(() => acceptSessionTitle(h.pi, h.manager, id, 'Accepted task', () => {}), /malformed.*suspended/i);
-  assert.throws(() => h.apply('Accepted task', { titleMode: 'auto' }), /malformed.*suspended/i);
+  assert.throws(() => h.apply('Accepted task'), /malformed.*suspended/i);
   assert.equal(h.manager.getEntries().length, entries); assert.equal(h.sets(), 0);
   assert.equal(h.manager.getSessionName(), undefined);
 });
 
-test('valid foreign provenance can accept current sources but never inherits overwrite rights or loses empty manual protection', () => {
-  for (const mode of ['auto', 'manual', undefined]) {
-    const h = fixture(), id = h.manager.getSessionId();
-    h.manager.appendSessionInfo('');
-    h.manager.appendCustomEntry(sessionNamingEntry, { version: 1, sessionId: 'parent-session', acceptedTitle: 'Parent task',
-      ...(mode ? { mode, name: '', ...(mode === 'auto' ? { sessionInfoId: 'parent-info' } : {}) } : {}) });
-    acceptSessionTitle(h.pi, h.manager, id, 'Current task', () => {});
-    assert.equal(sessionTitleReady(h.manager, id, 'Current task', 'auto'), true);
-    assert.equal(h.apply('Current task', { titleMode: 'auto' }), 'manual');
-    assert.equal(h.manager.getSessionName(), undefined); assert.equal(h.sets(), 0);
+test('copied foreign auto/manual provenance protects even an empty name until explicit reclaim', () => {
+  for (const mode of ['auto', 'manual']) {
+    for (const withInfo of [false, true]) {
+      const h = fixture();
+      if (withInfo) h.manager.appendSessionInfo('');
+      h.manager.appendCustomEntry(sessionNamingEntry, { version: 1, sessionId: 'parent-session', acceptedTitle: 'Parent task',
+        mode, name: '', ...(mode === 'auto' ? { sessionInfoId: 'parent-info' } : {}) });
+      assert.equal(h.apply('Current task'), 'manual');
+      assert.equal(h.manager.getSessionName(), undefined); assert.equal(h.sets(), 0); assert.equal(h.writes(), 1);
+      assert.equal(h.apply('Later task'), 'manual'); assert.equal(h.writes(), 1);
+      assert.equal(h.apply('Own task', { intent: 'explicit' }), 'renamed');
+      assert.equal(h.apply('Next task'), 'renamed');
+    }
   }
 });
 
-test('blank and automatic bootstrap placeholder titles have no effects; explicit own titles are allowed', () => {
+test('catalog titles must be nonempty; former scratch placeholder text is a legitimate title', () => {
   const h = fixture();
-  assert.equal(h.apply(''), 'skipped'); assert.equal(h.apply('Untitled task', { titleMode: 'auto' }), 'skipped');
+  for (const title of ['', '   ']) assert.throws(() => h.apply(title), /nonempty/i);
   assert.equal(h.sets(), 0); assert.equal(h.writes(), 0);
-  assert.equal(h.apply('Untitled task', { titleMode: 'manual' }), 'renamed');
-});
-
-test('automatic source readiness requires a published exact own title and survives manual Pi protection', () => {
-  const h = fixture(), id = h.manager.getSessionId();
-  assert.equal(sessionTitleReady(h.manager, id, 'Seed', 'auto'), false);
-  assert.equal(h.apply('Seed', { titleMode: 'auto' }), 'skipped');
-  acceptSessionTitle(h.pi, h.manager, id, 'Seed', () => {});
-  assert.equal(sessionTitleReady(h.manager, id, 'Seed', 'auto'), true);
-  assert.equal(sessionTitleReady(h.manager, id, 'Other', 'auto'), false);
-  assert.equal(h.apply('Seed', { titleMode: 'auto' }), 'renamed');
-  h.manager.appendSessionInfo('Manual'); h.apply('Seed', { titleMode: 'auto' });
-  acceptSessionTitle(h.pi, h.manager, id, 'New accepted title', () => {});
-  assert.equal(sessionTitleReady(h.manager, id, 'New accepted title', 'auto'), true);
-  assert.equal(h.apply('New accepted title', { titleMode: 'auto' }), 'manual');
-  assert.equal(fixture(h.manager).apply('New accepted title', { titleMode: 'auto' }), 'manual');
-  assert.equal(sessionTitleReady(h.manager, 'fork-id', 'New accepted title', 'auto'), false);
+  assert.equal(h.apply('Untitled task'), 'renamed');
+  assert.equal(h.apply('Untitled task'), 'unchanged'); assert.equal(h.writes(), 1);
 });
 
 test('identity and synchronous guard changes prevent names or provenance', () => {
   const h = fixture();
   assert.throws(() => h.apply('Task', { guard: () => { throw new Error('cancelled'); } }), /cancelled/);
-  assert.throws(() => projectSessionName(h.pi, h.manager, 'other-session', 'Task', 'manual', () => {}), /session/i);
+  assert.throws(() => projectSessionName(h.pi, h.manager, 'other-session', 'Task', () => {}), /session/i);
   assert.equal(h.sets(), 0); assert.equal(h.writes(), 0);
 });
 
@@ -182,6 +165,21 @@ test('failed name application never persists auto authority; failed persistence 
   assert.throws(() => h.apply(), /persist failed/); assert.equal(h.manager.getSessionName(), 'Own task');
   h.pi.appendEntry = append;
   assert.equal(h.apply('Retry title'), 'manual'); assert.equal(h.manager.getSessionName(), 'Own task');
+});
+
+test('unacknowledged name writes and identity changes after a name write never persist authority', () => {
+  for (const behavior of ['ignored', 'no-new-info', 'wrong-info', 'stale-id', 'stale-guard']) {
+    const h = fixture(); let changed = false;
+    h.pi.setSessionName = title => {
+      changed = true;
+      if (behavior === 'stale-id') h.manager.getSessionId = () => 'other-session';
+      if (behavior !== 'ignored' && behavior !== 'no-new-info') h.manager.appendSessionInfo(behavior === 'wrong-info' ? 'Other title' : title);
+    };
+    if (behavior === 'no-new-info') h.pi.getSessionName = () => changed ? 'Own task' : undefined;
+    const guard = () => { if (changed && behavior === 'stale-guard') throw Error('cancelled'); };
+    assert.throws(() => h.apply('Own task', { guard }), /acknowledged|cancelled/i);
+    assert.equal(h.writes(), 0);
+  }
 });
 
 test('a failed persistence after an automatic title change does not restore previous authority', () => {

@@ -66,20 +66,6 @@ def _check_directory_selection(
         })
 
 
-def _check_herdr_locks(herdr_dir: Path, issues: list[dict[str, Any]]) -> None:
-    for lock_path in sorted(herdr_dir.glob(".work-cards-*.lock")):
-        try:
-            if lock_path.is_symlink() or not lock_path.is_file():
-                raise ValueError("lock path is not a regular file")
-            if lock_path.read_text(encoding="utf-8") != "work-cards workspace lock v1\n":
-                raise ValueError("expected 'work-cards workspace lock v1' marker")
-        except (OSError, ValueError) as exc:
-            issues.append({
-                "kind": "invalid-work-cards-lock", "path": str(lock_path),
-                "message": f"invalid work-cards lock {lock_path}: {exc}; inspect before replacing",
-            })
-
-
 def _work_card_state(state_dir: Path, keys: tuple[str, ...] | None, issues: list[dict[str, Any]]) -> dict[Path, dict | None] | None:
     """Read native launch evidence without following links or blocking on special files."""
     def invalid(path: Path, error: Exception) -> None:
@@ -170,7 +156,6 @@ def _check_herdr_live(
     scope = _key("herdr", endpoint.socket, endpoint.session)
     workspaces = snapshot.get("workspaces") if isinstance(snapshot, dict) else None
     panes = snapshot.get("panes") if isinstance(snapshot, dict) else None
-    _check_herdr_locks(herdr_dir, issues)
     if not isinstance(workspaces, list) or not isinstance(panes, list):
         issues.append({
             "kind": "invalid-herdr-snapshot",

@@ -38,8 +38,7 @@ export const loadNative: NativeFactory = async ({pi, ctx, sessionId, cwd, env}) 
   summaries: (context, signal) => client.projectSummaries(source, context, config, signal),
   names: (context, signal, intent) => client.projectNames(source, context, config, signal, intent),
   sessionName: (snapshot, assertCurrent, intent) => {
-   naming.acceptSessionTitle(pi, ctx.sessionManager, sessionId, snapshot.session.title, assertCurrent);
-   naming.projectSessionName(pi, ctx.sessionManager, sessionId, snapshot.session.title, snapshot.session.title_mode === "automatic" ? "auto" : "manual", assertCurrent, intent);
+   naming.projectSessionName(pi, ctx.sessionManager, sessionId, snapshot.session.title, assertCurrent, intent);
   },
  };
 };

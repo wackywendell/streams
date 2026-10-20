@@ -1,10 +1,9 @@
 import { spawn } from 'node:child_process';
-import { createHash, randomUUID } from 'node:crypto';
+import { createHash } from 'node:crypto';
 import { constants } from 'node:fs';
-import { access, link, lstat, open, stat, unlink, type FileHandle } from 'node:fs/promises';
+import { access, lstat, open, stat, type FileHandle } from 'node:fs/promises';
 import { dirname, isAbsolute, join } from 'node:path';
 
-const marker = 'work-cards workspace lock v1\n';
 const startupMs = 5000;
 // flock belongs to the open file description shared with Node's retained fd, not
 // to this short-lived helper. stdin EOF prevents an orphaned waiter acquiring.
@@ -27,47 +26,23 @@ while True:
 `;
 
 function inspectionError(path: string): Error {
-  return new Error(`Unsafe or legacy work-cards lock at ${path}. Inspect the file and stop all legacy clients before activation or manual recovery; never automatically remove or steal this lock.`);
+  return new Error(`Unsafe work-cards lock at ${path}. Inspect the file; never automatically remove or steal this lock.`);
 }
 
 async function openLock(path: string): Promise<FileHandle> {
-  // A legacy owner may unlink between our link/open. Retry that race, but not a
-  // missing socket directory or an indefinitely changing pathname.
-  for (let attempt = 0; attempt < 8; attempt++) {
-    let handle: FileHandle;
-    try { handle = await open(path, constants.O_RDWR | constants.O_NOFOLLOW | constants.O_NONBLOCK); }
-    catch (error) {
-      const code = (error as NodeJS.ErrnoException).code;
-      if (code !== 'ENOENT') {
-        const entry = await lstat(path).catch(() => undefined);
-        if (code === 'ELOOP' || code === 'EISDIR' || (entry && (!entry.isFile() || entry.uid !== process.getuid!()))) throw inspectionError(path);
-        throw error;
-      }
-      const temporary = `${path}.${process.pid}.${randomUUID()}.tmp`;
-      const initial = await open(temporary, 'wx', 0o600);
-      try {
-        await initial.writeFile(marker);
-        await initial.sync();
-        try { await link(temporary, path); }
-        catch (error) { if ((error as NodeJS.ErrnoException).code !== 'EEXIST') throw error; }
-      } finally {
-        try { await initial.close(); } finally { await unlink(temporary); }
-      }
-      // Also makes publication durable across a crash, not just atomic to readers.
-      const directory = await open(dirname(path), constants.O_RDONLY);
-      try { await directory.sync(); } finally { await directory.close(); }
-      continue;
-    }
-    try {
-      const identity = await handle.stat();
-      if (!identity.isFile() || identity.uid !== process.getuid!() || identity.size !== Buffer.byteLength(marker)) throw inspectionError(path);
-      const contents = Buffer.alloc(Buffer.byteLength(marker) + 1);
-      const { bytesRead } = await handle.read(contents, 0, contents.length, 0);
-      if (contents.subarray(0, bytesRead).toString() !== marker) throw inspectionError(path);
-      return handle;
-    } catch (error) { await handle.close(); throw error; }
+  let handle: FileHandle;
+  try { handle = await open(path, constants.O_CREAT | constants.O_RDWR | constants.O_NOFOLLOW | constants.O_NONBLOCK, 0o600); }
+  catch (error) {
+    const code = (error as NodeJS.ErrnoException).code;
+    const entry = await lstat(path).catch(() => undefined);
+    if (code === 'ELOOP' || code === 'EISDIR' || (entry && (!entry.isFile() || entry.uid !== process.getuid!()))) throw inspectionError(path);
+    throw error;
   }
-  throw new Error(`Work-cards lock pathname keeps changing at ${path}; inspect and stop legacy clients before retrying.`);
+  try {
+    const identity = await handle.stat();
+    if (!identity.isFile() || identity.uid !== process.getuid!()) throw inspectionError(path);
+    return handle;
+  } catch (error) { await handle.close(); throw error; }
 }
 
 let cachedPython: { pathEnv: string; executable: string } | undefined;

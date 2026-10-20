@@ -17,7 +17,9 @@ const lockPath = socket => join(join(socket, '..'), `.work-cards-${createHash('s
 async function assertPersistent(root) {
   const names = (await readdir(root)).filter(name => name.endsWith('.lock'));
   assert.equal(names.length, 1);
-  assert.equal(await readFile(join(root, names[0]), 'utf8'), marker);
+  const identity = await stat(join(root, names[0]));
+  assert.ok(identity.isFile());
+  assert.equal(identity.uid, process.getuid());
 }
 
 async function directory(t) {
@@ -160,7 +162,7 @@ test('minimal PATH falls back to a standard Python installation', async t => {
   assert.equal(await w.message(), 'acquired');
 });
 
-test('same-process contenders serialize without replacing the marker inode', async t => {
+test('same-process contenders serialize without replacing the lock inode', async t => {
   const f = await directory(t); let active = 0, calls = 0;
   await withWorkspaceLock(f.socket, 'w', async () => {});
   const before = await stat(lockPath(f.socket));
@@ -172,7 +174,7 @@ test('same-process contenders serialize without replacing the marker inode', asy
   await assertPersistent(f.root);
 });
 
-test('fresh multi-process contenders atomically publish and serialize on one inode', async t => {
+test('fresh multi-process contenders atomically create and serialize on one inode', async t => {
   const f = await directory(t); let entries = 0;
   const workers = Array.from({ length: 6 }, () => worker(t, f.socket, `
     const { open, unlink } = await import('node:fs/promises');
@@ -189,7 +191,7 @@ test('fresh multi-process contenders atomically publish and serialize on one ino
   for (const w of workers) assert.equal((await w.closed)[0], 0);
   assert.equal(entries, 6);
   await assertPersistent(f.root);
-  // A legacy wx caller cannot enter even while the new-format lock is idle.
+  // The persistent inode exists even while the lock is idle.
   await assert.rejects(open(lockPath(f.socket), 'wx'), { code: 'EEXIST' });
 });
 
@@ -251,17 +253,24 @@ test('helper startup has its own finite deadline and cannot run callback', async
   await withWorkspaceLock(f.socket, 'w', async () => {});
 });
 
-test('legacy and unrecognized files fail closed without rewriting or takeover', async t => {
+test('empty, marker-format and arbitrary contents have no authority and remain unchanged', async t => {
   const f = await directory(t), path = lockPath(f.socket); let calls = 0;
-  for (const contents of ['', 'pid=999999999\n', 'pid=1\n', 'work-cards workspace lock v2\n', marker + 'extra']) {
+  for (const contents of ['', marker, 'pid=999999999\n', 'pid=1\n', 'work-cards workspace lock v2\n', marker + 'extra']) {
     await writeFile(path, contents); const identity = await stat(path);
-    await assert.rejects(withWorkspaceLock(f.socket, 'w', async () => { calls++; }, { waitMs: 30 }), /legacy.*Inspect.*activation.*recovery/i);
-    assert.equal(await readFile(path, 'utf8'), contents); assert.equal((await stat(path)).ino, identity.ino);
+    await withWorkspaceLock(f.socket, 'w', async () => {
+      calls++;
+      await assert.rejects(withWorkspaceLock(f.socket, 'w', async () => assert.fail('concurrent entry')), /lock.*busy/i);
+    }, { waitMs: 30 });
+    assert.equal(await readFile(path, 'utf8'), contents);
+    const after = await stat(path);
+    assert.equal(after.ino, identity.ino); assert.equal(after.dev, identity.dev);
+    assert.equal(after.mode, identity.mode);
+    await assertPersistent(f.root);
   }
-  assert.equal(calls, 0);
+  assert.equal(calls, 6);
 });
 
-test('marker ownership must match the caller UID', async t => {
+test('lock ownership must match the caller UID', async t => {
   const f = await directory(t);
   await withWorkspaceLock(f.socket, 'w', async () => {});
   const w = worker(t, f.socket, `

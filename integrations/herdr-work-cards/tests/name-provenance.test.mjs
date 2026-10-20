@@ -37,49 +37,32 @@ test('scopes isolate stores, binding lifetimes, sockets, workspace, kind and sur
   assert.match(store.path(scope), /\/\.native-names\/[a-f0-9]{64}\.json$/);
 });
 
-test('missing read creates nothing and only proven blank/numeric defaults permit adoption', async t => {
+test('missing read creates nothing; matching labels adopt and only proven defaults permit renaming', async t => {
   const { root, store, scope } = await fixture(t);
   assert.equal(await store.read(scope), null); assert.deepEqual(await readdir(root), []);
   for (const label of ['', '   ', '1', '002']) {
     assert.equal(decide(scope, null, { currentLabel: label, defaultLabelProven: true }).kind, 'rename');
     assert.equal(decide(scope, null, { currentLabel: label }).kind, 'manual');
   }
-  assert.deepEqual(decide(scope, null, { currentLabel: '1', desiredName: '1', defaultLabelProven: true }), { kind: 'noop' });
+  const matching = decide(scope, null, { currentLabel: '1', desiredName: '1' });
+  assert.equal(matching.kind, 'adopt'); assert.equal(matching.afterSuccess.lastApplied, '1');
   const manual = decide(scope, null, { currentLabel: 'User title', defaultLabelProven: true });
   assert.equal(manual.kind, 'manual'); assert.equal(manual.provenance.owner, null); assert.equal(manual.provenance.lastApplied, null);
-  assert.equal(decide(scope, null, { currentLabel: 'Next', desiredName: 'Next' }).kind, 'manual');
+  assert.equal(decide(scope, null, { currentLabel: 'Next', desiredName: 'Next' }).kind, 'adopt');
 });
 
-test('workspace pending baseline requires accepted source and pins drift before readiness', async t => {
+test('workspace and tab use the same direct claim policy without pending records', async t => {
   const { scope: tab, store } = await fixture(t);
-  const scope = { ...tab, kind: 'workspace', surfaceId: 'workspace-1' };
-  const first = decide(scope, null, { currentLabel: 'Existing native name' });
-  assert.deepEqual(first, { kind: 'pending', baseline: 'Existing native name' });
-  const saved = await store.write(scope, { version: 1, scope, mode: 'pending', baseline: first.baseline, nonce: 'baseline-1' }, null);
-  const pending = (await store.read(scope)).record;
-  assert.equal(decide(scope, pending, { currentLabel: pending.baseline }).kind, 'not-ready');
-  const claim = decide(scope, pending, { currentLabel: pending.baseline, initialClaimReady: true });
-  assert.equal(claim.kind, 'rename'); assert.equal(claim.afterSuccess.mode, 'auto');
-  assert.equal(decide(scope, pending, { currentLabel: pending.baseline, desiredName: pending.baseline, initialClaimReady: true }).kind, 'adopt');
-  const drift = decide(scope, pending, { currentLabel: 'User rename' });
-  assert.deepEqual(drift.provenance, { version: 1, scope, mode: 'manual', owner: null, lastApplied: null });
-  assert.equal(decide(scope, drift.provenance, { initialClaimReady: true }).kind, 'manual');
-  await store.write(scope, { ...pending, baseline: '' }, saved.revision);
-  assert.equal((await store.read(scope)).record.baseline, '');
-  assert.equal((await store.read(scope)).record.nonce, 'baseline-1');
-  const { nonce: _nonce, ...missingNonce } = pending;
-  for (const invalid of [missingNonce, { ...pending, nonce: '' }, { ...pending, nonce: 'a/b' }, { ...pending, nonce: null }, { ...pending, extra: true }]) {
-    await assert.rejects(store.write(scope, invalid, saved.revision));
-    await writeFile(saved.path, JSON.stringify(invalid));
-    await assert.rejects(store.read(scope));
+  for (const scope of [tab, { ...tab, kind: 'workspace', surfaceId: 'workspace-1' }]) {
+    assert.equal(decide(scope, null, { currentLabel: 'Existing native name' }).kind, 'manual');
+    assert.equal(decide(scope, null, { currentLabel: 'Next' }).kind, 'adopt');
+    assert.equal(decide(scope, null, { currentLabel: '', defaultLabelProven: true }).kind, 'rename');
+    const invalid = { version: 1, scope, mode: 'pending', baseline: '', nonce: 'baseline-1' };
     assert.throws(() => decide(scope, invalid));
+    await assert.rejects(store.write(scope, invalid, null));
+    assert.equal(await store.read(scope), null);
   }
-  await assert.rejects(store.write(tab, { ...pending, scope: tab }, null));
-  await writeFile(store.path(tab), JSON.stringify({ ...pending, scope: tab }));
-  await assert.rejects(store.read(tab));
-  assert.throws(() => decide(scope, { ...pending, owner: null }));
-  assert.throws(() => decide(scope, pending, { initialClaimReady: 'yes' }));
-  assert.equal(decide(scope, pending, { intent: 'explicit' }).kind, 'rename');
+  assert.throws(() => decide(tab, null, { initialClaimReady: true }));
 });
 
 test('explicit reclaim overrides a valid pin and adopts a matching name without a native effect', async t => {
@@ -114,6 +97,8 @@ test('observed mismatch pins manual mode permanently, even if old automatic labe
   assert.equal(pin.provenance.lastApplied, 'Automatic'); assert.deepEqual(pin.provenance.owner, owner);
   const again = decide(scope, pin.provenance, { currentLabel: 'Automatic', defaultLabelProven: true });
   assert.equal(again.kind, 'manual'); assert.deepEqual(again.provenance, pin.provenance);
+  assert.equal(decide(scope, automatic(scope), { currentLabel: 'Next', desiredName: 'Next' }).kind, 'manual');
+  assert.equal(decide(scope, pin.provenance, { currentLabel: 'Next', desiredName: 'Next' }).kind, 'manual');
 });
 
 test('rename intent does not persist; verified success can publish provenance with raw CAS/no-op preservation', async t => {

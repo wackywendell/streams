@@ -15,7 +15,6 @@ export interface NameScope {
 export interface NameOwner { terminalId: string; nonce: string }
 interface AppliedName { owner: NameOwner; lastApplied: string }
 export type NameProvenance = { version: 1; scope: NameScope } & (
-  | { mode: 'pending'; baseline: string; nonce: string }
   | ({ mode: 'auto' } & AppliedName)
   | ({ mode: 'manual' } & (AppliedName | { owner: null; lastApplied: null }))
 );
@@ -30,13 +29,9 @@ export interface NameInput {
   defaultLabelProven: boolean;
   /** Deliberate reclaim; caller still verifies every native authority guard. */
   intent?: 'automatic' | 'explicit';
-  /** Accepted purpose/title after this workspace's pending baseline was observed. */
-  initialClaimReady?: boolean;
 }
 export type NameDecision =
   | { kind: 'noop' }
-  | { kind: 'not-ready' }
-  | { kind: 'pending'; baseline: string }
   | { kind: 'adopt'; afterSuccess: NameProvenance }
   | { kind: 'manual'; provenance: NameProvenance }
   | { kind: 'rename'; name: string; afterSuccess: NameProvenance };
@@ -76,47 +71,35 @@ function validateOwner(value: unknown): NameOwner {
   return { terminalId: token(v.terminalId), nonce: token(v.nonce) };
 }
 function validateProvenance(value: unknown, scope: NameScope): NameProvenance {
-  const pending = !!value && typeof value === 'object' && (value as Record<string, unknown>).mode === 'pending';
-  const v = object(value, pending ? ['version', 'scope', 'mode', 'baseline', 'nonce'] : ['version', 'scope', 'mode', 'owner', 'lastApplied']);
-  if (v.version !== 1 || (v.mode !== 'auto' && v.mode !== 'manual' && v.mode !== 'pending')) throw new Error('Invalid naming version/mode');
+  const v = object(value, ['version', 'scope', 'mode', 'owner', 'lastApplied']);
+  if (v.version !== 1 || (v.mode !== 'auto' && v.mode !== 'manual')) throw new Error('Invalid naming version/mode');
   const actual = validateScope(v.scope);
   if (!isDeepStrictEqual(actual, scope)) throw new Error('Naming scope mismatch');
-  if (v.mode === 'pending') {
-    if (actual.kind !== 'workspace') throw new Error('Pending naming requires a workspace');
-    return { version: 1, scope: actual, mode: 'pending', baseline: text(v.baseline, false), nonce: token(v.nonce) };
-  }
   if (v.mode === 'manual' && v.owner === null && v.lastApplied === null) return { version: 1, scope: actual, mode: 'manual', owner: null, lastApplied: null };
   return { version: 1, scope: actual, mode: v.mode, owner: validateOwner(v.owner), lastApplied: text(v.lastApplied) };
 }
 
 /** Pure policy, not native authority. Caller verifies eligibility/actual first pane,
  * binding, context and observed label under the native workspace lock. No predecessor
- * liveness is required. Persist pending baselines and manual pins immediately; persist afterSuccess ONLY
+ * liveness is required. Persist manual pins immediately; persist afterSuccess ONLY
  * after verified native success (or a fresh matching-label observation for adopt).
  * A failed cache read must suspend naming, not become null.
  * A native success followed by a cache failure is partial progress: retry from a fresh
- * read/observation, never infer automatic ownership from a newly observed matching label.
+ * read/observation, preserving manual protection when a prior automatic label drifted.
  */
 export function decideName(input: NameInput): NameDecision {
-  const v = object(input, ['scope', 'provenance', 'owner', 'currentLabel', 'desiredName', 'defaultLabelProven', ...(Object.hasOwn(input, 'intent') ? ['intent'] : []), ...(Object.hasOwn(input, 'initialClaimReady') ? ['initialClaimReady'] : [])]);
+  const v = object(input, ['scope', 'provenance', 'owner', 'currentLabel', 'desiredName', 'defaultLabelProven', ...(Object.hasOwn(input, 'intent') ? ['intent'] : [])]);
   const scope = validateScope(v.scope); const owner = validateOwner(v.owner);
   const current = text(v.currentLabel, false); const desired = text(v.desiredName);
   if (typeof v.defaultLabelProven !== 'boolean') throw new Error('Invalid default-label proof');
   const prior = v.provenance === null ? null : validateProvenance(v.provenance, scope);
   if (v.intent !== undefined && v.intent !== 'automatic' && v.intent !== 'explicit') throw new Error('Invalid naming intent');
-  if (v.initialClaimReady !== undefined && typeof v.initialClaimReady !== 'boolean') throw new Error('Invalid initial naming proof');
   if (v.intent === 'explicit') {
     const afterSuccess: NameProvenance = { version: 1, scope, mode: 'auto', owner, lastApplied: desired };
     return current === desired ? { kind: 'adopt', afterSuccess } : { kind: 'rename', name: desired, afterSuccess };
   }
-  if (!prior && scope.kind === 'workspace') return { kind: 'pending', baseline: current };
-  if (prior?.mode === 'pending') {
-    if (current !== prior.baseline) return { kind: 'manual', provenance: { version: 1, scope, mode: 'manual', owner: null, lastApplied: null } };
-    if (!v.initialClaimReady) return { kind: 'not-ready' };
-    const afterSuccess: NameProvenance = { version: 1, scope, mode: 'auto', owner, lastApplied: desired };
-    return current === desired ? { kind: 'adopt', afterSuccess } : { kind: 'rename', name: desired, afterSuccess };
-  }
   if (prior?.mode === 'manual') return { kind: 'manual', provenance: prior };
+  if (!prior && current === desired) return { kind: 'adopt', afterSuccess: { version: 1, scope, mode: 'auto', owner, lastApplied: desired } };
   if (prior ? current !== prior.lastApplied : !(v.defaultLabelProven && /^\s*\d*\s*$/.test(current))) {
     const provenance: NameProvenance = prior
       ? { ...prior, mode: 'manual' }
