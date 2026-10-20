@@ -11,14 +11,14 @@ import time
 from uuid import uuid4
 
 from ..model import RecordKey, Session, Stream, text
-from ..operations import Operation, Reconciliation, reconcile
+from ..operations import Authority, Operation, Reconciliation, reconcile
 from ..storage import Snapshot, StorageError
 from ..yaml_store import YamlStore
 from .envelope import BOOTSTRAP, encode_operation
 from .git_io import Git, GitError
 from .history import History, read_history, records
-from .local import authority_for, check_producer
-from .outcomes import Result
+from .local import authority_for, check_producer, read_context_records
+from .outcomes import ReadResult, Result
 from .state import AdoptingAttempt, GitConfig, PublicationAttempt, RepairRequired, State, SyncMetadata
 from .policy import Policy, Timing
 
@@ -146,6 +146,25 @@ class GitCatalog:
             self._ready()
             return self._authorities(self._history()).get(stream_id)
 
+    def context_records(
+        self,
+        *,
+        harness: str,
+        native_id: str,
+        stream_id: str | None = None,
+        explicit_stream_id: str | None = None,
+        workspace_stream_id: str | None = None,
+        deterministic_id: str | None = None,
+    ) -> tuple[Stream | None, Session | None, tuple[Session, ...], Authority | None]:
+        with self.store.transaction() as transaction:
+            self._ready()
+            authorities = self._authorities(self._history())
+            return read_context_records(
+                transaction, host_id=self.host_id, authorities=authorities, harness=harness, native_id=native_id,
+                stream_id=stream_id, explicit_stream_id=explicit_stream_id, workspace_stream_id=workspace_stream_id,
+                deterministic_id=deterministic_id,
+            )
+
     def save(self, operation: Operation, *, origin: dict[str, str] | None = None) -> Result:
         check_producer(operation, self.host_id)
         message = encode_operation(operation, origin={"host": self.host_id, **(origin or {})})
@@ -210,7 +229,6 @@ class GitCatalog:
 
     def read(self, *, refresh: bool = False):
         """Blocking scheduled fetch and a non-publishing projection of pending intent."""
-        from .coordinator import ReadResult
         from .replay import replay
         with self.store.transaction() as transaction:
             config = self._ready()
@@ -416,6 +434,3 @@ class GitCatalog:
             except (StorageError, OSError):
                 pass
             return Result("failed", detail=str(error))
-
-    def handover(self, *args, **kwargs):
-        raise NotImplementedError("handover requires the domain publication coordinator")

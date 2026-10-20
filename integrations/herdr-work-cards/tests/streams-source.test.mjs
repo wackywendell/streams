@@ -14,7 +14,7 @@ function wire() {
     documents: [{ repository: 'main', ref: 'topic', commit: 'abc123', path: 'docs/design.md', description: 'Design' }], issues: [], prs: [] },
     native: { frontend: 'herdr', pane_id: 'w:p1', tab_id: 'w:t1', workspace_id: 'w' },
     checkouts: [{ repository: 'main', checkout_id: 'checkout-b', root: '/host/b' }],
-    document_locations: [{ repository: 'main', path: 'docs/design.md', checkout_id: 'checkout-b', root: '/host/b', file: '/host/b/docs/design.md', error: null }],
+    document_locations: [{ kind: 'local', repository: 'main', path: 'docs/design.md', checkout_id: 'checkout-b', root: '/host/b', file: '/host/b/docs/design.md', error: null }],
     session, sessions: [session, { ...session, id: 'other', harness_session_id: 'other', state: 'Private other state' }], authority: null };
 }
 function fixture(options = {}) {
@@ -83,11 +83,27 @@ test('nullable compact summaries are retained without native-side inference', as
 });
 test('app errors remain renderable; external repo root/default is consumed without native discovery', async () => {
   const { value, source } = fixture();
-  Object.assign(value.document_locations[0], { checkout_id: null, root: null, file: null, error: 'No registered checkout for main' });
+  Object.assign(value.document_locations[0], { kind: null, checkout_id: null, root: null, file: null, error: 'No registered checkout for main' });
   value.checkouts = []; assert.equal((await source.read()).documentLocations[0].error, 'No registered checkout for main');
   value.checkouts = [{ repository: 'main', checkout_id: 'external-default', root: '/external/default' }];
-  Object.assign(value.document_locations[0], { checkout_id: 'external-default', root: '/external/default', file: '/external/default/docs/design.md', error: null });
+  Object.assign(value.document_locations[0], { kind: 'local', checkout_id: 'external-default', root: '/external/default', file: '/external/default/docs/design.md', error: null });
   assert.equal((await source.read()).checkouts[0].checkout_id, 'external-default');
+});
+test('revision primary and alternates retain real checkout metadata without extracted files', async () => {
+  const { value, source } = fixture();
+  const revision = { kind: 'revision', checkout_id: 'checkout-b', root: '/host/b', file: null, revision: 'abc123' };
+  value.document_locations[0].alternates = [{ ...revision, label: 'revision abc123' }];
+  assert.deepEqual((await source.read()).documentLocations[0].alternates[0], { ...revision, label: 'revision abc123' });
+  Object.assign(value.document_locations[0], revision);
+  assert.equal((await source.read()).documentLocations[0].kind, 'revision');
+  for (const change of [{ revision: 'stale' }, { file: '/host/b/extracted.md' }, { kind: 'local' }, { checkout_id: 'checkout-b@abc123' }]) {
+    const original = structuredClone(value.document_locations[0]);
+    Object.assign(value.document_locations[0], change); await assert.rejects(source.read());
+    value.document_locations[0] = original;
+  }
+  delete value.stream.documents[0].commit;
+  value.document_locations[0].revision = value.document_locations[0].alternates[0].revision = 'topic';
+  assert.equal((await source.read()).documentLocations[0].revision, 'topic');
 });
 async function cliFixture(t) {
   const dir = await realpath(await mkdtemp(join(tmpdir(), 'streams-read-only-'))); t.after(() => rm(dir, { recursive: true, force: true }));
@@ -95,7 +111,7 @@ async function cliFixture(t) {
   await writeFile(executable, `#!${process.execPath}\nconst args = process.argv.slice(2);\nif (JSON.stringify(args) !== JSON.stringify(['agent','context','--harness','pi','--session-id','${native}','--attest','--json'])) process.exit(9);\nif (process.cwd() !== process.env.EXPECT_CWD) process.exit(10);\nif (process.env.HERDR_PANE_ID !== 'w:p1' || process.env.HERDR_TAB_ID !== 'w:t1' || process.env.HERDR_WORKSPACE_ID !== 'w') process.exit(11);\nif (process.env.DELAY) setTimeout(() => {}, 5000);\nelse { process.stdout.write(process.env.RESPONSE); process.exit(Number(process.env.EXIT_CODE || 0)); }\n`);
   await chmod(executable, 0o755);
   return extra => createStreamsContextReader({ cwd: dir, owner: wire().native, ...extra,
-    env: { PATH: dir, EXPECT_CWD: dir, RESPONSE: JSON.stringify(wire()), HERDR_PANE_ID: 'wrong-helper-pane', ...extra?.env } });
+    env: { PATH: dir, STREAMS_BIN_PATH: executable, EXPECT_CWD: dir, RESPONSE: JSON.stringify(wire()), HERDR_PANE_ID: 'wrong-helper-pane', ...extra?.env } });
 }
 test('CLI executes only bounded read-only attested context argv and exact owner env, without shell', async t => {
   const factory = await cliFixture(t); assert.equal((await factory()(native)).session.id, 'own');

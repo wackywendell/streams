@@ -6,8 +6,6 @@ import shlex
 from dataclasses import dataclass
 from enum import Enum
 
-from .errors import StreamError
-
 
 class Agent(str, Enum):
     CODEX = "codex"
@@ -40,12 +38,3 @@ class AgentSessionCommand:
     def command_text(self) -> str:
         return shlex.join(self.argv)
 
-
-def command_from_session(session: str) -> AgentSessionCommand:
-    agent, _, session_id = str(session).partition(":")
-    if not session_id:
-        raise StreamError(f"invalid session {session!r}; expected agent:id")
-    try:
-        return AgentSessionCommand(Agent(agent), session_id)
-    except ValueError as exc:
-        raise StreamError(str(exc)) from exc

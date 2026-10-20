@@ -2,28 +2,11 @@ import { runProcess } from './subprocess.js';
 import { isAbsolute } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import type { WorkCardsConfig } from '../config.js';
-import type { Pane } from './workspace-ownership.js';
+import { nativeId as id, nativeObject as object, nativePane as parsePane, nativeTokens as tokens, type Pane } from './workspace-ownership.js';
 export type Run = (argv: string[], timeoutMs: number, signal?: AbortSignal) => Promise<string>;
 export interface ClientOptions { env?: NodeJS.ProcessEnv; run?: Run; pluginRoot?: string }
+export { id, object, parsePane, tokens };
 
-export function object(value: unknown, label: string): Record<string, any> {
-  if (!value || typeof value !== 'object' || Array.isArray(value)) throw new Error(`Unexpected Herdr ${label}`);
-  return value as Record<string, any>;
-}
-export function id(value: unknown): string {
-  if (typeof value !== 'string' || !value || /[\p{Cc}\p{Cf}]/u.test(value)) throw new Error('Invalid Herdr identifier');
-  return value;
-}
-export function tokens(value: unknown): Record<string, string> {
-  if (value === undefined) return {};
-  const result = object(value, 'tokens');
-  if (Object.values(result).some(v => typeof v !== 'string')) throw new Error('Invalid Herdr tokens');
-  return result;
-}
-export function parsePane(value: unknown): Pane {
-  const p = object(value, 'pane');
-  return { pane_id: id(p.pane_id), terminal_id: id(p.terminal_id), workspace_id: id(p.workspace_id), tab_id: id(p.tab_id), tokens: tokens(p.tokens) };
-}
 export class HerdrTransport {
   readonly env: NodeJS.ProcessEnv;
   protected readonly run: Run;
@@ -46,7 +29,9 @@ export class HerdrTransport {
     if (this.env.HERDR_ENV !== '1' || !this.env.HERDR_PANE_ID || !this.env.HERDR_SOCKET_PATH) {
       throw new Error('Not in a Herdr-managed pane. Run explicit work-card open inside Herdr; GUI focus is never used.');
     }
-    return parsePane((await this.result(['pane', 'current', '--current'], config, 'pane_current', signal)).pane);
+    const p = parsePane((await this.result(['pane', 'current', '--current'], config, 'pane_current', signal)).pane);
+    delete p.label;
+    return p;
   }
   protected async socket(config: WorkCardsConfig, signal?: AbortSignal): Promise<string> {
     const response = object(JSON.parse(await this.run(['status', '--json'], config.herdr_timeout_ms, signal)), 'status');

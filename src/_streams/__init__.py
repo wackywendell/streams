@@ -1,1 +1,1 @@
-"""Scratch-first stream helpers."""
+"""Streams catalog, CLI and runtime integrations."""

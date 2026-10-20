@@ -618,7 +618,7 @@ Context preflight uses Pi's message-token estimate and rejects input above 90% o
 
 ## Evidence
 
-- [Streams format](../src/_streams/FORMAT.md): schema, intent-focused body, session ordering, and CMUX projection
+- Retired Streams format (`src/_streams/FORMAT.md` at commit `c427e579`): scratch schema, session ordering, and CMUX projection
 - [Streams reference resolution](../src/_streams/resolve.py): deterministic title and slug matching
 - [Streams creation](../src/_streams/store.py): starter note, location discovery, and returned stream
 - [Streams CLI](../src/_streams/cli.py): JSON flags, checks, and projection commands

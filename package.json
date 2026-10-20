@@ -9,6 +9,7 @@
     "extensions", "skills",
     "integrations/herdr-work-cards/package.json",
     "integrations/herdr-work-cards/dist",
+    "integrations/herdr-work-cards/src/streams-bin.ts",
     "integrations/herdr-work-cards/bin",
     "integrations/herdr-work-cards/streams-herdr-plugin.toml"
   ],
@@ -16,8 +17,7 @@
     "prepack": "npm --prefix integrations/herdr-work-cards run build"
   },
   "dependencies": {
-    "string-width": "^8.3.0",
-    "yaml": "^2.8.1"
+    "string-width": "^8.3.0"
   },
   "pi": {
     "extensions": ["./extensions/stream-checkpoint/index.ts"],

@@ -1,18 +1,9 @@
-import { existsSync } from 'node:fs';
-import { delimiter, isAbsolute, join, normalize, resolve } from 'node:path';
-import { fileURLToPath } from 'node:url';
+import { isAbsolute, normalize } from 'node:path';
+import { resolveStreamsBin } from '../streams-bin.js';
 import { runProcess } from './subprocess.js';
 import type { CardStatus } from './view.js';
 
-const PACKAGE_ROOT = resolve(fileURLToPath(new URL('../../../..', import.meta.url)));
-function resolveStreamsBin(cwd: string | undefined, env: NodeJS.ProcessEnv): string {
-  if (env.STREAMS_BIN_PATH) return env.STREAMS_BIN_PATH;
-  const first = (env.PATH ?? '').split(delimiter).filter(Boolean).map(p => join(p, 'streams')).find(existsSync);
-  const own = join(PACKAGE_ROOT, '.venv', 'bin', 'streams');
-  return cwd && resolve(cwd) !== PACKAGE_ROOT && first?.startsWith(join(resolve(cwd), '.venv') + '/') && existsSync(own) ? own : 'streams';
-}
-
-export const STREAMS_READ_ENV_KEYS = ['HOME', 'XDG_CONFIG_HOME', 'XDG_DATA_HOME', 'XDG_STATE_HOME', 'PI_CODING_AGENT_DIR', 'HERDR_BIN_PATH', 'PATH'] as const;
+export const STREAMS_READ_ENV_KEYS = ['HOME', 'XDG_CONFIG_HOME', 'XDG_DATA_HOME', 'XDG_STATE_HOME', 'PI_CODING_AGENT_DIR', 'HERDR_BIN_PATH', 'STREAMS_BIN_PATH', 'PATH'] as const;
 
 export interface StreamsCardScope {
   catalogSource: string; hostId: string; streamId: string; sessionId: string; nativeSessionId: string;
@@ -22,13 +13,14 @@ export interface StreamsDocument {
   commit?: string; source_session_id?: string;
 }
 export interface StreamsCheckoutBinding { repository: string; checkout_id: string; root: string }
-export interface StreamsDocumentAlternate {
-  kind: 'local' | 'origin' | 'revision'; label: string; checkout_id: string; root: string; file: string;
-}
-export interface StreamsDocumentLocation {
-  repository: string; path: string; checkout_id: string | null; root: string | null; file: string | null; error: string | null;
-  alternates?: readonly StreamsDocumentAlternate[];
-}
+export type StreamsDocumentDescriptor =
+  | { kind: 'local' | 'origin'; checkout_id: string; root: string; file: string; revision?: never }
+  | { kind: 'revision'; checkout_id: string; root: string; file: null; revision: string };
+export type StreamsDocumentAlternate = StreamsDocumentDescriptor & { label: string };
+export type StreamsDocumentLocation = {
+  repository: string; path: string; alternates?: readonly StreamsDocumentAlternate[];
+} & ((StreamsDocumentDescriptor & { error: null })
+  | { kind: null; checkout_id: string | null; root: string | null; file: null; revision?: never; error: string });
 export interface StreamsNativeOwner { frontend: 'herdr'; pane_id: string; tab_id: string; workspace_id: string }
 export interface StreamsStream {
   id: string; title: string; title_mode: string; goal: string | null; goal_short: string | null;
@@ -100,15 +92,17 @@ function context(value: unknown, nativeSessionId: string): StreamsCardSnapshot {
     const matches = locations.filter(l => object(l) && l.repository === doc.repository && l.path === doc.path);
     if (matches.length !== 1) throw new Error('Missing or duplicate app document location');
     const l = matches[0] as Record<string, unknown>;
-    if (!(l.checkout_id === null || identity(l.checkout_id)) || !(l.root === null || absolute(l.root))
-      || !(l.file === null || absolute(l.file)) || !(l.error === null || identity(l.error))
-      || (l.checkout_id === null) !== (l.root === null)
-      || (l.error === null ? !(identity(l.checkout_id) && absolute(l.root) && absolute(l.file)) : l.file !== null)) throw new Error('Invalid app document location');
+    const descriptor = (a: Record<string, unknown>) => identity(a.checkout_id) && absolute(a.root)
+      && (a.kind === 'revision'
+        ? a.file === null && identity(a.revision) && a.revision === (doc.commit ?? doc.ref)
+        : (a.kind === 'local' || a.kind === 'origin') && absolute(a.file) && a.revision === undefined);
+    if (l.error === null ? !descriptor(l) : !(identity(l.error) && l.kind === null && l.file === null
+      && l.revision === undefined && (l.checkout_id === null || identity(l.checkout_id))
+      && (l.root === null || absolute(l.root)) && (l.checkout_id === null) === (l.root === null))) throw new Error('Invalid app document location');
     if (l.checkout_id !== null && !checkouts.some(b => b.repository === doc.repository && b.checkout_id === l.checkout_id && b.root === l.root)) throw new Error('App document location has no matching checkout binding');
     if (l.alternates !== undefined) {
       if (!Array.isArray(l.alternates) || !l.alternates.every(a => object(a)
-        && ['local', 'origin', 'revision'].includes(String(a.kind))
-        && identity(a.label) && identity(a.checkout_id) && absolute(a.root) && absolute(a.file)
+        && descriptor(a) && identity(a.label)
         && checkouts.some(b => b.repository === doc.repository && b.checkout_id === a.checkout_id && b.root === a.root))) {
         throw new Error('Invalid app document alternate location');
       }
@@ -166,7 +160,7 @@ export function createStreamsContextReader(options: StreamsContextReaderOptions 
     if (!uuid(nativeSessionId)) throw new Error('A native Pi session UUID is required');
     let output: string;
     try {
-      output = await runProcess(resolveStreamsBin(cwd, env), ['agent', 'context', '--harness', 'pi', '--session-id', nativeSessionId, '--attest', '--json'],
+      output = await runProcess(resolveStreamsBin(env), ['agent', 'context', '--harness', 'pi', '--session-id', nativeSessionId, '--attest', '--json'],
         { cwd, env, timeoutMs, maxBuffer, signal });
     } catch (error) { throw new Error(`Streams context read failed: ${(error as Error).message}`, { cause: error }); }
     let value: unknown;

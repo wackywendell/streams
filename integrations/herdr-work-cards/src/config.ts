@@ -4,17 +4,10 @@ import { join } from 'node:path';
 
 export interface WorkCardsConfig {
   workspace_startup: 'automatic' | 'manual';
-  workspace_naming: boolean | null;
-  tab_naming: boolean | null;
-  session_naming: boolean | null;
-  model: string;
-  thinking_level: null | 'off' | 'minimal' | 'low' | 'medium' | 'high' | 'xhigh' | 'max';
-  show_refresh_spinner: boolean;
-  /** Interval of distinct projected input changes, including user and assistant text; 0 disables automatic checks. */
-  check_every_n_responses: number;
+  workspace_naming: boolean;
+  tab_naming: boolean;
+  session_naming: boolean;
   document_command: string | null;
-  max_output_tokens: number;
-  request_timeout_ms: number;
   pane_poll_interval_ms: number;
   herdr_timeout_ms: number;
   pane_height_fraction: number;
@@ -22,24 +15,14 @@ export interface WorkCardsConfig {
 
 export const DEFAULT_CONFIG: Readonly<WorkCardsConfig> = Object.freeze({
   workspace_startup: 'automatic',
-  workspace_naming: null,
-  tab_naming: null,
-  session_naming: null,
-  model: 'helpers/simple',
-  thinking_level: null,
-  show_refresh_spinner: false,
-  check_every_n_responses: 1,
+  workspace_naming: true,
+  tab_naming: true,
+  session_naming: true,
   document_command: null,
-  max_output_tokens: 2048,
-  request_timeout_ms: 30000,
   pane_poll_interval_ms: 1000,
   herdr_timeout_ms: 3000,
   pane_height_fraction: 0.2,
 });
-
-export function namingEnabled(config: WorkCardsConfig, surface: 'workspace' | 'tab' | 'session'): boolean {
-  return config[`${surface}_naming`] ?? config.workspace_startup === 'automatic';
-}
 
 function validateDocumentCommand(value: unknown, label: string): asserts value is string {
   if (typeof value !== 'string' || !value.trim() || /[\p{Cc}\p{Cf}]/u.test(value)) {
@@ -69,33 +52,19 @@ export async function loadConfig(path = configPath()): Promise<WorkCardsConfig> 
     if (!input || typeof input !== 'object' || Array.isArray(input)) throw new Error('expected a JSON object');
     for (const [key, value] of Object.entries(input)) {
       if (!Object.hasOwn(DEFAULT_CONFIG, key)) throw new Error(`unknown field ${key}`);
-      if (key === 'model') {
-        if (typeof value !== 'string' || !/^[^\s/\p{Cc}\p{Cf}]+\/[^\s\p{Cc}\p{Cf}]+$/u.test(value)) {
-          throw new Error('model must be provider/model or a configured helpers/alias');
-        }
-      } else if (key === 'workspace_startup') {
+      if (key === 'workspace_startup') {
         if (value !== 'automatic' && value !== 'manual') throw new Error('workspace_startup must be automatic or manual');
       } else if (key === 'workspace_naming' || key === 'tab_naming' || key === 'session_naming') {
-        if (value !== null && typeof value !== 'boolean') throw new Error(`${key} must be a boolean or null`);
-      } else if (key === 'show_refresh_spinner') {
-        if (typeof value !== 'boolean') throw new Error('show_refresh_spinner must be a boolean');
+        if (typeof value !== 'boolean') throw new Error(`${key} must be a boolean`);
       } else if (key === 'document_command') {
         if (value !== null) validateDocumentCommand(value, key);
-      } else if (key === 'thinking_level') {
-        if (value !== null && (typeof value !== 'string' || !['off', 'minimal', 'low', 'medium', 'high', 'xhigh', 'max'].includes(value))) {
-          throw new Error('thinking_level must be null or off, minimal, low, medium, high, xhigh, max');
-        }
       } else if (key === 'pane_height_fraction') {
         if (typeof value !== 'number' || !Number.isFinite(value) || value <= 0 || value >= 1) {
           throw new Error('pane_height_fraction must be a finite number strictly between 0 and 1');
         }
       } else {
-        const minimum = key === 'check_every_n_responses' ? 0 : 1;
-        if (typeof value !== 'number' || !Number.isSafeInteger(value) || value < minimum) {
-          throw new Error(`${key} must be an integer >= ${minimum}`);
-        }
-        if (['pane_poll_interval_ms', 'request_timeout_ms', 'herdr_timeout_ms'].includes(key) && value > 2147483647) {
-          throw new Error(`${key} must be <= 2147483647 (Node timer maximum)`);
+        if (typeof value !== 'number' || !Number.isSafeInteger(value) || value < 1 || value > 2147483647) {
+          throw new Error(`${key} must be an integer between 1 and 2147483647 (Node timer maximum)`);
         }
       }
     }

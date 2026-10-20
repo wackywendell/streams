@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from typing import Literal, Sequence
 
-ErrorKind = Literal["not-found", "ambiguous", "invalid-ref", "invalid-stream", "error"]
+ErrorKind = Literal["not-found", "ambiguous", "invalid-ref", "error"]
 
 
 class StreamError(Exception):

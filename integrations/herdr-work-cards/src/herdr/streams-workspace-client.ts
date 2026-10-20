@@ -2,10 +2,10 @@ import { randomUUID } from 'node:crypto';
 import { realpath } from 'node:fs/promises';
 import { dirname, join } from 'node:path';
 import { isDeepStrictEqual } from 'node:util';
-import { configPath, documentCommand, namingEnabled, type WorkCardsConfig } from '../config.js';
+import { configPath, documentCommand, type WorkCardsConfig } from '../config.js';
 import { decideName, NameStore, type NameProvenance } from './name-provenance.js';
 import { HerdrTransport, object, type ClientOptions } from './transport.js';
-import { classifyPair, firstPane, locateTerminal, nativePane, parseNativeSnapshot, type NativeSnapshot, type Pane, type PairState } from './workspace-ownership.js';
+import { classifyPair, firstPane, locateTerminal, nativePane, pairKeys, parseNativeSnapshot, type NativeSnapshot, type Pane, type PairState } from './workspace-ownership.js';
 import { withWorkspaceLock } from './workspace-lock.js';
 import { resolveStreamsDocument } from './streams-documents.js';
 import { STREAMS_READ_ENV_KEYS, sameStreamsScope, type StreamsCardSnapshot, type StreamsCardSource } from './streams-source.js';
@@ -15,7 +15,6 @@ import { StreamsNativeState, streamsDigest, type StreamsAttempt } from './stream
 export interface StreamsNativeContext { socket: string; paneId: string; terminalId: string; workspaceId: string; tabId: string }
 export interface StreamsWorkspaceOptions extends ClientOptions { stateDirectory?: string }
 type Source = Pick<StreamsCardSource, 'read'>;
-const pairKeys = ['strm_agent', 'strm_nonce', 'strm_pi', 'strm_card', 'strm_role', 'strm_native'];
 const tuple = (p: Pane) => [p.pane_id, p.terminal_id, p.workspace_id, p.tab_id];
 const contextTuple = (c: StreamsNativeContext) => [c.paneId, c.terminalId, c.workspaceId, c.tabId];
 const pluginId = 'streams-work-cards';
@@ -29,15 +28,6 @@ const pluginPanes = [
   { id: 'card', title: 'Streams work card', placement: 'split', command: ['node', 'dist/herdr/streams-pane.js'] },
   { id: 'document', title: 'Document', placement: 'tab', command: ['/bin/sh', 'bin/open-document.sh'] },
 ];
-/** Reuse the imported pairing algorithm with an isolated metadata namespace. */
-export function classifyStreamsPair(snapshot: NativeSnapshot, identity: string, terminal: string): PairState {
-  const normalized = { ...snapshot, panes: snapshot.panes.map(p => ({ ...p, tokens: Object.fromEntries(
-    Object.entries(p.tokens).filter(([k]) => k.startsWith('strm_')).map(([k, v]) => [k.replace(/^strm_/, 'wca_'), v])) })) };
-  const pair = classifyPair(normalized, identity, terminal);
-  if (pair.kind === 'empty') return pair;
-  return { ...pair, agent: locateTerminal(snapshot, pair.agent.terminal_id),
-    ...('card' in pair ? { card: locateTerminal(snapshot, pair.card.terminal_id) } : {}) };
-}
 interface Verified {
   saved: StreamsCardSnapshot; snapshot: NativeSnapshot; caller: Pane; owner: Pane;
   identity: string; key: string; binding: Record<string, string>; pair: PairState;
@@ -66,9 +56,9 @@ export class StreamsWorkspaceClient extends HerdrTransport {
     signal?.throwIfAborted();
     const saved = preRead ?? await source.read(signal);
     if (await this.socket(config, signal) !== context.socket) throw new Error('Native endpoint changed');
-    const current = await this.current(config, signal), snapshot = await this.snapshot(config, signal);
+    const snapshot = await this.snapshot(config, signal);
     const caller = locateTerminal(snapshot, context.terminalId);
-    if (!isDeepStrictEqual(tuple(caller), contextTuple(context)) || !isDeepStrictEqual(tuple(current), tuple(caller))
+    if (!isDeepStrictEqual(tuple(caller), contextTuple(context))
       || caller.pane_id !== this.env.HERDR_PANE_ID) throw new Error('Caller native tuple moved or changed');
     const owner = snapshot.panes.find(p => p.pane_id === saved.native.pane_id);
     if (!owner || owner.tab_id !== saved.native.tab_id || owner.workspace_id !== saved.native.workspace_id
@@ -82,7 +72,7 @@ export class StreamsWorkspaceClient extends HerdrTransport {
     this.owners.set(context, { scope: { ...saved.scope }, tuple: tuple(owner), binding: workspace.tokens.strm_binding });
     const marked = Object.keys(workspace.tokens).some(k => k.startsWith('strm_'));
     if (marked && (!workspace.tokens.strm_binding || Object.entries(binding).some(([k, v]) => workspace.tokens[k] !== v))) throw new Error('Conflicting native Stream workspace binding');
-    const pair = classifyStreamsPair(snapshot, identity, owner.terminal_id);
+    const pair = classifyPair(snapshot, identity, owner.terminal_id);
     if (pair.kind !== 'empty' && (!isDeepStrictEqual(tuple(pair.agent), tuple(owner)) || pair.agent.tokens.strm_native !== saved.scope.nativeSessionId)) throw new Error('Native Pi UUID or owner tuple mismatch');
     if (caller.terminal_id !== owner.terminal_id && (pair.kind !== 'paired' || pair.card.terminal_id !== caller.terminal_id
       || pair.nonce !== this.env.STREAMS_CARDS_NONCE || pair.card.tokens.strm_native !== saved.scope.nativeSessionId
@@ -104,7 +94,11 @@ export class StreamsWorkspaceClient extends HerdrTransport {
         && !v.snapshot.panes.some(p => p.terminal_id === attempt.terminalId || p.pane_id === attempt.paneId)) {
         return { ...attempt, phase: 'closed' };
       }
-      throw new Error('Uncertain Streams launch retained; inspect native launch evidence before retrying');
+      if (v.pair.kind !== 'paired' || v.pair.nonce !== attempt.nonce || v.pair.card.pane_id !== attempt.paneId
+        || v.pair.card.terminal_id !== attempt.terminalId || v.pair.card.tab_id !== attempt.tabId) {
+        throw new Error('Uncertain Streams launch retained; inspect native launch evidence before retrying');
+      }
+      return { ...attempt, phase: 'ready' };
     }
     if (attempt && v.pair.kind === 'empty' && v.snapshot.panes.some(p => p.terminal_id === attempt.terminalId || p.pane_id === attempt.paneId)) throw new Error('Recorded card is still live without verified ownership; no duplicate or cleanup permitted');
     if (v.pair.kind !== 'empty' && (!attempt || v.pair.nonce !== attempt.nonce || v.pair.agent.tokens.strm_card !== attempt.terminalId
@@ -128,7 +122,6 @@ export class StreamsWorkspaceClient extends HerdrTransport {
     }
     if (v.caller.terminal_id !== v.owner.terminal_id) throw new Error('Only the attested Pi owner may initialize projections');
     if (pairKeys.some(k => Object.hasOwn(v.owner.tokens, k))) throw new Error('Incomplete Streams owner markers');
-    if (Object.keys(v.owner.tokens).some(k => k.startsWith('wca_'))) throw new Error('Legacy publisher owns this pane; no Streams adoption');
     await this.evidence(v, context);
     if (v.snapshot.workspaces.find(w => w.workspace_id === context.workspaceId)!.tokens.strm_binding) this.bound(v, context);
     return v;
@@ -184,10 +177,12 @@ export class StreamsWorkspaceClient extends HerdrTransport {
     if (!card || card.tab_id !== owner.tab_id || card.workspace_id !== owner.workspace_id) return null;
     const markers = { strm_agent: identity, strm_nonce: attempt.nonce, strm_pi: owner.terminal_id, strm_card: card.terminal_id, strm_native: saved.scope.nativeSessionId };
     const expectedCard: Record<string, string> = { ...markers, strm_role: 'card' };
-    if (pairKeys.some(k => card.tokens[k] !== expectedCard[k])) return null;
+    const cardStamped = pairKeys.every(k => card.tokens[k] === expectedCard[k]);
+    if (!cardStamped && pairKeys.some(k => Object.hasOwn(card.tokens, k))) return null;
     if (snapshot.panes.some(p => p !== card && (p.tokens.strm_agent === identity || p.tokens.strm_pi === owner.terminal_id))) return null;
     const workspace = snapshot.workspaces.find(w => w.workspace_id === context.workspaceId)!;
     this.owners.set(context, { scope: { ...saved.scope }, tuple: tuple(owner), binding: workspace.tokens.strm_binding });
+    if (!cardStamped) await this.stampReserved(source, context, card, expectedCard, config, signal);
     await this.stampReserved(source, context, owner, { ...markers, strm_role: 'agent' }, config, signal);
     const v = await this.guard(source, context, config, signal);
     if (v.pair.kind !== 'paired' || v.pair.nonce !== attempt.nonce) throw new Error('Recovered pair did not round-trip; evidence retained');
@@ -203,23 +198,23 @@ export class StreamsWorkspaceClient extends HerdrTransport {
     }
     if (observed) {
       if (observed.caller.terminal_id !== observed.owner.terminal_id) throw new Error('Only the attested Pi owner may open a display');
-      const attempt = await this.evidence(observed, context);
-      if (observed.pair.kind === 'paired') { this.bound(observed, context); return observed.pair; }
-      if (mode === 'automatic' && (attempt || observed.pair.kind === 'absent')) return { kind: 'suppressed' };
+      const record = await this.state(context).read(observed.key);
+      if (record?.phase !== 'pending') {
+        const attempt = await this.evidence(observed, context);
+        if (observed.pair.kind === 'paired') { this.bound(observed, context); return observed.pair; }
+        if (mode === 'automatic' && (attempt || observed.pair.kind === 'absent')) return { kind: 'suppressed' };
+      }
     }
     return withWorkspaceLock(context.socket, context.workspaceId, async () => {
-      if (!observed) {
-        const recovered = await this.recoverHalfStamped(source, context, config, signal);
-        if (recovered) return recovered;
-      }
+      const recovered = await this.recoverHalfStamped(source, context, config, signal);
+      if (recovered) return recovered;
       let v = await this.guard(source, context, config, signal);
       if (v.caller.terminal_id !== v.owner.terminal_id) throw new Error('Only the attested Pi owner may open a display');
       const state = this.state(context), attempt = await this.evidence(v, context);
-      if (v.pair.kind === 'paired') { this.bound(v, context); return v.pair; }
+      if (v.pair.kind === 'paired') { this.bound(v, context); await state.write(attempt!); return v.pair; }
       if (v.pair.kind === 'separated') throw new Error('Owned card moved; no resource was closed or replaced');
       if (mode === 'automatic' && (attempt || v.pair.kind === 'absent')) return { kind: 'suppressed' };
       if (v.pair.kind === 'empty' && pairKeys.some(k => Object.hasOwn(v.owner.tokens, k))) throw new Error('Incomplete Streams owner markers');
-      if (Object.keys(v.owner.tokens).some(k => k.startsWith('wca_'))) throw new Error('Legacy publisher owns this pane; no Streams adoption');
       const linked = await this.ensureStreamsPlugin(config, () => this.guard(source, context, config, signal), signal);
       if (linked) v = await this.guard(source, context, config, signal);
       const workspace = v.snapshot.workspaces.find(w => w.workspace_id === context.workspaceId)!;
@@ -336,8 +331,8 @@ export class StreamsWorkspaceClient extends HerdrTransport {
   private summaryChanges(v: Verified, context: StreamsNativeContext, kind: 'workspace' | 'pane') {
     const target = kind === 'pane' ? v.owner : v.snapshot.workspaces.find(w => w.workspace_id === context.workspaceId)!;
     // Full narratives remain in the catalog/card, never in bounded native tokens.
-    const values = kind === 'pane' ? { strm_status: v.saved.session.status, strm_now: null, strm_state_short: compactToken(v.saved.session.state_short) }
-      : { strm_goal: null, strm_goal_short: compactToken(v.saved.stream.goal_short) };
+    const values = kind === 'pane' ? { strm_status: v.saved.session.status, strm_state_short: compactToken(v.saved.session.state_short) }
+      : { strm_goal_short: compactToken(v.saved.stream.goal_short) };
     return Object.fromEntries(Object.entries(values).filter(([k, value]) => (target.tokens[k] ?? null) !== value));
   }
   async projectSummaries(source: Source, context: StreamsNativeContext, config: WorkCardsConfig, signal?: AbortSignal): Promise<void> {
@@ -388,13 +383,13 @@ export class StreamsWorkspaceClient extends HerdrTransport {
   }
   private async unchangedNames(source: Source, context: StreamsNativeContext, config: WorkCardsConfig, signal?: AbortSignal): Promise<Record<'workspace' | 'tab', string> | null> {
     const result = { workspace: 'disabled', tab: 'disabled' };
-    if (!namingEnabled(config, 'workspace') && !namingEnabled(config, 'tab')) return result;
+    if (!config.workspace_naming && !config.tab_naming) return result;
     const v = await this.observeProjection(source, context, config, signal);
     if (v.caller.terminal_id !== v.owner.terminal_id) throw new Error('Only owning Pi may name agent surfaces');
     if (!v.snapshot.workspaces.find(w => w.workspace_id === context.workspaceId)!.tokens.strm_binding) return null;
     const names = new NameStore(this.state(context).directory);
     for (const kind of ['workspace', 'tab'] as const) {
-      if (!namingEnabled(config, kind)) continue;
+      if (!config[`${kind}_naming`]) continue;
       if (kind === 'tab' && !firstPane(v.snapshot, v.owner)) { result[kind] = 'not-first'; continue; }
       const surface = kind === 'workspace' ? v.snapshot.workspaces.find(w => w.workspace_id === context.workspaceId)! : v.snapshot.tabs.find(t => t.tab_id === context.tabId)!;
       const desired = this.title(kind === 'workspace' ? v.saved.stream.title : v.saved.session.title);
@@ -418,7 +413,7 @@ export class StreamsWorkspaceClient extends HerdrTransport {
       const result = { workspace: 'disabled', tab: 'disabled' };
       for (const kind of ['workspace', 'tab'] as const) {
         const kindIntent: 'automatic' | 'explicit' = intent === 'explicit' || (intent === 'explicit-workspace' && kind === 'workspace') || (intent === 'explicit-tab' && kind === 'tab') ? 'explicit' : 'automatic';
-        if (kindIntent === 'automatic' && !namingEnabled(config, kind)) continue;
+        if (kindIntent === 'automatic' && !config[`${kind}_naming`]) continue;
         const read = async () => {
           const v = await this.projectionProof(source, context, config, signal);
           if (v.caller.terminal_id !== v.owner.terminal_id) throw new Error('Only owning Pi may name agent surfaces');
@@ -465,7 +460,7 @@ export class StreamsWorkspaceClient extends HerdrTransport {
       const verify = async () => {
         const v = await this.marked(source, context, config, signal);
         if (v.pair.kind !== 'paired' || !sameStreamsScope(v.saved.scope, painted.scope)) throw new Error('Document viewing scope/card changed');
-        return { v, resolved: await resolveStreamsDocument(v.saved, target) };
+        return { v, resolved: await resolveStreamsDocument(v.saved, target, { env: this.env, signal }) };
       };
       let current = await verify();
       const key = current.resolved.key, state = this.state(context), evidenceKey = streamsDigest([context.socket, context.workspaceId, 'editor', key]);
@@ -514,7 +509,7 @@ export class StreamsWorkspaceClient extends HerdrTransport {
       await this.stamp(source, context, pane, { strm_doc: key, strm_editor: nonce, strm_doc_pane: pane.pane_id, strm_doc_terminal: pane.terminal_id, strm_doc_tab: pane.tab_id }, config, signal, after.v.saved);
       await state.write({ version: 1, key: evidenceKey, phase: 'ready', nonce, paneId: pane.pane_id, terminalId: pane.terminal_id, tabId: pane.tab_id });
       // Only this exact editor lifetime may establish its naming provenance.
-      if (namingEnabled(config, 'tab')) {
+      if (config.tab_naming) {
         const read = async () => {
           const fresh = await verify(), p = matching(fresh.v);
           if (!p || p.tokens.strm_editor !== nonce || !isDeepStrictEqual(tuple(p), tuple(pane))) throw new Error('Editor naming tuple changed');

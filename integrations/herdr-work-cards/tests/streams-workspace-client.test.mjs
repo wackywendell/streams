@@ -3,7 +3,7 @@ import assert from 'node:assert/strict';
 import { mkdtemp, mkdir, writeFile, realpath, rm, readdir, readFile } from 'node:fs/promises';
 import { join } from 'node:path';
 import { tmpdir } from 'node:os';
-import { StreamsWorkspaceClient, classifyStreamsPair } from '../dist/herdr/streams-workspace-client.js';
+import { StreamsWorkspaceClient } from '../dist/herdr/streams-workspace-client.js';
 import { StreamsCardSource } from '../dist/herdr/streams-source.js';
 import { renderStreamsCard } from '../dist/herdr/streams-view.js';
 import { NameStore } from '../dist/herdr/name-provenance.js';
@@ -27,7 +27,7 @@ async function fixture(t) {
       stream: { id: 'shared', title: 'Shared stream', title_mode: 'manual', goal: 'Shared purpose', goal_short: 'Shared',
         repositories: { main: { url: 'https://example.com/repo' } }, documents: [{ repository: 'main', path: 'docs/design.md', ref: 'recovery', commit: 'abcdef012345', description: 'Design' }], issues: [], prs: [] },
       checkouts: [{ repository: 'main', checkout_id: `checkout-${n}`, root: checkout }],
-      document_locations: [{ repository: 'main', path: 'docs/design.md', checkout_id: `checkout-${n}`, root: checkout, file: join(checkout, 'docs/design.md'), error: null }],
+      document_locations: [{ kind: 'local', repository: 'main', path: 'docs/design.md', checkout_id: `checkout-${n}`, root: checkout, file: join(checkout, 'docs/design.md'), error: null }],
     });
   }
   contexts[0].sessions.push(contexts[1].session); contexts[1].sessions.push(contexts[0].session);
@@ -129,13 +129,11 @@ test('absent compact summaries leave full narratives in the card and do not bloc
   assert.equal((await a.s.read()).session.state, 'Own progress 1');
   assert.equal((await a.c.projectNames(a.s, a.context, config)).tab, 'renamed');
 });
-test('long full narratives clear obsolete tokens without altering catalog text or replacing compact summaries', async t => {
+test('long full narratives stay in the catalog without replacing compact summaries', async t => {
   const f = await fixture(t), a = await f.owner(1);
   await a.c.projectSummaries(a.s, a.context, config);
   f.contexts[0].stream.goal = 'Full shared goal\n'.repeat(20);
   f.contexts[0].session.state = 'Full own progress\n'.repeat(20);
-  f.workspaces[0].tokens.strm_goal = 'Old truncated goal';
-  f.panes[0].tokens.strm_now = 'Old truncated progress';
   const before = structuredClone(f.contexts);
   await a.c.projectSummaries(a.s, a.context, config);
   assert.ok(!Object.hasOwn(f.workspaces[0].tokens, 'strm_goal'));
@@ -176,8 +174,8 @@ for (const missing of [null, '']) test(`empty summaries clear native tokens and 
   await a.c.projectSummaries(a.s, a.context, config);
   f.contexts[0].stream.goal = f.contexts[0].session.state = '';
   f.contexts[0].stream.goal_short = f.contexts[0].session.state_short = missing;
-  Object.assign(f.workspaces[0].tokens, { strm_goal: 'Old goal', strm_goal_short: 'Old compact goal' });
-  Object.assign(f.panes[0].tokens, { strm_now: 'Old progress', strm_state_short: 'Old compact progress' });
+  f.workspaces[0].tokens.strm_goal_short = 'Old compact goal';
+  f.panes[0].tokens.strm_state_short = 'Old compact progress';
   await a.c.projectSummaries(a.s, a.context, config);
   for (const key of ['strm_goal', 'strm_goal_short']) assert.ok(!Object.hasOwn(f.workspaces[0].tokens, key));
   for (const key of ['strm_now', 'strm_state_short']) assert.ok(!Object.hasOwn(f.panes[0].tokens, key));
@@ -186,10 +184,9 @@ for (const missing of [null, '']) test(`empty summaries clear native tokens and 
   await a.c.projectSummaries(a.s, a.context, config);
   assert.equal(effects(f).length, before);
 });
-for (const change of ['partial', 'legacy', 'pending', 'live-unowned', 'conflicting-binding', 'binding-save']) test(`empty-pair projections fail closed on ${change}`, async t => {
+for (const change of ['partial', 'pending', 'live-unowned', 'conflicting-binding', 'binding-save']) test(`empty-pair projections fail closed on ${change}`, async t => {
   const f = await fixture(t), a = await f.owner(1);
   if (change === 'partial') f.panes[0].tokens.strm_nonce = 'partial';
-  if (change === 'legacy') f.panes[0].tokens.wca_agent = 'legacy';
   if (change === 'conflicting-binding') f.workspaces[0].tokens = { strm_binding: 'wrong', strm_stream: 'foreign' };
   if (change === 'pending' || change === 'live-unowned') {
     const saved = await a.s.read(), p = f.panes[0], key = streamsDigest([f.socket, saved.scope, [p.pane_id, p.terminal_id, p.workspace_id, p.tab_id]]);
@@ -240,15 +237,14 @@ test('external card close also suppresses automatic reopening; no requirement to
   const f = await fixture(t), a = await f.owner(1), pair = await a.open(); f.panes.splice(f.panes.findIndex(p => p.terminal_id === pair.card.terminal_id), 1);
   assert.equal((await (await f.owner(1)).open()).kind, 'suppressed');
 });
-for (const failure of ['timeout', 'malformed', 'replayed', 'persist']) test(`uncertain ${failure} launch retains evidence and blocks duplicates even explicit after reload`, async t => {
-  const f = await fixture(t), a = await f.owner(1), original = StreamsNativeState.prototype.write;
-  if (failure === 'persist') StreamsNativeState.prototype.write = async function(value) { if (value.phase === 'ready') throw Error('post-launch persistence unavailable'); return original.call(this, value); };
-  else f.hook((args, output) => {
+for (const failure of ['timeout', 'malformed', 'replayed']) test(`uncertain ${failure} launch retains evidence and blocks duplicates even explicit after reload`, async t => {
+  const f = await fixture(t), a = await f.owner(1);
+  f.hook((args, output) => {
     if (args[0] !== 'plugin' || args[2] !== 'open') return output;
     if (failure === 'timeout') throw Error('timeout after launch'); if (failure === 'malformed') return '{';
     const response = JSON.parse(output); response.result.plugin_pane.pane = f.panes[0]; return JSON.stringify(response);
   });
-  try { await assert.rejects(a.open()); } finally { StreamsNativeState.prototype.write = original; }
+  await assert.rejects(a.open());
   f.hook(undefined); const reloaded = await f.owner(1);
   await assert.rejects(reloaded.open('explicit'), /Uncertain/); assert.equal(launches(f).length, 1); assert.ok(!f.calls.some(a => a[2] === 'close'));
 });
@@ -309,7 +305,8 @@ test('cancellation inside absent marker guard restores prior closed proof withou
   const write = StreamsNativeState.prototype.write, read = a.s.read.bind(a.s), before = effects(f).length;
   let reserved = false, pending, previous;
   StreamsNativeState.prototype.write = async function(value) {
-    previous = await this.read(value.key); await write.call(this, value); pending = value; reserved = true;
+    if (value.phase === 'pending') { previous = await this.read(value.key); pending = value; }
+    await write.call(this, value); reserved = true;
   };
   a.s.read = async signal => { if (reserved) { controller.abort(); signal.throwIfAborted(); } return read(signal); };
   try { await assert.rejects(a.open('explicit', controller.signal), /abort/i); }
@@ -343,7 +340,7 @@ test('unlaunched rollback refuses another nonce and retains the uncertainty gate
   const f = await fixture(t), state = new StreamsNativeState(f.stateDirectory), key = streamsDigest('rollback');
   const pending = { version:1, key, phase:'pending', nonce:'current' }; await state.write(pending);
   await assert.rejects(state.discardUnlaunched({ ...pending, nonce:'old' }, null), /reservation changed/);
-  assert.deepEqual(await state.read(key), pending); assert.ok((await readdir(f.stateDirectory)).includes(`${key}.json.pending`));
+  assert.deepEqual(await state.read(key), pending); assert.deepEqual(await readdir(f.stateDirectory), [`${key}.json`]);
 });
 test('wrong/disabled registration requires explicit link; never repoints legacy registration', async t => {
   const f = await fixture(t), a = await f.owner(1); f.registration({ ...f.plugin(), plugin_id: 'work-cards' });
@@ -425,12 +422,8 @@ test('missing document or app error never launches editor nor alters shared refe
   const f = await fixture(t), a = await f.owner(1); await a.open(); const before = JSON.stringify(f.contexts[0].stream);
   await rm(f.contexts[0].document_locations[0].file); let snapshot = await a.s.read(), target = renderStreamsCard(snapshot, 100, 10).documents.get('a');
   await assert.rejects(a.c.openDocument(a.s, a.context, snapshot, target, config), /not present/);
-  Object.assign(f.contexts[0].document_locations[0], { file: null, error: 'Registry mapping unavailable' }); snapshot = await a.s.read(); target = renderStreamsCard(snapshot, 100, 10).documents.get('a');
+  Object.assign(f.contexts[0].document_locations[0], { kind: null, file: null, error: 'Registry mapping unavailable' }); snapshot = await a.s.read(); target = renderStreamsCard(snapshot, 100, 10).documents.get('a');
   await assert.rejects(a.c.openDocument(a.s, a.context, snapshot, target, config), /Registry mapping unavailable/); assert.equal(JSON.stringify(f.contexts[0].stream), before); assert.equal(launches(f).length, 1);
-});
-test('unverified legacy tokens cannot masquerade as Streams pairing', async t => {
-  const f = await fixture(t), a = await f.owner(1); f.panes[0].tokens = { wca_agent: 'legacy', wca_nonce: 'old', wca_pi: 'term1', wca_card: 'term3', wca_role: 'agent' };
-  assert.equal(classifyStreamsPair(f.snapshot(), 'identity', 'term1').kind, 'empty'); await assert.rejects(a.open(), /Legacy publisher/); assert.equal(launches(f).length, 0);
 });
 for (const change of ['owner', 'card', 'binding', 'nonce', 'duplicate', 'scope', 'cancel']) test(`reserved pair rejects late ${change} change without stamping owner or closing anything`, async t => {
   const f = await fixture(t), a = await f.owner(1), controller = new AbortController();
@@ -510,7 +503,7 @@ test('a narrative progress edit during native snapshot revalidation succeeds whi
   await assert.rejects(a.c.projectSummaries(a.s, a.context, config), /context changed/);
   assert.equal(effects(f).length, before);
 });
-test('openDisplay resizes split immediately after launch and absent pair reconciles a stale pending gate', async t => {
+test('openDisplay resizes split immediately after launch and absent pair reconciles a stale pending record', async t => {
   const f = await fixture(t), a = await f.owner(1), pair = await a.open();
   const openIdx = f.calls.findIndex(args => args[0] === 'plugin' && args[2] === 'open');
   const resizeIdx = f.calls.findIndex(args => args[0] === 'pane' && args[1] === 'resize');
@@ -525,6 +518,26 @@ test('openDisplay resizes split immediately after launch and absent pair reconci
   assert.equal((await a.open('automatic')).kind, 'suppressed');
   assert.equal((await a.open('explicit')).kind, 'paired');
   assert.ok(!(await readdir(f.stateDirectory)).includes(`${key}.json.pending`));
+});
+for (const interruption of ['before-stamping', 'before-ready']) test(`openDisplay reconciles an exact reservation ${interruption} without duplicating the launch`, async t => {
+  const f = await fixture(t), a = await f.owner(1), write = StreamsNativeState.prototype.write;
+  if (interruption === 'before-ready') {
+    StreamsNativeState.prototype.write = async function(value) {
+      if (value.phase === 'ready') throw Error('ready persistence unavailable');
+      return write.call(this, value);
+    };
+  } else f.hook((args, output) => {
+    if (args[0] === 'pane' && args[1] === 'resize') throw Error('resize acknowledgement lost');
+    return output;
+  });
+  try { await assert.rejects(a.open()); } finally { StreamsNativeState.prototype.write = write; f.hook(undefined); }
+  assert.equal(launches(f).length, 1);
+  assert.equal((await (await f.owner(1)).open('automatic')).kind, 'paired');
+  assert.equal(launches(f).length, 1);
+  const state = new StreamsNativeState(f.stateDirectory);
+  const records = (await readdir(f.stateDirectory)).filter(name => name.endsWith('.json'));
+  assert.equal(records.length, 1);
+  assert.equal((await state.read(records[0].slice(0, -5))).phase, 'ready');
 });
 test('openDisplay self-heals a half-stamped reserved pair without launching a duplicate card', async t => {
   const f = await fixture(t), a = await f.owner(1), controller = new AbortController();

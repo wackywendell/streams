@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import json
-import os
 import subprocess
 import sys
 from dataclasses import dataclass
@@ -19,27 +18,6 @@ class CmuxWorkspace:
     @property
     def id(self) -> str:
         return str(self.raw.get("id") or "")
-
-    @property
-    def ref(self) -> str:
-        return str(self.raw.get("ref") or "")
-
-    @property
-    def title(self) -> str:
-        return str(self.raw.get("title") or "")
-
-    @property
-    def index(self) -> int | None:
-        value = self.raw.get("index")
-        return value if isinstance(value, int) else None
-
-    @property
-    def current_directory(self) -> str:
-        return str(self.raw.get("current_directory") or "")
-
-    @property
-    def display_ref(self) -> str:
-        return self.ref or self.id or "<unknown>"
 
 
 class CmuxClient:
@@ -68,25 +46,3 @@ class CmuxClient:
             raise StreamError("cmux rpc workspace.list returned an unexpected shape")
         return [CmuxWorkspace(dict(workspace)) for workspace in data["workspaces"] if isinstance(workspace, dict)]
 
-    def current_workspace_ref(self) -> str:
-        if workspace_id := os.environ.get("CMUX_WORKSPACE_ID"):
-            return workspace_id
-        raise StreamError("current CMUX targeting requires caller context; pass --workspace outside CMUX")
-
-    def resolve_workspace(self, selector: str | None) -> CmuxWorkspace:
-        current = selector is None
-        if current:
-            selector = self.current_workspace_ref()
-        elif not selector:
-            raise StreamError("CMUX workspace selector must be nonempty")
-        matches = [
-            workspace
-            for workspace in self.workspaces()
-            if selector in {workspace.ref, workspace.id} or (not current and selector == workspace.title)
-        ]
-        if not matches:
-            raise StreamError(f"could not find CMUX workspace {selector!r}")
-        if len(matches) > 1:
-            choices = ", ".join(f"{item.display_ref} {item.title}" for item in matches)
-            raise StreamError(f"CMUX workspace {selector!r} is ambiguous: {choices}")
-        return matches[0]

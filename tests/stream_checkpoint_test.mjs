@@ -13,7 +13,7 @@ const { StreamCli, StreamsCliError, receiptText } = await load('streams');
 const { automaticFields, editRequest, FieldEdit } = await load('core');
 const { checkpointContext, infer, changesSchema } = await load('agent');
 const { chooseInitial } = await load('chooser');
-const { openCard, cardSummary, compose, editField } = await load('panel');
+const { openCard, compose, editField } = await load('panel');
 const { validateReferences, validateChanges } = await load('core');
 const { ModelRuntime, ModelRegistry, SessionManager, initTheme } = await import('@earendil-works/pi-coding-agent');
 initTheme('dark');
@@ -336,7 +336,7 @@ test('bound chooser never lists or switches, and live card offers no switch/crea
  assert.match((await chooseInitial(ctx,cli,{title:'Another'},()=>assert.fail())).status,/already-bound/);
  await openCard(ctx,cli,{discussion:{input:'',messages:[]},edits:new Map()},{receipt:()=>{},discuss:()=>assert.fail(),settings:()=>assert.fail(),report:()=>assert.fail()});
  assert.ok(calls[0].rows.includes('Finish this session'));assert.ok(calls[0].rows.includes('Finish whole effort'));
- assert.ok(calls[0].rows.every(row=>! /switch|create|attach/i.test(row)));assert.match(cardSummary(context()),/owner: host/);
+ assert.ok(calls[0].rows.every(row=>! /switch|create|attach/i.test(row)));
 });
 for(const intent of ['reply','automatic','user'])test(`card discussion ${intent} has typed intent and no redundant confirmation`,async()=>{
  const handlers=new Map(),receipts=[],writes=[],history=[];let openPanel,submitted=false;const menu=['Discuss live card','Close'];

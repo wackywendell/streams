@@ -3,10 +3,23 @@
 from dataclasses import dataclass
 from typing import Literal
 
+from ..model import Catalog
 from ..operations import Reconciliation
+from ..storage import Snapshot
 
 LocalStatus = Literal["unchanged", "persisted", "committed", "repair-required"]
 SharingStatus = Literal["local-only", "pending", "confirmed", "blocked", "failed", "uncertain"]
+
+
+@dataclass(frozen=True)
+class ReadResult:
+    catalog: Catalog
+    local: Snapshot
+    confirmed: Snapshot | None
+    freshness: Literal["local-only", "cached", "refreshed", "failed"]
+    fetched_at: float | None = None
+    conflicts: tuple[dict, ...] = ()
+    detail: str = ""
 
 
 @dataclass(frozen=True)

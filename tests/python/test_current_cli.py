@@ -80,7 +80,7 @@ class CurrentCliTest(unittest.TestCase):
         self.assertEqual(self.cli("init", "--sync", "none")[0], 0)
         self.herdr = self.enterContext(patch("_streams.catalog_runtime.HerdrClient")).return_value
         self.herdr.endpoint.return_value = HerdrEndpoint("/actual/herdr.sock", None)
-        self.herdr.resolve_workspace.return_value = HerdrWorkspace("live-workspace", "Stale title", str(self.root))
+        self.herdr.resolve_workspace.return_value = HerdrWorkspace("live-workspace", "Stale title")
         self.herdr.current_pane.return_value = HerdrPane("live-pane", "live-tab", "live-workspace", str(self.root))
         self.herdr.command_result.side_effect = lambda args, kind: {'snapshot': {
             'workspaces': [{'workspace_id': 'live-workspace'}],

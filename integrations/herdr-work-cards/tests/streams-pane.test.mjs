@@ -25,7 +25,7 @@ test('pane reads the attested exact launcher owner, not its own card pane or cwd
   const executable = join(root, 'streams');
   await writeFile(executable, `#!${process.execPath}\nif (process.env.HERDR_PANE_ID !== 'w:p1' || process.env.HERDR_TAB_ID !== 'w:t1' || process.env.HERDR_WORKSPACE_ID !== 'w' || !process.argv.includes('--attest')) process.exit(10);\nprocess.stdout.write(process.env.RESPONSE);\n`);
   await chmod(executable, 0o755);
-  const env = { ...launcher, HERDR_PANE_ID: 'w:card', HERDR_TAB_ID: 'wrong-helper-tab', PATH: root, STREAMS_CARDS_READ_ENV: JSON.stringify({ PATH: root }), RESPONSE: JSON.stringify(wire) };
+  const env = { ...launcher, HERDR_PANE_ID: 'w:card', HERDR_TAB_ID: 'wrong-helper-tab', PATH: root, STREAMS_CARDS_READ_ENV: JSON.stringify({ PATH: root, STREAMS_BIN_PATH: executable }), RESPONSE: JSON.stringify(wire) };
   assert.deepEqual((await streamsPaneSource(env).read()).scope, scope);
   await assert.rejects(streamsPaneSource({ ...env, RESPONSE: JSON.stringify({ ...wire, catalog_source: 'changed-before-first-read' }) }).read(), /scope changed/);
   await assert.rejects(streamsPaneSource({ ...env, RESPONSE: JSON.stringify({ ...wire, native: { ...owner, pane_id: 'helper' } }) }).read(), /exact requested owner/);
@@ -36,7 +36,7 @@ for (const captured of [undefined, '{', 'null', '[]', '42', '{"HOME":null}', '{"
 test('pane CLI uses owner selector snapshot and removes stale server selectors', async t => {
   const root = await realpath(await mkdtemp(join(tmpdir(), 'streams-pane-env-'))); t.after(() => rm(root, { recursive: true, force: true }));
   const executable = join(root, 'streams');
-  const captured = { HOME: '/owner/home', XDG_CONFIG_HOME: '/owner/config', XDG_DATA_HOME: '', PI_CODING_AGENT_DIR: '/owner/pi', HERDR_BIN_PATH: '/owner/herdr', PATH: root };
+  const captured = { HOME: '/owner/home', XDG_CONFIG_HOME: '/owner/config', XDG_DATA_HOME: '', PI_CODING_AGENT_DIR: '/owner/pi', HERDR_BIN_PATH: '/owner/herdr', STREAMS_BIN_PATH: executable, PATH: root };
   await writeFile(executable, `#!${process.execPath}\nimport assert from 'node:assert/strict';\nconst expected = ${JSON.stringify(captured)}; for (const [key, value] of Object.entries(expected)) assert.equal(process.env[key], value);\nassert.equal(process.env.XDG_STATE_HOME, undefined);\nassert.equal(process.env.HERDR_SOCKET_PATH, '/pinned/socket');\nassert.equal(process.env.STREAMS_CARDS_NONCE, 'nonce');\nassert.equal(process.env.HERDR_PANE_ID, 'w:p1');\nprocess.stdout.write(process.env.RESPONSE);\n`);
   await chmod(executable, 0o755);
   const env = { ...launcher, HOME: '/server/home', XDG_CONFIG_HOME: '/server/config', XDG_STATE_HOME: '/server/state', PI_CODING_AGENT_DIR: '/server/pi', PATH: '/server/bin', HERDR_BIN_PATH: '/server/herdr', HERDR_SOCKET_PATH: '/pinned/socket',
@@ -117,7 +117,7 @@ for (const stage of ['idle', 'refresh', 'bootstrap', 'verify', 'caption', 'docum
       goal: 'Unicode 界😀é content wrapping and grid reflow '.repeat(4), repositories: { lib: { url: 'https://example.com/lib' } },
       documents: [{ repository: 'lib', ref: 'topic', path: 'docs/design.md', description: '' }] },
       session: ${JSON.stringify(session)}, native: ${JSON.stringify(owner)}, checkouts: [{ repository: 'lib', checkout_id: 'lib', root: '/code/lib' }],
-      documentLocations: [{ repository: 'lib', path: 'docs/design.md', checkout_id: 'lib', root: '/code/lib', file: '/code/lib/docs/design.md', error: null }] };
+      documentLocations: [{ kind: 'local', repository: 'lib', path: 'docs/design.md', checkout_id: 'lib', root: '/code/lib', file: '/code/lib/docs/design.md', error: null }] };
     const context = { socket: '/test/socket', paneId: 'w:p2', terminalId: 'term2', workspaceId: 'w', tabId: 'w:t1' };
     async function operation(name, result) {
       calls.push(name); maxActive = Math.max(maxActive, ++active);

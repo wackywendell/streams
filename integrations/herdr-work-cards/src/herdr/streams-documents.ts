@@ -2,6 +2,8 @@ import { createHash } from 'node:crypto';
 import { realpath, stat } from 'node:fs/promises';
 import { isAbsolute, normalize, relative, resolve, sep } from 'node:path';
 import { isDeepStrictEqual } from 'node:util';
+import { resolveStreamsBin } from '../streams-bin.js';
+import { runProcess } from './subprocess.js';
 import type { StreamsCardSnapshot } from './streams-source.js';
 import type { StreamsDocumentTarget } from './streams-view.js';
 
@@ -39,7 +41,7 @@ export async function resolveCheckoutDocument(directory: string, path: string): 
 }
 
 /** Recovery/provenance guards freshness, never the working-tree revision. */
-export async function resolveStreamsDocument(snapshot: StreamsCardSnapshot, target: StreamsDocumentTarget): Promise<ResolvedStreamsDocument> {
+export async function resolveStreamsDocument(snapshot: StreamsCardSnapshot, target: StreamsDocumentTarget, options: { env?: NodeJS.ProcessEnv; signal?: AbortSignal } = {}): Promise<ResolvedStreamsDocument> {
   if (!isDeepStrictEqual(snapshot.scope, target.scope)) throw new Error('Viewing session or catalog source changed; redraw before opening');
   const repository = snapshot.stream.repositories[target.repository];
   if (!repository || repository.url !== target.repositoryUrl) throw new Error('Document repository changed; redraw before opening');
@@ -47,17 +49,20 @@ export async function resolveStreamsDocument(snapshot: StreamsCardSnapshot, targ
     throw new Error('Document reference no longer present; redraw before opening');
   }
   const location = snapshot.documentLocations.find(l => l.repository === target.repository && l.path === target.path);
-  const matchesPrimary = !!location && !['checkout_id', 'root', 'file', 'error'].some(key => location[key as keyof typeof location] !== target[key as keyof StreamsDocumentTarget]);
-  const matchedAlt = !matchesPrimary && target.error === null ? location?.alternates?.find(a => a.checkout_id === target.checkout_id && a.root === target.root && a.file === target.file) : undefined;
+  const descriptorKeys = ['kind', 'revision', 'checkout_id', 'root', 'file'] as const;
+  const matchesPrimary = !!location && location.error === target.error && descriptorKeys.every(key => location[key] === target[key]);
+  const matchedAlt = !matchesPrimary && target.error === null ? location?.alternates?.find(a => descriptorKeys.every(key => a[key] === target[key])) : undefined;
   if (!location || (!matchesPrimary && !matchedAlt)) throw new Error('Viewing checkout or app location changed; redraw before opening');
   if (matchesPrimary && location.error) throw new Error(location.error);
   const expectedFile = matchedAlt ? matchedAlt.file : location.file;
+  relativeDocumentPath(target.path);
   const bindings = snapshot.checkouts.filter(binding => binding.repository === target.repository && binding.checkout_id === target.checkout_id);
   if (bindings.length > 1) throw new Error('Ambiguous viewing-session checkout binding');
   const selected = bindings[0];
   if (selected && selected.root !== target.root) throw new Error('Viewing checkout changed; redraw before opening');
   if (!selected) throw new Error(`No checkout binding for ${target.repository} in this viewing session`);
-  const root = selected.root;
+  const baseRoot = selected.root;
+  let root = baseRoot;
   let before;
   try {
     if (await realpath(root) !== root) throw new Error('Checkout canonical directory changed');
@@ -65,6 +70,19 @@ export async function resolveStreamsDocument(snapshot: StreamsCardSnapshot, targ
     if (!before.isDirectory()) throw new Error('Checkout must be a directory');
   } catch (error) {
     throw new Error(`Viewing checkout unavailable: ${(error as Error).message}`, { cause: error });
+  }
+  let revisionFile: string | undefined;
+  if (target.kind === 'revision') {
+    if (target.revision !== (target.commit ?? target.ref)) throw new Error('Document revision changed; redraw before opening');
+    const env = options.env ?? process.env;
+    const output = await runProcess(resolveStreamsBin(env), ['checkout', 'document', selected.checkout_id, target.path, '--revision', target.revision, '--json'],
+      { env, timeoutMs: 60000, maxBuffer: 64 * 1024, signal: options.signal });
+    let result;
+    try { result = JSON.parse(output); } catch { throw new Error('Invalid document revision response'); }
+    if (!result || result.checkout_id !== selected.checkout_id || result.revision !== target.revision
+      || typeof result.root !== 'string' || typeof result.file !== 'string') throw new Error('Invalid document revision response');
+    root = result.root;
+    revisionFile = result.file;
   }
   let file;
   try { file = await resolveCheckoutDocument(root, target.path); }
@@ -74,9 +92,9 @@ export async function resolveStreamsDocument(snapshot: StreamsCardSnapshot, targ
     }
     throw error;
   }
-  if (file !== expectedFile) throw new Error('App-resolved canonical file changed; redraw before opening');
-  const after = await stat(root, { bigint: true });
-  if (await realpath(root) !== root || before.dev !== after.dev || before.ino !== after.ino) throw new Error('Viewing checkout changed during document resolution');
+  if (file !== (target.kind === 'revision' ? revisionFile : expectedFile)) throw new Error('App-resolved canonical file changed; redraw before opening');
+  const after = await stat(baseRoot, { bigint: true });
+  if (await realpath(baseRoot) !== baseRoot || before.dev !== after.dev || before.ino !== after.ino) throw new Error('Viewing checkout changed during document resolution');
   const key = createHash('sha256').update(JSON.stringify([snapshot.scope.catalogSource, snapshot.scope.hostId, selected.checkout_id, file])).digest('hex');
   return { root, file, key };
 }

@@ -3,8 +3,8 @@ export interface Workspace { workspace_id: string; label: string; number: number
 export interface NativeTab { tab_id: string; workspace_id: string; label: string; number: number }
 export interface NativeLayout { tab_id: string; workspace_id: string; panes: { pane_id: string }[] }
 export interface NativeSnapshot { workspaces: Workspace[]; tabs: NativeTab[]; panes: Pane[]; layouts: NativeLayout[] }
-export function nativeObject(value: unknown): Record<string, any> {
-  if (!value || typeof value !== 'object' || Array.isArray(value)) throw new Error('Unexpected Herdr object');
+export function nativeObject(value: unknown, label = 'object'): Record<string, any> {
+  if (!value || typeof value !== 'object' || Array.isArray(value)) throw new Error(`Unexpected Herdr ${label}`);
   return value as Record<string, any>;
 }
 export function nativeId(value: unknown): string {
@@ -13,12 +13,12 @@ export function nativeId(value: unknown): string {
 }
 export function nativeTokens(value: unknown): Record<string, string> {
   if (value === undefined) return {};
-  const tokens = nativeObject(value);
+  const tokens = nativeObject(value, 'tokens');
   if (Object.values(tokens).some(v => typeof v !== 'string')) throw new Error('Invalid Herdr tokens');
   return tokens;
 }
 export function nativePane(value: unknown): Pane {
-  const p = nativeObject(value);
+  const p = nativeObject(value, 'pane');
   if (p.label !== undefined && p.label !== null && typeof p.label !== 'string') throw new Error('Invalid Herdr pane label');
   return { pane_id: nativeId(p.pane_id), terminal_id: nativeId(p.terminal_id), workspace_id: nativeId(p.workspace_id), tab_id: nativeId(p.tab_id), tokens: nativeTokens(p.tokens), ...(typeof p.label === 'string' ? { label: p.label } : {}) };
 }
@@ -57,35 +57,32 @@ export function locateTerminal(snapshot: NativeSnapshot, terminal: string): Pane
   if (matches.length !== 1) throw new Error('Missing or duplicate live terminal identity');
   return matches[0];
 }
-export const pairKeys = ['wca_agent', 'wca_nonce', 'wca_pi', 'wca_card', 'wca_role'];
-export function pairMarkers(identity: string, nonce: string, agentTerminal: string, cardTerminal: string): Record<string, string> {
-  return { wca_agent: identity, wca_nonce: nonce, wca_pi: agentTerminal, wca_card: cardTerminal };
-}
+export const pairKeys = ['strm_agent', 'strm_nonce', 'strm_pi', 'strm_card', 'strm_role', 'strm_native'];
 export interface LivePair { kind: 'paired' | 'separated'; agent: Pane; card: Pane; identity: string; nonce: string }
 export type PairState = LivePair | { kind: 'empty' } | { kind: 'absent'; agent: Pane; identity: string; nonce: string };
 export function classifyPair(s: NativeSnapshot, identity: string, terminal: string): PairState {
   const caller = locateTerminal(s, terminal);
-  if (s.panes.some(p => p.tokens.wca_pi === terminal && p.tokens.wca_agent !== identity)) throw new Error('Foreign or incomplete agent owner markers');
-  const marked = s.panes.filter(p => p.tokens.wca_agent === identity);
+  if (s.panes.some(p => p.tokens.strm_pi === terminal && p.tokens.strm_agent !== identity)) throw new Error('Foreign or incomplete agent owner markers');
+  const marked = s.panes.filter(p => p.tokens.strm_agent === identity);
   if (!marked.length) {
     if (pairKeys.some(k => Object.hasOwn(caller.tokens, k))) throw new Error('Foreign or incomplete pair markers');
     return { kind: 'empty' };
   }
   for (const p of marked) {
-    if (!pairKeys.every(k => p.tokens[k]) || !['agent', 'card'].includes(p.tokens.wca_role)) throw new Error('Incomplete pair markers');
+    if (!pairKeys.every(k => p.tokens[k]) || !['agent', 'card'].includes(p.tokens.strm_role)) throw new Error('Incomplete pair markers');
   }
-  const agents = marked.filter(p => p.tokens.wca_role === 'agent');
-  const cards = marked.filter(p => p.tokens.wca_role === 'card');
+  const agents = marked.filter(p => p.tokens.strm_role === 'agent');
+  const cards = marked.filter(p => p.tokens.strm_role === 'card');
   if (agents.length !== 1 || cards.length > 1) throw new Error('Conflicting duplicate live owners');
   const agent = agents[0], a = agent.tokens;
-  if (agent.terminal_id !== a.wca_pi || (terminal !== a.wca_pi && terminal !== a.wca_card)) throw new Error('Foreign agent terminal');
-  const referenced = s.panes.find(p => p.terminal_id === a.wca_card);
+  if (agent.terminal_id !== a.strm_pi || (terminal !== a.strm_pi && terminal !== a.strm_card)) throw new Error('Foreign agent terminal');
+  const referenced = s.panes.find(p => p.terminal_id === a.strm_card);
   if (!cards.length) {
     if (referenced) throw new Error('Foreign or incomplete live card markers');
-    return { kind: 'absent', agent, identity, nonce: a.wca_nonce };
+    return { kind: 'absent', agent, identity, nonce: a.strm_nonce };
   }
   const card = cards[0];
-  if (card.terminal_id !== a.wca_card || ['wca_agent', 'wca_nonce', 'wca_pi', 'wca_card'].some(k => card.tokens[k] !== a[k])) throw new Error('Contradictory pair markers');
-  return { kind: agent.workspace_id === card.workspace_id && agent.tab_id === card.tab_id ? 'paired' : 'separated', agent, card, identity, nonce: a.wca_nonce };
+  if (card.terminal_id !== a.strm_card || ['strm_agent', 'strm_nonce', 'strm_pi', 'strm_card', 'strm_native'].some(k => card.tokens[k] !== a[k])) throw new Error('Contradictory pair markers');
+  return { kind: agent.workspace_id === card.workspace_id && agent.tab_id === card.tab_id ? 'paired' : 'separated', agent, card, identity, nonce: a.strm_nonce };
 }
 export function firstPane(s: NativeSnapshot, p: Pane): boolean { return s.layouts.find(l => l.tab_id === p.tab_id)?.panes[0]?.pane_id === p.pane_id; }

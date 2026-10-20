@@ -1,15 +1,5 @@
 import { spawn } from "node:child_process";
-import { existsSync } from "node:fs";
-import { delimiter, join, resolve } from "node:path";
-import { fileURLToPath } from "node:url";
-
-const PACKAGE_ROOT = resolve(fileURLToPath(new URL("../..", import.meta.url)));
-function resolveStreamsBin(cwd: string, env: NodeJS.ProcessEnv = process.env): string {
- if (env.STREAMS_BIN_PATH) return env.STREAMS_BIN_PATH;
- const first = (env.PATH ?? "").split(delimiter).filter(Boolean).map((p) => join(p, "streams")).find(existsSync);
- const own = join(PACKAGE_ROOT, ".venv", "bin", "streams");
- return cwd && resolve(cwd) !== PACKAGE_ROOT && first?.startsWith(join(resolve(cwd), ".venv") + "/") && existsSync(own) ? own : "streams";
-}
+import { resolveStreamsBin } from "../../integrations/herdr-work-cards/src/streams-bin.ts";
 
 export type Status = "active" | "waiting" | "blocked" | "parked" | "done";
 export type Mode = "automatic" | "manual";
@@ -66,7 +56,7 @@ export class StreamCli {
    const signal = options?.signal;
    signal?.throwIfAborted();
    const detached = !!options?.timeout || !!signal;
-   const child = spawn(resolveStreamsBin(cwd), args, {cwd, detached, stdio: ["pipe", "pipe", "pipe"]});
+   const child = spawn(resolveStreamsBin(), args, {cwd, detached, stdio: ["pipe", "pipe", "pipe"]});
    let stdout = "", stderr = "", failure: Error | undefined;
    // Wait for the process group and stdio to close before releasing lifecycle work.
    const terminate = (error: Error) => {

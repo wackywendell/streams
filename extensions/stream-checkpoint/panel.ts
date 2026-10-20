@@ -5,11 +5,6 @@ import type { LocalContext, Receipt, StreamCli } from "./streams.ts";
 import { FieldEdit, fields, statuses, validateReferences } from "./core.ts";
 export type DiscussionState = {input: string; messages: {role: "user" | "assistant"; text: string}[]; error?: string};
 export type CardState = {discussion: DiscussionState; edits: Map<string, FieldEdit>};
-export function cardSummary(catalog: LocalContext): string {
- const stream = catalog.stream, session = catalog.session;
- if (!stream) return "No work card attached";
- return [`Whole effort · ${stream.title} [${stream.title_mode}]`, `ID: ${stream.id} · owner: ${stream.owner.host_id}`, `${stream.status}${stream.archived ? " · archived" : ""}`, `Goal [${stream.goal_mode}]: ${stream.goal ?? "—"}`, ...stream.documents.map((row) => `Document: ${row.repository}:${row.path} — ${row.description}${row.commit ? ` · commit ${row.commit}` : ""} · recovery ref ${row.ref}`), ...[...stream.issues, ...stream.prs].map((row) => `${row.url} — ${row.description}`), "", "This session", session ? `${session.title} [${session.title_mode}] · ${session.status}\nID: ${session.id} · host: ${session.host_id} · membership: ${session.stream_id}\n${session.state}\nRemaining: ${session.remaining}` : "Not yet enrolled", "", "Other recorded contributions", ...catalog.sessions.filter((row) => row.id !== session?.id || row.host_id !== session?.host_id).map((row) => `${row.title} · ${row.host_id} · ${row.status}: ${row.state_short ?? row.state}`)].join("\n");
-}
 /** A small composer built around Pi's editor; unsent input survives close/reopen. */
 export async function compose(ctx: ExtensionContext, state: DiscussionState): Promise<string | undefined> {
  return ctx.ui.custom<string | undefined>((tui, theme, _keys, done) => {
@@ -199,8 +194,6 @@ export async function openCard(ctx: ExtensionContext, cli: StreamCli, state: Car
    await editField(ctx, cli, catalog, kind, field, state, actions.receipt);
    continue;
   }
-  if (ctx.ui.custom && action === "Whole effort — edit fields") {activeTab = "stream";continue;}
-  if (ctx.ui.custom && action === "This session — edit fields") {activeTab = "session";continue;}
   if (action === "Discuss live card") {await actions.discuss();continue;}
   if (action === "Reset generated fields" || action === "Re-enable automatic naming & reset") {actions.reset?.(action === "Re-enable automatic naming & reset", "all");return;}
   if (action === "Reset this session only" || action === "Re-enable session auto-naming & reset") {actions.reset?.(action === "Re-enable session auto-naming & reset", "session");return;}

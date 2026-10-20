@@ -70,13 +70,17 @@ async function openLock(path: string): Promise<FileHandle> {
   throw new Error(`Work-cards lock pathname keeps changing at ${path}; inspect and stop legacy clients before retrying.`);
 }
 
+let cachedPython: { pathEnv: string; executable: string } | undefined;
+
 async function pythonExecutable(): Promise<string> {
+  const pathEnv = process.env.PATH ?? '';
+  if (cachedPython && cachedPython.pathEnv === pathEnv) return cachedPython.executable;
   // PATH is caller-owned; ignore relative entries so the workspace cannot supply
   // an interpreter accidentally. Absolute fallbacks also support minimal PATHs.
-  const candidates = [...(process.env.PATH ?? '').split(':').filter(isAbsolute).map(path => join(path, 'python3')),
+  const candidates = [...pathEnv.split(':').filter(isAbsolute).map(path => join(path, 'python3')),
     '/usr/bin/python3', '/usr/local/bin/python3', '/opt/homebrew/bin/python3', '/bin/python3'];
   for (const candidate of new Set(candidates)) {
-    try { await access(candidate, constants.X_OK); if ((await stat(candidate)).isFile()) return candidate; }
+    try { await access(candidate, constants.X_OK); if ((await stat(candidate)).isFile()) { cachedPython = { pathEnv, executable: candidate }; return candidate; } }
     catch { /* Try the next executable location. */ }
   }
   throw new Error('Work-cards locking requires python3 with fcntl; install Python in a trusted PATH or standard system location.');

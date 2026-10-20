@@ -12,7 +12,6 @@ from pathlib import Path
 import stat
 import subprocess
 import tempfile
-import time
 from uuid import uuid4
 
 from .errors import StreamError
@@ -145,7 +144,6 @@ class CheckoutRegistry:
         digest = hashlib.sha256(host_id.encode()).hexdigest()
         self.path = state_dir / f"checkouts-{digest}.json"
         self._lock_path = state_dir / f"checkouts-{digest}.lock"
-        self._validated: set[tuple[object, ...]] = set()
 
     def _read(self) -> _State:
         try:
@@ -271,15 +269,22 @@ class CheckoutRegistry:
             if root != path or (metadata.st_dev, metadata.st_ino) != (checkout.device, checkout.inode):
                 raise StreamError(f"checkout root was replaced: {checkout.directory}; explicitly move the registration")
             marker = (root / ".jj") if (root / ".jj").exists() or (root / ".jj").is_symlink() else (root / ".git")
-            m_stat = marker.lstat() if marker.exists() or marker.is_symlink() else None
-            key = None if m_stat is None or marker.is_symlink() else (checkout.id, metadata.st_dev, metadata.st_ino, m_stat.st_dev, m_stat.st_ino, m_stat.st_mtime_ns, m_stat.st_size)
-            if key is None or key not in self._validated:
-                _exact_root(root)
-                if key is not None:
-                    self._validated.add(key)
+            # Registration verifies the VCS root. Reads only revalidate its physical
+            # identity and marker; polling must never invoke Git or snapshot jj.
+            if marker.is_symlink() or not (marker.is_dir() or marker.name == ".git" and marker.is_file()):
+                raise StreamError(f"checkout marker is unavailable or malformed: {marker}")
             return checkout
         except OSError as error:
             raise StreamError(f"checkout root is unavailable: {checkout.directory}: {error}") from error
+
+    def bind_inferred_repositories(self, checkout_id: str) -> tuple[str, ...]:
+        checkout = self.get(checkout_id)
+        if checkout.repository_urls:
+            return checkout.repository_urls
+        urls = infer_checkout_repository_urls(Path(checkout.directory), self)
+        for url in urls:
+            self.register(Path(checkout.directory), repository_url=url)
+        return urls
 
     def list(self) -> tuple[CheckoutLocation, ...]:
         return tuple(self._read().checkouts)
@@ -391,6 +396,19 @@ class CheckoutRegistry:
     def directory(self, checkout_id: str, relative_cwd: str = ".") -> Path:
         return self._contained(self.get(checkout_id), relative_cwd, directory=True)
 
+    def revision_document(self, checkout_id: str, path: str, revision: str, *, cache_dir: Path) -> dict:
+        checkout = self.get(checkout_id)
+        _relative(path, allow_root=False)
+        _text(revision, "revision")
+        if revision.startswith("-"):
+            raise StreamError("revision must not start with a dash")
+        extracted = extract_document_revision(checkout, path, commit=revision, cache_dir=cache_dir)
+        if extracted is None:
+            raise StreamError(f"document revision is unavailable: {path} at {revision}")
+        file, _ = extracted
+        root = file.parents[len(Path(path).parts) - 1]
+        return {"checkout_id": checkout.id, "root": str(root), "file": str(file), "revision": revision}
+
     def document(self, repository_url: str, path: str, *, selected_checkout_id: str | None = None,
                  selected_repository_url: str | None = None) -> tuple[CheckoutLocation, Path]:
         checkout = self.resolve(repository_url, selected_checkout_id=selected_checkout_id,
@@ -478,8 +496,16 @@ def extract_document_revision(
                     pass
         rev_key = resolved[:12] if (len(resolved) >= 12 and all(ch in "0123456789abcdefABCDEF" for ch in resolved)) else hashlib.sha256(resolved.encode("utf-8")).hexdigest()[:12]
         rev_label = rev[:8] if len(rev) >= 8 else rev
-        dest = (cache_dir / checkout.id / rev_key / relative).resolve()
+        cache_root = cache_dir.resolve()
+        revision_root = cache_root / checkout.id / rev_key
+        dest = revision_root / relative
+        # A cache entry must not redirect extraction or reads through symlinks.
+        if (not revision_root.resolve().is_relative_to(cache_root)
+                or dest.resolve() != dest or not dest.is_relative_to(revision_root)):
+            return None
         missing = dest.parent / f".{dest.name}.missing"
+        if missing.is_symlink():
+            return None
         if is_immutable_hex or resolved != rev:
             if dest.is_file():
                 return dest, rev_label

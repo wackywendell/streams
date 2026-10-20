@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { mkdtemp, mkdir, readFile, realpath, rename, rm, symlink, writeFile } from 'node:fs/promises';
+import { chmod, mkdtemp, mkdir, readFile, realpath, rename, rm, symlink, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { resolveStreamsDocument } from '../dist/herdr/streams-documents.js';
@@ -10,7 +10,7 @@ async function fixture(t) {
   const a = join(temporary, 'workspace-a'), b = join(temporary, 'workspace-b');
   for (const root of [a, b]) await mkdir(join(root, 'docs'), { recursive: true });
   const reference = { repository: 'project', ref: 'recovery-branch', commit: 'a1', path: 'docs/design.md', description: 'Shared design' };
-  const location = { repository: 'project', path: reference.path, checkout_id: 'b', root: b, file: join(b, reference.path), error: null };
+  const location = { kind: 'local', repository: 'project', path: reference.path, checkout_id: 'b', root: b, file: join(b, reference.path), error: null };
   const snapshot = { scope: { ...scope }, stream: { repositories: { project: { url: 'https://example.com/project' } }, documents: [reference] },
     checkouts: [{ repository: 'project', checkout_id: 'b', root: b }], documentLocations: [location] };
   const target = { scope: { ...scope }, repositoryUrl: 'https://example.com/project', ref: reference.ref, commit: 'a1', ...location };
@@ -28,7 +28,7 @@ test('missing B file stays visible when A has it; no cleanup, fallback or catalo
 });
 test('app binding errors stay visible; never search another root or select defaults', async t => {
   const { snapshot, target } = await fixture(t); snapshot.checkouts = [];
-  Object.assign(snapshot.documentLocations[0], { checkout_id: null, root: null, file: null, error: 'No registered checkout for project' });
+  Object.assign(snapshot.documentLocations[0], { kind: null, checkout_id: null, root: null, file: null, error: 'No registered checkout for project' });
   Object.assign(target, snapshot.documentLocations[0]); await assert.rejects(resolveStreamsDocument(snapshot, target), /No registered checkout/);
 });
 test('viewing scope is exact source, host, Stream, Session and native UUID', async t => {
@@ -71,7 +71,7 @@ test('different checkouts inside the same native workspace resolve independently
     { kind: 'local', label: 'local (b)', checkout_id: 'b', root: b, file: join(b, target.path) },
     { kind: 'origin', label: 'origin (a)', checkout_id: 'origin-a', root: a, file: join(a, target.path) },
   ];
-  const resolvedAlt = await resolveStreamsDocument(withAlternates, { ...target, checkout_id: 'origin-a', root: a, file: join(a, target.path), error: null });
+  const resolvedAlt = await resolveStreamsDocument(withAlternates, { ...target, kind: 'origin', checkout_id: 'origin-a', root: a, file: join(a, target.path), error: null });
   assert.equal(resolvedAlt.file, join(a, target.path));
   assert.notEqual(resolvedAlt.key, first.key);
 });
@@ -84,6 +84,58 @@ test('contained symlinks must match app canonical file; escaping symlinks reject
 test('root replaced by symlink is not silently relocated', async t => {
   const { a, b, snapshot, target } = await fixture(t); await rename(b, `${b}-old`); await symlink(a, b);
   await assert.rejects(resolveStreamsDocument(snapshot, target), /Viewing checkout unavailable: Checkout canonical directory changed/);
+});
+async function revisionFixture(t) {
+  const f = await fixture(t);
+  const root = join(f.a, 'revision'); await mkdir(join(root, 'docs'), { recursive: true });
+  const file = join(root, f.target.path); await writeFile(file, 'recorded revision');
+  const executable = join(f.a, 'streams');
+  await writeFile(executable, `#!${process.execPath}
+import assert from 'node:assert/strict';
+assert.deepEqual(process.argv.slice(2), ['checkout', 'document', 'b', 'docs/design.md', '--revision', 'a1', '--json']);
+assert.equal(process.env.OWNER_ENV, 'selected owner');
+if (process.env.DELAY) setTimeout(() => {}, 5000);
+else if (process.env.FAIL) process.exit(2);
+else process.stdout.write(process.env.RESULT);
+`);
+  await chmod(executable, 0o755);
+  const revision = { kind: 'revision', label: 'revision a1', checkout_id: 'b', root: f.b, file: null, revision: 'a1' };
+  f.snapshot.documentLocations[0].alternates = [revision];
+  return { ...f, root, file, target: { ...f.target, ...revision },
+    env: { STREAMS_BIN_PATH: executable, OWNER_ENV: 'selected owner', RESULT: JSON.stringify({ checkout_id: 'b', root, file, revision: 'a1' }) } };
+}
+test('only explicit revision choice invokes narrow CLI with owner env and returns validated cache file', async t => {
+  const f = await revisionFixture(t);
+  await writeFile(join(f.b, f.target.path), 'current local edits');
+  const localTarget = { ...f.target, ...f.snapshot.documentLocations[0] }; delete localTarget.revision;
+  const local = await resolveStreamsDocument(f.snapshot, localTarget, { env: { STREAMS_BIN_PATH: '/must-not-run' } });
+  assert.equal(await readFile(local.file, 'utf8'), 'current local edits');
+  const revision = await resolveStreamsDocument(f.snapshot, f.target, { env: f.env });
+  assert.equal(revision.root, f.root); assert.equal(revision.file, f.file);
+  assert.equal(await readFile(revision.file, 'utf8'), 'recorded revision');
+  assert.notEqual(revision.key, local.key);
+});
+test('revision descriptor kind, exact revision, membership and base checkout validate before CLI', async t => {
+  const f = await revisionFixture(t);
+  for (const [field, value] of [['kind', 'origin'], ['revision', 'changed'], ['checkout_id', 'unknown'], ['root', '/other']]) {
+    await assert.rejects(resolveStreamsDocument(f.snapshot, { ...f.target, [field]: value }, { env: { STREAMS_BIN_PATH: '/must-not-run' } }), /changed/);
+  }
+  f.snapshot.checkouts[0].root = '/other';
+  await assert.rejects(resolveStreamsDocument(f.snapshot, f.target, { env: { STREAMS_BIN_PATH: '/must-not-run' } }), /Viewing checkout changed/);
+});
+test('revision extraction errors, cancellation and invalid canonical cache results fail visibly', async t => {
+  const f = await revisionFixture(t);
+  await assert.rejects(resolveStreamsDocument(f.snapshot, f.target, { env: { ...f.env, FAIL: 'yes' } }), /failed/);
+  for (const change of [{ file: join(f.b, 'wrong.md') }, { revision: 'changed' }, { checkout_id: 'other' }, { root: 'relative' }]) {
+    const result = { checkout_id: 'b', root: f.root, file: f.file, revision: 'a1', ...change };
+    await assert.rejects(resolveStreamsDocument(f.snapshot, f.target, { env: { ...f.env, RESULT: JSON.stringify(result) } }), /canonical|response|absolute/);
+  }
+  await rm(f.file); await writeFile(join(f.b, f.target.path), 'outside'); await symlink(join(f.b, f.target.path), f.file);
+  await assert.rejects(resolveStreamsDocument(f.snapshot, f.target, { env: f.env }), /outside the checkout/);
+  const controller = new AbortController();
+  const pending = resolveStreamsDocument(f.snapshot, f.target, { env: { ...f.env, DELAY: 'yes' }, signal: controller.signal });
+  controller.abort(new Error('revision cancelled'));
+  await assert.rejects(pending, /revision cancelled/);
 });
 for (const path of ['../design.md', '/design.md', 'docs/../design.md', 'docs\\design.md']) test(`reject invalid document path ${path}`, async t => {
   const { snapshot, target } = await fixture(t); snapshot.stream.documents[0].path = target.path = snapshot.documentLocations[0].path = path;

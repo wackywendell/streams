@@ -1,36 +1,31 @@
 import { isDeepStrictEqual } from 'node:util';
 import { checkoutLabels } from '../presentation.js';
 import { renderDisplayCard, type RenderedCard } from './view.js';
-import { sameStreamsScope, type StreamsCardScope, type StreamsCardSnapshot, type StreamsCardSource, type StreamsDocumentAlternate } from './streams-source.js';
+import { sameStreamsScope, type StreamsCardScope, type StreamsCardSnapshot, type StreamsCardSource, type StreamsDocumentLocation } from './streams-source.js';
 
-export interface StreamsDocumentTarget {
-  scope: StreamsCardScope; repository: string; repositoryUrl: string; ref: string;
-  commit?: string; source_session_id?: string; path: string;
-  checkout_id: string | null; root: string | null; file: string | null; error: string | null;
-  alternates?: readonly StreamsDocumentAlternate[];
-}
+export type StreamsDocumentTarget = StreamsDocumentLocation & {
+  scope: StreamsCardScope; repositoryUrl: string; ref: string;
+  commit?: string; source_session_id?: string;
+};
 export function renderStreamsCard(snapshot: StreamsCardSnapshot | undefined, columns: number, rows: number, notice?: string): RenderedCard<StreamsDocumentTarget> {
   if (!snapshot) return renderDisplayCard<StreamsDocumentTarget>(undefined, columns, rows, notice);
   const { stream, session, scope, checkouts } = snapshot;
-  const worktreeCheckouts = checkouts.filter(binding => !binding.checkout_id.includes('@'));
-  const roots = [...new Set(worktreeCheckouts.map(binding => binding.root))];
+  const roots = [...new Set(checkouts.map(binding => binding.root))];
   // Feed only checkout directory data to the existing distinguishing-label helper.
   const labels = checkoutLabels(Object.fromEntries(roots.map((root, index) => [String(index), { directory: root }])));
   const repositories = Object.keys(stream.repositories);
   const documents = stream.documents.map(document => {
     const location = snapshot.documentLocations.find(l => l.repository === document.repository && l.path === document.path)!;
     const root = location.root ?? undefined;
-    const isRevision = location.checkout_id?.includes('@') ?? false;
     let qualifier = '';
-    if (isRevision && location.checkout_id) {
-      qualifier = `@${location.checkout_id.split('@')[1]}`;
-    } else if (repositories.length > 1 || roots.length > 1) {
+    if (repositories.length > 1 || roots.length > 1) {
       qualifier = root === undefined ? document.repository : labels[String(roots.indexOf(root))];
-      if (root !== undefined && worktreeCheckouts.some(binding => binding.repository !== document.repository && binding.root === root)) {
+      if (root !== undefined && checkouts.some(binding => binding.repository !== document.repository && binding.root === root)) {
         qualifier = `${document.repository}:${qualifier}`;
       }
     }
-    const revSuffix = document.commit ? ` (commit ${document.commit.slice(0, 8)})` : '';
+    const revSuffix = location.kind === 'revision' ? ` (revision ${location.revision.slice(0, 8)})`
+      : document.commit ? ` (commit ${document.commit.slice(0, 8)})` : '';
     const label = `${qualifier ? `${qualifier === '/' ? '' : qualifier}/` : ''}${document.path}${revSuffix}`;
     return { label, target: {
       scope: { ...scope }, repositoryUrl: stream.repositories[document.repository].url,
@@ -100,7 +95,7 @@ export class StreamsCardView {
       const next = renderStreamsCard(this.current, columns, rows, notice).documents.get(active.key);
       const validTargets = next ? [
         next,
-        ...(next.alternates ?? []).map(alt => ({ ...next, checkout_id: alt.checkout_id, root: alt.root, file: alt.file, error: null })),
+        ...(next.alternates ?? []).map(alt => ({ ...next, ...alt, error: null } as StreamsDocumentTarget)),
       ] : [];
       if (paint !== this.paint || !next || !validTargets.some(cand => sameTarget(cand, chosen.target))) {
         this.documents.clear();
@@ -114,8 +109,8 @@ export class StreamsCardView {
       const displayed = this.documents.get(lower);
       if (!displayed) return { kind: 'none' };
       const options = displayed.alternates?.length
-        ? displayed.alternates.map(alt => ({ label: alt.label, target: { ...displayed, checkout_id: alt.checkout_id, root: alt.root, file: alt.file, error: null } }))
-        : displayed.file ? [{ label: `local (${displayed.root?.split('/').at(-1) ?? displayed.repository})`, target: displayed }] : [];
+        ? displayed.alternates.map(alt => ({ label: alt.label, target: { ...displayed, ...alt, error: null } as StreamsDocumentTarget }))
+        : displayed.kind !== null ? [{ label: displayed.kind === 'revision' ? `revision ${displayed.revision}` : `${displayed.kind} (${displayed.root.split('/').at(-1) ?? displayed.repository})`, target: displayed }] : [];
       if (!options.length) return { kind: 'none' };
       this.chooser = { key: lower, options, notice: this.paintedNotice };
       this.setNotice('document', `Open ${displayed.path}: ${options.map((o, i) => `[${i + 1}] ${o.label}`).join('  ')}  [Esc] cancel`);

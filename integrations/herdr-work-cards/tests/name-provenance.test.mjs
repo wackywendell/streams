@@ -137,7 +137,7 @@ test('rename intent does not persist; verified success can publish provenance wi
 
 test('malformed, unknown-field, wrong-scope and invalid provenance are rejected without overwrite', async t => {
   const { store, scope } = await fixture(t); const record = automatic(scope); const saved = await store.write(scope, record, null);
-  for (const bad of ['{', Buffer.from([255]), JSON.stringify(record).replace('"version":1', '"version":2,"version":1'), JSON.stringify({ ...record, extra: true }), JSON.stringify({ ...record, scope: { ...scope, surfaceId: 'elsewhere' } }), JSON.stringify({ ...record, owner: null }), JSON.stringify({ ...record, lastApplied: 'bad\nname' })]) {
+  for (const bad of ['{', Buffer.from([255]), JSON.stringify({ ...record, version: 2 }), JSON.stringify({ ...record, extra: true }), JSON.stringify({ ...record, scope: { ...scope, surfaceId: 'elsewhere' } }), JSON.stringify({ ...record, owner: null }), JSON.stringify({ ...record, lastApplied: 'bad\nname' })]) {
     await writeFile(saved.path, bad); const bytes = await readFile(saved.path);
     await assert.rejects(store.read(scope)); await assert.rejects(store.write(scope, record, null));
     assert.deepEqual(await readFile(saved.path), bytes);

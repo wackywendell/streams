@@ -20,7 +20,7 @@ function fixture() {
   const source = new StreamsCardSource({ nativeSessionId: native, readContext: async () => {
     if (fail) throw Error('Malformed record');
     value.checkouts = Object.entries(roots).map(([repository, root]) => ({ repository, checkout_id: repository, root }));
-    value.document_locations = value.stream.documents.map(({ repository, path }) => ({ repository, path, checkout_id: roots[repository] ? repository : null,
+    value.document_locations = value.stream.documents.map(({ repository, path }) => ({ kind: roots[repository] ? 'local' : null, repository, path, checkout_id: roots[repository] ? repository : null,
       root: roots[repository] ?? null, file: roots[repository] ? `${roots[repository]}/${path}` : null, error: roots[repository] ? null : 'No checkout binding' }));
     return value;
   } });
@@ -32,7 +32,7 @@ test('two exact sessions share goal and references, never progress; baseline ren
   const { value, source } = fixture(); const snapshot = await source.read();
   const rendered = renderStreamsCard(snapshot, 100, 12);
   const target = rendered.documents.get('a');
-  assert.deepEqual(target, { scope: snapshot.scope, repository: 'lib', repositoryUrl: 'https://example.com/lib', ref: 'topic', path: 'docs/design.md', root: '/code/library', checkout_id: 'lib', file: '/code/library/docs/design.md', error: null });
+  assert.deepEqual(target, { kind: 'local', scope: snapshot.scope, repository: 'lib', repositoryUrl: 'https://example.com/lib', ref: 'topic', path: 'docs/design.md', root: '/code/library', checkout_id: 'lib', file: '/code/library/docs/design.md', error: null });
   assert.equal(rendered.text, renderDisplayCard({ title: snapshot.session.title, status: 'active', goal: snapshot.stream.goal,
     now: snapshot.session.state, remaining: snapshot.session.remaining,
     documents: [{ label: 'docs/design.md', target }], issues: snapshot.stream.issues, prs: snapshot.stream.prs }, 100, 12).text);
@@ -80,11 +80,12 @@ test('Shift+letter opens inline footer chooser for document alternates and 1..9 
       { repository: 'lib', checkout_id: 'origin-chk', root: '/code/streams-temper' },
     ],
     document_locations: [{
-      repository: 'lib', path: 'docs/design.md', checkout_id: 'local-chk', root: '/code/streams-lifecycle',
+      kind: 'local', repository: 'lib', path: 'docs/design.md', checkout_id: 'local-chk', root: '/code/streams-lifecycle',
       file: '/code/streams-lifecycle/docs/design.md', error: null,
       alternates: [
         { kind: 'local', label: 'local (streams-lifecycle)', checkout_id: 'local-chk', root: '/code/streams-lifecycle', file: '/code/streams-lifecycle/docs/design.md' },
         { kind: 'origin', label: 'origin (streams-temper)', checkout_id: 'origin-chk', root: '/code/streams-temper', file: '/code/streams-temper/docs/design.md' },
+        { kind: 'revision', label: 'revision 12345678abcdef00', checkout_id: 'origin-chk', root: '/code/streams-temper', file: null, revision: '12345678abcdef00' },
       ],
     }],
   };
@@ -93,12 +94,31 @@ test('Shift+letter opens inline footer chooser for document alternates and 1..9 
   await view.refresh();
   view.render(120, 8);
   assert.deepEqual(await view.key('A'), { kind: 'none' });
-  assert.match(view.notice.text, /Open docs\/design\.md: \[1\] local \(streams-lifecycle\)\s+\[2\] origin \(streams-temper\)\s+\[Esc\] cancel/);
+  assert.match(view.notice.text, /Open docs\/design\.md: \[1\] local \(streams-lifecycle\)\s+\[2\] origin \(streams-temper\)\s+\[3\] revision 12345678abcdef00\s+\[Esc\] cancel/);
   view.render(120, 8);
   const chosen = await view.key('2');
   assert.equal(chosen.kind, 'open-document');
   assert.equal(chosen.target.checkout_id, 'origin-chk');
   assert.equal(chosen.target.file, '/code/streams-temper/docs/design.md');
+  assert.equal(chosen.target.kind, 'origin');
+  view.render(120, 8); await view.key('A'); view.render(120, 8);
+  const revision = await view.key('3');
+  assert.equal(revision.kind, 'open-document');
+  assert.equal(revision.target.kind, 'revision');
+  assert.equal(revision.target.revision, '12345678abcdef00');
+  assert.equal(revision.target.checkout_id, 'origin-chk');
+  assert.equal(revision.target.file, null);
+  view.render(120, 8); await view.key('A'); view.render(120, 8);
+  value.stream.documents[0].commit = 'changed-revision';
+  value.document_locations[0].alternates[2].revision = 'changed-revision';
+  assert.deepEqual(await view.key('3'), { kind: 'none' });
+  assert.match(view.notice.text, /changed.*redraw/);
+
+  Object.assign(value.document_locations[0], value.document_locations[0].alternates[2]);
+  await view.refresh();
+  const rendered = plain(renderStreamsCard(view.current, 160, 10).text);
+  assert.equal((rendered.match(/revision changed-/g) ?? []).length, 1);
+  assert.doesNotMatch(rendered, /origin-chk@|12345678/);
 });
 test('missing bindings keep actionable references and their captured recovery ref and URL', async () => {
   const f = fixture(); f.roots({}); await f.view.refresh();

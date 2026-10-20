@@ -17,7 +17,7 @@ import tempfile
 
 from .catalog.model import Session, Stream
 from .catalog.sync.envelope import load_json
-from .catalog_checkouts import CheckoutRegistry, _relative, extract_document_revision, inspect_directory
+from .catalog_checkouts import CheckoutRegistry, _relative, inspect_directory
 from .catalog_config import _atomic_json
 from .errors import StreamError
 
@@ -143,7 +143,10 @@ class DirectoryBindings:
             selected = self.read(stream.id, session.id)
             if selected is None:
                 raise StreamError("no directory is selected for this Session; use streams session directory")
-            if selected.checkout_id is None and inspect_directory(selected.cwd) is not None:
+            if selected.checkout_id is None and any(
+                (directory / marker).exists() or (directory / marker).is_symlink()
+                for directory in (selected.cwd, *selected.cwd.parents) for marker in (".git", ".jj")
+            ):
                 raise StreamError("the Session checkout is not registered; use streams checkout register")
             primary = self.checkouts.get(selected.checkout_id) if selected.checkout_id else None
             if primary is not None and not primary.repository_urls:
@@ -181,7 +184,7 @@ class DirectoryBindings:
             repo_url = stream.repositories[document.repository].url
             checkout = resolved.get(document.repository)
             local_error = errors.get(document.repository)
-            alternates: list[dict[str, str]] = []
+            alternates: list[dict[str, object]] = []
             if checkout is not None:
                 try:
                     current, file = self.checkouts.document(repo_url, document.path, **kwargs)
@@ -229,35 +232,22 @@ class DirectoryBindings:
             if selection_error is None and (document.commit is not None or (not alternates and document.source_session_id is not None)):
                 base_chk = origin_chk or checkout
                 if base_chk is not None:
-                    cache_dir = self.state_dir / "revisions"
-                    extracted = extract_document_revision(
-                        base_chk,
-                        document.path,
-                        ref=document.ref,
-                        commit=document.commit,
-                        cache_dir=cache_dir,
-                    )
-                    if extracted is not None:
-                        rev_file, rev_label = extracted
-                        rev_root = str(rev_file.parents[len(Path(document.path).parts) - 1])
-                        rev_key = Path(rev_root).name
-                        rev_chk_id = f"{base_chk.id}@{rev_key}"
-                        add_checkout(document.repository, rev_chk_id, rev_root)
-                        alternates.append({
-                            "kind": "revision",
-                            "label": f"commit {rev_label}",
-                            "checkout_id": rev_chk_id,
-                            "root": rev_root,
-                            "file": str(rev_file),
-                        })
+                    revision = document.commit or document.ref
+                    add_checkout(document.repository, base_chk.id, base_chk.directory)
+                    alternates.append({
+                        "kind": "revision",
+                        "label": f"revision {revision}",
+                        "checkout_id": base_chk.id,
+                        "root": base_chk.directory,
+                        "file": None,
+                        "revision": revision,
+                    })
             if alternates:
                 primary_target = alternates[0]
                 location: dict[str, object] = {
                     "repository": document.repository,
                     "path": document.path,
-                    "checkout_id": primary_target["checkout_id"],
-                    "root": primary_target["root"],
-                    "file": primary_target["file"],
+                    **primary_target,
                     "error": None,
                 }
                 if len(alternates) > 1 or primary_target["kind"] != "local":
@@ -266,6 +256,7 @@ class DirectoryBindings:
                 location = {
                     "repository": document.repository,
                     "path": document.path,
+                    "kind": None,
                     "checkout_id": checkout.id if checkout else None,
                     "root": checkout.directory if checkout else None,
                     "file": None,

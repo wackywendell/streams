@@ -66,7 +66,7 @@ catalog = GitCatalog.initialize(
 
 Initialization creates an empty bootstrap locally if the remote branch does not exist. If another host already published a supported catalog, it fetches and validates that history. It will not adopt arbitrary existing Git contents. Reopen an initialized directory with `GitCatalog(path, host_id="laptop")`; pass the same policy in every process if overriding defaults.
 
-`save(operation)` commits a validated change locally. It does not push automatically. Command handlers use `SyncCoordinator` to request opportunistic publication after related saves. They must check even after a no-change save: older pending changes may now be eligible. A running integration normally creates a stream, then its session record, then checks publication once:
+`save(operation)` commits a validated change locally. It does not push automatically. Command handlers call `catalog.sync(event=...)` to request publication after related saves. They must check even after a no-change save: older pending changes may now be eligible. A running integration normally creates a stream, then its session record, then checks publication once:
 
 ```python
 from _streams.catalog.model import Session
@@ -78,18 +78,17 @@ if created.accepted:
                       harness="pi", harness_session_id="native-session-id", title="Investigate indexing")
     joined = catalog.save(Operation(id=str(uuid4()), before=None, after=session,
                                     actor="automatic", ownership_token=authority.token))
-    from _streams.catalog.sync import SyncCoordinator
     if joined.accepted:
-        publication = SyncCoordinator(catalog).maybe_sync("session")
+        publication = catalog.sync(event="session")
 ```
 
-The initial creation operation establishes local ownership without a push. Generic operations cannot transfer ownership or reattach a session. `handover()` explicitly raises `NotImplementedError`; the domain handover coordinator is a follow-on.
+The initial creation operation establishes local ownership without a push. Generic operations cannot transfer ownership or reattach a session. Ownership handover is not implemented.
 
 Each record save is separate. If session creation fails after stream creation, retain and report the successful stream save. Do not treat the pair as a rollback transaction. Integrations must establish user approval before creating user-directed operations.
 
 ## Publication events and results
 
-Call `SyncCoordinator(catalog).maybe_sync(event)` after an event's related saves. With a configured remote, the backend checks timing and pending state under its shared store lock; callers do not implement their own timers. Without a remote, it validates local history and returns local-only state without publication scheduling. `sync(event=...)` remains the lower-level backend entry point.
+Call `catalog.sync(event=event)` after an event's related saves. With a configured remote, the backend checks timing and pending state under its shared store lock; callers do not implement their own timers. Without a remote, it validates local history and returns local-only state without publication scheduling.
 
 | Event | Eligibility |
 | --- | --- |
@@ -118,7 +117,7 @@ Failed results, transport errors and timeouts produce a warning and a durable `s
 
 ### Scheduled and explicit read refresh
 
-List/show command handlers call `SyncCoordinator(catalog).read(refresh=False)`. A Git read fetches when N has elapsed since the last successful refresh; `refresh=True` requests an explicit blocking fetch. A successful fetch in any write sync counts toward this read clock, even if its later push fails. There is no daemon and no asynchronous refresh to wait for later.
+List/show command handlers call `catalog.read(refresh=False)`. A Git read fetches when N has elapsed since the last successful refresh; `refresh=True` requests an explicit blocking fetch. A successful fetch in any write sync counts toward this read clock, even if its later push fails. There is no daemon and no asynchronous refresh to wait for later.
 
 Reads never push or reset the M/N publication clocks. They share a separate 60-second failed-read cooldown; explicit refresh bypasses it. Fetch success clears the prior read error. A failure returns the cached view with `freshness='failed'` and diagnostic detail. During the cooldown, cached reads retain that detail rather than hiding the failure. Local-only reads make no network calls, including explicit refresh requests.
 

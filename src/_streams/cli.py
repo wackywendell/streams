@@ -19,7 +19,7 @@ from .catalog.codec import record_to_data
 from .catalog.model import Checkout, Document, Link, Repository, Session, STATUSES, Stream, ValidationError
 from .catalog.operations import Operation, normalize_changes, update
 from .catalog.storage import StorageError
-from .catalog.sync import Result, SyncCoordinator
+from .catalog.sync import Result
 from .errors import StreamError
 from .frontend import Frontend, resolve_frontend
 
@@ -100,7 +100,7 @@ def catalog_data(catalog):
 
 
 def read_catalog(backend, args):
-    result = SyncCoordinator(backend).read(refresh=args.refresh)
+    result = backend.read(refresh=args.refresh)
     sharing = {"freshness": result.freshness, "fetched_at": result.fetched_at,
                "view": "local" if result.catalog == result.local.catalog else "projected",
                "conflicts": list(result.conflicts), "detail": result.detail}
@@ -110,7 +110,7 @@ def read_catalog(backend, args):
 
 
 def maybe_sync(backend, event):
-    return SyncCoordinator(backend).maybe_sync(event)
+    return backend.sync(event=event)
 
 
 def save(backend, operation):
@@ -127,6 +127,23 @@ def result_data(result):
     return data
 
 
+def complete_publication(backend, payload, *, event, operation=None):
+    """Attach publication facts without treating pending sharing as a failed save."""
+    try:
+        publication = maybe_sync(backend, event)
+        payload["publication"] = result_data(publication)
+        if publication.requires_repair:
+            return False
+        if operation is not None:
+            current = backend.snapshot().catalog.get(operation.target)
+            kind = "session" if isinstance(operation.after, Session) else "stream"
+            payload[kind] = record_to_data(current)
+        return True
+    except (StreamError, StorageError, OSError, ValueError) as error:
+        payload["completion_error"] = {"message": str(error), "detail": "local save succeeded; inspect before retrying"}
+        return False
+
+
 def finish(backend, operation, saved, *, event, args, extra=None):
     payload = {"operation_id": operation.id, "save": result_data(saved)}
     kind = "session" if isinstance(operation.after, Session) else "stream"
@@ -134,16 +151,7 @@ def finish(backend, operation, saved, *, event, args, extra=None):
     payload[kind] = record_to_data(accepted)
     ok = saved.accepted
     if ok:
-        try:
-            publication = maybe_sync(backend, event)
-            payload["publication"] = result_data(publication)
-            ok = not publication.requires_repair
-            if ok:
-                current = backend.snapshot().catalog.get(operation.target)
-                payload[kind] = record_to_data(current)
-        except (StreamError, StorageError, OSError, ValueError) as error:
-            payload["completion_error"] = {"message": str(error), "detail": "local save succeeded; inspect before retrying"}
-            ok = False
+        ok = complete_publication(backend, payload, event=event, operation=operation)
     payload.update(extra or {})
     emit(payload, args)
     return 0 if ok else 2
@@ -202,20 +210,14 @@ def collection_changes(args, before):
                 values.append(item)
         changes[field] = tuple(values)
     documents = list(changes.get("documents", before.documents))
-    for repository, path, commit in getattr(args, "document_commit", ()):
-        matches = [index for index, item in enumerate(documents) if item.identity == (repository, path)]
-        if not matches:
-            raise StreamError(f"no document matches repository/path: {repository}:{path}")
-        index = matches[0]
-        documents[index] = replace(documents[index], commit=commit)
-        changes["documents"] = tuple(documents)
-    for repository, path, session_id in getattr(args, "document_session", ()):
-        matches = [index for index, item in enumerate(documents) if item.identity == (repository, path)]
-        if not matches:
-            raise StreamError(f"no document matches repository/path: {repository}:{path}")
-        index = matches[0]
-        documents[index] = replace(documents[index], source_session_id=session_id)
-        changes["documents"] = tuple(documents)
+    for argument, field in (("document_commit", "commit"), ("document_session", "source_session_id")):
+        for repository, path, value in getattr(args, argument, ()):
+            matches = [index for index, item in enumerate(documents) if item.identity == (repository, path)]
+            if not matches:
+                raise StreamError(f"no document matches repository/path: {repository}:{path}")
+            index = matches[0]
+            documents[index] = replace(documents[index], **{field: value})
+            changes["documents"] = tuple(documents)
     return changes
 
 
@@ -365,6 +367,9 @@ def command_checkout(args):
         value = {"checkout": registry.register(Path(args.directory), repository_url=args.repository)}
     elif args.checkout_command == "show":
         value = {"checkout": registry.get(args.checkout_id)}
+    elif args.checkout_command == "document":
+        value = registry.revision_document(args.checkout_id, args.path, args.revision,
+                                           cache_dir=runtime().state_dir / "revisions")
     elif args.checkout_command == "move":
         value = {"checkout": registry.move(args.checkout_id, Path(args.directory))}
     elif args.checkout_command == "default":
@@ -497,13 +502,7 @@ def command_agent(args):
                       event="session" if isinstance(operation.after, Session) else "stream", args=args)
     payload, code = catalog_agent.enroll(backend, runtime(), source)
     if code == 0 or any(item["save"].accepted for item in payload["saves"]):
-        try:
-            publication = maybe_sync(backend, "attach")
-            payload["publication"] = result_data(publication)
-            if publication.requires_repair:
-                code = 2
-        except (StreamError, StorageError, OSError, ValueError) as error:
-            payload["completion_error"] = {"message": str(error), "detail": "local save succeeded; inspect before retrying"}
+        if not complete_publication(backend, payload, event="attach"):
             code = 2
     emit(payload, args)
     return code
@@ -609,12 +608,15 @@ def build_parser():
     sync.set_defaults(func=command_sync)
     checkouts = sub.add_parser("checkout", help="manage exact host-local checkout identities and repository defaults")
     checkout_sub = checkouts.add_subparsers(dest="checkout_command", required=True)
-    for name in ("list", "register", "show", "move", "default", "resolve"):
+    for name in ("list", "register", "show", "move", "default", "resolve", "document"):
         child = checkout_sub.add_parser(name, allow_abbrev=False)
-        if name in ("show", "move", "default"):
+        if name in ("show", "move", "default", "document"):
             child.add_argument("checkout_id")
         if name in ("register", "move"):
             child.add_argument("directory")
+        if name == "document":
+            child.add_argument("path", help="safe checkout-relative document path")
+            child.add_argument("--revision", required=True)
         if name == "register":
             child.add_argument("--repository", help="explicit repository URL binding; never inferred from remotes")
         elif name in ("default", "resolve"):

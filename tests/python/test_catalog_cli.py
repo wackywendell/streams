@@ -48,6 +48,42 @@ class CatalogCliTest(unittest.TestCase):
         self.assertEqual((code, err), (0, ""), out + err)
         return json.loads(out)["stream"]
 
+    def test_checkout_document_materializes_only_an_explicit_safe_revision_request(self):
+        self.initialize()
+        root = self.root / "checkout"
+        subprocess.run(["git", "init", "--quiet", str(root)], check=True, capture_output=True)
+        (root / "docs").mkdir()
+        (root / "docs/design.md").write_text("recorded revision\n")
+        subprocess.run(["git", "add", "docs/design.md"], cwd=root, check=True, capture_output=True)
+        subprocess.run(["git", "-c", "user.name=Test", "-c", "user.email=test@example.com", "-c", "commit.gpgsign=false",
+                        "commit", "--quiet", "-m", "document"], cwd=root, check=True, capture_output=True)
+        revision = subprocess.run(["git", "rev-parse", "HEAD"], cwd=root, check=True, capture_output=True, text=True).stdout.strip()
+        code, out, err = self.cli("checkout", "register", str(root), "--repository", "repo", "--json")
+        self.assertEqual((code, err), (0, ""), out)
+        checkout_id = json.loads(out)["checkout"]["id"]
+        (root / "docs/design.md").write_text("current worktree edits\n")
+        code, out, err = self.cli("checkout", "document", checkout_id, "docs/design.md", "--revision", revision, "--json")
+        self.assertEqual((code, err), (0, ""), out)
+        result = json.loads(out)
+        self.assertEqual(result["checkout_id"], checkout_id)
+        self.assertEqual(result["revision"], revision)
+        self.assertEqual(Path(result["file"]).read_text(), "recorded revision\n")
+        self.assertEqual(Path(result["file"]), Path(result["root"]) / "docs/design.md")
+        self.assertEqual((root / "docs/design.md").read_text(), "current worktree edits\n")
+        outside = self.root / "outside.md"
+        outside.write_text("must not overwrite")
+        Path(result["file"]).unlink()
+        Path(result["file"]).symlink_to(outside)
+        code, out, _ = self.cli("checkout", "document", checkout_id, "docs/design.md", "--revision", revision, "--json")
+        self.assertEqual(code, 2)
+        self.assertIn("unavailable", json.loads(out)["error"]["message"])
+        self.assertEqual(outside.read_text(), "must not overwrite")
+        for identity, path, rev in (("unknown", "docs/design.md", revision), (checkout_id, "../escape", revision),
+                                    (checkout_id, "docs/missing.md", revision), (checkout_id, "docs/design.md", "missing-revision")):
+            code, out, err = self.cli("checkout", "document", identity, path, "--revision", rev, "--json")
+            self.assertEqual(code, 2)
+            self.assertTrue(json.loads(out)["error"])
+
     def test_explicit_init_required_and_scratch_is_never_adopted(self):
         scratch = self.root / "streams/scratch"
         scratch.mkdir(parents=True)
@@ -329,13 +365,13 @@ class CatalogCliTest(unittest.TestCase):
              patch("_streams.catalog_check.HerdrClient.command_result", return_value={"type": "session_snapshot", "snapshot": snapshot}):
             code, out, _ = self.cli("check", "--pane", "wH:p2E", "--json")
             self.assertEqual(code, 2)
-            self.assertEqual(json.loads(out)["issues"][0]["kind"], "unresolved-session-document")
+            self.assertIn("unresolved-session-document", {issue["kind"] for issue in json.loads(out)["issues"]})
 
             code, out, _ = self.cli("check", "--pane", "wH:p2E", "--fix", "--json")
             self.assertEqual(code, 0)
             fixed = json.loads(out)
             self.assertTrue(fixed["valid"])
-            self.assertEqual(fixed["fixed"][0]["kind"], "session-checkout-repository-bound")
+            self.assertEqual(fixed["fixed"][0]["kind"], "checkout-repository-bound")
             self.assertEqual(fixed["fixed"][0]["repository_urls"], ["git@github.com:example/streams.git"])
 
 

@@ -31,13 +31,7 @@ export async function runStreamsPane(env: NodeJS.ProcessEnv = process.env): Prom
   const source = streamsPaneSource(env), client = new StreamsWorkspaceClient({ env, stateDirectory: env.STREAMS_CARDS_STATE_DIR });
   const controller = new AbortController();
   const view = new StreamsCardView({ read: () => source.read(controller.signal) }), parser = new KeyInput();
-  const rawConfig = await loadConfig(env.STREAMS_CARDS_CONFIG || configPath(env));
-  const config = {
-    ...rawConfig,
-    workspace_naming: rawConfig.workspace_naming ?? true,
-    tab_naming: rawConfig.tab_naming ?? true,
-    session_naming: rawConfig.session_naming ?? true,
-  };
+  const config = await loadConfig(env.STREAMS_CARDS_CONFIG || configPath(env));
   let context: StreamsNativeContext | undefined, stopped = false, closeRequested = false, selfClosing = false, wake: (() => void) | undefined;
   let keys: string[] = [], previous = '', repaintQueued = false;
   const render = () => {

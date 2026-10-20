@@ -129,7 +129,7 @@ test('native lifecycle deadline kills the CLI and its child processes', {timeout
  const bin=join(root,'bin');mkdirSync(bin);const pidfile=join(root,'pids.json');
  const shim=join(bin,'streams');
  writeFileSync(shim,`#!${process.execPath}\nconst {spawn}=require('node:child_process');const fs=require('node:fs');const child=spawn(process.execPath,['-e','setInterval(()=>{},1000)'],{stdio:'inherit'});fs.writeFileSync(${JSON.stringify(pidfile)},JSON.stringify([process.pid,child.pid]));setInterval(()=>{},1000);\n`);chmodSync(shim,0o755);
- const before=process.env.PATH;process.env.PATH=`${bin}:${before}`;t.after(()=>{process.env.PATH=before;});
+ const before=process.env.STREAMS_BIN_PATH;process.env.STREAMS_BIN_PATH=shim;t.after(()=>{if(before===undefined)delete process.env.STREAMS_BIN_PATH;else process.env.STREAMS_BIN_PATH=before;});
  await assert.rejects(new StreamCli(root).sync('shutdown'),/timed out.*uncertain.*repair state/);
  for(const pid of JSON.parse(readFileSync(pidfile,'utf8'))) {
   let state='';try {state=execFileSync('ps',['-p',String(pid),'-o','stat='],{encoding:'utf8',stdio:['ignore','pipe','pipe']}).trim();} catch(error) {assert.equal(error.status,1);}
@@ -151,7 +151,7 @@ test('native capture abort settles only after CLI and descendants stop', {timeou
  const bin=join(root,'bin');mkdirSync(bin);const pidfile=join(root,'pids.json');
  const shim=join(bin,'streams');
  writeFileSync(shim,`#!${process.execPath}\nconst {spawn}=require('node:child_process');const fs=require('node:fs');process.on('SIGTERM',()=>{});const child=spawn(process.execPath,['-e','process.on("SIGTERM",()=>{});setInterval(()=>{},1000)'],{stdio:'inherit'});fs.writeFileSync(${JSON.stringify(pidfile)},JSON.stringify([process.pid,child.pid]));setInterval(()=>{},1000);\n`);chmodSync(shim,0o755);
- const before=process.env.PATH;process.env.PATH=`${bin}:${before}`;t.after(()=>{process.env.PATH=before;});
+ const before=process.env.STREAMS_BIN_PATH;process.env.STREAMS_BIN_PATH=shim;t.after(()=>{if(before===undefined)delete process.env.STREAMS_BIN_PATH;else process.env.STREAMS_BIN_PATH=before;});
  const controller=new AbortController(), pending=new StreamCli(root).captureArrangement('effort',controller.signal);
  const rejected=assert.rejects(pending,/abort/i), deadline=performance.now()+5000;
  while(true) {

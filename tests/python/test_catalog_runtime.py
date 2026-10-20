@@ -14,7 +14,7 @@ from unittest.mock import patch
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[2] / 'src'))
 
-from _streams.catalog.model import Session, Stream
+from _streams.catalog.model import Catalog, Session, Stream
 from _streams.catalog.operations import Authority
 from _streams.catalog_runtime import Runtime, _native_environment
 from _streams.cmux import CmuxWorkspace
@@ -169,6 +169,51 @@ class RuntimeTest(unittest.TestCase):
         self.herdr.command_result.assert_not_called()
         self.assertFalse(self.runtime.state_dir.exists())
 
+    def test_check_state_reports_runtime_issue_shapes_without_writes_or_native_probes(self):
+        from _streams.catalog_runtime import _key
+        scope = 'endpoint'
+        attempt_path = self.runtime.state_dir / 'attempts' / scope / (_key(self.stream.id) + '.json')
+        self.runtime._write(attempt_path, {'stream_id': self.stream.id, 'session_id': None, 'command': None,
+                                         'cwd': str(self.cwd), 'workspace_id': 'w1', 'effects': [], 'launches': []})
+        claim_path = self.runtime._enrollment_path(scope, 'w1')
+        self.runtime._write(claim_path, {'stream_id': self.stream.id, 'workspace_id': 'w1'})
+        assoc_path = self.runtime._association_path(scope, 'w1')
+        self.runtime._write(assoc_path, {'stream_id': self.stream.id, 'workspace_id': 'w1',
+                                        'session_id': None, 'command': None, 'ready': True})
+        before = {path: path.read_bytes() for path in self.runtime.state_dir.rglob('*.json')}
+        with patch.object(self.runtime, '_write', side_effect=AssertionError('check wrote state')):
+            self.assertEqual(self.runtime.check_state(Catalog(), None), [
+                {'kind': 'pending-open-attempt', 'stream_id': self.stream.id, 'workspace_id': 'w1',
+                 'path': str(attempt_path),
+                 'message': f'pending or partial open attempt at {attempt_path} blocks workspace open and lock acquisition'},
+                {'kind': 'pending-enrollment-claim', 'stream_id': self.stream.id, 'workspace_id': 'w1',
+                 'path': str(claim_path), 'message': f'unfinished or mismatched enrollment claim marker at {claim_path}'},
+                {'kind': 'dangling-workspace-association', 'stream_id': self.stream.id, 'workspace_id': 'w1',
+                 'path': str(assoc_path),
+                 'message': f"workspace 'w1' is associated with missing stream {self.stream.id!r}"},
+            ])
+            self.assertEqual(self.runtime.check_state(Catalog(), {'unrelated'}), [])
+            self.assertEqual([issue['kind'] for issue in self.runtime.check_state(Catalog(streams=(self.stream,)), None)],
+                             ['pending-open-attempt'])
+        self.assertEqual({path: path.read_bytes() for path in before}, before)
+        self.herdr.endpoint.assert_not_called()
+        self.herdr.command_result.assert_not_called()
+        self.herdr.run.assert_not_called()
+
+    def test_check_state_reports_malformed_runtime_files_even_outside_target_filter(self):
+        from _streams.catalog_runtime import _key
+        paths = [self.runtime.state_dir / 'attempts' / 'endpoint' / (_key('other') + '.json'),
+                 self.runtime._enrollment_path('endpoint', 'w1'), self.runtime._association_path('endpoint', 'w1')]
+        for path in paths:
+            path.parent.mkdir(parents=True, exist_ok=True)
+            path.write_text('{broken')
+        issues = self.runtime.check_state(Catalog(), {self.stream.id})
+        self.assertEqual([issue['kind'] for issue in issues],
+                         ['invalid-open-attempt', 'invalid-enrollment-claim', 'invalid-workspace-association'])
+        self.assertEqual([issue['path'] for issue in issues], [str(path) for path in paths])
+        self.assertTrue(all(set(issue) == {'kind', 'path', 'message'} for issue in issues))
+        self.assertTrue(all(path.read_text() == '{broken' for path in paths))
+
     def test_reporting_context_reads_unbound_claimed_and_bound_workspaces_without_writes(self):
         self.assertIsNone(self.runtime.context_stream_id())
         self.assertFalse(self.runtime.state_dir.exists())
@@ -203,7 +248,7 @@ class RuntimeTest(unittest.TestCase):
         other = self.root / 'other'
         other.mkdir()
         self.runtime.remember_directory(self.stream.id, other, if_missing=True)
-        self.assertEqual(self.runtime._directory_record(self.stream.id, None)['cwd'], str(self.cwd.resolve()))
+        self.assertEqual(str(self.runtime.locations.read(self.stream.id, None).cwd), str(self.cwd.resolve()))
 
     def test_pending_enrollment_claim_blocks_explicit_open_after_interruption(self):
         with self.runtime.enrollment() as scope:
@@ -269,7 +314,7 @@ class RuntimeTest(unittest.TestCase):
         _, frontend_scope = self.runtime._transport(FrontendMode.HERDR)
         with self.runtime._open_lock(frontend_scope, self.stream.id) as attempt:
             self.runtime._write(attempt, {'stream_id': self.stream.id, 'session_id': None,
-                                         'command': None, 'cwd': str(self.cwd), 'workspace_id': None})
+                                         'command': None, 'cwd': str(self.cwd), 'workspace_id': None, 'effects': [], 'launches': []})
         with self.runtime.enrollment() as scope:
             for action in (lambda: scope.claim(self.stream.id), lambda: scope.bind(self.stream, authority=self.authority)):
                 with self.assertRaisesRegex(StreamError, 'pending|partial'):
@@ -730,6 +775,36 @@ sys.exit(1)
         with self.assertRaisesRegex(StreamError, 'association'):
             self.runtime.current_stream_id()
 
+    def test_current_explicit_identity_must_agree_with_ready_native_association(self):
+        for mode in (FrontendMode.HERDR, FrontendMode.CMUX):
+            with self.subTest(mode=mode), patch('_streams.catalog_runtime.CmuxClient') as transport:
+                runtime = Runtime(self.root / mode, 'local', mode)
+                transport.return_value.workspaces.return_value = [CmuxWorkspace({'id': 'c1'})]
+                with patch.dict(os.environ, {'CMUX_WORKSPACE_ID': 'c1'}):
+                    with runtime.enrollment() as enrollment:
+                        enrollment.bind(self.stream, authority=self.authority)
+                    with patch.dict(os.environ, {'STREAMS_STREAM_ID': self.stream.id}):
+                        self.assertEqual(runtime.current_stream_id(), self.stream.id)
+                    with patch.dict(os.environ, {'STREAMS_STREAM_ID': 'conflicting'}):
+                        with self.assertRaisesRegex(StreamError, 'ready workspace association disagree'):
+                            runtime.current_stream_id()
+
+    def test_current_explicit_identity_skips_ambiguous_or_incomplete_auto_probes(self):
+        runtime = Runtime(self.root / 'state', 'local', FrontendMode.AUTO)
+        for context in ({'HERDR_ENV': '1'}, {'HERDR_ENV': '1', 'HERDR_PANE_ID': 'p1', 'CMUX_WORKSPACE_ID': 'c1'}):
+            with self.subTest(context=context), patch.dict(os.environ, {**context, 'STREAMS_STREAM_ID': self.stream.id}):
+                self.assertEqual(runtime.current_stream_id(), self.stream.id)
+        self.herdr.endpoint.assert_not_called()
+        self.herdr.current_pane.assert_not_called()
+        self.assertFalse(runtime.state_dir.exists())
+
+    def test_current_ignores_claim_without_association_but_reporting_reads_it(self):
+        with self.runtime.enrollment() as enrollment:
+            enrollment.claim(self.stream.id)
+        self.assertEqual(self.runtime.context_stream_id(), self.stream.id)
+        with self.assertRaisesRegex(StreamError, 'no catalog association'):
+            self.runtime.current_stream_id()
+
     def test_malformed_local_state_is_not_silently_overwritten(self):
         self.runtime.remember_directory(self.stream.id, self.cwd)
         path = next((self.root / 'state').rglob('*.json'))
@@ -849,7 +924,7 @@ sys.exit(1)
                 if collection == 'attempts':
                     path = self.runtime.state_dir / collection / 'other-endpoint' / (_key(self.stream.id) + '.json')
                     record = {'stream_id': self.stream.id, 'session_id': None, 'command': None,
-                              'cwd': str(self.cwd), 'workspace_id': None}
+                              'cwd': str(self.cwd), 'workspace_id': None, 'effects': [], 'launches': []}
                 else:
                     path = self.runtime._enrollment_path('other-endpoint', 'w1')
                     record = {'stream_id': self.stream.id, 'workspace_id': 'w1'}
@@ -874,13 +949,56 @@ sys.exit(1)
         from _streams.catalog_runtime import _key
         path = self.runtime.state_dir / 'attempts' / 'other' / (_key(self.stream.id) + '.json')
         self.runtime._write(path, {'stream_id': 'wrong-identity', 'session_id': None, 'command': None,
-                                  'cwd': str(self.cwd), 'workspace_id': None})
+                                  'cwd': str(self.cwd), 'workspace_id': None, 'effects': [], 'launches': []})
         with self.assertRaisesRegex(StreamError, 'invalid open attempt identity'):
             self.open(cwd=self.cwd)
         path.write_text('{broken')
         with self.assertRaisesRegex(StreamError, 'invalid open attempt'):
             self.open(cwd=self.cwd)
         self.herdr.command_result.assert_not_called()
+
+    def test_open_attempt_requires_shared_effects_and_launches_schema(self):
+        from _streams.catalog_runtime import _key
+        path = self.runtime.state_dir / 'attempts' / 'other' / (_key(self.stream.id) + '.json')
+        baseline = {'stream_id': self.stream.id, 'session_id': None, 'command': None,
+                    'cwd': str(self.cwd), 'workspace_id': None, 'effects': [], 'launches': []}
+        invalid = [{key: value for key, value in baseline.items() if key != missing}
+                   for missing in ('effects', 'launches')]
+        invalid += [{**baseline, 'effects': {}}, {**baseline, 'launches': None}]
+        for record in invalid:
+            with self.subTest(record=record):
+                self.runtime._write(path, record)
+                evidence = path.read_bytes()
+                with self.assertRaisesRegex(StreamError, 'invalid open attempt'):
+                    self.open(cwd=self.cwd)
+                self.assertEqual(path.read_bytes(), evidence)
+        self.herdr.command_result.assert_not_called()
+
+    def test_cmux_failed_association_retains_shared_journal_and_launch_intent(self):
+        runtime = Runtime(self.root / 'state', 'local', FrontendMode.CMUX)
+        write = runtime._write
+        def fail_association(path, data):
+            if 'associations' in path.parts:
+                raise StreamError('association write failed')
+            return write(path, data)
+        with patch('_streams.catalog_runtime.CmuxClient') as transport:
+            client = transport.return_value
+            created = {'workspace_id': 'uuid-1', 'pane_id': 'pane-1'}
+            client.json_from_command.return_value = created
+            with patch.object(runtime, '_write', side_effect=fail_association):
+                with self.assertRaisesRegex(StreamError, 'uuid-1.*pane-1.*no rollback'):
+                    runtime.open(self.stream, (self.session,), authority=self.authority, cwd=self.cwd)
+            path = next(runtime.state_dir.glob('attempts/*/*.json'))
+            evidence = path.read_bytes()
+            attempt = json.loads(evidence)
+            self.assertEqual(attempt['effects'], [{'kind': 'workspace_create', 'returned': created}])
+            self.assertEqual(attempt['launches'], [{'session_id': self.session.id, 'command': attempt['command']}])
+            client.json_from_command.reset_mock()
+            fresh = Runtime(self.root / 'state', 'local', FrontendMode.CMUX)
+            with self.assertRaisesRegex(StreamError, 'pending or partial open'):
+                fresh.open(self.stream, (self.session,), authority=self.authority, cwd=self.cwd)
+            self.assertEqual(path.read_bytes(), evidence)
+            client.json_from_command.assert_not_called()
 
     def test_cmux_open_serializes_with_herdr_open_on_global_stream_lock(self):
         entered, release, attempted = threading.Event(), threading.Event(), threading.Event()

@@ -14,7 +14,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "src"))
 
 from _streams import catalog_config
 from _streams.cli import main
-from _streams.catalog.sync import SyncCoordinator
+from _streams.catalog.sync import LocalCatalog
 
 
 class CatalogAgentTest(unittest.TestCase):
@@ -64,7 +64,7 @@ class CatalogAgentTest(unittest.TestCase):
         })
 
     def test_unattached_local_context_neither_fetches_nor_creates_records(self):
-        with patch.object(SyncCoordinator, "read", side_effect=AssertionError("projected read")), patch.object(SyncCoordinator, "maybe_sync", side_effect=AssertionError("publication")):
+        with patch.object(LocalCatalog, "read", side_effect=AssertionError("projected read")), patch.object(LocalCatalog, "sync", side_effect=AssertionError("publication")):
             result = self.context()
         self.assertIsNone(result["stream"])
         self.assertIsNone(result["session"])
@@ -224,6 +224,32 @@ class CatalogAgentTest(unittest.TestCase):
                 self.assertEqual(self.apply(before, changes, kind=kind, actor=actor)[0], 2)
         self.assertEqual(self.context()["session"], before["session"])
 
+    def test_sharing_attention_does_not_fail_apply_or_enrollment_but_fails_explicit_sync(self):
+        from _streams.catalog.sync import Result
+        self.enroll()
+        for sharing in ("pending", "blocked", "failed", "uncertain"):
+            with self.subTest(sharing=sharing):
+                before = self.context()
+                with patch("_streams.cli.maybe_sync", return_value=Result(sharing)):
+                    code, result, _ = self.apply(before, {"state": sharing}, operation_id=sharing)
+                    self.assertEqual(code, 0, result)
+                    self.assertEqual(result["publication"]["sharing"], sharing)
+                    enrolled = self.enroll(native=sharing)
+                    self.assertEqual(enrolled["publication"]["sharing"], sharing)
+                    self.assertEqual(self.call("sync")[0], 2 if sharing != "pending" else 0)
+
+    def test_enrollment_publication_exception_preserves_all_accepted_saves(self):
+        request = {"operation_id": "interrupted-enroll", "catalog_source": self.context()["catalog_source"],
+                   "harness": "pi", "harness_session_id": "native", "actor": "automatic", "cwd": str(self.root),
+                   "stream": {"title": "Local effort"}, "session": {"title": "Local contribution"}}
+        with patch("_streams.cli.maybe_sync", side_effect=OSError("publication interrupted")):
+            code, result, _ = self.call("agent", "enroll", request=request)
+        self.assertEqual(code, 2)
+        self.assertEqual(len(result["saves"]), 2)
+        self.assertTrue(all(item["save"]["local"] == "persisted" for item in result["saves"]))
+        self.assertIn("local save succeeded", result["completion_error"]["detail"])
+        self.assertEqual(self.context()["session"], result["session"])
+
     def test_publication_failure_preserves_a_successful_local_save(self):
         before = self.enroll()
         with patch("_streams.cli.maybe_sync", side_effect=OSError("publication interrupted")):
@@ -348,7 +374,7 @@ class CatalogAgentTest(unittest.TestCase):
         enrolled = self.enroll()
         local = runtime()
         # Runtime lookup with no eligible session still has a useful cwd.
-        self.assertEqual(local._directory_record(enrolled["stream"]["id"], None)["cwd"], str(self.root.resolve()))
+        self.assertEqual(str(local.locations.read(enrolled["stream"]["id"], None).cwd), str(self.root.resolve()))
 
     def test_user_supplied_title_selects_manual_mode_even_when_unchanged(self):
         before = self.enroll()

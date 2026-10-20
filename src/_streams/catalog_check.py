@@ -8,11 +8,9 @@ import os
 from pathlib import Path
 from typing import Any
 
-from .catalog.model import Catalog, RecordKey, Session, Stream, record_key
-from .catalog.sync.local import LocalCatalog
-from .catalog.yaml_store import _directory as _store_directory, _path as _record_path
+from .catalog.model import Catalog, Session, Stream
+from .catalog_config import _atomic_json
 from .catalog_agent import source_id
-from .catalog_checkouts import infer_checkout_repository_urls, inspect_directory
 from .catalog_conversations import native_identity
 from .catalog_runtime import Runtime, _key
 from .errors import StreamError
@@ -38,275 +36,53 @@ def _should_check_herdr(local: Runtime, *, pane_id: str | None, frontend: str | 
     return any((local.state_dir / name).exists() for name in ("associations", "enrollments", "attempts"))
 
 
-def _check_runtime_files(
-    catalog: Catalog,
-    local: Runtime,
-    target_stream_ids: set[str] | None,
-    issues: list[dict[str, Any]],
-) -> None:
-    for path in sorted((local.state_dir / "attempts").glob("*/*.json")):
-        try:
-            raw = json.loads(path.read_text())
-        except (OSError, ValueError) as exc:
-            issues.append({
-                "kind": "invalid-open-attempt",
-                "path": str(path),
-                "message": f"invalid open attempt at {path}: {exc}",
-            })
-            continue
-        stream_id = raw.get("stream_id") if isinstance(raw, dict) else None
-        if target_stream_ids is None or stream_id in target_stream_ids:
-            issues.append({
-                "kind": "pending-open-attempt",
-                "stream_id": stream_id,
-                "workspace_id": raw.get("workspace_id") if isinstance(raw, dict) else None,
-                "path": str(path),
-                "message": f"pending or partial open attempt at {path} blocks workspace open and lock acquisition",
-            })
-
-    for path in sorted((local.state_dir / "enrollments").glob("*/*.json")):
-        try:
-            claim = local._enrollment_claim(path)
-        except StreamError as exc:
-            issues.append({
-                "kind": "invalid-enrollment-claim",
-                "path": str(path),
-                "message": str(exc),
-            })
-            continue
-        if claim is None or (target_stream_ids is not None and claim["stream_id"] not in target_stream_ids):
-            continue
-        assoc_path = local.state_dir / "associations" / path.parent.name / path.name
-        try:
-            assoc = local._association(assoc_path)
-        except StreamError:
-            assoc = None
-        if assoc is None or not assoc.get("ready") or assoc.get("stream_id") != claim["stream_id"] or catalog.stream(claim["stream_id"]) is None:
-            issues.append({
-                "kind": "pending-enrollment-claim",
-                "stream_id": claim["stream_id"],
-                "workspace_id": claim["workspace_id"],
-                "path": str(path),
-                "message": f"unfinished or mismatched enrollment claim marker at {path}",
-            })
-
-    for path in sorted((local.state_dir / "associations").glob("*/*.json")):
-        try:
-            assoc = local._association(path)
-        except StreamError as exc:
-            issues.append({
-                "kind": "invalid-workspace-association",
-                "path": str(path),
-                "message": str(exc),
-            })
-            continue
-        if assoc is None:
-            continue
-        if target_stream_ids is not None and assoc["stream_id"] not in target_stream_ids:
-            continue
-        if catalog.stream(assoc["stream_id"]) is None:
-            issues.append({
-                "kind": "dangling-workspace-association",
-                "stream_id": assoc["stream_id"],
-                "workspace_id": assoc["workspace_id"],
-                "path": str(path),
-                "message": f"workspace {assoc['workspace_id']!r} is associated with missing stream {assoc['stream_id']!r}",
-            })
-
-
 def _check_directory_selection(
-    stream_id: str,
-    session_id: str | None,
-    local: Runtime,
-    *,
-    fix: bool,
-    issues: list[dict[str, Any]],
-    fixed: list[dict[str, Any]],
-) -> dict[str, Any] | None:
-    if not local.locations.path(stream_id, session_id).exists():
-        return None
+    stream_id: str, session_id: str | None, local: Runtime, issues: list[dict[str, Any]], *, fix: bool, fixed: list[dict[str, Any]],
+) -> None:
     try:
-        selection = local.locations._selection(stream_id, session_id)
-        if selection is None:
-            return None
-        loc = selection["location"]
-        if loc["kind"] == "directory":
-            local.locations.checked(Path(loc["cwd"]))
-        else:
-            local.checkouts.directory(loc["id"], loc["within"])
-            chk = local.checkouts.get(loc["id"])
+        selection = local.locations.read(stream_id, session_id)
+        if selection is not None and selection.checkout_id is not None:
+            chk = local.checkouts.get(selection.checkout_id)
             if not chk.repository_urls:
-                if fix:
-                    urls = infer_checkout_repository_urls(Path(chk.directory), local.checkouts)
-                    if urls:
-                        for url in urls:
-                            local.checkouts.register(Path(chk.directory), repository_url=url)
-                        fixed.append({
-                            "kind": "session-checkout-repository-bound",
-                            "stream_id": stream_id,
-                            "session_id": session_id,
-                            "checkout_id": chk.id,
-                            "directory": chk.directory,
-                            "repository_urls": list(urls),
-                        })
-                        return selection
+                urls = local.checkouts.bind_inferred_repositories(chk.id) if fix else ()
+                if urls:
+                    fixed.append({
+                        "kind": "checkout-repository-bound", "checkout_id": chk.id,
+                        "directory": chk.directory, "repository_urls": list(urls),
+                    })
+                    return
                 issues.append({
-                    "kind": "unbound-session-checkout",
-                    "stream_id": stream_id,
-                    "session_id": session_id,
-                    "checkout_id": chk.id,
-                    "directory": chk.directory,
+                    "kind": "unbound-session-checkout", "stream_id": stream_id, "session_id": session_id,
+                    "checkout_id": chk.id, "directory": chk.directory,
                     "message": f"checkout {chk.directory} has no repository URL binding",
                 })
-        return selection
     except StreamError as exc:
         issues.append({
-            "kind": "invalid-directory-binding",
-            "stream_id": stream_id,
-            "session_id": session_id,
+            "kind": "invalid-directory-binding", "stream_id": stream_id, "session_id": session_id,
             "message": str(exc),
         })
-        return None
 
 
-def _check_stream_locations(
-    stream: Stream,
-    sessions: tuple[Session, ...],
-    local: Runtime,
-    *,
-    fix: bool,
-    issues: list[dict[str, Any]],
-    fixed: list[dict[str, Any]],
-) -> None:
-    _check_directory_selection(stream.id, None, local, fix=fix, issues=issues, fixed=fixed)
-    for session in sessions:
-        if session.host_id != local.host_id:
-            continue
-        _check_directory_selection(stream.id, session.id, local, fix=fix, issues=issues, fixed=fixed)
-
-
-def _reconcile_pending_sidecar(
-    pending_path: Path,
-    live_by_pane: dict[str, dict] | None,
-    *,
-    fix: bool,
-    fixed: list[dict[str, Any]],
-    issues: list[dict[str, Any]],
-    extra: dict[str, Any] | None = None,
-) -> None:
-    json_path = pending_path.with_suffix("")
-    record = None
-    if json_path.exists():
-        try:
-            record = json.loads(json_path.read_text())
-        except (OSError, ValueError):
-            record = None
-    if fix and live_by_pane is not None and not pending_path.is_symlink() and not json_path.is_symlink():
-        rec_pane = record.get("paneId") if isinstance(record, dict) else None
-        rec_term = record.get("terminalId") if isinstance(record, dict) else None
-        rec_tab = record.get("tabId") if isinstance(record, dict) else None
-        rec_nonce = record.get("nonce") if isinstance(record, dict) else None
-        live_card = live_by_pane.get(rec_pane) if isinstance(rec_pane, str) else None
-        try:
-            if live_card and live_card.get("terminal_id") == rec_term and live_card.get("tab_id") == rec_tab:
-                card_tokens = live_card.get("tokens") if isinstance(live_card.get("tokens"), dict) else {}
-                owner_term = card_tokens.get("strm_pi")
-                owner_pane = next(
-                    (p for p in live_by_pane.values() if p.get("terminal_id") == owner_term),
-                    None,
-                ) if isinstance(owner_term, str) else None
-                owner_tokens = owner_pane.get("tokens") if isinstance(owner_pane, dict) and isinstance(owner_pane.get("tokens"), dict) else {}
-                properly_stamped = (
-                    card_tokens.get("strm_role") == "card"
-                    and (not isinstance(rec_nonce, str) or card_tokens.get("strm_nonce") == rec_nonce)
-                    and owner_pane is not None
-                    and owner_tokens.get("strm_role") == "agent"
-                    and owner_tokens.get("strm_card") == rec_term
-                    and owner_tokens.get("strm_nonce") == card_tokens.get("strm_nonce")
-                )
-                if properly_stamped:
-                    record["phase"] = "ready"
-                    tmp_path = json_path.with_name(f".{json_path.name}.tmp-{os.getpid()}")
-                    tmp_path.write_text(json.dumps(record) + "\n")
-                    os.replace(tmp_path, json_path)
-                    pending_path.unlink(missing_ok=True)
-                    fixed.append({"kind": "pending-work-card-promoted-ready", "path": str(pending_path), "pane_id": rec_pane})
-                    return
-            if isinstance(rec_pane, str) and live_card is None and isinstance(record, dict):
-                record["phase"] = "closed"
-                tmp_path = json_path.with_name(f".{json_path.name}.tmp-{os.getpid()}")
-                tmp_path.write_text(json.dumps(record) + "\n")
-                os.replace(tmp_path, json_path)
-                pending_path.unlink(missing_ok=True)
-                fixed.append({"kind": "pending-work-card-marked-closed", "path": str(pending_path), "pane_id": rec_pane})
-                return
-            if rec_pane is None:
-                pending_path.unlink(missing_ok=True)
-                json_path.unlink(missing_ok=True)
-                fixed.append({"kind": "unlaunched-pending-work-card-removed", "path": str(pending_path)})
-                return
-        except OSError:
-            pass
-    issue = {
-        "kind": "pending-work-card-launch",
-        "path": str(pending_path),
-        "key": record.get("key") if isinstance(record, dict) else pending_path.name.removesuffix(".json.pending"),
-        "pane_id": record.get("paneId") if isinstance(record, dict) else None,
-        "terminal_id": record.get("terminalId") if isinstance(record, dict) else None,
-        "tab_id": record.get("tabId") if isinstance(record, dict) else None,
-        "message": f"pending work-card launch sidecar {pending_path} blocks automatic card open",
-    }
-    if extra:
-        issue.update(extra)
-    issues.append(issue)
-
-
-def _check_herdr_locks_and_state(
-    herdr_dir: Path,
-    *,
-    live_panes: list[dict[str, Any]] | None = None,
-    unscoped: bool,
-    fix: bool,
-    issues: list[dict[str, Any]],
-    fixed: list[dict[str, Any]],
-) -> None:
-    if not herdr_dir.exists():
-        return
+def _check_herdr_locks(herdr_dir: Path, issues: list[dict[str, Any]]) -> None:
     for lock_path in sorted(herdr_dir.glob(".work-cards-*.lock")):
         try:
             if lock_path.is_symlink() or not lock_path.is_file():
                 raise ValueError("lock path is not a regular file")
-            content = lock_path.read_text(encoding="utf-8", errors="replace")
+            if lock_path.read_text(encoding="utf-8") != "work-cards workspace lock v1\n":
+                raise ValueError("expected 'work-cards workspace lock v1' marker")
         except (OSError, ValueError) as exc:
             issues.append({
-                "kind": "invalid-work-cards-lock",
-                "path": str(lock_path),
-                "message": f"invalid work-cards lock {lock_path}: {exc}",
+                "kind": "invalid-work-cards-lock", "path": str(lock_path),
+                "message": f"invalid work-cards lock {lock_path}: {exc}; inspect before replacing",
             })
-            continue
-        if content != "work-cards workspace lock v1\n":
-            if fix and not lock_path.is_symlink():
-                lock_path.unlink(missing_ok=True)
-                fixed.append({
-                    "kind": "legacy-work-cards-lock-removed",
-                    "path": str(lock_path),
-                })
-            else:
-                issues.append({
-                    "kind": "legacy-work-cards-lock",
-                    "path": str(lock_path),
-                    "content": content.strip(),
-                    "message": f"legacy or malformed work-cards lock {lock_path} (expected 'work-cards workspace lock v1') blocks native workspace lock acquisition",
-                })
 
-    if not unscoped:
-        return
-    state_dir = herdr_dir / ".streams-work-cards"
-    if not state_dir.exists():
-        return
-    live_by_pane = {p.get("pane_id") or p.get("id"): p for p in (live_panes or []) if isinstance(p, dict) and isinstance(p.get("pane_id") or p.get("id"), str)} if live_panes is not None else None
-    for pending_path in sorted(state_dir.glob("*.json.pending")):
-        _reconcile_pending_sidecar(pending_path, live_by_pane, fix=fix, fixed=fixed, issues=issues)
+
+def _pending_launch(path: Path, record: dict) -> dict[str, Any]:
+    return {
+        "kind": "pending-work-card-launch", "path": str(path), "key": record.get("key"),
+        "pane_id": record.get("paneId"), "terminal_id": record.get("terminalId"), "tab_id": record.get("tabId"),
+        "message": f"pending work-card launch {path} requires native ownership reconciliation",
+    }
 
 
 def _check_herdr_live(
@@ -337,14 +113,7 @@ def _check_herdr_live(
     scope = _key("herdr", endpoint.socket, endpoint.session)
     workspaces = snapshot.get("workspaces") if isinstance(snapshot, dict) else None
     panes = snapshot.get("panes") if isinstance(snapshot, dict) else None
-    _check_herdr_locks_and_state(
-        herdr_dir,
-        live_panes=panes if isinstance(panes, list) else None,
-        unscoped=target_stream is None and pane_id is None,
-        fix=fix,
-        issues=issues,
-        fixed=fixed,
-    )
+    _check_herdr_locks(herdr_dir, issues)
     if not isinstance(workspaces, list) or not isinstance(panes, list):
         issues.append({
             "kind": "invalid-herdr-snapshot",
@@ -416,12 +185,14 @@ def _check_herdr_live(
     if state_dir.exists() and target_stream is None and pane_id is None:
         live_by_pane = {p.get("pane_id"): p for p in panes if isinstance(p, dict) and isinstance(p.get("pane_id"), str)}
         for rec_path in sorted(state_dir.glob("*.json")):
-            if rec_path.is_symlink() or rec_path.with_name(f"{rec_path.name}.pending").exists():
+            if rec_path.is_symlink():
                 continue
             try:
                 rec = json.loads(rec_path.read_text())
             except (OSError, ValueError):
                 continue
+            if isinstance(rec, dict) and rec.get("phase") == "pending":
+                issues.append(_pending_launch(rec_path, rec))
             if not isinstance(rec, dict) or rec.get("phase") != "ready":
                 continue
             rec_pane = rec.get("paneId")
@@ -441,9 +212,7 @@ def _check_herdr_live(
                     try:
                         client.run(["pane", "close", rec_pane])
                         rec["phase"] = "closed"
-                        tmp_path = rec_path.with_name(f".{rec_path.name}.tmp-{os.getpid()}")
-                        tmp_path.write_text(json.dumps(rec) + "\n")
-                        os.replace(tmp_path, rec_path)
+                        _atomic_json(rec_path, rec)
                         fixed.append({
                             "kind": "orphaned-restored-card-pane-closed",
                             "pane_id": rec_pane,
@@ -582,30 +351,11 @@ def _check_herdr_live(
             })
 
         stream_record = catalog.stream(session.stream_id)
+        if pane_id is not None:
+            _check_directory_selection(session.stream_id, session.id, local, issues, fix=fix, fixed=fixed)
         if stream_record is not None and stream_record.documents:
             stream_sessions = tuple(s for s in catalog.sessions if s.stream_id == stream_record.id)
             doc_locs = local.locations.document_context(stream_record, session, sessions=stream_sessions)["document_locations"]
-            if fix and any(loc["error"] is not None and "no repository binding" in loc["error"] for loc in doc_locs):
-                try:
-                    selected = local.locations.read(stream_record.id, session.id)
-                    if selected is not None and selected.checkout_id is not None:
-                        chk = local.checkouts.get(selected.checkout_id)
-                        if not chk.repository_urls:
-                            inferred = infer_checkout_repository_urls(Path(chk.directory), local.checkouts)
-                            if inferred:
-                                for url in inferred:
-                                    local.checkouts.register(Path(chk.directory), repository_url=url)
-                                fixed.append({
-                                    "kind": "session-checkout-repository-bound",
-                                    "pane_id": p_id,
-                                    "session_id": session.id,
-                                    "checkout_id": chk.id,
-                                    "directory": chk.directory,
-                                    "repository_urls": list(inferred),
-                                })
-                                doc_locs = local.locations.document_context(stream_record, session, sessions=stream_sessions)["document_locations"]
-                except StreamError:
-                    pass
             for loc in doc_locs:
                 if loc["error"] is not None:
                     issues.append({
@@ -632,7 +382,6 @@ def _check_herdr_live(
 
         if state_dir.exists():
             state_path = state_dir / f"{expected_key}.json"
-            pending_path = state_dir / f"{expected_key}.json.pending"
             state_rec = None
             if state_path.exists() and not state_path.is_symlink():
                 try:
@@ -666,70 +415,17 @@ def _check_herdr_live(
                     }
                     owner_ok = tokens.get("strm_role") == "agent" and all(tokens.get(k) == v for k, v in expected_pair.items())
                     card_ok = ctokens.get("strm_role") == "card" and all(ctokens.get(k) == v for k, v in expected_pair.items())
-                    owner_foreign = any(k in tokens and tokens.get(k) != v for k, v in expected_pair.items())
-                    card_foreign = any(k in ctokens and ctokens.get(k) != v for k, v in expected_pair.items())
-                    if (not owner_ok or not card_ok) and not owner_foreign and not card_foreign:
-                        if fix:
-                            card_token_args = [arg for k, v in {**expected_pair, "strm_role": "card"}.items() for arg in ("--token", f"{k}={v}")]
-                            owner_token_args = [arg for k, v in {**expected_pair, "strm_role": "agent"}.items() for arg in ("--token", f"{k}={v}")]
-                            if not card_ok:
-                                client.run(["pane", "report-metadata", rec_pane, "--source", "streams-work-cards", *card_token_args])
-                                live_card["tokens"] = {**ctokens, **expected_pair, "strm_role": "card"}
-                            if not owner_ok:
-                                client.run(["pane", "report-metadata", p_id, "--source", "streams-work-cards", *owner_token_args])
-                                tokens = {**tokens, **expected_pair, "strm_role": "agent"}
-                                p["tokens"] = tokens
-                            if pending_path.exists() or state_rec.get("phase") != "ready":
-                                state_rec["phase"] = "ready"
-                                tmp_path = state_path.with_name(f".{state_path.name}.tmp-{os.getpid()}")
-                                tmp_path.write_text(json.dumps(state_rec) + "\n")
-                                os.replace(tmp_path, state_path)
-                                pending_path.unlink(missing_ok=True)
-                            fixed.append({
-                                "kind": "unstamped-work-card-pair-stamped",
-                                "pane_id": p_id,
-                                "card_pane_id": rec_pane,
-                                "workspace_id": ws_id,
-                                "tab_id": tab_id,
-                                "stream_id": session.stream_id,
-                                "session_id": session.id,
-                                "nonce": rec_nonce,
-                            })
-                        else:
-                            issues.append({
-                                "kind": "unstamped-work-card-pair",
-                                "pane_id": p_id,
-                                "card_pane_id": rec_pane,
-                                "workspace_id": ws_id,
-                                "tab_id": tab_id,
-                                "stream_id": session.stream_id,
-                                "session_id": session.id,
-                                "key": expected_key,
-                                "message": (
-                                    f"recorded live work card {rec_pane} for owner pane {p_id} is missing strm_* pair markers "
-                                    f"(causes 'Caller is not the exact owned Streams card' / 'Recorded card is still live without verified ownership')"
-                                ),
-                            })
-                            continue
+                    if not owner_ok or not card_ok:
+                        issues.append({
+                            "kind": "unstamped-work-card-pair", "pane_id": p_id, "card_pane_id": rec_pane,
+                            "workspace_id": ws_id, "tab_id": tab_id, "stream_id": session.stream_id,
+                            "session_id": session.id, "key": expected_key,
+                            "message": f"recorded work card {rec_pane} lacks matching pair markers; open its owner's card to reconcile the exact reservation",
+                        })
+                        continue
 
-            if (target_stream is not None or pane_id is not None) and pending_path.exists():
-                live_by_pane = {p.get("pane_id") or p.get("id"): p for p in panes if isinstance(p, dict) and isinstance(p.get("pane_id") or p.get("id"), str)}
-                _reconcile_pending_sidecar(
-                    pending_path,
-                    live_by_pane,
-                    fix=fix,
-                    fixed=fixed,
-                    issues=issues,
-                    extra={
-                        "pane_id": p_id,
-                        "workspace_id": ws_id,
-                        "tab_id": tab_id,
-                        "stream_id": session.stream_id,
-                        "session_id": session.id,
-                        "key": expected_key,
-                        "message": f"pending work-card launch sidecar {pending_path} blocks automatic card open for pane {p_id}",
-                    },
-                )
+            if (target_stream is not None or pane_id is not None) and isinstance(state_rec, dict) and state_rec.get("phase") == "pending":
+                issues.append(_pending_launch(state_path, state_rec))
 
         present_pair_keys = [k for k in PAIR_KEYS if k in tokens]
         if present_pair_keys:
@@ -862,27 +558,22 @@ def check_all(
             "message": f"catalog save repair marker at {save_marker} blocks catalog writes",
         })
 
-    if stream is None and pane_id is None:
-        for chk in local.checkouts.list():
-            if not chk.repository_urls:
-                if fix:
-                    urls = infer_checkout_repository_urls(Path(chk.directory), local.checkouts)
-                    if urls:
-                        for url in urls:
-                            local.checkouts.register(Path(chk.directory), repository_url=url)
-                        fixed.append({
-                            "kind": "checkout-repository-bound",
-                            "checkout_id": chk.id,
-                            "directory": chk.directory,
-                            "repository_urls": list(urls),
-                        })
-                        continue
-                issues.append({
-                    "kind": "unbound-checkout",
-                    "checkout_id": chk.id,
-                    "directory": chk.directory,
-                    "message": f"registered checkout {chk.directory} has no repository URL binding",
+    for chk in local.checkouts.list() if stream is None and pane_id is None else ():
+        if chk.repository_urls:
+            continue
+        if fix:
+            urls = local.checkouts.bind_inferred_repositories(chk.id)
+            if urls:
+                fixed.append({
+                    "kind": "checkout-repository-bound", "checkout_id": chk.id,
+                    "directory": chk.directory, "repository_urls": list(urls),
                 })
+                continue
+        if stream is None and pane_id is None:
+            issues.append({
+                "kind": "unbound-checkout", "checkout_id": chk.id, "directory": chk.directory,
+                "message": f"registered checkout {chk.directory} has no repository URL binding",
+            })
 
     if pane_id is None:
         pre_streams = (stream,) if stream is not None else catalog.streams
@@ -894,7 +585,10 @@ def check_all(
                     "message": f"local owner stream {s.id!r} is missing its authority token in local.json",
                 })
             s_sessions = tuple(item for item in catalog.sessions if item.stream_id == s.id)
-            _check_stream_locations(s, s_sessions, local, fix=fix, issues=issues, fixed=fixed)
+            _check_directory_selection(s.id, None, local, issues, fix=fix, fixed=fixed)
+            for session in s_sessions:
+                if session.host_id == local.host_id:
+                    _check_directory_selection(s.id, session.id, local, issues, fix=fix, fixed=fixed)
 
     herdr_streams: set[str] | None = None
     if _should_check_herdr(local, pane_id=pane_id, frontend=frontend):
@@ -924,7 +618,7 @@ def check_all(
     else:
         target_stream_ids = None
 
-    _check_runtime_files(catalog, local, target_stream_ids, issues)
+    issues.extend(local.check_state(catalog, target_stream_ids))
 
     session_count = (
         sum(item.stream_id == stream.id for item in catalog.sessions)

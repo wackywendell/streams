@@ -3,7 +3,6 @@ import { constants } from 'node:fs';
 import { link, lstat, mkdir, open, realpath, rename, unlink } from 'node:fs/promises';
 import { isAbsolute, join, normalize, resolve } from 'node:path';
 import { isDeepStrictEqual } from 'node:util';
-import { parseDocument } from 'yaml';
 
 export interface NameScope {
   storePath: string;
@@ -183,8 +182,6 @@ export class NameStore {
       const bytes = await file.readFile();
       const source = new TextDecoder('utf-8', { fatal: true }).decode(bytes);
       const parsed: unknown = JSON.parse(source);
-      // JSON.parse silently accepts duplicate keys; use the existing persistence parser's guard.
-      if (parseDocument(source, { uniqueKeys: true }).errors.length) throw new Error('Malformed naming JSON: duplicate or invalid keys');
       const record = validateProvenance(parsed, validateScope(scope));
       return { path, record, revision: hash(bytes) };
     } finally { await file.close(); }

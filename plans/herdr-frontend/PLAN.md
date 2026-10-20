@@ -61,7 +61,7 @@ Use ordinary argparse parsing; `-f` always requires a value. Supply one selector
 
 ## Structure and style
 
-Python implementation lives in `src/_streams/`; tests use `unittest` in `tests/python/`. Pi integration stays in `extensions/stream-checkpoint/`, with `node:test` coverage in `tests/stream_checkpoint_test.mjs`. Documentation lives in `README.md`, `src/_streams/FORMAT.md`, and `docs/pi-stream-checkpoint-spec.md`.
+Python implementation lives in `src/_streams/`; tests use `unittest` in `tests/python/`. Pi integration stays in `extensions/stream-checkpoint/`, with `node:test` coverage in `tests/stream_checkpoint_test.mjs`. Documentation lives in `README.md`, the retired `src/_streams/FORMAT.md` (commit `c427e579`), and `docs/pi-stream-checkpoint-spec.md`.
 
 Use `frontend.py` for selection, `herdr.py` for the native CLI adapter, and a small neutral projection helper module only for functionality both frontends actually share. Keep the links renderer and plugin manifest in the Python package. Use a fixed two-frontend dispatch, not a registry, abstract class hierarchy, or new dependency.
 

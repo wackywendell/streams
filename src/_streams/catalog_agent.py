@@ -21,7 +21,6 @@ from .catalog.model import Session, Stream, ValidationError, choice, text
 from .catalog.operations import Operation, filter_automatic_changes, normalize_changes, update
 from .catalog.storage import StorageError
 from .catalog.sync.envelope import load_json
-from .catalog_checkouts import infer_checkout_repository_urls
 from .errors import StreamError
 
 
@@ -69,39 +68,22 @@ def context(backend, *, harness, native_id, stream_id=None, workspace_stream_id=
     """Read only actual local records; identifying a stream does not attach a session."""
     _identity(harness, native_id)
     explicit = os.environ.get("STREAMS_STREAM_ID")
-    if hasattr(backend, "context_records"):
-        stream, session, sessions, authority = backend.context_records(
-            harness=harness,
-            native_id=native_id,
-            stream_id=stream_id,
-            explicit_stream_id=explicit,
-            workspace_stream_id=workspace_stream_id,
-            deterministic_id=session_id_for(backend.host_id, harness, native_id),
-        )
-        return {
-            "catalog_source": source_id(backend),
-            "host_id": backend.host_id,
-            "stream": stream,
-            "session": session,
-            "sessions": sessions,
-            "authority": authority,
-        }
-    catalog = backend.snapshot().catalog
-    session = next((item for item in catalog.sessions if item.host_id == backend.host_id
-                    and item.harness == harness and item.harness_session_id == native_id), None)
-    candidates = [value for value in (stream_id, explicit, workspace_stream_id, session.stream_id if session else None) if value is not None]
-    for identity in candidates:
-        text(identity, "stream_id")
-    identities = set(candidates)
-    if len(identities) > 1:
-        raise StreamError("conversation already has a different effort; moving it requires an explicit move or fork operation")
-    selected = next(iter(identities), None)
-    stream = catalog.stream(selected) if selected is not None else None
-    if selected is not None and stream is None:
-        raise StreamError(f"stream {selected!r} is not in the local catalog; run streams sync to adopt remote-only records")
-    return {"catalog_source": source_id(backend), "host_id": backend.host_id, "stream": stream, "session": session,
-            "sessions": tuple(item for item in catalog.sessions if stream and item.stream_id == stream.id),
-            "authority": backend.authority(stream.id) if stream else None}
+    stream, session, sessions, authority = backend.context_records(
+        harness=harness,
+        native_id=native_id,
+        stream_id=stream_id,
+        explicit_stream_id=explicit,
+        workspace_stream_id=workspace_stream_id,
+        deterministic_id=session_id_for(backend.host_id, harness, native_id),
+    )
+    return {
+        "catalog_source": source_id(backend),
+        "host_id": backend.host_id,
+        "stream": stream,
+        "session": session,
+        "sessions": sessions,
+        "authority": authority,
+    }
 
 
 def parse_update(source: str, *, catalog_source: str) -> Operation:
@@ -225,10 +207,7 @@ def enroll(backend, runtime, source: str):
             runtime.remember_directory(stream.id, directory, if_missing=True)
             binding = runtime.remember_directory(stream.id, directory, session_id=session.id, if_missing=True)
             if binding is not None and binding.checkout_id is not None:
-                checkout = runtime.checkouts.get(binding.checkout_id)
-                if not checkout.repository_urls:
-                    for url in infer_checkout_repository_urls(Path(checkout.directory), runtime.checkouts):
-                        runtime.checkouts.register(Path(checkout.directory), repository_url=url)
+                runtime.checkouts.bind_inferred_repositories(binding.checkout_id)
             scope.bind(stream, authority=authority)
     except (StreamError, StorageError, OSError, ValueError) as error:
         if not payload["saves"] and payload.get("session") is None:

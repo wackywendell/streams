@@ -7,7 +7,7 @@ import os
 import re
 import subprocess
 import sys
-from dataclasses import dataclass, replace
+from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
@@ -24,7 +24,6 @@ class HerdrEndpoint:
 class HerdrWorkspace:
     id: str
     label: str
-    cwd: str = ""
 
     @classmethod
     def parse(cls, value: object) -> HerdrWorkspace:
@@ -128,16 +127,10 @@ class HerdrClient:
             raise StreamError("current Herdr targeting requires caller context; pass --workspace outside Herdr")
         return HerdrPane.parse(self.command_result(["pane", "current", "--current"], "pane_current").get("pane"))
 
-    def resolve_workspace(self, selector: str | None) -> HerdrWorkspace:
-        if selector is None:
-            pane = self.current_pane()
-            workspace_id = pane.workspace_id
-        else:
-            if not selector.strip():
-                raise StreamError("Herdr --workspace requires a nonempty workspace ID", kind="invalid-ref")
-            pane = None
-            workspace_id = selector
-        workspace = HerdrWorkspace.parse(self.command_result(["workspace", "get", workspace_id], "workspace_info").get("workspace"))
-        if workspace.id != workspace_id:
+    def resolve_workspace(self, selector: str) -> HerdrWorkspace:
+        if not selector.strip():
+            raise StreamError("Herdr --workspace requires a nonempty workspace ID", kind="invalid-ref")
+        workspace = HerdrWorkspace.parse(self.command_result(["workspace", "get", selector], "workspace_info").get("workspace"))
+        if workspace.id != selector:
             raise StreamError("Herdr workspace ID mismatch in native response")
-        return replace(workspace, cwd=pane.cwd) if pane is not None else workspace
+        return workspace

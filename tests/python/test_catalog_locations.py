@@ -154,6 +154,13 @@ class DirectoryBindingsTest(unittest.TestCase):
         self.assertEqual(path.read_bytes(), before)
         self.assertIn("invalid checkout directory binding", self.context()["document_locations"][0]["error"])
 
+    def test_unregistered_checkout_detection_does_not_invoke_vcs(self):
+        self.locations.remember("stream", self.root, session_id="session")
+        (self.root / ".git").mkdir()
+        with patch("_streams.catalog_checkouts._run", side_effect=AssertionError("context must not invoke VCS")):
+            context = self.context()
+        self.assertIn("not registered", context["document_locations"][0]["error"])
+
     def test_directories_outside_vcs_are_valid_and_use_external_defaults(self):
         self.locations.remember("stream", self.root, session_id="session")
         root, checkout = self.repo("external", "repo")
@@ -175,7 +182,12 @@ class DirectoryBindingsTest(unittest.TestCase):
             self.stream,
             documents=(Document("code", "main", "branch-only.md", "Branch doc", commit=commit_sha, source_session_id="other"),),
         )
-        ctx = self.locations.document_context(stream, self.session, sessions=(self.session, other))
+        before = {path: path.read_bytes() for path in self.root.rglob("*") if path.is_file()}
+        with patch("_streams.catalog_checkouts._run", side_effect=AssertionError("context must not invoke VCS")):
+            ctx = self.locations.document_context(stream, self.session, sessions=(self.session, other))
+        self.assertEqual(before, {path: path.read_bytes() for path in self.root.rglob("*") if path.is_file()})
+        self.assertFalse((self.locations.state_dir / "revisions").exists())
+        self.assertTrue(all("@" not in item["checkout_id"] for item in ctx["checkouts"]))
         loc = ctx["document_locations"][0]
         self.assertIsNone(loc["error"])
         self.assertEqual(loc["checkout_id"], two_chk.id)
@@ -186,7 +198,15 @@ class DirectoryBindingsTest(unittest.TestCase):
         loc_after = ctx_after_unlink["document_locations"][0]
         self.assertIsNone(loc_after["error"])
         self.assertEqual(loc_after["alternates"][0]["kind"], "revision")
-        self.assertEqual(Path(loc_after["file"]).read_text(), "from worktree two\n")
+        self.assertEqual(loc_after["kind"], "revision")
+        self.assertEqual(loc_after["checkout_id"], two_chk.id)
+        self.assertEqual(loc_after["root"], str(two_root))
+        self.assertEqual(loc_after["revision"], commit_sha)
+        self.assertIsNone(loc_after["file"])
+        self.assertFalse((self.locations.state_dir / "revisions").exists())
+        extracted = self.registry.revision_document(two_chk.id, "branch-only.md", commit_sha,
+                                                    cache_dir=self.locations.state_dir / "revisions")
+        self.assertEqual(Path(extracted["file"]).read_text(), "from worktree two\n")
 
 
 

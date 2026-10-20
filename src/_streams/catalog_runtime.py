@@ -1,8 +1,4 @@
-"""Host-local catalog directories and explicit native workspace associations.
-
-Only native transports are reused from the scratch frontend integrations. Catalog
-records never pass through scratch resolution, projection, or storage.
-"""
+"""Host-local catalog directories and explicit native workspace associations."""
 
 from __future__ import annotations
 
@@ -17,7 +13,7 @@ from pathlib import Path
 from typing import Iterator
 
 from .agent_sessions import Agent, AgentSessionCommand
-from .catalog.model import Session, Stream
+from .catalog.model import Catalog, Session, Stream
 from .catalog.operations import Authority
 from .catalog_checkouts import CheckoutRegistry
 from .catalog_locations import DirectoryBindings
@@ -142,6 +138,79 @@ class Runtime:
         self.checkouts = CheckoutRegistry(checkout_dir or Path(state_dir) / 'checkouts', host_id)
         self.locations = DirectoryBindings(self.state_dir, self.checkouts)
 
+    def check_state(self, catalog: Catalog, target_stream_ids: set[str] | None) -> list[dict]:
+        """Report durable runtime issues without probing native clients or changing state."""
+        issues = []
+        for path in sorted((self.state_dir / "attempts").glob("*/*.json")):
+            try:
+                raw = json.loads(path.read_text())
+            except (OSError, ValueError) as exc:
+                issues.append({
+                    "kind": "invalid-open-attempt",
+                    "path": str(path),
+                    "message": f"invalid open attempt at {path}: {exc}",
+                })
+                continue
+            stream_id = raw.get("stream_id") if isinstance(raw, dict) else None
+            if target_stream_ids is None or stream_id in target_stream_ids:
+                issues.append({
+                    "kind": "pending-open-attempt",
+                    "stream_id": stream_id,
+                    "workspace_id": raw.get("workspace_id") if isinstance(raw, dict) else None,
+                    "path": str(path),
+                    "message": f"pending or partial open attempt at {path} blocks workspace open and lock acquisition",
+                })
+
+        for path in sorted((self.state_dir / "enrollments").glob("*/*.json")):
+            try:
+                claim = self._enrollment_claim(path)
+            except StreamError as exc:
+                issues.append({
+                    "kind": "invalid-enrollment-claim",
+                    "path": str(path),
+                    "message": str(exc),
+                })
+                continue
+            if claim is None or (target_stream_ids is not None and claim["stream_id"] not in target_stream_ids):
+                continue
+            assoc_path = self.state_dir / "associations" / path.parent.name / path.name
+            try:
+                assoc = self._association(assoc_path)
+            except StreamError:
+                assoc = None
+            if assoc is None or not assoc.get("ready") or assoc.get("stream_id") != claim["stream_id"] or catalog.stream(claim["stream_id"]) is None:
+                issues.append({
+                    "kind": "pending-enrollment-claim",
+                    "stream_id": claim["stream_id"],
+                    "workspace_id": claim["workspace_id"],
+                    "path": str(path),
+                    "message": f"unfinished or mismatched enrollment claim marker at {path}",
+                })
+
+        for path in sorted((self.state_dir / "associations").glob("*/*.json")):
+            try:
+                assoc = self._association(path)
+            except StreamError as exc:
+                issues.append({
+                    "kind": "invalid-workspace-association",
+                    "path": str(path),
+                    "message": str(exc),
+                })
+                continue
+            if assoc is None:
+                continue
+            if target_stream_ids is not None and assoc["stream_id"] not in target_stream_ids:
+                continue
+            if catalog.stream(assoc["stream_id"]) is None:
+                issues.append({
+                    "kind": "dangling-workspace-association",
+                    "stream_id": assoc["stream_id"],
+                    "workspace_id": assoc["workspace_id"],
+                    "path": str(path),
+                    "message": f"workspace {assoc['workspace_id']!r} is associated with missing stream {assoc['stream_id']!r}",
+                })
+        return issues
+
     def _read(self, path: Path, fields: set[str]) -> dict | None:
         try:
             if path.is_symlink():
@@ -202,22 +271,16 @@ class Runtime:
                     raise StreamError(f'known workspace association or enrollment claim in another scope at {path}; '
                                       'cannot verify native state; inspect runtime state before retrying')
         for path in (self.state_dir / 'attempts').glob('*/*.json'):
-            # Both historical single-session and arrangement journals remain readable.
-            fields = {'stream_id', 'session_id', 'command', 'cwd', 'workspace_id'}
             try:
-                raw = json.loads(path.read_text(), object_pairs_hook=_object_pairs)
-            except (OSError, ValueError) as exc:
+                attempt = self._read(path, {'stream_id', 'session_id', 'command', 'cwd', 'workspace_id', 'effects', 'launches'})
+            except StreamError as exc:
                 raise StreamError(f'invalid open attempt at {path}: {exc}') from exc
-            if isinstance(raw, dict) and ('effects' in raw or 'launches' in raw):
-                fields |= {'effects', 'launches'}
-            attempt = self._read(path, fields)
             if (attempt is None or not _text(attempt['stream_id']) or not _text(attempt['cwd'])
                     or path.name != _key(attempt['stream_id']) + '.json'
                     or any(attempt[key] is not None and not _text(attempt[key])
                            for key in ('session_id', 'command', 'workspace_id'))
                     or (attempt['session_id'] is None) != (attempt['command'] is None)
-                    or ('effects' in fields and (not isinstance(attempt['effects'], list)
-                                                or not isinstance(attempt['launches'], list)))):
+                    or not isinstance(attempt['effects'], list) or not isinstance(attempt['launches'], list)):
                 raise StreamError(f'invalid open attempt identity at {path}')
             if attempt['stream_id'] == stream_id:
                 raise StreamError(f'pending or partial open at {path}; inspect native state before retrying; no automatic relaunch')
@@ -237,17 +300,6 @@ class Runtime:
             if descriptor is not None:
                 os.close(descriptor)
 
-    def _directory_path(self, stream_id: str, session_id: str | None) -> Path:
-        return self.locations.path(stream_id, session_id)
-
-    def _directory_record(self, stream_id: str, session_id: str | None) -> dict | None:
-        binding = self.locations.read(stream_id, session_id)
-        return None if binding is None else {'stream_id': stream_id, 'session_id': session_id, 'cwd': str(binding.cwd)}
-
-    @staticmethod
-    def _checked_directory(cwd: Path) -> Path:
-        return DirectoryBindings.checked(cwd)
-
     def remember_directory(self, stream_id: str, cwd: Path, *, session_id: str | None = None, if_missing: bool = False,
                            repository_url: str | None = None, checkout_id: str | None = None) -> None:
         self.locations.remember(stream_id, cwd, session_id=session_id, if_missing=if_missing,
@@ -255,13 +307,13 @@ class Runtime:
 
     def _cwd(self, stream: Stream, session: Session | None, cwd: Path | None) -> Path:
         if cwd is not None:
-            return self._checked_directory(cwd)
-        data = self._directory_record(stream.id, session.id) if session is not None else None
-        if data is None:
-            data = self._directory_record(stream.id, None)
-        if data is None:
+            return self.locations.checked(cwd)
+        binding = self.locations.read(stream.id, session.id) if session is not None else None
+        if binding is None:
+            binding = self.locations.read(stream.id, None)
+        if binding is None:
             raise StreamError(f'no local directory for stream {stream.id!r}; pass --cwd PATH')
-        return self._checked_directory(Path(data['cwd']))
+        return self.locations.checked(binding.cwd)
 
     def _authorize(self, authority: Authority | None) -> None:
         if not isinstance(authority, Authority) or authority.host_id != self.host_id:
@@ -404,6 +456,36 @@ class Runtime:
             raise StreamError('native projection requires a ready workspace association for this Stream')
         return native
 
+    def _caller_context(self, frontend: str | None, *, explicit_precedence: bool = False) -> tuple[str | None, str | None, str | None]:
+        explicit = os.environ.get('STREAMS_STREAM_ID')
+        if explicit is not None and not _text(explicit):
+            raise StreamError('STREAMS_STREAM_ID must be a nonempty stream ID')
+        try:
+            selected = resolve_frontend(self.frontend_mode, frontend, os.environ).resolved
+        except StreamError:
+            # --current historically permits an explicit identity without native
+            # probes when AUTO cannot choose one exact frontend.
+            if explicit_precedence and explicit is not None:
+                return explicit, None, None
+            raise
+        if selected is None:
+            return explicit, None, None
+        client, scope = self._transport(selected)
+        return explicit, scope, self._caller_workspace(selected, client)
+
+    def _enrollment_identity(self, explicit: str | None, scope: str, workspace_id: str) -> tuple[str | None, dict | None]:
+        binding = self._association(self._association_path(scope, workspace_id))
+        if binding is not None and not binding['ready']:
+            raise StreamError(f'calling workspace {workspace_id} has a partial open; inspect runtime state before enrollment or reporting')
+        claim = self._enrollment_claim(self._enrollment_path(scope, workspace_id), workspace_id)
+        identities = {value for value in (explicit, binding['stream_id'] if binding else None,
+                                          claim['stream_id'] if claim else None) if value is not None}
+        if len(identities) > 1:
+            raise StreamError(f'enrollment identity mismatch for workspace {workspace_id}; '
+                              'calling workspace association, enrollment claim and explicit identity disagree; '
+                              'inspect runtime state; refusing replacement')
+        return next(iter(identities), None), binding
+
     @contextmanager
     def enrollment(self, frontend: str | None = None) -> Iterator[Enrollment]:
         """Serialize enrollment and catalog saves for the exact calling native workspace.
@@ -411,32 +493,19 @@ class Runtime:
         Call claim(chosen_id) before creating catalog records, then bind() after
         saves. A surviving claim is returned on retry even if no Stream was saved.
         """
-        explicit = os.environ.get('STREAMS_STREAM_ID')
-        if explicit is not None and not _text(explicit):
-            raise StreamError('STREAMS_STREAM_ID must be a nonempty stream ID')
-        selected = resolve_frontend(self.frontend_mode, frontend, os.environ).resolved
-        if selected is None:
+        explicit, scope, workspace_id = self._caller_context(frontend)
+        if scope is None:
             enrollment = Enrollment(self, explicit, None, None, None, None)
             try:
                 yield enrollment
             finally:
                 enrollment._active = False
             return
-        client, scope = self._transport(selected)
-        workspace_id = self._caller_workspace(selected, client)
         path = self._enrollment_path(scope, workspace_id)
         with self._enrollment_lock(path):
+            stream_id, binding = self._enrollment_identity(explicit, scope, workspace_id)
             association_path = self._association_path(scope, workspace_id)
-            binding = self._association(association_path)
-            if binding is not None and not binding['ready']:
-                raise StreamError(f'workspace {workspace_id} has a partial open; inspect native state before enrollment')
-            claim = self._enrollment_claim(path, workspace_id)
-            identities = {value for value in (explicit, binding['stream_id'] if binding else None,
-                                              claim['stream_id'] if claim else None) if value is not None}
-            if len(identities) > 1:
-                raise StreamError(f'enrollment identity mismatch for workspace {workspace_id}; '
-                                  f'inspect association and claim at {path}; refusing replacement')
-            enrollment = Enrollment(self, next(iter(identities), None), workspace_id, path, association_path, binding, scope)
+            enrollment = Enrollment(self, stream_id, workspace_id, path, association_path, binding, scope)
             try:
                 yield enrollment
             finally:
@@ -444,36 +513,26 @@ class Runtime:
 
     def context_stream_id(self, *, frontend: str | None = None) -> str | None:
         """Read exact caller associations/claims without creating locks or bindings."""
-        explicit = os.environ.get('STREAMS_STREAM_ID')
-        if explicit is not None and not _text(explicit):
-            raise StreamError('STREAMS_STREAM_ID must be a nonempty stream ID')
-        selected = resolve_frontend(self.frontend_mode, frontend, os.environ).resolved
-        if selected is None:
+        explicit, scope, workspace_id = self._caller_context(frontend)
+        if scope is None:
             return explicit
-        client, scope = self._transport(selected)
-        workspace_id = self._caller_workspace(selected, client)
-        binding = self._association(self._association_path(scope, workspace_id))
-        if binding is not None and not binding['ready']:
-            raise StreamError('calling workspace has a partial open; inspect runtime state before reporting')
-        claim = self._enrollment_claim(self._enrollment_path(scope, workspace_id), workspace_id)
-        identities = {value for value in (explicit, binding['stream_id'] if binding else None,
-                                          claim['stream_id'] if claim else None) if value is not None}
-        if len(identities) > 1:
-            raise StreamError('calling workspace association and enrollment claim disagree; inspect runtime state')
-        return next(iter(identities), None)
+        return self._enrollment_identity(explicit, scope, workspace_id)[0]
 
     def current_stream_id(self, *, frontend: str | None = None) -> str:
-        if 'STREAMS_STREAM_ID' in os.environ:
-            explicit = os.environ['STREAMS_STREAM_ID']
-            if not _text(explicit):
-                raise StreamError('STREAMS_STREAM_ID must be a nonempty stream ID')
-            return explicit
-        selected = self._frontend(frontend)
-        client, scope = self._transport(selected)
-        workspace_id = self._caller_workspace(selected, client)
+        explicit, scope, workspace_id = self._caller_context(frontend, explicit_precedence=True)
+        if scope is None:
+            if explicit is not None:
+                return explicit
+            raise StreamError('no native frontend selected; pass --frontend herdr or --frontend cmux (or use resume)')
         binding = self._association(self._association_path(scope, workspace_id))
+        if explicit is not None:
+            if binding is not None and binding['ready'] and binding['stream_id'] != explicit:
+                raise StreamError('explicit STREAMS_STREAM_ID and ready workspace association disagree; inspect runtime state')
+            return explicit
         if binding is None:
             raise StreamError(f'workspace {workspace_id} has no catalog association; open an explicit stream first')
+        # Unlike enrollment/reporting, --current can identify a partial binding
+        # for inspection. Claims alone are not a current workspace association.
         return binding['stream_id']
 
     def _arrangement_path(self, scope: str, stream_id: str) -> Path:
@@ -579,7 +638,7 @@ class Runtime:
         self._authorize(authority)
         selected = self._frontend(frontend)
         if selected == Frontend.CMUX:
-            result = self._open_cmux(stream, sessions, authority=authority, frontend=frontend, session_ref=session_ref, cwd=cwd)
+            result = self._open_cmux(stream, sessions, session_ref=session_ref, cwd=cwd)
             return {**result, 'restored': [] if result['reused'] or result['session_id'] is None else [result['session_id']],
                     'skipped': [], 'unavailable': [], 'needs_attention': [], 'arrangement_support': 'single-session-only'}
         client, scope = self._transport(selected)
@@ -619,7 +678,7 @@ class Runtime:
                         if len(local) > 1:
                             raise StreamError('--cwd is ambiguous across multiple Sessions; choose --session')
                         remembered = local[0] if local else None
-                    self.remember_directory(stream.id, self._checked_directory(cwd), session_id=remembered.id if remembered else None)
+                    self.remember_directory(stream.id, self.locations.checked(cwd), session_id=remembered.id if remembered else None)
                 live = self._live_session(snapshot, target) if target is not None else None
                 if live is not None and live['workspace_id'] != workspace_id:
                     raise StreamError('selected conversation is already running in another native workspace; refusing duplicate launch')
@@ -768,14 +827,12 @@ class Runtime:
             raise StreamError('created Herdr pane/tab workspace identity mismatch')
         return pane
 
-    def _open_cmux(self, stream: Stream, sessions: tuple[Session, ...], *, authority: Authority | None,
-             frontend: str | None = None, session_ref: str | None = None, cwd: Path | None = None) -> dict:
-        self._authorize(authority)
+    def _open_cmux(self, stream: Stream, sessions: tuple[Session, ...], *,
+                   session_ref: str | None = None, cwd: Path | None = None) -> dict:
         session = self._select_session(stream, sessions, session_ref)
         command = self._command(session)
         directory = self._cwd(stream, session, cwd)
-        selected = self._frontend(frontend)
-        client, scope = self._transport(selected)
+        client, scope = self._transport(Frontend.CMUX)
         with self._open_lock(scope, stream.id) as attempt_path:
             bindings = [binding for binding in self._associations(scope) if binding['stream_id'] == stream.id]
             for claim in self._enrollment_claims(scope):
@@ -789,11 +846,7 @@ class Runtime:
                 binding = bindings[0]
                 workspace_id = binding['workspace_id']
                 try:
-                    if selected == Frontend.HERDR:
-                        workspace = client.resolve_workspace(workspace_id)
-                        if workspace.id != workspace_id:
-                            raise StreamError('workspace ID mismatch')
-                    elif len([w for w in client.workspaces() if w.id == workspace_id]) != 1:
+                    if len([w for w in client.workspaces() if w.id == workspace_id]) != 1:
                         raise StreamError('exact workspace ID not found')
                 except StreamError as exc:
                     raise StreamError(f'stale recorded workspace {workspace_id}: {exc}. Inspect native state and the local association; no automatic relaunch') from exc
@@ -807,42 +860,34 @@ class Runtime:
                     raise StreamError(f'workspace {workspace_id} has a different session; refusing to duplicate or replace it; inspect native state')
                 if cwd is not None:
                     self.remember_directory(stream.id, directory, session_id=session.id if session else None)
-                if selected == Frontend.HERDR:
-                    client.run(['workspace', 'focus', workspace_id])
-                else:
-                    client.run(['cmux', 'select-workspace', '--workspace', workspace_id])
-                return {'stream_id': stream.id, 'session_id': binding['session_id'], 'frontend': selected.value,
+                client.run(['cmux', 'select-workspace', '--workspace', workspace_id])
+                return {'stream_id': stream.id, 'session_id': binding['session_id'], 'frontend': Frontend.CMUX.value,
                         'workspace_id': workspace_id, 'reused': True}
 
             if any(ord(char) < 32 or ord(char) == 127 for char in stream.title):
                 raise StreamError('workspace title must not contain control characters')
             self.remember_directory(stream.id, directory, session_id=session.id if session else None)
             attempt = {'stream_id': stream.id, 'session_id': session.id if session else None,
-                       'command': command.command_text if command else None, 'cwd': str(directory), 'workspace_id': None}
+                       'command': command.command_text if command else None, 'cwd': str(directory), 'workspace_id': None,
+                       'effects': [{'kind': 'workspace_create'}],
+                       'launches': [{'session_id': session.id, 'command': command.command_text}] if command else []}
             self._write(attempt_path, attempt)
             resources = ['workspace creation attempted']
             try:
-                if selected == Frontend.HERDR:
-                    created = client.command_result(['workspace', 'create', '--cwd', str(directory), '--label', stream.title,
-                                                     *_native_environment(stream.id), '--focus'], 'workspace_created')
-                    for field, key, label in (('workspace', 'workspace_id', 'workspace'), ('tab', 'tab_id', 'tab'), ('root_pane', 'pane_id', 'pane')):
-                        resource = created.get(field)
-                        if isinstance(resource, dict) and _text(resource.get(key)):
-                            resources.append(f'{label} {resource[key]}')
-                    workspace_id = HerdrWorkspace.parse(created.get('workspace')).id
-                else:
-                    args = ['cmux', '--json', '--id-format', 'uuids', 'new-workspace', '--name', stream.title,
-                            '--cwd', str(directory), *_native_environment(stream.id), '--focus', 'true']
-                    if command:
-                        args.extend(['--command', command.command_text])
-                    created = client.json_from_command(args)
-                    workspace_id = created.get('workspace_id') if isinstance(created, dict) else None
-                    if not _text(workspace_id):
-                        raise StreamError(f'CMUX creation returned no workspace ID: {created!r}')
-                    resources.append(f'workspace {workspace_id}')
-                    for key, value in created.items():
-                        if key != 'workspace_id' and key.endswith('_id') and _text(value):
-                            resources.append(f'{key} {value}')
+                args = ['cmux', '--json', '--id-format', 'uuids', 'new-workspace', '--name', stream.title,
+                        '--cwd', str(directory), *_native_environment(stream.id), '--focus', 'true']
+                if command:
+                    args.extend(['--command', command.command_text])
+                created = client.json_from_command(args)
+                attempt['effects'][0]['returned'] = created
+                workspace_id = created.get('workspace_id') if isinstance(created, dict) else None
+                if not _text(workspace_id):
+                    self._write(attempt_path, attempt)
+                    raise StreamError(f'CMUX creation returned no workspace ID: {created!r}')
+                resources.append(f'workspace {workspace_id}')
+                for key, value in created.items():
+                    if key != 'workspace_id' and key.endswith('_id') and _text(value):
+                        resources.append(f'{key} {value}')
                 attempt['workspace_id'] = workspace_id
                 self._write(attempt_path, attempt)
                 path = self._association_path(scope, workspace_id)
@@ -852,27 +897,13 @@ class Runtime:
                 binding = {'stream_id': stream.id, 'workspace_id': workspace_id, 'session_id': session.id if session else None,
                            'command': command.command_text if command else None, 'ready': False}
                 self._write(path, binding)
-                if selected == Frontend.HERDR:
-                    tab = created.get('tab')
-                    pane = HerdrPane.parse(created.get('root_pane'))
-                    if not isinstance(tab, dict) or tab.get('workspace_id') != workspace_id or pane.workspace_id != workspace_id or pane.tab_id != tab.get('tab_id'):
-                        raise StreamError('created Herdr pane/tab workspace identity mismatch')
-                    if command:
-                        name = 'streams-' + uuid.uuid4().hex[:24]
-                        resources.append(f'agent {name} start attempted')
-                        started = client.command_result(['agent', 'start', name, '--kind', command.agent.value, '--pane', pane.id,
-                                                         '--timeout', '20000', '--', *command.argv[1:]], 'agent_started').get('agent')
-                        if (not isinstance(started, dict) or started.get('pane_id') != pane.id or started.get('workspace_id') != workspace_id
-                                or started.get('tab_id') != pane.tab_id or started.get('name') != name
-                                or started.get('agent') != command.agent.value or started.get('interactive_ready') is not True):
-                            raise StreamError('Herdr agent identity/readiness mismatch')
                 binding['ready'] = True
                 self._write(path, binding)
                 attempt_path.unlink()
                 self._sync_directory(attempt_path.parent)
             except (StreamError, OSError, ValueError) as exc:
                 raise StreamError(f'native open may be partial; {"; ".join(resources)}; {exc}. Inspect native state before retrying; no rollback or automatic relaunch') from exc
-            return {'stream_id': stream.id, 'session_id': session.id if session else None, 'frontend': selected.value,
+            return {'stream_id': stream.id, 'session_id': session.id if session else None, 'frontend': Frontend.CMUX.value,
                     'workspace_id': workspace_id, 'reused': False}
 
     def resume(self, stream: Stream, sessions: tuple[Session, ...], *, authority: Authority | None,

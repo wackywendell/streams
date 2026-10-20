@@ -141,10 +141,9 @@ class LocalCatalogTest(unittest.TestCase):
         self.assertEqual(local.save(create()).local, "repair-required")
         self.assertTrue((self.root / ".catalog-sync" / "save.json").exists())
 
-    def test_handover_is_explicitly_unsupported(self):
+    def test_backend_does_not_expose_domain_handover(self):
         local = LocalCatalog(YamlStore(self.root), host_id="laptop")
-        with self.assertRaises(NotImplementedError):
-            local.handover()
+        self.assertFalse(hasattr(local, "handover"))
 
 
 if __name__ == "__main__":
