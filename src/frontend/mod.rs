@@ -92,6 +92,20 @@ pub enum FrontendRequest {
     Explicit(FrontendId),
 }
 
+impl std::str::FromStr for FrontendRequest {
+    type Err = &'static str;
+
+    fn from_str(value: &str) -> Result<Self, Self::Err> {
+        match value {
+            "auto" => Ok(Self::Auto),
+            id if !id.trim().is_empty() && !id.chars().any(char::is_control) => {
+                Ok(Self::Explicit(FrontendId(id.into())))
+            }
+            _ => Err("invalid frontend identifier"),
+        }
+    }
+}
+
 /// Resolved policy without any native discovery or caller-workspace inference.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct FrontendSelection {
@@ -100,12 +114,21 @@ pub struct FrontendSelection {
     pub resolved: Option<FrontendId>,
 }
 
+/// Policy failures have no native effects or command evidence.
+#[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
+pub enum FrontendSelectionError {
+    #[error("incomplete Herdr caller context; expected HERDR_ENV=1 and HERDR_PANE_ID")]
+    IncompleteHerdr,
+    #[error("both CMUX and Herdr caller contexts are present; choose an explicit frontend")]
+    Ambiguous([FrontendId; 2]),
+}
+
 /// Pure Python-compatible selection policy; explicit modes bypass auto detection.
 pub fn resolve_frontend(
     configured: FrontendMode,
     requested: Option<FrontendRequest>,
     context: &BTreeMap<String, String>,
-) -> Result<FrontendSelection, FrontendError> {
+) -> Result<FrontendSelection, FrontendSelectionError> {
     let policy = match &requested {
         Some(FrontendRequest::Explicit(id)) => FrontendMode::Explicit(id.clone()),
         _ => configured.clone(),
@@ -120,14 +143,13 @@ pub fn resolve_frontend(
             let herdr = context.get("HERDR_ENV").is_some_and(|v| v == "1");
             let pane = context.get("HERDR_PANE_ID").is_some_and(|v| !v.is_empty());
             if herdr != pane {
-                return Err(FrontendError::invalid(
-                    "incomplete Herdr caller context; expected HERDR_ENV=1 and HERDR_PANE_ID",
-                ));
+                return Err(FrontendSelectionError::IncompleteHerdr);
             }
             if cmux && herdr {
-                return Err(FrontendError::invalid(
-                    "both CMUX and Herdr caller contexts are present; choose an explicit frontend",
-                ));
+                return Err(FrontendSelectionError::Ambiguous([
+                    FrontendId::cmux(),
+                    FrontendId::herdr(),
+                ]));
             }
             if cmux {
                 Some(FrontendId::cmux())

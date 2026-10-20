@@ -88,6 +88,16 @@ Migration therefore proceeds in gated stages rather than a single cutover:
 4. **Stage 4 — Native Herdr lock and workspace client in Rust:** Move native workspace locking (`flock`), pane attestation, and naming/summary projection into Rust, retiring the Node-to-Python lock helper.
 5. **Stage 5 — Native side-pane TUI (`ratatui`):** Extract portable rendering, Unicode width/clipping, shortcut-invalidation, and link/editor fixtures from the active Herdr view tests, then replace `work-cards-pane.js` with `streams-herdr-pane`.
 
+### Core CLI integration
+
+The Rust `streams` binary supports catalog setup, configuration, discovery, edits, lifecycle, sessions, checkouts, and captured agent context and apply requests. Python remains the installed default.
+
+[Process tests](../tests/cli.rs) cover receipts, host-qualified session references, Unicode selection and local-to-Git adoption. [CLI handoff tests](../tests/python/test_rust_cli_differential.py) share physical catalog, checkout and directory state between Python and Rust. The differential task builds both the binary and trace examples.
+
+An accepted save remains usable when ordinary publication fails. The receipt retains that warning; explicit `sync` returns exit 2 for sharing failures. Repair conditions and incomplete command effects also return exit 2 without discarding earlier save receipts.
+
+Native start, open, resume, workspace capture, enrollment and attestation remain separate work. The Rust CLI rejects unsupported operations rather than inventing native identity or authority. Stages 3 to 5 still require their native acceptance tests before cutover.
+
 ### TUI Unicode compatibility
 
 Use ratatui's standard Unicode layout rather than reproduce every width rule of the JavaScript renderer. The extracted fixtures match except for five trailing U+0D4E Malayalam stress cases, where Rust treats the final grapheme as zero-width and JavaScript counts one column. Accept those five named differences, retain the original fixtures, and test the exact Rust outputs alongside unchanged document targets and links. This avoids a custom Unicode compatibility patch; it does not waive other rendering or shortcut checks. The [fixture notes](../src/tui/fixtures/README.md) record the cases.

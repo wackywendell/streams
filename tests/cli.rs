@@ -1,0 +1,614 @@
+use serde_json::{Value, json};
+use std::{
+    fs,
+    io::Write,
+    path::{Path, PathBuf},
+    process::{Command, Stdio},
+};
+
+struct Fixture {
+    _temporary: tempfile::TempDir,
+    home: PathBuf,
+    cwd: PathBuf,
+}
+impl Fixture {
+    fn new() -> Self {
+        let temporary = tempfile::tempdir().unwrap();
+        let home = temporary.path().join("home");
+        let cwd = temporary.path().join("working");
+        fs::create_dir_all(&home).unwrap();
+        fs::create_dir_all(&cwd).unwrap();
+        fs::write(home.join("gitconfig"), "[user]\n name = Streams Test\n email = streams@example.test\n[commit]\n gpgSign = false\n").unwrap();
+        Self {
+            _temporary: temporary,
+            home: fs::canonicalize(home).unwrap(),
+            cwd: fs::canonicalize(cwd).unwrap(),
+        }
+    }
+    fn root(&self) -> PathBuf {
+        self.home.join("data/streams/catalog")
+    }
+    fn command(&self) -> Command {
+        let mut command = Command::new(env!("CARGO_BIN_EXE_streams"));
+        command
+            .env_clear()
+            .current_dir(&self.cwd)
+            .env("HOME", &self.home)
+            .env("XDG_CONFIG_HOME", self.home.join("config"))
+            .env("XDG_DATA_HOME", self.home.join("data"))
+            .env("XDG_STATE_HOME", self.home.join("state"))
+            .env("PATH", std::env::var_os("PATH").unwrap_or_default())
+            .env("GIT_CONFIG_NOSYSTEM", "1")
+            .env("GIT_CONFIG_GLOBAL", self.home.join("gitconfig"));
+        command
+    }
+    fn run(&self, args: &[&str], input: Option<&str>) -> (i32, Value) {
+        let mut command = self.command();
+        command
+            .args(args)
+            .arg("--json")
+            .stdout(Stdio::piped())
+            .stderr(Stdio::piped());
+        if input.is_some() {
+            command.stdin(Stdio::piped());
+        } else {
+            command.stdin(Stdio::null());
+        }
+        let mut child = command.spawn().unwrap();
+        if let Some(input) = input {
+            child
+                .stdin
+                .take()
+                .unwrap()
+                .write_all(input.as_bytes())
+                .unwrap();
+        }
+        let output = child.wait_with_output().unwrap();
+        let value = serde_json::from_slice(&output.stdout).unwrap_or_else(|error| {
+            panic!(
+                "{args:?}: {error}; stdout={} stderr={}",
+                String::from_utf8_lossy(&output.stdout),
+                String::from_utf8_lossy(&output.stderr)
+            )
+        });
+        (output.status.code().unwrap(), value)
+    }
+    fn ok(&self, args: &[&str]) -> Value {
+        let (code, value) = self.run(args, None);
+        assert_eq!(code, 0, "{args:?}: {value}");
+        value
+    }
+    fn init(&self) {
+        self.ok(&["init", "--sync", "none"]);
+    }
+    fn create(&self, title: &str) -> Value {
+        self.ok(&["create", title])["stream"].clone()
+    }
+}
+
+#[test]
+fn rejected_reads_adoption_and_missing_sync_leave_uninitialized_catalog_untouched() {
+    let f = Fixture::new();
+    for args in [
+        vec!["list"],
+        vec!["init"],
+        vec!["init", "--sync", "git", "--adopt"],
+        vec![
+            "agent",
+            "context",
+            "--harness",
+            "pi",
+            "--session-id",
+            "unknown",
+        ],
+    ] {
+        let (code, value) = f.run(&args, None);
+        assert_eq!(code, 2, "{value}");
+        assert!(value.get("error").is_some());
+        assert!(!f.root().exists());
+        assert!(!f.home.join("config/streams/host.json").exists());
+    }
+}
+
+#[test]
+fn current_target_requires_supported_policy_even_with_an_explicit_environment_identity() {
+    let f = Fixture::new();
+    f.init();
+    let stream = f.create("Current");
+    let id = stream["id"].as_str().unwrap();
+    assert_eq!(
+        f.ok(&["show", id, "--frontend", "third-party"])["stream"],
+        stream
+    );
+    for (frontend, code) in [("auto", 0), ("third-party", 2)] {
+        let output = f
+            .command()
+            .env("STREAMS_STREAM_ID", id)
+            .args(["show", "--current", "--frontend", frontend, "--json"])
+            .output()
+            .unwrap();
+        assert_eq!(output.status.code(), Some(code), "{output:?}");
+        let value: Value = serde_json::from_slice(&output.stdout).unwrap();
+        if code == 0 {
+            assert_eq!(value["stream"], stream);
+        } else {
+            assert!(
+                value["error"]["message"]
+                    .as_str()
+                    .unwrap()
+                    .contains("not enabled")
+            );
+        }
+    }
+}
+
+#[test]
+fn local_catalog_manages_fields_visibility_and_full_unicode_literal_selection() {
+    let f = Fixture::new();
+    f.init();
+    let stream = f.ok(&[
+        "create",
+        "Straße",
+        "--goal",
+        "Literal [plan]",
+        "--status",
+        "waiting",
+    ])["stream"]
+        .clone();
+    let id = stream["id"].as_str().unwrap();
+    assert_eq!(f.ok(&["show", "STRASSE"])["stream"], stream);
+    f.create("STRASSE continuation");
+    assert_eq!(f.ok(&["show", "STRASSE"])["stream"]["id"], id);
+    assert_eq!(
+        f.ok(&["list", "literal ["])["streams"]
+            .as_array()
+            .unwrap()
+            .len(),
+        1
+    );
+    let (code, value) = f.run(
+        &["update", id, "--goal-file", "-"],
+        Some("line one\nline two\n"),
+    );
+    assert_eq!(code, 0, "{value}");
+    assert_eq!(value["stream"]["goal"], "line one\nline two\n");
+    let archived = f.ok(&["archive", id]);
+    assert_eq!(archived["stream"]["archived"], true);
+    assert_eq!(archived["stream"]["status"], "waiting");
+    assert_eq!(f.ok(&["list"])["streams"].as_array().unwrap().len(), 1);
+    assert_eq!(f.ok(&["list", "--archived"])["streams"][0]["id"], id);
+    assert_eq!(
+        f.ok(&["list", "--all"])["streams"]
+            .as_array()
+            .unwrap()
+            .len(),
+        2
+    );
+    assert_eq!(f.ok(&["restore", id])["stream"]["status"], "waiting");
+    assert_eq!(
+        f.ok(&["check", id]),
+        json!({"valid":true,"streams":1,"sessions":0})
+    );
+    let (code, error) = f.run(&["show", "continu"], None);
+    assert_eq!(code, 0, "{error}");
+    let (code, error) = f.run(&["show", "STRAS"], None);
+    assert_eq!(code, 2);
+    assert_eq!(error["error"]["kind"], "ambiguous");
+    assert_eq!(error["error"]["candidates"].as_array().unwrap().len(), 2);
+}
+
+#[test]
+fn collections_keep_identity_and_reject_invalid_intent_before_save() {
+    let f = Fixture::new();
+    f.init();
+    let stream = f.create("Work");
+    let id = stream["id"].as_str().unwrap();
+    let changed = f.ok(&[
+        "update",
+        id,
+        "--add-repository",
+        "repo",
+        "https://example.test/repo",
+        "--add-document",
+        "repo",
+        "main",
+        "docs/design.md",
+        "Design",
+        "--document-added-at",
+        "repo",
+        "docs/design.md",
+        "abc123",
+        "--add-issue",
+        "https://example.test/issue",
+        "Issue",
+    ]);
+    assert_eq!(changed["stream"]["documents"][0]["added_at"], "abc123");
+    let (code, error) = f.run(
+        &[
+            "update",
+            id,
+            "--document-added-at",
+            "repo",
+            "missing.md",
+            "abc",
+        ],
+        None,
+    );
+    assert_eq!(code, 2);
+    assert!(error.get("error").is_some());
+    assert_eq!(f.ok(&["show", id])["stream"], changed["stream"]);
+    let removed = f.ok(&[
+        "update",
+        id,
+        "--remove-document",
+        "repo",
+        "docs/design.md",
+        "--remove-repository",
+        "repo",
+    ]);
+    assert_eq!(removed["stream"]["documents"], json!([]));
+    assert_eq!(removed["stream"]["repositories"], json!({}));
+}
+
+#[test]
+fn session_attach_captures_explicit_native_id_and_keeps_local_directory_state_private() {
+    let f = Fixture::new();
+    f.init();
+    let stream = f.create("Work");
+    let id = stream["id"].as_str().unwrap();
+    let attached = f.ok(&[
+        "session",
+        "attach",
+        id,
+        "--harness",
+        "pi",
+        "--session-id",
+        "opaque-native-id",
+        "--title",
+        "Contribution",
+    ]);
+    let session = &attached["session"];
+    let session_id = session["id"].as_str().unwrap();
+    assert_eq!(session["harness_session_id"], "opaque-native-id");
+    assert_eq!(
+        f.ok(&["session", "list", "--stream", id])["sessions"],
+        json!([session])
+    );
+    assert_eq!(f.ok(&["session", "show", session_id])["session"], *session);
+    let directory = f.ok(&["session", "directory", session_id]);
+    assert_eq!(directory["directory"]["cwd"], json!(f.cwd));
+    let changed = f.ok(&[
+        "session",
+        "update",
+        session_id,
+        "--state",
+        "Working",
+        "--remaining-file",
+        "-",
+    ]);
+    assert_eq!(changed["session"]["state"], "Working");
+    let files = catalog_files(&f.root());
+    assert!(
+        !files
+            .iter()
+            .any(|(_, bytes)| String::from_utf8_lossy(bytes).contains(f.cwd.to_str().unwrap()))
+    );
+    let context = f.ok(&[
+        "agent",
+        "context",
+        "--harness",
+        "pi",
+        "--session-id",
+        "opaque-native-id",
+    ]);
+    assert_eq!(context["session"]["id"], session_id);
+    assert_eq!(context["stream"]["id"], id);
+    assert_eq!(context["checkouts"], json!([]));
+    assert_eq!(context["document_locations"], json!([]));
+}
+
+#[test]
+fn captured_apply_preserves_source_base_and_stable_receipts_without_enrollment() {
+    let f = Fixture::new();
+    f.init();
+    let stream = f.create("Work");
+    let id = stream["id"].as_str().unwrap();
+    let context = f.ok(&[
+        "agent",
+        "context",
+        "--harness",
+        "pi",
+        "--session-id",
+        "not-enrolled",
+        "--stream-id",
+        id,
+    ]);
+    assert_eq!(context["session"], Value::Null);
+    assert_eq!(context["stream"], stream);
+    let request = json!({"operation_id":"captured-update","catalog_source":context["catalog_source"],"actor":"user","kind":"stream","before":stream,"changes":{"goal":"Captured"},"inputs":[]});
+    let (code, first) = f.run(&["agent", "apply"], Some(&request.to_string()));
+    assert_eq!(code, 0, "{first}");
+    assert_eq!(first["operation_id"], "captured-update");
+    let (code, retry) = f.run(&["agent", "apply"], Some(&request.to_string()));
+    assert_eq!(code, 0, "{retry}");
+    assert_eq!(retry["save"]["domain"]["outcome"], "no-change");
+    let before = catalog_files(&f.root());
+    let mut bad = request.clone();
+    bad["catalog_source"] = json!("wrong");
+    let (code, error) = f.run(&["agent", "apply"], Some(&bad.to_string()));
+    assert_eq!(code, 2);
+    assert!(error.get("error").is_some());
+    assert_eq!(catalog_files(&f.root()), before);
+    let mut stale = request;
+    stale["operation_id"] = json!("new-stale-intent");
+    stale["changes"] = json!({"goal":"Different"});
+    let (code, rejected) = f.run(&["agent", "apply"], Some(&stale.to_string()));
+    assert_eq!(code, 2, "{rejected}");
+    assert_eq!(rejected["save"]["domain"]["outcome"], "conflict");
+    assert_eq!(f.ok(&["show", id])["stream"]["goal"], "Captured");
+}
+
+#[test]
+fn accepted_save_keeps_receipt_when_directory_completion_fails() {
+    let f = Fixture::new();
+    f.init();
+    let missing = f.home.join("missing-cwd");
+    let (code, value) = f.run(
+        &["create", "Saved", "--cwd", missing.to_str().unwrap()],
+        None,
+    );
+    assert_eq!(code, 2, "{value}");
+    assert_eq!(value["save"]["local"], "persisted");
+    assert!(value["runtime"]["error"]["message"].is_string());
+    assert_eq!(
+        f.ok(&["show", value["stream"]["id"].as_str().unwrap()])["stream"],
+        value["stream"]
+    );
+}
+
+#[test]
+fn explicit_git_import_preserves_authority_and_completed_retry_returns_baseline_root() {
+    let f = Fixture::new();
+    f.init();
+    let stream = f.create("Imported");
+    let id = stream["id"].as_str().unwrap();
+    let context = f.ok(&[
+        "agent",
+        "context",
+        "--harness",
+        "pi",
+        "--session-id",
+        "not-enrolled",
+        "--stream-id",
+        id,
+    ]);
+    let imported = f.ok(&["init", "--sync", "git", "--adopt"]);
+    assert!(imported["baseline_revision"].is_string());
+    assert_eq!(f.ok(&["show", id])["stream"], stream);
+    f.ok(&["update", id, "--goal", "After import"]);
+    assert_eq!(
+        f.ok(&["init", "--sync", "git", "--adopt"])["baseline_revision"],
+        imported["baseline_revision"]
+    );
+    assert_eq!(
+        f.ok(&[
+            "agent",
+            "context",
+            "--harness",
+            "pi",
+            "--session-id",
+            "not-enrolled",
+            "--stream-id",
+            id
+        ])["authority"],
+        context["authority"]
+    );
+}
+
+#[test]
+fn frontend_policy_errors_keep_typed_candidates_without_native_calls() {
+    let f = Fixture::new();
+    let output = f
+        .command()
+        .env("CMUX_WORKSPACE_ID", "cmux-work")
+        .env("HERDR_ENV", "1")
+        .env("HERDR_PANE_ID", "herdr-pane")
+        .args(["frontend", "get", "--json"])
+        .output()
+        .unwrap();
+    assert_eq!(output.status.code(), Some(2));
+    let error: Value = serde_json::from_slice(&output.stdout).unwrap();
+    assert_eq!(error["error"]["kind"], "ambiguous");
+    assert_eq!(error["error"]["candidates"], json!(["cmux", "herdr"]));
+    assert!(!f.root().exists());
+    assert_eq!(
+        f.ok(&["frontend", "get", "--frontend", "third-party"]),
+        json!({"configured":"auto","requested":"third-party","resolved":"third-party"})
+    );
+}
+
+#[test]
+fn local_catalog_does_not_require_git_in_plain_directories() {
+    use std::os::unix::fs::PermissionsExt;
+    let f = Fixture::new();
+    let bin = f.home.join("bin");
+    fs::create_dir(&bin).unwrap();
+    let git = bin.join("git");
+    fs::write(
+        &git,
+        "#!/bin/sh\nprintf called >> \"$STREAMS_TEST_GIT_PROBE\"\nexit 99\n",
+    )
+    .unwrap();
+    fs::set_permissions(&git, fs::Permissions::from_mode(0o700)).unwrap();
+    let probe = f.home.join("git-called");
+    for args in [
+        vec!["init", "--sync", "none"],
+        vec!["create", "No subprocess"],
+        vec!["list"],
+        vec!["check"],
+        vec!["sync"],
+    ] {
+        let output = f
+            .command()
+            .env("PATH", &bin)
+            .env("STREAMS_TEST_GIT_PROBE", &probe)
+            .args(&args)
+            .arg("--json")
+            .output()
+            .unwrap();
+        assert!(
+            output.status.success(),
+            "{args:?}: {}",
+            String::from_utf8_lossy(&output.stdout)
+        );
+        let data: Value = serde_json::from_slice(&output.stdout).unwrap();
+        assert!(data.get("runtime").is_none(), "{data}");
+        assert!(!probe.exists());
+    }
+}
+
+#[test]
+fn session_references_and_candidates_keep_the_host_qualified_identity() {
+    let f = Fixture::new();
+    f.init();
+    let stream = f.create("Sessions");
+    let local = f.ok(&[
+        "session",
+        "attach",
+        stream["id"].as_str().unwrap(),
+        "--harness",
+        "pi",
+        "--session-id",
+        "native",
+        "--title",
+        "Contribution",
+    ])["session"]
+        .clone();
+    let id = local["id"].as_str().unwrap();
+    let host = local["host_id"].as_str().unwrap();
+    let foreign_host = "00000000-0000-4000-8000-000000000000";
+    let mut foreign = local.clone();
+    foreign["host_id"] = json!(foreign_host);
+    foreign["harness_session_id"] = json!("foreign-native");
+    let directory = f.root().join("sessions").join(foreign_host);
+    fs::create_dir_all(&directory).unwrap();
+    fs::write(
+        directory.join(format!("{id}.yaml")),
+        serde_json::to_vec_pretty(
+            &json!({"version":1,"revision":"foreign-revision","kind":"session","record":foreign}),
+        )
+        .unwrap(),
+    )
+    .unwrap();
+    let (code, error) = f.run(&["session", "show", id], None);
+    assert_eq!(code, 2, "{error}");
+    assert_eq!(error["error"]["kind"], "ambiguous", "{error}");
+    let mut candidates: Vec<_> = error["error"]["candidates"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|v| v.as_str().unwrap().to_owned())
+        .collect();
+    candidates.sort();
+    let qualified = format!("{host}/{id}");
+    let foreign_qualified = format!("{foreign_host}/{id}");
+    let mut expected = vec![qualified.clone(), foreign_qualified.clone()];
+    expected.sort();
+    assert_eq!(candidates, expected);
+    assert_eq!(f.ok(&["session", "show", &qualified])["session"], local);
+    assert_eq!(
+        f.ok(&["session", "show", &foreign_qualified])["session"],
+        foreign
+    );
+    assert_eq!(
+        f.ok(&["session", "update", &qualified, "--state", "Active"])["session"]["state"],
+        "Active"
+    );
+    assert_eq!(
+        f.ok(&["session", "directory", &qualified])["directory"]["cwd"],
+        f.cwd.to_str().unwrap()
+    );
+}
+
+#[test]
+fn accepted_local_write_retains_publication_warning_without_requiring_repair() {
+    let f = Fixture::new();
+    let remote = f.home.join("remote.git");
+    assert!(
+        Command::new("git")
+            .args(["-c", "init.templateDir=", "init", "--bare", "--quiet"])
+            .arg(&remote)
+            .current_dir(&f.cwd)
+            .env("GIT_CONFIG_NOSYSTEM", "1")
+            .env("GIT_CONFIG_GLOBAL", f.home.join("gitconfig"))
+            .status()
+            .unwrap()
+            .success()
+    );
+    f.ok(&[
+        "init",
+        "--sync",
+        "git",
+        "--remote",
+        remote.to_str().unwrap(),
+    ]);
+    fs::rename(&remote, f.home.join("offline.git")).unwrap();
+    let result = f.ok(&["create", "Saved offline"]);
+    assert_eq!(result["save"]["local"], "committed");
+    assert_eq!(result["save"]["domain"]["outcome"], "changes");
+    assert_eq!(result["publication"]["sharing"], "failed");
+    assert_eq!(result["publication"]["local"], "unchanged");
+    assert_eq!(
+        f.ok(&["show", result["stream"]["id"].as_str().unwrap()])["stream"],
+        result["stream"]
+    );
+    let (code, sync) = f.run(&["sync"], None);
+    assert_eq!(code, 2, "{sync}");
+    assert_eq!(sync["sharing"], "failed");
+}
+
+#[test]
+fn invalid_utf8_captured_input_is_rejected_before_any_record_changes() {
+    let f = Fixture::new();
+    f.init();
+    f.create("Unchanged");
+    let before = catalog_files(&f.root());
+    let mut child = f
+        .command()
+        .args(["agent", "apply", "--json"])
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .spawn()
+        .unwrap();
+    child.stdin.take().unwrap().write_all(&[0xff]).unwrap();
+    let output = child.wait_with_output().unwrap();
+    assert_eq!(output.status.code(), Some(2));
+    let error: Value = serde_json::from_slice(&output.stdout).unwrap();
+    assert!(error["error"]["message"].is_string());
+    assert_eq!(catalog_files(&f.root()), before);
+}
+
+fn catalog_files(root: &Path) -> Vec<(PathBuf, Vec<u8>)> {
+    fn visit(root: &Path, path: &Path, files: &mut Vec<(PathBuf, Vec<u8>)>) {
+        for entry in fs::read_dir(path).unwrap() {
+            let entry = entry.unwrap();
+            if entry.file_type().unwrap().is_dir() {
+                visit(root, &entry.path(), files);
+            } else {
+                files.push((
+                    entry.path().strip_prefix(root).unwrap().to_path_buf(),
+                    fs::read(entry.path()).unwrap(),
+                ));
+            }
+        }
+    }
+    let mut files = Vec::new();
+    for directory in ["streams", "sessions", "hosts"] {
+        let path = root.join(directory);
+        if path.exists() {
+            visit(root, &path, &mut files);
+        }
+    }
+    files.sort_by(|left, right| left.0.cmp(&right.0));
+    files
+}

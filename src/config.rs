@@ -128,7 +128,12 @@ impl Config {
 
     /// Runtime identity is the resolved catalog path, not frontend selection or inode.
     pub fn runtime_state_dir(&self) -> Result<PathBuf> {
-        let root = resolve_path(&self.load()?.catalog_root)?;
+        self.runtime_state_dir_for(&self.load()?.catalog_root)
+    }
+
+    /// Bind runtime state to an already-open catalog instead of reloading mutable settings.
+    pub fn runtime_state_dir_for(&self, root: &Path) -> Result<PathBuf> {
+        let root = resolve_path(root)?;
         Ok(self.state_home.join("streams/catalogs").join(format!(
             "{:x}",
             Sha256::digest(path_text(&root)?.as_bytes())
@@ -408,8 +413,11 @@ struct HostWire {
 }
 
 /// Existing version-one marker strategies; no backend is constructed by this module.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(
+    Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, EnumString, Display, AsRefStr,
+)]
 #[serde(rename_all = "lowercase")]
+#[strum(serialize_all = "lowercase")]
 pub enum Strategy {
     None,
     Git,
