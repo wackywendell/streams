@@ -129,75 +129,35 @@ def _check_directory_selection(
         selection = local.locations._selection(stream_id, session_id)
         if selection is None:
             return None
-        if selection["version"] == 1:
-            cwd = local.locations.checked(Path(selection["cwd"]))
-            found = inspect_directory(cwd)
-            if found is not None:
-                registered = local.checkouts.find(found[0])
-                if registered is None or not registered.repository_urls:
-                    if fix:
-                        urls = infer_checkout_repository_urls(found[0], local.checkouts)
-                        if registered is None:
-                            registered = local.checkouts.register(found[0])
+        loc = selection["location"]
+        if loc["kind"] == "directory":
+            local.locations.checked(Path(loc["cwd"]))
+        else:
+            local.checkouts.directory(loc["id"], loc["within"])
+            chk = local.checkouts.get(loc["id"])
+            if not chk.repository_urls:
+                if fix:
+                    urls = infer_checkout_repository_urls(Path(chk.directory), local.checkouts)
+                    if urls:
                         for url in urls:
-                            registered = local.checkouts.register(found[0], repository_url=url)
-                        local.locations.remember(stream_id, cwd, session_id=session_id)
+                            local.checkouts.register(Path(chk.directory), repository_url=url)
                         fixed.append({
-                            "kind": "legacy-session-checkout-registered",
+                            "kind": "session-checkout-repository-bound",
                             "stream_id": stream_id,
                             "session_id": session_id,
-                            "checkout_id": registered.id,
-                            "directory": str(found[0]),
-                            "repository_urls": list(registered.repository_urls),
+                            "checkout_id": chk.id,
+                            "directory": chk.directory,
+                            "repository_urls": list(urls),
                         })
-                        return local.locations._selection(stream_id, session_id)
-                    issues.append({
-                        "kind": "unregistered-session-checkout",
-                        "stream_id": stream_id,
-                        "session_id": session_id,
-                        "cwd": str(cwd),
-                        "message": f"session directory {cwd} is in a VCS checkout that is not registered with a repository URL",
-                    })
-                elif fix and session_id is not None:
-                    local.locations.remember(stream_id, cwd, session_id=session_id)
-                    fixed.append({
-                        "kind": "legacy-session-location-upgraded",
-                        "stream_id": stream_id,
-                        "session_id": session_id,
-                        "checkout_id": registered.id,
-                        "directory": str(found[0]),
-                    })
-                    return local.locations._selection(stream_id, session_id)
-        else:
-            loc = selection["location"]
-            if loc["kind"] == "directory":
-                local.locations.checked(Path(loc["cwd"]))
-            else:
-                local.checkouts.directory(loc["id"], loc["within"])
-                chk = local.checkouts.get(loc["id"])
-                if not chk.repository_urls:
-                    if fix:
-                        urls = infer_checkout_repository_urls(Path(chk.directory), local.checkouts)
-                        if urls:
-                            for url in urls:
-                                local.checkouts.register(Path(chk.directory), repository_url=url)
-                            fixed.append({
-                                "kind": "session-checkout-repository-bound",
-                                "stream_id": stream_id,
-                                "session_id": session_id,
-                                "checkout_id": chk.id,
-                                "directory": chk.directory,
-                                "repository_urls": list(urls),
-                            })
-                            return selection
-                    issues.append({
-                        "kind": "unbound-session-checkout",
-                        "stream_id": stream_id,
-                        "session_id": session_id,
-                        "checkout_id": chk.id,
-                        "directory": chk.directory,
-                        "message": f"checkout {chk.directory} has no repository URL binding",
-                    })
+                        return selection
+                issues.append({
+                    "kind": "unbound-session-checkout",
+                    "stream_id": stream_id,
+                    "session_id": session_id,
+                    "checkout_id": chk.id,
+                    "directory": chk.directory,
+                    "message": f"checkout {chk.directory} has no repository URL binding",
+                })
         return selection
     except StreamError as exc:
         issues.append({
@@ -551,7 +511,7 @@ def _check_herdr_live(
 
         locator = agent_session.get("value") if isinstance(agent_session, dict) and agent_session.get("kind") == "path" else None
         if not isinstance(locator, str) or not locator.strip():
-            if p.get("agent") == "pi" or p_id == pane_id or any(k in tokens for k in PAIR_KEYS):
+            if p_id == pane_id or any(k in tokens for k in PAIR_KEYS):
                 issues.append({
                     "kind": "missing-agent-session-locator",
                     "pane_id": p_id,
@@ -903,39 +863,6 @@ def check_all(
         })
 
     if stream is None and pane_id is None:
-        if isinstance(backend, LocalCatalog):
-            for sess in catalog.sessions:
-                expected_path = _record_path(backend.store.root, record_key(sess))
-                legacy_path = _record_path(backend.store.root, RecordKey("session", sess.id, sess.host_id))
-                if legacy_path.exists() and not expected_path.exists():
-                    if fix:
-                        try:
-                            with backend.store.transaction():
-                                _store_directory(expected_path.parent.parent.parent, create=True)
-                                _store_directory(expected_path.parent.parent, create=True)
-                                _store_directory(expected_path.parent, create=True)
-                                os.replace(legacy_path, expected_path)
-                                try:
-                                    legacy_path.parent.rmdir()
-                                except OSError:
-                                    pass
-                            fixed.append({
-                                "kind": "legacy-session-path-migrated",
-                                "session_id": sess.id,
-                                "stream_id": sess.stream_id,
-                                "from": str(legacy_path.relative_to(backend.store.root)),
-                                "to": str(expected_path.relative_to(backend.store.root)),
-                            })
-                            continue
-                        except (OSError, Exception):
-                            pass
-                    issues.append({
-                        "kind": "unpartitioned-session-record",
-                        "session_id": sess.id,
-                        "stream_id": sess.stream_id,
-                        "path": str(legacy_path.relative_to(backend.store.root)),
-                        "message": f"session {sess.id} is stored at legacy unpartitioned path {legacy_path.relative_to(backend.store.root)}; run streams check --fix to migrate to {expected_path.relative_to(backend.store.root)}",
-                    })
         for chk in local.checkouts.list():
             if not chk.repository_urls:
                 if fix:

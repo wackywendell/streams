@@ -100,19 +100,8 @@ def _read_history(git: Git, tip: str | None) -> History:
             if result.outcome != "changes":
                 raise RepairRequired(f"operation {operation.id} does not explain its commit: {result.outcome}")
             changes = {name for name in files.keys() | history.files.keys() if files.get(name) != history.files.get(name)}
-            expected_path = YamlStore.record_path(operation.target).as_posix()
-            legacy_path = (
-                YamlStore.record_path(RecordKey("session", operation.after.id, operation.after.host_id)).as_posix()
-                if isinstance(operation.after, Session)
-                else expected_path
-            )
-            if changes == {expected_path} and expected_path in files:
-                path = expected_path
-            elif changes == {legacy_path} and legacy_path in files:
-                path = legacy_path
-            elif changes == {expected_path, legacy_path} and expected_path in files and legacy_path not in files and legacy_path in history.files:
-                path = expected_path
-            else:
+            path = YamlStore.record_path(operation.target).as_posix()
+            if changes != {path} or path not in files:
                 raise RepairRequired(f"commit changes do not match operation {operation.id}")
             actual = history.catalog.replacing(YamlStore.decode_record(path, files[path]))
             expected = history.catalog.replacing(result.record)

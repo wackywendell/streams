@@ -172,14 +172,7 @@ class GitCatalog:
                 self.state.write("save.json", {"start": history.tip, "operation": message})
                 transaction.save(result.record, expected=snapshot)
                 path = self.store.record_path(operation.target).as_posix()
-                if isinstance(result.record, Session):
-                    legacy_path = self.store.record_path(RecordKey("session", result.record.id, result.record.host_id)).as_posix()
-                    if legacy_path != path and legacy_path in history.files:
-                        self.git.run("add", "-A", "--", path, legacy_path)
-                    else:
-                        self.git.run("add", "--", path)
-                else:
-                    self.git.run("add", "--", path)
+                self.git.run("add", "--", path)
                 commit = self._commit(self.git.text("write-tree"), message, history.tip)
                 branch = self._config().branch
                 self.git.run("update-ref", "refs/heads/" + branch, commit, history.tip)

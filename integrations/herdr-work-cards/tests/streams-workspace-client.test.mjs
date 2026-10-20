@@ -25,7 +25,7 @@ async function fixture(t) {
     contexts.push({ catalog_source: 'catalog', host_id: 'host', authority: null, session, sessions: [session],
       native: { frontend: 'herdr', pane_id: `w:p${n}`, tab_id: `w:t${n}`, workspace_id: 'w' },
       stream: { id: 'shared', title: 'Shared stream', title_mode: 'manual', goal: 'Shared purpose', goal_short: 'Shared',
-        repositories: { main: { url: 'https://example.com/repo' } }, documents: [{ repository: 'main', path: 'docs/design.md', ref: 'recovery', added_at: 'abcdef012345', description: 'Design' }], issues: [], prs: [] },
+        repositories: { main: { url: 'https://example.com/repo' } }, documents: [{ repository: 'main', path: 'docs/design.md', ref: 'recovery', commit: 'abcdef012345', description: 'Design' }], issues: [], prs: [] },
       checkouts: [{ repository: 'main', checkout_id: `checkout-${n}`, root: checkout }],
       document_locations: [{ repository: 'main', path: 'docs/design.md', checkout_id: `checkout-${n}`, root: checkout, file: join(checkout, 'docs/design.md'), error: null }],
     });

@@ -87,7 +87,7 @@ class CatalogAgentTest(unittest.TestCase):
     def test_herdr_helper_rejected_before_any_catalog_or_runtime_mutation_but_user_can_enroll(self):
         from _streams.cli import runtime
         from _streams.herdr import HerdrPane, HerdrWorkspace
-        from _streams.herdr_binding import HerdrEndpoint
+        from _streams.herdr import HerdrEndpoint
         source = self.context('helper')['catalog_source']
         self.assertEqual(self.call('config', 'set', 'frontend.mode', 'herdr')[0], 0)
         # A persisted helper session is real, but is not the session in the parent pane.
@@ -128,7 +128,7 @@ class CatalogAgentTest(unittest.TestCase):
 
     def test_automatic_herdr_fork_and_resume_enroll_the_actual_pane_session(self):
         from _streams.herdr import HerdrPane, HerdrWorkspace
-        from _streams.herdr_binding import HerdrEndpoint
+        from _streams.herdr import HerdrEndpoint
         self.assertEqual(self.call('config', 'set', 'frontend.mode', 'herdr')[0], 0)
         path = self.root / 'original-filename.jsonl'
         with patch('_streams.catalog_runtime.HerdrClient') as transport, patch.dict(os.environ, {

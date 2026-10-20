@@ -1,5 +1,5 @@
 import stringWidth from 'string-width';
-import type { CardStatus } from '../records/schema.js';
+export type CardStatus = 'active' | 'waiting' | 'blocked' | 'parked' | 'done';
 
 const documentKeys = 'abcdefghijklmnoprstuvwxyz';
 export function plain(text: string): string { return text.toWellFormed().replace(/[\p{Cc}\p{Cf}]/gu, ''); }

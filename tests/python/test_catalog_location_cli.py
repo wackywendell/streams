@@ -16,7 +16,7 @@ from _streams.cli import main, runtime
 from _streams.catalog.operations import Authority
 from _streams.errors import StreamError
 from _streams.herdr import HerdrPane, HerdrWorkspace
-from _streams.herdr_binding import HerdrEndpoint
+from _streams.herdr import HerdrEndpoint
 
 
 class CatalogLocationCliTest(unittest.TestCase):

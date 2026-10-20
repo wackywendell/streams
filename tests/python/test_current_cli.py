@@ -18,7 +18,7 @@ from _streams.cli import build_parser, main
 from _streams.cmux import CmuxWorkspace
 from _streams.errors import StreamError
 from _streams.herdr import HerdrPane, HerdrWorkspace
-from _streams.herdr_binding import HerdrEndpoint
+from _streams.herdr import HerdrEndpoint
 
 
 CMUX = {"CMUX_WORKSPACE_ID": "caller-id"}

@@ -8,7 +8,7 @@ export type CardState = {discussion: DiscussionState; edits: Map<string, FieldEd
 export function cardSummary(catalog: LocalContext): string {
  const stream = catalog.stream, session = catalog.session;
  if (!stream) return "No work card attached";
- return [`Whole effort · ${stream.title} [${stream.title_mode}]`, `ID: ${stream.id} · owner: ${stream.owner.host_id}`, `${stream.status}${stream.archived ? " · archived" : ""}`, `Goal [${stream.goal_mode}]: ${stream.goal ?? "—"}`, ...stream.documents.map((row) => `Document: ${row.repository}:${row.path} — ${row.description}${(row.commit ?? row.added_at) ? ` · commit ${row.commit ?? row.added_at}` : ""} · recovery ref ${row.ref}`), ...[...stream.issues, ...stream.prs].map((row) => `${row.url} — ${row.description}`), "", "This session", session ? `${session.title} [${session.title_mode}] · ${session.status}\nID: ${session.id} · host: ${session.host_id} · membership: ${session.stream_id}\n${session.state}\nRemaining: ${session.remaining}` : "Not yet enrolled", "", "Other recorded contributions", ...catalog.sessions.filter((row) => row.id !== session?.id || row.host_id !== session?.host_id).map((row) => `${row.title} · ${row.host_id} · ${row.status}: ${row.state_short ?? row.state}`)].join("\n");
+ return [`Whole effort · ${stream.title} [${stream.title_mode}]`, `ID: ${stream.id} · owner: ${stream.owner.host_id}`, `${stream.status}${stream.archived ? " · archived" : ""}`, `Goal [${stream.goal_mode}]: ${stream.goal ?? "—"}`, ...stream.documents.map((row) => `Document: ${row.repository}:${row.path} — ${row.description}${row.commit ? ` · commit ${row.commit}` : ""} · recovery ref ${row.ref}`), ...[...stream.issues, ...stream.prs].map((row) => `${row.url} — ${row.description}`), "", "This session", session ? `${session.title} [${session.title_mode}] · ${session.status}\nID: ${session.id} · host: ${session.host_id} · membership: ${session.stream_id}\n${session.state}\nRemaining: ${session.remaining}` : "Not yet enrolled", "", "Other recorded contributions", ...catalog.sessions.filter((row) => row.id !== session?.id || row.host_id !== session?.host_id).map((row) => `${row.title} · ${row.host_id} · ${row.status}: ${row.state_short ?? row.state}`)].join("\n");
 }
 /** A small composer built around Pi's editor; unsent input survives close/reopen. */
 export async function compose(ctx: ExtensionContext, state: DiscussionState): Promise<string | undefined> {
@@ -43,8 +43,7 @@ async function referenceRows(ctx: ExtensionContext, field: string, edit: FieldEd
    const alias = await ctx.ui.select("Existing repository alias", Object.keys(stream.repositories));if (!alias) continue;row.repository = alias;
    const ref = await ctx.ui.editor("Recovery branch/bookmark (does not pin opening)", row.ref ?? "");if (ref === undefined) continue;row.ref = ref;
    const path = await ctx.ui.editor("Portable relative document path", row.path ?? "");if (path === undefined) continue;row.path = path;
-   const commitVal = await ctx.ui.editor("Commit SHA (optional recovery context)", row.commit ?? row.added_at ?? "");if (commitVal === undefined) continue;
-   delete row.added_at;
+   const commitVal = await ctx.ui.editor("Commit SHA (optional recovery context)", row.commit ?? "");if (commitVal === undefined) continue;
    if (commitVal.trim()) row.commit = commitVal;else delete row.commit;
    if (!row.source_session_id && edit.base.session?.id) row.source_session_id = edit.base.session.id;
   } else {const url = await ctx.ui.editor("HTTP(S) URL", row.url ?? "");if (url === undefined) continue;row.url = url;}

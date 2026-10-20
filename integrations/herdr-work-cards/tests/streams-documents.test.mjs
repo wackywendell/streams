@@ -9,11 +9,11 @@ async function fixture(t) {
   const temporary = await realpath(await mkdtemp(join(tmpdir(), 'streams-document-'))); t.after(() => rm(temporary, { recursive: true, force: true }));
   const a = join(temporary, 'workspace-a'), b = join(temporary, 'workspace-b');
   for (const root of [a, b]) await mkdir(join(root, 'docs'), { recursive: true });
-  const reference = { repository: 'project', ref: 'recovery-branch', added_at: 'a1', path: 'docs/design.md', description: 'Shared design' };
+  const reference = { repository: 'project', ref: 'recovery-branch', commit: 'a1', path: 'docs/design.md', description: 'Shared design' };
   const location = { repository: 'project', path: reference.path, checkout_id: 'b', root: b, file: join(b, reference.path), error: null };
   const snapshot = { scope: { ...scope }, stream: { repositories: { project: { url: 'https://example.com/project' } }, documents: [reference] },
     checkouts: [{ repository: 'project', checkout_id: 'b', root: b }], documentLocations: [location] };
-  const target = { scope: { ...scope }, repositoryUrl: 'https://example.com/project', ref: reference.ref, added_at: 'a1', ...location };
+  const target = { scope: { ...scope }, repositoryUrl: 'https://example.com/project', ref: reference.ref, commit: 'a1', ...location };
   return { a, b, snapshot, target };
 }
 test('a1 provenance opens viewing B current edits, never A or recorded revision', async t => {
@@ -46,7 +46,7 @@ test('changed app binding, checkout ID, canonical file, root and errors invalida
 test('reference recovery/provenance freshness and repository URL fail before filesystem resolution', async t => {
   const { snapshot, target } = await fixture(t); const changed = structuredClone(snapshot); changed.stream.repositories.project.url = 'https://example.com/other';
   await assert.rejects(resolveStreamsDocument(changed, target), /Document repository changed/);
-  for (const field of ['repository', 'ref', 'path', 'added_at']) { const removed = structuredClone(snapshot); removed.stream.documents[0][field] = 'different'; await assert.rejects(resolveStreamsDocument(removed, target), /Document reference no longer present/); }
+  for (const field of ['repository', 'ref', 'path', 'commit']) { const removed = structuredClone(snapshot); removed.stream.documents[0][field] = 'different'; await assert.rejects(resolveStreamsDocument(removed, target), /Document reference no longer present/); }
 });
 test('editor key includes source, host, checkout ID and canonical file but not ref/provenance or progress', async t => {
   const { b, snapshot, target } = await fixture(t); await writeFile(join(b, target.path), 'B'); const first = await resolveStreamsDocument(snapshot, target);
@@ -55,8 +55,8 @@ test('editor key includes source, host, checkout ID and canonical file but not r
   }
   const other = structuredClone(snapshot); other.checkouts[0].checkout_id = other.documentLocations[0].checkout_id = 'replacement-lifetime';
   assert.notEqual(first.key, (await resolveStreamsDocument(other, { ...target, checkout_id: 'replacement-lifetime' })).key);
-  snapshot.stream.documents[0].ref = 'new-ref'; snapshot.stream.documents[0].added_at = 'new-commit';
-  assert.equal(first.key, (await resolveStreamsDocument(snapshot, { ...target, ref: 'new-ref', added_at: 'new-commit' })).key);
+  snapshot.stream.documents[0].ref = 'new-ref'; snapshot.stream.documents[0].commit = 'new-commit';
+  assert.equal(first.key, (await resolveStreamsDocument(snapshot, { ...target, ref: 'new-ref', commit: 'new-commit' })).key);
 });
 test('different checkouts inside the same native workspace resolve independently', async t => {
   const { a, b, snapshot, target } = await fixture(t); for (const root of [a, b]) await writeFile(join(root, target.path), root);

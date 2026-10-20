@@ -2,24 +2,14 @@ import { existsSync } from 'node:fs';
 import { delimiter, isAbsolute, join, normalize, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { runProcess } from './subprocess.js';
-import type { CardStatus } from '../records/schema.js';
+import type { CardStatus } from './view.js';
 
 const PACKAGE_ROOT = resolve(fileURLToPath(new URL('../../../..', import.meta.url)));
 function resolveStreamsBin(cwd: string | undefined, env: NodeJS.ProcessEnv): string {
   if (env.STREAMS_BIN_PATH) return env.STREAMS_BIN_PATH;
-  const ownBin = join(PACKAGE_ROOT, '.venv', 'bin', 'streams');
-  if (cwd && resolve(cwd) !== PACKAGE_ROOT && existsSync(ownBin)) {
-    const cwdVenvPrefix = join(resolve(cwd), '.venv') + '/';
-    for (const entry of (env.PATH ?? '').split(delimiter)) {
-      if (!entry) continue;
-      const candidate = join(entry, 'streams');
-      if (existsSync(candidate)) {
-        if (resolve(candidate).startsWith(cwdVenvPrefix)) return ownBin;
-        break;
-      }
-    }
-  }
-  return 'streams';
+  const first = (env.PATH ?? '').split(delimiter).filter(Boolean).map(p => join(p, 'streams')).find(existsSync);
+  const own = join(PACKAGE_ROOT, '.venv', 'bin', 'streams');
+  return cwd && resolve(cwd) !== PACKAGE_ROOT && first?.startsWith(join(resolve(cwd), '.venv') + '/') && existsSync(own) ? own : 'streams';
 }
 
 export const STREAMS_READ_ENV_KEYS = ['HOME', 'XDG_CONFIG_HOME', 'XDG_DATA_HOME', 'XDG_STATE_HOME', 'PI_CODING_AGENT_DIR', 'HERDR_BIN_PATH', 'PATH'] as const;
@@ -29,7 +19,7 @@ export interface StreamsCardScope {
 }
 export interface StreamsDocument {
   repository: string; ref: string; path: string; description: string;
-  added_at?: string; commit?: string; source_session_id?: string;
+  commit?: string; source_session_id?: string;
 }
 export interface StreamsCheckoutBinding { repository: string; checkout_id: string; root: string }
 export interface StreamsDocumentAlternate {
@@ -77,7 +67,6 @@ function stream(value: unknown): value is StreamsStream {
     || !Object.entries(value.repositories).every(([alias, repo]) => identity(alias) && object(repo) && identity(repo.url))
     || !Array.isArray(value.documents) || !value.documents.every(doc => object(doc)
       && [doc.repository, doc.ref, doc.path].every(identity) && text(doc.description)
-      && (doc.added_at === undefined || identity(doc.added_at))
       && (doc.commit === undefined || identity(doc.commit))
       && (doc.source_session_id === undefined || identity(doc.source_session_id))
       && Object.hasOwn(value.repositories as object, doc.repository as string))

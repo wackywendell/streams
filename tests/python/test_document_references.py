@@ -58,7 +58,7 @@ class DocumentReferencesTest(unittest.TestCase):
         self.document = self.before.documents[0]
 
     def test_identity_excludes_recovery_ref_description_and_provenance(self):
-        changed = replace(self.document, ref="other", description="Updated", added_at="commit:opaque")
+        changed = replace(self.document, ref="other", description="Updated", commit="commit:opaque")
         self.assertEqual(self.document.identity, ("code", "docs/design.md"))
         self.assertEqual(changed.identity, self.document.identity)
         with self.assertRaisesRegex(ValidationError, "duplicate documents"):
@@ -71,29 +71,29 @@ class DocumentReferencesTest(unittest.TestCase):
                 self.assertEqual(len(effort.documents), 2)
 
     def test_provenance_is_optional_opaque_nonempty_text(self):
-        self.assertIsNone(self.document.added_at)
+        self.assertIsNone(self.document.commit)
         for value in ("", " \t\n", 42, False, [], {}, "bad\x00commit"):
-            with self.subTest(value=value), self.assertRaisesRegex(ValidationError, "document.added_at"):
-                replace(self.document, added_at=value)
+            with self.subTest(value=value), self.assertRaisesRegex(ValidationError, "document.commit"):
+                replace(self.document, commit=value)
         for value in ("commit:opaque", "sha256:not-a-git-hash", "非Git commit"):
             with self.subTest(value=value):
-                document = replace(self.document, added_at=value)
+                document = replace(self.document, commit=value)
                 effort = replace(self.before, documents=(document,))
                 data = record_to_data(effort)
-                self.assertEqual(data["documents"][0]["added_at"], value)
+                self.assertEqual(data["documents"][0]["commit"], value)
                 self.assertEqual(record_from_data("stream", data), effort)
                 self.assertEqual(YamlStore.decode_record("streams/stream-1.yaml", physical_record(data)), effort)
 
     def test_absent_provenance_preserves_old_physical_shape(self):
         self.assertEqual(record_to_data(self.before), stream_data())
         explicit_none = stream_data()
-        explicit_none["documents"][0]["added_at"] = None
+        explicit_none["documents"][0]["commit"] = None
         self.assertEqual(record_from_data("stream", explicit_none), self.before)
         self.assertEqual(record_to_data(record_from_data("stream", explicit_none)), stream_data())
         self.assertEqual(YamlStore.decode_record("streams/stream-1.yaml", physical_record(stream_data())), self.before)
 
     def test_document_decoding_remains_strict(self):
-        for changes in ({"added_at": ""}, {"added_at": 17}, {"unexpected": "value"}, {"ref": None}):
+        for changes in ({"commit": ""}, {"commit": 17}, {"unexpected": "value"}, {"ref": None}):
             data = stream_data()
             data["documents"][0].update(changes)
             with self.subTest(changes=changes):
@@ -104,8 +104,8 @@ class DocumentReferencesTest(unittest.TestCase):
 
     def test_reference_metadata_edits_are_guarded_replacements(self):
         for changes in ({"ref": "recovered"}, {"description": "New purpose"},
-                        {"added_at": "commit:opaque"},
-                        {"ref": "recovered", "description": "New purpose", "added_at": "commit:opaque"}):
+                        {"commit": "commit:opaque"},
+                        {"ref": "recovered", "description": "New purpose", "commit": "commit:opaque"}):
             with self.subTest(changes=changes):
                 edited = replace(self.document, **changes)
                 operation = update("edit-document", self.before, {"documents": (edited,)})
@@ -116,7 +116,7 @@ class DocumentReferencesTest(unittest.TestCase):
                 current = replace(self.before, status="waiting")
                 result = reconcile(Catalog(streams=(current,)), operation)
                 self.assertEqual(result.record, replace(current, documents=(edited,)))
-        with_provenance = replace(self.before, documents=(replace(self.document, added_at="commit:old"),))
+        with_provenance = replace(self.before, documents=(replace(self.document, commit="commit:old"),))
         operation = update("clear-provenance", with_provenance, {"documents": (self.document,)})
         self.assertEqual(reconcile(Catalog(streams=(with_provenance,)), operation).record, self.before)
 
@@ -125,7 +125,7 @@ class DocumentReferencesTest(unittest.TestCase):
                            {"documents": (replace(self.document, ref="desired"),)})
         encoded = encode_operation(operation)
         for changes in ({"ref": "concurrent"}, {"description": "Concurrent purpose"},
-                        {"added_at": "commit:concurrent"}):
+                        {"commit": "commit:concurrent"}):
             with self.subTest(changes=changes):
                 current = replace(self.before, documents=(replace(self.document, **changes),))
                 result = reconcile(Catalog(streams=(current,)), operation)
@@ -139,7 +139,7 @@ class DocumentReferencesTest(unittest.TestCase):
         current = replace(before, documents=(independent,))
         result = reconcile(Catalog(streams=(current,)), operation)
         self.assertEqual((result.outcome, result.record.documents), ("changes", (independent, self.document)))
-        for changes in ({"ref": "other"}, {"description": "Other purpose"}, {"added_at": "commit:other"}):
+        for changes in ({"ref": "other"}, {"description": "Other purpose"}, {"commit": "commit:other"}):
             with self.subTest(changes=changes):
                 current = replace(before, documents=(replace(self.document, **changes),))
                 result = reconcile(Catalog(streams=(current,)), operation)
@@ -148,18 +148,18 @@ class DocumentReferencesTest(unittest.TestCase):
     def test_envelope_round_trip_preserves_old_canonical_bytes_and_digest(self):
         original = message(envelope_data())
         operation, origin = decode_operation(original)
-        self.assertIsNone(operation.before.documents[0].added_at)
-        self.assertIsNone(operation.after.documents[0].added_at)
-        self.assertIsNone(operation.inputs[0].documents[0].added_at)
+        self.assertIsNone(operation.before.documents[0].commit)
+        self.assertIsNone(operation.after.documents[0].commit)
+        self.assertIsNone(operation.inputs[0].documents[0].commit)
         encoded = encode_operation(operation, origin=origin)
         self.assertEqual(encoded, original)
         self.assertEqual(hashlib.sha256(encoded.encode()).digest(), hashlib.sha256(original.encode()).digest())
-        self.assertNotIn("added_at", encoded)
+        self.assertNotIn("commit", encoded)
 
     def test_provenance_round_trips_in_all_envelope_records(self):
         data = envelope_data()
         for record in (data["before"], data["after"], data["inputs"][0]["record"]):
-            record["documents"][0]["added_at"] = "commit:known"
+            record["documents"][0]["commit"] = "commit:known"
         original = message(data)
         operation, origin = decode_operation(original)
         self.assertEqual(encode_operation(operation, origin=origin), original)

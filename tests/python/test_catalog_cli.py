@@ -142,12 +142,12 @@ class CatalogCliTest(unittest.TestCase):
         self.initialize()
         stream = self.create("Documents", "--add-repository", "code", "https://example.org/code",
                              "--add-document", "code", "topic", "docs/design.md", "Design",
-                             "--document-added-at", "code", "docs/design.md", "commit:known")
+                             "--document-commit", "code", "docs/design.md", "commit:known")
         document = stream["documents"][0]
-        self.assertEqual(document["added_at"], "commit:known")
+        self.assertEqual(document["commit"], "commit:known")
         self.assertEqual(self.cli("update", stream["id"], "--add-document", "code", "other",
                                  "docs/design.md", "Design")[0], 2)
-        self.assertEqual(self.cli("update", stream["id"], "--document-added-at", "code",
+        self.assertEqual(self.cli("update", stream["id"], "--document-commit", "code",
                                  "missing.md", "commit:known")[0], 2)
         self.assertEqual(self.cli("update", stream["id"], "--remove-document", "code", "docs/design.md",
                                  "--add-document", "code", "other", "docs/design.md", "Updated")[0], 0)
@@ -244,7 +244,7 @@ class CatalogCliTest(unittest.TestCase):
         transcript.write_text(json.dumps({"type": "session", "version": 3, "id": "01a154ad-a5fc-7180-a631-bd34e8c4c093"}) + "\n")
         from _streams import catalog_config as config
         from _streams.catalog_runtime import Runtime, _key
-        from _streams.herdr_binding import HerdrEndpoint
+        from _streams.herdr import HerdrEndpoint
         rt = Runtime(config.runtime_state_dir(), config.host_id(), config.get_frontend_mode(), checkout_dir=config.checkout_state_dir())
         socket = str(self.root / "config/herdr/herdr.sock")
         scope = _key("herdr", socket, "default")
@@ -308,7 +308,7 @@ class CatalogCliTest(unittest.TestCase):
         transcript.write_text(json.dumps({"type": "session", "version": 3, "id": "01a1556b-8410-75b9-851d-778193659ea0"}) + "\n")
         from _streams import catalog_config as config
         from _streams.catalog_runtime import Runtime, _key
-        from _streams.herdr_binding import HerdrEndpoint
+        from _streams.herdr import HerdrEndpoint
         rt = Runtime(config.runtime_state_dir(), config.host_id(), config.get_frontend_mode(), checkout_dir=config.checkout_state_dir())
         socket = str(self.root / "config/herdr/herdr.sock")
         scope = _key("herdr", socket, "default")

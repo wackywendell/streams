@@ -50,13 +50,13 @@ test('two exact sessions share goal and references, never progress; baseline ren
 });
 
 test('commit provenance is labelled as added or commit, never as a revision pin or recovery branch', async () => {
-  const f = fixture(); f.value.stream.documents[0].added_at = 'abcdef0123456789';
+  const f = fixture(); f.value.stream.documents[0].commit = 'abcdef0123456789';
   const rendered = renderStreamsCard(await f.source.read(), 100, 10);
-  assert.match(plain(rendered.text), /docs\/design.md \(added abcdef01\)/);
+  assert.match(plain(rendered.text), /docs\/design.md \(commit abcdef01\)/);
   assert.doesNotMatch(plain(rendered.text), /@ topic|@ abcdef/);
-  assert.equal(rendered.documents.get('a').added_at, 'abcdef0123456789');
+  assert.equal(rendered.documents.get('a').commit, 'abcdef0123456789');
 
-  delete f.value.stream.documents[0].added_at;
+  delete f.value.stream.documents[0].commit;
   f.value.stream.documents[0].commit = '9876543210fedcba';
   f.value.stream.documents[0].source_session_id = 'other';
   const renderedCommit = renderStreamsCard(await f.source.read(), 100, 10);
@@ -122,7 +122,7 @@ test('multiroot labels reuse distinguishing ancestors; same-root collisions and 
 for (const [name, change] of [
   ['path', f => { f.value.stream.documents[0].path = 'replaced.md'; }],
   ['ref', f => { f.value.stream.documents[0].ref = 'different-branch'; }],
-  ['provenance', f => { f.value.stream.documents[0].added_at = 'new-commit'; }],
+  ['provenance', f => { f.value.stream.documents[0].commit = 'new-commit'; }],
   ['repository URL', f => { f.value.stream.repositories.lib.url = 'https://example.com/new'; }],
   ['root', f => { f.roots({ lib: '/relocated' }); }],
   ['binding removed', f => { f.roots({}); }],

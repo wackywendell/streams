@@ -18,7 +18,7 @@ def _value(value: object) -> object:
         return value.isoformat()
     if is_dataclass(value):
         return {field.name: _value(getattr(value, field.name)) for field in fields(value)
-                if not (isinstance(value, Document) and field.name in ("added_at", "commit", "source_session_id") and getattr(value, field.name) is None)}
+                if not (isinstance(value, Document) and field.name in ("commit", "source_session_id") and getattr(value, field.name) is None)}
     if isinstance(value, Mapping):
         return {key: _value(item) for key, item in value.items()}
     if isinstance(value, tuple):

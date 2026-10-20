@@ -72,14 +72,13 @@ class Link:
 class Document:
     """Repository/path identity with a recovery ref and optional commit/session provenance.
 
-    commit (or legacy added_at) identifies the latest known commit from source_session_id.
+    commit identifies the latest known commit from source_session_id.
     """
 
     repository: str
     ref: str
     path: str
     description: str
-    added_at: str | None = None
     commit: str | None = None
     source_session_id: str | None = None
 
@@ -88,16 +87,10 @@ class Document:
         text(self.ref, "document.ref")
         relative_path(self.path, "document.path")
         text(self.description, "document.description", empty=True)
-        if self.added_at is not None:
-            text(self.added_at, "document.added_at")
         if self.commit is not None:
             text(self.commit, "document.commit")
         if self.source_session_id is not None:
             text(self.source_session_id, "document.source_session_id")
-
-    @property
-    def effective_commit(self) -> str | None:
-        return self.commit if self.commit is not None else self.added_at
 
     @property
     def identity(self) -> tuple[str, str]:
@@ -223,8 +216,7 @@ class RecordKey:
         text(self.id, "record id")
         if self.kind == "session":
             text(self.host_id, "session host id")
-            if self.stream_id is not None:
-                text(self.stream_id, "session stream id")
+            text(self.stream_id, "session stream id")
         elif self.host_id is not None or self.stream_id is not None:
             raise ValidationError("only session keys have a host id")
 

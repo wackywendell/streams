@@ -6,25 +6,15 @@ import { fileURLToPath } from "node:url";
 const PACKAGE_ROOT = resolve(fileURLToPath(new URL("../..", import.meta.url)));
 function resolveStreamsBin(cwd: string, env: NodeJS.ProcessEnv = process.env): string {
  if (env.STREAMS_BIN_PATH) return env.STREAMS_BIN_PATH;
- const ownBin = join(PACKAGE_ROOT, ".venv", "bin", "streams");
- if (cwd && resolve(cwd) !== PACKAGE_ROOT && existsSync(ownBin)) {
-  const cwdVenvPrefix = join(resolve(cwd), ".venv") + "/";
-  for (const entry of (env.PATH ?? "").split(delimiter)) {
-   if (!entry) continue;
-   const candidate = join(entry, "streams");
-   if (existsSync(candidate)) {
-    if (resolve(candidate).startsWith(cwdVenvPrefix)) return ownBin;
-    break;
-   }
-  }
- }
- return "streams";
+ const first = (env.PATH ?? "").split(delimiter).filter(Boolean).map((p) => join(p, "streams")).find(existsSync);
+ const own = join(PACKAGE_ROOT, ".venv", "bin", "streams");
+ return cwd && resolve(cwd) !== PACKAGE_ROOT && first?.startsWith(join(resolve(cwd), ".venv") + "/") && existsSync(own) ? own : "streams";
 }
 
 export type Status = "active" | "waiting" | "blocked" | "parked" | "done";
 export type Mode = "automatic" | "manual";
 export type Link = { url: string; description: string };
-export type Document = { repository: string; ref: string; path: string; description: string; added_at?: string | null; commit?: string | null; source_session_id?: string | null };
+export type Document = { repository: string; ref: string; path: string; description: string; commit?: string | null; source_session_id?: string | null };
 export type StreamWire = { id: string; title: string; title_mode: Mode; goal: string | null; goal_short: string | null; goal_mode: Mode; status: Status; archived: boolean; owner: { host_id: string }; repositories: Record<string, { url: string }>; documents: Document[]; issues: Link[]; prs: Link[] };
 export type SessionWire = { id: string; host_id: string; stream_id: string; harness: string; harness_session_id: string; title: string; title_mode: Mode; status: Status; state: string; state_short: string | null; remaining: string; checkout: {repository: string; ref: string; directory_within_checkout: string} | null };
 export type LocalContext = { catalog_source: string; host_id: string; stream: StreamWire | null; session: SessionWire | null; sessions: SessionWire[]; authority: { host_id: string; token: string } | null };
@@ -46,7 +36,7 @@ const status = (value: unknown) => ["active", "waiting", "blocked", "parked", "d
 const nullableText = (value: unknown) => value === null || text(value);
 const link = (value: unknown) => object(value) && text(value.url) && text(value.description);
 function stream(value: unknown): value is StreamWire {
- return object(value) && text(value.id) && text(value.title) && mode(value.title_mode) && nullableText(value.goal) && nullableText(value.goal_short) && mode(value.goal_mode) && status(value.status) && typeof value.archived === "boolean" && object(value.owner) && text(value.owner.host_id) && object(value.repositories) && Object.values(value.repositories).every((repo) => object(repo) && text(repo.url)) && Array.isArray(value.documents) && value.documents.every((doc: unknown) => object(doc) && [doc.repository, doc.ref, doc.path, doc.description].every(text) && (doc.added_at === undefined || nullableText(doc.added_at)) && (doc.commit === undefined || nullableText(doc.commit)) && (doc.source_session_id === undefined || nullableText(doc.source_session_id))) && Array.isArray(value.issues) && value.issues.every(link) && Array.isArray(value.prs) && value.prs.every(link);
+ return object(value) && text(value.id) && text(value.title) && mode(value.title_mode) && nullableText(value.goal) && nullableText(value.goal_short) && mode(value.goal_mode) && status(value.status) && typeof value.archived === "boolean" && object(value.owner) && text(value.owner.host_id) && object(value.repositories) && Object.values(value.repositories).every((repo) => object(repo) && text(repo.url)) && Array.isArray(value.documents) && value.documents.every((doc: unknown) => object(doc) && [doc.repository, doc.ref, doc.path, doc.description].every(text) && (doc.commit === undefined || nullableText(doc.commit)) && (doc.source_session_id === undefined || nullableText(doc.source_session_id))) && Array.isArray(value.issues) && value.issues.every(link) && Array.isArray(value.prs) && value.prs.every(link);
 }
 function session(value: unknown): value is SessionWire {
  return object(value) && [value.id, value.host_id, value.stream_id, value.harness, value.harness_session_id, value.title, value.state, value.remaining].every(text) && mode(value.title_mode) && status(value.status) && nullableText(value.state_short) && (value.checkout === null || object(value.checkout) && [value.checkout.repository, value.checkout.ref, value.checkout.directory_within_checkout].every(text));

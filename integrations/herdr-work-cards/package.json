@@ -7,23 +7,14 @@
   "engines": {
     "node": ">=22"
   },
-  "keywords": [
-    "pi-package"
-  ],
   "files": [
     "src",
     "dist",
     "bin",
     "docs",
-    "herdr-plugin.toml"
+    "streams-herdr-plugin.toml"
   ],
-  "pi": {
-    "extensions": [
-      "src/pi/index.ts"
-    ]
-  },
   "exports": {
-    "./records": "./dist/records.js",
     "./config": "./dist/config.js"
   },
   "scripts": {

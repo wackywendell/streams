@@ -68,10 +68,6 @@ class DirectoryBindings:
         base = {"version", "stream_id", "session_id"}
         if type(data.get("version")) is not int:
             raise StreamError(f"invalid directory binding version: {path}")
-        if data["version"] == 1 and set(data) == base | {"cwd"}:
-            if not _text(data["cwd"]) or not Path(data["cwd"]).is_absolute():
-                raise StreamError(f"invalid directory binding cwd: {path}")
-            return data
         if data["version"] != 2 or set(data) != base | {"location"} or not isinstance(data["location"], dict):
             raise StreamError(f"invalid directory binding schema: {path}")
         location = data["location"]
@@ -90,14 +86,6 @@ class DirectoryBindings:
         data = self._selection(stream_id, session_id)
         if data is None:
             return None
-        if data["version"] == 1:
-            # Legacy absolute selections can use already registered roots, but
-            # reading them never registers a root or changes repository bindings.
-            directory = self.checked(Path(data["cwd"]))
-            found = inspect_directory(directory)
-            registered = self.checkouts.find(found[0]) if found else None
-            return DirectoryBinding(directory, registered.id if registered else None,
-                                    found[1] if registered else None)
         location = data["location"]
         if location["kind"] == "directory":
             return DirectoryBinding(self.checked(Path(location["cwd"])))
@@ -238,7 +226,7 @@ class DirectoryBindings:
                                 break
                     except (StreamError, OSError, ValueError):
                         continue
-            if selection_error is None and (document.effective_commit is not None or (not alternates and document.source_session_id is not None)):
+            if selection_error is None and (document.commit is not None or (not alternates and document.source_session_id is not None)):
                 base_chk = origin_chk or checkout
                 if base_chk is not None:
                     cache_dir = self.state_dir / "revisions"
@@ -246,7 +234,7 @@ class DirectoryBindings:
                         base_chk,
                         document.path,
                         ref=document.ref,
-                        commit=document.effective_commit,
+                        commit=document.commit,
                         cache_dir=cache_dir,
                     )
                     if extracted is not None:

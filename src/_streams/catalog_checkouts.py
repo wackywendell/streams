@@ -68,14 +68,9 @@ def _run(args: list[str], cwd: Path) -> str:
         raise StreamError(f"checkout inspection failed in {cwd}: {' '.join(args)}") from error
 
 
-_MARKER_CACHE: dict[tuple[object, ...], tuple[float, Path]] = {}
-
-
 def inspect_directory(cwd: Path) -> tuple[Path, str] | None:
     """Find the nearest marked worktree, without snapshotting a jj workspace."""
     current = _directory(cwd)
-    mocked = any(hasattr(fn, "side_effect") or hasattr(fn, "return_value") for fn in (_run, subprocess.run))
-    now = time.monotonic()
     for candidate in (current, *current.parents):
         jj = candidate / ".jj"
         git = candidate / ".git"
@@ -87,28 +82,14 @@ def inspect_directory(cwd: Path) -> tuple[Path, str] | None:
             if has_jj:
                 if jj.is_symlink() or not jj.is_dir():
                     raise StreamError(f"malformed jj marker: {jj}")
-                marker = jj
+                output = _run(["jj", "--ignore-working-copy", "--at-operation=@", "workspace", "root"], candidate)
             else:
                 if git.is_symlink() or not (git.is_dir() or git.is_file()):
                     raise StreamError(f"malformed Git marker: {git}")
-                marker = git
-            c_stat = candidate.stat()
-            m_stat = marker.stat()
-            cache_key = None if mocked else (str(candidate), c_stat.st_dev, c_stat.st_ino, has_jj, m_stat.st_dev, m_stat.st_ino, m_stat.st_mtime_ns, m_stat.st_size)
-            cached = _MARKER_CACHE.get(cache_key) if cache_key is not None else None
-            root = cached[1] if cached is not None and (now - cached[0]) < 5.0 else None
-            if root is None:
-                if has_jj:
-                    output = _run(["jj", "--ignore-working-copy", "--at-operation=@", "workspace", "root"], candidate)
-                else:
-                    output = _run(["git", "rev-parse", "--path-format=absolute", "--show-toplevel"], candidate)
-                root = _directory(Path(output))
-                if not Path(output).is_absolute() or root != candidate:
-                    raise StreamError(f"VCS marker does not describe its exact checkout root: {candidate}")
-                if cache_key is not None:
-                    if len(_MARKER_CACHE) >= 256:
-                        _MARKER_CACHE.clear()
-                    _MARKER_CACHE[cache_key] = (now, root)
+                output = _run(["git", "rev-parse", "--path-format=absolute", "--show-toplevel"], candidate)
+            root = _directory(Path(output))
+            if not Path(output).is_absolute() or root != candidate:
+                raise StreamError(f"VCS marker does not describe its exact checkout root: {candidate}")
             return root, current.relative_to(root).as_posix()
         except (OSError, ValueError, RuntimeError) as error:
             raise StreamError(f"cannot inspect checkout marker in {candidate}: {error}") from error
@@ -164,6 +145,7 @@ class CheckoutRegistry:
         digest = hashlib.sha256(host_id.encode()).hexdigest()
         self.path = state_dir / f"checkouts-{digest}.json"
         self._lock_path = state_dir / f"checkouts-{digest}.lock"
+        self._validated: set[tuple[object, ...]] = set()
 
     def _read(self) -> _State:
         try:
@@ -281,15 +263,20 @@ class CheckoutRegistry:
                 return checkout
         raise StreamError(f"checkout is not registered: {checkout_id}", kind="not-found")
 
-    @staticmethod
-    def _validate(checkout: CheckoutLocation) -> CheckoutLocation:
+    def _validate(self, checkout: CheckoutLocation) -> CheckoutLocation:
         try:
             path = Path(checkout.directory)
             root = _directory(path)
             metadata = root.stat()
             if root != path or (metadata.st_dev, metadata.st_ino) != (checkout.device, checkout.inode):
                 raise StreamError(f"checkout root was replaced: {checkout.directory}; explicitly move the registration")
-            _exact_root(root)
+            marker = (root / ".jj") if (root / ".jj").exists() or (root / ".jj").is_symlink() else (root / ".git")
+            m_stat = marker.lstat() if marker.exists() or marker.is_symlink() else None
+            key = None if m_stat is None or marker.is_symlink() else (checkout.id, metadata.st_dev, metadata.st_ino, m_stat.st_dev, m_stat.st_ino, m_stat.st_mtime_ns, m_stat.st_size)
+            if key is None or key not in self._validated:
+                _exact_root(root)
+                if key is not None:
+                    self._validated.add(key)
             return checkout
         except OSError as error:
             raise StreamError(f"checkout root is unavailable: {checkout.directory}: {error}") from error
@@ -448,50 +435,6 @@ def infer_checkout_repository_urls(directory: Path, checkouts: CheckoutRegistry)
         except StreamError:
             pass
     return tuple(urls)
-
-
-def inspect_document_revision(checkout_dir: Path, path: str) -> dict[str, object] | None:
-    """Return {ref, commit, modified} for an existing file in a Git/jj checkout, or None."""
-    try:
-        relative = _relative(path, allow_root=False)
-        root = _directory(checkout_dir)
-        target = (root / relative).resolve(strict=True)
-        if not target.is_relative_to(root) or not target.is_file():
-            return None
-    except (OSError, RuntimeError, StreamError, ValueError):
-        return None
-    if (root / ".jj").is_dir():
-        try:
-            meta = _run([
-                "jj", "--ignore-working-copy", "--at-operation=@", "log", "-r", "@", "--no-graph",
-                "-T", 'change_id.shortest(8) ++ "\\t" ++ commit_id ++ "\\t" ++ local_bookmarks.map(|b| b.name()).join(",") ++ "\\n"',
-            ], root).splitlines()
-            if meta:
-                parts = meta[0].split("\t")
-                if len(parts) >= 2 and parts[0].strip() and parts[1].strip():
-                    change_id, commit_id = parts[0].strip(), parts[1].strip()
-                    bookmarks = [b.strip().rstrip("*") for b in (parts[2].split(",") if len(parts) > 2 else []) if b.strip()]
-                    diff_files = set(_run(["jj", "--ignore-working-copy", "--at-operation=@", "diff", "-r", "@", "--name-only"], root).splitlines())
-                    return {"ref": bookmarks[0] if bookmarks else change_id, "commit": commit_id, "modified": relative in diff_files}
-        except StreamError:
-            pass
-    try:
-        commit_id = _run(["git", "rev-parse", "--verify", "HEAD"], root).strip()
-        if not commit_id:
-            return None
-        try:
-            branch = _run(["git", "symbolic-ref", "--short", "-q", "HEAD"], root).strip()
-        except StreamError:
-            branch = ""
-        modified = False
-        try:
-            status_out = _run(["git", "status", "--porcelain", "--", relative], root).strip()
-            modified = bool(status_out)
-        except StreamError:
-            pass
-        return {"ref": branch or commit_id[:12], "commit": commit_id, "modified": modified}
-    except StreamError:
-        return None
 
 
 def extract_document_revision(

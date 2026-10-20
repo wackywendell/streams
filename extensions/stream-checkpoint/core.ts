@@ -33,9 +33,8 @@ export function validateReferences(field: string, rows: unknown, stream: StreamW
  for (const row of rows) {
   if (!row || typeof row !== "object" || Array.isArray(row)) throw Error("Invalid reference row");
   const keys = field === "documents" ? ["repository", "ref", "path", "description"] : ["url", "description"];
-  const allowed = field === "documents" ? [...keys, "added_at", "commit", "source_session_id"] : keys;
+  const allowed = field === "documents" ? [...keys, "commit", "source_session_id"] : keys;
   if (Object.keys(row).some((key) => !allowed.includes(key)) || keys.some((key) => typeof row[key] !== "string" || row[key].includes("\0"))) throw Error("Reference rows require labelled text fields");
-  if (field === "documents" && row.added_at !== undefined && row.added_at !== null) nonempty(row.added_at, "added_at");
   if (field === "documents" && row.commit !== undefined && row.commit !== null) nonempty(row.commit, "commit");
   if (field === "documents" && row.source_session_id !== undefined && row.source_session_id !== null) nonempty(row.source_session_id, "source_session_id");
   let id: string;

@@ -21,7 +21,7 @@ from _streams.catalog_conversations import conversation_file, file_identity, nat
 from _streams.catalog_runtime import Runtime
 from _streams.errors import StreamError
 from _streams.frontend import FrontendMode
-from _streams.herdr_binding import HerdrEndpoint
+from _streams.herdr import HerdrEndpoint
 
 
 class ArrangementTest(unittest.TestCase):

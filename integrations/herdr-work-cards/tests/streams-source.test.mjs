@@ -11,7 +11,7 @@ function wire() {
     title: 'Own', title_mode: 'manual', status: 'active', state: 'Own state', state_short: 'Own', remaining: 'Own remaining' };
   return { catalog_source: 'catalog', host_id: 'host', stream: { id: 'shared', title: 'Shared', title_mode: 'manual', goal: 'Goal', goal_short: 'Goal',
     repositories: { main: { url: 'https://example.com/main' } },
-    documents: [{ repository: 'main', ref: 'topic', added_at: 'abc123', path: 'docs/design.md', description: 'Design' }], issues: [], prs: [] },
+    documents: [{ repository: 'main', ref: 'topic', commit: 'abc123', path: 'docs/design.md', description: 'Design' }], issues: [], prs: [] },
     native: { frontend: 'herdr', pane_id: 'w:p1', tab_id: 'w:t1', workspace_id: 'w' },
     checkouts: [{ repository: 'main', checkout_id: 'checkout-b', root: '/host/b' }],
     document_locations: [{ repository: 'main', path: 'docs/design.md', checkout_id: 'checkout-b', root: '/host/b', file: '/host/b/docs/design.md', error: null }],

@@ -7,7 +7,6 @@ from dataclasses import dataclass
 from enum import Enum
 
 from .errors import StreamError
-from .models import Stream
 
 
 class Agent(str, Enum):
@@ -30,7 +29,7 @@ class AgentSessionCommand:
     @property
     def argv(self) -> tuple[str, ...]:
         if self.agent == Agent.CODEX:
-            return ("codex", "resume", self.session_id) # "--no-sandbox"
+            return ("codex", "resume", self.session_id)
         if self.agent == Agent.CLAUDE:
             return ("claude", "--resume", self.session_id)
         if self.agent == Agent.PI:
@@ -50,9 +49,3 @@ def command_from_session(session: str) -> AgentSessionCommand:
         return AgentSessionCommand(Agent(agent), session_id)
     except ValueError as exc:
         raise StreamError(str(exc)) from exc
-
-
-def latest_session_command(stream: Stream) -> AgentSessionCommand | None:
-    if not stream.sessions:
-        return None
-    return command_from_session(stream.sessions[-1])

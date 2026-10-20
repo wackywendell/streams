@@ -5,7 +5,7 @@ import { sameStreamsScope, type StreamsCardScope, type StreamsCardSnapshot, type
 
 export interface StreamsDocumentTarget {
   scope: StreamsCardScope; repository: string; repositoryUrl: string; ref: string;
-  added_at?: string; commit?: string; source_session_id?: string; path: string;
+  commit?: string; source_session_id?: string; path: string;
   checkout_id: string | null; root: string | null; file: string | null; error: string | null;
   alternates?: readonly StreamsDocumentAlternate[];
 }
@@ -30,12 +30,11 @@ export function renderStreamsCard(snapshot: StreamsCardSnapshot | undefined, col
         qualifier = `${document.repository}:${qualifier}`;
       }
     }
-    const revSuffix = document.commit ? ` (commit ${document.commit.slice(0, 8)})` : document.added_at ? ` (added ${document.added_at.slice(0, 8)})` : '';
+    const revSuffix = document.commit ? ` (commit ${document.commit.slice(0, 8)})` : '';
     const label = `${qualifier ? `${qualifier === '/' ? '' : qualifier}/` : ''}${document.path}${revSuffix}`;
     return { label, target: {
       scope: { ...scope }, repositoryUrl: stream.repositories[document.repository].url,
       ref: document.ref,
-      ...(document.added_at ? { added_at: document.added_at } : {}),
       ...(document.commit ? { commit: document.commit } : {}),
       ...(document.source_session_id ? { source_session_id: document.source_session_id } : {}),
       ...location,

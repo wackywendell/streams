@@ -21,7 +21,7 @@ from _streams.cmux import CmuxWorkspace
 from _streams.errors import StreamError
 from _streams.frontend import FrontendMode
 from _streams.herdr import HerdrPane, HerdrWorkspace
-from _streams.herdr_binding import HerdrEndpoint
+from _streams.herdr import HerdrEndpoint
 
 
 class NativeEnvironmentTest(unittest.TestCase):

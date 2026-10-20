@@ -1,4 +1,4 @@
-"""Native Herdr workspace projection; scratch notes remain authoritative."""
+"""Native Herdr transport and endpoint inspection."""
 
 from __future__ import annotations
 
@@ -7,29 +7,17 @@ import os
 import re
 import subprocess
 import sys
-import time
-import tomllib
-import uuid
 from dataclasses import dataclass, replace
 from pathlib import Path
 from typing import Any
 
-from .agent_sessions import latest_session_command
-from .config import config_path
 from .errors import StreamError
-from .herdr_binding import HerdrEndpoint, binding_path, read_optional_binding, write_binding
-from .models import Stream
-from .projection import stream_cwd, stream_for_hints
-from .resolve import resolve_stream_ref
-from .store import list_streams
 
-STATUS_SYMBOLS = {
-    "active": "🟩",
-    "waiting": "◷",
-    "blocked": "!",
-    "parked": "Ⅱ",
-    "done": "✓",
-}
+
+@dataclass(frozen=True)
+class HerdrEndpoint:
+    socket: str
+    session: str | None = None
 
 
 @dataclass(frozen=True)
@@ -76,58 +64,12 @@ def _id(data: dict[str, Any], key: str) -> str:
     return value
 
 
-_HERDR_READ_CACHE: dict[tuple[object, ...], tuple[float, subprocess.CompletedProcess[str]]] = {}
-
-
-def _is_read_only_herdr_args(arg_tuple: tuple[str, ...]) -> bool:
-    if not arg_tuple:
-        return False
-    first = arg_tuple[0]
-    if first == "status":
-        return True
-    if len(arg_tuple) >= 2:
-        pair = (first, arg_tuple[1])
-        if pair in {
-            ("pane", "current"),
-            ("pane", "list"),
-            ("pane", "get"),
-            ("workspace", "list"),
-            ("workspace", "get"),
-            ("tab", "list"),
-            ("tab", "get"),
-            ("agent", "get"),
-            ("agent", "list"),
-            ("plugin", "list"),
-            ("api", "snapshot"),
-        }:
-            return True
-    return False
-
-
 class HerdrClient:
     def __init__(self) -> None:
         self.context = dict(os.environ)
         self.binary = self.context.get("HERDR_BIN_PATH") or "herdr"
 
     def run(self, args: list[str]) -> subprocess.CompletedProcess[str]:
-        arg_tuple = tuple(args)
-        is_read = _is_read_only_herdr_args(arg_tuple)
-        can_cache = is_read and not hasattr(subprocess.run, "side_effect") and not hasattr(subprocess.run, "return_value")
-        cache_key = (
-            id(subprocess.run),
-            self.binary,
-            self.context.get("HERDR_PANE_ID"),
-            self.context.get("HERDR_TAB_ID"),
-            self.context.get("HERDR_WORKSPACE_ID"),
-            self.context.get("HERDR_SOCKET_PATH"),
-            arg_tuple,
-        ) if can_cache else None
-        if cache_key is not None:
-            cached = _HERDR_READ_CACHE.get(cache_key)
-            if cached is not None and (time.monotonic() - cached[0]) < 0.25:
-                return cached[1]
-        elif not is_read:
-            _HERDR_READ_CACHE.clear()
         try:
             result = subprocess.run(
                 [self.binary, *args], env=self.context,
@@ -144,8 +86,6 @@ class HerdrClient:
             raise StreamError(f"could not execute Herdr: {exc}") from exc
         if result.stderr:
             print(result.stderr, end="", file=sys.stderr)
-        if cache_key is not None:
-            _HERDR_READ_CACHE[cache_key] = (time.monotonic(), result)
         return result
 
     def json_from_command(self, args: list[str]) -> dict[str, Any]:
@@ -201,201 +141,3 @@ class HerdrClient:
         if workspace.id != workspace_id:
             raise StreamError("Herdr workspace ID mismatch in native response")
         return replace(workspace, cwd=pane.cwd) if pane is not None else workspace
-
-
-def stream_for_workspace(workspace: HerdrWorkspace, herdr: HerdrClient, *, root: Path | None = None) -> Stream:
-    path = binding_path(herdr.endpoint(), workspace.id)
-    root_args = {"root": root} if root is not None else {}
-    try:
-        ref = read_optional_binding(path)
-        if ref is not None:
-            return resolve_stream_ref(ref, exact=True, **root_args)
-    except StreamError as exc:
-        raise StreamError(
-            f"Herdr workspace {workspace.id} association is unavailable: {exc}; pass an explicit stream to rebind",
-            kind=exc.kind, candidates=exc.candidates,
-        ) from exc
-    streams = list_streams(**root_args)
-    return stream_for_hints(
-        streams, title=workspace.label, cwd=workspace.cwd,
-        source=f"Herdr workspace {workspace.id}",
-    )
-
-
-def load_stream_for_update(
-    slug: str | None,
-    workspace_selector: str | None,
-    current: bool,
-    herdr: HerdrClient,
-    *,
-    root: Path | None = None,
-) -> tuple[Stream, HerdrWorkspace]:
-    if current and workspace_selector is not None:
-        raise StreamError("use either --current or --workspace, not both")
-    workspace = herdr.resolve_workspace(workspace_selector)
-    stream = (resolve_stream_ref(slug, **({"root": root} if root is not None else {}))
-              if slug is not None else stream_for_workspace(workspace, herdr, root=root))
-    return stream, workspace
-
-
-def update_workspace(stream: Stream, workspace: HerdrWorkspace, herdr: HerdrClient | None = None) -> Path:
-    herdr = herdr or HerdrClient()
-    path = binding_path(herdr.endpoint(), workspace.id)
-    _project_workspace(stream, workspace, herdr, path)
-    return path
-
-
-def _project_workspace(stream: Stream, workspace: HerdrWorkspace, herdr: HerdrClient, path: Path) -> None:
-    completed: list[str] = []
-    try:
-        # Commit the association before deriving native display from it.
-        write_binding(path, stream.slug)
-        completed.append("association")
-        renamed = HerdrWorkspace.parse(herdr.command_result(["workspace", "rename", workspace.id, stream.title], "workspace_info").get("workspace"))
-        if renamed.id != workspace.id:
-            raise StreamError("Herdr renamed workspace ID mismatch in native response")
-        completed.append("label")
-        status_symbol = STATUS_SYMBOLS[stream.status]
-        # report-metadata deliberately exits silently on success.
-        herdr.run([
-            "workspace", "report-metadata", workspace.id, "--source", "streams",
-            "--token", f"stream_slug={stream.slug}", "--token", f"stream_status={status_symbol}",
-            "--token", f"stream_state={stream.state}", "--token", f"stream_summary={status_symbol} {stream.state.strip()}",
-        ])
-        completed.append("metadata")
-    except StreamError as exc:
-        if not completed:
-            raise StreamError(
-                f"Herdr association for {workspace.id} was not changed; no native display update attempted; "
-                f"binding: {path}; {exc}"
-            ) from exc
-        raise StreamError(
-            f"Herdr refresh may be partial for {workspace.id}; association {stream.slug} recorded; "
-            f"display completed: {', '.join(completed[1:]) or 'none confirmed'}; "
-            f"binding: {path}; {exc}. Inspect state before retrying"
-        ) from exc
-
-
-def plugin_root() -> Path:
-    return Path(__file__).resolve().with_name("herdr_plugin")
-
-
-def _check_plugin(value: object, manifest: dict[str, Any]) -> None:
-    plugin = _object(value, "plugin registration")
-    if plugin.get("enabled") is not True:
-        raise StreamError("Herdr plugin streams.links is disabled; enable it explicitly before opening")
-    root, path = plugin.get("plugin_root"), plugin.get("manifest_path")
-    source = plugin.get("source")
-    matches = (
-        plugin.get("plugin_id") == manifest["id"]
-        and isinstance(root, str) and Path(root).resolve() == plugin_root()
-        and isinstance(path, str) and Path(path).resolve() == plugin_root() / "herdr-plugin.toml"
-        and isinstance(source, dict) and source.get("kind") == "local"
-        and all(plugin.get(key) == manifest[key] for key in ("version", "min_herdr_version", "platforms", "panes"))
-    )
-    if not matches:
-        raise StreamError("Herdr plugin streams.links has a conflicting source or manifest; no registration was replaced")
-
-
-def _ensure_plugin(herdr: HerdrClient) -> bool:
-    try:
-        manifest = tomllib.loads((plugin_root() / "herdr-plugin.toml").read_text())
-    except (OSError, ValueError) as exc:
-        raise StreamError(f"could not read bundled Herdr plugin: {exc}") from exc
-    plugins = herdr.command_result(["plugin", "list", "--plugin", "streams.links", "--json"], "plugin_list").get("plugins")
-    if not isinstance(plugins, list) or len(plugins) > 1:
-        raise StreamError("Herdr returned an unexpected streams.links registration list")
-    if plugins:
-        _check_plugin(plugins[0], manifest)
-        return False
-    try:
-        registered = herdr.command_result(["plugin", "link", str(plugin_root())], "plugin_linked")
-        _check_plugin(registered.get("plugin"), manifest)
-    except StreamError as exc:
-        raise StreamError(f"Herdr plugin registration may be partial: {exc}; inspect the global registry before retrying") from exc
-    return True
-
-
-@dataclass(frozen=True)
-class HerdrOpenedWorkspace:
-    workspace: HerdrWorkspace
-    root_pane: HerdrPane
-    links_pane: HerdrPane
-    binding: Path
-    agent_name: str | None
-
-
-def _check_pane_location(pane: HerdrPane, workspace: HerdrWorkspace, tab_id: str) -> None:
-    if pane.workspace_id != workspace.id or pane.tab_id != tab_id:
-        raise StreamError("Herdr pane workspace/tab ID mismatch in native response")
-
-
-def open_workspace(stream: Stream, herdr: HerdrClient | None = None) -> HerdrOpenedWorkspace:
-    if sys.platform != "darwin":
-        raise StreamError("this Herdr links-pane prototype supports macOS only")
-    cwd = stream_cwd(stream)
-    session = latest_session_command(stream)
-    arguments = (stream.title, *session.argv) if session is not None else (stream.title,)
-    if any(any(ord(char) < 32 for char in argument) for argument in arguments):
-        raise StreamError("Herdr opening requires title/session arguments without control characters")
-    herdr = herdr or HerdrClient()
-    endpoint = herdr.endpoint()
-    registered = _ensure_plugin(herdr)
-    resources = [f"plugin streams.links registered at {plugin_root()}"] if registered else []
-    agent_name = None
-    try:
-        resources.append("workspace creation attempted")
-        created = herdr.command_result(["workspace", "create", "--cwd", str(cwd), "--label", stream.title, "--focus"], "workspace_created")
-        workspace = HerdrWorkspace.parse(created.get("workspace"))
-        resources.append(f"workspace {workspace.id}")
-        tab = _object(created.get("tab"), "created tab")
-        tab_id = _id(tab, "tab_id")
-        resources.append(f"tab {tab_id}")
-        if _id(tab, "workspace_id") != workspace.id:
-            raise StreamError("Herdr created tab workspace ID mismatch")
-        root_pane = HerdrPane.parse(created.get("root_pane"))
-        resources.append(f"root pane {root_pane.id}")
-        _check_pane_location(root_pane, workspace, tab_id)
-        binding = binding_path(endpoint, workspace.id)
-        resources.append(f"binding {binding}")
-        _project_workspace(stream, workspace, herdr, binding)
-        links = herdr.command_result([
-            "plugin", "pane", "open", "--plugin", "streams.links", "--entrypoint", "links", "--placement", "split",
-            # Static manifest argv resolves launch.sh from the plugin directory.
-            "--target-pane", root_pane.id, "--direction", "down", "--cwd", str(plugin_root()), "--no-focus",
-            "--env", f"STREAMS_PYTHON={sys.executable}",
-            "--env", f"STREAMS_IMPORT_ROOT={Path(__file__).resolve().parents[1]}",
-            "--env", f"STREAMS_BINDING={binding}",
-            "--env", f"HOME={Path.home()}",
-            "--env", f"XDG_CONFIG_HOME={config_path().parent.parent.expanduser().resolve()}",
-        ], "plugin_pane_opened")
-        plugin_pane = _object(links.get("plugin_pane"), "opened plugin pane")
-        links_pane = HerdrPane.parse(plugin_pane.get("pane"))
-        resources.append(f"links pane {links_pane.id}")
-        if plugin_pane.get("plugin_id") != "streams.links" or plugin_pane.get("entrypoint") != "links":
-            raise StreamError("Herdr opened plugin identity mismatch")
-        _check_pane_location(links_pane, workspace, tab_id)
-        # Plugin split starts balanced. Grow the root so links use about 20%.
-        resized = herdr.command_result([
-            "pane", "resize", "--pane", root_pane.id, "--direction", "down", "--amount", "0.3",
-        ], "pane_resize")
-        resize = _object(resized.get("resize"), "pane resize")
-        if resize.get("pane_id") != root_pane.id or resize.get("focused_pane_id") != root_pane.id or resize.get("changed") is not True:
-            raise StreamError("Herdr could not size the links pane while preserving root focus")
-        if session is not None:
-            agent_name = f"streams-{uuid.uuid4().hex[:24]}"
-            resources.append(f"agent start attempted: {agent_name}")
-            started = herdr.command_result([
-                "agent", "start", agent_name, "--kind", session.agent.value, "--pane", root_pane.id,
-                "--timeout", "20000", "--", *session.argv[1:],
-            ], "agent_started")
-            agent = _object(started.get("agent"), "started agent")
-            _check_pane_location(HerdrPane.parse(agent), workspace, tab_id)
-            if agent.get("pane_id") != root_pane.id or agent.get("name") != agent_name or agent.get("agent") != session.agent.value or agent.get("interactive_ready") is not True:
-                raise StreamError("Herdr returned an unexpected started agent identity/readiness")
-    except StreamError as exc:
-        raise StreamError(
-            f"Herdr open may be partial; resources: {'; '.join(resources)}; {exc}. "
-            "Inspect native state before retrying; no resources were closed or relaunched"
-        ) from exc
-    return HerdrOpenedWorkspace(workspace, root_pane, links_pane, binding, agent_name)

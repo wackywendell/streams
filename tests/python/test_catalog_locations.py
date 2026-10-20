@@ -95,23 +95,19 @@ class DirectoryBindingsTest(unittest.TestCase):
         self.assertEqual(self.locations.read("stream", "session").cwd, first)
 
     def test_explicit_selection_repairs_deleted_directory_without_replacing_corrupt_intent(self):
-        for version in (1, 2):
-            with self.subTest(version=version):
-                old = self.root / f"deleted-{version}"
-                old.mkdir()
-                self.locations.remember("stream", old, session_id="session")
-                path = self.locations.path("stream", "session")
-                if version == 1:
-                    path.write_text(json.dumps({"version": 1, "stream_id": "stream", "session_id": "session", "cwd": str(old)}))
-                old.rmdir()
-                before = path.read_bytes()
-                with self.assertRaises(StreamError):
-                    self.locations.read("stream", "session")
-                with self.assertRaises(StreamError):
-                    self.locations.remember("stream", self.root, session_id="session", if_missing=True)
-                self.assertEqual(path.read_bytes(), before)
-                self.locations.remember("stream", self.root, session_id="session")
-                self.assertEqual(self.locations.read("stream", "session").cwd, self.root)
+        old = self.root / "deleted"
+        old.mkdir()
+        self.locations.remember("stream", old, session_id="session")
+        path = self.locations.path("stream", "session")
+        old.rmdir()
+        before = path.read_bytes()
+        with self.assertRaises(StreamError):
+            self.locations.read("stream", "session")
+        with self.assertRaises(StreamError):
+            self.locations.remember("stream", self.root, session_id="session", if_missing=True)
+        self.assertEqual(path.read_bytes(), before)
+        self.locations.remember("stream", self.root, session_id="session")
+        self.assertEqual(self.locations.read("stream", "session").cwd, self.root)
 
     def test_explicit_selection_repairs_missing_checkout_or_within_directory(self):
         for remove_root in (False, True):
@@ -138,16 +134,6 @@ class DirectoryBindingsTest(unittest.TestCase):
         before = path.read_bytes()
         with self.assertRaisesRegex(StreamError, "nonescaping"):
             self.locations.remember("stream", self.root, session_id="session")
-        self.assertEqual(path.read_bytes(), before)
-
-    def test_existing_absolute_mapping_is_read_without_rewriting(self):
-        root, checkout = self.repo("legacy-location", "repo")
-        path = self.locations.path("stream", "session")
-        path.parent.mkdir(parents=True)
-        path.write_text(json.dumps({"version": 1, "stream_id": "stream", "session_id": "session", "cwd": str(root)}))
-        before = path.read_bytes()
-        self.assertEqual(self.locations.read("stream", "session").checkout_id, checkout.id)
-        self.assertEqual(self.context()["document_locations"][0]["file"], str(root / "doc.md"))
         self.assertEqual(path.read_bytes(), before)
 
     def test_unbound_checkout_does_not_guess_repository_from_sole_default(self):

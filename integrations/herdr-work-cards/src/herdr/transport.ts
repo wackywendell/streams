@@ -1,16 +1,10 @@
 import { runProcess } from './subprocess.js';
-import { realpath } from 'node:fs/promises';
-import { isAbsolute, join } from 'node:path';
+import { isAbsolute } from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { isDeepStrictEqual } from 'node:util';
 import type { WorkCardsConfig } from '../config.js';
 import type { Pane } from './workspace-ownership.js';
 export type Run = (argv: string[], timeoutMs: number, signal?: AbortSignal) => Promise<string>;
 export interface ClientOptions { env?: NodeJS.ProcessEnv; run?: Run; pluginRoot?: string }
-const pluginPanes = [
-  { id: 'card', title: 'Work card', placement: 'split', command: ['node', 'dist/herdr/pane.js'] },
-  { id: 'document', title: 'Document', placement: 'tab', command: ['/bin/sh', 'bin/open-document.sh'] },
-];
 
 export function object(value: unknown, label: string): Record<string, any> {
   if (!value || typeof value !== 'object' || Array.isArray(value)) throw new Error(`Unexpected Herdr ${label}`);
@@ -65,28 +59,5 @@ export class HerdrTransport {
     const socket = id(server.socket);
     if (!isAbsolute(socket) || socket !== this.env.HERDR_SOCKET_PATH) throw new Error('Herdr endpoint mismatch; refusing focused/default session fallback');
     return socket;
-  }
-  protected async report(kind: 'pane' | 'workspace', target: string, values: Record<string, string | null>, config: WorkCardsConfig): Promise<void> {
-    const argv = [kind, 'report-metadata', target, '--source', 'work-cards'];
-    for (const [key, value] of Object.entries(values)) argv.push(value === null ? '--clear-token' : '--token', value === null ? key : `${key}=${value}`);
-    await this.run(argv, config.herdr_timeout_ms);
-  }
-  protected async ensurePlugin(config: WorkCardsConfig, beforeLink?: () => Promise<unknown>): Promise<void> {
-    const root = await realpath(this.pluginRoot);
-    const check = (value: unknown) => {
-      const p = object(value, 'plugin registration');
-      if (p.plugin_id !== 'work-cards' || p.enabled !== true || p.plugin_root !== root || p.manifest_path !== join(root, 'herdr-plugin.toml') ||
-          p.source?.kind !== 'local' || p.version !== '0.1.0' || p.min_herdr_version !== '0.9.3' ||
-          !isDeepStrictEqual(p.platforms, ['macos', 'linux']) || !isDeepStrictEqual(p.panes, pluginPanes)) {
-        throw new Error(`Conflicting or disabled work-cards plugin registration; inspect it and explicitly relink with herdr plugin link ${join(root, 'herdr-plugin.toml')}. No registration was replaced; linked manifests may require explicit relink for new entrypoints.`);
-      }
-    };
-    const plugins = (await this.result(['plugin', 'list', '--plugin', 'work-cards', '--json'], config, 'plugin_list')).plugins;
-    if (!Array.isArray(plugins) || plugins.length > 1) throw new Error('Unexpected Herdr plugin registration list');
-    if (plugins.length) check(plugins[0]);
-    else {
-      await beforeLink?.();
-      check((await this.result(['plugin', 'link', join(root, 'herdr-plugin.toml')], config, 'plugin_linked')).plugin);
-    }
   }
 }

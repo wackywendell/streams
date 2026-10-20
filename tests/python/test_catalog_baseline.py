@@ -69,10 +69,10 @@ class CatalogBaselineTest(unittest.TestCase):
         baseline = Baseline("laptop", {"work": envelope}, {operation.id: operation_digest(operation)})
         decoded, _, _ = decode_baseline(encode_baseline(baseline), snapshot(replace(stream, title="New")))
         self.assertEqual(decoded.creations["work"], envelope)
-        self.assertNotIn('"added_at"', envelope)
+        self.assertNotIn('"commit"', envelope)
         self.assertEqual(decode_operation(decoded.creations["work"])[0].inputs, (captured,))
         self.assertNotEqual(operation_digest(operation), operation_digest(replace(operation, inputs=())))
-        explicit_null = envelope.replace('"description":"Design"', '"added_at":null,"description":"Design"')
+        explicit_null = envelope.replace('"description":"Design"', '"commit":null,"description":"Design"')
         with self.assertRaises(ValueError):
             decode_baseline(encode_baseline(replace(baseline, creations={"work": explicit_null})), snapshot(stream))
         explicit_empty = self.envelope.replace('"kind":"stream"', '"inputs":[],"kind":"stream"')
