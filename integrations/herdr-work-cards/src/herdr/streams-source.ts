@@ -1,6 +1,26 @@
+import { existsSync } from 'node:fs';
+import { delimiter, isAbsolute, join, normalize, resolve } from 'node:path';
+import { fileURLToPath } from 'node:url';
 import { runProcess } from './subprocess.js';
-import { isAbsolute, normalize } from 'node:path';
 import type { CardStatus } from '../records/schema.js';
+
+const PACKAGE_ROOT = resolve(fileURLToPath(new URL('../../../..', import.meta.url)));
+function resolveStreamsBin(cwd: string | undefined, env: NodeJS.ProcessEnv): string {
+  if (env.STREAMS_BIN_PATH) return env.STREAMS_BIN_PATH;
+  const ownBin = join(PACKAGE_ROOT, '.venv', 'bin', 'streams');
+  if (cwd && resolve(cwd) !== PACKAGE_ROOT && existsSync(ownBin)) {
+    const cwdVenvPrefix = join(resolve(cwd), '.venv') + '/';
+    for (const entry of (env.PATH ?? '').split(delimiter)) {
+      if (!entry) continue;
+      const candidate = join(entry, 'streams');
+      if (existsSync(candidate)) {
+        if (resolve(candidate).startsWith(cwdVenvPrefix)) return ownBin;
+        break;
+      }
+    }
+  }
+  return 'streams';
+}
 
 export const STREAMS_READ_ENV_KEYS = ['HOME', 'XDG_CONFIG_HOME', 'XDG_DATA_HOME', 'XDG_STATE_HOME', 'PI_CODING_AGENT_DIR', 'HERDR_BIN_PATH', 'PATH'] as const;
 
@@ -157,7 +177,7 @@ export function createStreamsContextReader(options: StreamsContextReaderOptions 
     if (!uuid(nativeSessionId)) throw new Error('A native Pi session UUID is required');
     let output: string;
     try {
-      output = await runProcess('streams', ['agent', 'context', '--harness', 'pi', '--session-id', nativeSessionId, '--attest', '--json'],
+      output = await runProcess(resolveStreamsBin(cwd, env), ['agent', 'context', '--harness', 'pi', '--session-id', nativeSessionId, '--attest', '--json'],
         { cwd, env, timeoutMs, maxBuffer, signal });
     } catch (error) { throw new Error(`Streams context read failed: ${(error as Error).message}`, { cause: error }); }
     let value: unknown;

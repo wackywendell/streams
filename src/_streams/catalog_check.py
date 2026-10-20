@@ -256,15 +256,15 @@ def _reconcile_pending_sidecar(
                     None,
                 ) if isinstance(owner_term, str) else None
                 owner_tokens = owner_pane.get("tokens") if isinstance(owner_pane, dict) and isinstance(owner_pane.get("tokens"), dict) else {}
-                half_stamped = bool(card_tokens) and (
-                    card_tokens.get("strm_role") != "card"
-                    or (isinstance(rec_nonce, str) and card_tokens.get("strm_nonce") != rec_nonce)
-                    or owner_pane is None
-                    or owner_tokens.get("strm_role") != "agent"
-                    or owner_tokens.get("strm_card") != rec_term
-                    or owner_tokens.get("strm_nonce") != card_tokens.get("strm_nonce")
+                properly_stamped = (
+                    card_tokens.get("strm_role") == "card"
+                    and (not isinstance(rec_nonce, str) or card_tokens.get("strm_nonce") == rec_nonce)
+                    and owner_pane is not None
+                    and owner_tokens.get("strm_role") == "agent"
+                    and owner_tokens.get("strm_card") == rec_term
+                    and owner_tokens.get("strm_nonce") == card_tokens.get("strm_nonce")
                 )
-                if not half_stamped:
+                if properly_stamped:
                     record["phase"] = "ready"
                     tmp_path = json_path.with_name(f".{json_path.name}.tmp-{os.getpid()}")
                     tmp_path.write_text(json.dumps(record) + "\n")
@@ -453,6 +453,55 @@ def _check_herdr_live(
                 })
 
     state_dir = herdr_dir / ".streams-work-cards"
+    if state_dir.exists() and target_stream is None and pane_id is None:
+        live_by_pane = {p.get("pane_id"): p for p in panes if isinstance(p, dict) and isinstance(p.get("pane_id"), str)}
+        for rec_path in sorted(state_dir.glob("*.json")):
+            if rec_path.is_symlink() or rec_path.with_name(f"{rec_path.name}.pending").exists():
+                continue
+            try:
+                rec = json.loads(rec_path.read_text())
+            except (OSError, ValueError):
+                continue
+            if not isinstance(rec, dict) or rec.get("phase") != "ready":
+                continue
+            rec_pane = rec.get("paneId")
+            rec_term = rec.get("terminalId")
+            rec_tab = rec.get("tabId")
+            op = live_by_pane.get(rec_pane) if isinstance(rec_pane, str) else None
+            if (
+                isinstance(op, dict)
+                and op.get("tab_id") == rec_tab
+                and op.get("terminal_id") != rec_term
+                and not op.get("agent")
+                and not op.get("agent_session")
+                and not (op.get("tokens") or {})
+                and str(op.get("cwd") or "").endswith("integrations/herdr-work-cards")
+            ):
+                if fix:
+                    try:
+                        client.run(["pane", "close", rec_pane])
+                        rec["phase"] = "closed"
+                        tmp_path = rec_path.with_name(f".{rec_path.name}.tmp-{os.getpid()}")
+                        tmp_path.write_text(json.dumps(rec) + "\n")
+                        os.replace(tmp_path, rec_path)
+                        fixed.append({
+                            "kind": "orphaned-restored-card-pane-closed",
+                            "pane_id": rec_pane,
+                            "tab_id": rec_tab,
+                            "old_terminal_id": rec_term,
+                            "restored_terminal_id": op.get("terminal_id"),
+                        })
+                    except StreamError:
+                        pass
+                else:
+                    issues.append({
+                        "kind": "orphaned-restored-card-pane",
+                        "pane_id": rec_pane,
+                        "tab_id": rec_tab,
+                        "old_terminal_id": rec_term,
+                        "restored_terminal_id": op.get("terminal_id"),
+                        "message": f"pane {rec_pane} in tab {rec_tab} is an inert shell restored from previous card terminal {rec_term}",
+                    })
 
     for p in candidate_panes:
         p_id = p.get("pane_id")
@@ -486,7 +535,13 @@ def _check_herdr_live(
                 })
             continue
 
-        is_pi_agent = p.get("agent") == "pi" or role == "agent" or p_id == pane_id
+        agent_session = p.get("agent_session")
+        is_pi_agent = (
+            p.get("agent") == "pi"
+            or (isinstance(agent_session, dict) and (agent_session.get("agent") == "pi" or agent_session.get("agent_type") == "pi"))
+            or role == "agent"
+            or p_id == pane_id
+        )
         if not is_pi_agent:
             continue
 
@@ -494,7 +549,6 @@ def _check_herdr_live(
         if bound_stream_id:
             checked_streams.add(bound_stream_id)
 
-        agent_session = p.get("agent_session")
         locator = agent_session.get("value") if isinstance(agent_session, dict) and agent_session.get("kind") == "path" else None
         if not isinstance(locator, str) or not locator.strip():
             if p.get("agent") == "pi" or p_id == pane_id or any(k in tokens for k in PAIR_KEYS):
@@ -614,11 +668,91 @@ def _check_herdr_live(
             "nativeSessionId": native_session_id,
         }
         expected_identity = _js_digest(scope_obj)
-        expected_key = _js_digest([endpoint.socket, scope_obj, [p_id, term_id, tab_id, ws_id]])
+        expected_key = _js_digest([endpoint.socket, scope_obj, [p_id, term_id, ws_id, tab_id]])
 
-        if state_dir.exists() and (target_stream is not None or pane_id is not None):
+        if state_dir.exists():
+            state_path = state_dir / f"{expected_key}.json"
             pending_path = state_dir / f"{expected_key}.json.pending"
-            if pending_path.exists():
+            state_rec = None
+            if state_path.exists() and not state_path.is_symlink():
+                try:
+                    state_rec = json.loads(state_path.read_text())
+                except (OSError, ValueError):
+                    state_rec = None
+            if isinstance(state_rec, dict):
+                rec_pane = state_rec.get("paneId")
+                rec_term = state_rec.get("terminalId")
+                rec_tab = state_rec.get("tabId")
+                rec_nonce = state_rec.get("nonce")
+                live_card = next(
+                    (cp for cp in panes if isinstance(cp, dict) and cp.get("pane_id") == rec_pane and cp.get("terminal_id") == rec_term),
+                    None,
+                )
+                if (
+                    live_card is not None
+                    and rec_tab == tab_id
+                    and live_card.get("tab_id") == tab_id
+                    and live_card.get("workspace_id") == ws_id
+                    and isinstance(rec_nonce, str)
+                    and rec_nonce
+                ):
+                    ctokens = live_card.get("tokens") if isinstance(live_card.get("tokens"), dict) else {}
+                    expected_pair = {
+                        "strm_agent": expected_identity,
+                        "strm_nonce": rec_nonce,
+                        "strm_pi": term_id,
+                        "strm_card": rec_term,
+                        "strm_native": native_session_id,
+                    }
+                    owner_ok = tokens.get("strm_role") == "agent" and all(tokens.get(k) == v for k, v in expected_pair.items())
+                    card_ok = ctokens.get("strm_role") == "card" and all(ctokens.get(k) == v for k, v in expected_pair.items())
+                    owner_foreign = any(k in tokens and tokens.get(k) != v for k, v in expected_pair.items())
+                    card_foreign = any(k in ctokens and ctokens.get(k) != v for k, v in expected_pair.items())
+                    if (not owner_ok or not card_ok) and not owner_foreign and not card_foreign:
+                        if fix:
+                            card_token_args = [arg for k, v in {**expected_pair, "strm_role": "card"}.items() for arg in ("--token", f"{k}={v}")]
+                            owner_token_args = [arg for k, v in {**expected_pair, "strm_role": "agent"}.items() for arg in ("--token", f"{k}={v}")]
+                            if not card_ok:
+                                client.run(["pane", "report-metadata", rec_pane, "--source", "streams-work-cards", *card_token_args])
+                                live_card["tokens"] = {**ctokens, **expected_pair, "strm_role": "card"}
+                            if not owner_ok:
+                                client.run(["pane", "report-metadata", p_id, "--source", "streams-work-cards", *owner_token_args])
+                                tokens = {**tokens, **expected_pair, "strm_role": "agent"}
+                                p["tokens"] = tokens
+                            if pending_path.exists() or state_rec.get("phase") != "ready":
+                                state_rec["phase"] = "ready"
+                                tmp_path = state_path.with_name(f".{state_path.name}.tmp-{os.getpid()}")
+                                tmp_path.write_text(json.dumps(state_rec) + "\n")
+                                os.replace(tmp_path, state_path)
+                                pending_path.unlink(missing_ok=True)
+                            fixed.append({
+                                "kind": "unstamped-work-card-pair-stamped",
+                                "pane_id": p_id,
+                                "card_pane_id": rec_pane,
+                                "workspace_id": ws_id,
+                                "tab_id": tab_id,
+                                "stream_id": session.stream_id,
+                                "session_id": session.id,
+                                "nonce": rec_nonce,
+                            })
+                        else:
+                            issues.append({
+                                "kind": "unstamped-work-card-pair",
+                                "pane_id": p_id,
+                                "card_pane_id": rec_pane,
+                                "workspace_id": ws_id,
+                                "tab_id": tab_id,
+                                "stream_id": session.stream_id,
+                                "session_id": session.id,
+                                "key": expected_key,
+                                "message": (
+                                    f"recorded live work card {rec_pane} for owner pane {p_id} is missing strm_* pair markers "
+                                    f"(causes 'Caller is not the exact owned Streams card' / 'Recorded card is still live without verified ownership')"
+                                ),
+                            })
+                            continue
+
+            if (target_stream is not None or pane_id is not None) and pending_path.exists():
                 live_by_pane = {p.get("pane_id") or p.get("id"): p for p in panes if isinstance(p, dict) and isinstance(p.get("pane_id") or p.get("id"), str)}
                 _reconcile_pending_sidecar(
                     pending_path,

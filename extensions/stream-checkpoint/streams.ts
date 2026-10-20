@@ -1,4 +1,25 @@
 import { spawn } from "node:child_process";
+import { existsSync } from "node:fs";
+import { delimiter, join, resolve } from "node:path";
+import { fileURLToPath } from "node:url";
+
+const PACKAGE_ROOT = resolve(fileURLToPath(new URL("../..", import.meta.url)));
+function resolveStreamsBin(cwd: string, env: NodeJS.ProcessEnv = process.env): string {
+ if (env.STREAMS_BIN_PATH) return env.STREAMS_BIN_PATH;
+ const ownBin = join(PACKAGE_ROOT, ".venv", "bin", "streams");
+ if (cwd && resolve(cwd) !== PACKAGE_ROOT && existsSync(ownBin)) {
+  const cwdVenvPrefix = join(resolve(cwd), ".venv") + "/";
+  for (const entry of (env.PATH ?? "").split(delimiter)) {
+   if (!entry) continue;
+   const candidate = join(entry, "streams");
+   if (existsSync(candidate)) {
+    if (resolve(candidate).startsWith(cwdVenvPrefix)) return ownBin;
+    break;
+   }
+  }
+ }
+ return "streams";
+}
 
 export type Status = "active" | "waiting" | "blocked" | "parked" | "done";
 export type Mode = "automatic" | "manual";
@@ -55,7 +76,7 @@ export class StreamCli {
    const signal = options?.signal;
    signal?.throwIfAborted();
    const detached = !!options?.timeout || !!signal;
-   const child = spawn("streams", args, {cwd, detached, stdio: ["pipe", "pipe", "pipe"]});
+   const child = spawn(resolveStreamsBin(cwd), args, {cwd, detached, stdio: ["pipe", "pipe", "pipe"]});
    let stdout = "", stderr = "", failure: Error | undefined;
    // Wait for the process group and stdio to close before releasing lifecycle work.
    const terminate = (error: Error) => {
