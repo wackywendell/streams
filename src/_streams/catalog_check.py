@@ -10,7 +10,7 @@ from typing import Any
 
 from .catalog.model import Catalog, Session, Stream
 from .catalog_agent import source_id
-from .catalog_checkouts import infer_checkout_repository_urls
+from .catalog_checkouts import infer_checkout_repository_urls, inspect_directory
 from .catalog_conversations import native_identity
 from .catalog_runtime import Runtime, _key
 from .errors import StreamError
@@ -116,7 +116,10 @@ def _check_directory_selection(
     stream_id: str,
     session_id: str | None,
     local: Runtime,
+    *,
+    fix: bool,
     issues: list[dict[str, Any]],
+    fixed: list[dict[str, Any]],
 ) -> dict[str, Any] | None:
     if not local.locations.path(stream_id, session_id).exists():
         return None
@@ -125,13 +128,64 @@ def _check_directory_selection(
         if selection is None:
             return None
         if selection["version"] == 1:
-            local.locations.checked(Path(selection["cwd"]))
+            cwd = local.locations.checked(Path(selection["cwd"]))
+            found = inspect_directory(cwd)
+            if found is not None:
+                registered = local.checkouts.find(found[0])
+                if registered is None or not registered.repository_urls:
+                    if fix:
+                        urls = infer_checkout_repository_urls(found[0], local.checkouts)
+                        if registered is None:
+                            registered = local.checkouts.register(found[0])
+                        for url in urls:
+                            registered = local.checkouts.register(found[0], repository_url=url)
+                        local.locations.remember(stream_id, cwd, session_id=session_id)
+                        fixed.append({
+                            "kind": "legacy-session-checkout-registered",
+                            "stream_id": stream_id,
+                            "session_id": session_id,
+                            "checkout_id": registered.id,
+                            "directory": str(found[0]),
+                            "repository_urls": list(registered.repository_urls),
+                        })
+                        return local.locations._selection(stream_id, session_id)
+                    issues.append({
+                        "kind": "unregistered-session-checkout",
+                        "stream_id": stream_id,
+                        "session_id": session_id,
+                        "cwd": str(cwd),
+                        "message": f"session directory {cwd} is in a VCS checkout that is not registered with a repository URL",
+                    })
         else:
             loc = selection["location"]
             if loc["kind"] == "directory":
                 local.locations.checked(Path(loc["cwd"]))
             else:
                 local.checkouts.directory(loc["id"], loc["within"])
+                chk = local.checkouts.get(loc["id"])
+                if not chk.repository_urls:
+                    if fix:
+                        urls = infer_checkout_repository_urls(Path(chk.directory), local.checkouts)
+                        if urls:
+                            for url in urls:
+                                local.checkouts.register(Path(chk.directory), repository_url=url)
+                            fixed.append({
+                                "kind": "session-checkout-repository-bound",
+                                "stream_id": stream_id,
+                                "session_id": session_id,
+                                "checkout_id": chk.id,
+                                "directory": chk.directory,
+                                "repository_urls": list(urls),
+                            })
+                            return selection
+                    issues.append({
+                        "kind": "unbound-session-checkout",
+                        "stream_id": stream_id,
+                        "session_id": session_id,
+                        "checkout_id": chk.id,
+                        "directory": chk.directory,
+                        "message": f"checkout {chk.directory} has no repository URL binding",
+                    })
         return selection
     except StreamError as exc:
         issues.append({
@@ -147,13 +201,16 @@ def _check_stream_locations(
     stream: Stream,
     sessions: tuple[Session, ...],
     local: Runtime,
+    *,
+    fix: bool,
     issues: list[dict[str, Any]],
+    fixed: list[dict[str, Any]],
 ) -> None:
-    _check_directory_selection(stream.id, None, local, issues)
+    _check_directory_selection(stream.id, None, local, fix=fix, issues=issues, fixed=fixed)
     for session in sessions:
         if session.host_id != local.host_id:
             continue
-        _check_directory_selection(stream.id, session.id, local, issues)
+        _check_directory_selection(stream.id, session.id, local, fix=fix, issues=issues, fixed=fixed)
 
 
 def _check_herdr_locks_and_state(
@@ -461,6 +518,13 @@ def _check_herdr_live(
                     pass
             for loc in doc_locs:
                 if loc["error"] is not None:
+                    if pane_id is None and loc["error"].startswith("Document not present in this checkout:"):
+                        repo_obj = stream_record.repositories.get(loc["repository"])
+                        if repo_obj is not None and any(
+                            repo_obj.url in chk.repository_urls and (Path(chk.directory) / loc["path"]).is_file()
+                            for chk in local.checkouts.list()
+                        ):
+                            continue
                     issues.append({
                         "kind": "unresolved-session-document",
                         "pane_id": p_id,
@@ -661,7 +725,29 @@ def check_all(
             })
         if pane_id is None:
             s_sessions = tuple(item for item in catalog.sessions if item.stream_id == s.id)
-            _check_stream_locations(s, s_sessions, local, issues)
+            _check_stream_locations(s, s_sessions, local, fix=fix, issues=issues, fixed=fixed)
+
+    if stream is None and pane_id is None:
+        for chk in local.checkouts.list():
+            if not chk.repository_urls:
+                if fix:
+                    urls = infer_checkout_repository_urls(Path(chk.directory), local.checkouts)
+                    if urls:
+                        for url in urls:
+                            local.checkouts.register(Path(chk.directory), repository_url=url)
+                        fixed.append({
+                            "kind": "checkout-repository-bound",
+                            "checkout_id": chk.id,
+                            "directory": chk.directory,
+                            "repository_urls": list(urls),
+                        })
+                        continue
+                issues.append({
+                    "kind": "unbound-checkout",
+                    "checkout_id": chk.id,
+                    "directory": chk.directory,
+                    "message": f"registered checkout {chk.directory} has no repository URL binding",
+                })
 
     _check_runtime_files(catalog, local, target_stream_ids, issues)
 
