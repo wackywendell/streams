@@ -210,7 +210,7 @@ class DirectoryBindingsTest(unittest.TestCase):
         two_root, two_chk = self.repo("two", "repo")
         (two_root / "branch-only.md").write_text("from worktree two\n")
         subprocess.run(["git", "add", "branch-only.md"], cwd=two_root, check=True, capture_output=True, timeout=30)
-        subprocess.run(["git", "-c", "user.name=Test", "-c", "user.email=test@example.com", "commit", "-m", "add branch-only"], cwd=two_root, check=True, capture_output=True, timeout=30)
+        subprocess.run(["git", "-c", "user.name=Test", "-c", "user.email=test@example.com", "-c", "commit.gpgsign=false", "commit", "-m", "add branch-only"], cwd=two_root, check=True, capture_output=True, timeout=30)
         commit_sha = subprocess.run(["git", "rev-parse", "HEAD"], cwd=two_root, check=True, capture_output=True, text=True, timeout=30).stdout.strip()
         other = replace(self.session, id="other", harness_session_id="native-2")
         self.locations.remember("stream", one_root, session_id="session", repository_url="repo")
