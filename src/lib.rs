@@ -8,4 +8,5 @@ pub mod operations;
 pub mod process;
 pub mod storage;
 pub mod sync;
+pub mod tui;
 pub mod yaml_store;

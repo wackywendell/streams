@@ -88,6 +88,10 @@ Migration therefore proceeds in gated stages rather than a single cutover:
 4. **Stage 4 — Native Herdr lock and workspace client in Rust:** Move native workspace locking (`flock`), pane attestation, and naming/summary projection into Rust, retiring the Node-to-Python lock helper.
 5. **Stage 5 — Native side-pane TUI (`ratatui`):** Extract portable rendering, Unicode width/clipping, shortcut-invalidation, and link/editor fixtures from the active Herdr view tests, then replace `work-cards-pane.js` with `streams-herdr-pane`.
 
+### TUI Unicode compatibility
+
+Use ratatui's standard Unicode layout rather than reproduce every width rule of the JavaScript renderer. The extracted fixtures match except for five trailing U+0D4E Malayalam stress cases, where Rust treats the final grapheme as zero-width and JavaScript counts one column. Accept those five named differences, retain the original fixtures, and test the exact Rust outputs alongside unchanged document targets and links. This avoids a custom Unicode compatibility patch; it does not waive other rendering or shortcut checks. The [fixture notes](../src/tui/fixtures/README.md) record the cases.
+
 ## Alternatives considered
 
 - **Keep Python and TypeScript, and add `.ioa.toml` files verified by `temper verify`:** Rejected. Because `temper-codegen` targets only Temper's Rust runtime, `.ioa.toml` files in a Python/TypeScript repository would be verified in isolation with no mechanical guarantee that the Python or TypeScript code matched them.
