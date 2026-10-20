@@ -2,6 +2,7 @@
 
 pub mod agent;
 pub mod codec;
+pub mod config;
 pub mod frontend;
 pub mod model;
 pub mod operations;
