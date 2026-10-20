@@ -459,7 +459,8 @@ def command_session(args):
             raise StreamError("checkout --ref/--directory-within-checkout requires --repository")
         if args.repository is not None and args.vcs_ref is None:
             raise StreamError("checkout --repository requires --ref")
-        session = Session(str(uuid4()), backend.host_id, stream.id, args.harness, args.session_id, args.title, title_mode="manual", checkout=checkout)
+        from . import catalog_agent
+        session = Session(catalog_agent.session_id_for(backend.host_id, args.harness, args.session_id), backend.host_id, stream.id, args.harness, args.session_id, args.title, title_mode="manual", checkout=checkout)
         operation = Operation(str(uuid4()), None, session, "user", ownership_token=authority.token if authority else None)
     else:
         before = resolve(catalog.sessions, args.ref)
@@ -500,7 +501,7 @@ def _refresh_session_documents(backend, local, session: Session) -> None:
             info = inspect_document_revision(Path(chk.directory), doc.path)
             if info is None:
                 continue
-            if doc.source_session_id == session.id or bool(info["modified"]):
+            if bool(info["modified"]) or (doc.source_session_id == session.id and doc.effective_commit is None):
                 next_doc = replace(doc, source_session_id=session.id, ref=str(info["ref"]), commit=str(info["commit"]))
                 if next_doc != doc:
                     updated[i] = next_doc
@@ -513,7 +514,7 @@ def _refresh_session_documents(backend, local, session: Session) -> None:
 
 def command_agent(args):
     from . import catalog_agent
-    backend = config.open_catalog()
+    backend = config.open_catalog(validate_records=args.agent_command != "context")
     if args.agent_command == "context":
         local = runtime()
         context = catalog_agent.context(backend, harness=args.harness, native_id=args.session_id, stream_id=args.stream_id,

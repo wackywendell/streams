@@ -53,7 +53,7 @@ class GitCatalogTest(unittest.TestCase):
         op, _ = decode_operation(git(self.a.root, "show", "-s", "--format=%B", "HEAD") + "\n")
         self.assertEqual(op, contribution())
         self.assertEqual(git(self.a.root, "ls-files").splitlines(),
-                         ["sessions/laptop/session.yaml", "streams/work.yaml"])
+                         ["sessions/work/laptop/session.yaml", "streams/work.yaml"])
         self.assertEqual(self.a.save(contribution()).local, "unchanged")
         self.assertFalse(self.remote_has_branch())
 

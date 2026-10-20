@@ -60,6 +60,8 @@ def _component(id: str) -> str:
 def _path(root: Path, key: RecordKey) -> Path:
     name = f"{_component(key.id)}.yaml"
     if key.kind == "session":
+        if key.stream_id is not None:
+            return root / "sessions" / _component(key.stream_id) / _component(key.host_id) / name
         return root / "sessions" / _component(key.host_id) / name
     return root / ("streams" if key.kind == "stream" else "hosts") / name
 
@@ -99,7 +101,9 @@ class YamlStore:
                 raise ValidationError("unsupported catalog encoding version")
             text(envelope.get("revision"), "storage revision")
             record = record_from_data(envelope.get("kind"), envelope.get("record"))
-            if path != _path(Path(), record_key(record)).as_posix():
+            expected = _path(Path(), record_key(record)).as_posix()
+            legacy = _path(Path(), RecordKey("session", record.id, record.host_id)).as_posix() if isinstance(record, Session) else expected
+            if path not in (expected, legacy):
                 raise ValidationError(f"record identity does not match its physical location: {path}")
             return record
         except (ValueError, yaml.YAMLError) as error:
@@ -163,7 +167,12 @@ class _YamlTransaction:
             for path in sorted(directory.iterdir()):
                 if name == "sessions":
                     _directory(path)
-                    yield from self._record_files(path)
+                    for child in sorted(path.iterdir()):
+                        if child.is_dir() and not child.is_symlink():
+                            _directory(child)
+                            yield from self._record_files(child)
+                        else:
+                            yield self._record_file(child)
                 else:
                     yield self._record_file(path)
 
@@ -175,6 +184,108 @@ class _YamlTransaction:
     def _record_files(self, directory: Path):
         for path in sorted(directory.iterdir()):
             yield self._record_file(path)
+
+    def _read_single_file(self, path: Path) -> Record | None:
+        self._check_active()
+        if path.is_symlink():
+            raise StorageError(f"unexpected catalog file: {path}")
+        if not path.exists():
+            return None
+        for parent in path.relative_to(self.root).parents:
+            if str(parent) != ".":
+                _directory(self.root / parent)
+        self._record_file(path)
+        try:
+            rel = path.relative_to(self.root).as_posix()
+            return YamlStore.decode_record(rel, path.read_bytes())
+        except (OSError, ValueError, yaml.YAMLError) as error:
+            raise StorageError(f"cannot read catalog: {error}") from error
+
+    def read_stream(self, stream_id: str) -> Stream | None:
+        record = self._read_single_file(_path(self.root, RecordKey("stream", stream_id)))
+        return record if isinstance(record, Stream) else None
+
+    def read_stream_sessions(self, stream_id: str) -> tuple[Session, ...]:
+        self._check_active()
+        sessions: dict[tuple[str, str], Session] = {}
+        sessions_root = self.root / "sessions"
+        _directory(sessions_root)
+        if not sessions_root.exists():
+            return ()
+        stream_dir = sessions_root / _component(stream_id)
+        _directory(stream_dir)
+        if stream_dir.exists():
+            for host_dir in sorted(stream_dir.iterdir()):
+                if host_dir.is_dir() and not host_dir.is_symlink():
+                    _directory(host_dir)
+                    for path in self._record_files(host_dir):
+                        rec = self._read_single_file(path)
+                        if isinstance(rec, Session) and rec.stream_id == stream_id:
+                            sessions[(rec.host_id, rec.id)] = rec
+        # Also support any unmigrated 2-level legacy session files under sessions/<host>/<id>.yaml.
+        for entry in sorted(sessions_root.iterdir()):
+            _directory(entry)
+            for child in sorted(entry.iterdir()):
+                if child.suffix == ".yaml" and (child.is_file() or child.is_symlink()):
+                    rec = self._read_single_file(child)
+                    if isinstance(rec, Session) and rec.stream_id == stream_id:
+                        sessions.setdefault((rec.host_id, rec.id), rec)
+        return tuple(sessions.values())
+
+    def read_native_session(
+        self,
+        host_id: str,
+        harness: str,
+        native_id: str,
+        *,
+        stream_id: str | None = None,
+        deterministic_id: str | None = None,
+    ) -> Session | None:
+        self._check_active()
+        sessions_root = self.root / "sessions"
+        _directory(sessions_root)
+        if not sessions_root.exists():
+            return None
+        host_comp = _component(host_id)
+        if deterministic_id is not None:
+            fname = f"{_component(deterministic_id)}.yaml"
+            if stream_id is not None:
+                direct = sessions_root / _component(stream_id) / host_comp / fname
+                rec = self._read_single_file(direct)
+                if isinstance(rec, Session) and rec.native_identity == (host_id, harness, native_id):
+                    return rec
+            for s_dir in sorted(sessions_root.iterdir()):
+                _directory(s_dir)
+                cand = s_dir / host_comp / fname
+                if cand.exists() or cand.is_symlink():
+                    rec = self._read_single_file(cand)
+                    if isinstance(rec, Session) and rec.native_identity == (host_id, harness, native_id):
+                        return rec
+            legacy = sessions_root / host_comp / fname
+            if legacy.exists() or legacy.is_symlink():
+                rec = self._read_single_file(legacy)
+                if isinstance(rec, Session) and rec.native_identity == (host_id, harness, native_id):
+                    return rec
+        # Fallback for unmigrated 2-level legacy session files or when deterministic_id is not supplied:
+        legacy_host_dir = sessions_root / host_comp
+        if legacy_host_dir.exists() or legacy_host_dir.is_symlink():
+            _directory(legacy_host_dir)
+            for child in sorted(legacy_host_dir.iterdir()):
+                if child.suffix == ".yaml" and (child.is_file() or child.is_symlink()):
+                    rec = self._read_single_file(child)
+                    if isinstance(rec, Session) and rec.native_identity == (host_id, harness, native_id):
+                        return rec
+        if deterministic_id is None:
+            for s_dir in sorted(sessions_root.iterdir()):
+                _directory(s_dir)
+                host_dir = s_dir / host_comp
+                if host_dir.exists() or host_dir.is_symlink():
+                    _directory(host_dir)
+                    for path in self._record_files(host_dir):
+                        rec = self._read_single_file(path)
+                        if isinstance(rec, Session) and rec.native_identity == (host_id, harness, native_id):
+                            return rec
+        return None
 
     def read(self) -> Snapshot:
         self._check_active()
@@ -189,18 +300,23 @@ class _YamlTransaction:
         current = self.read()
         if current.revisions != expected.revisions:
             raise RevisionConflict("catalog changed since the captured snapshot")
-        current.catalog.replacing(record)
+        updated_catalog = current.catalog.replacing(record)
         key = record_key(record)
         if current.catalog.get(key) == record:
             return current
         envelope = {"version": 1, "revision": str(uuid4()), "kind": key.kind, "record": record_to_data(record)}
         contents = yaml.safe_dump(envelope, sort_keys=False, allow_unicode=True).encode("utf-8")
         path = _path(self.root, key)
+        legacy_path = _path(self.root, RecordKey("session", record.id, record.host_id)) if isinstance(record, Session) else None
         temporary = None
         replaced = False
         try:
             # Check every internal directory before creating any missing descendants.
-            _directory(path.parent.parent if key.kind == "session" else path.parent, create=True)
+            if key.kind == "session" and key.stream_id is not None:
+                _directory(path.parent.parent.parent, create=True)
+                _directory(path.parent.parent, create=True)
+            elif key.kind == "session":
+                _directory(path.parent.parent, create=True)
             _directory(path.parent, create=True)
             staging = self.root / ".catalog-staging"
             _directory(staging, create=True)
@@ -213,8 +329,17 @@ class _YamlTransaction:
                 os.fsync(handle.fileno())
             os.replace(temporary, path)
             replaced = True
+            if legacy_path is not None and legacy_path != path and legacy_path.exists():
+                legacy_path.unlink(missing_ok=True)
             _sync_directory(path.parent)
-            return self.read()
+            written = path.read_bytes()
+            decoded = YamlStore.decode_record(path.relative_to(self.root).as_posix(), written)
+            if decoded != record:
+                raise StorageError("post-replace record mismatch")
+            return Snapshot(
+                catalog=updated_catalog,
+                revisions={**current.revisions, key: hashlib.sha256(written).hexdigest()},
+            )
         except (OSError, StorageError) as error:
             raise StorageError(f"cannot save catalog record: {error}", uncertain=replaced) from error
         finally:

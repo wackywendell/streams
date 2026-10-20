@@ -89,16 +89,21 @@ export class StreamsCardView {
     if (key === 'q' || key === '\x03') { this.chooser = undefined; return { kind: 'exit' }; }
     if (this.chooser) {
       const active = this.chooser;
+      const notice = this.paintedNotice, paint = this.paint;
       this.chooser = undefined;
       this.clearNotice('document');
       if (key === '\x1b' || !/^[1-9]$/.test(key)) return { kind: 'none' };
       const chosen = active.options[Number(key) - 1];
       if (!chosen) return { kind: 'none' };
-      const columns = this.columns, rows = this.rows, notice = active.notice, paint = this.paint;
+      const columns = this.columns, rows = this.rows;
       await this.refresh();
       if (!this.current) return { kind: 'none' };
       const next = renderStreamsCard(this.current, columns, rows, notice).documents.get(active.key);
-      if (paint !== this.paint || !next || !sameStreamsScope(next.scope, chosen.target.scope)) {
+      const validTargets = next ? [
+        next,
+        ...(next.alternates ?? []).map(alt => ({ ...next, checkout_id: alt.checkout_id, root: alt.root, file: alt.file, error: null })),
+      ] : [];
+      if (paint !== this.paint || !next || !validTargets.some(cand => sameTarget(cand, chosen.target))) {
         this.documents.clear();
         this.setNotice('document', 'Document scope/binding/target changed; redraw and press the displayed shortcut again.');
         return { kind: 'none' };

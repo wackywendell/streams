@@ -360,12 +360,11 @@ class Runtime:
                 raise StreamError('could not confirm exact CMUX caller workspace ID; no focused-workspace fallback')
         return workspace_id
 
-    def verify_automatic_enrollment(self, harness: str, native_id: str) -> dict | None:
-        """Fence automatic Pi enrollment to the conversation registered in its pane."""
+    def _verify_herdr_agent_pane(self, harness: str, native_id: str) -> tuple[HerdrClient, str, dict] | None:
         if harness != 'pi' or resolve_frontend(self.frontend_mode, None, os.environ).resolved != Frontend.HERDR:
-            return
+            return None
         try:
-            client, _ = self._transport(Frontend.HERDR)
+            client, scope = self._transport(Frontend.HERDR)
             pane = client.current_pane()
             if (not _text(pane.id) or pane.id != os.environ.get('HERDR_PANE_ID')
                     or not _text(pane.workspace_id)):
@@ -378,24 +377,30 @@ class Runtime:
             actual_id, _ = native_identity(agent.get('agent_session'), 'pi')
             if actual_id != native_id:
                 raise ValueError('requested Pi session differs from the native pane session')
-            return {'frontend': 'herdr', 'pane_id': pane.id, 'tab_id': pane.tab_id, 'workspace_id': pane.workspace_id}
+            return client, scope, {'frontend': 'herdr', 'pane_id': pane.id, 'tab_id': pane.tab_id, 'workspace_id': pane.workspace_id}
         except (StreamError, OSError, ValueError) as exc:
             raise StreamError(f'could not confirm automatic Pi enrollment: {exc}; '
                               "a background helper cannot automatically enroll its parent's workspace") from exc
+
+    def verify_automatic_enrollment(self, harness: str, native_id: str) -> dict | None:
+        """Fence automatic Pi enrollment to the conversation registered in its pane."""
+        verified = self._verify_herdr_agent_pane(harness, native_id)
+        return verified[2] if verified is not None else None
 
     def attest_context(self, stream: Stream, session: Session, *, authority: Authority | None) -> dict:
         """Read-only native proof for a projection, including a ready Stream association."""
         self._authorize(authority)
         if session.host_id != self.host_id or session.stream_id != stream.id or session.harness != 'pi':
             raise StreamError('native projection requires the exact local Pi Session')
-        native = self.verify_automatic_enrollment(session.harness, session.harness_session_id)
-        if native is None:
+        verified = self._verify_herdr_agent_pane(session.harness, session.harness_session_id)
+        if verified is None:
             raise StreamError('native projection attestation requires an exact Herdr caller')
-        client, scope = self._transport(Frontend.HERDR)
-        workspace_id = self._caller_workspace(Frontend.HERDR, client)
+        client, scope, native = verified
+        workspace_id = native['workspace_id']
+        if not _text(workspace_id) or client.resolve_workspace(workspace_id).id != workspace_id:
+            raise StreamError('could not confirm exact Herdr caller workspace ID; workspace mismatch')
         binding = self._association(self._association_path(scope, workspace_id))
-        if (workspace_id != native['workspace_id'] or binding is None or not binding['ready']
-                or binding['stream_id'] != stream.id):
+        if binding is None or not binding['ready'] or binding['stream_id'] != stream.id:
             raise StreamError('native projection requires a ready workspace association for this Stream')
         return native
 

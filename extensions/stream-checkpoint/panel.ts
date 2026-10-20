@@ -46,7 +46,7 @@ async function referenceRows(ctx: ExtensionContext, field: string, edit: FieldEd
    const commitVal = await ctx.ui.editor("Commit SHA (optional recovery context)", row.commit ?? row.added_at ?? "");if (commitVal === undefined) continue;
    delete row.added_at;
    if (commitVal.trim()) row.commit = commitVal;else delete row.commit;
-   if (edit.base.session?.id) row.source_session_id = edit.base.session.id;
+   if (!row.source_session_id && edit.base.session?.id) row.source_session_id = edit.base.session.id;
   } else {const url = await ctx.ui.editor("HTTP(S) URL", row.url ?? "");if (url === undefined) continue;row.url = url;}
   const description = await ctx.ui.editor("Description", row.description ?? "");if (description === undefined) continue;row.description = description;
   rows[index] = row;edit.value = structuredClone(rows);
@@ -137,7 +137,11 @@ export async function openCard(ctx: ExtensionContext, cli: StreamCli, state: Car
     list = new SelectList(items, Math.max(4, Math.min(12, tui.terminal.rows - 14)), getSelectListTheme());
     list.setSelectedIndex(Math.min(selectedByTab[activeTab], Math.max(0, items.length - 1)));
     list.onSelectionChange = (item) => {selectedByTab[activeTab] = Math.max(0, items.findIndex((i) => i.value === item.value));};
-    list.onSelect = (item) => done(item.value);
+    list.onSelect = (item) => {
+     if (item.value === "Whole effort — edit fields") {activeTab = "stream";buildList();tui.requestRender();return;}
+     if (item.value === "This session — edit fields") {activeTab = "session";buildList();tui.requestRender();return;}
+     done(item.value);
+    };
     list.onCancel = () => done(undefined);
    };
    buildList();

@@ -49,7 +49,7 @@ class CatalogStorageTest(unittest.TestCase):
         self.assertEqual(snapshot.catalog.sessions, (contribution,))
         self.assertEqual(snapshot.catalog.hosts, (host,))
         self.assertEqual(sorted(str(p.relative_to(self.root)) for p in self.root.rglob("*.yaml")),
-                         ["hosts/laptop.yaml", "sessions/laptop/session-1.yaml", "streams/stream-1.yaml"])
+                         ["hosts/laptop.yaml", "sessions/stream-1/laptop/session-1.yaml", "streams/stream-1.yaml"])
         self.assertFalse((self.root / ".git").exists())
 
     def test_cleared_goal_round_trips_through_codec_and_yaml(self):
@@ -167,7 +167,7 @@ class CatalogStorageTest(unittest.TestCase):
         self.assertEqual({item.id for item in snapshot.catalog.streams}, set(ids))
         self.assertEqual(len(snapshot.catalog.sessions), 4)
         self.assertEqual(len(list((self.root / "streams").iterdir())), 4)
-        self.assertEqual(len(list((self.root / "sessions").iterdir())), 2)
+        self.assertEqual(len(list((self.root / "sessions/stream-a").iterdir())), 2)
 
     def test_confirmation_read_failure_after_replace_is_uncertain(self):
         snapshot = self.create(stream())
@@ -325,6 +325,27 @@ with YamlStore(Path(sys.argv[2])).transaction() as tx:
             self.assertEqual(process.returncode, 0, (out, err))
         with self.store.transaction() as tx:
             self.assertEqual(len(tx.read().catalog.streams[0].issues), 4)
+
+    def test_stream_partitioned_sessions_and_targeted_reads(self):
+        s1 = stream(id="stream-1", title="One")
+        s2 = stream(id="stream-2", title="Two")
+        c1 = session(id="sess-1", stream_id="stream-1", harness_session_id="native-1")
+        c2 = session(id="sess-2", stream_id="stream-2", harness_session_id="native-2")
+        for record in (s1, s2, c1, c2):
+            self.create(record)
+        with self.store.transaction() as tx:
+            self.assertEqual(tx.read_stream("stream-1"), s1)
+            self.assertIsNone(tx.read_stream("missing"))
+            self.assertEqual(tx.read_stream_sessions("stream-1"), (c1,))
+            self.assertEqual(tx.read_stream_sessions("stream-2"), (c2,))
+            self.assertEqual(
+                tx.read_native_session("laptop", "pi", "native-1", stream_id="stream-1", deterministic_id="sess-1"),
+                c1,
+            )
+            self.assertEqual(
+                tx.read_native_session("laptop", "pi", "native-2", deterministic_id="sess-2"),
+                c2,
+            )
 
 
 if __name__ == "__main__":

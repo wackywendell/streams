@@ -236,7 +236,7 @@ def _empty_root(root: Path) -> None:
         raise StreamError("initialization requires empty catalog bookkeeping; inspect existing state")
 
 
-def open_catalog() -> LocalCatalog | GitCatalog:
+def open_catalog(*, validate_records: bool = True) -> LocalCatalog | GitCatalog:
     settings = load_config()
     root = Path(settings["catalog"]["root"])
     try:
@@ -247,7 +247,11 @@ def open_catalog() -> LocalCatalog | GitCatalog:
         _check_host(marker, identity)
         if marker["strategy"] == "none":
             backend = LocalCatalog(YamlStore(root), host_id=identity)
-            backend.snapshot()
+            if validate_records:
+                backend.snapshot()
+            else:
+                with backend.store.transaction():
+                    backend._ready()
             return backend
         backend = GitCatalog(root, host_id=identity, policy=Policy(**settings["sync"]))
         backend.snapshot()

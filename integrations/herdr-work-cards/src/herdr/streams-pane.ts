@@ -31,7 +31,13 @@ export async function runStreamsPane(env: NodeJS.ProcessEnv = process.env): Prom
   const source = streamsPaneSource(env), client = new StreamsWorkspaceClient({ env, stateDirectory: env.STREAMS_CARDS_STATE_DIR });
   const controller = new AbortController();
   const view = new StreamsCardView({ read: () => source.read(controller.signal) }), parser = new KeyInput();
-  const config = await loadConfig(env.STREAMS_CARDS_CONFIG || configPath(env));
+  const rawConfig = await loadConfig(env.STREAMS_CARDS_CONFIG || configPath(env));
+  const config = {
+    ...rawConfig,
+    workspace_naming: rawConfig.workspace_naming ?? true,
+    tab_naming: rawConfig.tab_naming ?? true,
+    session_naming: rawConfig.session_naming ?? true,
+  };
   let context: StreamsNativeContext | undefined, stopped = false, closeRequested = false, selfClosing = false, wake: (() => void) | undefined;
   let keys: string[] = [], previous = '', repaintQueued = false;
   const render = () => {
@@ -63,7 +69,7 @@ export async function runStreamsPane(env: NodeJS.ProcessEnv = process.env): Prom
       try {
         context ??= await client.bootstrap(config, controller.signal);
         if (saved) {
-          const pair = await client.verifyDisplay(source, context, config, controller.signal);
+          const pair = await client.verifyDisplay(source, context, config, controller.signal, saved);
           if (pair.agent.terminal_id !== env.STREAMS_CARDS_OWNER_TERMINAL || pair.card.terminal_id !== context.terminalId || pair.nonce !== env.STREAMS_CARDS_NONCE) throw new Error('Launcher owner/card/nonce mismatch');
           ready = true; startupRetries = 3;
           if (pair.card.tokens.strm_caption_manual !== '1'

@@ -216,13 +216,16 @@ class RecordKey:
     kind: Literal["stream", "session", "host"]
     id: str
     host_id: str | None = None
+    stream_id: str | None = field(default=None, compare=False)
 
     def __post_init__(self) -> None:
         choice(self.kind, "record kind", ("stream", "session", "host"))
         text(self.id, "record id")
         if self.kind == "session":
             text(self.host_id, "session host id")
-        elif self.host_id is not None:
+            if self.stream_id is not None:
+                text(self.stream_id, "session stream id")
+        elif self.host_id is not None or self.stream_id is not None:
             raise ValidationError("only session keys have a host id")
 
 
@@ -230,7 +233,7 @@ def record_key(record: Record) -> RecordKey:
     if isinstance(record, Stream):
         return RecordKey("stream", record.id)
     if isinstance(record, Session):
-        return RecordKey("session", record.id, record.host_id)
+        return RecordKey("session", record.id, record.host_id, record.stream_id)
     if isinstance(record, Host):
         return RecordKey("host", record.id)
     raise ValidationError("expected a stream, session or host record")

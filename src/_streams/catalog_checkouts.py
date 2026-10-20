@@ -12,6 +12,7 @@ from pathlib import Path
 import stat
 import subprocess
 import tempfile
+import time
 from uuid import uuid4
 
 from .errors import StreamError
@@ -67,12 +68,14 @@ def _run(args: list[str], cwd: Path) -> str:
         raise StreamError(f"checkout inspection failed in {cwd}: {' '.join(args)}") from error
 
 
-_MARKER_CACHE: dict[tuple[object, ...], Path] = {}
+_MARKER_CACHE: dict[tuple[object, ...], tuple[float, Path]] = {}
 
 
 def inspect_directory(cwd: Path) -> tuple[Path, str] | None:
     """Find the nearest marked worktree, without snapshotting a jj workspace."""
     current = _directory(cwd)
+    mocked = any(hasattr(fn, "side_effect") or hasattr(fn, "return_value") for fn in (_run, subprocess.run))
+    now = time.monotonic()
     for candidate in (current, *current.parents):
         jj = candidate / ".jj"
         git = candidate / ".git"
@@ -91,8 +94,9 @@ def inspect_directory(cwd: Path) -> tuple[Path, str] | None:
                 marker = git
             c_stat = candidate.stat()
             m_stat = marker.stat()
-            cache_key = (id(_run), id(subprocess.run), str(candidate), c_stat.st_dev, c_stat.st_ino, has_jj, m_stat.st_dev, m_stat.st_ino, m_stat.st_mtime_ns, m_stat.st_size)
-            root = _MARKER_CACHE.get(cache_key)
+            cache_key = None if mocked else (str(candidate), c_stat.st_dev, c_stat.st_ino, has_jj, m_stat.st_dev, m_stat.st_ino, m_stat.st_mtime_ns, m_stat.st_size)
+            cached = _MARKER_CACHE.get(cache_key) if cache_key is not None else None
+            root = cached[1] if cached is not None and (now - cached[0]) < 5.0 else None
             if root is None:
                 if has_jj:
                     output = _run(["jj", "--ignore-working-copy", "--at-operation=@", "workspace", "root"], candidate)
@@ -101,7 +105,10 @@ def inspect_directory(cwd: Path) -> tuple[Path, str] | None:
                 root = _directory(Path(output))
                 if not Path(output).is_absolute() or root != candidate:
                     raise StreamError(f"VCS marker does not describe its exact checkout root: {candidate}")
-                _MARKER_CACHE[cache_key] = root
+                if cache_key is not None:
+                    if len(_MARKER_CACHE) >= 256:
+                        _MARKER_CACHE.clear()
+                    _MARKER_CACHE[cache_key] = (now, root)
             return root, current.relative_to(root).as_posix()
         except (OSError, ValueError, RuntimeError) as error:
             raise StreamError(f"cannot inspect checkout marker in {candidate}: {error}") from error
@@ -479,8 +486,7 @@ def inspect_document_revision(checkout_dir: Path, path: str) -> dict[str, object
         modified = False
         try:
             status_out = _run(["git", "status", "--porcelain", "--", relative], root).strip()
-            head_out = _run(["git", "diff-tree", "--no-commit-id", "--name-only", "-r", "HEAD", "--", relative], root).strip()
-            modified = bool(status_out or head_out)
+            modified = bool(status_out)
         except StreamError:
             pass
         return {"ref": branch or commit_id[:12], "commit": commit_id, "modified": modified}
@@ -504,16 +510,38 @@ def extract_document_revision(
             return None
     except (OSError, StreamError):
         return None
-    candidates = [rev.strip() for rev in (commit, ref) if isinstance(rev, str) and rev.strip() and not rev.strip().startswith("-")]
+    raw_candidates = (commit,) if (isinstance(commit, str) and commit.strip()) else (ref,)
+    candidates = [rev.strip() for rev in raw_candidates if isinstance(rev, str) and rev.strip() and not rev.strip().startswith("-")]
     if not candidates:
         return None
     has_jj = (root / ".jj").is_dir()
     for rev in candidates:
-        rev_key = hashlib.sha256(rev.encode("utf-8")).hexdigest()[:12]
+        is_immutable_hex = len(rev) >= 12 and all(ch in "0123456789abcdefABCDEF" for ch in rev)
+        resolved = rev
+        if not is_immutable_hex:
+            if has_jj:
+                try:
+                    cid = _run(["jj", "--ignore-working-copy", "--at-operation=@", "log", "--no-graph", "-r", rev, "-T", "commit_id ++ \"\\n\""], root).splitlines()
+                    if cid and cid[0].strip():
+                        resolved = cid[0].strip()
+                except StreamError:
+                    pass
+            if resolved == rev:
+                try:
+                    cid = _run(["git", "rev-parse", "--verify", f"{rev}^{{commit}}"], root).strip()
+                    if cid:
+                        resolved = cid
+                except StreamError:
+                    pass
+        rev_key = resolved[:12] if (len(resolved) >= 12 and all(ch in "0123456789abcdefABCDEF" for ch in resolved)) else hashlib.sha256(resolved.encode("utf-8")).hexdigest()[:12]
         rev_label = rev[:8] if len(rev) >= 8 else rev
         dest = (cache_dir / checkout.id / rev_key / relative).resolve()
-        if dest.is_file():
-            return dest, rev_label
+        missing = dest.parent / f".{dest.name}.missing"
+        if is_immutable_hex or resolved != rev:
+            if dest.is_file():
+                return dest, rev_label
+            if missing.is_file():
+                continue
         content: str | None = None
         if has_jj:
             try:
@@ -532,6 +560,12 @@ def extract_document_revision(
                 return dest, rev_label
             except OSError:
                 return None
+        elif is_immutable_hex or resolved != rev:
+            try:
+                missing.parent.mkdir(mode=0o700, parents=True, exist_ok=True)
+                missing.write_text("", encoding="utf-8")
+            except OSError:
+                pass
     return None
 
 

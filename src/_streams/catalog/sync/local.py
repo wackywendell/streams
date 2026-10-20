@@ -35,6 +35,7 @@ class LocalCatalog:
         text(host_id, "host_id")
         self.store, self.host_id = store, host_id
         self.state = State(store.root)
+        self._cached_creations: tuple[tuple[int, int] | None, dict[str, Authority]] | None = None
 
     def _ready(self) -> dict[str, Authority]:
         self.state.check_save()
@@ -45,6 +46,14 @@ class LocalCatalog:
         return self._creations()
 
     def _creations(self) -> dict[str, Authority]:
+        local_path = self.store.root / ".catalog-sync" / "local.json"
+        try:
+            st = local_path.stat()
+            stamp: tuple[int, int] | None = (st.st_mtime_ns, st.st_size)
+        except FileNotFoundError:
+            stamp = None
+        if self._cached_creations is not None and self._cached_creations[0] == stamp:
+            return dict(self._cached_creations[1])
         state = self.state.read("local.json") or {"creations": {}}
         try:
             if set(state) - {"version", "creations"}:
@@ -55,6 +64,7 @@ class LocalCatalog:
                 if operation.before is not None or not isinstance(operation.after, Stream) or operation.after.id != stream_id:
                     raise ValueError("invalid local creation receipt")
                 result[stream_id] = Authority(operation.after.owner_host_id, operation.id)
+            self._cached_creations = (stamp, dict(result))
             return result
         except (KeyError, AttributeError, ValueError) as error:
             raise RepairRequired(f"invalid local creation receipts: {error}") from error
@@ -67,9 +77,48 @@ class LocalCatalog:
     def authority(self, stream_id: str) -> Authority | None:
         with self.store.transaction() as transaction:
             authorities = self._ready()
-            catalog = transaction.read().catalog
-            stream = catalog.stream(stream_id)
+            stream = transaction.read_stream(stream_id)
             return authorities.get(stream_id) if stream is not None else None
+
+    def context_records(
+        self,
+        *,
+        harness: str,
+        native_id: str,
+        stream_id: str | None = None,
+        explicit_stream_id: str | None = None,
+        workspace_stream_id: str | None = None,
+        deterministic_id: str | None = None,
+    ) -> tuple[Stream | None, Session | None, tuple[Session, ...], Authority | None]:
+        from ..model import Catalog, text
+        with self.store.transaction() as transaction:
+            authorities = self._ready()
+            for identity in (stream_id, explicit_stream_id, workspace_stream_id):
+                if identity is not None:
+                    text(identity, "stream_id")
+            hint_stream = stream_id or explicit_stream_id or workspace_stream_id
+            session = transaction.read_native_session(
+                self.host_id, harness, native_id, stream_id=hint_stream, deterministic_id=deterministic_id
+            )
+            candidates = [v for v in (stream_id, explicit_stream_id, workspace_stream_id, session.stream_id if session else None) if v is not None]
+            for identity in candidates:
+                text(identity, "stream_id")
+            identities = set(candidates)
+            if len(identities) > 1:
+                from ...errors import StreamError
+                raise StreamError("conversation already has a different effort; moving it requires an explicit move or fork operation")
+            selected = next(iter(identities), None)
+            if selected is None:
+                return None, session, (), None
+            stream = transaction.read_stream(selected)
+            if stream is None:
+                from ...errors import StreamError
+                raise StreamError(f"stream {selected!r} is not in the local catalog; run streams sync to adopt remote-only records")
+            sessions = transaction.read_stream_sessions(stream.id)
+            if session is not None and all((s.host_id, s.id) != (session.host_id, session.id) for s in sessions):
+                sessions = sessions + (session,)
+            Catalog(streams=(stream,), sessions=sessions)
+            return stream, session, sessions, authorities.get(stream.id)
 
     def save(self, operation: Operation, *, origin: dict[str, str] | None = None) -> Result:
         check_producer(operation, self.host_id)

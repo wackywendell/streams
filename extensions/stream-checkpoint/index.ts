@@ -189,10 +189,15 @@ export default function registerWorkCard(pi: ExtensionAPI, options: Options = {}
      if (!native) throw Error("Native work cards require session startup in an interactive Herdr pane.");
      clearStatusTimer();
      ctx.ui.setStatus?.("stream-reporting", instructions === "close" ? "Work card · ⟳ Closing pane..." : "Work card · ⟳ Opening pane...");
+     let ok = false;
      try {
       if (instructions === "close") await native.close();else await native.open();
+      ok = true;
      } finally {
-      if (paneFence.current()) ctx.ui.setStatus?.("stream-reporting", undefined);
+      if (paneFence.current()) {
+       if (ok) showDoneStatus(instructions === "close" ? "Pane closed" : "Pane open");
+       else ctx.ui.setStatus?.("stream-reporting", undefined);
+      }
      }
     }
     else if (command === "reset") reporter.reset(ctx, resetParsed!.auto, resetParsed!.target);

@@ -241,7 +241,7 @@ class DirectoryBindings:
             if selection_error is None and (document.effective_commit is not None or (not alternates and document.source_session_id is not None)):
                 base_chk = origin_chk or checkout
                 if base_chk is not None:
-                    cache_dir = Path(tempfile.gettempdir()) / f"streams-revisions-{os.getuid()}"
+                    cache_dir = self.state_dir / "revisions"
                     extracted = extract_document_revision(
                         base_chk,
                         document.path,
@@ -252,7 +252,8 @@ class DirectoryBindings:
                     if extracted is not None:
                         rev_file, rev_label = extracted
                         rev_root = str(rev_file.parents[len(Path(document.path).parts) - 1])
-                        rev_chk_id = f"{base_chk.id}@{rev_label}"
+                        rev_key = Path(rev_root).name
+                        rev_chk_id = f"{base_chk.id}@{rev_key}"
                         add_checkout(document.repository, rev_chk_id, rev_root)
                         alternates.append({
                             "kind": "revision",

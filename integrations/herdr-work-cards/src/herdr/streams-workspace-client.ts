@@ -62,9 +62,9 @@ export class StreamsWorkspaceClient extends HerdrTransport {
       || (this.env.HERDR_WORKSPACE_ID && this.env.HERDR_WORKSPACE_ID !== live.workspace_id)) throw new Error('Caller native tuple changed during bootstrap');
     return { socket, paneId: live.pane_id, terminalId: live.terminal_id, workspaceId: live.workspace_id, tabId: live.tab_id };
   }
-  private async guard(source: Source, context: StreamsNativeContext, config: WorkCardsConfig, signal?: AbortSignal): Promise<Verified> {
+  private async guard(source: Source, context: StreamsNativeContext, config: WorkCardsConfig, signal?: AbortSignal, preRead?: StreamsCardSnapshot): Promise<Verified> {
     signal?.throwIfAborted();
-    const saved = await source.read(signal);
+    const saved = preRead ?? await source.read(signal);
     if (await this.socket(config, signal) !== context.socket) throw new Error('Native endpoint changed');
     const current = await this.current(config, signal), snapshot = await this.snapshot(config, signal);
     const caller = locateTerminal(snapshot, context.terminalId);
@@ -87,7 +87,7 @@ export class StreamsWorkspaceClient extends HerdrTransport {
     if (caller.terminal_id !== owner.terminal_id && (pair.kind !== 'paired' || pair.card.terminal_id !== caller.terminal_id
       || pair.nonce !== this.env.STREAMS_CARDS_NONCE || pair.card.tokens.strm_native !== saved.scope.nativeSessionId
       || this.env.STREAMS_CARDS_OWNER_TERMINAL !== owner.terminal_id)) throw new Error('Caller is not the exact owned Streams card');
-    const latest = await source.read(signal);
+    const latest = preRead ?? await source.read(signal);
     if (!sameStreamsScope(latest.scope, saved.scope) || !isDeepStrictEqual(latest.native, saved.native)) throw new Error('Streams context changed during native verification');
     signal?.throwIfAborted();
     return { saved: latest, snapshot, caller, owner, identity, key, binding, pair };
@@ -111,8 +111,8 @@ export class StreamsWorkspaceClient extends HerdrTransport {
       || ('card' in v.pair && (v.pair.card.pane_id !== attempt.paneId || v.pair.card.terminal_id !== attempt.terminalId || v.pair.card.tab_id !== attempt.tabId)))) throw new Error('Pair does not match durable native launch evidence');
     return attempt;
   }
-  private async marked(source: Source, context: StreamsNativeContext, config: WorkCardsConfig, signal?: AbortSignal): Promise<Verified> {
-    const v = await this.guard(source, context, config, signal); this.bound(v, context);
+  private async marked(source: Source, context: StreamsNativeContext, config: WorkCardsConfig, signal?: AbortSignal, preRead?: StreamsCardSnapshot): Promise<Verified> {
+    const v = await this.guard(source, context, config, signal, preRead); this.bound(v, context);
     await this.evidence(v, context);
     if (v.pair.kind === 'empty' || v.pair.kind === 'separated') throw new Error('Verified paired or absent owner markers required');
     return v;
@@ -309,8 +309,8 @@ export class StreamsWorkspaceClient extends HerdrTransport {
     const after = await verify();
     if (!after || !isDeepStrictEqual(tuple(after), tuple(target)) || Object.entries(values).some(([k, v]) => after.tokens[k] !== v)) throw new Error('Reserved pair metadata did not round-trip');
   }
-  async verifyDisplay(source: Source, context: StreamsNativeContext, config: WorkCardsConfig, signal?: AbortSignal) {
-    const v = await this.marked(source, context, config, signal);
+  async verifyDisplay(source: Source, context: StreamsNativeContext, config: WorkCardsConfig, signal?: AbortSignal, preRead?: StreamsCardSnapshot) {
+    const v = await this.marked(source, context, config, signal, preRead);
     if (v.pair.kind !== 'paired') throw new Error('Streams card is absent');
     return v.pair;
   }

@@ -77,11 +77,31 @@ def _id(data: dict[str, Any], key: str) -> str:
 
 
 _HERDR_READ_CACHE: dict[tuple[object, ...], tuple[float, subprocess.CompletedProcess[str]]] = {}
-_HERDR_READ_ARGS = {
-    ("status", "--json"),
-    ("pane", "current", "--current", "--json"),
-    ("workspace", "list", "--json"),
-}
+
+
+def _is_read_only_herdr_args(arg_tuple: tuple[str, ...]) -> bool:
+    if not arg_tuple:
+        return False
+    first = arg_tuple[0]
+    if first == "status":
+        return True
+    if len(arg_tuple) >= 2:
+        pair = (first, arg_tuple[1])
+        if pair in {
+            ("pane", "current"),
+            ("pane", "list"),
+            ("pane", "get"),
+            ("workspace", "list"),
+            ("workspace", "get"),
+            ("tab", "list"),
+            ("tab", "get"),
+            ("agent", "get"),
+            ("agent", "list"),
+            ("plugin", "list"),
+            ("api", "snapshot"),
+        }:
+            return True
+    return False
 
 
 class HerdrClient:
@@ -91,7 +111,8 @@ class HerdrClient:
 
     def run(self, args: list[str]) -> subprocess.CompletedProcess[str]:
         arg_tuple = tuple(args)
-        can_cache = arg_tuple in _HERDR_READ_ARGS and not hasattr(subprocess.run, "side_effect") and not hasattr(subprocess.run, "return_value")
+        is_read = _is_read_only_herdr_args(arg_tuple)
+        can_cache = is_read and not hasattr(subprocess.run, "side_effect") and not hasattr(subprocess.run, "return_value")
         cache_key = (
             id(subprocess.run),
             self.binary,
@@ -105,7 +126,7 @@ class HerdrClient:
             cached = _HERDR_READ_CACHE.get(cache_key)
             if cached is not None and (time.monotonic() - cached[0]) < 0.25:
                 return cached[1]
-        elif arg_tuple not in _HERDR_READ_ARGS:
+        elif not is_read:
             _HERDR_READ_CACHE.clear()
         try:
             result = subprocess.run(

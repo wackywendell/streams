@@ -61,13 +61,34 @@ def _check_source(data, expected):
         raise StreamError("catalog source changed since capture; inspect the current catalog before making a new request")
 
 
+def session_id_for(host_id: str, harness: str, native_id: str) -> str:
+    return str(uuid5(NAMESPACE_URL, "streams:session:" + json.dumps([host_id, harness, native_id])))
+
+
 def context(backend, *, harness, native_id, stream_id=None, workspace_stream_id=None):
     """Read only actual local records; identifying a stream does not attach a session."""
     _identity(harness, native_id)
+    explicit = os.environ.get("STREAMS_STREAM_ID")
+    if hasattr(backend, "context_records"):
+        stream, session, sessions, authority = backend.context_records(
+            harness=harness,
+            native_id=native_id,
+            stream_id=stream_id,
+            explicit_stream_id=explicit,
+            workspace_stream_id=workspace_stream_id,
+            deterministic_id=session_id_for(backend.host_id, harness, native_id),
+        )
+        return {
+            "catalog_source": source_id(backend),
+            "host_id": backend.host_id,
+            "stream": stream,
+            "session": session,
+            "sessions": sessions,
+            "authority": authority,
+        }
     catalog = backend.snapshot().catalog
     session = next((item for item in catalog.sessions if item.host_id == backend.host_id
                     and item.harness == harness and item.harness_session_id == native_id), None)
-    explicit = os.environ.get("STREAMS_STREAM_ID")
     candidates = [value for value in (stream_id, explicit, workspace_stream_id, session.stream_id if session else None) if value is not None]
     for identity in candidates:
         text(identity, "stream_id")

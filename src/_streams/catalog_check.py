@@ -8,7 +8,9 @@ import os
 from pathlib import Path
 from typing import Any
 
-from .catalog.model import Catalog, Session, Stream
+from .catalog.model import Catalog, RecordKey, Session, Stream, record_key
+from .catalog.sync.local import LocalCatalog
+from .catalog.yaml_store import _directory as _store_directory, _path as _record_path
 from .catalog_agent import source_id
 from .catalog_checkouts import infer_checkout_repository_urls, inspect_directory
 from .catalog_conversations import native_identity
@@ -223,6 +225,82 @@ def _check_stream_locations(
         _check_directory_selection(stream.id, session.id, local, fix=fix, issues=issues, fixed=fixed)
 
 
+def _reconcile_pending_sidecar(
+    pending_path: Path,
+    live_by_pane: dict[str, dict] | None,
+    *,
+    fix: bool,
+    fixed: list[dict[str, Any]],
+    issues: list[dict[str, Any]],
+    extra: dict[str, Any] | None = None,
+) -> None:
+    json_path = pending_path.with_suffix("")
+    record = None
+    if json_path.exists():
+        try:
+            record = json.loads(json_path.read_text())
+        except (OSError, ValueError):
+            record = None
+    if fix and live_by_pane is not None and not pending_path.is_symlink() and not json_path.is_symlink():
+        rec_pane = record.get("paneId") if isinstance(record, dict) else None
+        rec_term = record.get("terminalId") if isinstance(record, dict) else None
+        rec_tab = record.get("tabId") if isinstance(record, dict) else None
+        rec_nonce = record.get("nonce") if isinstance(record, dict) else None
+        live_card = live_by_pane.get(rec_pane) if isinstance(rec_pane, str) else None
+        try:
+            if live_card and live_card.get("terminal_id") == rec_term and live_card.get("tab_id") == rec_tab:
+                card_tokens = live_card.get("tokens") if isinstance(live_card.get("tokens"), dict) else {}
+                owner_term = card_tokens.get("strm_pi")
+                owner_pane = next(
+                    (p for p in live_by_pane.values() if p.get("terminal_id") == owner_term),
+                    None,
+                ) if isinstance(owner_term, str) else None
+                owner_tokens = owner_pane.get("tokens") if isinstance(owner_pane, dict) and isinstance(owner_pane.get("tokens"), dict) else {}
+                half_stamped = bool(card_tokens) and (
+                    card_tokens.get("strm_role") != "card"
+                    or (isinstance(rec_nonce, str) and card_tokens.get("strm_nonce") != rec_nonce)
+                    or owner_pane is None
+                    or owner_tokens.get("strm_role") != "agent"
+                    or owner_tokens.get("strm_card") != rec_term
+                    or owner_tokens.get("strm_nonce") != card_tokens.get("strm_nonce")
+                )
+                if not half_stamped:
+                    record["phase"] = "ready"
+                    tmp_path = json_path.with_name(f".{json_path.name}.tmp-{os.getpid()}")
+                    tmp_path.write_text(json.dumps(record) + "\n")
+                    os.replace(tmp_path, json_path)
+                    pending_path.unlink(missing_ok=True)
+                    fixed.append({"kind": "pending-work-card-promoted-ready", "path": str(pending_path), "pane_id": rec_pane})
+                    return
+            if isinstance(rec_pane, str) and live_card is None and isinstance(record, dict):
+                record["phase"] = "closed"
+                tmp_path = json_path.with_name(f".{json_path.name}.tmp-{os.getpid()}")
+                tmp_path.write_text(json.dumps(record) + "\n")
+                os.replace(tmp_path, json_path)
+                pending_path.unlink(missing_ok=True)
+                fixed.append({"kind": "pending-work-card-marked-closed", "path": str(pending_path), "pane_id": rec_pane})
+                return
+            if rec_pane is None:
+                pending_path.unlink(missing_ok=True)
+                json_path.unlink(missing_ok=True)
+                fixed.append({"kind": "unlaunched-pending-work-card-removed", "path": str(pending_path)})
+                return
+        except OSError:
+            pass
+    issue = {
+        "kind": "pending-work-card-launch",
+        "path": str(pending_path),
+        "key": record.get("key") if isinstance(record, dict) else pending_path.name.removesuffix(".json.pending"),
+        "pane_id": record.get("paneId") if isinstance(record, dict) else None,
+        "terminal_id": record.get("terminalId") if isinstance(record, dict) else None,
+        "tab_id": record.get("tabId") if isinstance(record, dict) else None,
+        "message": f"pending work-card launch sidecar {pending_path} blocks automatic card open",
+    }
+    if extra:
+        issue.update(extra)
+    issues.append(issue)
+
+
 def _check_herdr_locks_and_state(
     herdr_dir: Path,
     *,
@@ -266,49 +344,9 @@ def _check_herdr_locks_and_state(
     state_dir = herdr_dir / ".streams-work-cards"
     if not state_dir.exists():
         return
-    live_by_pane = {p.get("pane_id") or p.get("id"): p for p in (live_panes or []) if isinstance(p, dict) and isinstance(p.get("pane_id") or p.get("id"), str)}
+    live_by_pane = {p.get("pane_id") or p.get("id"): p for p in (live_panes or []) if isinstance(p, dict) and isinstance(p.get("pane_id") or p.get("id"), str)} if live_panes is not None else None
     for pending_path in sorted(state_dir.glob("*.json.pending")):
-        json_path = pending_path.with_suffix("")
-        record = None
-        if json_path.exists():
-            try:
-                record = json.loads(json_path.read_text())
-            except (OSError, ValueError):
-                record = None
-        if fix and live_panes is not None and not pending_path.is_symlink() and not json_path.is_symlink():
-            rec_pane = record.get("paneId") if isinstance(record, dict) else None
-            rec_term = record.get("terminalId") if isinstance(record, dict) else None
-            rec_tab = record.get("tabId") if isinstance(record, dict) else None
-            live_card = live_by_pane.get(rec_pane) if isinstance(rec_pane, str) else None
-            try:
-                if live_card and live_card.get("terminal_id") == rec_term and live_card.get("tab_id") == rec_tab:
-                    record["phase"] = "ready"
-                    json_path.write_text(json.dumps(record) + "\n")
-                    pending_path.unlink(missing_ok=True)
-                    fixed.append({"kind": "pending-work-card-promoted-ready", "path": str(pending_path), "pane_id": rec_pane})
-                    continue
-                if isinstance(rec_pane, str) and live_card is None and isinstance(record, dict):
-                    record["phase"] = "closed"
-                    json_path.write_text(json.dumps(record) + "\n")
-                    pending_path.unlink(missing_ok=True)
-                    fixed.append({"kind": "pending-work-card-marked-closed", "path": str(pending_path), "pane_id": rec_pane})
-                    continue
-                if rec_pane is None:
-                    pending_path.unlink(missing_ok=True)
-                    json_path.unlink(missing_ok=True)
-                    fixed.append({"kind": "unlaunched-pending-work-card-removed", "path": str(pending_path)})
-                    continue
-            except OSError:
-                pass
-        issues.append({
-            "kind": "pending-work-card-launch",
-            "path": str(pending_path),
-            "key": record.get("key") if isinstance(record, dict) else pending_path.name.removesuffix(".json.pending"),
-            "pane_id": record.get("paneId") if isinstance(record, dict) else None,
-            "terminal_id": record.get("terminalId") if isinstance(record, dict) else None,
-            "tab_id": record.get("tabId") if isinstance(record, dict) else None,
-            "message": f"pending work-card launch sidecar {pending_path} blocks automatic card open",
-        })
+        _reconcile_pending_sidecar(pending_path, live_by_pane, fix=fix, fixed=fixed, issues=issues)
 
 
 def _check_herdr_live(
@@ -581,17 +619,23 @@ def _check_herdr_live(
         if state_dir.exists() and (target_stream is not None or pane_id is not None):
             pending_path = state_dir / f"{expected_key}.json.pending"
             if pending_path.exists():
-                issues.append({
-                    "kind": "pending-work-card-launch",
-                    "pane_id": p_id,
-                    "workspace_id": ws_id,
-                    "tab_id": tab_id,
-                    "stream_id": session.stream_id,
-                    "session_id": session.id,
-                    "key": expected_key,
-                    "path": str(pending_path),
-                    "message": f"pending work-card launch sidecar {pending_path} blocks automatic card open for pane {p_id}",
-                })
+                live_by_pane = {p.get("pane_id") or p.get("id"): p for p in panes if isinstance(p, dict) and isinstance(p.get("pane_id") or p.get("id"), str)}
+                _reconcile_pending_sidecar(
+                    pending_path,
+                    live_by_pane,
+                    fix=fix,
+                    fixed=fixed,
+                    issues=issues,
+                    extra={
+                        "pane_id": p_id,
+                        "workspace_id": ws_id,
+                        "tab_id": tab_id,
+                        "stream_id": session.stream_id,
+                        "session_id": session.id,
+                        "key": expected_key,
+                        "message": f"pending work-card launch sidecar {pending_path} blocks automatic card open for pane {p_id}",
+                    },
+                )
 
         present_pair_keys = [k for k in PAIR_KEYS if k in tokens]
         if present_pair_keys:
@@ -724,41 +768,40 @@ def check_all(
             "message": f"catalog save repair marker at {save_marker} blocks catalog writes",
         })
 
-    herdr_streams: set[str] | None = None
-    if _should_check_herdr(local, pane_id=pane_id, frontend=frontend):
-        herdr_streams = _check_herdr_live(
-            backend,
-            catalog,
-            local,
-            target_stream=stream,
-            pane_id=pane_id,
-            fix=fix,
-            issues=issues,
-            fixed=fixed,
-        )
-
-    if stream is not None:
-        streams_to_check = (stream,)
-        target_stream_ids: set[str] | None = {stream.id}
-    elif pane_id is not None and herdr_streams is not None:
-        streams_to_check = tuple(s for s in catalog.streams if s.id in herdr_streams)
-        target_stream_ids = set(herdr_streams)
-    else:
-        streams_to_check = catalog.streams
-        target_stream_ids = None
-
-    for s in streams_to_check:
-        if s.owner_host_id == backend.host_id and backend.authority(s.id) is None:
-            issues.append({
-                "kind": "missing-stream-authority",
-                "stream_id": s.id,
-                "message": f"local owner stream {s.id!r} is missing its authority token in local.json",
-            })
-        if pane_id is None:
-            s_sessions = tuple(item for item in catalog.sessions if item.stream_id == s.id)
-            _check_stream_locations(s, s_sessions, local, fix=fix, issues=issues, fixed=fixed)
-
     if stream is None and pane_id is None:
+        if isinstance(backend, LocalCatalog):
+            for sess in catalog.sessions:
+                expected_path = _record_path(backend.store.root, record_key(sess))
+                legacy_path = _record_path(backend.store.root, RecordKey("session", sess.id, sess.host_id))
+                if legacy_path.exists() and not expected_path.exists():
+                    if fix:
+                        try:
+                            with backend.store.transaction():
+                                _store_directory(expected_path.parent.parent.parent, create=True)
+                                _store_directory(expected_path.parent.parent, create=True)
+                                _store_directory(expected_path.parent, create=True)
+                                os.replace(legacy_path, expected_path)
+                                try:
+                                    legacy_path.parent.rmdir()
+                                except OSError:
+                                    pass
+                            fixed.append({
+                                "kind": "legacy-session-path-migrated",
+                                "session_id": sess.id,
+                                "stream_id": sess.stream_id,
+                                "from": str(legacy_path.relative_to(backend.store.root)),
+                                "to": str(expected_path.relative_to(backend.store.root)),
+                            })
+                            continue
+                        except (OSError, Exception):
+                            pass
+                    issues.append({
+                        "kind": "unpartitioned-session-record",
+                        "session_id": sess.id,
+                        "stream_id": sess.stream_id,
+                        "path": str(legacy_path.relative_to(backend.store.root)),
+                        "message": f"session {sess.id} is stored at legacy unpartitioned path {legacy_path.relative_to(backend.store.root)}; run streams check --fix to migrate to {expected_path.relative_to(backend.store.root)}",
+                    })
         for chk in local.checkouts.list():
             if not chk.repository_urls:
                 if fix:
@@ -779,6 +822,46 @@ def check_all(
                     "directory": chk.directory,
                     "message": f"registered checkout {chk.directory} has no repository URL binding",
                 })
+
+    if pane_id is None:
+        pre_streams = (stream,) if stream is not None else catalog.streams
+        for s in pre_streams:
+            if s.owner_host_id == backend.host_id and backend.authority(s.id) is None:
+                issues.append({
+                    "kind": "missing-stream-authority",
+                    "stream_id": s.id,
+                    "message": f"local owner stream {s.id!r} is missing its authority token in local.json",
+                })
+            s_sessions = tuple(item for item in catalog.sessions if item.stream_id == s.id)
+            _check_stream_locations(s, s_sessions, local, fix=fix, issues=issues, fixed=fixed)
+
+    herdr_streams: set[str] | None = None
+    if _should_check_herdr(local, pane_id=pane_id, frontend=frontend):
+        herdr_streams = _check_herdr_live(
+            backend,
+            catalog,
+            local,
+            target_stream=stream,
+            pane_id=pane_id,
+            fix=fix,
+            issues=issues,
+            fixed=fixed,
+        )
+
+    if stream is not None:
+        target_stream_ids: set[str] | None = {stream.id}
+    elif pane_id is not None and herdr_streams is not None:
+        streams_to_check = tuple(s for s in catalog.streams if s.id in herdr_streams)
+        target_stream_ids = set(herdr_streams)
+        for s in streams_to_check:
+            if s.owner_host_id == backend.host_id and backend.authority(s.id) is None:
+                issues.append({
+                    "kind": "missing-stream-authority",
+                    "stream_id": s.id,
+                    "message": f"local owner stream {s.id!r} is missing its authority token in local.json",
+                })
+    else:
+        target_stream_ids = None
 
     _check_runtime_files(catalog, local, target_stream_ids, issues)
 
