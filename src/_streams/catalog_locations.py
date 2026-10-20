@@ -13,10 +13,11 @@ import hashlib
 import json
 import os
 from pathlib import Path
+import tempfile
 
 from .catalog.model import Session, Stream
 from .catalog.sync.envelope import load_json
-from .catalog_checkouts import CheckoutRegistry, _relative, inspect_directory
+from .catalog_checkouts import CheckoutRegistry, _relative, extract_document_revision, inspect_directory
 from .catalog_config import _atomic_json
 from .errors import StreamError
 
@@ -146,7 +147,7 @@ class DirectoryBindings:
             _atomic_json(path, {"version": 2, "stream_id": stream_id, "session_id": session_id, "location": location})
             return binding
 
-    def document_context(self, stream: Stream, session: Session) -> dict:
+    def document_context(self, stream: Stream, session: Session, *, sessions: tuple[Session, ...] = ()) -> dict:
         """Return current-file targets and per-reference errors, without native effects."""
         selected = None
         selection_error = None
@@ -170,6 +171,13 @@ class DirectoryBindings:
         kwargs = {"selected_checkout_id": selected.checkout_id if selected else None,
                   "selected_repository_url": repository_url}
         checkouts, locations = [], []
+        seen_checkouts: set[tuple[str, str]] = set()
+
+        def add_checkout(alias: str, checkout_id: str, root: str) -> None:
+            if (alias, checkout_id) not in seen_checkouts:
+                seen_checkouts.add((alias, checkout_id))
+                checkouts.append({"repository": alias, "checkout_id": checkout_id, "root": root})
+
         resolved, errors = {}, {}
         for alias, repository in stream.repositories.items():
             try:
@@ -177,21 +185,99 @@ class DirectoryBindings:
                     raise StreamError(selection_error)
                 checkout = self.checkouts.resolve(repository.url, **kwargs)
                 resolved[alias] = checkout
-                checkouts.append({"repository": alias, "checkout_id": checkout.id, "root": checkout.directory})
+                add_checkout(alias, checkout.id, checkout.directory)
             except (StreamError, OSError, ValueError) as error:
                 errors[alias] = str(error)
         for document in stream.documents:
+            repo_url = stream.repositories[document.repository].url
             checkout = resolved.get(document.repository)
-            location = {"repository": document.repository, "path": document.path,
-                        "checkout_id": checkout.id if checkout else None,
-                        "root": checkout.directory if checkout else None, "file": None, "error": errors.get(document.repository)}
+            local_error = errors.get(document.repository)
+            alternates: list[dict[str, str]] = []
             if checkout is not None:
                 try:
-                    current, file = self.checkouts.document(stream.repositories[document.repository].url, document.path, **kwargs)
+                    current, file = self.checkouts.document(repo_url, document.path, **kwargs)
                     if current != checkout:
                         raise StreamError("checkout binding changed during document resolution; refresh to retry")
-                    location["file"] = str(file)
+                    alternates.append({
+                        "kind": "local",
+                        "label": f"local ({Path(checkout.directory).name})",
+                        "checkout_id": checkout.id,
+                        "root": checkout.directory,
+                        "file": str(file),
+                    })
                 except (StreamError, OSError, ValueError) as error:
-                    location["error"] = f"Document not present in this checkout: {document.path}. {error}"
+                    local_error = f"Document not present in this checkout: {document.path}. {error}"
+            origin_chk = None
+            if selection_error is None:
+                candidate_sids = (
+                    [document.source_session_id]
+                    if document.source_session_id is not None
+                    else [s.id for s in sessions if s.id != session.id and s.stream_id == stream.id]
+                )
+                for origin_sid in candidate_sids:
+                    if not origin_sid or origin_sid == session.id:
+                        continue
+                    try:
+                        origin_sel = self.read(stream.id, origin_sid)
+                        cand_chk = self.checkouts.get(origin_sel.checkout_id) if origin_sel and origin_sel.checkout_id else None
+                        if cand_chk is not None and repo_url in cand_chk.repository_urls:
+                            origin_chk = cand_chk
+                            if checkout is None or cand_chk.id != checkout.id:
+                                origin_file = self.checkouts._contained(cand_chk, document.path, directory=False)
+                                add_checkout(document.repository, cand_chk.id, cand_chk.directory)
+                                alternates.append({
+                                    "kind": "origin",
+                                    "label": f"origin ({Path(cand_chk.directory).name})",
+                                    "checkout_id": cand_chk.id,
+                                    "root": cand_chk.directory,
+                                    "file": str(origin_file),
+                                })
+                                break
+                    except (StreamError, OSError, ValueError):
+                        continue
+            if selection_error is None and (document.effective_commit is not None or (not alternates and document.source_session_id is not None)):
+                base_chk = origin_chk or checkout
+                if base_chk is not None:
+                    cache_dir = Path(tempfile.gettempdir()) / f"streams-revisions-{os.getuid()}"
+                    extracted = extract_document_revision(
+                        base_chk,
+                        document.path,
+                        ref=document.ref,
+                        commit=document.effective_commit,
+                        cache_dir=cache_dir,
+                    )
+                    if extracted is not None:
+                        rev_file, rev_label = extracted
+                        rev_root = str(rev_file.parents[len(Path(document.path).parts) - 1])
+                        rev_chk_id = f"{base_chk.id}@{rev_label}"
+                        add_checkout(document.repository, rev_chk_id, rev_root)
+                        alternates.append({
+                            "kind": "revision",
+                            "label": f"commit {rev_label}",
+                            "checkout_id": rev_chk_id,
+                            "root": rev_root,
+                            "file": str(rev_file),
+                        })
+            if alternates:
+                primary_target = alternates[0]
+                location: dict[str, object] = {
+                    "repository": document.repository,
+                    "path": document.path,
+                    "checkout_id": primary_target["checkout_id"],
+                    "root": primary_target["root"],
+                    "file": primary_target["file"],
+                    "error": None,
+                }
+                if len(alternates) > 1 or primary_target["kind"] != "local":
+                    location["alternates"] = alternates
+            else:
+                location = {
+                    "repository": document.repository,
+                    "path": document.path,
+                    "checkout_id": checkout.id if checkout else None,
+                    "root": checkout.directory if checkout else None,
+                    "file": None,
+                    "error": local_error,
+                }
             locations.append(location)
         return {"checkouts": checkouts, "document_locations": locations}

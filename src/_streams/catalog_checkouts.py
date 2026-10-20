@@ -429,3 +429,96 @@ def infer_checkout_repository_urls(directory: Path, checkouts: CheckoutRegistry)
             pass
     return tuple(urls)
 
+
+def inspect_document_revision(checkout_dir: Path, path: str) -> dict[str, object] | None:
+    """Return {ref, commit, modified} for an existing file in a Git/jj checkout, or None."""
+    try:
+        relative = _relative(path, allow_root=False)
+        root = _directory(checkout_dir)
+        target = (root / relative).resolve(strict=True)
+        if not target.is_relative_to(root) or not target.is_file():
+            return None
+    except (OSError, RuntimeError, StreamError, ValueError):
+        return None
+    if (root / ".jj").is_dir():
+        try:
+            meta = _run([
+                "jj", "--ignore-working-copy", "--at-operation=@", "log", "-r", "@", "--no-graph",
+                "-T", 'change_id.shortest(8) ++ "\\t" ++ commit_id ++ "\\t" ++ local_bookmarks.map(|b| b.name()).join(",") ++ "\\n"',
+            ], root).splitlines()
+            if meta:
+                parts = meta[0].split("\t")
+                if len(parts) >= 2 and parts[0].strip() and parts[1].strip():
+                    change_id, commit_id = parts[0].strip(), parts[1].strip()
+                    bookmarks = [b.strip().rstrip("*") for b in (parts[2].split(",") if len(parts) > 2 else []) if b.strip()]
+                    diff_files = set(_run(["jj", "--ignore-working-copy", "--at-operation=@", "diff", "-r", "@", "--name-only"], root).splitlines())
+                    return {"ref": bookmarks[0] if bookmarks else change_id, "commit": commit_id, "modified": relative in diff_files}
+        except StreamError:
+            pass
+    try:
+        commit_id = _run(["git", "rev-parse", "--verify", "HEAD"], root).strip()
+        if not commit_id:
+            return None
+        try:
+            branch = _run(["git", "symbolic-ref", "--short", "-q", "HEAD"], root).strip()
+        except StreamError:
+            branch = ""
+        modified = False
+        try:
+            status_out = _run(["git", "status", "--porcelain", "--", relative], root).strip()
+            head_out = _run(["git", "diff-tree", "--no-commit-id", "--name-only", "-r", "HEAD", "--", relative], root).strip()
+            modified = bool(status_out or head_out)
+        except StreamError:
+            pass
+        return {"ref": branch or commit_id[:12], "commit": commit_id, "modified": modified}
+    except StreamError:
+        return None
+
+
+def extract_document_revision(
+    checkout: CheckoutLocation,
+    path: str,
+    *,
+    ref: str | None = None,
+    commit: str | None = None,
+    cache_dir: Path,
+) -> tuple[Path, str] | None:
+    """Materialize a file from VCS at commit or ref into cache_dir, returning (file_path, rev_label)."""
+    try:
+        relative = _relative(path, allow_root=False)
+        root = Path(checkout.directory)
+        if not root.is_dir():
+            return None
+    except (OSError, StreamError):
+        return None
+    candidates = [rev.strip() for rev in (commit, ref) if isinstance(rev, str) and rev.strip() and not rev.strip().startswith("-")]
+    if not candidates:
+        return None
+    has_jj = (root / ".jj").is_dir()
+    for rev in candidates:
+        rev_key = hashlib.sha256(rev.encode("utf-8")).hexdigest()[:12]
+        rev_label = rev[:8] if len(rev) >= 8 else rev
+        dest = (cache_dir / checkout.id / rev_key / relative).resolve()
+        if dest.is_file():
+            return dest, rev_label
+        content: str | None = None
+        if has_jj:
+            try:
+                content = _run(["jj", "--ignore-working-copy", "--at-operation=@", "file", "show", "-r", rev, relative], root) + "\n"
+            except StreamError:
+                content = None
+        if content is None:
+            try:
+                content = _run(["git", "show", f"{rev}:{relative}"], root) + "\n"
+            except StreamError:
+                content = None
+        if content is not None:
+            try:
+                dest.parent.mkdir(mode=0o700, parents=True, exist_ok=True)
+                dest.write_text(content, encoding="utf-8")
+                return dest, rev_label
+            except OSError:
+                return None
+    return None
+
+

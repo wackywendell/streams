@@ -174,6 +174,35 @@ class DirectoryBindingsTest(unittest.TestCase):
         self.registry.set_default("repo", checkout.id)
         self.assertEqual(self.context()["document_locations"][0]["file"], str(root / "doc.md"))
 
+    def test_document_fallback_resolves_origin_session_checkout_and_vcs_commit(self):
+        from dataclasses import replace
+        one_root, _ = self.repo("one", "repo")
+        two_root, two_chk = self.repo("two", "repo")
+        (two_root / "branch-only.md").write_text("from worktree two\n")
+        subprocess.run(["git", "add", "branch-only.md"], cwd=two_root, check=True, capture_output=True, timeout=30)
+        subprocess.run(["git", "-c", "user.name=Test", "-c", "user.email=test@example.com", "commit", "-m", "add branch-only"], cwd=two_root, check=True, capture_output=True, timeout=30)
+        commit_sha = subprocess.run(["git", "rev-parse", "HEAD"], cwd=two_root, check=True, capture_output=True, text=True, timeout=30).stdout.strip()
+        other = replace(self.session, id="other", harness_session_id="native-2")
+        self.locations.remember("stream", one_root, session_id="session", repository_url="repo")
+        self.locations.remember("stream", two_root, session_id="other", repository_url="repo")
+        stream = replace(
+            self.stream,
+            documents=(Document("code", "main", "branch-only.md", "Branch doc", commit=commit_sha, source_session_id="other"),),
+        )
+        ctx = self.locations.document_context(stream, self.session, sessions=(self.session, other))
+        loc = ctx["document_locations"][0]
+        self.assertIsNone(loc["error"])
+        self.assertEqual(loc["checkout_id"], two_chk.id)
+        self.assertEqual(loc["file"], str(two_root / "branch-only.md"))
+        self.assertEqual([a["kind"] for a in loc["alternates"]], ["origin", "revision"])
+        (two_root / "branch-only.md").unlink()
+        ctx_after_unlink = self.locations.document_context(stream, self.session, sessions=(self.session, other))
+        loc_after = ctx_after_unlink["document_locations"][0]
+        self.assertIsNone(loc_after["error"])
+        self.assertEqual(loc_after["alternates"][0]["kind"], "revision")
+        self.assertEqual(Path(loc_after["file"]).read_text(), "from worktree two\n")
+
+
 
 if __name__ == "__main__":
     unittest.main()

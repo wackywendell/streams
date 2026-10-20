@@ -209,6 +209,20 @@ def collection_changes(args, before):
         index = matches[0]
         documents[index] = replace(documents[index], added_at=commit)
         changes["documents"] = tuple(documents)
+    for repository, path, commit in getattr(args, "document_commit", ()):
+        matches = [index for index, item in enumerate(documents) if item.identity == (repository, path)]
+        if not matches:
+            raise StreamError(f"no document matches repository/path: {repository}:{path}")
+        index = matches[0]
+        documents[index] = replace(documents[index], commit=commit)
+        changes["documents"] = tuple(documents)
+    for repository, path, session_id in getattr(args, "document_session", ()):
+        matches = [index for index, item in enumerate(documents) if item.identity == (repository, path)]
+        if not matches:
+            raise StreamError(f"no document matches repository/path: {repository}:{path}")
+        index = matches[0]
+        documents[index] = replace(documents[index], source_session_id=session_id)
+        changes["documents"] = tuple(documents)
     return changes
 
 
@@ -465,6 +479,38 @@ def command_session(args):
     return finish(backend, operation, saved, event="attach" if args.session_command == "attach" else "session", args=args, extra=extra)
 
 
+def _refresh_session_documents(backend, local, session: Session) -> None:
+    from .catalog_checkouts import inspect_document_revision
+    try:
+        catalog = backend.snapshot().catalog
+        stream = catalog.stream(session.stream_id)
+        authority = backend.authority(stream.id) if stream else None
+        if stream is None or not stream.documents or authority is None or authority.host_id != backend.host_id:
+            return
+        selected = local.locations.read(stream.id, session.id)
+        if selected is None or selected.checkout_id is None:
+            return
+        chk = local.checkouts.get(selected.checkout_id)
+        updated = list(stream.documents)
+        changed = False
+        for i, doc in enumerate(updated):
+            repo = stream.repositories.get(doc.repository)
+            if repo is None or repo.url not in chk.repository_urls:
+                continue
+            info = inspect_document_revision(Path(chk.directory), doc.path)
+            if info is None:
+                continue
+            if doc.source_session_id == session.id or bool(info["modified"]):
+                next_doc = replace(doc, source_session_id=session.id, ref=str(info["ref"]), commit=str(info["commit"]))
+                if next_doc != doc:
+                    updated[i] = next_doc
+                    changed = True
+        if changed:
+            backend.save(update(str(uuid4()), stream, {"documents": tuple(updated)}, actor="user"), origin={"command": "streams-agent"})
+    except (StreamError, StorageError, ValidationError, OSError, ValueError):
+        pass
+
+
 def command_agent(args):
     from . import catalog_agent
     backend = config.open_catalog()
@@ -474,7 +520,7 @@ def command_agent(args):
                                         workspace_stream_id=local.context_stream_id())
         context.update(checkouts=[], document_locations=[])
         if context["stream"] is not None and context["session"] is not None:
-            context.update(local.locations.document_context(context["stream"], context["session"]))
+            context.update(local.locations.document_context(context["stream"], context["session"], sessions=context["sessions"]))
         if args.attest:
             if context["stream"] is None or context["session"] is None:
                 raise StreamError("native projection requires an enrolled Stream and Session")
@@ -484,7 +530,10 @@ def command_agent(args):
     source = sys.stdin.read()
     if args.agent_command == "apply":
         operation = catalog_agent.parse_update(source, catalog_source=catalog_agent.source_id(backend))
-        return finish(backend, operation, save(backend, operation),
+        saved = save(backend, operation)
+        if saved.accepted and isinstance(operation.after, Session):
+            _refresh_session_documents(backend, runtime(), operation.after)
+        return finish(backend, operation, saved,
                       event="session" if isinstance(operation.after, Session) else "stream", args=args)
     payload, code = catalog_agent.enroll(backend, runtime(), source)
     if code == 0 or any(item["save"].accepted for item in payload["saves"]):
@@ -529,6 +578,10 @@ def add_stream_fields(parser):
     parser.add_argument("--remove-document", nargs=2, metavar=("REPOSITORY", "PATH"), action="append", default=[])
     parser.add_argument("--document-added-at", nargs=3, metavar=("REPOSITORY", "PATH", "COMMIT"), action="append", default=[],
                         help="record a known commit for document recovery, not revision-pinned opening")
+    parser.add_argument("--document-commit", nargs=3, metavar=("REPOSITORY", "PATH", "COMMIT"), action="append", default=[],
+                        help="record the latest known commit SHA for a document")
+    parser.add_argument("--document-session", nargs=3, metavar=("REPOSITORY", "PATH", "SESSION_ID"), action="append", default=[],
+                        help="record the source Session ID whose checkout produced a document")
     for field in ("issue", "pr"):
         parser.add_argument("--add-" + field, nargs=2, metavar=("URL", "DESCRIPTION"), action="append", default=[])
         parser.add_argument("--remove-" + field, metavar="URL", action="append", default=[])

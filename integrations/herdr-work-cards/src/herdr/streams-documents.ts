@@ -16,12 +16,15 @@ export async function resolveStreamsDocument(snapshot: StreamsCardSnapshot, targ
   if (!isDeepStrictEqual(snapshot.scope, target.scope)) throw new Error('Viewing session or catalog source changed; redraw before opening');
   const repository = snapshot.stream.repositories[target.repository];
   if (!repository || repository.url !== target.repositoryUrl) throw new Error('Document repository changed; redraw before opening');
-  if (!snapshot.stream.documents.some(document => document.repository === target.repository && document.ref === target.ref && document.added_at === target.added_at && document.path === target.path)) {
+  if (!snapshot.stream.documents.some(document => document.repository === target.repository && document.ref === target.ref && document.added_at === target.added_at && document.commit === target.commit && document.source_session_id === target.source_session_id && document.path === target.path)) {
     throw new Error('Document reference no longer present; redraw before opening');
   }
   const location = snapshot.documentLocations.find(l => l.repository === target.repository && l.path === target.path);
-  if (!location || ['checkout_id', 'root', 'file', 'error'].some(key => location[key as keyof typeof location] !== target[key as keyof StreamsDocumentTarget])) throw new Error('Viewing checkout or app location changed; redraw before opening');
-  if (location.error) throw new Error(location.error);
+  const matchesPrimary = !!location && !['checkout_id', 'root', 'file', 'error'].some(key => location[key as keyof typeof location] !== target[key as keyof StreamsDocumentTarget]);
+  const matchedAlt = !matchesPrimary && target.error === null ? location?.alternates?.find(a => a.checkout_id === target.checkout_id && a.root === target.root && a.file === target.file) : undefined;
+  if (!location || (!matchesPrimary && !matchedAlt)) throw new Error('Viewing checkout or app location changed; redraw before opening');
+  if (matchesPrimary && location.error) throw new Error(location.error);
+  const expectedFile = matchedAlt ? matchedAlt.file : location.file;
   const bindings = snapshot.checkouts.filter(binding => binding.repository === target.repository && binding.checkout_id === target.checkout_id);
   if (bindings.length > 1) throw new Error('Ambiguous viewing-session checkout binding');
   const selected = bindings[0];
@@ -44,7 +47,7 @@ export async function resolveStreamsDocument(snapshot: StreamsCardSnapshot, targ
     }
     throw error;
   }
-  if (file !== location.file) throw new Error('App-resolved canonical file changed; redraw before opening');
+  if (file !== expectedFile) throw new Error('App-resolved canonical file changed; redraw before opening');
   const after = await stat(root, { bigint: true });
   if (await realpath(root) !== root || before.dev !== after.dev || before.ino !== after.ino) throw new Error('Viewing checkout changed during document resolution');
   // Native reuse also verifies the Herdr workspace and its exact owned editor tuple.

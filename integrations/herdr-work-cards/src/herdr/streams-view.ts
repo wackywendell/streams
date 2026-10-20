@@ -1,33 +1,44 @@
 import { isDeepStrictEqual } from 'node:util';
 import { checkoutLabels } from '../presentation.js';
 import { renderDisplayCard, type RenderedCard } from './view.js';
-import { sameStreamsScope, type StreamsCardScope, type StreamsCardSnapshot, type StreamsCardSource } from './streams-source.js';
+import { sameStreamsScope, type StreamsCardScope, type StreamsCardSnapshot, type StreamsCardSource, type StreamsDocumentAlternate } from './streams-source.js';
 
 export interface StreamsDocumentTarget {
-  scope: StreamsCardScope; repository: string; repositoryUrl: string; ref: string; added_at?: string; path: string;
+  scope: StreamsCardScope; repository: string; repositoryUrl: string; ref: string;
+  added_at?: string; commit?: string; source_session_id?: string; path: string;
   checkout_id: string | null; root: string | null; file: string | null; error: string | null;
+  alternates?: readonly StreamsDocumentAlternate[];
 }
 export function renderStreamsCard(snapshot: StreamsCardSnapshot | undefined, columns: number, rows: number, notice?: string): RenderedCard<StreamsDocumentTarget> {
   if (!snapshot) return renderDisplayCard<StreamsDocumentTarget>(undefined, columns, rows, notice);
   const { stream, session, scope, checkouts } = snapshot;
-  const roots = [...new Set(checkouts.map(binding => binding.root))];
+  const worktreeCheckouts = checkouts.filter(binding => !binding.checkout_id.includes('@'));
+  const roots = [...new Set(worktreeCheckouts.map(binding => binding.root))];
   // Feed only checkout directory data to the existing distinguishing-label helper.
   const labels = checkoutLabels(Object.fromEntries(roots.map((root, index) => [String(index), { directory: root }])));
   const repositories = Object.keys(stream.repositories);
   const documents = stream.documents.map(document => {
     const location = snapshot.documentLocations.find(l => l.repository === document.repository && l.path === document.path)!;
     const root = location.root ?? undefined;
+    const isRevision = location.checkout_id?.includes('@') ?? false;
     let qualifier = '';
-    if (repositories.length > 1 || roots.length > 1) {
+    if (isRevision && location.checkout_id) {
+      qualifier = `@${location.checkout_id.split('@')[1]}`;
+    } else if (repositories.length > 1 || roots.length > 1) {
       qualifier = root === undefined ? document.repository : labels[String(roots.indexOf(root))];
-      if (root !== undefined && checkouts.some(binding => binding.repository !== document.repository && binding.root === root)) {
+      if (root !== undefined && worktreeCheckouts.some(binding => binding.repository !== document.repository && binding.root === root)) {
         qualifier = `${document.repository}:${qualifier}`;
       }
     }
-    const label = `${qualifier ? `${qualifier === '/' ? '' : qualifier}/` : ''}${document.path}${document.added_at ? ` (added ${document.added_at.slice(0, 8)})` : ''}`;
+    const revSuffix = document.commit ? ` (commit ${document.commit.slice(0, 8)})` : document.added_at ? ` (added ${document.added_at.slice(0, 8)})` : '';
+    const label = `${qualifier ? `${qualifier === '/' ? '' : qualifier}/` : ''}${document.path}${revSuffix}`;
     return { label, target: {
       scope: { ...scope }, repositoryUrl: stream.repositories[document.repository].url,
-      ref: document.ref, ...(document.added_at ? { added_at: document.added_at } : {}), ...location,
+      ref: document.ref,
+      ...(document.added_at ? { added_at: document.added_at } : {}),
+      ...(document.commit ? { commit: document.commit } : {}),
+      ...(document.source_session_id ? { source_session_id: document.source_session_id } : {}),
+      ...location,
     } };
   });
   return renderDisplayCard({ title: session.title, status: session.status, goal: stream.goal ?? '', now: session.state,
@@ -43,6 +54,7 @@ export class StreamsCardView {
   current?: StreamsCardSnapshot;
   private activeNotice?: Readonly<Notice>;
   private documents = new Map<string, StreamsDocumentTarget>();
+  private chooser?: { key: string; options: { label: string; target: StreamsDocumentTarget }[]; notice?: string };
   private columns = 80;
   private rows = 0;
   private paintedNotice?: string;
@@ -61,6 +73,7 @@ export class StreamsCardView {
     } catch (error) {
       this.current = undefined;
       this.documents.clear();
+      this.chooser = undefined;
       this.setNotice('card', `Card unavailable: ${error instanceof Error ? error.message : String(error)}. Refresh to retry.`);
       return undefined;
     }
@@ -73,7 +86,37 @@ export class StreamsCardView {
     return rendered.text;
   }
   async key(key: string): Promise<StreamsKeyResult> {
-    if (key === 'q' || key === '\x03') return { kind: 'exit' };
+    if (key === 'q' || key === '\x03') { this.chooser = undefined; return { kind: 'exit' }; }
+    if (this.chooser) {
+      const active = this.chooser;
+      this.chooser = undefined;
+      this.clearNotice('document');
+      if (key === '\x1b' || !/^[1-9]$/.test(key)) return { kind: 'none' };
+      const chosen = active.options[Number(key) - 1];
+      if (!chosen) return { kind: 'none' };
+      const columns = this.columns, rows = this.rows, notice = active.notice, paint = this.paint;
+      await this.refresh();
+      if (!this.current) return { kind: 'none' };
+      const next = renderStreamsCard(this.current, columns, rows, notice).documents.get(active.key);
+      if (paint !== this.paint || !next || !sameStreamsScope(next.scope, chosen.target.scope)) {
+        this.documents.clear();
+        this.setNotice('document', 'Document scope/binding/target changed; redraw and press the displayed shortcut again.');
+        return { kind: 'none' };
+      }
+      return { kind: 'open-document', snapshot: this.current, target: chosen.target };
+    }
+    if (/^[A-Z]$/.test(key) && key !== 'Q') {
+      const lower = key.toLowerCase();
+      const displayed = this.documents.get(lower);
+      if (!displayed) return { kind: 'none' };
+      const options = displayed.alternates?.length
+        ? displayed.alternates.map(alt => ({ label: alt.label, target: { ...displayed, checkout_id: alt.checkout_id, root: alt.root, file: alt.file, error: null } }))
+        : displayed.file ? [{ label: `local (${displayed.root?.split('/').at(-1) ?? displayed.repository})`, target: displayed }] : [];
+      if (!options.length) return { kind: 'none' };
+      this.chooser = { key: lower, options, notice: this.paintedNotice };
+      this.setNotice('document', `Open ${displayed.path}: ${options.map((o, i) => `[${i + 1}] ${o.label}`).join('  ')}  [Esc] cancel`);
+      return { kind: 'none' };
+    }
     const displayed = this.documents.get(key);
     if (!displayed) return { kind: 'none' };
     const columns = this.columns, rows = this.rows, notice = this.paintedNotice, paint = this.paint;

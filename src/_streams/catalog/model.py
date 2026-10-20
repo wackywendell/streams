@@ -70,9 +70,9 @@ class Link:
 
 @dataclass(frozen=True)
 class Document:
-    """Repository/path identity with a recovery ref and optional immutable commit provenance.
+    """Repository/path identity with a recovery ref and optional commit/session provenance.
 
-    added_at identifies a known commit, not necessarily the document creation commit.
+    commit (or legacy added_at) identifies the latest known commit from source_session_id.
     """
 
     repository: str
@@ -80,6 +80,8 @@ class Document:
     path: str
     description: str
     added_at: str | None = None
+    commit: str | None = None
+    source_session_id: str | None = None
 
     def __post_init__(self) -> None:
         text(self.repository, "document.repository")
@@ -88,6 +90,14 @@ class Document:
         text(self.description, "document.description", empty=True)
         if self.added_at is not None:
             text(self.added_at, "document.added_at")
+        if self.commit is not None:
+            text(self.commit, "document.commit")
+        if self.source_session_id is not None:
+            text(self.source_session_id, "document.source_session_id")
+
+    @property
+    def effective_commit(self) -> str | None:
+        return self.commit if self.commit is not None else self.added_at
 
     @property
     def identity(self) -> tuple[str, str]:

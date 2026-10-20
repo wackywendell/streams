@@ -494,7 +494,8 @@ def _check_herdr_live(
 
         stream_record = catalog.stream(session.stream_id)
         if stream_record is not None and stream_record.documents:
-            doc_locs = local.locations.document_context(stream_record, session)["document_locations"]
+            stream_sessions = tuple(s for s in catalog.sessions if s.stream_id == stream_record.id)
+            doc_locs = local.locations.document_context(stream_record, session, sessions=stream_sessions)["document_locations"]
             if fix and any(loc["error"] is not None and "no repository binding" in loc["error"] for loc in doc_locs):
                 try:
                     selected = local.locations.read(stream_record.id, session.id)
@@ -513,18 +514,11 @@ def _check_herdr_live(
                                     "directory": chk.directory,
                                     "repository_urls": list(inferred),
                                 })
-                                doc_locs = local.locations.document_context(stream_record, session)["document_locations"]
+                                doc_locs = local.locations.document_context(stream_record, session, sessions=stream_sessions)["document_locations"]
                 except StreamError:
                     pass
             for loc in doc_locs:
                 if loc["error"] is not None:
-                    if pane_id is None and loc["error"].startswith("Document not present in this checkout:"):
-                        repo_obj = stream_record.repositories.get(loc["repository"])
-                        if repo_obj is not None and any(
-                            repo_obj.url in chk.repository_urls and (Path(chk.directory) / loc["path"]).is_file()
-                            for chk in local.checkouts.list()
-                        ):
-                            continue
                     issues.append({
                         "kind": "unresolved-session-document",
                         "pane_id": p_id,

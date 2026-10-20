@@ -7,10 +7,17 @@ export const STREAMS_READ_ENV_KEYS = ['HOME', 'XDG_CONFIG_HOME', 'XDG_DATA_HOME'
 export interface StreamsCardScope {
   catalogSource: string; hostId: string; streamId: string; sessionId: string; nativeSessionId: string;
 }
-export interface StreamsDocument { repository: string; ref: string; path: string; description: string; added_at?: string }
+export interface StreamsDocument {
+  repository: string; ref: string; path: string; description: string;
+  added_at?: string; commit?: string; source_session_id?: string;
+}
 export interface StreamsCheckoutBinding { repository: string; checkout_id: string; root: string }
+export interface StreamsDocumentAlternate {
+  kind: 'local' | 'origin' | 'revision'; label: string; checkout_id: string; root: string; file: string;
+}
 export interface StreamsDocumentLocation {
   repository: string; path: string; checkout_id: string | null; root: string | null; file: string | null; error: string | null;
+  alternates?: readonly StreamsDocumentAlternate[];
 }
 export interface StreamsNativeOwner { frontend: 'herdr'; pane_id: string; tab_id: string; workspace_id: string }
 export interface StreamsStream {
@@ -50,7 +57,10 @@ function stream(value: unknown): value is StreamsStream {
     || !Object.entries(value.repositories).every(([alias, repo]) => identity(alias) && object(repo) && identity(repo.url))
     || !Array.isArray(value.documents) || !value.documents.every(doc => object(doc)
       && [doc.repository, doc.ref, doc.path].every(identity) && text(doc.description)
-      && (doc.added_at === undefined || identity(doc.added_at)) && Object.hasOwn(value.repositories as object, doc.repository as string))
+      && (doc.added_at === undefined || identity(doc.added_at))
+      && (doc.commit === undefined || identity(doc.commit))
+      && (doc.source_session_id === undefined || identity(doc.source_session_id))
+      && Object.hasOwn(value.repositories as object, doc.repository as string))
     || !Array.isArray(value.issues) || !value.issues.every(link) || !Array.isArray(value.prs) || !value.prs.every(link)) return false;
   return new Set(value.documents.map(doc => JSON.stringify([doc.repository, doc.path]))).size === value.documents.length;
 }
@@ -86,6 +96,14 @@ function context(value: unknown, nativeSessionId: string): StreamsCardSnapshot {
       || (l.checkout_id === null) !== (l.root === null)
       || (l.error === null ? !(identity(l.checkout_id) && absolute(l.root) && absolute(l.file)) : l.file !== null)) throw new Error('Invalid app document location');
     if (l.checkout_id !== null && !checkouts.some(b => b.repository === doc.repository && b.checkout_id === l.checkout_id && b.root === l.root)) throw new Error('App document location has no matching checkout binding');
+    if (l.alternates !== undefined) {
+      if (!Array.isArray(l.alternates) || !l.alternates.every(a => object(a)
+        && ['local', 'origin', 'revision'].includes(String(a.kind))
+        && identity(a.label) && identity(a.checkout_id) && absolute(a.root) && absolute(a.file)
+        && checkouts.some(b => b.repository === doc.repository && b.checkout_id === a.checkout_id && b.root === a.root))) {
+        throw new Error('Invalid app document alternate location');
+      }
+    }
   }
   // Never retain authority or another Session's progress in a UI snapshot.
   return structuredClone({

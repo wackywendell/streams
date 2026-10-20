@@ -49,12 +49,56 @@ test('two exact sessions share goal and references, never progress; baseline ren
   assert.match(rendered.text, /\x1b\]8;;https:\/\/example.com\/org\/repo\/issues\/42/);
 });
 
-test('commit provenance is labelled as added, never as a revision pin or recovery branch', async () => {
+test('commit provenance is labelled as added or commit, never as a revision pin or recovery branch', async () => {
   const f = fixture(); f.value.stream.documents[0].added_at = 'abcdef0123456789';
   const rendered = renderStreamsCard(await f.source.read(), 100, 10);
   assert.match(plain(rendered.text), /docs\/design.md \(added abcdef01\)/);
   assert.doesNotMatch(plain(rendered.text), /@ topic|@ abcdef/);
   assert.equal(rendered.documents.get('a').added_at, 'abcdef0123456789');
+
+  delete f.value.stream.documents[0].added_at;
+  f.value.stream.documents[0].commit = '9876543210fedcba';
+  f.value.stream.documents[0].source_session_id = 'other';
+  const renderedCommit = renderStreamsCard(await f.source.read(), 100, 10);
+  assert.match(plain(renderedCommit.text), /docs\/design.md \(commit 98765432\)/);
+  assert.equal(renderedCommit.documents.get('a').commit, '9876543210fedcba');
+  assert.equal(renderedCommit.documents.get('a').source_session_id, 'other');
+});
+
+test('Shift+letter opens inline footer chooser for document alternates and 1..9 selects target', async () => {
+  const session = { id: 'own', host_id: 'host', stream_id: 'shared', harness: 'pi', harness_session_id: native,
+    title: 'Own', title_mode: 'manual', state_short: 'Implement', status: 'active', state: 'Now', remaining: 'Next' };
+  const value = {
+    catalog_source: 'catalog', host_id: 'host', session, sessions: [session], authority: null,
+    native: { frontend: 'herdr', pane_id: 'w:p1', tab_id: 'w:t1', workspace_id: 'w' },
+    stream: { id: 'shared', title: 'Shared', title_mode: 'manual', goal_short: null, goal: null,
+      repositories: { lib: { url: 'https://example.com/lib' } },
+      documents: [{ repository: 'lib', ref: 'topic', path: 'docs/design.md', description: 'Design', commit: '12345678abcdef00', source_session_id: 'other' }],
+      issues: [], prs: [] },
+    checkouts: [
+      { repository: 'lib', checkout_id: 'local-chk', root: '/code/streams-lifecycle' },
+      { repository: 'lib', checkout_id: 'origin-chk', root: '/code/streams-temper' },
+    ],
+    document_locations: [{
+      repository: 'lib', path: 'docs/design.md', checkout_id: 'local-chk', root: '/code/streams-lifecycle',
+      file: '/code/streams-lifecycle/docs/design.md', error: null,
+      alternates: [
+        { kind: 'local', label: 'local (streams-lifecycle)', checkout_id: 'local-chk', root: '/code/streams-lifecycle', file: '/code/streams-lifecycle/docs/design.md' },
+        { kind: 'origin', label: 'origin (streams-temper)', checkout_id: 'origin-chk', root: '/code/streams-temper', file: '/code/streams-temper/docs/design.md' },
+      ],
+    }],
+  };
+  const source = new StreamsCardSource({ nativeSessionId: native, readContext: async () => value });
+  const view = new StreamsCardView(source);
+  await view.refresh();
+  view.render(120, 8);
+  assert.deepEqual(await view.key('A'), { kind: 'none' });
+  assert.match(view.notice.text, /Open docs\/design\.md: \[1\] local \(streams-lifecycle\)\s+\[2\] origin \(streams-temper\)\s+\[Esc\] cancel/);
+  view.render(120, 8);
+  const chosen = await view.key('2');
+  assert.equal(chosen.kind, 'open-document');
+  assert.equal(chosen.target.checkout_id, 'origin-chk');
+  assert.equal(chosen.target.file, '/code/streams-temper/docs/design.md');
 });
 test('missing bindings keep actionable references and their captured recovery ref and URL', async () => {
   const f = fixture(); f.roots({}); await f.view.refresh();

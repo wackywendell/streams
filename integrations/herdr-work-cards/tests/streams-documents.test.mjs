@@ -64,6 +64,16 @@ test('different checkouts inside the same native workspace resolve independently
   other.scope.sessionId = 'session-a'; other.checkouts[0] = { repository: 'project', checkout_id: 'a', root: a };
   Object.assign(other.documentLocations[0], { checkout_id: 'a', root: a, file: join(a, target.path) });
   const next = await resolveStreamsDocument(other, { ...target, scope: other.scope, ...other.documentLocations[0] }); assert.equal(next.file, join(a, target.path)); assert.notEqual(first.key, next.key);
+
+  const withAlternates = structuredClone(snapshot);
+  withAlternates.checkouts.push({ repository: 'project', checkout_id: 'origin-a', root: a });
+  withAlternates.documentLocations[0].alternates = [
+    { kind: 'local', label: 'local (b)', checkout_id: 'b', root: b, file: join(b, target.path) },
+    { kind: 'origin', label: 'origin (a)', checkout_id: 'origin-a', root: a, file: join(a, target.path) },
+  ];
+  const resolvedAlt = await resolveStreamsDocument(withAlternates, { ...target, checkout_id: 'origin-a', root: a, file: join(a, target.path), error: null });
+  assert.equal(resolvedAlt.file, join(a, target.path));
+  assert.notEqual(resolvedAlt.key, first.key);
 });
 test('contained symlinks must match app canonical file; escaping symlinks rejected', async t => {
   const { a, b, snapshot, target } = await fixture(t); await writeFile(join(b, 'docs/actual.md'), 'B'); await symlink('actual.md', join(b, target.path));
