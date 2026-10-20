@@ -491,6 +491,10 @@ def command_agent(args):
             if context["stream"] is None or context["session"] is None:
                 raise StreamError("native projection requires an enrolled Stream and Session")
             context["native"] = local.attest_context(context["stream"], context["session"], authority=context["authority"])
+        if args.native_inventory:
+            if not args.attest:
+                raise StreamError("native inventory requires --attest")
+            context["native_inventory"] = local.native_inventory()
         emit(context, args)
         return 0
     source = sys.stdin.read()
@@ -673,6 +677,7 @@ def build_parser():
     context.add_argument("--session-id", required=True)
     context.add_argument("--stream-id", help="exact stream identity; never switches an attached conversation")
     context.add_argument("--attest", action="store_true", help="require the exact native Pi caller and ready Herdr Stream association")
+    context.add_argument("--native-inventory", action="store_true", help="include verified native conversation identities for owner handover (requires --attest)")
     enroll = agent_sub.add_parser("enroll", allow_abbrev=False, help="enroll the caller from a structured stdin request")
     apply = agent_sub.add_parser("apply", allow_abbrev=False, help="apply a captured-record update from stdin")
     for child in (context, enroll, apply):

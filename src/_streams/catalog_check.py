@@ -475,40 +475,28 @@ def _check_herdr_live(
                     (cp for cp in panes if isinstance(cp, dict) and cp.get("terminal_id") == old_card_term),
                     None,
                 )
-                if fix and old_card_pane is None:
-                    clear_args = [arg for k in PAIR_KEYS if k in tokens for arg in ("--clear-token", k)]
-                    client.run(["pane", "report-metadata", p_id, "--source", "streams-work-cards", *clear_args])
-                    fixed.append({
-                        "kind": "stale-agent-owner-markers-cleared",
-                        "pane_id": p_id,
-                        "terminal_id": term_id,
-                        "workspace_id": ws_id,
-                        "tab_id": tab_id,
-                        "stream_id": session.stream_id,
-                        "session_id": session.id,
-                        "native_session_id": native_session_id,
-                        "cleared_native_session_id": tokens.get("strm_native"),
-                    })
-                else:
-                    issues.append({
-                        "kind": "stale-agent-owner-markers",
-                        "pane_id": p_id,
-                        "terminal_id": term_id,
-                        "workspace_id": ws_id,
-                        "tab_id": tab_id,
-                        "stream_id": session.stream_id,
-                        "session_id": session.id,
-                        "native_session_id": native_session_id,
-                        "marker_native_session_id": tokens.get("strm_native"),
-                        "marker_agent": tokens.get("strm_agent"),
-                        "marker_card": old_card_term,
-                        "card_live": old_card_pane is not None,
-                        "message": (
-                            f"pane {p_id} has stale strm_* owner markers for Pi session "
-                            f"{tokens.get('strm_native')!r} while running enrolled Pi session "
-                            f"{native_session_id!r} (causes 'Foreign or incomplete agent owner markers')"
-                        ),
-                    })
+                # Only the native owner can reconcile this under its workspace lock,
+                # with exact predecessor launch evidence and effect-time attestation.
+                issues.append({
+                    "kind": "stale-agent-owner-markers",
+                    "pane_id": p_id,
+                    "terminal_id": term_id,
+                    "workspace_id": ws_id,
+                    "tab_id": tab_id,
+                    "stream_id": session.stream_id,
+                    "session_id": session.id,
+                    "native_session_id": native_session_id,
+                    "marker_native_session_id": tokens.get("strm_native"),
+                    "marker_agent": tokens.get("strm_agent"),
+                    "marker_card": old_card_term,
+                    "card_live": old_card_pane is not None,
+                    "message": (
+                        f"pane {p_id} has stale strm_* owner markers for Pi session "
+                        f"{tokens.get('strm_native')!r} while running enrolled Pi session "
+                        f"{native_session_id!r}; refresh or open the owner's native card "
+                        "to attempt verified handover (check --fix does not clear ownership)"
+                    ),
+                })
                 continue
 
             if not all(tokens.get(k) for k in PAIR_KEYS) or tokens.get("strm_role") != "agent" or tokens.get("strm_pi") != term_id:

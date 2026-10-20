@@ -204,7 +204,7 @@ for (const [name, change] of [
 async function cliFixture(t) {
   const dir = await realpath(await mkdtemp(join(tmpdir(), 'streams-read-only-'))); t.after(() => rm(dir, { recursive: true, force: true }));
   const executable = join(dir, 'streams');
-  await writeFile(executable, `#!${process.execPath}\nconst args = process.argv.slice(2);\nif (JSON.stringify(args) !== JSON.stringify(['agent','context','--harness','pi','--session-id','${native}','--attest','--json'])) process.exit(9);\nif (process.cwd() !== process.env.EXPECT_CWD) process.exit(10);\nif (process.env.HERDR_PANE_ID !== 'w:p1' || process.env.HERDR_TAB_ID !== 'w:t1' || process.env.HERDR_WORKSPACE_ID !== 'w') process.exit(11);\nif (process.env.DELAY) setTimeout(() => {}, 5000);\nelse { process.stdout.write(process.env.RESPONSE); process.exit(Number(process.env.EXIT_CODE || 0)); }\n`);
+  await writeFile(executable, `#!${process.execPath}\nconst args = process.argv.slice(2);\nif (JSON.stringify(args) !== JSON.stringify(['agent','context','--harness','pi','--session-id','${native}','--attest','--json', ...(process.env.EXPECT_INVENTORY ? ['--native-inventory'] : [])])) process.exit(9);\nif (process.cwd() !== process.env.EXPECT_CWD) process.exit(10);\nif (process.env.HERDR_PANE_ID !== 'w:p1' || process.env.HERDR_TAB_ID !== 'w:t1' || process.env.HERDR_WORKSPACE_ID !== 'w') process.exit(11);\nif (process.env.DELAY) setTimeout(() => {}, 5000);\nelse { process.stdout.write(process.env.RESPONSE); process.exit(Number(process.env.EXIT_CODE || 0)); }\n`);
   await chmod(executable, 0o755);
   return extra => createStreamsSnapshotReader({ cwd: dir, owner: wire().native, ...extra,
     env: { PATH: dir, STREAMS_BIN_PATH: executable, EXPECT_CWD: dir, RESPONSE: JSON.stringify(wire()), HERDR_PANE_ID: 'wrong-helper-pane', ...extra?.env } });
@@ -215,6 +215,22 @@ test('CLI executes only bounded read-only attested context argv and exact owner 
   assert.equal(snapshot.session.id, 'own'); assert.equal(snapshot.scope.nativeSessionId, native);
   assert.equal(Object.hasOwn(snapshot, 'sessions'), false); assert.equal(Object.hasOwn(snapshot, 'authority'), false);
   await assert.rejects(factory()('not-a-uuid'), /UUID/); assert.throws(() => factory({ timeoutMs: 0 }), /positive/);
+});
+test('handover requests bounded read-only identity inventory without retaining other Session progress', async t => {
+  const value = wire();
+  value.sessions.push({ ...value.session, id: 'remote', host_id: 'remote', state: 'Remote secret' });
+  value.native_inventory = { socket: '/herdr.sock', panes: [{ pane_id: 'w:p1', terminal_id: 'term1', workspace_id: 'w', tab_id: 'w:t1', native_session_id: native }] };
+  const factory = await cliFixture(t), reader = factory({ env: { EXPECT_INVENTORY: '1', RESPONSE: JSON.stringify(value) } });
+  const source = new StreamsCardSource({ nativeSessionId: native, readSnapshot: reader });
+  const saved = await source.read(undefined, true);
+  assert.equal(saved.handover.socket, '/herdr.sock');
+  assert.deepEqual(saved.handover.inventory, value.native_inventory.panes);
+  assert.deepEqual(saved.handover.scopes.map(s => s.sessionId), ['own', 'other']);
+  assert.doesNotMatch(JSON.stringify(saved.handover), /Private other state|Remote secret|state|title|token/);
+  for (const invalid of [null, [], {}, { socket: 'relative', panes: [] }, { socket: '/herdr.sock', panes: [{}] },
+    { socket: '/herdr.sock', panes: [{ ...value.native_inventory.panes[0], native_session_id: 1 }] }]) {
+    assert.throws(() => parseStreamsCardContext({ ...value, native_inventory: invalid }, native), /inventory/);
+  }
 });
 test('CLI reader honours cancellation before dispatch and during a bounded subprocess', async t => {
   const factory = await cliFixture(t), controller = new AbortController();

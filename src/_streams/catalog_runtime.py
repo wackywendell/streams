@@ -476,6 +476,29 @@ class Runtime:
             raise StreamError('native projection requires a ready workspace association for this Stream')
         return native
 
+    def native_inventory(self) -> dict:
+        """Read-only conversation identities, never a missing-file inference of death.
+
+        The native owner requests this only for handover and must match every tuple
+        to its own fresh snapshot under the workspace lock before any effect.
+        """
+        client, _ = self._transport(Frontend.HERDR)
+        snapshot = client.command_result(['api', 'snapshot'], 'session_snapshot').get('snapshot')
+        if not isinstance(snapshot, dict) or not isinstance(snapshot.get('panes'), list):
+            raise StreamError('native conversation inventory unavailable')
+        inventory = []
+        for pane in snapshot['panes']:
+            if not isinstance(pane, dict) or not all(_text(pane.get(k)) for k in ('pane_id', 'terminal_id', 'workspace_id', 'tab_id')):
+                raise StreamError('invalid native conversation inventory tuple')
+            metadata = pane.get('agent_session')
+            tokens = pane.get('tokens') or {}
+            is_pi = (pane.get('agent') == 'pi' or isinstance(metadata, dict) and metadata.get('agent') == 'pi'
+                     or isinstance(tokens, dict) and tokens.get('strm_role') == 'agent')
+            identity = native_identity(metadata, 'pi')[0] if is_pi else None
+            inventory.append({k: pane[k] for k in ('pane_id', 'terminal_id', 'workspace_id', 'tab_id')}
+                             | {'native_session_id': identity})
+        return {'socket': client.endpoint().socket, 'panes': inventory}
+
     def _caller_context(self, frontend: str | None, *, explicit_precedence: bool = False) -> tuple[str | None, str | None, str | None]:
         explicit = os.environ.get('STREAMS_STREAM_ID')
         if explicit is not None and not _text(explicit):

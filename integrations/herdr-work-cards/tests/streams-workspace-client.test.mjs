@@ -74,6 +74,26 @@ async function fixture(t) {
   const owner = async n => { const c = client(`term${n}`), s = source(n), context = await c.bootstrap(config); return { c, s, context, open: (mode = 'automatic', signal) => c.openDisplay(s, context, config, signal, mode) }; };
   return { root, socket, stateDirectory, panes, tabs, workspaces, contexts, calls, snapshot, client, source, owner, hook: fn => { hook = fn; }, registration: value => { registration = value; }, plugin };
 }
+async function successor(f, close = true) {
+  const predecessor = await f.owner(1), pair = await predecessor.open(), saved = await predecessor.s.read();
+  const key = streamsDigest([f.socket, saved.scope, ['w:p1', 'term1', 'w', 'w:t1']]);
+  if (close) await predecessor.c.closeDisplay(predecessor.s, predecessor.context, config);
+  const state = new StreamsNativeState(f.stateDirectory), attempt = await state.read(key);
+  const old = structuredClone(f.contexts[0].session);
+  f.contexts[0].session = { ...old, id: 'successor', harness_session_id: native(3), title: 'Successor' };
+  f.contexts[0].sessions = [f.contexts[0].session, old, f.contexts[1].session];
+  let proofRead, reads = 0;
+  const s = new StreamsCardSource({ nativeSessionId: native(3), readSnapshot: async (id, signal, inventory) => {
+    if (inventory) await proofRead?.(++reads);
+    const wire = structuredClone(f.contexts[0]);
+    if (inventory) wire.native_inventory = { socket: f.socket, panes: f.panes.map(p => ({ pane_id: p.pane_id, terminal_id: p.terminal_id, tab_id: p.tab_id, workspace_id: p.workspace_id,
+      native_session_id: p.native_session_id ?? f.contexts.find(c => c.native.pane_id === p.pane_id)?.session.harness_session_id ?? null })) };
+    return parseStreamsCardContext(wire, id);
+  } });
+  const c = f.client('term1'), context = await c.bootstrap(config);
+  f.calls.length = 0;
+  return { c, s, context, state, key, attempt, pair, saved, proofRead: fn => { proofRead = fn; }, open: (mode = 'automatic') => c.openDisplay(s, context, config, undefined, mode) };
+}
 const launches = f => f.calls.filter(a => a[0] === 'plugin' && a[2] === 'open');
 const effects = f => f.calls.filter(a => a[1] === 'report-metadata' || a[1] === 'rename' || a[1] === 'focus' || a[2] === 'open' || a[2] === 'close');
 test('automatic enrolled owner opens an isolated pair; reused display has no duplicate, catalog write or workspace launch', async t => {
@@ -636,6 +656,83 @@ for (const corruption of ['missing', 'ready', 'nonce', 'tuple']) test(`card-only
   if (bytes !== null) assert.equal(await readFile(path, 'utf8'), bytes);
   else await assert.rejects(readFile(path), { code: 'ENOENT' });
   assert.equal(launches(f).length, 1);
+});
+for (const phase of ['ready', 'closed']) test(`verified successor retires ${phase} predecessor at exact reused tuple and opens once`, async t => {
+  const f = await fixture(t), a = await successor(f);
+  await a.state.write({ ...a.attempt, phase, extension: { retained: true } });
+  const oldBytes = await readFile(join(f.stateDirectory, `${a.key}.json`), 'utf8');
+  const catalog = structuredClone(f.contexts);
+  assert.throws(() => classifyPair(f.snapshot(), streamsDigest(successorScope(a)), 'term1'), /Foreign/);
+  const pair = await a.open();
+  assert.equal(pair.kind, 'paired'); assert.equal(pair.agent.tokens.strm_native, native(3));
+  assert.notEqual(pair.nonce, a.pair.nonce); assert.equal(launches(f).length, 1);
+  assert.equal((await a.open()).nonce, pair.nonce); assert.equal(launches(f).length, 1);
+  assert.equal(await readFile(join(f.stateDirectory, `${a.key}.json`), 'utf8'), oldBytes);
+  assert.deepEqual(f.contexts, catalog);
+  assert.ok(!f.calls.some(args => args[2] === 'close'));
+});
+function successorScope(a) { return { ...a.saved.scope, sessionId: 'successor', nativeSessionId: native(3) }; }
+for (const projection of ['summaries', 'names']) test(`manual-startup ${projection} can retire a verified dead predecessor without launching`, async t => {
+  const f = await fixture(t), a = await successor(f);
+  await a.c[projection === 'summaries' ? 'projectSummaries' : 'projectNames'](a.s, a.context, { ...config, workspace_startup: 'manual' });
+  assert.equal(f.panes[0].tokens.strm_agent, undefined);
+  assert.equal(launches(f).length, 0); assert.deepEqual(await a.state.read(a.key), a.attempt);
+});
+for (const change of ['live card', 'live predecessor', 'stale reference', 'unknown inventory', 'missing evidence', 'pending', 'unlaunched', 'wrong nonce', 'wrong card terminal', 'wrong card pane', 'wrong tab', 'foreign owner terminal', 'foreign scope', 'duplicate scope', 'current pending']) test(`successor handover fails closed on ${change}`, async t => {
+  const f = await fixture(t), a = await successor(f, change !== 'live card');
+  if (change === 'live predecessor') f.panes[1].native_session_id = native(1);
+  if (change === 'stale reference') f.panes[0].native_session_id = native(1);
+  if (change === 'unknown inventory') a.proofRead(() => { throw new Error('unavailable native header'); });
+  if (change === 'missing evidence') await rm(join(f.stateDirectory, `${a.key}.json`));
+  if (change === 'pending') await a.state.write({ ...a.attempt, phase: 'pending' });
+  if (change === 'unlaunched') await a.state.write({ version: 1, key: a.key, nonce: a.attempt.nonce, phase: 'pending' });
+  if (change === 'wrong nonce') f.panes[0].tokens.strm_nonce = 'another-lifetime';
+  if (change === 'wrong card terminal') await a.state.write({ ...a.attempt, terminalId: 'foreign' });
+  if (change === 'wrong card pane') await a.state.write({ ...a.attempt, paneId: f.panes[1].pane_id });
+  if (change === 'wrong tab') await a.state.write({ ...a.attempt, tabId: 'foreign' });
+  if (change === 'foreign owner terminal') f.panes[0].tokens.strm_pi = 'foreign';
+  if (change === 'foreign scope') f.contexts[0].sessions.find(s => s.harness_session_id === native(1)).host_id = 'remote';
+  if (change === 'duplicate scope') f.contexts[0].sessions.push(structuredClone(f.contexts[0].sessions.find(s => s.harness_session_id === native(1))));
+  if (change === 'current pending') {
+    const key = streamsDigest([f.socket, successorScope(a), ['w:p1', 'term1', 'w', 'w:t1']]);
+    await a.state.write({ version: 1, key, nonce: 'uncertain', phase: 'pending' });
+  }
+  const before = structuredClone(f.panes), evidence = await Promise.all((await readdir(f.stateDirectory)).filter(n => n.endsWith('.json')).sort().map(n => readFile(join(f.stateDirectory, n), 'utf8')));
+  await assert.rejects(a.open('explicit'));
+  assert.equal(effects(f).length, 0); assert.deepEqual(f.panes, before);
+  assert.deepEqual(await Promise.all((await readdir(f.stateDirectory)).filter(n => n.endsWith('.json')).sort().map(n => readFile(join(f.stateDirectory, n), 'utf8'))), evidence);
+});
+for (const change of ['nonce', 'tuple', 'binding', 'evidence', 'live predecessor', 'scope']) test(`successor handover repeats proof and refuses concurrent ${change} change before clearing`, async t => {
+  const f = await fixture(t), a = await successor(f);
+  a.proofRead(async read => {
+    if (read !== 2) return;
+    if (change === 'nonce') f.panes[0].tokens.strm_nonce = 'changed';
+    if (change === 'tuple') f.panes[0].terminal_id = 'changed';
+    if (change === 'binding') f.workspaces[0].tokens.strm_binding = 'changed';
+    if (change === 'evidence') await a.state.write({ ...a.attempt, nonce: 'changed' });
+    if (change === 'live predecessor') f.panes[1].native_session_id = native(1);
+    if (change === 'scope') f.contexts[0].catalog_source = 'changed';
+  });
+  await assert.rejects(a.open());
+  assert.equal(effects(f).length, 0); assert.equal(f.panes[0].tokens.strm_native, native(1));
+});
+test('same-tuple native identity switch during final handover snapshot is rejected before clearing', async t => {
+  const f = await fixture(t), a = await successor(f); let snapshots = 0;
+  f.hook((args, output) => {
+    if (args[0] === 'api' && ++snapshots === 3) f.panes[0].native_session_id = native(1);
+    return output;
+  });
+  await assert.rejects(a.open(), /attestation.*changed/);
+  assert.equal(snapshots, 3); assert.equal(effects(f).length, 0);
+  assert.equal(f.panes[0].tokens.strm_native, native(1)); assert.deepEqual(await a.state.read(a.key), a.attempt);
+});
+test('successor handover waits for the same native workspace flock and never clears on timeout', async t => {
+  const f = await fixture(t), a = await successor(f), before = structuredClone(f.panes);
+  await withWorkspaceLock(f.socket, 'w', async () => {
+    await assert.rejects(a.c.openDisplay(a.s, a.context, { ...config, herdr_timeout_ms: 20 }), /lock.*timed out/);
+    assert.equal(effects(f).length, 0); assert.deepEqual(f.panes, before);
+  });
+  assert.equal((await a.open()).kind, 'paired'); assert.equal(launches(f).length, 1);
 });
 test('openDisplay self-heals a half-stamped reserved pair without launching a duplicate card', async t => {
   const f = await fixture(t), a = await f.owner(1), controller = new AbortController();

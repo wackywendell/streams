@@ -52,7 +52,7 @@ export class StreamsWorkspaceClient extends HerdrTransport {
       || (this.env.HERDR_WORKSPACE_ID && this.env.HERDR_WORKSPACE_ID !== live.workspace_id)) throw new Error('Caller native tuple changed during bootstrap');
     return { socket, paneId: live.pane_id, terminalId: live.terminal_id, workspaceId: live.workspace_id, tabId: live.tab_id };
   }
-  private async guard(source: Source, context: StreamsNativeContext, config: WorkCardsConfig, signal?: AbortSignal, preRead?: StreamsCardSnapshot): Promise<Verified> {
+  private async inspect(source: Source, context: StreamsNativeContext, config: WorkCardsConfig, signal?: AbortSignal, preRead?: StreamsCardSnapshot): Promise<Omit<Verified, 'pair'>> {
     signal?.throwIfAborted();
     const saved = preRead ?? await source.read(signal);
     if (await this.socket(config, signal) !== context.socket) throw new Error('Native endpoint changed');
@@ -72,6 +72,18 @@ export class StreamsWorkspaceClient extends HerdrTransport {
     this.owners.set(context, { scope: { ...saved.scope }, tuple: tuple(owner), binding: workspace.tokens.strm_binding });
     const marked = Object.keys(workspace.tokens).some(k => k.startsWith('strm_'));
     if (marked && (!workspace.tokens.strm_binding || Object.entries(binding).some(([k, v]) => workspace.tokens[k] !== v))) throw new Error('Conflicting native Stream workspace binding');
+    const latest = preRead ?? await source.read(signal);
+    if (!sameStreamsScope(latest.scope, saved.scope) || !isDeepStrictEqual(latest.native, saved.native)) throw new Error('Streams context changed during native verification');
+    signal?.throwIfAborted();
+    return { saved: latest, snapshot, caller, owner, identity, key, binding };
+  }
+  private async guard(source: Source, context: StreamsNativeContext, config: WorkCardsConfig, signal?: AbortSignal, preRead?: StreamsCardSnapshot, recover = false): Promise<Verified> {
+    const v = await this.inspect(source, context, config, signal, preRead);
+    const { saved, snapshot, caller, owner, identity } = v;
+    if (recover && owner.tokens.strm_native && owner.tokens.strm_native !== saved.scope.nativeSessionId) {
+      await this.handover(source, context, config, signal);
+      return this.guard(source, context, config, signal);
+    }
     const pair = classifyPair(snapshot, identity, owner.terminal_id);
     if (pair.kind === 'card-only') {
       if (pair.card.tokens.strm_native !== saved.scope.nativeSessionId) throw new Error('Native Pi UUID mismatch');
@@ -79,10 +91,56 @@ export class StreamsWorkspaceClient extends HerdrTransport {
     if (caller.terminal_id !== owner.terminal_id && (pair.kind !== 'paired' || pair.card.terminal_id !== caller.terminal_id
       || pair.nonce !== this.env.STREAMS_CARDS_NONCE || pair.card.tokens.strm_native !== saved.scope.nativeSessionId
       || this.env.STREAMS_CARDS_OWNER_TERMINAL !== owner.terminal_id)) throw new Error('Caller is not the exact owned Streams card');
-    const latest = preRead ?? await source.read(signal);
-    if (!sameStreamsScope(latest.scope, saved.scope) || !isDeepStrictEqual(latest.native, saved.native)) throw new Error('Streams context changed during native verification');
-    signal?.throwIfAborted();
-    return { saved: latest, snapshot, caller, owner, identity, key, binding, pair };
+    return { ...v, pair };
+  }
+  /** A new enrolled Pi may retire only a fully acknowledged, dead predecessor at
+   * this exact reused tuple. No card is adopted, no pending launch is retried, and
+   * the predecessor's durable evidence is retained. All effects belong here.
+   */
+  private async handover(source: Source, context: StreamsNativeContext, config: WorkCardsConfig, signal?: AbortSignal): Promise<void> {
+    await withWorkspaceLock(context.socket, context.workspaceId, async () => {
+      const state = this.state(context);
+      const prove = async () => {
+        const saved = await source.read(signal, true);
+        const v = await this.inspect(source, context, config, signal, saved), a = v.owner.tokens;
+        this.bound({ ...v, pair: { kind: 'empty' } }, context);
+        if (v.caller.terminal_id !== v.owner.terminal_id || !saved.handover || saved.handover.socket !== context.socket
+          || !pairKeys.every(k => a[k]) || a.strm_role !== 'agent' || a.strm_pi !== v.owner.terminal_id
+          || a.strm_native === saved.scope.nativeSessionId) throw new Error('Unverified predecessor owner; handover refused');
+        const scopes = saved.handover.scopes.filter(s => s.catalogSource === saved.scope.catalogSource && s.hostId === saved.scope.hostId
+          && s.streamId === saved.scope.streamId && s.nativeSessionId === a.strm_native && streamsDigest(s) === a.strm_agent);
+        if (scopes.length !== 1) throw new Error('Predecessor scope does not match this catalog/host/Stream');
+        const oldPair = classifyPair(v.snapshot, a.strm_agent, v.owner.terminal_id);
+        if (oldPair.kind !== 'absent' || !isDeepStrictEqual(oldPair.agent, v.owner)
+          || v.snapshot.panes.some(p => p.pane_id !== v.owner.pane_id && p.tokens.strm_native === a.strm_native)) throw new Error('Predecessor owner or card is still live or uncertain');
+        const inventory = saved.handover.inventory;
+        if (inventory.length !== v.snapshot.panes.length || new Set(inventory.map(p => p.pane_id)).size !== inventory.length
+          || v.snapshot.panes.some(p => !inventory.some(i => isDeepStrictEqual([i.pane_id, i.terminal_id, i.workspace_id, i.tab_id], tuple(p))))
+          || inventory.find(p => p.pane_id === v.owner.pane_id)?.native_session_id !== saved.scope.nativeSessionId
+          || inventory.some(p => p.native_session_id === a.strm_native)) throw new Error('Predecessor conversation is live or native inventory changed');
+        const key = streamsDigest([context.socket, scopes[0], tuple(v.owner)]), attempt = await state.read(key);
+        if (!attempt || attempt.phase === 'pending' || attempt.nonce !== a.strm_nonce || attempt.terminalId !== a.strm_card
+          || attempt.tabId !== v.owner.tab_id || v.snapshot.panes.some(p => p.pane_id === attempt.paneId || p.terminal_id === attempt.terminalId)) throw new Error('No exact acknowledged predecessor launch proof; handover refused');
+        const current = await this.evidence({ ...v, pair: { kind: 'empty' } }, context);
+        // Bracket the native snapshot with fresh app attestation. A pre-read must
+        // not hide a same-tuple conversation switch just before marker clearing.
+        const latest = await source.read(signal, true);
+        if (!sameStreamsScope(saved.scope, latest.scope) || !isDeepStrictEqual(saved.native, latest.native)
+          || !isDeepStrictEqual(saved.handover, latest.handover)
+          || !isDeepStrictEqual(await state.read(key), attempt) || !isDeepStrictEqual(await state.read(v.key), current)) throw new Error('Predecessor handover attestation or evidence changed; nothing cleared');
+        return { v, attempt, current };
+      };
+      const before = await prove(), fresh = await prove();
+      if (!isDeepStrictEqual(before, fresh)) throw new Error('Predecessor handover proof changed; nothing cleared');
+      signal?.throwIfAborted();
+      await this.run(['pane', 'report-metadata', fresh.v.owner.pane_id, '--source', pluginId,
+        ...pairKeys.flatMap(k => ['--clear-token', k])], config.herdr_timeout_ms, signal);
+      const after = await this.guard(source, context, config, signal);
+      if (after.pair.kind !== 'empty' || !isDeepStrictEqual(tuple(after.owner), tuple(fresh.v.owner))
+        || !sameStreamsScope(after.saved.scope, fresh.v.saved.scope) || this.bound(after, context) !== this.bound({ ...fresh.v, pair: { kind: 'empty' } }, context)
+        || !isDeepStrictEqual(await state.read(fresh.attempt.key), fresh.attempt)
+        || !isDeepStrictEqual(await this.evidence(after, context), fresh.current)) throw new Error('Handover acknowledgement changed; effect may be partial');
+    }, { signal, waitMs: config.herdr_timeout_ms });
   }
   private bound(v: Verified, context: StreamsNativeContext): string {
     const w = v.snapshot.workspaces.find(w => w.workspace_id === context.workspaceId)!;
@@ -115,9 +173,9 @@ export class StreamsWorkspaceClient extends HerdrTransport {
     if (v.pair.kind === 'empty' || v.pair.kind === 'separated') throw new Error('Verified paired or absent owner markers required');
     return v;
   }
-  /** Read-only proof for deciding that no effect or provenance write is needed. */
-  private async observeProjection(source: Source, context: StreamsNativeContext, config: WorkCardsConfig, signal?: AbortSignal): Promise<Verified> {
-    const v = await this.guard(source, context, config, signal);
+  /** Projection observation; entrypoints may first request locked predecessor handover. */
+  private async observeProjection(source: Source, context: StreamsNativeContext, config: WorkCardsConfig, signal?: AbortSignal, recover = false): Promise<Verified> {
+    const v = await this.guard(source, context, config, signal, undefined, recover);
     if (v.pair.kind !== 'empty') {
       this.bound(v, context);
       await this.evidence(v, context);
@@ -195,7 +253,7 @@ export class StreamsWorkspaceClient extends HerdrTransport {
     return v.pair;
   }
   async openDisplay(source: Source, context: StreamsNativeContext, config: WorkCardsConfig, signal?: AbortSignal, mode: 'automatic' | 'explicit' = 'automatic'): Promise<PairState | { kind: 'suppressed' }> {
-    const observed = await this.guard(source, context, config, signal);
+    const observed = await this.guard(source, context, config, signal, undefined, true);
     if (observed.caller.terminal_id !== observed.owner.terminal_id) throw new Error('Only the attested Pi owner may open a display');
     const record = await this.state(context).read(observed.key);
     if (record?.phase !== 'pending') {
@@ -299,7 +357,7 @@ export class StreamsWorkspaceClient extends HerdrTransport {
     return Object.fromEntries(Object.entries(values).filter(([k, value]) => (target.tokens[k] ?? null) !== value));
   }
   async projectSummaries(source: Source, context: StreamsNativeContext, config: WorkCardsConfig, signal?: AbortSignal): Promise<void> {
-    const observed = await this.observeProjection(source, context, config, signal);
+    const observed = await this.observeProjection(source, context, config, signal, true);
     if (observed.caller.terminal_id !== observed.owner.terminal_id) throw new Error('Only the owning Pi may publish Session progress');
     if (observed.snapshot.workspaces.find(w => w.workspace_id === context.workspaceId)!.tokens.strm_binding
       && !Object.keys(this.summaryChanges(observed, context, 'workspace')).length && !Object.keys(this.summaryChanges(observed, context, 'pane')).length) return;
@@ -347,7 +405,7 @@ export class StreamsWorkspaceClient extends HerdrTransport {
   private async unchangedNames(source: Source, context: StreamsNativeContext, config: WorkCardsConfig, signal?: AbortSignal): Promise<Record<'workspace' | 'tab', string> | null> {
     const result = { workspace: 'disabled', tab: 'disabled' };
     if (!config.workspace_naming && !config.tab_naming) return result;
-    const v = await this.observeProjection(source, context, config, signal);
+    const v = await this.observeProjection(source, context, config, signal, true);
     if (v.caller.terminal_id !== v.owner.terminal_id) throw new Error('Only owning Pi may name agent surfaces');
     if (!v.snapshot.workspaces.find(w => w.workspace_id === context.workspaceId)!.tokens.strm_binding) return null;
     const names = new NameStore(this.state(context).directory);

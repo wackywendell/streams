@@ -295,7 +295,7 @@ class CatalogCliTest(unittest.TestCase):
                         self.assertEqual((lock.stat().st_dev, lock.stat().st_ino),
                                          (identity.st_dev, identity.st_ino))
 
-    def test_check_detects_and_fixes_stale_agent_owner_markers(self):
+    def test_check_fix_leaves_stale_agent_owner_markers_to_native_owner(self):
         self.initialize()
         stream = self.create()
         session = json.loads(self.cli("session", "attach", stream["id"], "--harness", "pi", "--session-id", "01a154ad-a5fc-7180-a631-bd34e8c4c093", "--title", "Core", "--json")[1])["session"]
@@ -341,12 +341,14 @@ class CatalogCliTest(unittest.TestCase):
             self.assertEqual(runs, [])
 
             code, out, _ = self.cli("check", "--pane", "wH:p1", "--fix", "--json")
-            self.assertEqual(code, 0)
+            self.assertEqual(code, 2)
             fixed = json.loads(out)
-            self.assertTrue(fixed["valid"])
-            self.assertEqual(fixed["fixed"][0]["kind"], "stale-agent-owner-markers-cleared")
-            self.assertEqual(len(runs), 1)
-            self.assertEqual(runs[0][:5], ["pane", "report-metadata", "wH:p1", "--source", "streams-work-cards"])
+            self.assertFalse(fixed["valid"])
+            self.assertEqual(fixed["issues"][0]["kind"], "stale-agent-owner-markers")
+            self.assertIn("native card", fixed["issues"][0]["message"])
+            self.assertEqual(fixed.get("fixed", []), [])
+            self.assertEqual(runs, [])
+            self.assertEqual(snapshot["panes"][0]["tokens"], pane_tokens)
 
     def test_check_fix_reports_unavailable_unbound_checkout_without_aborting(self):
         self.initialize()

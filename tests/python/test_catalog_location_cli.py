@@ -130,6 +130,40 @@ class CatalogLocationCliTest(unittest.TestCase):
         self.call("session", "directory", session["id"], "--repository", "code", code=2)
         self.assertEqual(self.files(), before)
 
+    def test_native_inventory_is_read_only_and_never_treats_unknown_identity_as_dead(self):
+        local = runtime()
+        transcript = self.root / "misleading-name.jsonlcd"
+        transcript.write_text(json.dumps({"type": "session", "id": "actual-header"}) + "\n")
+        pane = {"pane_id": "w:p1", "terminal_id": "term1", "workspace_id": "w", "tab_id": "w:t1",
+                "agent": "pi", "agent_session": {"agent": "pi", "kind": "path", "value": str(transcript)}}
+        other = {"pane_id": "w:p2", "terminal_id": "term2", "workspace_id": "w", "tab_id": "w:t1"}
+        with patch.object(local, "_transport") as transport:
+            client = transport.return_value
+            transport.return_value = (client, "scope")
+            client.command_result.return_value = {"snapshot": {"panes": [pane, other]}}
+            client.endpoint.return_value = HerdrEndpoint("/test.sock", None)
+            before = self.files()
+            inventory = local.native_inventory()
+            self.assertEqual(inventory["socket"], "/test.sock")
+            self.assertEqual([p["native_session_id"] for p in inventory["panes"]], ["actual-header", None])
+            self.assertEqual(self.files(), before)
+            client.run.assert_not_called()
+            for metadata in (None, {"agent": "pi", "kind": "path", "value": str(self.root / "missing")}):
+                pane["agent_session"] = metadata
+                with self.assertRaises(StreamError):
+                    local.native_inventory()
+            pane.pop("agent")
+            pane["tokens"] = {"strm_role": "agent"}
+            with self.assertRaises(StreamError):
+                local.native_inventory()
+            client.command_result.return_value = {"snapshot": {"panes": [{"pane_id": "partial"}]}}
+            with self.assertRaisesRegex(StreamError, "tuple"):
+                local.native_inventory()
+
+    def test_native_inventory_requires_attestation(self):
+        response = self.call("agent", "context", "--harness", "pi", "--session-id", "native", "--native-inventory", code=2)
+        self.assertIn("requires --attest", response["error"]["message"])
+
     def test_attestation_requires_ready_native_binding_and_is_read_only(self):
         directory = self.repo("code")
         stream, session = self.effort(directory)

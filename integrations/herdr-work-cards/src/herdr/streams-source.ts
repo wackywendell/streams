@@ -24,6 +24,10 @@ export type StreamsSession = SessionWire;
 export interface StreamsCardSnapshot {
   scope: StreamsCardScope; stream: StreamsStream; session: StreamsSession; native: StreamsNativeOwner;
   checkouts: readonly StreamsCheckoutBinding[]; documentLocations: readonly StreamsDocumentLocation[];
+  handover?: {
+    socket: string; scopes: StreamsCardScope[];
+    inventory: { pane_id: string; terminal_id: string; workspace_id: string; tab_id: string; native_session_id: string | null }[];
+  };
 }
 const object = (value: unknown): value is Record<string, unknown> => !!value && typeof value === 'object' && !Array.isArray(value);
 const text = (value: unknown): value is string => typeof value === 'string' && !value.includes('\0');
@@ -76,17 +80,30 @@ export function parseStreamsCardContext(raw: unknown, nativeSessionId: string): 
       }
     }
   }
+  let handover: StreamsCardSnapshot['handover'];
+  if (value.native_inventory !== undefined) {
+    if (!object(value.native_inventory) || !absolute(value.native_inventory.socket) || !Array.isArray(value.native_inventory.panes)
+      || !value.native_inventory.panes.every(p => object(p) && [p.pane_id, p.terminal_id, p.workspace_id, p.tab_id].every(identity)
+        && (p.native_session_id === null || identity(p.native_session_id)))) throw new Error('Invalid native conversation inventory');
+    handover = {
+      socket: value.native_inventory.socket,
+      scopes: value.sessions.filter(s => s.host_id === own.host_id && s.stream_id === own.stream_id && s.harness === 'pi')
+        .map(s => ({ catalogSource: value.catalog_source, hostId: s.host_id, streamId: s.stream_id, sessionId: s.id, nativeSessionId: s.harness_session_id })),
+      inventory: value.native_inventory.panes as NonNullable<StreamsCardSnapshot['handover']>['inventory'],
+    };
+  }
   // Never retain authority or another Session's progress in a UI snapshot.
   return structuredClone({
     scope: { catalogSource: value.catalog_source, hostId: value.host_id, streamId: value.stream.id, sessionId: own.id, nativeSessionId },
     stream: value.stream, session: own, native: value.native as unknown as StreamsNativeOwner,
     checkouts, documentLocations: locations as unknown as StreamsDocumentLocation[],
+    ...(handover ? { handover } : {}),
   });
 }
 export interface StreamsCardSourceOptions {
   nativeSessionId: string;
   expectedScope?: StreamsCardScope;
-  readSnapshot: (nativeSessionId: string, signal?: AbortSignal) => Promise<StreamsCardSnapshot>;
+  readSnapshot: (nativeSessionId: string, signal?: AbortSignal, nativeInventory?: boolean) => Promise<StreamsCardSnapshot>;
 }
 export class StreamsCardSource {
   private captured?: StreamsCardScope;
@@ -97,10 +114,10 @@ export class StreamsCardSource {
     this.options = { ...options };
     this.captured = options.expectedScope && { ...options.expectedScope };
   }
-  async read(signal?: AbortSignal): Promise<StreamsCardSnapshot> {
+  async read(signal?: AbortSignal, nativeInventory = false): Promise<StreamsCardSnapshot> {
     signal?.throwIfAborted();
     if (this.switched) throw new Error('Streams scope changed; create a new source for the new attachment');
-    const fresh = await this.options.readSnapshot(this.options.nativeSessionId, signal);
+    const fresh = await this.options.readSnapshot(this.options.nativeSessionId, signal, nativeInventory);
     signal?.throwIfAborted();
     if (fresh.scope.nativeSessionId !== this.options.nativeSessionId
       || this.captured && !sameStreamsScope(this.captured, fresh.scope)) {
@@ -117,18 +134,18 @@ export interface StreamsContextReaderOptions {
   owner?: StreamsNativeOwner;
 }
 /** Owner-targeted read-only app boundary. Native effects separately verify live tuples. */
-export function createStreamsSnapshotReader(options: StreamsContextReaderOptions = {}): (nativeSessionId: string, signal?: AbortSignal) => Promise<StreamsCardSnapshot> {
+export function createStreamsSnapshotReader(options: StreamsContextReaderOptions = {}): (nativeSessionId: string, signal?: AbortSignal, nativeInventory?: boolean) => Promise<StreamsCardSnapshot> {
   const { cwd, timeoutMs = 15000, maxBuffer = 1024 * 1024, owner } = options;
   const env = { ...(options.env ?? process.env), ...(owner ? {
     HERDR_PANE_ID: owner.pane_id, HERDR_TAB_ID: owner.tab_id, HERDR_WORKSPACE_ID: owner.workspace_id,
   } : {}) };
   if (!Number.isSafeInteger(timeoutMs) || timeoutMs <= 0 || !Number.isSafeInteger(maxBuffer) || maxBuffer <= 0) throw new Error('Streams CLI timeout and output limit must be positive integers');
-  return async (nativeSessionId, signal) => {
+  return async (nativeSessionId, signal, nativeInventory = false) => {
     signal?.throwIfAborted();
     if (!uuid(nativeSessionId)) throw new Error('A native Pi session UUID is required');
     let output: string;
     try {
-      output = await runProcess(resolveStreamsBin(env), ['agent', 'context', '--harness', 'pi', '--session-id', nativeSessionId, '--attest', '--json'],
+      output = await runProcess(resolveStreamsBin(env), ['agent', 'context', '--harness', 'pi', '--session-id', nativeSessionId, '--attest', '--json', ...(nativeInventory ? ['--native-inventory'] : [])],
         { cwd, env, timeoutMs, maxBuffer, signal });
     } catch (error) { throw new Error(`Streams context read failed: ${(error as Error).message}`, { cause: error }); }
     let value: unknown;

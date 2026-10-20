@@ -77,6 +77,26 @@ test('unbound and inherited helper attestation failures stay quiet, with actiona
  f.saved.session = {...session, harness_session_id:randomUUID()};f.saved.sessions = [f.saved.session];
  await assert.rejects(f.controller.open(), /exact host\/pi\/native/);assert.deepEqual(f.notices, []);
 });
+test('transient native startup reference mismatch waits for fresh attestation without replacing the real conversation', async t => {
+ environment(t);let stale = true;
+ const f = fixture(t, {read:async () => {if (stale) throw Error('Streams context read failed: requested Pi session differs from the native pane session');}});
+ const before = structuredClone(f.saved);
+ f.controller.start();await f.controller.idle();
+ assert.equal(f.ctx.sessionManager.getSessionId(), f.id);assert.deepEqual(f.events, ['read']);assert.deepEqual(f.notices, []);
+ stale = false;f.controller.update();await f.controller.idle();
+ assert.equal(f.loads(), 1);assert.equal(f.events.filter(e => e === 'open:automatic').length, 1);
+ assert.deepEqual(f.saved, before);assert.equal(f.events.at(-1), 'capture:stream');
+});
+test('missed native reference refresh never authorizes effects even when the real conversation is unchanged', async t => {
+ environment(t);t.mock.timers.enable({apis:['setTimeout']});
+ const f = fixture(t, {read:async () => {throw Error('Streams context read failed: requested Pi session differs from the native pane session');}});
+ f.controller.start();await f.controller.idle();
+ for (let i = 0; i < 6; i++) {t.mock.timers.tick(15000);await f.controller.idle();}
+ assert.equal(f.events.filter(e => e === 'read').length, 5);assert.equal(f.loads(), 1);
+ assert.equal(f.ctx.sessionManager.getSessionId(), f.id);assert.ok(f.events.every(e => e === 'read'));
+ await assert.rejects(f.controller.open(), /native pane session/);
+ assert.ok(f.events.every(e => e === 'read'));assert.deepEqual(f.notices, []);
+});
 test('ready enrollment recovers on update using the same source without model work', async t => {
  environment(t);const f = fixture(t), session = f.saved.session;f.saved.session = null;
  f.controller.start();await f.controller.idle();f.saved.session = session;f.controller.update();await f.controller.idle();
