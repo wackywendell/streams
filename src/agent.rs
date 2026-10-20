@@ -7,9 +7,9 @@ use serde::Deserialize;
 use serde_json::{Map, Value};
 
 use crate::{
-    codec::{load_json, record_from_data},
+    codec::{load_json, objects, record_from_data, require_object},
     model::{RecordKind, ValidationError, check_text},
-    operations::{Actor, Operation, filter_automatic_changes, update},
+    operations::{Actor, Operation, agent_field_allowed, filter_automatic_changes, update},
 };
 
 #[derive(Deserialize)]
@@ -29,7 +29,7 @@ struct UpdateRequest {
     before: Value,
     changes: Map<String, Value>,
     ownership_token: Option<String>,
-    #[serde(default)]
+    #[serde(default, deserialize_with = "objects")]
     inputs: Vec<CapturedInput>,
 }
 
@@ -40,7 +40,9 @@ struct UpdateRequest {
 /// Only explicitly allowed fields enter domain normalization; automatic requests
 /// also discard edits to text already marked manual in the captured record.
 pub fn parse_update(source: &str, catalog_source: &str) -> Result<Operation, ValidationError> {
-    let request: UpdateRequest = serde_json::from_value(load_json(source)?)
+    let value = load_json(source)?;
+    require_object(&value, "agent update")?;
+    let request: UpdateRequest = serde_json::from_value(value)
         .map_err(|e| ValidationError::new(format!("invalid agent update: {e}")))?;
     check_text(&request.catalog_source, "catalog_source", false)?;
     if request.catalog_source != catalog_source {
@@ -48,39 +50,13 @@ pub fn parse_update(source: &str, catalog_source: &str) -> Result<Operation, Val
             "catalog source changed since capture; inspect the current catalog before making a new request",
         ));
     }
-    let allowed: &[&str] = match (request.kind, request.actor) {
-        (RecordKind::Stream, Actor::User) => &[
-            "title",
-            "title_mode",
-            "goal",
-            "goal_short",
-            "goal_mode",
-            "status",
-            "archived",
-            "documents",
-            "issues",
-            "prs",
-        ],
-        (RecordKind::Stream, Actor::Automatic) => &["title", "goal", "goal_short"],
-        (RecordKind::Session, Actor::User) => &[
-            "title",
-            "title_mode",
-            "status",
-            "state",
-            "state_short",
-            "remaining",
-        ],
-        (RecordKind::Session, Actor::Automatic) => {
-            &["title", "status", "state", "state_short", "remaining"]
-        }
-        (RecordKind::Host, _) => {
-            return Err(ValidationError::new(
-                "agent updates require stream or session kind",
-            ));
-        }
-    };
+    if request.kind == RecordKind::Host {
+        return Err(ValidationError::new(
+            "agent updates require stream or session kind",
+        ));
+    }
     for field in request.changes.keys() {
-        if !allowed.contains(&field.as_str()) {
+        if !agent_field_allowed(request.kind, request.actor, field) {
             return Err(ValidationError::new(format!(
                 "unknown agent update field: {field}"
             )));

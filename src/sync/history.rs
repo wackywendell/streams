@@ -1,25 +1,18 @@
 //! Validate materialized Git history against the original domain operations.
 
+#[cfg(test)]
+mod tests;
+
 use std::collections::{BTreeMap, BTreeSet};
 
-use crate::model::{Catalog, Record, RecordKey};
-use crate::operations::{Authority, DomainOutcome, Operation, reconcile};
+use crate::model::Catalog;
+use crate::operations::{Authority, Operation, Reconciliation, reconcile};
 use crate::yaml_store::{YamlStore, relative_record_path};
 
 use super::baseline::{BASELINE, Baseline, decode_baseline};
 use super::envelope::{BOOTSTRAP, Origin, check_fingerprints, decode_operation, operation_digest};
 use super::git_io::Git;
-use super::local::authority_for;
 use super::state::RepairRequired;
-
-/// Index domain values by identity, independently of on-disk byte formatting.
-pub fn records(catalog: &Catalog) -> BTreeMap<RecordKey, Record> {
-    catalog
-        .records()
-        .into_iter()
-        .map(|r| (r.key(), r))
-        .collect()
-}
 
 /// An operation and its provenance, in replay order; its ID lives only in the operation.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -32,19 +25,51 @@ pub struct CommittedOperation {
 /// Only `read_history` verifies Git ancestry and each operation's exact file changes.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct History {
-    pub tip: Option<String>,
-    pub root: Option<String>,
-    pub catalog: Catalog,
-    pub files: BTreeMap<String, Vec<u8>>,
-    pub authorities: BTreeMap<String, Authority>,
-    pub operations: Vec<CommittedOperation>,
-    pub baseline: Option<Baseline>,
-    pub fingerprints: BTreeMap<String, String>,
+    tip: Option<String>,
+    root: Option<String>,
+    catalog: Catalog,
+    files: BTreeMap<String, Vec<u8>>,
+    authorities: BTreeMap<String, Authority>,
+    operations: Vec<CommittedOperation>,
+    baseline: Option<Baseline>,
+    fingerprints: BTreeMap<String, String>,
 }
 
 impl History {
+    pub fn tip(&self) -> Option<&str> {
+        self.tip.as_deref()
+    }
+
+    pub fn root(&self) -> Option<&str> {
+        self.root.as_deref()
+    }
+
+    pub fn catalog(&self) -> &Catalog {
+        &self.catalog
+    }
+
+    pub fn files(&self) -> &BTreeMap<String, Vec<u8>> {
+        &self.files
+    }
+
+    pub fn authorities(&self) -> &BTreeMap<String, Authority> {
+        &self.authorities
+    }
+
+    pub fn operations(&self) -> &[CommittedOperation] {
+        &self.operations
+    }
+
+    pub fn baseline(&self) -> Option<&Baseline> {
+        self.baseline.as_ref()
+    }
+
+    pub fn fingerprints(&self) -> &BTreeMap<String, String> {
+        &self.fingerprints
+    }
+
     /// Check and combine fingerprint evidence; this alone does not validate Git commits.
-    pub fn validated(mut self) -> Result<Self, String> {
+    fn validated(mut self) -> Result<Self, String> {
         let mut fps = self
             .baseline
             .as_ref()
@@ -60,14 +85,14 @@ impl History {
             fps.insert(id.clone(), digest.clone());
         }
         for entry in &self.operations {
-            let id = &entry.operation.id;
+            let id = entry.operation.id();
             let digest = operation_digest(&entry.operation);
             if let Some(existing) = fps.get(id)
                 && existing != &digest
             {
                 return Err(format!("inconsistent operation fingerprint: {id}"));
             }
-            fps.insert(id.clone(), digest);
+            fps.insert(id.to_owned(), digest);
         }
         self.fingerprints = fps;
         Ok(self)
@@ -188,27 +213,28 @@ fn read_history_inner(git: &Git, tip: Option<&str>) -> Result<History, String> {
                 return Err("catalog history must be linear and non-merged".to_string());
             }
             let (operation, origin) = decode_operation(&message).map_err(|e| e.to_string())?;
-            if history.fingerprints.contains_key(&operation.id) {
+            if history.fingerprints.contains_key(operation.id()) {
                 return Err(format!(
                     "duplicate operation ID in history: {}",
-                    operation.id
+                    operation.id()
                 ));
             }
-            let auth = authority_for(&operation, &history.authorities);
-            let result = reconcile(&history.catalog, &operation, auth.as_ref());
-            if result.outcome != DomainOutcome::Changes {
+            let auth = operation.authority_for(&history.authorities);
+            let result = reconcile(&history.catalog, &operation, auth);
+            let Reconciliation::Changes { record, .. } = result else {
                 return Err(format!(
                     "operation {} does not explain its commit: {}",
-                    operation.id, result.outcome
+                    operation.id(),
+                    result.outcome()
                 ));
-            }
+            };
             let all_keys: BTreeSet<&String> = files.keys().chain(history.files.keys()).collect();
             let changed_paths: BTreeSet<String> = all_keys
                 .into_iter()
                 .filter(|k| files.get(*k) != history.files.get(*k))
                 .cloned()
                 .collect();
-            let expected_path = relative_record_path(&operation.after)
+            let expected_path = relative_record_path(operation.after())
                 .to_string_lossy()
                 .replace('\\', "/");
             let mut expected_set = BTreeSet::new();
@@ -216,39 +242,28 @@ fn read_history_inner(git: &Git, tip: Option<&str>) -> Result<History, String> {
             if changed_paths != expected_set || !files.contains_key(&expected_path) {
                 return Err(format!(
                     "commit changes do not match operation {}",
-                    operation.id
+                    operation.id()
                 ));
             }
             let decoded_record = YamlStore::decode_record(&expected_path, &files[&expected_path])
                 .map_err(|e| e.to_string())?;
+            if decoded_record != *record {
+                return Err(format!(
+                    "commit changes do not match operation {}",
+                    operation.id()
+                ));
+            }
             let actual = history
                 .catalog
                 .replacing(decoded_record)
                 .map_err(|e| e.to_string())?;
-            let expected = history
-                .catalog
-                .replacing(result.record.unwrap())
-                .map_err(|e| e.to_string())?;
-            if records(&actual) != records(&expected) {
-                return Err(format!(
-                    "commit changes do not match operation {}",
-                    operation.id
-                ));
-            }
-            let mut new_authority = None;
-            if let Record::Stream(ref s) = operation.after
-                && operation.before.is_none()
-            {
-                new_authority = Some((
-                    s.id.clone(),
-                    Authority::new(&s.owner_host_id, &operation.id).map_err(|e| e.to_string())?,
-                ));
-            }
             let digest = operation_digest(&operation);
-            if let Some((id, authority)) = new_authority {
+            if let Some((id, authority)) = operation.created_authority() {
                 history.authorities.insert(id, authority);
             }
-            history.fingerprints.insert(operation.id.clone(), digest);
+            history
+                .fingerprints
+                .insert(operation.id().to_owned(), digest);
             history
                 .operations
                 .push(CommittedOperation { operation, origin });

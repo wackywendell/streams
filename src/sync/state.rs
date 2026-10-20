@@ -9,18 +9,18 @@
 //! already have changed disk state; do not assume rollback or retry blindly.
 
 use std::collections::{BTreeMap, BTreeSet};
-use std::fs;
-use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
 
 use serde::{Deserialize, Serialize, de::DeserializeOwned};
 use serde_json::{Map, Value};
 
+use crate::codec::required_nullable;
 use crate::model::check_text;
 use crate::operations::Operation;
 use crate::storage::{Journal, StorageError};
 
-use super::envelope::{check_fingerprints, load_json, operation_digest};
+use super::envelope::{check_fingerprints, operation_digest};
+use super::{Oid, Seconds};
 
 /// State cannot safely support further effects without inspection or repair.
 #[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
@@ -33,45 +33,10 @@ impl RepairRequired {
     }
 }
 
-/// Checks lowercase SHA-1 or SHA-256 object-ID syntax, not object existence.
-pub fn check_oid(value: Option<&str>, nullable: bool) -> Result<(), String> {
-    let Some(s) = value else {
-        if nullable {
-            return Ok(());
-        }
-        return Err("expected a Git object ID".to_string());
-    };
-    if (s.len() != 40 && s.len() != 64)
-        || !s
-            .bytes()
-            .all(|b| b.is_ascii_digit() || (b'a'..=b'f').contains(&b))
-    {
-        return Err("expected a Git object ID".to_string());
+impl From<StorageError> for RepairRequired {
+    fn from(error: StorageError) -> Self {
+        Self::new(error.to_string())
     }
-    Ok(())
-}
-
-/// Checks finiteness, allowing absence only when `nullable`; no clock ordering is checked.
-pub fn check_timestamp(value: Option<f64>, nullable: bool) -> Result<(), String> {
-    let Some(v) = value else {
-        if nullable {
-            return Ok(());
-        }
-        return Err("expected a finite timestamp".to_string());
-    };
-    if !v.is_finite() {
-        return Err("expected a finite timestamp".to_string());
-    }
-    Ok(())
-}
-
-// Option normally accepts missing keys in Serde; these nullable fields are required.
-fn required_nullable<'de, D, T>(deserializer: D) -> Result<Option<T>, D::Error>
-where
-    D: serde::Deserializer<'de>,
-    T: Deserialize<'de>,
-{
-    Option::<T>::deserialize(deserializer)
 }
 
 /// Independent publication and refresh clocks, expressed in seconds.
@@ -84,20 +49,19 @@ where
 #[serde(deny_unknown_fields)]
 pub struct SyncMetadata {
     #[serde(deserialize_with = "required_nullable")]
-    pub confirmed: Option<String>,
+    pub confirmed: Option<Oid>,
     #[serde(deserialize_with = "required_nullable")]
-    pub last_sync: Option<f64>,
+    pub last_sync: Option<Seconds>,
     #[serde(deserialize_with = "required_nullable")]
-    pub last_push: Option<f64>,
-    pub retry_after: f64,
+    pub last_push: Option<Seconds>,
+    pub retry_after: Seconds,
     #[serde(deserialize_with = "required_nullable")]
-    pub fetched_at: Option<f64>,
+    pub fetched_at: Option<Seconds>,
     /// Candidate whose confirmation established `last_push`, so recovery records
     /// that baseline once rather than advancing it on every retry.
-    pub last_confirmed_attempt: Option<String>,
-    #[serde(default)]
-    pub refresh_retry_after: f64,
-    #[serde(default)]
+    #[serde(deserialize_with = "required_nullable")]
+    pub last_confirmed_attempt: Option<Oid>,
+    pub refresh_retry_after: Seconds,
     pub refresh_error: String,
 }
 
@@ -107,44 +71,64 @@ impl Default for SyncMetadata {
             confirmed: None,
             last_sync: None,
             last_push: None,
-            retry_after: 0.0,
+            retry_after: Seconds::ZERO,
             fetched_at: None,
             last_confirmed_attempt: None,
-            refresh_retry_after: 0.0,
+            refresh_retry_after: Seconds::ZERO,
             refresh_error: String::new(),
         }
     }
 }
 
 impl SyncMetadata {
-    /// Checks ID and timestamp shapes and requires a baseline for a recorded attempt.
-    pub fn validated(self) -> Result<Self, String> {
-        check_oid(self.confirmed.as_deref(), true)?;
-        check_oid(self.last_confirmed_attempt.as_deref(), true)?;
-        for val in [self.last_sync, self.last_push, self.fetched_at] {
-            check_timestamp(val, true)?;
-        }
-        for val in [self.retry_after, self.refresh_retry_after] {
-            check_timestamp(Some(val), false)?;
-        }
+    /// Requires a scheduling baseline for a recorded confirmation identity.
+    pub fn validate(&self) -> Result<(), String> {
         if self.last_confirmed_attempt.is_some() && self.last_push.is_none() {
             return Err("confirmation identity requires its scheduling baseline".to_string());
         }
-        Ok(self)
+        Ok(())
     }
 }
 
 /// Stored transport selection; `None` for `remote` means local-only operation.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(deny_unknown_fields)]
+#[serde(try_from = "GitConfigData")]
 pub struct GitConfig {
+    remote: Option<String>,
+    branch: String,
+    host: String,
+}
+
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct GitConfigData {
     #[serde(deserialize_with = "required_nullable")]
-    pub remote: Option<String>,
-    pub branch: String,
-    pub host: String,
+    remote: Option<String>,
+    branch: String,
+    host: String,
+}
+
+impl TryFrom<GitConfigData> for GitConfig {
+    type Error = String;
+
+    fn try_from(data: GitConfigData) -> Result<Self, Self::Error> {
+        Self::new(data.remote, data.branch, data.host)
+    }
 }
 
 impl GitConfig {
+    pub fn remote(&self) -> Option<&str> {
+        self.remote.as_deref()
+    }
+
+    pub fn branch(&self) -> &str {
+        &self.branch
+    }
+
+    pub fn host(&self) -> &str {
+        &self.host
+    }
+
     /// Checks nonempty text, not remote reachability or Git ref-name validity.
     pub fn new(
         remote: Option<String>,
@@ -170,40 +154,67 @@ impl GitConfig {
 ///
 /// IDs, target and intended operations let recovery identify what was attempted.
 /// Even `confirmed_at` is stored data: callers must verify history and remote
-/// observations before treating the attempt as published. Public fields can be
-/// changed after construction, so persistence validates their shapes again.
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+/// observations before treating the attempt as published.
+#[derive(Debug, Clone, PartialEq, Serialize)]
 pub struct PublicationAttempt {
-    pub base: Option<String>,
-    pub candidate: String,
-    pub local_tip: String,
-    pub branch: String,
-    pub remote: String,
-    pub operations: Vec<String>,
-    pub confirmed_at: Option<f64>,
+    base: Option<Oid>,
+    candidate: Oid,
+    local_tip: Oid,
+    branch: String,
+    remote: String,
+    operations: Vec<String>,
+    confirmed_at: Option<Seconds>,
 }
 
 impl PublicationAttempt {
+    pub fn base(&self) -> Option<&Oid> {
+        self.base.as_ref()
+    }
+
+    pub fn candidate(&self) -> &Oid {
+        &self.candidate
+    }
+
+    pub fn local_tip(&self) -> &Oid {
+        &self.local_tip
+    }
+
+    pub fn branch(&self) -> &str {
+        &self.branch
+    }
+
+    pub fn remote(&self) -> &str {
+        &self.remote
+    }
+
+    pub fn operations(&self) -> &[String] {
+        &self.operations
+    }
+
+    pub fn confirmed_at(&self) -> Option<Seconds> {
+        self.confirmed_at
+    }
+
+    /// Records a finite confirmation timestamp without establishing publication evidence.
+    pub fn with_confirmed_at(mut self, confirmed_at: Option<Seconds>) -> Self {
+        self.confirmed_at = confirmed_at;
+        self
+    }
+
     /// Checks field syntax and unique operation IDs, without inspecting Git history.
     pub fn new(
-        base: Option<String>,
-        candidate: impl Into<String>,
-        local_tip: impl Into<String>,
+        base: Option<Oid>,
+        candidate: Oid,
+        local_tip: Oid,
         branch: impl Into<String>,
         remote: impl Into<String>,
         operations: Vec<String>,
-        confirmed_at: Option<f64>,
+        confirmed_at: Option<Seconds>,
     ) -> Result<Self, String> {
-        let candidate = candidate.into();
-        let local_tip = local_tip.into();
         let branch = branch.into();
         let remote = remote.into();
-        check_oid(base.as_deref(), true)?;
-        check_oid(Some(&candidate), false)?;
-        check_oid(Some(&local_tip), false)?;
         check_text(&branch, "branch", false).map_err(|e| e.to_string())?;
         check_text(&remote, "remote", false).map_err(|e| e.to_string())?;
-        check_timestamp(confirmed_at, true)?;
         let mut seen = BTreeSet::new();
         for id in &operations {
             check_text(id, "operation identity", false).map_err(|e| e.to_string())?;
@@ -223,43 +234,43 @@ impl PublicationAttempt {
     }
 
     /// Adds the planned local-tip transition without verifying that it is safe.
-    pub fn adopting(
-        &self,
-        old: impl Into<String>,
-        new: impl Into<String>,
-    ) -> Result<AdoptingAttempt, String> {
-        AdoptingAttempt::new(self.clone(), old.into(), new.into())
+    pub fn adopting(&self, old: Oid, new: Oid) -> AdoptingAttempt {
+        AdoptingAttempt::new(self.clone(), old, new)
     }
 }
 
 /// An attempt plus the old and new tips recorded for local adoption recovery.
 ///
 /// These are transition facts to check against Git, not proof that publication or
-/// adoption succeeded. Construction checks tip syntax only, not their relationship.
+/// adoption succeeded. Validated tips do not establish their relationship.
 #[derive(Debug, Clone, PartialEq, Serialize)]
 pub struct AdoptingAttempt {
     #[serde(flatten)]
-    pub attempt: PublicationAttempt,
-    pub adoption_from: String,
-    pub adoption_to: String,
+    attempt: PublicationAttempt,
+    adoption_from: Oid,
+    adoption_to: Oid,
 }
 
 impl AdoptingAttempt {
-    /// Checks adoption-tip syntax; does not revalidate the supplied attempt.
-    pub fn new(
-        attempt: PublicationAttempt,
-        adoption_from: impl Into<String>,
-        adoption_to: impl Into<String>,
-    ) -> Result<Self, String> {
-        let adoption_from = adoption_from.into();
-        let adoption_to = adoption_to.into();
-        check_oid(Some(&adoption_from), false)?;
-        check_oid(Some(&adoption_to), false)?;
-        Ok(Self {
+    pub fn attempt(&self) -> &PublicationAttempt {
+        &self.attempt
+    }
+
+    pub fn adoption_from(&self) -> &Oid {
+        &self.adoption_from
+    }
+
+    pub fn adoption_to(&self) -> &Oid {
+        &self.adoption_to
+    }
+
+    /// Records validated tips without establishing their relationship to the attempt.
+    pub fn new(attempt: PublicationAttempt, adoption_from: Oid, adoption_to: Oid) -> Self {
+        Self {
             attempt,
             adoption_from,
             adoption_to,
-        })
+        }
     }
 }
 
@@ -285,18 +296,20 @@ impl PublicationMarker {
 
 // A flat disk schema avoids Serde's flatten/deny_unknown_fields interaction,
 // so phase-specific fields can be rejected before constructing a marker.
-#[derive(Deserialize)]
-#[serde(rename_all = "lowercase")]
+#[derive(strum::EnumString, strum::VariantNames)]
+#[strum(serialize_all = "lowercase")]
 enum PublicationPhase {
     Attempting,
     Adopting,
 }
 
-fn present_string<'de, D>(d: D) -> Result<Option<String>, D::Error>
+crate::codec::deserialize_string_enum!(PublicationPhase);
+
+fn present_oid<'de, D>(d: D) -> Result<Option<Oid>, D::Error>
 where
     D: serde::Deserializer<'de>,
 {
-    String::deserialize(d).map(Some)
+    Oid::deserialize(d).map(Some)
 }
 
 #[derive(Deserialize)]
@@ -304,17 +317,18 @@ where
 struct PublicationData {
     phase: PublicationPhase,
     #[serde(deserialize_with = "required_nullable")]
-    base: Option<String>,
-    candidate: String,
-    local_tip: String,
+    base: Option<Oid>,
+    candidate: Oid,
+    local_tip: Oid,
     branch: String,
     remote: String,
     operations: Vec<String>,
-    confirmed_at: Option<f64>,
-    #[serde(default, deserialize_with = "present_string")]
-    adoption_from: Option<String>,
-    #[serde(default, deserialize_with = "present_string")]
-    adoption_to: Option<String>,
+    #[serde(deserialize_with = "required_nullable")]
+    confirmed_at: Option<Seconds>,
+    #[serde(default, deserialize_with = "present_oid")]
+    adoption_from: Option<Oid>,
+    #[serde(default, deserialize_with = "present_oid")]
+    adoption_to: Option<Oid>,
 }
 
 impl PublicationData {
@@ -333,11 +347,9 @@ impl PublicationData {
             (PublicationPhase::Attempting, None, None) => {
                 Ok(PublicationMarker::Attempting(attempt))
             }
-            (PublicationPhase::Adopting, Some(old), Some(new)) => {
-                AdoptingAttempt::new(attempt, old, new)
-                    .map(PublicationMarker::Adopting)
-                    .map_err(RepairRequired::new)
-            }
+            (PublicationPhase::Adopting, Some(old), Some(new)) => Ok(PublicationMarker::Adopting(
+                AdoptingAttempt::new(attempt, old, new),
+            )),
             _ => Err(RepairRequired::new(
                 "publication phase does not match adoption evidence",
             )),
@@ -355,119 +367,42 @@ struct Receipts {
 /// Runs under its mutex; it must not recursively invoke hooked methods.
 pub type StateHook = Arc<Mutex<dyn FnMut(&str, &str) -> Result<(), RepairRequired> + Send>>;
 
-/// Filesystem object persistence; callers provide the catalog's serialization scope.
-#[derive(Debug, Clone)]
-pub struct FileJournal {
-    pub root: PathBuf,
-}
-
-impl FileJournal {
-    fn ensure_directory(&self) -> Result<(), StorageError> {
-        if self.root.is_symlink() {
-            return Err(StorageError::new("symlinked transport state"));
-        }
-        crate::yaml_store::ensure_directory(&self.root, true)
-    }
-}
-
-impl Journal for FileJournal {
-    fn read(&self, name: &str) -> Result<Option<Map<String, Value>>, StorageError> {
-        self.ensure_directory()?;
-        let path = self.root.join(name);
-        if path.is_symlink() {
-            return Err(StorageError::new(format!(
-                "symlinked transport state: {}",
-                path.display()
-            )));
-        }
-        if !path.exists() {
-            return Ok(None);
-        }
-        let text = fs::read_to_string(&path)
-            .map_err(|e| StorageError::new(format!("cannot read {}: {e}", path.display())))?;
-        let val = load_json(&text)
-            .map_err(|e| StorageError::new(format!("cannot read {}: {e}", path.display())))?;
-        val.as_object().cloned().map(Some).ok_or_else(|| {
-            StorageError::new(format!(
-                "cannot read {}: unsupported transport state version",
-                path.display()
-            ))
-        })
-    }
-
-    fn write(&self, name: &str, data: Map<String, Value>) -> Result<(), StorageError> {
-        self.ensure_directory()?;
-        let bytes = serde_json::to_vec(&Value::Object(data))
-            .map_err(|e| StorageError::new(format!("cannot serialize {name}: {e}")))?;
-        crate::yaml_store::atomic_write(&self.root.join(name), &bytes, &self.root)
-    }
-
-    fn clear(&self, name: &str) -> Result<(), StorageError> {
-        self.ensure_directory()?;
-        let path = self.root.join(name);
-        let removed = path.exists();
-        if removed {
-            fs::remove_file(&path)
-                .map_err(|e| StorageError::new(format!("cannot clear {name}: {e}")))?;
-        }
-        crate::yaml_store::sync_directory(&self.root)
-            .map_err(|e| if removed { e.after_write() } else { e })
-    }
-
-    fn names(&self) -> Result<Vec<String>, StorageError> {
-        self.ensure_directory()?;
-        fs::read_dir(&self.root)
-            .map_err(|e| StorageError::new(format!("cannot read {}: {e}", self.root.display())))?
-            .map(|entry| {
-                entry
-                    .map(|e| e.file_name().to_string_lossy().into_owned())
-                    .map_err(|e| StorageError::new(e.to_string()))
-            })
-            .collect()
-    }
-
-    fn describe(&self, name: &str) -> String {
-        self.root.join(name).display().to_string()
-    }
-}
-
-/// Typed recovery state over durable objects; clones provide no transaction isolation.
+/// Typed recovery state borrowed from the owning transaction's durable objects.
 /// Raw names are trusted bookkeeping keys. Reads validate versions, while typed
 /// accessors also validate schemas. Callers must hold the owning store's lock.
-#[derive(Clone)]
-pub struct State<J: Journal = FileJournal> {
-    journal: J,
+pub struct State<'tx> {
+    journal: &'tx dyn Journal,
     hook: Option<StateHook>,
 }
 
-impl<J: Journal> std::fmt::Debug for State<J> {
+impl std::fmt::Debug for State<'_> {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("State").finish_non_exhaustive()
     }
 }
 
-impl State<FileJournal> {
-    /// Selects the catalog's `.catalog-sync` directory without creating it yet.
-    pub fn new(root: impl AsRef<Path>) -> Self {
-        Self::from_journal(FileJournal {
-            root: root.as_ref().join(".catalog-sync"),
-        })
-    }
-}
-
-impl<J: Journal> State<J> {
-    /// Uses objects from the same persistence and serialization scope as the catalog.
-    pub fn from_journal(journal: J) -> Self {
+impl<'tx> State<'tx> {
+    /// Borrows objects within the owning catalog transaction.
+    pub fn from_journal(journal: &'tx dyn Journal) -> Self {
         Self {
             journal,
             hook: None,
         }
     }
 
+    pub(crate) fn with_optional_hook(mut self, hook: Option<StateHook>) -> Self {
+        self.hook = hook;
+        self
+    }
+
     /// Installs a hook that may fail an operation before its state effects begin.
     pub fn with_hook(mut self, hook: StateHook) -> Self {
-        self.hook = Some(hook);
+        self.set_hook(hook);
         self
+    }
+
+    pub(crate) fn set_hook(&mut self, hook: StateHook) {
+        self.hook = Some(hook);
     }
 
     fn run_hook(&self, op: &str, name: &str) -> Result<(), RepairRequired> {
@@ -525,29 +460,26 @@ impl<J: Journal> State<J> {
 
     /// Loads validated scheduling metadata, using defaults only when the file is absent.
     pub fn metadata(&self) -> Result<SyncMetadata, RepairRequired> {
-        self.read_record::<SyncMetadata>("sync.json")?
-            .unwrap_or_default()
-            .validated()
-            .map_err(RepairRequired::new)
+        let metadata = self
+            .read_record::<SyncMetadata>("sync.json")?
+            .unwrap_or_default();
+        metadata.validate().map_err(RepairRequired::new)?;
+        Ok(metadata)
     }
 
     /// Validates and persists scheduling state without deriving confirmation evidence.
     pub fn write_metadata(&self, metadata: &SyncMetadata) -> Result<(), RepairRequired> {
-        metadata.clone().validated().map_err(RepairRequired::new)?;
+        metadata.validate().map_err(RepairRequired::new)?;
         self.write_record("sync.json", metadata)
     }
 
     /// Loads the transport selection; absence is distinct from invalid configuration.
     pub fn config(&self) -> Result<Option<GitConfig>, RepairRequired> {
-        self.read_record::<GitConfig>("config.json")?
-            .map(|c| GitConfig::new(c.remote, c.branch, c.host).map_err(RepairRequired::new))
-            .transpose()
+        self.read_record("config.json")
     }
 
-    /// Validates text fields and persists the transport selection.
+    /// Persists the validated transport selection.
     pub fn write_config(&self, config: &GitConfig) -> Result<(), RepairRequired> {
-        GitConfig::new(config.remote.clone(), &config.branch, &config.host)
-            .map_err(RepairRequired::new)?;
         self.write_record("config.json", config)
     }
 
@@ -559,23 +491,8 @@ impl<J: Journal> State<J> {
             .transpose()
     }
 
-    /// Revalidates marker field shapes and persists the recovery phase.
+    /// Persists the validated recovery phase.
     pub fn write_publication(&self, marker: &PublicationMarker) -> Result<(), RepairRequired> {
-        let a = marker.attempt();
-        PublicationAttempt::new(
-            a.base.clone(),
-            &a.candidate,
-            &a.local_tip,
-            &a.branch,
-            &a.remote,
-            a.operations.clone(),
-            a.confirmed_at,
-        )
-        .map_err(RepairRequired::new)?;
-        if let PublicationMarker::Adopting(a) = marker {
-            check_oid(Some(&a.adoption_from), false).map_err(RepairRequired::new)?;
-            check_oid(Some(&a.adoption_to), false).map_err(RepairRequired::new)?;
-        }
         self.write_record("publication.json", marker)
     }
 
@@ -610,11 +527,11 @@ impl<J: Journal> State<J> {
     /// Tests whether the same intent was recorded; reused IDs with different intent fail closed.
     pub fn seen(&self, operation: &Operation) -> Result<bool, RepairRequired> {
         let fps = self.fingerprints()?;
-        if let Some(digest) = fps.get(&operation.id) {
+        if let Some(digest) = fps.get(operation.id()) {
             if digest != &operation_digest(operation) {
                 return Err(RepairRequired::new(format!(
                     "operation ID reused with different intent: {}",
-                    operation.id
+                    operation.id()
                 )));
             }
             return Ok(true);
@@ -624,9 +541,9 @@ impl<J: Journal> State<J> {
 
     /// Persists an intent receipt, rejecting any prior use of the ID for another intent.
     pub fn remember(&self, operation: &Operation) -> Result<(), RepairRequired> {
-        self.run_hook("remember", &operation.id)?;
+        self.run_hook("remember", operation.id())?;
         let mut incoming = BTreeMap::new();
-        incoming.insert(operation.id.clone(), operation_digest(operation));
+        incoming.insert(operation.id().to_owned(), operation_digest(operation));
         self.validate_fingerprints(&incoming, true)
     }
 

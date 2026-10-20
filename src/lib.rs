@@ -4,6 +4,7 @@ pub mod agent;
 pub mod application;
 pub mod codec;
 pub mod config;
+mod file_io;
 pub mod frontend;
 pub mod model;
 pub mod operations;

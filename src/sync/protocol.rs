@@ -5,6 +5,7 @@
 mod import;
 pub(crate) mod publication;
 
+use serde::Serialize;
 use std::sync::OnceLock;
 use strum::{AsRefStr, EnumString};
 
@@ -37,11 +38,7 @@ enum Action {
 use temper_jit::table::{Effect, EvalContext, TransitionTable, effect_args};
 
 use super::state::{PublicationMarker, RepairRequired, State};
-use crate::{
-    model::Record,
-    operations::Operation,
-    storage::{Journal, Snapshot},
-};
+use crate::{model::Record, operations::Operation, storage::Snapshot};
 
 pub const CATALOG_PROTOCOL_IOA: &str = include_str!("../../specs/catalog_protocol.ioa.toml");
 
@@ -90,10 +87,18 @@ pub fn verify_total_context(
     Ok(())
 }
 
-/// The permit borrows its originating machine and exact immutable save inputs.
-/// It cannot be cloned, transferred to another machine, or completed twice.
+#[derive(Serialize)]
+struct SaveMarker<'a> {
+    operation: &'a str,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    start: Option<&'a str>,
+}
+
+/// Owns marker, persistence, receipt, and cleanup ordering under the borrowed journal.
+/// The callback supplies backend-specific persistence and verification.
 pub(crate) struct SavePermit<'machine, 'input> {
     machine: &'machine mut ProtocolMachine,
+    state: &'input State<'input>,
     operation: &'input Operation,
     record: &'input Record,
     expected: &'input Snapshot,
@@ -101,9 +106,6 @@ pub(crate) struct SavePermit<'machine, 'input> {
 }
 
 impl SavePermit<'_, '_> {
-    pub(crate) fn operation(&self) -> &Operation {
-        self.operation
-    }
     pub(crate) fn record(&self) -> &Record {
         self.record
     }
@@ -113,10 +115,40 @@ impl SavePermit<'_, '_> {
     pub(crate) fn start_tip(&self) -> Option<&str> {
         self.start_tip
     }
-    pub(crate) fn complete(self) -> Result<(), RepairRequired> {
+    pub(crate) fn run<T, E: From<RepairRequired>>(
+        self,
+        encoded: &str,
+        effects: impl FnOnce(&Self) -> Result<T, E>,
+    ) -> Result<T, E> {
+        let result: Result<T, E> = (|| {
+            self.state.write_record(
+                "save.json",
+                &SaveMarker {
+                    operation: encoded,
+                    start: self.start_tip,
+                },
+            )?;
+            let value = effects(&self)?;
+            self.state.remember(self.operation)?;
+            self.state.clear("save.json")?;
+            Ok(value)
+        })();
+        match result {
+            Ok(value) => {
+                self.complete()?;
+                Ok(value)
+            }
+            Err(error) => {
+                let _ = self.fail();
+                Err(error)
+            }
+        }
+    }
+
+    fn complete(self) -> Result<(), RepairRequired> {
         self.machine.step(Action::CompleteSave)
     }
-    pub(crate) fn fail(self) -> Result<(), RepairRequired> {
+    fn fail(self) -> Result<(), RepairRequired> {
         self.machine.step(Action::FailSaveNeedsRepair)
     }
 }
@@ -128,8 +160,8 @@ pub(crate) struct ProtocolMachine {
 }
 
 impl ProtocolMachine {
-    pub(crate) fn observe<J: Journal>(
-        state: &State<J>,
+    pub(crate) fn observe(
+        state: &State<'_>,
         attempt_budget: usize,
     ) -> Result<Self, RepairRequired> {
         let save = state.read("save.json")?.is_some();
@@ -155,6 +187,10 @@ impl ProtocolMachine {
             },
             context,
         })
+    }
+
+    fn has_push_budget(&self) -> bool {
+        self.context.counters["attempt_budget"] > 0
     }
 
     // Raw dispatch is private: callers cannot bypass the evidence-bearing API.
@@ -208,6 +244,7 @@ impl ProtocolMachine {
 
     pub(crate) fn begin_save<'machine, 'input>(
         &'machine mut self,
+        state: &'input State<'input>,
         operation: &'input Operation,
         record: &'input Record,
         expected: &'input Snapshot,
@@ -221,6 +258,7 @@ impl ProtocolMachine {
         self.step(Action::BeginSave)?;
         Ok(SavePermit {
             machine: self,
+            state,
             operation,
             record,
             expected,
@@ -232,22 +270,134 @@ impl ProtocolMachine {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::{model::Stream, operations::Actor};
+    use crate::{
+        model::Stream,
+        operations::Actor,
+        storage::{StorageError, Transaction},
+        yaml_store::YamlStore,
+    };
+
+    #[test]
+    fn push_budget_counts_dispatches_not_recovery_or_adoption() {
+        let dir = tempfile::tempdir().unwrap();
+        YamlStore::new(dir.path())
+            .with_transaction::<_, StorageError>(|tx| {
+                let state = State::from_journal(tx.journal());
+                let mut machine = ProtocolMachine::observe(&state, 2).unwrap();
+                machine.step(Action::PrepareFreshCandidate).unwrap();
+                assert_eq!(machine.context.counters["attempt_budget"], 1);
+                machine.step(Action::ConfirmLostPushAfterFetch).unwrap();
+                assert_eq!(machine.context.counters["attempt_budget"], 1);
+                machine
+                    .context
+                    .booleans
+                    .insert("candidate_reusable".into(), true);
+                machine.step(Action::ReuseExistingCandidate).unwrap();
+                assert!(!machine.has_push_budget());
+                machine.step(Action::ConfirmLostPushAfterFetch).unwrap();
+                assert!(machine.step(Action::PrepareFreshCandidate).is_err());
+                machine.step(Action::NoPushNeededBeginAdopt).unwrap();
+                machine.step(Action::CompleteAdoption).unwrap();
+                assert!(!machine.has_push_budget());
+                assert!(machine.step(Action::PrepareFreshCandidate).is_err());
+                Ok(())
+            })
+            .unwrap();
+    }
+
+    #[test]
+    fn remote_races_and_failed_pushes_do_not_spend_a_second_attempt() {
+        let dir = tempfile::tempdir().unwrap();
+        YamlStore::new(dir.path())
+            .with_transaction::<_, StorageError>(|tx| {
+                let state = State::from_journal(tx.journal());
+                let mut machine = ProtocolMachine::observe(&state, 2).unwrap();
+                machine.step(Action::PrepareFreshCandidate).unwrap();
+                machine.step(Action::RetryPushOnRemoteRace).unwrap();
+                assert_eq!(machine.context.counters["attempt_budget"], 1);
+                machine.step(Action::PrepareFreshCandidate).unwrap();
+                machine.step(Action::LeavePushFailedOrUncertain).unwrap();
+                assert!(!machine.has_push_budget());
+                assert!(machine.step(Action::PrepareFreshCandidate).is_err());
+                Ok(())
+            })
+            .unwrap();
+    }
+
+    #[test]
+    fn failed_save_effects_preserve_the_error_and_fence_the_machine() {
+        let dir = tempfile::tempdir().unwrap();
+        YamlStore::new(dir.path())
+            .with_transaction::<_, StorageError>(|tx| {
+                let state = State::from_journal(tx.journal());
+                let record = Record::Stream(Stream::new("work", "Work", None, "host").unwrap());
+                let op = Operation::new("create", None, record.clone(), Actor::User, None, vec![])
+                    .unwrap();
+                let snapshot = Snapshot::default();
+                let mut machine = ProtocolMachine::observe(&state, 1).unwrap();
+                let encoded = crate::sync::envelope::encode_operation(&op, None).unwrap();
+                let error = machine
+                    .begin_save(&state, &op, &record, &snapshot, None)
+                    .unwrap()
+                    .run(&encoded, |_| {
+                        Err::<(), _>(RepairRequired::new("original save failure"))
+                    })
+                    .unwrap_err();
+                assert_eq!(error.to_string(), "original save failure");
+                assert!(state.read("save.json").unwrap().is_some());
+                assert!(!state.seen(&op).unwrap());
+                assert!(
+                    machine
+                        .begin_save(&state, &op, &record, &snapshot, None)
+                        .is_err()
+                );
+                Ok(())
+            })
+            .unwrap();
+    }
 
     #[test]
     fn save_permit_controls_completion_and_dropped_permit_stays_fenced() {
         let dir = tempfile::tempdir().unwrap();
-        let state = State::new(dir.path());
-        let record = Record::Stream(Stream::new("work", "Work", None, "host").unwrap());
-        let op = Operation::new("create", None, record.clone(), Actor::User, None, vec![]).unwrap();
-        let snapshot = Snapshot::default();
-        let mut machine = ProtocolMachine::observe(&state, 1).unwrap();
-        let permit = machine.begin_save(&op, &record, &snapshot, None).unwrap();
-        assert_eq!(permit.operation(), &op);
-        permit.complete().unwrap();
-        {
-            let _permit = machine.begin_save(&op, &record, &snapshot, None).unwrap();
-        }
-        assert!(machine.begin_save(&op, &record, &snapshot, None).is_err());
+        YamlStore::new(dir.path())
+            .with_transaction::<_, StorageError>(|tx| {
+                let state = State::from_journal(tx.journal());
+                let record = Record::Stream(Stream::new("work", "Work", None, "host").unwrap());
+                let op = Operation::new("create", None, record.clone(), Actor::User, None, vec![])
+                    .unwrap();
+                let snapshot = Snapshot::default();
+                let mut machine = ProtocolMachine::observe(&state, 1).unwrap();
+                let encoded = crate::sync::envelope::encode_operation(&op, None).unwrap();
+                let permit = machine
+                    .begin_save(&state, &op, &record, &snapshot, None)
+                    .unwrap();
+                assert_eq!(permit.operation, &op);
+                permit
+                    .run(&encoded, |permit| -> Result<(), RepairRequired> {
+                        assert_eq!(state.read("save.json")?.unwrap()["operation"], encoded);
+                        assert!(!state.seen(&op)?);
+                        tx.save(permit.record(), permit.expected())?;
+                        Ok(())
+                    })
+                    .unwrap();
+                assert!(state.read("save.json").unwrap().is_none());
+                assert!(state.seen(&op).unwrap());
+                assert_eq!(
+                    tx.read().unwrap().catalog.get(&record.key()),
+                    Some(record.clone())
+                );
+                {
+                    let _permit = machine
+                        .begin_save(&state, &op, &record, &snapshot, None)
+                        .unwrap();
+                }
+                assert!(
+                    machine
+                        .begin_save(&state, &op, &record, &snapshot, None)
+                        .is_err()
+                );
+                Ok(())
+            })
+            .unwrap();
     }
 }

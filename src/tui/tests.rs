@@ -23,7 +23,7 @@ struct Fixture {
 struct SnapshotDto {
     scope: ScopeDto,
     native: OwnerDto,
-    stream: Stream,
+    stream: serde_json::Value,
     session: Session,
     checkouts: Vec<BindingDto>,
     #[serde(rename = "documentLocations")]
@@ -95,16 +95,24 @@ impl LocationDto {
     }
 }
 impl SnapshotDto {
-    fn snapshot(self) -> CardSnapshot {
+    fn snapshot(mut self) -> CardSnapshot {
+        // Frozen JavaScript fixtures predate the field rename; production accepts only commit.
+        for document in self.stream["documents"].as_array_mut().unwrap() {
+            let document = document.as_object_mut().unwrap();
+            if let Some(commit) = document.remove("added_at") {
+                document.insert("commit".into(), commit);
+            }
+        }
+        let stream: Stream = serde_json::from_value(self.stream).unwrap();
         assert_eq!(self.scope.host_id, self.session.host_id);
-        assert_eq!(self.scope.stream_id, self.stream.id);
+        assert_eq!(self.scope.stream_id, stream.id);
         assert_eq!(self.scope.session_id, self.session.id);
         assert_eq!(
             self.scope.native_session_id,
             self.session.harness_session_id
         );
         CardSnapshot::new(
-            self.stream,
+            stream,
             self.session,
             DisplayContext {
                 catalog_source: self.scope.catalog_source,
@@ -249,7 +257,7 @@ fn active_renderer_goldens_and_approved_rust_unicode_layout() {
                     .unwrap()
                     .clone();
                 assert_eq!(dto.r#ref, document.r#ref);
-                assert_eq!(dto.added_at, document.added_at);
+                assert_eq!(dto.added_at, document.commit);
                 (
                     key,
                     DocumentTarget {
@@ -350,23 +358,24 @@ fn stale_completion_failure_and_scope_switch_never_authorize_actions() {
 }
 
 #[test]
-fn document_revision_label_prefers_commit_and_preserves_legacy_fallback() {
+fn document_revision_label_uses_optional_commit_not_source_session() {
     let mut snapshot = snapshot();
     let path = snapshot.stream.documents[0].path.clone();
-    snapshot.stream.documents[0].added_at = Some("legacy-123456".into());
+    snapshot.stream.documents[0].source_session_id = Some("source-session".into());
     for commit in [None, Some("current-123456")] {
         snapshot.stream.documents[0].commit = commit.map(str::to_owned);
         let rendered = super::render::render(Some(&snapshot), Rect::new(0, 0, 160, 30), None);
-        let expected = if commit.is_some() {
-            "current-"
-        } else {
-            "legacy-1"
-        };
-        assert!(
-            lines(&rendered.buffer)
+        let rendered_lines = lines(&rendered.buffer);
+        assert!(rendered_lines.iter().any(|line| line.contains(&path)));
+        assert_eq!(
+            rendered_lines
                 .iter()
-                .any(|line| { line.contains(&format!("{path} (added {expected})")) })
+                .any(|line| line.contains(&format!("{path} (added current-)"))),
+            commit.is_some()
         );
+        if commit.is_none() {
+            assert!(!rendered_lines.iter().any(|line| line.contains(" (added ")));
+        }
         assert_eq!(
             rendered.documents[&'a'].document,
             snapshot.stream.documents[0]
@@ -388,7 +397,6 @@ fn every_repaint_geometry_notice_and_target_change_invalidates_old_actions() {
     assert!(!view.is_current(&action));
     for field in [
         "ref",
-        "added",
         "commit",
         "source-session",
         "url",
@@ -403,7 +411,6 @@ fn every_repaint_geometry_notice_and_target_change_invalidates_old_actions() {
         let action = view.paint(Rect::new(0, 0, 100, 12)).documents[&'a'].clone();
         match field {
             "ref" => changed.stream.documents[0].r#ref = "other".into(),
-            "added" => changed.stream.documents[0].added_at = Some("new-commit".into()),
             "commit" => changed.stream.documents[0].commit = Some("latest-commit".into()),
             "source-session" => {
                 changed.stream.documents[0].source_session_id = Some("source".into())
@@ -485,7 +492,6 @@ fn editor_identity_preserves_viewing_file_and_checkout_lifetime_not_recovery_rev
     let identity = target.editor_identity().unwrap();
     assert_eq!(identity.file, PathBuf::from("/code/library/docs/design.md"));
     target.document.r#ref = "recovery-branch".into();
-    target.document.added_at = Some("a1".into());
     target.document.commit = Some("b2".into());
     target.document.source_session_id = Some("source".into());
     assert_eq!(identity, target.editor_identity().unwrap());

@@ -10,18 +10,14 @@ pub mod locations;
 pub use checkouts::{CheckoutLocation, CheckoutRegistry, RepositoryInspection};
 pub use locations::{BoundCheckout, DirectoryBinding, DirectoryBindings};
 
-use std::fs::{File, OpenOptions};
-use std::io::Read;
-use std::os::fd::AsRawFd;
-use std::os::unix::fs::OpenOptionsExt;
+use std::fs::File;
 use std::path::Path;
 
 use serde::Serialize;
 use serde::de::DeserializeOwned;
 
-use crate::codec::load_json;
+use crate::file_io;
 use crate::storage::StorageError;
-use crate::yaml_store::{atomic_write, ensure_directory};
 
 /// Local state failures distinguish absence/ambiguity from corruption and uncertain writes.
 #[derive(Debug, thiserror::Error)]
@@ -64,68 +60,19 @@ pub(crate) fn text(value: &str) -> Result<()> {
 }
 
 pub(crate) fn decode<T: DeserializeOwned>(bytes: &[u8]) -> Result<T> {
-    let json = std::str::from_utf8(bytes).map_err(|error| invalid(error.to_string()))?;
-    let value = load_json(json).map_err(|error| invalid(error.to_string()))?;
-    if !value.is_object() {
-        return Err(invalid("expected a JSON object"));
-    }
-    serde_json::from_value(value).map_err(|e| invalid(e.to_string()))
+    Ok(file_io::decode_json(bytes)?)
 }
 
 pub(crate) fn read_json<T: DeserializeOwned>(path: &Path) -> Result<Option<T>> {
-    let mut file = match OpenOptions::new()
-        .read(true)
-        .custom_flags(libc::O_NOFOLLOW | libc::O_NONBLOCK)
-        .open(path)
-    {
-        Ok(file) => file,
-        Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(None),
-        Err(e) => return Err(e.into()),
-    };
-    if !file.metadata()?.is_file() {
-        return Err(invalid("state must be a regular file"));
-    }
-    let mut bytes = Vec::new();
-    file.read_to_end(&mut bytes)?;
-    decode(&bytes).map(Some)
+    Ok(file_io::read_json(path)?)
 }
 
 pub(crate) fn lock(path: &Path) -> Result<File> {
-    ensure_directory(
-        path.parent()
-            .ok_or_else(|| invalid("lock needs a parent"))?,
-        true,
-    )?;
-    let file = OpenOptions::new()
-        .create(true)
-        .truncate(false)
-        .read(true)
-        .write(true)
-        .mode(0o600)
-        .custom_flags(libc::O_NOFOLLOW | libc::O_NONBLOCK)
-        .open(path)?;
-    if !file.metadata()?.is_file() {
-        return Err(invalid("lock must be a regular file"));
-    }
-    if unsafe { libc::flock(file.as_raw_fd(), libc::LOCK_EX) } != 0 {
-        return Err(std::io::Error::last_os_error().into());
-    }
-    Ok(file)
+    Ok(file_io::lock(path)?)
 }
 
 pub(crate) fn write_json(path: &Path, value: &impl Serialize) -> Result<()> {
-    if path.is_symlink() {
-        return Err(invalid("symlinked state file"));
-    }
-    let mut bytes = serde_json::to_vec_pretty(value).map_err(|e| invalid(e.to_string()))?;
-    bytes.push(b'\n');
-    atomic_write(
-        path,
-        &bytes,
-        path.parent()
-            .ok_or_else(|| invalid("state needs a parent"))?,
-    )?;
-    Ok(())
+    Ok(file_io::write_json(path, value)?)
 }
 
 pub(crate) fn digest(value: &[u8]) -> String {

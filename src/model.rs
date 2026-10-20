@@ -1,13 +1,15 @@
 //! Typed records with strict wire field mapping. Deserialization checks wire shapes;
 //! record validation checks local constraints, and catalog construction checks relationships.
-//! Validation rejects invalid values without normalizing them.
+//! Validation preserves field values; catalog construction canonically orders records.
 
 use std::collections::{BTreeMap, BTreeSet};
 use std::fmt;
 
 use chrono::{DateTime, FixedOffset, SecondsFormat};
 use serde::{Deserialize, Deserializer, Serialize, Serializer};
-use strum::{AsRefStr, Display, EnumString};
+use strum::{AsRefStr, Display, EnumString, VariantNames};
+
+use crate::codec::{object, object_map, objects, optional_object, required_nullable};
 
 /// Personal lifecycle of a stream or contribution; completion does not close its workspace.
 #[derive(
@@ -18,8 +20,8 @@ use strum::{AsRefStr, Display, EnumString};
     PartialEq,
     Eq,
     Serialize,
-    Deserialize,
     EnumString,
+    VariantNames,
     Display,
     AsRefStr,
 )]
@@ -43,8 +45,8 @@ pub enum Status {
     PartialEq,
     Eq,
     Serialize,
-    Deserialize,
     EnumString,
+    VariantNames,
     Display,
     AsRefStr,
 )]
@@ -58,7 +60,7 @@ pub enum NamingMode {
 
 /// The record schemas accepted by catalog files and operation envelopes.
 #[derive(
-    Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, EnumString, Display, AsRefStr,
+    Debug, Clone, Copy, PartialEq, Eq, Serialize, EnumString, VariantNames, Display, AsRefStr,
 )]
 #[serde(rename_all = "kebab-case")]
 #[strum(serialize_all = "kebab-case")]
@@ -68,13 +70,10 @@ pub enum RecordKind {
     Stream,
 }
 
+crate::codec::deserialize_string_enum!(Status, NamingMode, RecordKind);
+
 fn checkout_directory() -> String {
     ".".into()
-}
-
-// A custom deserializer prevents serde from treating an absent Option as None.
-fn required_nullable<'de, D: Deserializer<'de>>(d: D) -> Result<Option<String>, D::Error> {
-    Option::deserialize(d)
 }
 
 // Keep the field diagnostic used to recover ambiguous legacy YAML titles.
@@ -97,7 +96,7 @@ mod owner {
     }
 
     pub fn deserialize<'de, D: Deserializer<'de>>(d: D) -> Result<String, D::Error> {
-        Ok(Owner::<String>::deserialize(d)?.host_id)
+        Ok(object::<Owner<String>, _>(d)?.host_id)
     }
 }
 
@@ -215,9 +214,7 @@ pub struct Document {
     pub path: String,
     #[serde(default)]
     pub description: String,
-    /// Optional commit provenance for when the document was added, not a timestamp.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub added_at: Option<String>,
+    /// Latest known commit from the source session, not a timestamp.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub commit: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -231,15 +228,14 @@ impl Document {
         r#ref: impl Into<String>,
         path: impl Into<String>,
         description: impl Into<String>,
-        added_at: Option<String>,
+        commit: Option<String>,
     ) -> Result<Self, ValidationError> {
         let document = Self {
             repository: repository.into(),
             r#ref: r#ref.into(),
             path: path.into(),
             description: description.into(),
-            added_at,
-            commit: None,
+            commit,
             source_session_id: None,
         };
         document.validate()?;
@@ -253,7 +249,6 @@ impl Document {
         check_relative_path(&self.path, "document.path")?;
         check_text(&self.description, "document.description", true)?;
         for (name, value) in [
-            ("document.added_at", &self.added_at),
             ("document.commit", &self.commit),
             ("document.source_session_id", &self.source_session_id),
         ] {
@@ -262,11 +257,6 @@ impl Document {
             }
         }
         Ok(())
-    }
-
-    /// Prefers current commit provenance over the legacy added-at commit.
-    pub fn effective_commit(&self) -> Option<&str> {
-        self.commit.as_deref().or(self.added_at.as_deref())
     }
 
     /// Identity within a stream excludes the ref and descriptive metadata.
@@ -333,13 +323,13 @@ pub struct Stream {
     pub status: Status,
     #[serde(default)]
     pub archived: bool,
-    #[serde(default)]
+    #[serde(default, deserialize_with = "object_map")]
     pub repositories: BTreeMap<String, Repository>,
-    #[serde(default)]
+    #[serde(default, deserialize_with = "objects")]
     pub documents: Vec<Document>,
-    #[serde(default)]
+    #[serde(default, deserialize_with = "objects")]
     pub issues: Vec<Link>,
-    #[serde(default)]
+    #[serde(default, deserialize_with = "objects")]
     pub prs: Vec<Link>,
 }
 
@@ -454,6 +444,7 @@ pub struct Session {
     pub state_short: Option<String>,
     #[serde(default)]
     pub remaining: String,
+    #[serde(default, deserialize_with = "optional_object")]
     pub checkout: Option<Checkout>,
 }
 
@@ -660,26 +651,22 @@ impl fmt::Display for RecordKey {
     }
 }
 
-pub fn record_key(record: &Record) -> RecordKey {
-    record.key()
-}
-
 /// Records checked together for identity uniqueness and attachment relationships.
-/// Public fields and deserialization can bypass these checks; use `new` to revalidate.
-#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize)]
 pub struct Catalog {
-    pub streams: Vec<Stream>,
-    pub sessions: Vec<Session>,
-    pub hosts: Vec<Host>,
+    streams: Vec<Stream>,
+    sessions: Vec<Session>,
+    hosts: Vec<Host>,
 }
 
 impl Catalog {
     /// Checks records, duplicate record/native identities, session streams, and checkout aliases.
-    /// Host references need not have corresponding host records.
+    /// Host references need not have corresponding host records. Collections are ordered by
+    /// stream/host ID and session (host ID, ID); nested record values retain their order.
     pub fn new(
-        streams: Vec<Stream>,
-        sessions: Vec<Session>,
-        hosts: Vec<Host>,
+        mut streams: Vec<Stream>,
+        mut sessions: Vec<Session>,
+        mut hosts: Vec<Host>,
     ) -> Result<Self, ValidationError> {
         let mut stream_keys = BTreeSet::new();
         for s in &streams {
@@ -724,11 +711,26 @@ impl Catalog {
                 )));
             }
         }
+        streams.sort_by(|a, b| a.id.cmp(&b.id));
+        sessions.sort_by(|a, b| (&a.host_id, &a.id).cmp(&(&b.host_id, &b.id)));
+        hosts.sort_by(|a, b| a.id.cmp(&b.id));
         Ok(Self {
             streams,
             sessions,
             hosts,
         })
+    }
+
+    pub fn streams(&self) -> &[Stream] {
+        &self.streams
+    }
+
+    pub fn sessions(&self) -> &[Session] {
+        &self.sessions
+    }
+
+    pub fn hosts(&self) -> &[Host] {
+        &self.hosts
     }
 
     pub fn stream(&self, id: &str) -> Option<&Stream> {

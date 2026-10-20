@@ -77,7 +77,7 @@ fn enrolled_context_preserves_local_records_authority_and_all_hosts_sessions() {
     let result = context(&backend, "host", "physical-source", request("native")).unwrap();
     assert_eq!(result.stream.as_ref().unwrap().id, "work");
     assert_eq!(result.session.as_ref().unwrap().id, "local");
-    assert_eq!(result.sessions, before.sessions);
+    assert_eq!(result.sessions, before.sessions());
     assert_eq!(
         result.authority.as_ref().unwrap().token,
         "original-creation"

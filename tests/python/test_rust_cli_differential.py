@@ -77,7 +77,7 @@ class RustCliDifferentialTests(unittest.TestCase):
         self.call("python", "restore", identity)
         self.call("rust", "update", identity, "--add-repository", "repo", "https://example.test/repo",
                   "--add-document", "repo", "main", "docs/design.md", "Design",
-                  "--document-added-at", "repo", "docs/design.md", "abc123",
+                  "--document-commit", "repo", "docs/design.md", "abc123",
                   "--document-commit", "repo", "docs/design.md", "def456",
                   "--document-session", "repo", "docs/design.md", "source-session")
         self.assertEqual(self.call("rust", "show", identity), self.call("python", "show", identity))
@@ -186,6 +186,23 @@ class RustCliDifferentialTests(unittest.TestCase):
         self.assertEqual(rust_code, 2)
         self.assertEqual(rust["save"]["domain"]["outcome"], "superseded")
 
+    def test_incomplete_directory_effects_preserve_receipts_across_languages(self):
+        missing = str(self.base / "missing-cwd")
+        for implementation in ("rust", "python"):
+            other = "python" if implementation == "rust" else "rust"
+            code, created = self.invoke(implementation, "create", f"Saved {implementation}", "--cwd", missing)
+            self.assertEqual(code, 2, created)
+            self.assertEqual(created["save"]["local"], "persisted")
+            self.assertTrue(created["runtime"]["error"])
+            identity = created["stream"]["id"]
+            self.assertEqual(self.call(other, "show", identity)["stream"], created["stream"])
+            code, attached = self.invoke(implementation, "session", "attach", identity, "--harness", "pi",
+                                         "--session-id", f"completion-{implementation}", "--title", "Saved session", "--cwd", missing)
+            self.assertEqual(code, 2, attached)
+            self.assertEqual(attached["save"]["local"], "persisted")
+            self.assertTrue(attached["runtime"]["error"])
+            self.assertEqual(self.call(other, "session", "show", attached["session"]["id"])["session"], attached["session"])
+
     def test_current_document_locations_share_checkout_and_directory_identity(self):
         checkout = self.base / "checkout"
         checkout.mkdir()
@@ -206,12 +223,16 @@ class RustCliDifferentialTests(unittest.TestCase):
         self.assertEqual(rust, self.context("python", "document-native"))
         self.assertEqual(rust["document_locations"][0]["file"], str(document))
         self.assertEqual(rust["document_locations"][0]["checkout_id"], registered["id"])
+        self.assertEqual(rust["document_locations"][0]["kind"], "local")
+        self.assertEqual(rust["document_locations"][0]["label"], f"local ({checkout.name})")
         self.assertEqual(self.call("rust", "session", "directory", session["id"]),
                          self.call("python", "session", "directory", session["id"]))
         document.unlink()
         for implementation in ("rust", "python"):
             location = self.context(implementation, "document-native")["document_locations"][0]
             self.assertIsNone(location["file"])
+            self.assertIsNone(location["kind"])
+            self.assertNotIn("label", location)
             self.assertTrue(location["error"])
             self.assertEqual(location["checkout_id"], registered["id"])
 

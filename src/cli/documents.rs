@@ -53,6 +53,7 @@ pub(super) fn context(
                 .and_then(|checkout| checkout.repository_url.as_deref())
         });
     let mut checkouts = Vec::new();
+    // Keep one checkout snapshot per repository for these read-only hints, not action authority.
     let mut repositories = BTreeMap::new();
     for (alias, repository) in &stream.repositories {
         let resolved = match &selected {
@@ -73,13 +74,15 @@ pub(super) fn context(
         let (checkout,error)=match resolved {Ok(checkout)=>(Some(checkout),None),Err(error)=>(None,Some(error))};
         let mut location=json!({"repository":document.repository,"path":document.path,
             "checkout_id":checkout.map(|checkout|&checkout.id),"root":checkout.map(|checkout|&checkout.directory),
-            "file":null,"error":error});
+            "kind":null,"file":null,"error":error});
         if let Some(checkout)=checkout {
-            let current=registry.document(&stream.repositories[&document.repository].url,&document.path,selected_id,repository_url)
-                .map_err(|error|error.to_string())
-                .and_then(|(current,file)|if &current==checkout{Ok(file)}else{Err("checkout binding changed during document resolution; refresh to retry".into())});
+            let current=checkout.document(&document.path).map_err(|error|error.to_string());
             match current {
-                Ok(file)=>location["file"]=json!(file),
+                Ok(file)=>{
+                    location["file"]=json!(file);
+                    location["kind"]=json!("local");
+                    location["label"]=json!(format!("local ({})",checkout.directory.file_name().unwrap_or_default().to_string_lossy()));
+                },
                 Err(error)=>location["error"]=json!(format!("Document not present in this checkout: {}. {error}",document.path)),
             }
         }

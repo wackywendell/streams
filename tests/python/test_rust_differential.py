@@ -8,6 +8,7 @@ Creation envelope strings and operation SHA256 receipts are compared verbatim.
 
 from __future__ import annotations
 
+from copy import deepcopy
 from datetime import datetime, timezone
 import hashlib
 import json
@@ -282,6 +283,109 @@ class LocalCatalogDifferentialTest(unittest.TestCase):
                 self.assertEqual("error" not in rust, accepted, rust)
                 if accepted:
                     self.assertEqual(rust, python)
+
+    def test_positional_record_arrays_are_rejected_at_yaml_ingress(self):
+        initial = stream(
+            repositories={"repo": Repository("url")},
+            documents=(Document("repo", "main", "doc", ""),),
+            issues=(Link("url", ""),), prs=(Link("url", ""),),
+        )
+        session = Session("session", HOST, initial.id, "pi", "native", "Session",
+                          checkout=Checkout("repo", "main"))
+        host = Host(HOST, "Laptop", datetime(2026, 1, 1, tzinfo=timezone.utc))
+        cases = [
+            (initial, "owner", [HOST]),
+            (initial, "repositories", {"repo": ["url"]}),
+            (initial, "documents", [["repo", "main", "doc", "", None, None]]),
+            (initial, "issues", [["url", ""]]),
+            (initial, "prs", [["url", ""]]),
+            (session, "checkout", ["repo", "main", "."]),
+            (host, None, [HOST, "Laptop", "2026-01-01T00:00:00+00:00"]),
+        ]
+        for record, field, positional in cases:
+            with self.subTest(kind=type(record).__name__, field=field), tempfile.TemporaryDirectory() as directory:
+                root = Path(directory)
+                store = YamlStore(root)
+                with store.transaction() as transaction:
+                    for item in (initial, session, host):
+                        transaction.save(item, expected=transaction.read())
+
+                def rust_snapshot():
+                    process = subprocess.run(
+                        [str(DRIVER), str(root), HOST], input='{"op":"snapshot"}\n',
+                        capture_output=True, text=True, encoding="utf-8", timeout=30,
+                    )
+                    self.assertEqual(process.returncode, 0, process.stderr)
+                    return json.loads(process.stdout)
+
+                expected = python_request(root, {"op": "snapshot"})
+                self.assertNotIn("error", expected)
+                self.assertEqual(rust_snapshot(), expected)
+                path = root / store.record_path(record_key(record))
+                envelope = yaml.safe_load(path.read_text())
+                if field is None:
+                    envelope["record"] = positional
+                else:
+                    envelope["record"][field] = positional
+                path.write_text(yaml.safe_dump(envelope), encoding="utf-8")
+                self.assertIn("error", python_request(root, {"op": "snapshot"}))
+                actual = rust_snapshot()
+                self.assertIn("error", actual)
+                self.assertIn("must be an object", actual["error"])
+
+    def test_positional_operation_envelopes_and_captures_are_rejected(self):
+        initial = stream()
+        supporting = Host(HOST, "Captured", datetime(2026, 1, 1, tzinfo=timezone.utc))
+        operation = Operation("create", None, initial, "user", inputs=(supporting,))
+        canonical = encode_operation(operation, origin=ORIGIN)
+        prefix = "Streams operation v1\n\n"
+        wire = json.loads(canonical[len(prefix):])
+        cases = [[wire[field] for field in (
+            "version", "id", "kind", "before", "after", "actor", "ownership_token", "origin", "inputs",
+        )]]
+        captured = deepcopy(wire)
+        captured["inputs"] = [["host", record_to_data(supporting)]]
+        cases.append(captured)
+        captured = deepcopy(wire)
+        captured["inputs"][0]["record"] = [HOST, "Captured", "2026-01-01T00:00:00+00:00"]
+        cases.append(captured)
+        for index, malformed in enumerate(cases):
+            with self.subTest(case=index), tempfile.TemporaryDirectory() as directory:
+                roots = [Path(directory) / name for name in ("python", "rust")]
+                accepted = python_request(roots[0], {"op": "save", "message": canonical})
+                self.assertNotIn("error", accepted)
+                process = subprocess.run(
+                    [str(DRIVER), str(roots[1]), HOST],
+                    input=json.dumps({"op": "save", "message": canonical}) + "\n",
+                    capture_output=True, text=True, encoding="utf-8", timeout=30,
+                )
+                self.assertEqual(process.returncode, 0, process.stderr)
+                self.assertNotIn("error", json.loads(process.stdout))
+                request = {"op": "save", "message": prefix + json.dumps(malformed) + "\n"}
+                self.assertIn("error", python_request(roots[0], request))
+                process = subprocess.run(
+                    [str(DRIVER), str(roots[1]), HOST], input=json.dumps(request) + "\n",
+                    capture_output=True, text=True, encoding="utf-8", timeout=30,
+                )
+                self.assertEqual(process.returncode, 0, process.stderr)
+                self.assertIn("error", json.loads(process.stdout))
+
+    def test_operation_enum_maps_are_not_wire_strings(self):
+        prefix = "Streams operation v1\n\n"
+        canonical = encode_operation(Operation("enum-shape", None, stream(), "user"), origin=ORIGIN)
+        wire = json.loads(canonical[len(prefix):])
+        for field in ("status", "title_mode", "goal_mode", "actor", "kind"):
+            malformed = deepcopy(wire)
+            container = malformed["after"] if field in ("status", "title_mode", "goal_mode") else malformed
+            container[field] = {container[field]: None}
+            request = {"op": "save", "message": prefix + json.dumps(malformed) + "\n"}
+            with self.subTest(field=field), tempfile.TemporaryDirectory() as directory:
+                root = Path(directory)
+                self.assertIn("error", python_request(root / "python", request))
+                process = subprocess.run([str(DRIVER), str(root / "rust"), HOST],
+                                         input=json.dumps(request) + "\n", capture_output=True, text=True, timeout=30)
+                self.assertEqual(process.returncode, 0, process.stderr)
+                self.assertIn("error", json.loads(process.stdout))
 
     def test_rust_opens_common_python_yaml_scalars(self):
         for title in ("0o10", "yes", "2026-01-01"):

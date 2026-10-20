@@ -1,7 +1,7 @@
 use serde_json::{Value, json};
 use streams_temper::{
     codec::{record_from_data, record_to_data},
-    model::{Document, RecordKind},
+    model::{Document, RecordKind, Session, Stream},
 };
 
 fn stream() -> Value {
@@ -22,6 +22,144 @@ fn roundtrip(kind: RecordKind, data: &Value) -> Value {
     let encoded = record_to_data(&record);
     assert_eq!(record_from_data(kind, &encoded).unwrap(), record);
     encoded
+}
+
+#[test]
+fn object_helpers_do_not_hide_duplicate_named_fields() {
+    let valid = serde_json::to_string(&stream()).unwrap();
+    let duplicate = valid.replace(
+        r#""host_id":"host""#,
+        r#""host_id":"host","host_id":"other""#,
+    );
+    assert_ne!(valid, duplicate);
+    let error = serde_json::from_str::<Stream>(&duplicate).unwrap_err();
+    assert!(error.to_string().contains("duplicate"), "{error}");
+}
+
+#[test]
+fn finite_wire_enums_accept_only_their_canonical_strings() {
+    use serde::{Serialize, de::DeserializeOwned};
+    use streams_temper::{
+        config::Strategy,
+        model::{NamingMode, Status},
+        operations::{Actor, DomainOutcome},
+        sync::{
+            outcomes::{LocalStatus, SharingStatus},
+            policy::SyncEvent,
+        },
+    };
+    fn check<T: Serialize + DeserializeOwned + PartialEq + std::fmt::Debug>(value: T) {
+        let wire = serde_json::to_value(&value).unwrap();
+        let name = wire.as_str().unwrap();
+        assert_eq!(serde_json::from_value::<T>(wire.clone()).unwrap(), value);
+        for invalid in [
+            json!({(name): null}),
+            json!([name]),
+            Value::Null,
+            json!(1),
+            json!(true),
+            json!("unknown-wire-enum"),
+        ] {
+            assert!(
+                serde_json::from_value::<T>(invalid.clone()).is_err(),
+                "{invalid}"
+            );
+        }
+    }
+    check(Status::Active);
+    check(NamingMode::Automatic);
+    check(RecordKind::Stream);
+    check(Actor::User);
+    check(DomainOutcome::NoChange);
+    check(Strategy::None);
+    check(LocalStatus::RepairRequired);
+    check(SharingStatus::LocalOnly);
+    check(SyncEvent::Explicit);
+}
+
+#[test]
+fn positional_record_arrays_are_not_wire_objects() {
+    let timestamp = "2025-01-02T03:04:05+00:00";
+    for (kind, object, positional) in [
+        (
+            RecordKind::Host,
+            host(timestamp),
+            json!(["host", "Laptop", timestamp]),
+        ),
+        (
+            RecordKind::Stream,
+            stream(),
+            json!([
+                "work", "Café", null, {"host_id": "host"}, "automatic", null,
+                "automatic", "active", false, {}, [], [], []
+            ]),
+        ),
+        (
+            RecordKind::Session,
+            session(),
+            json!([
+                "session",
+                "host",
+                "work",
+                "pi",
+                "native",
+                "Session",
+                "automatic",
+                "active",
+                "",
+                null,
+                "",
+                null
+            ]),
+        ),
+    ] {
+        record_from_data(kind, &object).unwrap();
+        let error = record_from_data(kind, &positional).unwrap_err();
+        assert!(
+            error.to_string().contains("must be an object"),
+            "{kind}: {error}"
+        );
+    }
+}
+
+#[test]
+fn positional_nested_arrays_are_not_wire_objects() {
+    for (field, object, positional) in [
+        ("owner", json!({"host_id": "host"}), json!(["host"])),
+        (
+            "repositories",
+            json!({"repo": {"url": "url"}}),
+            json!({"repo": ["url"]}),
+        ),
+        (
+            "documents",
+            json!([{"repository": "repo", "ref": "main", "path": "doc"}]),
+            json!([["repo", "main", "doc", "", null, null]]),
+        ),
+        ("issues", json!([{"url": "url"}]), json!([["url", ""]])),
+        ("prs", json!([{"url": "url"}]), json!([["url", ""]])),
+    ] {
+        let mut data = stream();
+        data["repositories"] = json!({"repo": {"url": "url"}});
+        data[field] = object;
+        record_from_data(RecordKind::Stream, &data).unwrap();
+        serde_json::from_value::<Stream>(data.clone()).unwrap();
+        data[field] = positional;
+        assert!(serde_json::from_value::<Stream>(data.clone()).is_err());
+        let error = record_from_data(RecordKind::Stream, &data).unwrap_err();
+        assert!(
+            error.to_string().contains("must be an object"),
+            "{field}: {error}"
+        );
+    }
+    let mut data = session();
+    data["checkout"] = json!({"repository": "repo", "ref": "main"});
+    record_from_data(RecordKind::Session, &data).unwrap();
+    serde_json::from_value::<Session>(data.clone()).unwrap();
+    data["checkout"] = json!(["repo", "main", "."]);
+    assert!(serde_json::from_value::<Session>(data.clone()).is_err());
+    let error = record_from_data(RecordKind::Session, &data).unwrap_err();
+    assert!(error.to_string().contains("must be an object"), "{error}");
 }
 
 #[test]
@@ -152,7 +290,7 @@ fn nested_descriptions_default_and_document_provenance_is_omitted_only_when_none
             "{field}"
         );
     }
-    for field in ["added_at", "commit", "source_session_id"] {
+    for field in ["commit", "source_session_id"] {
         assert!(encoded["documents"][0].get(field).is_none());
         data["documents"][0][field] = Value::Null;
         assert!(
@@ -174,25 +312,32 @@ fn nested_descriptions_default_and_document_provenance_is_omitted_only_when_none
             );
         }
     }
+    for value in [Value::Null, json!("retired-commit")] {
+        let mut invalid = data.clone();
+        invalid["documents"][0]["added_at"] = value;
+        let error = record_from_data(RecordKind::Stream, &invalid).unwrap_err();
+        assert!(error.to_string().contains("unknown field `added_at`"));
+    }
     let json = serde_json::to_string(&encoded).unwrap();
     assert!(json.contains("Café"));
     assert!(json.starts_with("{\"archived\":"));
 }
 
 #[test]
-fn document_effective_commit_prefers_commit_without_changing_identity() {
-    let mut document = Document::new("repo", "main", "doc", "", None).unwrap();
+fn document_constructor_sets_commit_and_provenance_does_not_change_identity() {
+    let document = Document::new("repo", "main", "doc", "", None).unwrap();
     assert_eq!(document.commit, None);
     assert_eq!(document.source_session_id, None);
-    assert_eq!(document.effective_commit(), None);
-    document.added_at = Some("legacy".into());
-    assert_eq!(document.effective_commit(), Some("legacy"));
+    let mut document = Document::new("repo", "main", "doc", "", Some("initial".into())).unwrap();
+    assert_eq!(document.commit.as_deref(), Some("initial"));
+    assert_eq!(document.source_session_id, None);
     document.commit = Some("latest".into());
     document.source_session_id = Some("session".into());
-    assert_eq!(document.effective_commit(), Some("latest"));
+    document.r#ref = "topic".into();
+    document.description = "updated".into();
+    document.validate().unwrap();
     assert_eq!(document.identity(), ("repo", "doc"));
-    document.added_at = None;
-    assert_eq!(document.effective_commit(), Some("latest"));
+    assert!(Document::new("repo", "main", "doc", "", Some("".into())).is_err());
 }
 
 #[test]

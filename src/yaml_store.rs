@@ -1,21 +1,19 @@
 //! Versioned YAML storage with process serialization and atomic single-record saves.
 
 use std::collections::{BTreeMap, BTreeSet};
-use std::fs::{self, File, OpenOptions};
-use std::io::Write;
-use std::os::unix::fs::{DirBuilderExt, OpenOptionsExt};
-use std::os::unix::io::AsRawFd;
+use std::fs;
 use std::path::{Path, PathBuf};
 
 use saneyaml as serde_yaml;
-use serde_json::Value;
+use serde::{Deserialize, Serialize};
+use serde_json::{Map, Value};
 use sha2::{Digest, Sha256};
 use uuid::Uuid;
 
-use crate::codec::{object_fields, record_from_data, record_to_data};
+use crate::codec::{record_from_data, record_to_data};
+use crate::file_io::{atomic_write, ensure_directory, lock};
 use crate::model::{Catalog, Record, RecordKind, ValidationError, check_text};
-use crate::storage::{Snapshot, StorageError, Store, Transaction};
-use crate::sync::state::FileJournal;
+use crate::storage::{Journal, Snapshot, StorageError, Store, Transaction};
 
 /// Encode UTF-8 bytes for a single filename component, including traversal-only dot names.
 pub fn encode_component(id: &str) -> String {
@@ -48,69 +46,13 @@ pub fn relative_record_path(record: &Record) -> PathBuf {
     }
 }
 
-/// Flush directory entries; this does not flush the contents of files named there.
-pub fn sync_directory(path: &Path) -> Result<(), StorageError> {
-    let file = File::open(path)
-        .map_err(|e| StorageError::new(format!("cannot open directory {path:?}: {e}")))?;
-    file.sync_all()
-        .map_err(|e| StorageError::new(format!("cannot fsync directory {path:?}: {e}")))
-}
-
-pub(crate) fn atomic_write(path: &Path, bytes: &[u8], staging: &Path) -> Result<(), StorageError> {
-    let parent = path.parent().expect("atomic destination has a parent");
-    ensure_directory(parent, true)?;
-    ensure_directory(staging, true)?;
-    let io_error = |e| StorageError::new(format!("cannot replace {}: {e}", path.display()));
-    let mut tmp = tempfile::NamedTempFile::new_in(staging).map_err(io_error)?;
-    tmp.write_all(bytes).map_err(io_error)?;
-    tmp.as_file().sync_all().map_err(io_error)?;
-    tmp.persist(path).map_err(|e| io_error(e.error))?;
-    let result = sync_directory(parent).and_then(|()| {
-        if staging != parent {
-            sync_directory(staging)
-        } else {
-            Ok(())
-        }
-    });
-    result.map_err(StorageError::after_write)
-}
-
-pub(crate) fn ensure_directory(path: &Path, create: bool) -> Result<(), StorageError> {
-    if path.is_symlink() {
-        return Err(StorageError::new(format!(
-            "symlinked catalog directory: {}",
-            path.display()
-        )));
-    }
-    if create && !path.exists() {
-        let parent = path
-            .parent()
-            .filter(|p| !p.as_os_str().is_empty())
-            .unwrap_or(Path::new("."));
-        ensure_directory(parent, true)?;
-        match fs::DirBuilder::new().mode(0o700).create(path) {
-            Ok(()) => {}
-            Err(e) if e.kind() == std::io::ErrorKind::AlreadyExists => {
-                ensure_directory(path, false)?;
-            }
-            Err(e) => {
-                return Err(StorageError::new(format!(
-                    "cannot create directory {}: {e}",
-                    path.display()
-                )));
-            }
-        }
-        // The name must survive in its parent before any durable receipt relies on it.
-        sync_directory(path)?;
-        sync_directory(parent)?;
-    }
-    if path.exists() && !path.is_dir() {
-        return Err(StorageError::new(format!(
-            "expected catalog directory: {}",
-            path.display()
-        )));
-    }
-    Ok(())
+#[derive(Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct RecordEnvelope {
+    version: u64,
+    revision: String,
+    kind: RecordKind,
+    record: Value,
 }
 
 fn yaml_to_json(yaml: serde_yaml::Value) -> Result<Value, ValidationError> {
@@ -212,30 +154,25 @@ impl YamlStore {
             .from_str(text_str)
             .map_err(|e| StorageError::new(format!("cannot read catalog: {e}")))?;
         let json_val = yaml_to_json(raw_yaml).map_err(map_err)?;
-        let envelope = object_fields(&json_val, &["version", "revision", "kind", "record"])
-            .map_err(map_err)?;
-        match envelope.get("version") {
-            Some(Value::Number(n)) if n.as_i64() == Some(1) => {}
-            _ => {
-                return Err(map_err(ValidationError::new(
-                    "unsupported catalog encoding version",
-                )));
-            }
-        }
-        let Some(Value::String(rev)) = envelope.get("revision") else {
+        if !json_val.is_object() {
             return Err(map_err(ValidationError::new(
-                "storage revision must be a nonempty string",
+                "expected an object with string keys",
             )));
-        };
-        check_text(rev, "storage revision", false).map_err(map_err)?;
-        let Some(Value::String(kind)) = envelope.get("kind") else {
-            return Err(map_err(ValidationError::new("unknown record kind")));
-        };
-        let record_val = envelope.get("record").unwrap_or(&Value::Null);
-        let kind = kind
-            .parse::<RecordKind>()
-            .map_err(|_| map_err(ValidationError::new(format!("unknown record kind: {kind}"))))?;
-        let record = record_from_data(kind, record_val).map_err(map_err)?;
+        }
+        let envelope: RecordEnvelope = serde_json::from_value(json_val)
+            .map_err(|e| map_err(ValidationError::new(e.to_string())))?;
+        if envelope.version != 1 {
+            return Err(map_err(ValidationError::new(
+                "unsupported catalog encoding version",
+            )));
+        }
+        check_text(&envelope.revision, "storage revision", false).map_err(map_err)?;
+        if !envelope.record.is_object() {
+            return Err(map_err(ValidationError::new(
+                "record must be an object with string keys",
+            )));
+        }
+        let record = record_from_data(envelope.kind, &envelope.record).map_err(map_err)?;
         let expected_path = relative_record_path(&record)
             .to_string_lossy()
             .replace('\\', "/");
@@ -274,32 +211,45 @@ impl YamlStore {
     ///
     /// The transaction is borrowed, so it cannot be retained after the lock scope:
     /// ```compile_fail
-    /// use streams_temper::yaml_store::YamlStore;
+    /// use streams_temper::{storage::StorageError, yaml_store::YamlStore};
     /// let store = YamlStore::new("catalog");
-    /// let escaped = store.with_transaction(|tx| Ok(tx));
+    /// let escaped = store.with_transaction::<_, StorageError>(|tx| Ok(tx));
     /// ```
-    pub fn with_transaction<T, F>(&self, f: F) -> Result<T, StorageError>
-    where
-        F: FnOnce(&mut YamlTransaction) -> Result<T, StorageError>,
-    {
+    ///
+    /// Its journal is borrowed from the same transaction and cannot escape either:
+    /// ```compile_fail
+    /// use streams_temper::{storage::{StorageError, Transaction}, yaml_store::YamlStore};
+    /// let store = YamlStore::new("catalog");
+    /// let escaped = store.with_transaction::<_, StorageError>(|tx| Ok(tx.journal()));
+    /// ```
+    ///
+    /// Journal operations and catalog operations share the held lock:
+    /// ```
+    /// use streams_temper::{storage::{StorageError, Transaction}, yaml_store::YamlStore};
+    /// # fn main() -> Result<(), StorageError> {
+    /// let directory = tempfile::tempdir().unwrap();
+    /// let store = YamlStore::new(directory.path());
+    /// store.with_transaction::<_, StorageError>(|tx| {
+    ///     let journal = tx.journal();
+    ///     let snapshot = tx.read()?;
+    ///     assert!(snapshot.catalog.records().is_empty());
+    ///     assert!(journal.names()?.is_empty());
+    ///     Ok(())
+    /// })?;
+    /// # Ok(())
+    /// # }
+    /// ```
+    pub fn with_transaction<T, E: From<StorageError>>(
+        &self,
+        f: impl FnOnce(&mut YamlTransaction) -> Result<T, E>,
+    ) -> Result<T, E> {
         ensure_directory(&self.root, true)?;
-        // Never unlink the lock file: another opener must lock this same inode.
-        let lock_path = self.root.join(".catalog.lock");
-        let file = OpenOptions::new()
-            .create(true)
-            .read(true)
-            .write(true)
-            .mode(0o600)
-            .custom_flags(libc::O_NOFOLLOW)
-            .open(&lock_path)
-            .map_err(|e| StorageError::new(format!("cannot open catalog lock: {e}")))?;
-        let rc = unsafe { libc::flock(file.as_raw_fd(), libc::LOCK_EX) };
-        if rc != 0 {
-            let err = std::io::Error::last_os_error();
-            return Err(StorageError::new(format!("cannot lock catalog: {err}")));
-        }
+        let file = lock(&self.root.join(".catalog.lock"))?;
         let mut tx = YamlTransaction {
             root: self.root.clone(),
+            journal: FileJournal {
+                root: self.root.join(".catalog-sync"),
+            },
             _lock: file,
         };
         f(&mut tx)
@@ -308,19 +258,18 @@ impl YamlStore {
 
 impl Store for YamlStore {
     type Transaction<'a> = YamlTransaction;
-    type Journal = FileJournal;
 
-    fn with_transaction<T>(
+    fn with_transaction<T, E: From<StorageError>>(
         &self,
-        f: impl FnOnce(&mut Self::Transaction<'_>) -> Result<T, StorageError>,
-    ) -> Result<T, StorageError> {
+        f: impl FnOnce(&mut Self::Transaction<'_>) -> Result<T, E>,
+    ) -> Result<T, E> {
         YamlStore::with_transaction(self, f)
     }
+}
 
-    fn journal(&self) -> Self::Journal {
-        FileJournal {
-            root: self.root.join(".catalog-sync"),
-        }
+impl Transaction for YamlTransaction {
+    fn journal(&self) -> &dyn Journal {
+        &self.journal
     }
 
     fn check_local(&self) -> Result<(), StorageError> {
@@ -345,9 +294,7 @@ impl Store for YamlStore {
         }
         Ok(())
     }
-}
 
-impl Transaction for YamlTransaction {
     fn read(&self) -> Result<Snapshot, StorageError> {
         YamlTransaction::read(self)
     }
@@ -360,7 +307,62 @@ impl Transaction for YamlTransaction {
 /// A catalog lock held by ownership; its borrowed handle cannot escape the transaction closure.
 pub struct YamlTransaction {
     root: PathBuf,
+    journal: FileJournal,
     _lock: std::fs::File,
+}
+
+/// Object persistence owned exclusively by a locked YAML transaction.
+struct FileJournal {
+    root: PathBuf,
+}
+
+impl FileJournal {
+    fn ensure_directory(&self) -> Result<(), StorageError> {
+        if self.root.is_symlink() {
+            return Err(StorageError::new("symlinked transport state"));
+        }
+        crate::file_io::ensure_directory(&self.root, true)
+    }
+}
+
+impl Journal for FileJournal {
+    fn read(&self, name: &str) -> Result<Option<Map<String, Value>>, StorageError> {
+        self.ensure_directory()?;
+        crate::file_io::read_json(&self.root.join(name))
+    }
+
+    fn write(&self, name: &str, data: Map<String, Value>) -> Result<(), StorageError> {
+        self.ensure_directory()?;
+        crate::file_io::write_json(&self.root.join(name), &data)
+    }
+
+    fn clear(&self, name: &str) -> Result<(), StorageError> {
+        self.ensure_directory()?;
+        let path = self.root.join(name);
+        let removed = path.exists();
+        if removed {
+            fs::remove_file(&path)
+                .map_err(|e| StorageError::new(format!("cannot clear {name}: {e}")))?;
+        }
+        crate::file_io::sync_directory(&self.root)
+            .map_err(|e| if removed { e.after_write() } else { e })
+    }
+
+    fn names(&self) -> Result<Vec<String>, StorageError> {
+        self.ensure_directory()?;
+        fs::read_dir(&self.root)
+            .map_err(|e| StorageError::new(format!("cannot read {}: {e}", self.root.display())))?
+            .map(|entry| {
+                entry
+                    .map(|e| e.file_name().to_string_lossy().into_owned())
+                    .map_err(|e| StorageError::new(e.to_string()))
+            })
+            .collect()
+    }
+
+    fn describe(&self, name: &str) -> String {
+        self.root.join(name).display().to_string()
+    }
 }
 
 impl YamlTransaction {
@@ -438,14 +440,16 @@ impl YamlTransaction {
         if current.catalog.get(&key).as_ref() == Some(record) {
             return Ok(current);
         }
-        let mut envelope = serde_json::Map::new();
-        envelope.insert("version".into(), Value::Number(1.into()));
-        envelope.insert("revision".into(), Value::String(Uuid::new_v4().to_string()));
-        envelope.insert("kind".into(), Value::String(key.kind().to_string()));
-        envelope.insert("record".into(), record_to_data(record));
+        let envelope = RecordEnvelope {
+            version: 1,
+            revision: Uuid::new_v4().to_string(),
+            kind: key.kind(),
+            record: record_to_data(record),
+        };
         // JSON is a YAML subset. Quoting every string preserves YAML 1.1 readers
         // (including PyYAML) where bare yes/on/timestamp-looking values change type.
-        let yaml_text = serde_json::to_string_pretty(&Value::Object(envelope))
+        let envelope = serde_json::to_value(envelope).expect("record envelope is JSON-compatible");
+        let yaml_text = serde_json::to_string_pretty(&envelope)
             .map_err(|e| StorageError::new(format!("cannot save catalog record: {e}")))?;
         let path = self.root.join(relative_record_path(record));
         atomic_write(

@@ -11,19 +11,22 @@ pub mod outcomes;
 pub mod policy;
 pub mod protocol;
 pub mod replay;
+pub mod scalars;
 pub mod state;
+
+pub use scalars::{Oid, Seconds};
 
 use crate::{
     model::{Catalog, ValidationError},
     operations::{Authority, Operation},
     storage::{Snapshot, Store},
 };
-use serde::{Deserialize, Serialize};
-use strum::{AsRefStr, Display, EnumString};
+use serde::Serialize;
+use strum::{AsRefStr, Display, EnumString, VariantNames};
 
 /// How recently the remote view was fetched; it does not describe publication.
 #[derive(
-    Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, EnumString, Display, AsRefStr,
+    Debug, Clone, Copy, PartialEq, Eq, Serialize, EnumString, VariantNames, Display, AsRefStr,
 )]
 #[serde(rename_all = "kebab-case")]
 #[strum(serialize_all = "kebab-case")]
@@ -33,6 +36,8 @@ pub enum Freshness {
     Refreshed,
     Failed,
 }
+
+crate::codec::deserialize_string_enum!(Freshness);
 
 /// Application-facing catalog operations, independent of storage and transport choice.
 ///

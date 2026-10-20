@@ -8,7 +8,8 @@ use std::collections::{BTreeMap, BTreeSet};
 
 use serde::{Deserialize, Serialize};
 
-use crate::model::{Catalog, Record, ValidationError, check_text};
+use crate::codec::require_object;
+use crate::model::{Catalog, ValidationError, check_text};
 use crate::operations::Authority;
 use crate::yaml_store::YamlStore;
 
@@ -87,7 +88,9 @@ pub fn decode_baseline(
     let Some(body) = message.strip_prefix(BASELINE) else {
         return Err(ValidationError::new("unsupported catalog baseline message"));
     };
-    let data: BaselineEnvelope = serde_json::from_value(load_json(body)?)
+    let value = load_json(body)?;
+    require_object(&value, "catalog baseline")?;
+    let data: BaselineEnvelope = serde_json::from_value(value)
         .map_err(|e| ValidationError::new(format!("invalid catalog baseline: {e}")))?;
     if data.version != 1 {
         return Err(ValidationError::new("unsupported catalog baseline version"));
@@ -97,18 +100,21 @@ pub fn decode_baseline(
         .map_err(|e| ValidationError::new(e.to_string()))?
         .catalog;
     let creation_keys: BTreeSet<String> = baseline.creations.keys().cloned().collect();
-    let stream_ids: BTreeSet<String> = catalog.streams.iter().map(|s| s.id.clone()).collect();
+    let stream_ids: BTreeSet<String> = catalog.streams().iter().map(|s| s.id.clone()).collect();
     if creation_keys != stream_ids {
         return Err(ValidationError::new(
             "baseline creations must exactly match snapshot streams",
         ));
     }
     if catalog
-        .streams
+        .streams()
         .iter()
         .any(|s| s.owner_host_id != baseline.host)
-        || catalog.sessions.iter().any(|s| s.host_id != baseline.host)
-        || catalog.hosts.iter().any(|h| h.id != baseline.host)
+        || catalog
+            .sessions()
+            .iter()
+            .any(|s| s.host_id != baseline.host)
+        || catalog.hosts().iter().any(|h| h.id != baseline.host)
     {
         return Err(ValidationError::new(
             "baseline snapshot producers must belong to its host",
@@ -123,32 +129,32 @@ pub fn decode_baseline(
                 "baseline creation envelope must be canonical",
             ));
         }
-        let Record::Stream(ref stream) = operation.after else {
+        let Some((stream_id, authority)) = operation.created_authority() else {
             return Err(ValidationError::new(
                 "baseline creation must create its indexed stream",
             ));
         };
-        if operation.before.is_some() || &stream.id != id {
+        if &stream_id != id {
             return Err(ValidationError::new(
                 "baseline creation must create its indexed stream",
             ));
         }
-        if stream.owner_host_id != baseline.host {
+        if authority.host_id != baseline.host {
             return Err(ValidationError::new(
                 "baseline creation owner must match its host",
             ));
         }
-        if !creation_ids.insert(operation.id.clone()) {
+        if !creation_ids.insert(operation.id().to_owned()) {
             return Err(ValidationError::new(
                 "duplicate baseline creation operation ID",
             ));
         }
-        if baseline.fingerprints.get(&operation.id) != Some(&operation_digest(&operation)) {
+        if baseline.fingerprints.get(operation.id()) != Some(&operation_digest(&operation)) {
             return Err(ValidationError::new(
                 "baseline creation fingerprint does not match original intent",
             ));
         }
-        authorities.insert(id.clone(), Authority::new(&baseline.host, &operation.id)?);
+        authorities.insert(id.clone(), authority);
     }
     Ok((baseline, catalog, authorities))
 }

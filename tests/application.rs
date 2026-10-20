@@ -3,6 +3,7 @@ use std::fs;
 use std::os::unix::fs::symlink;
 use std::path::PathBuf;
 use std::sync::{Arc, Barrier};
+use streams_temper::storage::StorageError;
 
 use serde_json::json;
 use streams_temper::{
@@ -10,7 +11,7 @@ use streams_temper::{
     config::{Config, ConfigKey, Marker, Strategy},
     model::{Record, Stream},
     operations::{Actor, Operation},
-    storage::Store,
+    storage::Transaction,
     sync::state::State,
     yaml_store::YamlStore,
 };
@@ -114,16 +115,19 @@ fn rejected_uninitialized_reads_and_adoptions_leave_catalog_untouched() {
 
 #[test]
 fn nonregular_initialization_markers_are_rejected_without_catalog_lock_creation() {
-    for link in [false, true] {
+    for kind in ["directory", "symlink", "fifo"] {
         let f = Fixture::new();
         let marker = f.root.join(".catalog-sync/cli.json");
         fs::create_dir_all(marker.parent().unwrap()).unwrap();
-        if link {
+        if kind == "symlink" {
             let target = f.temp.path().join("marker-target");
             fs::write(&target, "{}").unwrap();
             symlink(target, &marker).unwrap();
-        } else {
+        } else if kind == "directory" {
             fs::create_dir(&marker).unwrap();
+        } else {
+            let path = std::ffi::CString::new(marker.as_os_str().as_encoded_bytes()).unwrap();
+            assert_eq!(unsafe { libc::mkfifo(path.as_ptr(), 0o600) }, 0);
         }
         assert!(application::open(&f.config).is_err());
         assert!(application::initialize(&f.config, Strategy::Git, None, "main", true).is_err());
@@ -225,8 +229,8 @@ fn nonempty_bookkeeping_and_opaque_import_fences_fail_closed() {
     let f = Fixture::new();
     let store = YamlStore::new(&f.root);
     store
-        .with_transaction(|_| {
-            State::new(&f.root)
+        .with_transaction::<_, StorageError>(|tx| {
+            State::from_journal(tx.journal())
                 .write(
                     "receipts.json",
                     json!({"operations":{}}).as_object().unwrap().clone(),
@@ -241,8 +245,8 @@ fn nonempty_bookkeeping_and_opaque_import_fences_fail_closed() {
     f.init().unwrap();
     let store = YamlStore::new(&f.root);
     store
-        .with_transaction(|_| {
-            State::new(&f.root)
+        .with_transaction::<_, StorageError>(|tx| {
+            State::from_journal(tx.journal())
                 .write(
                     "save.json",
                     json!({"adoption":{"baseline":"opaque"}})
@@ -283,7 +287,7 @@ fn initialization_reads_settings_after_acquiring_config_lock() {
     assert!(!f.root.exists());
     let store = YamlStore::new(&selected);
     let marker = store
-        .with_transaction(|_| Ok(Marker::read(&store.journal()).unwrap()))
+        .with_transaction::<_, StorageError>(|tx| Ok(Marker::read(tx.journal()).unwrap()))
         .unwrap()
         .unwrap();
     assert_eq!(marker.host, f.config.host_identity().unwrap());

@@ -3,14 +3,13 @@
 use std::fs;
 use std::path::{Path, PathBuf};
 
-use serde_json::json;
-
 use crate::config::{Config, ConfigError, HostIdentity, Marker, Strategy, source_id};
+use crate::file_io::{check_catalog_root, check_empty_catalog_root};
 use crate::model::{ValidationError, check_text};
-use crate::storage::{StorageError, Store};
+use crate::storage::{StorageError, Transaction};
 use crate::sync::state::{RepairRequired, State};
 use crate::sync::{CatalogBackend, adoption::adopt_local, git::GitCatalog, local::LocalCatalog};
-use crate::yaml_store::{YamlStore, ensure_directory};
+use crate::yaml_store::YamlStore;
 
 #[derive(Debug, thiserror::Error)]
 pub enum ApplicationError {
@@ -52,53 +51,13 @@ fn invalid(message: &str) -> ApplicationError {
     ConfigError::Invalid(message.into()).into()
 }
 
-fn check_root(root: &Path) -> Result<()> {
-    ensure_directory(root, false)?;
-    for name in [".catalog-sync", ".catalog.lock", ".catalog-staging"] {
-        if root.join(name).is_symlink() {
-            return Err(invalid("symlinked catalog machinery"));
-        }
-    }
-    ensure_directory(&root.join(".catalog-sync"), false)?;
-    Ok(())
-}
-
-fn marker_exists(root: &Path) -> Result<bool> {
-    match fs::symlink_metadata(root.join(".catalog-sync/cli.json")) {
-        Ok(metadata) if metadata.is_file() => Ok(true),
-        Ok(_) => Err(invalid(
-            "catalog initialization marker must be a regular file",
-        )),
-        Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(false),
-        Err(error) => Err(StorageError::new(error.to_string()).into()),
-    }
-}
-
 fn empty_root(root: &Path) -> Result<()> {
     let io = |e: std::io::Error| StorageError::new(e.to_string());
-    for entry in fs::read_dir(root).map_err(io)? {
-        let name = entry.map_err(io)?.file_name();
-        if name != ".catalog.lock" && name != ".catalog-sync" {
-            return Err(invalid(
-                "initialization requires a new empty catalog directory",
-            ));
-        }
-    }
+    check_empty_catalog_root(root)?;
     let state = root.join(".catalog-sync");
     if state.exists() && fs::read_dir(state).map_err(io)?.next().is_some() {
         return Err(invalid("initialization requires empty catalog bookkeeping"));
     }
-    Ok(())
-}
-
-fn write_marker(store: &YamlStore, strategy: Strategy, host: &HostIdentity) -> Result<()> {
-    State::from_journal(store.journal()).write(
-        "cli.json",
-        json!({"strategy":strategy,"host":host.as_str()})
-            .as_object()
-            .expect("object")
-            .clone(),
-    )?;
     Ok(())
 }
 
@@ -119,13 +78,13 @@ fn opened(
 pub fn open(config: &Config) -> Result<OpenedCatalog> {
     let settings = config.load()?;
     let root = settings.catalog_root;
-    check_root(&root)?;
-    if !marker_exists(&root)? {
+    check_catalog_root(&root)?;
+    if !Marker::exists(&root)? {
         return Err(invalid("catalog is not initialized; run streams init"));
     }
     let store = YamlStore::new(&root);
     let marker = store
-        .with_transaction(|_| Ok(Marker::read(&store.journal())))??
+        .with_transaction(|tx| -> Result<_> { Ok(Marker::read(tx.journal())?) })?
         .ok_or_else(|| invalid("catalog is not initialized; run streams init"))?;
     let host = config.host_identity()?;
     marker.check_host(&host)?;
@@ -160,15 +119,15 @@ pub fn initialize(
     // Loading before the lock could select a different root from host creation.
     let settings = lock.settings()?;
     let root = settings.catalog_root;
-    check_root(&root)?;
-    let initialized = marker_exists(&root)?;
+    check_catalog_root(&root)?;
+    let initialized = Marker::exists(&root)?;
     if adopt && !initialized {
         return Err(invalid(
             "adoption requires an initialized local-only catalog",
         ));
     }
     let store = YamlStore::new(&root);
-    let marker = store.with_transaction(|_| Ok(Marker::read(&store.journal())))??;
+    let marker = store.with_transaction(|tx| -> Result<_> { Ok(Marker::read(tx.journal())?) })?;
     let host = if marker.is_some() {
         lock.existing_host_identity()?
     } else {
@@ -188,26 +147,28 @@ pub fn initialize(
         }
     }
     if strategy == Strategy::None {
-        store.with_transaction(|tx| {
-            Ok((|| -> Result<()> {
-                check_root(&root)?;
-                let current = Marker::read(&store.journal())?;
-                match &current {
-                    None => empty_root(&root)?,
-                    Some(marker) => {
-                        marker.check_host(&host)?;
-                        if marker.strategy != Strategy::None {
-                            return Err(invalid("catalog sync strategy does not match"));
-                        }
+        store.with_transaction(|tx| -> Result<()> {
+            check_catalog_root(&root)?;
+            let current = Marker::read(tx.journal())?;
+            match &current {
+                None => empty_root(&root)?,
+                Some(marker) => {
+                    marker.check_host(&host)?;
+                    if marker.strategy != Strategy::None {
+                        return Err(invalid("catalog sync strategy does not match"));
                     }
                 }
-                tx.read()?;
-                if current.is_none() {
-                    write_marker(&store, strategy, &host)?;
+            }
+            tx.read()?;
+            if current.is_none() {
+                Marker {
+                    strategy,
+                    host: host.clone(),
                 }
-                Ok(())
-            })())
-        })??;
+                .write(&State::from_journal(tx.journal()))?;
+            }
+            Ok(())
+        })?;
         let backend = Box::new(LocalCatalog::new(store, host.as_str())?);
         return opened(root, host, backend);
     }
@@ -217,14 +178,21 @@ pub fn initialize(
         backend
     } else {
         if marker.is_none() {
-            store.with_transaction(|_| Ok(empty_root(&root)))??;
+            store.with_transaction(|_| empty_root(&root))?;
         } else {
             backend.snapshot()?;
         }
         let backend = backend.initialize(remote.map(str::to_owned), branch)?;
         if marker.is_none() {
             backend.snapshot()?;
-            store.with_transaction(|_| Ok(write_marker(&store, strategy, &host)))??;
+            store.with_transaction(|tx| -> Result<()> {
+                Marker {
+                    strategy,
+                    host: host.clone(),
+                }
+                .write(&State::from_journal(tx.journal()))?;
+                Ok(())
+            })?;
         }
         backend
     };

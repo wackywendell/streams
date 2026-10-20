@@ -6,22 +6,22 @@
 
 use std::collections::{BTreeMap, BTreeSet, VecDeque};
 use std::ffi::{CStr, CString};
-use std::fs::{self, File, OpenOptions};
-use std::os::unix::fs::{MetadataExt, OpenOptionsExt};
-use std::os::unix::io::AsRawFd;
+use std::fs::{self, File};
+use std::os::unix::fs::MetadataExt;
 use std::path::{Component, Path, PathBuf};
 
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 use sha2::{Digest, Sha256};
-use strum::{AsRefStr, Display, EnumIter, EnumString};
+use strum::{AsRefStr, Display, EnumIter, EnumString, VariantNames};
 use uuid::Uuid;
 
 use crate::codec::load_json;
+use crate::file_io::{self, check_catalog_root};
 use crate::frontend::{FrontendId, FrontendMode};
 use crate::storage::{Journal, StorageError};
 use crate::sync::policy::Policy;
-use crate::yaml_store::{atomic_write, ensure_directory};
+use crate::sync::state::{RepairRequired, State};
 
 /// The supported persistent keys; backend selection lives in the catalog marker.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, EnumString, Display, AsRefStr, EnumIter)]
@@ -184,13 +184,13 @@ impl Config {
         let sync = Policy::new(
             data.pointer("/sync/stream_seconds")
                 .and_then(Value::as_f64)
-                .unwrap_or(default.stream_seconds),
+                .unwrap_or(default.stream_seconds()),
             data.pointer("/sync/session_seconds")
                 .and_then(Value::as_f64)
-                .unwrap_or(default.session_seconds),
-            default.cooldown_seconds,
-            default.timeout_seconds,
-            default.attempts,
+                .unwrap_or(default.session_seconds()),
+            default.cooldown_seconds(),
+            default.timeout_seconds(),
+            default.attempts(),
         )
         .map_err(invalid)?;
         Ok(Settings {
@@ -214,7 +214,7 @@ impl Config {
         };
         Ok(
             json!({"catalog":{"root":settings.catalog_root}, "frontend":{"mode":mode},
-            "sync":{"stream_seconds":settings.sync.stream_seconds,"session_seconds":settings.sync.session_seconds}}),
+            "sync":{"stream_seconds":settings.sync.stream_seconds(),"session_seconds":settings.sync.session_seconds()}}),
         )
     }
 
@@ -236,22 +236,7 @@ impl Config {
     /// while holding this guard; use the guard's methods instead.
     pub fn lock(&self) -> Result<ConfigLock<'_>> {
         let directory = self.config_path.parent().expect("config parent");
-        ensure_directory(directory, true)?;
-        let file = OpenOptions::new()
-            .create(true)
-            .truncate(false)
-            .read(true)
-            .write(true)
-            .mode(0o600)
-            .custom_flags(libc::O_NOFOLLOW | libc::O_NONBLOCK)
-            .open(directory.join(".catalog-config.lock"))?;
-        if !file.metadata()?.is_file() {
-            return Err(invalid("config lock must be a regular file"));
-        }
-        // Keep the lock inode: unlinking it could split concurrent writers into two locks.
-        if unsafe { libc::flock(file.as_raw_fd(), libc::LOCK_EX) } != 0 {
-            return Err(std::io::Error::last_os_error().into());
-        }
+        let file = file_io::lock(&directory.join(".catalog-config.lock"))?;
         Ok(ConfigLock {
             config: self,
             _file: file,
@@ -367,17 +352,9 @@ impl ConfigLock<'_> {
             return Ok(identity);
         }
         let root = self.settings()?.catalog_root;
-        ensure_directory(&root, false)?;
-        for name in [".catalog-sync", ".catalog.lock", ".catalog-staging"] {
-            if root.join(name).is_symlink() {
-                return Err(invalid("symlinked catalog machinery"));
-            }
-        }
-        ensure_directory(&root.join(".catalog-sync"), false)?;
-        match fs::symlink_metadata(root.join(".catalog-sync/cli.json")) {
-            Ok(_) => return Err(missing_host()),
-            Err(e) if e.kind() == std::io::ErrorKind::NotFound => {}
-            Err(e) => return Err(e.into()),
+        check_catalog_root(&root)?;
+        if Marker::exists(&root)? {
+            return Err(missing_host());
         }
         let identity = HostIdentity(Uuid::new_v4().to_string());
         write_json(
@@ -414,7 +391,7 @@ struct HostWire {
 
 /// Existing version-one marker strategies; no backend is constructed by this module.
 #[derive(
-    Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, EnumString, Display, AsRefStr,
+    Debug, Clone, Copy, PartialEq, Eq, Serialize, EnumString, VariantNames, Display, AsRefStr,
 )]
 #[serde(rename_all = "lowercase")]
 #[strum(serialize_all = "lowercase")]
@@ -423,6 +400,8 @@ pub enum Strategy {
     Git,
 }
 
+crate::codec::deserialize_string_enum!(Strategy);
+
 /// Host-bound initialization evidence read under the caller's store transaction.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Marker {
@@ -430,7 +409,29 @@ pub struct Marker {
     pub host: HostIdentity,
 }
 impl Marker {
-    pub fn read(journal: &impl Journal) -> Result<Option<Self>> {
+    /// Inspect before acquiring the catalog lock; malformed markers never permit host creation.
+    pub fn exists(root: &Path) -> Result<bool> {
+        match fs::symlink_metadata(root.join(".catalog-sync/cli.json")) {
+            Ok(metadata) if metadata.is_file() => Ok(true),
+            Ok(_) => Err(invalid(
+                "catalog initialization marker must be a regular file",
+            )),
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(false),
+            Err(error) => Err(error.into()),
+        }
+    }
+
+    pub fn write(&self, state: &State<'_>) -> std::result::Result<(), RepairRequired> {
+        state.write(
+            "cli.json",
+            json!({"strategy": self.strategy, "host": self.host.as_str()})
+                .as_object()
+                .expect("object")
+                .clone(),
+        )
+    }
+
+    pub fn read(journal: &dyn Journal) -> Result<Option<Self>> {
         #[derive(Deserialize)]
         #[serde(deny_unknown_fields)]
         struct Wire {
@@ -469,35 +470,10 @@ fn missing_host() -> ConfigError {
     )
 }
 fn read_json(path: &Path) -> Result<Option<Value>> {
-    ensure_directory(path.parent().expect("file parent"), false)?;
-    let mut file = match OpenOptions::new()
-        .read(true)
-        .custom_flags(libc::O_NOFOLLOW | libc::O_NONBLOCK)
-        .open(path)
-    {
-        Ok(file) => file,
-        Err(e) if e.kind() == std::io::ErrorKind::NotFound && !path.is_symlink() => {
-            return Ok(None);
-        }
-        Err(e) => return Err(e.into()),
-    };
-    if !file.metadata()?.is_file() {
-        return Err(invalid("config/host state must be a regular file"));
-    }
-    let mut text = String::new();
-    std::io::Read::read_to_string(&mut file, &mut text)?;
-    load_json(&text)
-        .map(Some)
-        .map_err(|e| invalid(e.to_string()))
+    Ok(file_io::read_json(path)?)
 }
 fn write_json(path: &Path, value: &Value) -> Result<()> {
-    if path.is_symlink() {
-        return Err(invalid("refusing symlinked config/host state"));
-    }
-    let mut bytes = serde_json::to_vec_pretty(value).map_err(|e| invalid(e.to_string()))?;
-    bytes.push(b'\n');
-    atomic_write(path, &bytes, path.parent().expect("file parent"))?;
-    Ok(())
+    Ok(file_io::write_json(path, value)?)
 }
 fn path_text(path: &Path) -> Result<&str> {
     path.to_str().ok_or_else(|| invalid("path must be UTF-8"))

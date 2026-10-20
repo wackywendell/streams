@@ -226,6 +226,39 @@ class CatalogCliTest(unittest.TestCase):
         self.assertIn("native open failed", created["runtime"]["error"]["message"])
         self.assertEqual(self.cli("show", created["stream"]["id"])[0], 0)
 
+    def test_start_successful_runtime_payload_does_not_signal_completion_failure(self):
+        self.initialize()
+        with patch("_streams.catalog_runtime.Runtime.open", return_value={"workspace": "ready"}):
+            code, out, err = self.cli("start", "Opened", "--frontend", "herdr", "--json")
+        self.assertEqual((code, err), (0, ""), out)
+        created = json.loads(out)
+        self.assertEqual(created["runtime"], {"workspace": "ready"})
+        self.assertEqual(created["save"]["local"], "persisted")
+
+    def test_directory_completion_failures_retain_saved_stream_and_session_receipts(self):
+        self.initialize()
+        missing = str(self.root / "missing-cwd")
+        code, out, _ = self.cli("create", "Saved", "--cwd", missing, "--json")
+        self.assertEqual(code, 2, out)
+        created = json.loads(out)
+        self.assertEqual(created["save"]["local"], "persisted")
+        self.assertTrue(created["runtime"]["error"])
+        stream_id = created["stream"]["id"]
+        self.assertEqual(json.loads(self.cli("show", stream_id, "--json")[1])["stream"], created["stream"])
+        code, out, _ = self.cli("session", "attach", stream_id, "--harness", "pi",
+                                "--session-id", "completion-native", "--title", "Saved session", "--cwd", missing, "--json")
+        self.assertEqual(code, 2, out)
+        attached = json.loads(out)
+        self.assertEqual(attached["save"]["local"], "persisted")
+        self.assertTrue(attached["runtime"]["error"])
+        self.assertEqual(json.loads(self.cli("session", "show", attached["session"]["id"], "--json")[1])["session"], attached["session"])
+        with patch("_streams.catalog_runtime.Runtime.remember_directory", side_effect=ValueError("invalid directory")):
+            code, out, _ = self.cli("session", "attach", stream_id, "--harness", "pi",
+                                    "--session-id", "value-error-native", "--title", "Also saved", "--json")
+        self.assertEqual(code, 2, out)
+        self.assertEqual(json.loads(out)["save"]["local"], "persisted")
+        self.assertIn("invalid directory", json.loads(out)["runtime"]["error"])
+
     def test_current_and_frontend_are_independent_and_no_cwd_inference(self):
         self.initialize()
         stream = self.create()

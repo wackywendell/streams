@@ -4,7 +4,7 @@ use serde_json::Value;
 use sha2::{Digest, Sha256};
 use std::collections::BTreeMap;
 
-use crate::codec::{record_from_data, record_to_data};
+use crate::codec::{objects, record_from_data, record_to_data, require_object, required_nullable};
 use crate::model::{RecordKind, ValidationError, check_text};
 use crate::operations::{Actor, Operation};
 
@@ -29,14 +29,18 @@ struct OperationEnvelope {
     version: u64,
     id: String,
     kind: RecordKind,
-    #[serde(deserialize_with = "Option::deserialize")]
+    #[serde(deserialize_with = "required_nullable")]
     before: Option<Value>,
     after: Value,
     actor: Actor,
-    #[serde(deserialize_with = "Option::deserialize")]
+    #[serde(deserialize_with = "required_nullable")]
     ownership_token: Option<String>,
     origin: Origin,
-    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    #[serde(
+        default,
+        deserialize_with = "objects",
+        skip_serializing_if = "Vec::is_empty"
+    )]
     inputs: Vec<CapturedRecord>,
 }
 
@@ -47,15 +51,15 @@ pub fn encode_operation(
 ) -> Result<String, ValidationError> {
     let envelope = OperationEnvelope {
         version: 1,
-        id: operation.id.clone(),
-        kind: operation.after.kind(),
-        before: operation.before.as_ref().map(record_to_data),
-        after: record_to_data(&operation.after),
-        actor: operation.actor,
-        ownership_token: operation.ownership_token.clone(),
+        id: operation.id().to_owned(),
+        kind: operation.after().kind(),
+        before: operation.before().map(record_to_data),
+        after: record_to_data(operation.after()),
+        actor: operation.actor(),
+        ownership_token: operation.ownership_token().map(str::to_owned),
         origin: origin.cloned().unwrap_or_default(),
         inputs: operation
-            .inputs
+            .inputs()
             .iter()
             .map(|record| CapturedRecord {
                 kind: record.kind(),
@@ -94,23 +98,14 @@ pub fn check_fingerprints(fingerprints: &BTreeMap<String, String>) -> Result<(),
     Ok(())
 }
 
-pub fn decode_fingerprints(value: &Value) -> Result<BTreeMap<String, String>, ValidationError> {
-    if !value.is_object() {
-        return Err(ValidationError::new("fingerprints must be an object"));
-    }
-    let fingerprints = serde_json::from_value(value.clone()).map_err(|_| {
-        ValidationError::new("operation fingerprint must be a lowercase SHA256 digest")
-    })?;
-    check_fingerprints(&fingerprints)?;
-    Ok(fingerprints)
-}
-
 /// Strictly decode the envelope and construct an operation through its validation boundary.
 pub fn decode_operation(message: &str) -> Result<(Operation, Origin), ValidationError> {
     let Some(body) = message.strip_prefix(PREFIX) else {
         return Err(ValidationError::new("unsupported operation commit message"));
     };
-    let data: OperationEnvelope = serde_json::from_value(load_json(body)?)
+    let value = load_json(body)?;
+    require_object(&value, "operation envelope")?;
+    let data: OperationEnvelope = serde_json::from_value(value)
         .map_err(|e| ValidationError::new(format!("invalid operation envelope: {e}")))?;
     if data.version != 1 {
         return Err(ValidationError::new(

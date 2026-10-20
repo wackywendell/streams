@@ -45,6 +45,37 @@ fn parsed_intent_keeps_original_identity_base_and_supporting_inputs() {
 }
 
 #[test]
+fn positional_requests_and_captured_inputs_are_rejected() {
+    let wire = request(&stream(), json!({"title": "Chosen"}), Actor::User);
+    parse_update(&wire.to_string(), "physical-source").unwrap();
+    let positional = json!([
+        wire["operation_id"],
+        wire["catalog_source"],
+        wire["kind"],
+        wire["actor"],
+        wire["before"],
+        wire["changes"],
+        wire["ownership_token"],
+        wire["inputs"]
+    ]);
+    assert!(parse_update(&positional.to_string(), "physical-source").is_err());
+
+    let host = json!({"id": "host", "label": "Captured", "checked_at": "2026-01-01T00:00:00Z"});
+    let mut captured = wire;
+    captured["inputs"] = json!([{"kind": "host", "record": host}]);
+    parse_update(&captured.to_string(), "physical-source").unwrap();
+    captured["inputs"] = json!([["host", host]]);
+    assert!(parse_update(&captured.to_string(), "physical-source").is_err());
+    captured["inputs"] = json!([{
+        "kind": "host", "record": ["host", "Captured", "2026-01-01T00:00:00Z"]
+    }]);
+    assert!(parse_update(&captured.to_string(), "physical-source").is_err());
+    captured["inputs"] = json!([]);
+    captured["before"]["owner"] = json!(["host"]);
+    assert!(parse_update(&captured.to_string(), "physical-source").is_err());
+}
+
+#[test]
 fn automatic_manual_text_is_filtered_before_domain_construction() {
     let Record::Stream(mut before) = stream() else {
         unreachable!()
@@ -115,6 +146,33 @@ fn source_fences_and_request_allowlists_fail_closed() {
     prohibited["changes"] = json!({});
     prohibited["unexpected"] = true.into();
     assert!(parse_update(&prohibited.to_string(), "physical-source").is_err());
+}
+
+#[test]
+fn host_updates_reject_even_empty_changes_after_the_source_fence() {
+    let host = Record::Host(
+        Host::new(
+            "host",
+            "Host",
+            chrono::DateTime::parse_from_rfc3339("2026-01-01T00:00:00Z").unwrap(),
+        )
+        .unwrap(),
+    );
+    for actor in [Actor::User, Actor::Automatic] {
+        let wire = request(&host, json!({}), actor).to_string();
+        assert_eq!(
+            parse_update(&wire, "physical-source")
+                .unwrap_err()
+                .to_string(),
+            "agent updates require stream or session kind",
+        );
+        assert!(
+            parse_update(&wire, "changed-source")
+                .unwrap_err()
+                .to_string()
+                .starts_with("catalog source changed since capture"),
+        );
+    }
 }
 
 #[test]

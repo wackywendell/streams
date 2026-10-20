@@ -1,5 +1,6 @@
 use std::collections::BTreeMap;
 use streams_temper::operations::Actor;
+use streams_temper::storage::StorageError;
 
 use chrono::DateTime;
 use serde_json::{Value, json};
@@ -9,8 +10,7 @@ use streams_temper::{
     sync::{
         baseline::{BASELINE, Baseline, decode_baseline, encode_baseline},
         envelope::{
-            PREFIX, check_fingerprints, decode_fingerprints, decode_operation, encode_operation,
-            operation_digest,
+            PREFIX, check_fingerprints, decode_operation, encode_operation, operation_digest,
         },
     },
     yaml_store::YamlStore,
@@ -90,6 +90,87 @@ fn captures_preserve_unicode_host_microseconds_and_origin() {
 }
 
 #[test]
+fn captured_input_order_remains_part_of_original_intent() {
+    let checked_at = DateTime::parse_from_rfc3339("2026-01-01T00:00:00Z").unwrap();
+    let inputs = ["z", "a"]
+        .map(|id| Record::Host(Host::new(id, id, checked_at).unwrap()))
+        .to_vec();
+    let operation = Operation::new(
+        "create",
+        None,
+        creation().after().clone(),
+        Actor::User,
+        None,
+        inputs.clone(),
+    )
+    .unwrap();
+    assert_eq!(operation.inputs(), inputs);
+    let encoded = encode_operation(&operation, None).unwrap();
+    assert_eq!(decode_operation(&encoded).unwrap().0, operation);
+    let mut reversed = inputs;
+    reversed.reverse();
+    let reordered = Operation::new(
+        "create",
+        None,
+        creation().after().clone(),
+        Actor::User,
+        None,
+        reversed,
+    )
+    .unwrap();
+    assert_ne!(operation, reordered);
+    assert_ne!(operation_digest(&operation), operation_digest(&reordered));
+}
+
+#[test]
+fn positional_envelopes_and_captured_records_are_rejected() {
+    let wire = data();
+    decode_operation(&message(&wire)).unwrap();
+    let positional = json!([
+        wire["version"],
+        wire["id"],
+        wire["kind"],
+        wire["before"],
+        wire["after"],
+        wire["actor"],
+        wire["ownership_token"],
+        wire["origin"],
+        []
+    ]);
+    assert!(decode_operation(&message(&positional)).is_err());
+
+    let host = json!({"id": "host", "label": "Captured", "checked_at": "2026-01-01T00:00:00Z"});
+    let mut captured = wire.clone();
+    captured["inputs"] = json!([{"kind": "host", "record": host}]);
+    decode_operation(&message(&captured)).unwrap();
+    captured["inputs"] = json!([["host", host]]);
+    assert!(decode_operation(&message(&captured)).is_err());
+    captured["inputs"] = json!([{
+        "kind": "host", "record": ["host", "Captured", "2026-01-01T00:00:00Z"]
+    }]);
+    assert!(decode_operation(&message(&captured)).is_err());
+
+    let mut nested = wire;
+    nested["after"]["owner"] = json!(["host"]);
+    assert!(decode_operation(&message(&nested)).is_err());
+    nested = data();
+    nested["before"] = nested["after"].clone();
+    nested["after"]["title"] = json!("Changed");
+    decode_operation(&message(&nested)).unwrap();
+    nested["before"]["owner"] = json!(["host"]);
+    assert!(decode_operation(&message(&nested)).is_err());
+}
+
+#[test]
+fn positional_baseline_envelopes_are_rejected() {
+    let files = BTreeMap::new();
+    let object = json!({"version": 1, "host": "host", "creations": {}, "fingerprints": {}});
+    decode_baseline(&format!("{BASELINE}{object}\n"), &files).unwrap();
+    let positional = json!([1, "host", {}, {}]);
+    assert!(decode_baseline(&format!("{BASELINE}{positional}\n"), &files).is_err());
+}
+
+#[test]
 fn duplicate_json_keys_are_rejected_at_every_depth() {
     for malformed in [
         MESSAGE.replace("\"actor\":\"user\"", "\"actor\":\"user\",\"actor\":\"user\""),
@@ -146,7 +227,6 @@ fn unknown_keys_required_nullable_fields_and_versions_are_strict() {
 fn fingerprints_validate_text_ids_and_lowercase_sha256() {
     let valid = BTreeMap::from([("create".into(), operation_digest(&creation()))]);
     check_fingerprints(&valid).unwrap();
-    assert_eq!(decode_fingerprints(&json!(valid)).unwrap(), valid);
     for malformed in [
         json!([]),
         json!({"create":1}),
@@ -155,7 +235,11 @@ fn fingerprints_validate_text_ids_and_lowercase_sha256() {
         json!({" ":"a".repeat(64)}),
         json!({"a\0b":"a".repeat(64)}),
     ] {
-        assert!(decode_fingerprints(&malformed).is_err(), "{malformed}");
+        let parsed = serde_json::from_value::<BTreeMap<String, String>>(malformed.clone());
+        assert!(
+            parsed.is_err() || check_fingerprints(&parsed.unwrap()).is_err(),
+            "{malformed}"
+        );
     }
 }
 
@@ -171,7 +255,7 @@ fn baseline_canonical_roundtrip_and_creation_evidence() {
     let dir = tempfile::tempdir().unwrap();
     let store = YamlStore::new(dir.path());
     store
-        .with_transaction(|tx| {
+        .with_transaction::<_, StorageError>(|tx| {
             let snapshot = tx.read()?;
             tx.save(operation.after(), &snapshot)?;
             Ok(())
@@ -188,7 +272,7 @@ fn baseline_canonical_roundtrip_and_creation_evidence() {
     let (decoded, catalog, authorities) = decode_baseline(&encoded, &files).unwrap();
     assert_eq!(decoded, baseline);
     assert_eq!(encode_baseline(&decoded).unwrap(), encoded);
-    assert_eq!(catalog.streams.len(), 1);
+    assert_eq!(catalog.streams().len(), 1);
     assert_eq!(authorities["work"].token, "create");
     for (field, value) in [
         ("fingerprints", json!({"create":"bad"})),

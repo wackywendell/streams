@@ -142,9 +142,12 @@ fn records(catalog: &Catalog) -> Value {
 fn outcome(result: SyncResult) -> Value {
     let domain = result.domain.as_ref().map(|domain| {
         json!({
-            "operation_id": domain.operation_id, "outcome": domain.outcome,
-            "record": domain.record.as_ref().map(record_to_data),
-            "conflicts": domain.conflicts, "reason": domain.reason,
+            "operation_id": domain.operation_id(), "outcome": domain.outcome(),
+            "record": match domain {
+                    streams_temper::operations::Reconciliation::Changes { record, .. } => Some(record_to_data(record)),
+                    _ => None,
+                },
+            "conflicts": domain.conflicts(), "reason": domain.reason(),
         })
     });
     json!({

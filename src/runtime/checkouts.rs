@@ -8,6 +8,8 @@ use std::path::{Path, PathBuf};
 use serde::{Deserialize, Serialize};
 use uuid::Uuid;
 
+use crate::codec::objects;
+
 use super::{Result, RuntimeError, digest, invalid, lock, read_json, text, write_json};
 
 /// A registered physical root. Repository URLs are exact locators, not inferred remotes.
@@ -27,24 +29,9 @@ pub struct CheckoutLocation {
 struct State {
     version: u64,
     host_id: String,
-    #[serde(deserialize_with = "checkout_objects")]
+    #[serde(deserialize_with = "objects")]
     checkouts: Vec<CheckoutLocation>,
     defaults: BTreeMap<String, String>,
-}
-
-fn checkout_objects<'de, D: serde::Deserializer<'de>>(
-    deserializer: D,
-) -> std::result::Result<Vec<CheckoutLocation>, D::Error> {
-    let records = Vec::<serde_json::Value>::deserialize(deserializer)?;
-    records
-        .into_iter()
-        .map(|record| {
-            if !record.is_object() {
-                return Err(serde::de::Error::custom("checkout must be an object"));
-            }
-            serde_json::from_value(record).map_err(serde::de::Error::custom)
-        })
-        .collect()
 }
 
 /// A discovered checkout root and the inspected directory's portable path within it.
@@ -60,20 +47,14 @@ pub type Inspector = fn(&Path) -> Result<Option<RepositoryInspection>>;
 /// Filesystem-backed host registry. Construction and reads never create state.
 #[derive(Debug, Clone)]
 pub struct CheckoutRegistry {
-    pub path: PathBuf,
+    path: PathBuf,
     host_id: String,
     inspector: Inspector,
 }
 
 /// Resolve an existing directory, using actual directory-entry spelling on macOS too.
 pub fn canonical_directory(path: &Path) -> Result<PathBuf> {
-    let expanded = if path == Path::new("~") || path.starts_with("~/") {
-        PathBuf::from(std::env::var_os("HOME").ok_or_else(|| invalid("HOME is unavailable"))?)
-            .join(path.strip_prefix("~").map_err(|e| invalid(e.to_string()))?)
-    } else {
-        path.to_path_buf()
-    };
-    let root = fs::canonicalize(expanded)?;
+    let root = fs::canonicalize(path)?;
     if !root.is_dir() {
         return Err(invalid("expected an existing directory"));
     }
@@ -155,6 +136,11 @@ impl CheckoutRegistry {
             host_id: host_id.into(),
             inspector: inspect_directory,
         })
+    }
+
+    /// Return the configured host-local registry path without reading or creating it.
+    pub fn path(&self) -> &Path {
+        &self.path
     }
 
     /// Override only read-only repository inspection; identity and containment checks remain active.
@@ -252,15 +238,7 @@ impl CheckoutRegistry {
     }
 
     fn validate(&self, checkout: &CheckoutLocation) -> Result<CheckoutLocation> {
-        let root = canonical_directory(&checkout.directory)?;
-        if root != checkout.directory
-            || physical(&fs::metadata(&root)?) != (checkout.device, checkout.inode)
-        {
-            return Err(invalid(
-                "checkout root was replaced; explicitly move the registration",
-            ));
-        }
-        self.exact_root(&root)?;
+        self.exact_root(&checkout.current_root()?)?;
         Ok(checkout.clone())
     }
 
@@ -444,10 +422,41 @@ impl CheckoutRegistry {
         }
     }
 
-    fn contained(checkout: &CheckoutLocation, relative: &str, directory: bool) -> Result<PathBuf> {
+    /// Resolve a relative working directory with strict existence and containment checks.
+    pub fn directory(&self, id: &str, relative: &str) -> Result<PathBuf> {
+        self.get(id)?.contained(relative, true)
+    }
+
+    /// Resolve the current worktree file, not a historical revision or another checkout.
+    pub fn document(
+        &self,
+        repository_url: &str,
+        path: &str,
+        selected_id: Option<&str>,
+        selected_repository_url: Option<&str>,
+    ) -> Result<(CheckoutLocation, PathBuf)> {
+        let checkout = self.resolve(repository_url, selected_id, selected_repository_url)?;
+        let target = checkout.document(path)?;
+        Ok((checkout, target))
+    }
+}
+
+impl CheckoutLocation {
+    fn current_root(&self) -> Result<PathBuf> {
+        let root = canonical_directory(&self.directory)?;
+        if root != self.directory || physical(&fs::metadata(&root)?) != (self.device, self.inode) {
+            return Err(invalid(
+                "checkout root was replaced; explicitly move the registration",
+            ));
+        }
+        Ok(root)
+    }
+
+    fn contained(&self, relative: &str, directory: bool) -> Result<PathBuf> {
         relative_path(relative, directory)?;
-        let target = fs::canonicalize(checkout.directory.join(relative))?;
-        if !target.starts_with(&checkout.directory) {
+        let root = self.current_root()?;
+        let target = fs::canonicalize(root.join(relative))?;
+        if !target.starts_with(&root) {
             return Err(invalid("path escapes checkout root"));
         }
         let metadata = fs::metadata(&target)?;
@@ -461,22 +470,11 @@ impl CheckoutRegistry {
         Ok(target)
     }
 
-    /// Resolve a relative working directory with strict existence and containment checks.
-    pub fn directory(&self, id: &str, relative: &str) -> Result<PathBuf> {
-        Self::contained(&self.get(id)?, relative, true)
-    }
-
-    /// Resolve the current worktree file, not a historical revision or another checkout.
-    pub fn document(
-        &self,
-        repository_url: &str,
-        path: &str,
-        selected_id: Option<&str>,
-        selected_repository_url: Option<&str>,
-    ) -> Result<(CheckoutLocation, PathBuf)> {
-        let checkout = self.resolve(repository_url, selected_id, selected_repository_url)?;
-        let target = Self::contained(&checkout, path, false)?;
-        Ok((checkout, target))
+    /// Resolve a current-file hint within this already-resolved checkout snapshot.
+    /// Rechecks filesystem identity and containment, without rereading the registry or VCS.
+    /// This is not native action authority; registry bindings and files can change after a read.
+    pub fn document(&self, path: &str) -> Result<PathBuf> {
+        self.contained(path, false)
     }
 }
 

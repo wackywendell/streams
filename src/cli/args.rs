@@ -236,8 +236,6 @@ pub(super) struct StreamFields {
     #[arg(long, num_args = 2, action = ArgAction::Append, value_names = ["REPOSITORY", "PATH"])]
     pub(super) remove_document: Vec<String>,
     #[arg(long, num_args = 3, action = ArgAction::Append, value_names = ["REPOSITORY", "PATH", "COMMIT"])]
-    pub(super) document_added_at: Vec<String>,
-    #[arg(long, num_args = 3, action = ArgAction::Append, value_names = ["REPOSITORY", "PATH", "COMMIT"])]
     pub(super) document_commit: Vec<String>,
     #[arg(long, num_args = 3, action = ArgAction::Append, value_names = ["REPOSITORY", "PATH", "SESSION_ID"])]
     pub(super) document_session: Vec<String>,
@@ -416,7 +414,6 @@ mod tests {
             "--add-repository",
             "--add-document",
             "--remove-document",
-            "--document-added-at",
             "--document-commit",
             "--document-session",
             "--add-issue",
@@ -441,14 +438,19 @@ mod tests {
     }
 
     #[test]
+    fn retired_document_added_at_flag_is_rejected() {
+        for command in ["create", "update"] {
+            assert!(
+                parse(&[command, "work", "--document-added-at", "repo", "doc", "sha"]).is_err()
+            );
+        }
+    }
+
+    #[test]
     fn document_provenance_flags_preserve_repeated_groups() {
         let parsed = parse(&[
             "update",
             "work",
-            "--document-added-at",
-            "repo",
-            "doc",
-            "legacy",
             "--document-commit",
             "repo",
             "doc",
@@ -466,7 +468,6 @@ mod tests {
         let Command::Update { fields, .. } = parsed.command else {
             panic!("expected update");
         };
-        assert_eq!(fields.document_added_at, ["repo", "doc", "legacy"]);
         assert_eq!(
             fields.document_commit,
             ["repo", "doc", "first", "repo", "doc", "latest"]

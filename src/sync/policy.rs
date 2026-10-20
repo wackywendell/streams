@@ -1,11 +1,13 @@
 //! Event eligibility only: no clock, file format, agent, or network dependencies.
 
 use serde::{Deserialize, Serialize};
-use strum::{AsRefStr, Display, EnumString};
+use strum::{AsRefStr, Display, EnumString, VariantNames};
+
+use super::Seconds;
 
 /// The caller's reason for syncing. Explicit, force and shutdown events bypass cooldowns.
 #[derive(
-    Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, EnumString, Display, AsRefStr,
+    Debug, Clone, Copy, PartialEq, Eq, Serialize, EnumString, VariantNames, Display, AsRefStr,
 )]
 #[serde(rename_all = "kebab-case")]
 #[strum(serialize_all = "kebab-case")]
@@ -20,54 +22,63 @@ pub enum SyncEvent {
     Force,
 }
 
-/// Publication scheduling timestamps, separate from read-refresh freshness.
-#[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
-pub struct Timing {
-    pub last_sync: Option<f64>,
-    pub last_push: Option<f64>,
-    pub retry_after: f64,
-}
+crate::codec::deserialize_string_enum!(SyncEvent);
 
-impl Default for Timing {
-    fn default() -> Self {
-        Self {
-            last_sync: None,
-            last_push: None,
-            retry_after: 0.0,
-        }
-    }
+/// Publication scheduling timestamps, separate from read-refresh freshness.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Serialize, Deserialize)]
+pub struct Timing {
+    last_sync: Option<Seconds>,
+    last_push: Option<Seconds>,
+    retry_after: Seconds,
 }
 
 impl Timing {
     pub fn new(
-        last_sync: Option<f64>,
-        last_push: Option<f64>,
-        retry_after: f64,
-    ) -> Result<Self, String> {
-        for val in [last_sync, last_push, Some(retry_after)] {
-            if let Some(v) = val
-                && !v.is_finite()
-            {
-                return Err("sync timestamps must be finite numbers".to_string());
-            }
-        }
-        Ok(Self {
+        last_sync: Option<Seconds>,
+        last_push: Option<Seconds>,
+        retry_after: Seconds,
+    ) -> Self {
+        Self {
             last_sync,
             last_push,
             retry_after,
-        })
+        }
     }
 }
 
 /// Independent read/publication intervals and bounded effect deadlines and attempts.
-/// Use `new` for configuration input so nonfinite durations and unbounded attempts are rejected.
+/// Construction and deserialization reject nonfinite durations and unbounded attempts.
 #[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
+#[serde(try_from = "PolicyData")]
 pub struct Policy {
-    pub stream_seconds: f64,
-    pub session_seconds: f64,
-    pub cooldown_seconds: f64,
-    pub timeout_seconds: f64,
-    pub attempts: usize,
+    stream_seconds: f64,
+    session_seconds: f64,
+    cooldown_seconds: f64,
+    timeout_seconds: f64,
+    attempts: usize,
+}
+
+#[derive(Deserialize)]
+struct PolicyData {
+    stream_seconds: f64,
+    session_seconds: f64,
+    cooldown_seconds: f64,
+    timeout_seconds: f64,
+    attempts: usize,
+}
+
+impl TryFrom<PolicyData> for Policy {
+    type Error = String;
+
+    fn try_from(data: PolicyData) -> Result<Self, Self::Error> {
+        Self::new(
+            data.stream_seconds,
+            data.session_seconds,
+            data.cooldown_seconds,
+            data.timeout_seconds,
+            data.attempts,
+        )
+    }
 }
 
 impl Default for Policy {
@@ -112,28 +123,44 @@ impl Policy {
         })
     }
 
+    pub fn stream_seconds(&self) -> f64 {
+        self.stream_seconds
+    }
+
+    pub fn session_seconds(&self) -> f64 {
+        self.session_seconds
+    }
+
+    pub fn cooldown_seconds(&self) -> f64 {
+        self.cooldown_seconds
+    }
+
+    pub fn timeout_seconds(&self) -> f64 {
+        self.timeout_seconds
+    }
+
+    pub fn attempts(&self) -> usize {
+        self.attempts
+    }
+
     /// Refresh on the read interval unless cooling down; forced reads bypass both.
     pub fn read_due(
         &self,
-        fetched_at: Option<f64>,
-        now: f64,
-        retry_after: f64,
+        fetched_at: Option<Seconds>,
+        now: Seconds,
+        retry_after: Seconds,
         force: bool,
-    ) -> Result<bool, String> {
-        Timing::new(fetched_at, None, retry_after)?;
-        if !now.is_finite() {
-            return Err("sync timestamp must be a finite number".to_string());
-        }
+    ) -> bool {
         if force {
-            return Ok(true);
+            return true;
         }
-        if now < retry_after {
-            return Ok(false);
+        if now.get() < retry_after.get() {
+            return false;
         }
-        Ok(match fetched_at {
+        match fetched_at {
             None => true,
-            Some(ts) => now - ts >= self.session_seconds,
-        })
+            Some(ts) => now.get() - ts.get() >= self.session_seconds,
+        }
     }
 
     /// Use the shorter interval for stream intent, even when triggered by a session event.
@@ -141,31 +168,27 @@ impl Policy {
         &self,
         event: SyncEvent,
         timing: Timing,
-        now: f64,
+        now: Seconds,
         pending_stream: bool,
-    ) -> Result<bool, String> {
-        Timing::new(timing.last_sync, timing.last_push, timing.retry_after)?;
-        if !now.is_finite() {
-            return Err("sync timestamp must be a finite number".to_string());
-        }
+    ) -> bool {
         if matches!(
             event,
             SyncEvent::Shutdown | SyncEvent::Explicit | SyncEvent::Force
         ) {
-            return Ok(true);
+            return true;
         }
-        if now < timing.retry_after {
-            return Ok(false);
+        if now.get() < timing.retry_after.get() {
+            return false;
         }
         if matches!(event, SyncEvent::Session | SyncEvent::Host) && !pending_stream {
-            return Ok(match timing.last_push {
+            return match timing.last_push {
                 None => true,
-                Some(ts) => now - ts >= self.session_seconds,
-            });
+                Some(ts) => now.get() - ts.get() >= self.session_seconds,
+            };
         }
-        Ok(match timing.last_sync {
+        match timing.last_sync {
             None => true,
-            Some(ts) => now - ts >= self.stream_seconds,
-        })
+            Some(ts) => now.get() - ts.get() >= self.stream_seconds,
+        }
     }
 }

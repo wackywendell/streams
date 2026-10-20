@@ -6,6 +6,7 @@ use std::collections::BTreeMap;
 use std::fs;
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
+use streams_temper::storage::{StorageError, Transaction};
 
 use serde_json::json;
 use streams_temper::{
@@ -20,7 +21,7 @@ use streams_temper::{
         history::read_history,
         local::LocalCatalog,
         policy::Policy,
-        state::{FileJournal, GitConfig, RepairRequired},
+        state::{GitConfig, RepairRequired, State},
     },
     yaml_store::YamlStore,
 };
@@ -153,18 +154,18 @@ fn baseline_preserves_exact_bytes_authority_and_retired_retry_fingerprints() {
     let tip = f.adopt().unwrap();
     assert_eq!(f.git.snapshot().unwrap(), before);
     let history = read_history(f.git.git(), Some(&tip)).unwrap();
-    assert_eq!(history.files["streams/work.yaml"], raw);
-    assert_eq!(history.operations.len(), 0);
+    assert_eq!(history.files()["streams/work.yaml"], raw);
+    assert_eq!(history.operations().len(), 0);
     assert!(history.has_operation(f.create.id()));
     assert!(history.has_operation(f.edit.id()));
-    assert_eq!(history.baseline.as_ref().unwrap().host, f.git.host_id());
+    assert_eq!(history.baseline().unwrap().host, f.git.host_id());
     let authority = f.git.authority("work").unwrap().unwrap();
     assert_eq!(authority.host_id, f.git.host_id());
     assert_eq!(authority.token, f.create.id());
     for operation in [&f.create, &f.edit] {
         let retry = f.git.save(operation, None).unwrap();
         assert!(retry.accepted());
-        assert_eq!(retry.domain.unwrap().outcome, DomainOutcome::NoChange);
+        assert_eq!(retry.domain.unwrap().outcome(), DomainOutcome::NoChange);
     }
     assert_eq!(f.git.snapshot().unwrap(), before);
     assert_eq!(
@@ -351,9 +352,8 @@ fn completed_retry_rejects_nonadoption_history_and_remote_configuration() {
     f.adopt().unwrap();
     let store = YamlStore::new(&f.root);
     store
-        .with_transaction(|_| {
-            f.git
-                .state()
+        .with_transaction::<_, StorageError>(|tx| {
+            State::from_journal(tx.journal())
                 .write_config(
                     &GitConfig::new(Some("remote".into()), "main", f.git.host_id()).unwrap(),
                 )
@@ -368,8 +368,8 @@ fn completed_retry_rejects_nonadoption_history_and_remote_configuration() {
     let git = git.initialize(None, "main").unwrap();
     let store = YamlStore::new(dir.path());
     store
-        .with_transaction(|_| {
-            git.state()
+        .with_transaction::<_, StorageError>(|tx| {
+            State::from_journal(tx.journal())
                 .write(
                     "cli.json",
                     json!({"host":git.host_id(),"strategy":"git"})
@@ -386,15 +386,11 @@ fn completed_retry_rejects_nonadoption_history_and_remote_configuration() {
 
 #[test]
 fn opaque_import_fence_is_not_blindly_completed_by_reopen() {
-    use streams_temper::storage::Journal;
     let f = Fixture::new();
     let store = YamlStore::new(&f.root);
     store
-        .with_transaction(|_| {
-            FileJournal {
-                root: f.root.join(".catalog-sync"),
-            }
-            .write(
+        .with_transaction::<_, StorageError>(|tx| {
+            tx.journal().write(
                 "save.json",
                 json!({"version":1,"adoption":{"baseline":"opaque"}})
                     .as_object()

@@ -15,7 +15,7 @@ use streams_temper::{
         local::LocalCatalog,
         outcomes::{LocalStatus, SharingStatus},
         policy::{Policy, SyncEvent},
-        state::{RepairRequired, State},
+        state::RepairRequired,
     },
     yaml_store::YamlStore,
 };
@@ -75,7 +75,7 @@ fn identical_retries_and_creation_authority_survive_reopening() {
         let saved = backend.snapshot().unwrap();
         let retry = backend.save(&operation, None).unwrap();
         assert!(retry.accepted());
-        assert_eq!(retry.domain.unwrap().outcome, DomainOutcome::NoChange);
+        assert_eq!(retry.domain.unwrap().outcome(), DomainOutcome::NoChange);
         assert_eq!(backend.snapshot().unwrap(), saved);
         let authority = backend.authority("work").unwrap().unwrap();
         assert_eq!(authority.host_id, "host");
@@ -118,13 +118,13 @@ fn captured_bases_and_manual_fields_are_not_refreshed_on_retry() {
                 .unwrap()
                 .domain
                 .unwrap()
-                .outcome,
+                .outcome(),
             DomainOutcome::Superseded
         );
         assert_eq!(open().snapshot().unwrap(), chosen);
         let conflicting = edit("conflicting", operation.after(), "Other", Actor::User);
         let result = backend.save(&conflicting, None).unwrap();
-        assert_eq!(result.domain.unwrap().outcome, DomainOutcome::Conflict);
+        assert_eq!(result.domain.unwrap().outcome(), DomainOutcome::Conflict);
         assert_eq!(backend.snapshot().unwrap(), chosen);
     });
 }
@@ -186,7 +186,12 @@ fn producer_partitions_and_ownership_tokens_are_enforced() {
         )
         .unwrap();
         assert_eq!(
-            backend.save(&stale, None).unwrap().domain.unwrap().outcome,
+            backend
+                .save(&stale, None)
+                .unwrap()
+                .domain
+                .unwrap()
+                .outcome(),
             DomainOutcome::Conflict
         );
         assert_eq!(backend.snapshot().unwrap(), original);
@@ -235,7 +240,7 @@ fn changed_cross_record_inputs_retire_generated_output_and_conflict_manual_inten
             )
             .unwrap();
             let result = open().save(&generated, None).unwrap();
-            assert_eq!(result.domain.unwrap().outcome, expected);
+            assert_eq!(result.domain.unwrap().outcome(), expected);
             assert_eq!(backend.snapshot().unwrap(), saved);
         }
     });
@@ -265,15 +270,15 @@ fn local_only_read_refresh_and_sync_do_not_invent_publication() {
 
 fn failed_clear_fences_reopened_store<S: Store + Clone>(store: S) {
     let mut backend = LocalCatalog::new(store.clone(), "host").unwrap();
-    backend.state = State::from_journal(store.journal()).with_hook(std::sync::Arc::new(
-        std::sync::Mutex::new(|operation: &str, name: &str| {
+    backend.set_state_hook(std::sync::Arc::new(std::sync::Mutex::new(
+        |operation: &str, name: &str| {
             if operation == "clear" && name == "save.json" {
                 Err(RepairRequired::new("injected failed clear"))
             } else {
                 Ok(())
             }
-        }),
-    ));
+        },
+    )));
     assert!(backend.save(&creation(), None).unwrap().requires_repair());
     let reopened = LocalCatalog::new(store, "host").unwrap();
     assert!(reopened.snapshot().is_err());

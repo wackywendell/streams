@@ -1,14 +1,14 @@
 //! Independent domain, local-save, and publication facts for every caller.
 
 use super::replay::ReplayConflict;
-use serde::{Deserialize, Serialize};
-use strum::{AsRefStr, Display, EnumString};
+use serde::Serialize;
+use strum::{AsRefStr, Display, EnumString, VariantNames};
 
 use crate::operations::{DomainOutcome, Reconciliation};
 
 /// What happened to local persistence, independently of domain acceptance or sharing.
 #[derive(
-    Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, EnumString, Display, AsRefStr,
+    Debug, Clone, Copy, PartialEq, Eq, Serialize, EnumString, VariantNames, Display, AsRefStr,
 )]
 #[serde(rename_all = "kebab-case")]
 #[strum(serialize_all = "kebab-case")]
@@ -21,7 +21,7 @@ pub enum LocalStatus {
 
 /// Publication evidence only; confirmed publication can coexist with local repair.
 #[derive(
-    Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, EnumString, Display, AsRefStr,
+    Debug, Clone, Copy, PartialEq, Eq, Serialize, EnumString, VariantNames, Display, AsRefStr,
 )]
 #[serde(rename_all = "kebab-case")]
 #[strum(serialize_all = "kebab-case")]
@@ -34,8 +34,10 @@ pub enum SharingStatus {
     Uncertain,
 }
 
+crate::codec::deserialize_string_enum!(LocalStatus, SharingStatus);
+
 /// Orthogonal outcome dimensions; never infer acceptance or rollback from sharing alone.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 pub struct Result {
     pub sharing: SharingStatus,
     pub local: LocalStatus,
@@ -88,7 +90,10 @@ impl Result {
     pub fn accepted(&self) -> bool {
         !self.requires_repair()
             && self.domain.as_ref().is_some_and(|d| {
-                matches!(d.outcome, DomainOutcome::Changes | DomainOutcome::NoChange)
+                matches!(
+                    d.outcome(),
+                    DomainOutcome::Changes | DomainOutcome::NoChange
+                )
             })
     }
 

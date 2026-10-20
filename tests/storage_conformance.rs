@@ -4,7 +4,7 @@ mod memory;
 use serde_json::json;
 use streams_temper::{
     model::{Record, Session, Stream},
-    storage::{Journal, StorageError, Store, Transaction},
+    storage::{StorageError, Store, Transaction},
     sync::state::State,
     yaml_store::YamlStore,
 };
@@ -86,9 +86,9 @@ fn storage_laws(store: &impl Store) {
     assert_eq!(store.with_transaction(|tx| tx.read()).unwrap(), restored);
 
     // An error from the closure is not a rollback of completed durable effects.
-    let journal = store.journal();
     let saved = stream("committed", "Committed");
-    let error = store.with_transaction::<()>(|tx| {
+    let error = store.with_transaction::<(), StorageError>(|tx| {
+        let journal = tx.journal();
         tx.save(&saved, &restored)?;
         journal.write(
             "probe.json",
@@ -101,12 +101,10 @@ fn storage_laws(store: &impl Store) {
     });
     assert!(error.is_err());
     store
-        .with_transaction(|tx| {
+        .with_transaction::<_, StorageError>(|tx| {
+            let journal = tx.journal();
             assert_eq!(tx.read()?.catalog.get(&saved.key()), Some(saved));
-            assert_eq!(
-                store.journal().read("probe.json")?.unwrap()["value"],
-                "kept"
-            );
+            assert_eq!(journal.read("probe.json")?.unwrap()["value"], "kept");
             assert!(journal.names()?.contains(&"probe.json".to_owned()));
             journal.clear("probe.json")?;
             journal.clear("probe.json")?;
@@ -118,8 +116,9 @@ fn storage_laws(store: &impl Store) {
 
     // The adapter persists objects; version policy belongs to State, not Journal.
     store
-        .with_transaction(|_| {
-            let state = State::from_journal(store.journal());
+        .with_transaction::<_, StorageError>(|tx| {
+            let journal = tx.journal();
+            let state = State::from_journal(journal);
             journal.write(
                 "probe.json",
                 json!({"version": 2}).as_object().unwrap().clone(),
@@ -143,6 +142,72 @@ fn storage_laws(store: &impl Store) {
 }
 
 #[test]
+fn yaml_typed_envelope_rejects_malformed_fields_and_array_structs() {
+    let record = stream("work", "Work");
+    let envelope = json!({
+        "version": 1,
+        "revision": "revision",
+        "kind": "stream",
+        "record": streams_temper::codec::record_to_data(&record),
+    });
+    let path = "streams/work.yaml";
+    let decode = |value: &serde_json::Value| {
+        YamlStore::decode_record(path, &serde_json::to_vec(value).unwrap())
+    };
+    assert_eq!(decode(&envelope).unwrap(), record);
+    assert!(decode(&json!([1, "revision", "stream", envelope["record"]])).is_err());
+    for field in ["version", "revision", "kind", "record"] {
+        let mut missing = envelope.clone();
+        missing.as_object_mut().unwrap().remove(field);
+        assert!(decode(&missing).is_err(), "missing {field}");
+        let mut null = envelope.clone();
+        null[field] = serde_json::Value::Null;
+        assert!(decode(&null).is_err(), "null {field}");
+        let mut array = envelope.clone();
+        array[field] = json!([]);
+        assert!(decode(&array).is_err(), "array {field}");
+    }
+    for (field, value) in [
+        ("version", json!(true)),
+        ("version", json!(1.0)),
+        ("version", json!(2)),
+        ("revision", json!("")),
+        ("revision", json!("  ")),
+        ("revision", json!("bad\0revision")),
+        ("kind", json!("unknown")),
+        ("record", json!("not an object")),
+        ("extra", json!(null)),
+    ] {
+        let mut invalid = envelope.clone();
+        invalid[field] = value;
+        assert!(decode(&invalid).is_err(), "{field}: {invalid}");
+    }
+    let array_record = json!({
+        "version": 1,
+        "revision": "revision",
+        "kind": "host",
+        "record": ["host", "Host", "2026-01-01T00:00:00+00:00"],
+    });
+    assert!(
+        YamlStore::decode_record(
+            "hosts/host.yaml",
+            &serde_json::to_vec(&array_record).unwrap()
+        )
+        .is_err()
+    );
+    let mut unknown_record_field = envelope.clone();
+    unknown_record_field["record"]["extra"] = json!(true);
+    assert!(decode(&unknown_record_field).is_err());
+    assert!(
+        YamlStore::decode_record(
+            "streams/elsewhere.yaml",
+            &serde_json::to_vec(&envelope).unwrap()
+        )
+        .is_err()
+    );
+}
+
+#[test]
 fn yaml_storage_conforms() {
     let dir = tempfile::tempdir().unwrap();
     storage_laws(&YamlStore::new(dir.path()));
@@ -154,31 +219,106 @@ fn memory_storage_conforms() {
 }
 
 #[test]
-fn memory_adapter_detects_access_outside_the_owning_transaction() {
-    let store = memory::MemoryStore::default();
-    let journal = store.journal();
-    assert!(journal.read("probe.json").is_err());
-    assert!(journal.write("probe.json", Default::default()).is_err());
-    assert!(journal.clear("probe.json").is_err());
-    assert!(journal.names().is_err());
-    assert!(store.check_local().is_err());
+fn transactions_preserve_caller_errors_and_converted_storage_error_kinds() {
+    #[derive(Debug, PartialEq, Eq)]
+    enum CallerError {
+        Closure,
+        Storage(StorageError),
+    }
+    impl From<StorageError> for CallerError {
+        fn from(error: StorageError) -> Self {
+            Self::Storage(error)
+        }
+    }
+
+    let dir = tempfile::tempdir().unwrap();
+    let store = YamlStore::new(dir.path());
+    let error = store
+        .with_transaction::<(), CallerError>(|_| Err(CallerError::Closure))
+        .unwrap_err();
+    assert_eq!(error, CallerError::Closure);
+    let error = memory::MemoryStore::default()
+        .with_transaction::<(), CallerError>(|_| Err(CallerError::Closure))
+        .unwrap_err();
+    assert_eq!(error, CallerError::Closure);
+
+    let empty = store.with_transaction(|tx| tx.read()).unwrap();
+    let record = stream("work", "Work");
     store
-        .with_transaction(|_| {
-            store.check_local()?;
-            let foreign = journal.clone();
-            assert!(
-                std::thread::spawn(move || foreign.names())
-                    .join()
-                    .unwrap()
-                    .is_err()
-            );
+        .with_transaction(|tx| tx.save(&record, &empty))
+        .unwrap();
+    let expected = store
+        .with_transaction(|tx| tx.save(&record, &empty))
+        .unwrap_err();
+    assert!(expected.is_revision_conflict());
+    let error = store
+        .with_transaction(|tx| -> Result<_, CallerError> { Ok(tx.save(&record, &empty)?) })
+        .unwrap_err();
+    assert_eq!(error, CallerError::Storage(expected));
+
+    let blocked = tempfile::tempdir().unwrap();
+    std::fs::create_dir(blocked.path().join(".catalog.lock")).unwrap();
+    let error = YamlStore::new(blocked.path())
+        .with_transaction::<(), CallerError>(|_| panic!("invalid lock admitted transaction"))
+        .unwrap_err();
+    let CallerError::Storage(error) = error else {
+        panic!("expected converted adapter error");
+    };
+    assert_eq!(
+        error.kind(),
+        streams_temper::storage::StorageErrorKind::Definite
+    );
+}
+
+#[test]
+fn memory_transactions_serialize_and_release_scope_on_unwind() {
+    let store = memory::MemoryStore::default();
+
+    let unwind = std::panic::catch_unwind(|| {
+        let _ = store.with_transaction::<(), StorageError>(|tx| {
+            tx.journal().write("probe.json", Default::default())?;
+            panic!("unwind transaction");
+        });
+    });
+    assert!(unwind.is_err());
+    store
+        .with_transaction::<_, StorageError>(|tx| {
+            tx.check_local()?;
+            assert!(tx.journal().read("probe.json")?.is_some());
             Ok(())
         })
         .unwrap();
-    let unwind = std::panic::catch_unwind(|| {
-        let _ = store.with_transaction::<()>(|_| panic!("unwind transaction"));
+
+    let other = store.clone();
+    let (starting, started) = std::sync::mpsc::channel();
+    let (finished, completed) = std::sync::mpsc::channel();
+    std::thread::scope(|scope| {
+        let worker = store
+            .with_transaction::<_, StorageError>(|tx| {
+                let worker = scope.spawn(move || {
+                    starting.send(()).unwrap();
+                    other
+                        .with_transaction::<_, StorageError>(|tx| {
+                            tx.check_local()?;
+                            tx.journal().clear("probe.json")?;
+                            finished.send(()).unwrap();
+                            Ok(())
+                        })
+                        .unwrap();
+                });
+                started.recv().unwrap();
+                assert!(completed.try_recv().is_err());
+                assert!(tx.journal().read("probe.json")?.is_some());
+                Ok(worker)
+            })
+            .unwrap();
+        worker.join().unwrap();
+        completed.recv().unwrap();
     });
-    assert!(unwind.is_err());
-    assert!(journal.names().is_err());
-    store.with_transaction(|_| store.check_local()).unwrap();
+    store
+        .with_transaction::<_, StorageError>(|tx| {
+            assert!(tx.journal().read("probe.json")?.is_none());
+            Ok(())
+        })
+        .unwrap();
 }

@@ -8,6 +8,8 @@ use std::path::{Path, PathBuf};
 
 use serde::{Deserialize, Deserializer, Serialize};
 
+use crate::codec::object;
+
 use super::{Result, RuntimeError, decode, invalid, text};
 
 const LIMIT: usize = 65536;
@@ -111,17 +113,8 @@ struct PiHeader {
 #[derive(Deserialize)]
 struct CodexHeader {
     r#type: String,
-    #[serde(deserialize_with = "codex_payload")]
+    #[serde(deserialize_with = "object")]
     payload: CodexPayload,
-}
-fn codex_payload<'de, D: Deserializer<'de>>(
-    deserializer: D,
-) -> std::result::Result<CodexPayload, D::Error> {
-    let value = serde_json::Value::deserialize(deserializer)?;
-    if !value.is_object() {
-        return Err(serde::de::Error::custom("Codex payload must be an object"));
-    }
-    serde_json::from_value(value).map_err(serde::de::Error::custom)
 }
 #[derive(Deserialize)]
 struct CodexPayload {

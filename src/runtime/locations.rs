@@ -2,7 +2,9 @@
 
 use std::path::{Path, PathBuf};
 
-use serde::{Deserialize, Deserializer, Serialize};
+use serde::{Deserialize, Serialize};
+
+use crate::codec::{object, required_nullable};
 
 use super::checkouts::{CheckoutRegistry, canonical_directory, relative_path};
 use super::{Result, digest, invalid, lock, read_json, text, write_json};
@@ -22,12 +24,6 @@ pub struct BoundCheckout {
     pub repository_url: Option<String>,
 }
 
-fn required_nullable<'de, D: Deserializer<'de>>(
-    deserializer: D,
-) -> std::result::Result<Option<String>, D::Error> {
-    Option::deserialize(deserializer)
-}
-
 #[derive(Clone, Serialize, Deserialize)]
 #[serde(tag = "kind", rename_all = "lowercase", deny_unknown_fields)]
 enum Location {
@@ -42,16 +38,6 @@ enum Location {
     },
 }
 
-#[derive(Serialize, Deserialize)]
-#[serde(deny_unknown_fields)]
-struct Legacy {
-    version: u64,
-    stream_id: String,
-    #[serde(deserialize_with = "required_nullable")]
-    session_id: Option<String>,
-    cwd: PathBuf,
-}
-
 #[derive(Clone, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 struct Current {
@@ -59,14 +45,8 @@ struct Current {
     stream_id: String,
     #[serde(deserialize_with = "required_nullable")]
     session_id: Option<String>,
+    #[serde(deserialize_with = "object")]
     location: Location,
-}
-
-#[derive(Deserialize)]
-#[serde(untagged)]
-enum Selection {
-    Legacy(Legacy),
-    Current(Current),
 }
 
 /// Saved cwd intent scoped by the exact `(stream_id, session_id)` pair.
@@ -85,7 +65,7 @@ impl DirectoryBindings {
         }
     }
 
-    /// Return the legacy-compatible hashed location, without creating a directory.
+    /// Return the current hashed binding path, without creating a directory.
     pub fn path(&self, stream_id: &str, session_id: Option<&str>) -> PathBuf {
         let key = format!(
             "[{}, {}]",
@@ -99,87 +79,55 @@ impl DirectoryBindings {
             .join(format!("{}.json", digest(key.as_bytes())))
     }
 
-    fn selection(&self, stream_id: &str, session_id: Option<&str>) -> Result<Option<Selection>> {
+    fn selection(&self, stream_id: &str, session_id: Option<&str>) -> Result<Option<Current>> {
         text(stream_id)?;
         if let Some(id) = session_id {
             text(id)?;
         }
-        let Some(selection) = read_json::<Selection>(&self.path(stream_id, session_id))? else {
+        let Some(selection) = read_json::<Current>(&self.path(stream_id, session_id))? else {
             return Ok(None);
         };
-        let (saved_stream, saved_session) = match &selection {
-            Selection::Legacy(data) => {
-                if data.version != 1 {
-                    return Err(invalid("unsupported directory binding version"));
+        if selection.version != 2 {
+            return Err(invalid("unsupported directory binding version"));
+        }
+        match &selection.location {
+            Location::Directory { cwd } => absolute(cwd)?,
+            Location::Checkout {
+                id,
+                within,
+                repository_url,
+            } => {
+                text(id)?;
+                relative_path(within, true)?;
+                if let Some(url) = repository_url {
+                    text(url)?;
                 }
-                absolute(&data.cwd)?;
-                (&data.stream_id, &data.session_id)
             }
-            Selection::Current(data) => {
-                if data.version != 2 {
-                    return Err(invalid("unsupported directory binding version"));
-                }
-                match &data.location {
-                    Location::Directory { cwd } => absolute(cwd)?,
-                    Location::Checkout {
-                        id,
-                        within,
-                        repository_url,
-                    } => {
-                        text(id)?;
-                        relative_path(within, true)?;
-                        if let Some(url) = repository_url {
-                            text(url)?;
-                        }
-                    }
-                }
-                (&data.stream_id, &data.session_id)
-            }
-        };
-        if saved_stream != stream_id || saved_session.as_deref() != session_id {
+        }
+        if selection.stream_id != stream_id || selection.session_id.as_deref() != session_id {
             return Err(invalid("directory binding identity mismatch"));
         }
         Ok(Some(selection))
     }
 
-    fn resolve(&self, selection: Selection) -> Result<DirectoryBinding> {
-        match selection {
-            Selection::Legacy(data) => {
-                let directory = canonical_directory(&data.cwd)?;
-                let found = self.checkouts.inspect(&directory)?;
-                let registered = match &found {
-                    Some(found) => self.checkouts.find(&found.root)?,
-                    None => None,
-                };
-                Ok(DirectoryBinding {
-                    cwd: directory,
-                    checkout: registered.map(|item| BoundCheckout {
-                        id: item.id,
-                        relative_cwd: found
-                            .expect("registered checkout was inspected")
-                            .relative_cwd,
-                        repository_url: None,
-                    }),
-                })
-            }
-            Selection::Current(data) => match data.location {
-                Location::Directory { cwd } => Ok(DirectoryBinding {
-                    cwd: canonical_directory(&cwd)?,
-                    checkout: None,
-                }),
-                Location::Checkout {
+    fn resolve(&self, selection: Current) -> Result<DirectoryBinding> {
+        match selection.location {
+            Location::Directory { cwd } => Ok(DirectoryBinding {
+                cwd: canonical_directory(&cwd)?,
+                checkout: None,
+            }),
+            Location::Checkout {
+                id,
+                within,
+                repository_url,
+            } => Ok(DirectoryBinding {
+                cwd: self.checkouts.directory(&id, &within)?,
+                checkout: Some(BoundCheckout {
                     id,
-                    within,
+                    relative_cwd: within,
                     repository_url,
-                } => Ok(DirectoryBinding {
-                    cwd: self.checkouts.directory(&id, &within)?,
-                    checkout: Some(BoundCheckout {
-                        id,
-                        relative_cwd: within,
-                        repository_url,
-                    }),
                 }),
-            },
+            }),
         }
     }
 
@@ -264,7 +212,7 @@ impl DirectoryBindings {
             location,
         };
         // Validate the selection before writing, retaining uncertainty only for the durable write itself.
-        let binding = self.resolve(Selection::Current(current.clone()))?;
+        let binding = self.resolve(current.clone())?;
         write_json(&path, &current)?;
         Ok(binding)
     }

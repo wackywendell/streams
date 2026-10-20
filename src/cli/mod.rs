@@ -307,7 +307,7 @@ impl App {
             .reference
             .as_deref()
             .ok_or_else(|| CliError::InvalidRef("supply a reference or --current".into()))?;
-        resolve(&catalog.streams, reference, |s| (&s.id, &s.title, None))
+        resolve(catalog.streams(), reference, |s| (&s.id, &s.title, None))
     }
     fn execute(&self, command: Command) -> Result<Output> {
         match command {
@@ -327,7 +327,7 @@ impl App {
                         .head()
                         .map_err(|error| CliError::message(error.to_string()))?;
                     let history = streams_temper::sync::history::read_history(&git, Some(&tip))?;
-                    value["baseline_revision"] = json!(history.root);
+                    value["baseline_revision"] = json!(history.root());
                 }
                 Ok(Output::value(value))
             }
@@ -353,7 +353,7 @@ impl App {
                 let (catalog, sharing) = read_catalog(opened.backend(), refresh)?;
                 let query = query.as_deref().map(fold);
                 let mut streams: Vec<_> = catalog
-                    .streams
+                    .streams()
                     .iter()
                     .filter(|stream| {
                         (all || stream.archived == archived)
@@ -399,7 +399,7 @@ impl App {
                 let (catalog, sharing) = read_catalog(opened.backend(), refresh)?;
                 let stream = self.target(&catalog, &target)?;
                 let sessions: Vec<_> = catalog
-                    .sessions
+                    .sessions()
                     .iter()
                     .filter(|s| s.stream_id == stream.id)
                     .collect();
@@ -418,16 +418,7 @@ impl App {
                 stream.title_mode = NamingMode::Manual;
                 let changes = fields::stream(&stream, &fields, &mut |path| self.read_text(path))?;
                 let base = Record::Stream(stream);
-                let desired = operations::update(
-                    Uuid::new_v4().to_string(),
-                    &base,
-                    &changes,
-                    Actor::User,
-                    None,
-                    vec![],
-                )?
-                .after()
-                .clone();
+                let desired = operations::apply_changes(&base, &changes, Actor::User)?;
                 let operation = Operation::new(
                     Uuid::new_v4().to_string(),
                     None,
@@ -443,18 +434,13 @@ impl App {
                 } else {
                     None
                 };
-                let incomplete = extra.is_some();
-                let mut output = finish(
+                finish(
                     opened.backend(),
                     &operation,
                     saved,
                     SyncEvent::Stream,
                     extra,
-                )?;
-                if incomplete {
-                    output.code = 2;
-                }
-                Ok(output)
+                )
             }
             Command::Update {
                 target,
@@ -493,11 +479,11 @@ impl App {
                 let stream = reference
                     .as_deref()
                     .map(|reference| {
-                        resolve(&catalog.streams, reference, |s| (&s.id, &s.title, None))
+                        resolve(catalog.streams(), reference, |s| (&s.id, &s.title, None))
                     })
                     .transpose()?;
                 Ok(Output::value(
-                    json!({"valid":true,"streams":if stream.is_some(){1}else{catalog.streams.len()},"sessions":catalog.sessions.iter().filter(|session|stream.is_none_or(|stream|session.stream_id==stream.id)).count()}),
+                    json!({"valid":true,"streams":if stream.is_some(){1}else{catalog.streams().len()},"sessions":catalog.sessions().iter().filter(|session|stream.is_none_or(|stream|session.stream_id==stream.id)).count()}),
                 ))
             }
             Command::Sync { event } => {
@@ -604,18 +590,18 @@ impl App {
                 let stream = stream
                     .as_deref()
                     .map(|reference| {
-                        resolve(&catalog.streams, reference, |s| (&s.id, &s.title, None))
+                        resolve(catalog.streams(), reference, |s| (&s.id, &s.title, None))
                     })
                     .transpose()?;
                 let sessions: Vec<_> = catalog
-                    .sessions
+                    .sessions()
                     .iter()
                     .filter(|session| stream.is_none_or(|stream| session.stream_id == stream.id))
                     .collect();
                 Ok(Output::value(json!({"sessions":sessions})))
             }
             SessionCommand::Show { reference } => Ok(Output::value(
-                json!({"session":resolve(&catalog.sessions,&reference,|s|(&s.id,&s.title,Some(&s.host_id)))?}),
+                json!({"session":resolve(catalog.sessions(),&reference,|s|(&s.id,&s.title,Some(&s.host_id)))?}),
             )),
             SessionCommand::Attach {
                 target,
@@ -694,7 +680,7 @@ impl App {
                 title,
                 fields,
             } => {
-                let before = resolve(&catalog.sessions, &reference, |s| {
+                let before = resolve(catalog.sessions(), &reference, |s| {
                     (&s.id, &s.title, Some(&s.host_id))
                 })?;
                 let mut changes =
@@ -732,7 +718,7 @@ impl App {
                 within,
                 repository,
             } => {
-                let session = resolve(&catalog.sessions, &reference, |s| {
+                let session = resolve(catalog.sessions(), &reference, |s| {
                     (&s.id, &s.title, Some(&s.host_id))
                 })?;
                 if session.host_id != opened.host().as_str() {
@@ -954,7 +940,7 @@ fn resolve<'a, T>(
     }
 }
 fn catalog_data(catalog: &Catalog) -> Value {
-    json!({"streams":catalog.streams,"sessions":catalog.sessions})
+    json!({"streams":catalog.streams(),"sessions":catalog.sessions()})
 }
 fn read_catalog(backend: &dyn CatalogBackend, refresh: bool) -> Result<(Catalog, Value)> {
     let ReadResult {
@@ -997,7 +983,10 @@ fn finish(
     let record = saved
         .domain
         .as_ref()
-        .and_then(|domain| domain.record.as_ref())
+        .and_then(|domain| match domain {
+            operations::Reconciliation::Changes { record, .. } => Some(record.as_ref()),
+            _ => None,
+        })
         .unwrap_or_else(|| operation.after());
     let key = record.kind().to_string();
     let mut payload = json!({"operation_id":operation.id(),"save":result_data(&saved)?,key.clone():record_to_data(record)});
@@ -1026,13 +1015,14 @@ fn finish(
             ok = false;
         }
     }
+    let completed = extra.is_none();
     if let Some(Value::Object(extra)) = extra {
         payload
             .as_object_mut()
             .expect("receipt object")
             .extend(extra);
     }
-    Ok(Output::receipt(payload, ok))
+    Ok(Output::receipt(payload, ok && completed))
 }
 fn binding_data(binding: &runtime::DirectoryBinding) -> Value {
     json!({"cwd":binding.cwd,"checkout_id":binding.checkout.as_ref().map(|c|&c.id),"relative_cwd":binding.checkout.as_ref().map(|c|&c.relative_cwd),"repository_url":binding.checkout.as_ref().and_then(|c|c.repository_url.as_ref())})

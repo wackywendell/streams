@@ -94,11 +94,14 @@ pub(super) fn stream(
         &input.remove_pr,
     )?;
 
-    for (field, updates) in [
-        ("added_at", &input.document_added_at),
-        ("commit", &input.document_commit),
-        ("source_session_id", &input.document_session),
-    ] {
+    type ProvenanceField = fn(&mut Document) -> &mut Option<String>;
+    let provenance: [(&[String], ProvenanceField); 2] = [
+        (&input.document_commit, |document| &mut document.commit),
+        (&input.document_session, |document| {
+            &mut document.source_session_id
+        }),
+    ];
+    for (updates, field) in provenance {
         for arguments in updates.chunks_exact(3) {
             let repository = &arguments[0];
             let path = &arguments[1];
@@ -110,19 +113,13 @@ pub(super) fn stream(
                         "no document matches repository/path: {repository}:{path}"
                     ))
                 })?;
-            let value = Some(arguments[2].clone());
-            match field {
-                "added_at" => item.added_at = value,
-                "commit" => item.commit = value,
-                _ => item.source_session_id = value,
-            }
+            *field(item) = Some(arguments[2].clone());
             item.validate()?;
         }
     }
     if [
         &input.add_document,
         &input.remove_document,
-        &input.document_added_at,
         &input.document_commit,
         &input.document_session,
     ]
@@ -413,7 +410,6 @@ mod tests {
         input.add_document = strings(&[
             "repo", "branch", "doc.md", "new", "repo", "branch", "doc.md", "new",
         ]);
-        input.document_added_at = strings(&["repo", "doc.md", "first", "repo", "doc.md", "last"]);
         input.document_commit = strings(&[
             "repo",
             "doc.md",
@@ -433,15 +429,15 @@ mod tests {
         let changes = stream(&current, &input, &mut no_read).unwrap();
         assert_eq!(
             changes["documents"],
-            json!([{"repository": "repo", "ref": "branch", "path": "doc.md", "description": "new", "added_at": "last", "commit": "latest-sha", "source_session_id": "source-session"}])
+            json!([{"repository": "repo", "ref": "branch", "path": "doc.md", "description": "new", "commit": "latest-sha", "source_session_id": "source-session"}])
         );
-        assert_eq!(current.documents[0].added_at.as_deref(), Some("commit"));
+        assert_eq!(current.documents[0].commit.as_deref(), Some("commit"));
     }
 
     #[test]
     fn provenance_requires_known_document_and_valid_commit() {
         let mut input = StreamFields {
-            document_added_at: strings(&["repo", "missing", "commit"]),
+            document_commit: strings(&["repo", "missing", "commit"]),
             ..Default::default()
         };
         let error = stream(&current_stream(), &input, &mut no_read).unwrap_err();
@@ -451,7 +447,7 @@ mod tests {
                 .contains("no document matches repository/path: repo:missing")
         );
         input.add_document = strings(&["repo", "main", "missing", ""]);
-        input.document_added_at[2] = "".into();
+        input.document_commit[2] = "".into();
         assert!(stream(&current_stream(), &input, &mut no_read).is_err());
     }
 
@@ -497,9 +493,14 @@ mod tests {
     #[test]
     fn unchanged_provenance_survives_other_document_changes() {
         let mut current = current_stream();
-        let mut original =
-            Document::new("repo", "main", "original", "keep", Some("commit".into())).unwrap();
-        original.commit = Some("latest-sha".into());
+        let mut original = Document::new(
+            "repo",
+            "main",
+            "original",
+            "keep",
+            Some("latest-sha".into()),
+        )
+        .unwrap();
         original.source_session_id = Some("source-session".into());
         current.documents.push(original.clone());
         let input = StreamFields {

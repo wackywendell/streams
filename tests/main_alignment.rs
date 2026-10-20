@@ -1,9 +1,10 @@
 use serde_json::json;
+use streams_temper::storage::StorageError;
 use streams_temper::{
     agent::session_id_for,
     codec::record_to_data,
     model::{Catalog, Record, Session, Stream},
-    operations::{Actor, Authority, DomainOutcome, reconcile, update},
+    operations::{Actor, Authority, DomainOutcome, Reconciliation, reconcile, update},
     runtime::conversations::Harness,
     yaml_store::{YamlStore, relative_record_path},
 };
@@ -39,8 +40,11 @@ fn generated_stream_text_merges_unrelated_changes_but_fences_description_inputs(
         let current = edit(&before, unrelated, Actor::User).after().clone();
         let catalog = Catalog::default().replacing(current.clone()).unwrap();
         let result = reconcile(&catalog, &operation, Some(&authority));
-        assert_eq!(result.outcome, DomainOutcome::Changes);
-        let merged = record_to_data(&result.record.unwrap());
+        assert_eq!(result.outcome(), DomainOutcome::Changes);
+        let Reconciliation::Changes { record, .. } = result else {
+            panic!("expected changes");
+        };
+        let merged = record_to_data(&record);
         assert_eq!(merged["goal"], "Generated goal");
         for field in ["status", "archived", "issues"] {
             assert_eq!(merged[field], record_to_data(&current)[field]);
@@ -55,7 +59,7 @@ fn generated_stream_text_merges_unrelated_changes_but_fences_description_inputs(
         let current = edit(&before, description, Actor::User).after().clone();
         let catalog = Catalog::default().replacing(current).unwrap();
         assert_eq!(
-            reconcile(&catalog, &operation, Some(&authority)).outcome,
+            reconcile(&catalog, &operation, Some(&authority)).outcome(),
             DomainOutcome::Superseded
         );
     }
@@ -81,7 +85,7 @@ fn generated_session_text_still_fences_the_whole_captured_target() {
         .unwrap();
     let authority = Authority::new("host", "creation").unwrap();
     assert_eq!(
-        reconcile(&catalog, &operation, Some(&authority)).outcome,
+        reconcile(&catalog, &operation, Some(&authority)).outcome(),
         DomainOutcome::Superseded
     );
 }
@@ -107,7 +111,7 @@ fn sessions_are_physically_stream_partitioned_without_changing_logical_identity(
         Session::new("native/😀", "host/A", "work/Ω", "pi", "native", "Session").unwrap(),
     );
     store
-        .with_transaction(|tx| {
+        .with_transaction::<_, StorageError>(|tx| {
             tx.save(&stream, &tx.read()?)?;
             tx.save(&session, &tx.read()?)?;
             assert_eq!(

@@ -1,19 +1,19 @@
 //! Domain-owned intent and pure reconciliation, independent of persistence.
 
-use std::collections::BTreeSet;
+use std::collections::{BTreeMap, BTreeSet};
 
 use serde::{Deserialize, Serialize};
 use serde_json::{Map, Value};
-use strum::{AsRefStr, Display, EnumString};
+use strum::{AsRefStr, Display, EnumString, VariantNames};
 
 use crate::codec::{record_from_data, record_to_data};
 use crate::model::{
-    Catalog, Host, NamingMode, Record, RecordKey, Status, ValidationError, check_text,
+    Catalog, NamingMode, Record, RecordKey, RecordKind, Status, ValidationError, check_text,
 };
 
 /// Who supplied the intent. Automatic writes cannot change lifecycle or manual naming modes.
 #[derive(
-    Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, EnumString, Display, AsRefStr,
+    Debug, Clone, Copy, PartialEq, Eq, Serialize, EnumString, VariantNames, Display, AsRefStr,
 )]
 #[serde(rename_all = "kebab-case")]
 #[strum(serialize_all = "kebab-case")]
@@ -24,7 +24,7 @@ pub enum Actor {
 
 /// Domain acceptance only; it says nothing about persistence or publication.
 #[derive(
-    Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, EnumString, Display, AsRefStr,
+    Debug, Clone, Copy, PartialEq, Eq, Serialize, EnumString, VariantNames, Display, AsRefStr,
 )]
 #[serde(rename_all = "kebab-case")]
 #[strum(serialize_all = "kebab-case")]
@@ -34,6 +34,8 @@ pub enum DomainOutcome {
     Superseded,
     Conflict,
 }
+
+crate::codec::deserialize_string_enum!(Actor, DomainOutcome);
 
 /// Effective ownership supplied from durable coordinator evidence, never from pending edits.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -114,17 +116,26 @@ pub fn normalize_changes(
             Record::Host(_) => {}
         }
     }
-    let before_obj = record_to_data(before);
-    if let Record::Stream(_) = before
+    if let Record::Stream(stream) = before
         && let Some(new_goal) = out.get("goal")
-        && before_obj.get("goal") != Some(new_goal)
+        && match (new_goal, stream.goal.as_deref()) {
+            (Value::Null, None) => false,
+            (Value::String(goal), Some(before)) => goal != before,
+            _ => true,
+        }
     {
         out.entry("goal_short".to_string()).or_insert(Value::Null);
     }
-    if let Record::Session(_) = before {
-        let state_changed = ["state", "remaining", "status"].iter().any(|field| {
+    if let Record::Session(session) = before {
+        let state_changed = [
+            ("state", session.state.as_str()),
+            ("remaining", session.remaining.as_str()),
+            ("status", session.status.as_ref()),
+        ]
+        .iter()
+        .any(|(field, current)| {
             out.get(*field)
-                .is_some_and(|val| before_obj.get(*field) != Some(val))
+                .is_some_and(|value| value.as_str() != Some(*current))
         });
         if state_changed {
             out.entry("state_short".to_string()).or_insert(Value::Null);
@@ -139,12 +150,12 @@ pub fn normalize_changes(
 /// cannot bypass these checks; replay must not refresh the captured base or inputs.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 pub struct Operation {
-    pub(crate) id: String,
-    pub(crate) before: Option<Record>,
-    pub(crate) after: Record,
-    pub(crate) actor: Actor,
-    pub(crate) ownership_token: Option<String>,
-    pub(crate) inputs: Vec<Record>,
+    id: String,
+    before: Option<Record>,
+    after: Record,
+    actor: Actor,
+    ownership_token: Option<String>,
+    inputs: Vec<Record>,
 }
 
 impl Operation {
@@ -165,6 +176,61 @@ impl Operation {
     }
     pub fn inputs(&self) -> &[Record] {
         &self.inputs
+    }
+
+    /// Enforce host ownership of producer records before accepting or replaying intent.
+    pub fn check_producer(&self, host_id: &str) -> Result<(), ValidationError> {
+        match &self.after {
+            Record::Session(s) => {
+                if s.host_id != host_id {
+                    return Err(ValidationError::new(
+                        "cannot write another host's producer-owned record",
+                    ));
+                }
+            }
+            Record::Host(h) => {
+                if h.id != host_id {
+                    return Err(ValidationError::new(
+                        "cannot write another host's producer-owned record",
+                    ));
+                }
+            }
+            Record::Stream(s) => {
+                if (self.before.is_none() || self.actor == Actor::Automatic)
+                    && s.owner_host_id != host_id
+                {
+                    return Err(ValidationError::new(
+                        "stream creation and inference require the owning host",
+                    ));
+                }
+            }
+        }
+        Ok(())
+    }
+
+    /// Select known stream authority; an operation's proposed values never create authority.
+    pub fn authority_for<'a>(
+        &self,
+        authorities: &'a BTreeMap<String, Authority>,
+    ) -> Option<&'a Authority> {
+        match &self.after {
+            Record::Session(s) => authorities.get(&s.stream_id),
+            Record::Stream(s) => authorities.get(&s.id),
+            Record::Host(_) => None,
+        }
+    }
+
+    pub fn created_authority(&self) -> Option<(String, Authority)> {
+        match (&self.before, &self.after) {
+            (None, Record::Stream(stream)) => Some((
+                stream.id.clone(),
+                Authority {
+                    host_id: stream.owner_host_id.clone(),
+                    token: self.id.clone(),
+                },
+            )),
+            _ => None,
+        }
     }
 
     /// Reject identity/ownership moves and edits the actor is not allowed to make.
@@ -276,18 +342,12 @@ impl Operation {
                         "automatic creation cannot set manual modes",
                     ));
                 }
-            } else {
-                let changed = op.changed_fields();
-                let mut prohibited: BTreeSet<&str> = ["title_mode", "goal_mode"].into();
-                if matches!(op.after, Record::Stream(_)) {
-                    prohibited.insert("status");
-                    prohibited.insert("archived");
-                }
-                if changed.iter().any(|f| prohibited.contains(f)) {
-                    return Err(ValidationError::new(
-                        "automatic operations cannot change personal lifecycle or naming modes",
-                    ));
-                }
+            } else if op.changed_fields().iter().any(|field| {
+                !field_policy(op.after.kind(), field).is_some_and(|policy| policy.automatic)
+            }) {
+                return Err(ValidationError::new(
+                    "automatic operations cannot change personal lifecycle or naming modes",
+                ));
             }
         }
         Ok(op)
@@ -310,15 +370,12 @@ impl Operation {
     }
 }
 
-/// Build validated intent from partial wire fields while retaining the caller's captured base.
-pub fn update(
-    id: impl Into<String>,
+/// Normalize partial fields and validate the resulting record, without capturing intent.
+pub fn apply_changes(
     before: &Record,
     changes: &Map<String, Value>,
     actor: Actor,
-    ownership_token: Option<String>,
-    inputs: Vec<Record>,
-) -> Result<Operation, ValidationError> {
+) -> Result<Record, ValidationError> {
     let normalized = normalize_changes(before, changes, actor);
     let mut wire = record_to_data(before)
         .as_object()
@@ -333,11 +390,22 @@ pub fn update(
             wire.insert(k, v);
         }
     }
-    let after = record_from_data(before.kind(), &Value::Object(wire))?;
+    record_from_data(before.kind(), &Value::Object(wire))
+}
+
+/// Build validated intent from partial wire fields while retaining the caller's captured base.
+pub fn update(
+    id: impl Into<String>,
+    before: &Record,
+    changes: &Map<String, Value>,
+    actor: Actor,
+    ownership_token: Option<String>,
+    inputs: Vec<Record>,
+) -> Result<Operation, ValidationError> {
     Operation::new(
         id,
         Some(before.clone()),
-        after,
+        apply_changes(before, changes, actor)?,
         actor,
         ownership_token,
         inputs,
@@ -345,35 +413,134 @@ pub fn update(
 }
 
 /// The domain decision, separate from whether a coordinator saved or published it.
-/// `record` is present only for changes; refusals retain field names and a reason.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-pub struct Reconciliation {
-    pub operation_id: String,
-    pub outcome: DomainOutcome,
-    pub record: Option<Record>,
-    pub conflicts: Vec<String>,
-    pub reason: String,
+/// Only changes carry a record; refusals retain field names and a reason.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum Reconciliation {
+    Changes {
+        operation_id: String,
+        record: Box<Record>,
+    },
+    NoChange {
+        operation_id: String,
+        reason: String,
+    },
+    Superseded {
+        operation_id: String,
+        conflicts: Vec<String>,
+        reason: String,
+    },
+    Conflict {
+        operation_id: String,
+        conflicts: Vec<String>,
+        reason: String,
+    },
 }
 
 impl Reconciliation {
     pub fn no_change(operation_id: impl Into<String>, reason: impl Into<String>) -> Self {
-        Self {
+        Self::NoChange {
             operation_id: operation_id.into(),
-            outcome: DomainOutcome::NoChange,
-            record: None,
-            conflicts: Vec::new(),
             reason: reason.into(),
+        }
+    }
+
+    pub fn operation_id(&self) -> &str {
+        match self {
+            Self::Changes { operation_id, .. }
+            | Self::NoChange { operation_id, .. }
+            | Self::Superseded { operation_id, .. }
+            | Self::Conflict { operation_id, .. } => operation_id,
+        }
+    }
+
+    pub fn outcome(&self) -> DomainOutcome {
+        match self {
+            Self::Changes { .. } => DomainOutcome::Changes,
+            Self::NoChange { .. } => DomainOutcome::NoChange,
+            Self::Superseded { .. } => DomainOutcome::Superseded,
+            Self::Conflict { .. } => DomainOutcome::Conflict,
+        }
+    }
+
+    pub fn conflicts(&self) -> &[String] {
+        match self {
+            Self::Superseded { conflicts, .. } | Self::Conflict { conflicts, .. } => conflicts,
+            Self::Changes { .. } | Self::NoChange { .. } => &[],
+        }
+    }
+
+    pub fn reason(&self) -> &str {
+        match self {
+            Self::NoChange { reason, .. }
+            | Self::Superseded { reason, .. }
+            | Self::Conflict { reason, .. } => reason,
+            Self::Changes { .. } => "",
         }
     }
 }
 
-// Keep names, equality and copying together. Native equality preserves timestamp instant
-// equality across offsets; logical owner_host_id is not the nested wire field owner.
+impl Serialize for Reconciliation {
+    fn serialize<S: serde::Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
+        #[derive(Serialize)]
+        struct Receipt<'a> {
+            operation_id: &'a str,
+            outcome: DomainOutcome,
+            record: Option<&'a Record>,
+            conflicts: &'a [String],
+            reason: &'a str,
+        }
+        Receipt {
+            operation_id: self.operation_id(),
+            outcome: self.outcome(),
+            record: match self {
+                Self::Changes { record, .. } => Some(record),
+                _ => None,
+            },
+            conflicts: self.conflicts(),
+            reason: self.reason(),
+        }
+        .serialize(serializer)
+    }
+}
+
+enum AgentAccess {
+    None,
+    User,
+    Automatic,
+}
+
+struct FieldPolicy {
+    automatic: bool,
+    agent: AgentAccess,
+}
+
+pub(crate) fn agent_field_allowed(kind: RecordKind, actor: Actor, name: &str) -> bool {
+    field_policy(kind, name).is_some_and(|policy| match policy.agent {
+        AgentAccess::None => false,
+        AgentAccess::User => actor == Actor::User,
+        AgentAccess::Automatic => true,
+    })
+}
+
+// Keep names, permissions, equality and copying together. Native equality preserves timestamp
+// instant equality across offsets; logical owner_host_id is not the nested wire field owner.
 macro_rules! record_fields {
     ($($variant:ident {
         immutable: [$($immutable:ident),*],
-        editable: [$($editable:ident),* $(,)?]
+        editable: [$($editable:ident: ($automatic:literal, $agent:ident)),* $(,)?]
     }),* $(,)?) => {
+        fn field_policy(kind: RecordKind, name: &str) -> Option<FieldPolicy> {
+            match kind {
+                $(RecordKind::$variant => match name {
+                    $(stringify!($editable) => Some(FieldPolicy {
+                        automatic: $automatic,
+                        agent: AgentAccess::$agent,
+                    }),)*
+                    _ => None,
+                },)*
+            }
+        }
+
         fn record_field_names(record: &Record) -> &'static [&'static str] {
             match record {
                 $(Record::$variant(_) => &[
@@ -410,32 +577,51 @@ record_fields! {
     Stream {
         immutable: [id],
         editable: [
-            title, goal, owner_host_id, title_mode, goal_short, goal_mode,
-            status, archived, repositories, documents, issues, prs,
+            title: (true, Automatic),
+            goal: (true, Automatic),
+            owner_host_id: (true, None),
+            title_mode: (false, User),
+            goal_short: (true, Automatic),
+            goal_mode: (false, User),
+            status: (false, User),
+            archived: (false, User),
+            repositories: (true, None),
+            documents: (true, User),
+            issues: (true, User),
+            prs: (true, User),
         ]
     },
     Session {
         immutable: [id, host_id, stream_id, harness, harness_session_id],
-        editable: [title, title_mode, status, state, state_short, remaining, checkout]
+        editable: [
+            title: (true, Automatic),
+            title_mode: (false, User),
+            status: (true, Automatic),
+            state: (true, Automatic),
+            state_short: (true, Automatic),
+            remaining: (true, Automatic),
+            checkout: (true, None),
+        ]
     },
     Host {
         immutable: [id],
-        editable: [label, checked_at]
+        editable: [label: (true, None), checked_at: (true, None)]
     },
 }
+
+const TITLE_GROUP: [&str; 2] = ["title", "title_mode"];
+const STREAM_GOAL_GROUP: [&str; 3] = ["goal", "goal_short", "goal_mode"];
 
 // A concurrent edit to any member invalidates intent captured from the whole text group.
 fn guard_fields(operation: &Operation) -> BTreeSet<&'static str> {
     let mut fields = operation.changed_fields();
-    let title_group = ["title", "title_mode"];
-    if fields.iter().any(|f| title_group.contains(f)) {
-        fields.extend(title_group);
+    if fields.iter().any(|f| TITLE_GROUP.contains(f)) {
+        fields.extend(TITLE_GROUP);
     }
     match operation.after {
         Record::Stream(_) => {
-            let goal_group = ["goal", "goal_short", "goal_mode"];
-            if fields.iter().any(|f| goal_group.contains(f)) {
-                fields.extend(goal_group);
+            if fields.iter().any(|f| STREAM_GOAL_GROUP.contains(f)) {
+                fields.extend(STREAM_GOAL_GROUP);
             }
         }
         Record::Session(_) => {
@@ -483,17 +669,19 @@ pub fn reconcile(
     authority: Option<&Authority>,
 ) -> Reconciliation {
     let refuse = |reason: &str, conflicts: &[&str], superseded: bool| -> Reconciliation {
-        let outcome = if superseded && operation.actor == Actor::Automatic {
-            DomainOutcome::Superseded
+        let conflicts = conflicts.iter().map(|s| (*s).to_string()).collect();
+        if superseded && operation.actor == Actor::Automatic {
+            Reconciliation::Superseded {
+                operation_id: operation.id.clone(),
+                conflicts,
+                reason: reason.to_string(),
+            }
         } else {
-            DomainOutcome::Conflict
-        };
-        Reconciliation {
-            operation_id: operation.id.clone(),
-            outcome,
-            record: None,
-            conflicts: conflicts.iter().map(|s| (*s).to_string()).collect(),
-            reason: reason.to_string(),
+            Reconciliation::Conflict {
+                operation_id: operation.id.clone(),
+                conflicts,
+                reason: reason.to_string(),
+            }
         }
     };
 
@@ -562,13 +750,10 @@ pub fn reconcile(
                     return Reconciliation::no_change(&operation.id, "");
                 }
                 let inputs_changed = match (before, cur) {
-                    (Record::Stream(before), Record::Stream(current)) => {
-                        before.title != current.title
-                            || before.title_mode != current.title_mode
-                            || before.goal != current.goal
-                            || before.goal_short != current.goal_short
-                            || before.goal_mode != current.goal_mode
-                    }
+                    (Record::Stream(_), Record::Stream(_)) => TITLE_GROUP
+                        .iter()
+                        .chain(STREAM_GOAL_GROUP.iter())
+                        .any(|field| field_eq(before, cur, field) == Some(false)),
                     _ => cur != before,
                 };
                 if inputs_changed {
@@ -663,11 +848,7 @@ pub fn reconcile(
                     false,
                 );
             }
-            let validated = match candidate {
-                Record::Stream(s) => s.validated().map(Record::Stream),
-                Record::Session(s) => s.validated().map(Record::Session),
-                Record::Host(h) => Host::new(h.id, h.label, h.checked_at).map(Record::Host),
-            };
+            let validated = candidate.validated();
             match validated {
                 Ok(rec) => rec,
                 Err(err) => return refuse(&err.to_string(), &["relationships"], false),
@@ -681,11 +862,81 @@ pub fn reconcile(
     if current.as_ref() == Some(&proposed) {
         return Reconciliation::no_change(&operation.id, "");
     }
-    Reconciliation {
+    Reconciliation::Changes {
         operation_id: operation.id.clone(),
-        outcome: DomainOutcome::Changes,
-        record: Some(proposed),
-        conflicts: Vec::new(),
-        reason: String::new(),
+        record: Box::new(proposed),
+    }
+}
+
+#[cfg(test)]
+mod field_policy_tests {
+    use super::*;
+
+    #[test]
+    fn backend_and_agent_capabilities_remain_distinct() {
+        for (kind, names, automatic, user_agent, automatic_agent) in [
+            (
+                RecordKind::Stream,
+                "title goal goal_short",
+                true,
+                true,
+                true,
+            ),
+            (
+                RecordKind::Stream,
+                "title_mode goal_mode status archived",
+                false,
+                true,
+                false,
+            ),
+            (
+                RecordKind::Stream,
+                "documents issues prs",
+                true,
+                true,
+                false,
+            ),
+            (
+                RecordKind::Stream,
+                "owner_host_id repositories",
+                true,
+                false,
+                false,
+            ),
+            (
+                RecordKind::Session,
+                "title status state state_short remaining",
+                true,
+                true,
+                true,
+            ),
+            (RecordKind::Session, "title_mode", false, true, false),
+            (RecordKind::Session, "checkout", true, false, false),
+            (RecordKind::Host, "label checked_at", true, false, false),
+        ] {
+            for name in names.split_whitespace() {
+                assert_eq!(field_policy(kind, name).unwrap().automatic, automatic);
+                assert_eq!(agent_field_allowed(kind, Actor::User, name), user_agent);
+                assert_eq!(
+                    agent_field_allowed(kind, Actor::Automatic, name),
+                    automatic_agent,
+                );
+            }
+        }
+        for (kind, names) in [
+            (RecordKind::Stream, "id unknown owner"),
+            (
+                RecordKind::Session,
+                "id host_id stream_id harness harness_session_id unknown",
+            ),
+            (RecordKind::Host, "id unknown"),
+        ] {
+            for name in names.split_whitespace() {
+                assert!(field_policy(kind, name).is_none());
+                for actor in [Actor::User, Actor::Automatic] {
+                    assert!(!agent_field_allowed(kind, actor, name));
+                }
+            }
+        }
     }
 }

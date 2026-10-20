@@ -13,7 +13,7 @@ use streams_temper::{
     model::{Host, NamingMode, Record, Session, Stream},
     operations::{Actor, DomainOutcome, Operation},
     sync::{
-        Freshness,
+        Freshness, Oid, Seconds,
         envelope::Origin,
         git::GitCatalog,
         git_io::{Git, GitError},
@@ -27,6 +27,21 @@ use support::git::{install_hook, test_command};
 
 // Tests override author/signing per subprocess, never process-global environment
 // or user config. The production constructor keeps normal signing requirements.
+fn state<T>(
+    catalog: &GitCatalog,
+    f: impl FnOnce(&streams_temper::sync::state::State<'_>) -> T,
+) -> T {
+    use streams_temper::storage::{StorageError, Transaction};
+    catalog
+        .store()
+        .with_transaction::<_, StorageError>(|tx| {
+            Ok(f(&streams_temper::sync::state::State::from_journal(
+                tx.journal(),
+            )))
+        })
+        .unwrap()
+}
+
 fn catalog(root: &Path, host: &str) -> GitCatalog {
     let mut catalog = GitCatalog::new(root, host, Policy::default()).unwrap();
     install_hook(&mut catalog, |_, _, _, _| None);
@@ -151,16 +166,16 @@ fn two_clones_combine_independent_edits_and_preserve_intent_origin() {
     sync(&p.a);
     let read = p.b.read(true).unwrap();
     assert_eq!(read.freshness, Freshness::Refreshed);
-    assert_eq!(read.catalog.streams.len(), 2);
+    assert_eq!(read.catalog.streams().len(), 2);
     assert_eq!(p.b.git().head().unwrap(), before);
     assert_eq!(
         std::fs::read(p.b.root().join(".git/index")).unwrap(),
         live_index
     );
-    assert_eq!(p.b.snapshot().unwrap().catalog.streams.len(), 1);
+    assert_eq!(p.b.snapshot().unwrap().catalog.streams().len(), 1);
     sync(&p.b);
     sync(&p.a);
-    assert_eq!(p.a.snapshot().unwrap().catalog.streams.len(), 2);
+    assert_eq!(p.a.snapshot().unwrap().catalog.streams().len(), 2);
     let history = read_history(p.b.git(), Some(&p.b.git().head().unwrap())).unwrap();
     let entry = history.operation("first").unwrap();
     assert_eq!(entry.operation, first);
@@ -174,17 +189,28 @@ fn whole_batch_conflict_preserves_local_view_and_allows_later_save() {
     sync(&p.a);
     sync(&p.b);
     accepted(&p.a, &edit(&p.a, "remote-edit", "work", "Remote"));
-    accepted(&p.b, &edit(&p.b, "local-edit", "work", "Local"));
     accepted(&p.b, &create("independent", "other", "b"));
+    accepted(&p.b, &edit(&p.b, "local-edit", "work", "Local"));
     sync(&p.a);
     let old = p.b.git().head().unwrap();
     let remote = p.a.git().head().unwrap();
+    let local_snapshot = p.b.snapshot().unwrap();
+    let local_history = read_history(p.b.git(), Some(&old)).unwrap();
+    let remote_history = read_history(p.a.git(), Some(&remote)).unwrap();
     let result = p.b.sync(SyncEvent::Explicit);
     assert_eq!(result.sharing, SharingStatus::Blocked, "{result:?}");
     assert_eq!(result.conflicts[0].operation, "local-edit");
     assert_eq!(p.b.git().head().unwrap(), old);
     assert_eq!(p.a.git().head().unwrap(), remote);
     let read = p.b.read(true).unwrap();
+    assert_eq!(read.catalog, local_snapshot.catalog);
+    assert_eq!(read.local, local_snapshot);
+    assert_eq!(read.conflicts, result.conflicts);
+    assert_eq!(read_history(p.b.git(), Some(&old)).unwrap(), local_history);
+    assert_eq!(
+        read_history(p.a.git(), Some(&remote)).unwrap(),
+        remote_history
+    );
     assert_eq!(read.catalog.stream("work").unwrap().title, "Local");
     assert_eq!(
         read.confirmed
@@ -222,7 +248,7 @@ fn retired_operation_keeps_receipt_and_changed_intent_is_rejected() {
     sync(&p.b);
     let history = read_history(p.b.git(), Some(&p.b.git().head().unwrap())).unwrap();
     assert!(!history.has_operation(local.id()));
-    assert!(p.b.state().seen(&local).unwrap());
+    assert!(state(&p.b, |state| state.seen(&local)).unwrap());
     let tip = p.b.git().head().unwrap();
     assert_eq!(
         p.b.save(&local, None).unwrap().local,
@@ -285,14 +311,17 @@ fn local_creation_authority_is_immediate_but_other_producers_are_rejected() {
 #[test]
 fn no_push_sync_and_read_do_not_advance_last_push_or_publication_clock() {
     let mut p = pair();
-    let baseline = p.a.state().metadata().unwrap().last_push;
+    let baseline = state(&p.a, |state| state.metadata()).unwrap().last_push;
     p.a.set_clock(Arc::new(|| 2000.0));
-    let before = p.a.state().metadata().unwrap().last_sync;
+    let before = state(&p.a, |state| state.metadata()).unwrap().last_sync;
     p.a.read(true).unwrap();
-    assert_eq!(p.a.state().metadata().unwrap().last_sync, before);
+    assert_eq!(
+        state(&p.a, |state| state.metadata()).unwrap().last_sync,
+        before
+    );
     sync(&p.a);
-    let metadata = p.a.state().metadata().unwrap();
-    assert_eq!(metadata.last_sync, Some(2000.0));
+    let metadata = state(&p.a, |state| state.metadata()).unwrap();
+    assert_eq!(metadata.last_sync, Some(Seconds::try_from(2000.0).unwrap()));
     assert_eq!(metadata.last_push, baseline);
     accepted(&p.a, &create("later", "later", "a"));
     p.a.set_clock(Arc::new(|| 2001.0));
@@ -311,24 +340,33 @@ fn no_push_sync_and_read_do_not_advance_last_push_or_publication_clock() {
 
 #[test]
 fn lost_response_is_confirmed_before_adoption() {
-    let mut p = pair();
-    accepted(&p.a, &create("create", "work", "a"));
-    let pushes = Arc::new(AtomicUsize::new(0));
-    let count = pushes.clone();
-    install_hook(&mut p.a, move |git, args, input, index| {
-        if args[0] == "push" {
-            count.fetch_add(1, Ordering::SeqCst);
-            Some(
-                test_command(git, args, input, index)
-                    .and_then(|_| Err(GitError::new("lost reply", None))),
-            )
-        } else {
-            None
-        }
-    });
-    sync(&p.a);
-    assert_eq!(pushes.load(Ordering::SeqCst), 1);
-    assert!(p.a.state().publication().unwrap().is_none());
+    for budget in [1, 3] {
+        let mut p = pair();
+        p.a = GitCatalog::new(
+            p.a.root(),
+            "a",
+            Policy::new(0.0, 0.0, 0.0, 30.0, budget).unwrap(),
+        )
+        .unwrap();
+        p.a.set_clock(Arc::new(|| 1000.0));
+        let pushes = Arc::new(AtomicUsize::new(0));
+        let count = pushes.clone();
+        install_hook(&mut p.a, move |git, args, input, index| {
+            if args[0] == "push" {
+                count.fetch_add(1, Ordering::SeqCst);
+                Some(
+                    test_command(git, args, input, index)
+                        .and_then(|_| Err(GitError::new("lost reply", None))),
+                )
+            } else {
+                None
+            }
+        });
+        accepted(&p.a, &create("create", "work", "a"));
+        sync(&p.a);
+        assert_eq!(pushes.load(Ordering::SeqCst), 1);
+        assert!(state(&p.a, |state| state.publication()).unwrap().is_none());
+    }
 }
 
 #[test]
@@ -356,9 +394,9 @@ fn lost_reply_restart_and_intervening_save_publish_both_operations() {
     accepted(&restarted, &create("second", "second", "a"));
     restarted.set_clock(Arc::new(|| 2000.0));
     sync(&restarted);
-    assert_eq!(restarted.snapshot().unwrap().catalog.streams.len(), 2);
+    assert_eq!(restarted.snapshot().unwrap().catalog.streams().len(), 2);
     sync(&p.b);
-    assert_eq!(p.b.snapshot().unwrap().catalog.streams.len(), 2);
+    assert_eq!(p.b.snapshot().unwrap().catalog.streams().len(), 2);
 }
 
 #[test]
@@ -391,7 +429,7 @@ fn unaccepted_uncertain_push_reconciles_later_remote_edit() {
     sync(&p.b);
     let restarted = catalog(p.a.root(), "a");
     sync(&restarted);
-    assert_eq!(restarted.snapshot().unwrap().catalog.streams.len(), 3);
+    assert_eq!(restarted.snapshot().unwrap().catalog.streams().len(), 3);
 }
 
 #[test]
@@ -409,7 +447,7 @@ fn remote_race_is_retried_against_new_history() {
         None
     });
     sync(&p.a);
-    assert_eq!(p.a.snapshot().unwrap().catalog.streams.len(), 2);
+    assert_eq!(p.a.snapshot().unwrap().catalog.streams().len(), 2);
 }
 
 #[test]
@@ -436,15 +474,18 @@ fn failed_adoption_retains_both_histories_and_fences_restart() {
         let result = p.b.sync(SyncEvent::Explicit);
         assert_eq!(result.sharing, SharingStatus::Confirmed, "{result:?}");
         assert_eq!(result.local, LocalStatus::RepairRequired, "{result:?}");
-        let marker = p.b.state().publication().unwrap().unwrap();
+        let marker = state(&p.b, |state| state.publication()).unwrap().unwrap();
         assert!(matches!(
             marker,
             streams_temper::sync::state::PublicationMarker::Adopting(_)
         ));
-        assert_eq!(marker.attempt().confirmed_at, Some(2000.0));
         assert_eq!(
-            marker.attempt().confirmed_at,
-            p.b.state().metadata().unwrap().last_push
+            marker.attempt().confirmed_at(),
+            Some(Seconds::try_from(2000.0).unwrap())
+        );
+        assert_eq!(
+            marker.attempt().confirmed_at(),
+            state(&p.b, |state| state.metadata()).unwrap().last_push
         );
         let retained = retained(&p.b);
         // One push-candidate ref plus exactly one adoption old/new pair.
@@ -453,7 +494,7 @@ fn failed_adoption_retains_both_histories_and_fences_restart() {
         assert_eq!(
             retained
                 .iter()
-                .filter(|tip| *tip == &marker.attempt().candidate)
+                .filter(|tip| *tip == marker.attempt().candidate().as_str())
                 .count(),
             2
         );
@@ -479,12 +520,18 @@ fn recovered_confirmation_survives_adoption_failure_and_newer_remote_history() {
             accepted(&p.a, &create("create", "work", "a"));
             let original = Arc::new(Mutex::new(None));
             let captured = original.clone();
-            let state = p.a.state().clone();
+            let publication = p.a.root().join(".catalog-sync/publication.json");
             let mut pushed = false;
             install_hook(&mut p.a, move |git, args, input, index| {
                 if args[0] == "push" {
-                    *captured.lock().unwrap() =
-                        Some(state.publication().unwrap().unwrap().attempt().clone());
+                    let mut attempt = streams_temper::codec::load_json(
+                        &std::fs::read_to_string(&publication).unwrap(),
+                    )
+                    .unwrap();
+                    let data = attempt.as_object_mut().unwrap();
+                    data.remove("version");
+                    data.remove("phase");
+                    *captured.lock().unwrap() = Some(attempt);
                     pushed = true;
                     Some(
                         test_command(git, args, input, index)
@@ -539,25 +586,36 @@ fn recovered_confirmation_survives_adoption_failure_and_newer_remote_history() {
                 p.a
             };
             let mut expected = original.lock().unwrap().clone().unwrap();
-            expected.confirmed_at = Some(if restart { 2000.0 } else { 1000.0 });
-            let marker = repaired.state().publication().unwrap().unwrap();
+            expected["confirmed_at"] = serde_json::json!(if restart { 2000.0 } else { 1000.0 });
+            let marker = state(&repaired, |state| state.publication())
+                .unwrap()
+                .unwrap();
             assert!(matches!(
                 marker,
                 streams_temper::sync::state::PublicationMarker::Adopting(_)
             ));
-            assert_eq!(marker.attempt(), &expected);
-            let metadata = repaired.state().metadata().unwrap();
-            assert_eq!(metadata.last_push, expected.confirmed_at);
+            assert_eq!(serde_json::to_value(marker.attempt()).unwrap(), expected);
+            let metadata = state(&repaired, |state| state.metadata()).unwrap();
             assert_eq!(
-                metadata.last_confirmed_attempt.as_ref(),
-                Some(&expected.candidate)
+                metadata.last_push.map(Seconds::get),
+                expected["confirmed_at"].as_f64()
+            );
+            assert_eq!(
+                metadata.last_confirmed_attempt.as_ref().map(Oid::as_str),
+                expected["candidate"].as_str()
             );
             if restart {
-                assert_ne!(metadata.confirmed.as_ref(), Some(&expected.candidate));
+                assert_ne!(
+                    metadata.confirmed.as_ref().map(Oid::as_str),
+                    expected["candidate"].as_str()
+                );
                 assert!(
                     repaired
                         .git()
-                        .ancestor(&expected.candidate, metadata.confirmed.as_deref().unwrap())
+                        .ancestor(
+                            expected["candidate"].as_str().unwrap(),
+                            metadata.confirmed.as_ref().map(Oid::as_str).unwrap()
+                        )
                         .unwrap()
                 );
             }
@@ -565,8 +623,11 @@ fn recovered_confirmation_survives_adoption_failure_and_newer_remote_history() {
             assert!(reopened.snapshot().is_err());
             assert!(reopened.sync(SyncEvent::Force).requires_repair());
             assert_eq!(
-                reopened.state().metadata().unwrap().last_push,
-                expected.confirmed_at
+                state(&reopened, |state| state.metadata())
+                    .unwrap()
+                    .last_push
+                    .map(Seconds::get),
+                expected["confirmed_at"].as_f64()
             );
         }
     }
@@ -590,10 +651,13 @@ fn pure_remote_adoption_failure_does_not_claim_an_outgoing_confirmation() {
         (SharingStatus::Blocked, LocalStatus::RepairRequired),
         "{result:?}"
     );
-    let marker = p.b.state().publication().unwrap().unwrap();
-    assert_eq!(marker.attempt().confirmed_at, None);
-    assert!(marker.attempt().operations.is_empty());
-    assert_eq!(p.b.state().metadata().unwrap().last_push, None);
+    let marker = state(&p.b, |state| state.publication()).unwrap().unwrap();
+    assert_eq!(marker.attempt().confirmed_at(), None);
+    assert!(marker.attempt().operations().is_empty());
+    assert_eq!(
+        state(&p.b, |state| state.metadata()).unwrap().last_push,
+        None
+    );
     assert!(catalog(p.b.root(), "b").snapshot().is_err());
 }
 
@@ -603,7 +667,7 @@ fn failed_attempt_marker_write_prevents_push_and_is_retryable_on_restart() {
     accepted(&p.b, &create("local", "local", "b"));
     let old = p.b.git().head().unwrap();
     let graphs = retained(&p.b).len();
-    let baseline = p.b.state().metadata().unwrap().last_push;
+    let baseline = state(&p.b, |state| state.metadata()).unwrap().last_push;
     install_hook(&mut p.b, |_, args, _, _| {
         assert_ne!(args[0], "push", "attempt marker must precede push");
         None
@@ -623,8 +687,11 @@ fn failed_attempt_marker_write_prevents_push_and_is_retryable_on_restart() {
     assert_eq!(result.local, LocalStatus::RepairRequired);
     assert_eq!(writes.load(Ordering::SeqCst), 1);
     assert_eq!(p.b.git().head().unwrap(), old);
-    assert!(p.b.state().publication().unwrap().is_none());
-    assert_eq!(p.b.state().metadata().unwrap().last_push, baseline);
+    assert!(state(&p.b, |state| state.publication()).unwrap().is_none());
+    assert_eq!(
+        state(&p.b, |state| state.metadata()).unwrap().last_push,
+        baseline
+    );
     assert_eq!(retained(&p.b).len(), graphs + 1);
     assert!(
         p.a.inspect_remote()
@@ -643,7 +710,11 @@ fn failed_attempt_marker_write_prevents_push_and_is_retryable_on_restart() {
             .is_some()
     );
     sync(&restarted);
-    assert!(restarted.state().publication().unwrap().is_none());
+    assert!(
+        state(&restarted, |state| state.publication())
+            .unwrap()
+            .is_none()
+    );
 }
 
 #[test]
@@ -708,20 +779,20 @@ fn confirmation_bookkeeping_faults_remain_attempting_and_recover_once() {
         assert_eq!(result.local, LocalStatus::RepairRequired);
         assert_eq!(faults.load(Ordering::SeqCst), 1);
         assert_eq!(p.b.git().head().unwrap(), old);
-        let marker = p.b.state().publication().unwrap().unwrap();
+        let marker = state(&p.b, |state| state.publication()).unwrap().unwrap();
         assert!(matches!(
             marker,
             streams_temper::sync::state::PublicationMarker::Attempting(_)
         ));
-        assert_eq!(marker.attempt().confirmed_at, None);
+        assert_eq!(marker.attempt().confirmed_at(), None);
         let timestamp = if stage == "confirmed-marker" {
             2000.0
         } else {
             3000.0
         };
         assert_eq!(
-            p.b.state().metadata().unwrap().last_push,
-            (stage == "confirmed-marker").then_some(2000.0)
+            state(&p.b, |state| state.metadata()).unwrap().last_push,
+            (stage == "confirmed-marker").then_some(Seconds::try_from(2000.0).unwrap())
         );
         assert_eq!(retained(&p.b).len(), graphs + 1);
         assert!(
@@ -742,15 +813,23 @@ fn confirmation_bookkeeping_faults_remain_attempting_and_recover_once() {
         });
         sync(&restarted);
         assert_eq!(
-            restarted.state().metadata().unwrap().last_push,
-            Some(timestamp)
+            state(&restarted, |state| state.metadata())
+                .unwrap()
+                .last_push,
+            Some(Seconds::try_from(timestamp).unwrap())
         );
-        assert!(restarted.state().publication().unwrap().is_none());
+        assert!(
+            state(&restarted, |state| state.publication())
+                .unwrap()
+                .is_none()
+        );
         restarted.set_clock(Arc::new(|| 4000.0));
         sync(&restarted);
         assert_eq!(
-            restarted.state().metadata().unwrap().last_push,
-            Some(timestamp)
+            state(&restarted, |state| state.metadata())
+                .unwrap()
+                .last_push,
+            Some(Seconds::try_from(timestamp).unwrap())
         );
     }
 }
@@ -812,28 +891,34 @@ fn adoption_journal_faults_preserve_confirmation_and_reassert_fence() {
         );
         assert_eq!(result.local, LocalStatus::RepairRequired);
         assert_eq!(faults.load(Ordering::SeqCst), 1);
-        let marker = p.b.state().publication().unwrap().unwrap();
+        let marker = state(&p.b, |state| state.publication()).unwrap().unwrap();
         assert!(matches!(
             marker,
             streams_temper::sync::state::PublicationMarker::Adopting(_)
         ));
-        assert_eq!(marker.attempt().confirmed_at, Some(2000.0));
         assert_eq!(
-            p.b.state().metadata().unwrap().last_push,
-            marker.attempt().confirmed_at
+            marker.attempt().confirmed_at(),
+            Some(Seconds::try_from(2000.0).unwrap())
+        );
+        assert_eq!(
+            state(&p.b, |state| state.metadata()).unwrap().last_push,
+            marker.attempt().confirmed_at()
         );
         assert_eq!(
             p.b.git().head().unwrap(),
             if stage == "before-adoption" {
                 old.clone()
             } else {
-                marker.attempt().candidate.clone()
+                marker.attempt().candidate().to_string()
             }
         );
         let refs = retained(&p.b);
         assert_eq!(refs.len(), graphs + 3);
         assert!(refs.contains(&old));
-        assert!(refs.contains(&marker.attempt().candidate));
+        assert!(
+            refs.iter()
+                .any(|tip| tip == marker.attempt().candidate().as_str())
+        );
         for tip in refs {
             read_history(p.b.git(), Some(&tip)).unwrap();
         }
@@ -844,10 +929,15 @@ fn adoption_journal_faults_preserve_confirmation_and_reassert_fence() {
         assert_eq!(retry.sharing, SharingStatus::Blocked);
         assert!(retry.requires_repair());
         assert_eq!(
-            restarted.state().metadata().unwrap().last_push,
-            Some(2000.0)
+            state(&restarted, |state| state.metadata())
+                .unwrap()
+                .last_push,
+            Some(Seconds::try_from(2000.0).unwrap())
         );
-        assert_eq!(restarted.state().publication().unwrap(), Some(marker));
+        assert_eq!(
+            state(&restarted, |state| state.publication()).unwrap(),
+            Some(marker)
+        );
     }
 }
 
@@ -864,7 +954,11 @@ fn save_faults_fence_mutated_records_and_history() {
         });
         let outcome = p.a.save(&create("create", "work", "a"), None).unwrap();
         assert_eq!(outcome.local, LocalStatus::RepairRequired);
-        assert!(p.a.state().read("save.json").unwrap().is_some());
+        assert!(
+            state(&p.a, |state| state.read("save.json"))
+                .unwrap()
+                .is_some()
+        );
         assert!(catalog(p.a.root(), "a").snapshot().is_err());
     }
     for name in ["receipts.json", "save.json"] {
@@ -922,7 +1016,8 @@ fn replaced_remote_and_changed_push_target_are_rejected() {
     p.b.read(true).unwrap();
     let root = read_history(p.a.git(), Some(&p.a.git().head().unwrap()))
         .unwrap()
-        .root
+        .root()
+        .map(str::to_owned)
         .unwrap();
     Git::new(&p.remote, 10.0)
         .run_raw(&["update-ref", "refs/heads/main", &root], None, None, &[0])
@@ -953,19 +1048,11 @@ fn tampered_attempt_cannot_be_reused_or_confirmed() {
         }
     });
     assert_eq!(p.a.sync(SyncEvent::Explicit).sharing, SharingStatus::Failed);
-    let mut attempt =
-        p.a.state()
-            .publication()
-            .unwrap()
-            .unwrap()
-            .attempt()
-            .clone();
-    attempt.operations.clear();
-    p.a.state()
-        .write_publication(&streams_temper::sync::state::PublicationMarker::Attempting(
-            attempt,
-        ))
+    let mut attempt = state(&p.a, |state| state.read("publication.json"))
+        .unwrap()
         .unwrap();
+    attempt.insert("operations".into(), serde_json::json!([]));
+    state(&p.a, |state| state.write("publication.json", attempt)).unwrap();
     let restarted = catalog(p.a.root(), "a");
     assert!(restarted.sync(SyncEvent::Explicit).requires_repair());
 }
@@ -994,7 +1081,7 @@ fn stale_automatic_write_keeps_original_capture() {
     .unwrap();
     accepted(&p.a, &edit(&p.a, "user", "work", "A new title"));
     let result = p.a.save(&automatic, None).unwrap();
-    assert_eq!(result.domain.unwrap().outcome, DomainOutcome::Superseded);
+    assert_eq!(result.domain.unwrap().outcome(), DomainOutcome::Superseded);
 }
 
 #[test]
@@ -1029,8 +1116,10 @@ fn confirmed_lost_attempt_counts_once_across_restart_and_later_conflict() {
     assert!(result.needs_attention());
     assert!(!result.conflicts.is_empty());
     assert_eq!(
-        restarted.state().metadata().unwrap().last_push,
-        Some(2000.0)
+        state(&restarted, |state| state.metadata())
+            .unwrap()
+            .last_push,
+        Some(Seconds::try_from(2000.0).unwrap())
     );
     let mut restarted = catalog(p.a.root(), "a");
     restarted.set_clock(Arc::new(|| 3000.0));
@@ -1039,8 +1128,10 @@ fn confirmed_lost_attempt_counts_once_across_restart_and_later_conflict() {
     assert!(result.needs_attention());
     assert!(!result.conflicts.is_empty());
     assert_eq!(
-        restarted.state().metadata().unwrap().last_push,
-        Some(2000.0)
+        state(&restarted, |state| state.metadata())
+            .unwrap()
+            .last_push,
+        Some(Seconds::try_from(2000.0).unwrap())
     );
 }
 
@@ -1066,14 +1157,12 @@ fn earlier_confirmation_does_not_mask_later_transport_failures() {
             p.a.sync(SyncEvent::Explicit).sharing,
             SharingStatus::Uncertain
         );
-        let first =
-            p.a.state()
-                .publication()
-                .unwrap()
-                .unwrap()
-                .attempt()
-                .candidate
-                .clone();
+        let first = state(&p.a, |state| state.publication())
+            .unwrap()
+            .unwrap()
+            .attempt()
+            .candidate()
+            .to_owned();
         let mut restarted = catalog(p.a.root(), "a");
         accepted(&restarted, &create("second", "second", "a"));
         let saved = restarted.snapshot().unwrap();
@@ -1109,8 +1198,8 @@ fn earlier_confirmation_does_not_mask_later_transport_failures() {
         }
         assert_eq!(restarted.git().head().unwrap(), old);
         assert_eq!(restarted.snapshot().unwrap(), saved);
-        let metadata = restarted.state().metadata().unwrap();
-        assert_eq!(metadata.last_push, Some(2000.0));
+        let metadata = state(&restarted, |state| state.metadata()).unwrap();
+        assert_eq!(metadata.last_push, Some(Seconds::try_from(2000.0).unwrap()));
         assert_eq!(metadata.last_confirmed_attempt, Some(first));
     }
 }
@@ -1190,13 +1279,13 @@ fn cross_record_capture_is_preserved_on_replay_and_retired_when_stale() {
         sync(&p.a);
         let history = read_history(p.a.git(), Some(&p.a.git().head().unwrap())).unwrap();
         assert_eq!(
-            history.catalog.session("a", "session").unwrap().state,
+            history.catalog().session("a", "session").unwrap().state,
             if stale { "" } else { "Generated" }
         );
         if stale {
             assert!(!history.has_operation("report"));
             assert_eq!(p.a.git().head().unwrap(), remote);
-            assert!(p.a.state().seen(&report).unwrap());
+            assert!(state(&p.a, |state| state.seen(&report)).unwrap());
         } else {
             assert_eq!(history.operation("report").unwrap().operation, report);
         }
@@ -1224,7 +1313,12 @@ fn session_event_uses_pending_stream_gate_across_reopen() {
         reopened.sync(SyncEvent::Session).sharing,
         SharingStatus::Confirmed
     );
-    assert_eq!(reopened.state().metadata().unwrap().last_push, Some(1300.0));
+    assert_eq!(
+        state(&reopened, |state| state.metadata())
+            .unwrap()
+            .last_push,
+        Some(Seconds::try_from(1300.0).unwrap())
+    );
 }
 
 #[test]
@@ -1252,7 +1346,12 @@ fn read_cooldown_does_not_delay_eligible_publication() {
         p.a.sync(SyncEvent::Stream).sharing,
         SharingStatus::Confirmed
     );
-    assert!(p.a.state().metadata().unwrap().refresh_error.is_empty());
+    assert!(
+        state(&p.a, |state| state.metadata())
+            .unwrap()
+            .refresh_error
+            .is_empty()
+    );
 }
 
 #[test]
@@ -1269,10 +1368,19 @@ fn failed_push_cooldown_is_shared_and_force_bypasses_it() {
             None
         }
     });
-    let baseline = p.a.state().metadata().unwrap().last_push;
+    let baseline = state(&p.a, |state| state.metadata()).unwrap().last_push;
     assert_eq!(p.a.sync(SyncEvent::Explicit).sharing, SharingStatus::Failed);
-    assert_eq!(p.a.state().metadata().unwrap().last_push, baseline);
-    assert_eq!(p.a.state().metadata().unwrap().retry_after, 1060.0);
+    assert_eq!(
+        state(&p.a, |state| state.metadata()).unwrap().last_push,
+        baseline
+    );
+    assert_eq!(
+        state(&p.a, |state| state.metadata())
+            .unwrap()
+            .retry_after
+            .get(),
+        1060.0
+    );
     let reopened = catalog(p.a.root(), "a");
     assert_eq!(
         reopened.sync(SyncEvent::Stream).sharing,
@@ -1281,6 +1389,83 @@ fn failed_push_cooldown_is_shared_and_force_bypasses_it() {
     assert_eq!(p.a.sync(SyncEvent::Force).sharing, SharingStatus::Failed);
     assert_eq!(calls.load(Ordering::SeqCst), 2);
     assert!(p.a.snapshot().unwrap().catalog.stream("local").is_some());
+}
+
+#[test]
+fn invalid_clock_is_rejected_at_scheduling_and_fresh_fetch_observations() {
+    for invalid in [f64::NAN, f64::INFINITY, f64::NEG_INFINITY] {
+        let mut p = pair();
+        let before = state(&p.a, |state| state.metadata()).unwrap();
+        p.a.set_clock(Arc::new(move || invalid));
+        assert!(
+            p.a.read(true)
+                .unwrap_err()
+                .to_string()
+                .contains("expected a finite timestamp")
+        );
+        let result = p.a.sync(SyncEvent::Force);
+        assert!(result.requires_repair(), "{result:?}");
+        assert_eq!(state(&p.a, |state| state.metadata()).unwrap(), before);
+
+        let observations = Arc::new(AtomicUsize::new(0));
+        let count = observations.clone();
+        p.a.set_clock(Arc::new(move || {
+            if count.fetch_add(1, Ordering::SeqCst) == 0 {
+                2000.0
+            } else {
+                invalid
+            }
+        }));
+        assert!(
+            p.a.read(true)
+                .unwrap_err()
+                .to_string()
+                .contains("expected a finite timestamp")
+        );
+        assert_eq!(observations.load(Ordering::SeqCst), 2);
+        assert_eq!(state(&p.a, |state| state.metadata()).unwrap(), before);
+    }
+}
+
+#[test]
+fn finite_clock_and_cooldown_overflow_requires_repair_without_corrupting_state() {
+    for refresh in [true, false] {
+        let p = pair();
+        accepted(&p.a, &create("local", "local", "a"));
+        let mut catalog = GitCatalog::new(
+            p.a.root(),
+            "a",
+            Policy::new(0.0, 0.0, f64::MAX, 30.0, 3).unwrap(),
+        )
+        .unwrap();
+        install_hook(&mut catalog, move |_, args, _, _| {
+            if (refresh && args[0] == "ls-remote") || (!refresh && args[0] == "push") {
+                Some(Err(GitError::new("offline", None)))
+            } else {
+                None
+            }
+        });
+        catalog.set_clock(Arc::new(|| f64::MAX));
+        if refresh {
+            assert!(
+                catalog
+                    .read(true)
+                    .unwrap_err()
+                    .to_string()
+                    .contains("expected a finite timestamp")
+            );
+        } else {
+            let result = catalog.sync(SyncEvent::Explicit);
+            assert!(result.requires_repair(), "{result:?}");
+            assert!(
+                result.detail.contains("expected a finite timestamp"),
+                "{result:?}"
+            );
+        }
+        let metadata = state(&catalog, |state| state.metadata()).unwrap();
+        assert_eq!(metadata.retry_after, Seconds::ZERO);
+        assert_eq!(metadata.refresh_retry_after, Seconds::ZERO);
+    }
 }
 
 #[test]
@@ -1295,14 +1480,12 @@ fn matching_candidate_is_reused_without_recommitting() {
         }
     });
     assert_eq!(p.a.sync(SyncEvent::Explicit).sharing, SharingStatus::Failed);
-    let candidate =
-        p.a.state()
-            .publication()
-            .unwrap()
-            .unwrap()
-            .attempt()
-            .candidate
-            .clone();
+    let candidate = state(&p.a, |state| state.publication())
+        .unwrap()
+        .unwrap()
+        .attempt()
+        .candidate()
+        .to_owned();
     let mut reopened = catalog(p.a.root(), "a");
     install_hook(&mut reopened, |_, args, _, _| {
         assert_ne!(
@@ -1312,7 +1495,122 @@ fn matching_candidate_is_reused_without_recommitting() {
         None
     });
     sync(&reopened);
-    assert_eq!(reopened.git().head().unwrap(), candidate);
+    assert_eq!(reopened.git().head().unwrap(), candidate.as_str());
+}
+
+#[test]
+fn retain_failure_recovers_against_the_actual_prior_marker() {
+    for prior_attempt in [false, true] {
+        for remote_race in [false, true] {
+            let mut p = pair();
+            accepted(&p.a, &create("local", "local", "a"));
+            if prior_attempt {
+                install_hook(&mut p.a, |_, args, _, _| {
+                    (args[0] == "push").then(|| Err(GitError::new("denied", Some(1))))
+                });
+                assert_eq!(p.a.sync(SyncEvent::Explicit).sharing, SharingStatus::Failed);
+                accepted(&p.a, &create("later", "later", "a"));
+            }
+            let marker = state(&p.a, |state| state.publication()).unwrap();
+            let other = p.b;
+            let mut failed = false;
+            install_hook(&mut p.a, move |_, args, _, _| {
+                if !failed
+                    && args[0] == "update-ref"
+                    && args
+                        .get(1)
+                        .is_some_and(|name| name.starts_with("refs/catalog/retained/"))
+                {
+                    failed = true;
+                    if remote_race {
+                        accepted(&other, &create("remote", "remote", "b"));
+                        sync(&other);
+                    }
+                    return Some(Err(GitError::new("retain failed before marker", Some(1))));
+                }
+                None
+            });
+            let result = p.a.sync(SyncEvent::Explicit);
+            if remote_race {
+                assert_eq!(result.sharing, SharingStatus::Confirmed, "{result:?}");
+                assert_eq!(
+                    p.a.snapshot().unwrap().catalog.streams().len(),
+                    if prior_attempt { 3 } else { 2 }
+                );
+                assert!(state(&p.a, |state| state.publication()).unwrap().is_none());
+            } else {
+                assert_eq!(result.sharing, SharingStatus::Failed, "{result:?}");
+                assert_eq!(result.local, LocalStatus::Unchanged, "{result:?}");
+                assert!(
+                    result.detail.contains("retain failed before marker"),
+                    "{result:?}"
+                );
+                assert_eq!(state(&p.a, |state| state.publication()).unwrap(), marker);
+            }
+        }
+    }
+}
+
+#[test]
+fn reused_candidate_recovery_fences_changed_mutable_facts() {
+    for changed in ["marker", "worktree"] {
+        let mut p = pair();
+        accepted(&p.a, &create("local", "local", "a"));
+        install_hook(&mut p.a, |_, args, _, _| {
+            (args[0] == "push").then(|| Err(GitError::new("denied", Some(1))))
+        });
+        assert_eq!(p.a.sync(SyncEvent::Explicit).sharing, SharingStatus::Failed);
+        let old = p.a.git().head().unwrap();
+        let marker = state(&p.a, |state| state.publication()).unwrap();
+        let baseline = state(&p.a, |state| state.metadata()).unwrap().last_push;
+        let mut reopened = catalog(p.a.root(), "a");
+        let root = reopened.root().to_owned();
+        install_hook(&mut reopened, move |_, args, _, _| {
+            assert_ne!(
+                args[0], "commit-tree",
+                "retained candidate should be reused"
+            );
+            if args[0] == "push" {
+                if changed == "marker" {
+                    let path = root.join(".catalog-sync/publication.json");
+                    let mut marker: serde_json::Value =
+                        serde_json::from_slice(&std::fs::read(&path).unwrap()).unwrap();
+                    marker["confirmed_at"] = serde_json::json!(2000.0);
+                    std::fs::write(path, serde_json::to_vec(&marker).unwrap()).unwrap();
+                } else {
+                    std::fs::write(root.join("unexpected.txt"), "changed after inspection")
+                        .unwrap();
+                }
+                return Some(Err(GitError::new("lost response", None)));
+            }
+            None
+        });
+        let result = reopened.sync(SyncEvent::Explicit);
+        assert_eq!(result.local, LocalStatus::RepairRequired, "{result:?}");
+        assert_eq!(reopened.git().head().unwrap(), old);
+        assert_eq!(
+            state(&reopened, |state| state.metadata())
+                .unwrap()
+                .last_push,
+            baseline
+        );
+        if changed == "marker" {
+            assert_ne!(
+                state(&reopened, |state| state.publication()).unwrap(),
+                marker
+            );
+            assert!(
+                result.detail.contains("publication marker changed"),
+                "{result:?}"
+            );
+        } else {
+            assert_eq!(
+                state(&reopened, |state| state.publication()).unwrap(),
+                marker
+            );
+            assert!(result.detail.contains("working-tree change"), "{result:?}");
+        }
+    }
 }
 
 #[test]
@@ -1343,7 +1641,7 @@ fn competing_pushes_stop_at_policy_budget_without_force() {
     assert_eq!(result.sharing, SharingStatus::Failed, "{result:?}");
     assert_eq!(calls.load(Ordering::SeqCst), 3);
     assert_eq!(p.a.git().head().unwrap(), before);
-    assert!(p.a.state().publication().unwrap().is_some());
+    assert!(state(&p.a, |state| state.publication()).unwrap().is_some());
     accepted(&p.a, &create("later", "later", "a"));
 }
 
@@ -1382,7 +1680,11 @@ fn signing_failure_has_no_unsigned_fallback() {
     assert!(result.requires_repair());
     assert_eq!(calls.load(Ordering::SeqCst), 1);
     assert_eq!(p.a.git().head().unwrap(), before);
-    assert!(p.a.state().read("save.json").unwrap().is_some());
+    assert!(
+        state(&p.a, |state| state.read("save.json"))
+            .unwrap()
+            .is_some()
+    );
 }
 
 #[test]
@@ -1491,14 +1793,14 @@ proptest! {
         ).unwrap();
         let snapshot = reopened.snapshot().unwrap();
         let tip = reopened.git().head().unwrap();
-        let receipts = reopened.state().fingerprints().unwrap();
-        let marker = reopened.state().publication().unwrap();
+        let receipts = state(&reopened, |state| state.fingerprints()).unwrap();
+        let marker = state(&reopened, |state| state.publication()).unwrap();
         let graphs = retained(&reopened);
         prop_assert!(reopened.save(&changed, None).unwrap().requires_repair());
         prop_assert_eq!(reopened.snapshot().unwrap(), snapshot);
         prop_assert_eq!(reopened.git().head().unwrap(), tip);
-        prop_assert_eq!(reopened.state().fingerprints().unwrap(), receipts);
-        prop_assert_eq!(reopened.state().publication().unwrap(), marker);
+        prop_assert_eq!(state(&reopened, |state| state.fingerprints()).unwrap(), receipts);
+        prop_assert_eq!(state(&reopened, |state| state.publication()).unwrap(), marker);
         prop_assert_eq!(retained(&reopened), graphs);
         prop_assert!(reopened.save(&create(id, id, "a"), None).unwrap().accepted());
         if competing_remote {
@@ -1517,13 +1819,13 @@ proptest! {
             let restarted = catalog(reopened.root(), "a");
             prop_assert!(restarted.snapshot().is_err());
             prop_assert!(restarted.sync(SyncEvent::Force).requires_repair());
-            prop_assert!(matches!(restarted.state().publication().unwrap(),
+            prop_assert!(matches!(state(&restarted, |state| state.publication()).unwrap(),
                 Some(streams_temper::sync::state::PublicationMarker::Adopting(_))));
         } else {
             sync(&reopened);
-            prop_assert!(reopened.state().publication().unwrap().is_none());
+            prop_assert!(state(&reopened, |state| state.publication()).unwrap().is_none());
         }
         sync(&p.b);
-        prop_assert_eq!(p.b.snapshot().unwrap().catalog.streams.len(), expected.len() + 1 + usize::from(competing_remote));
+        prop_assert_eq!(p.b.snapshot().unwrap().catalog.streams().len(), expected.len() + 1 + usize::from(competing_remote));
     }
 }

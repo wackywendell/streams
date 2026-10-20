@@ -3,11 +3,10 @@
 use serde::{Deserialize, Serialize};
 
 use crate::model::{Catalog, Record, RecordKey, RecordKind};
-use crate::operations::{Authority, DomainOutcome, Operation, Reconciliation, reconcile};
+use crate::operations::{Operation, Reconciliation, reconcile};
 
 use super::envelope::{Origin, operation_digest};
 use super::history::History;
-use super::local::authority_for;
 use super::state::RepairRequired;
 
 /// A replayed write retains original intent and provenance alongside its reconciled record.
@@ -99,87 +98,79 @@ impl TryFrom<TargetData> for ConflictTarget {
     }
 }
 
-/// A projected view, plus outgoing changes or the first blocking conflict.
+/// A complete projected plan or the first blocking conflict, never a partial plan.
 ///
 /// This value does not mutate either history or establish that changes were published.
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub struct Replay {
-    pub catalog: Catalog,
-    pub changes: Vec<ReplayChange>,
-    pub conflicts: Vec<ReplayConflict>,
+pub enum Replay {
+    Ready {
+        catalog: Catalog,
+        changes: Vec<ReplayChange>,
+    },
+    Blocked(ReplayConflict),
 }
 
 /// Reconcile unpublished local intent onto the remote view without rebasing Git commits.
 /// Divergent creation identities, fingerprints or baseline roots fail closed.
 pub fn replay(local: &History, remote: &History) -> Result<Replay, RepairRequired> {
-    if (local.baseline.is_some() || remote.baseline.is_some())
-        && (local.baseline.is_none()
-            || remote.baseline.is_none()
-            || local.root.is_none()
-            || local.root != remote.root)
+    if (local.baseline().is_some() || remote.baseline().is_some())
+        && (local.baseline().is_none()
+            || remote.baseline().is_none()
+            || local.root().is_none()
+            || local.root() != remote.root())
     {
         return Err(RepairRequired::new(
             "baseline replay requires an identical shared root",
         ));
     }
-    let mut catalog = remote.catalog.clone();
-    let mut authorities = remote.authorities.clone();
+    let mut catalog = remote.catalog().clone();
+    let mut authorities = remote.authorities().clone();
     let mut changes = Vec::new();
-    for entry in &local.operations {
+    for entry in local.operations() {
         let (operation, origin) = (&entry.operation, &entry.origin);
-        if let Some(published) = remote.fingerprints.get(&operation.id) {
+        if let Some(published) = remote.fingerprints().get(operation.id()) {
             if published != &operation_digest(operation) {
                 return Err(RepairRequired::new(format!(
                     "remote operation ID has different intent: {}",
-                    operation.id
+                    operation.id()
                 )));
             }
             continue;
         }
-        let result = if operation.before.is_none()
-            && let Record::Stream(ref s) = operation.after
-            && remote.catalog.stream(&s.id).is_some()
+        let result = if operation.before().is_none()
+            && let Record::Stream(s) = operation.after()
+            && remote.catalog().stream(&s.id).is_some()
         {
-            Reconciliation {
-                operation_id: operation.id.clone(),
-                outcome: DomainOutcome::Conflict,
-                record: None,
+            Reconciliation::Conflict {
+                operation_id: operation.id().to_owned(),
                 conflicts: vec!["identity".to_string()],
                 reason: "remote stream has a different creation".to_string(),
             }
         } else {
-            let auth = authority_for(operation, &authorities);
-            reconcile(&catalog, operation, auth.as_ref())
+            let auth = operation.authority_for(&authorities);
+            reconcile(&catalog, operation, auth)
         };
-        if result.outcome == DomainOutcome::Conflict {
-            let conflict = ReplayConflict {
-                operation: operation.id.clone(),
-                target: ConflictTarget::from_record(operation.after()),
-                origin: origin.clone(),
-                fields: result.conflicts,
-                reason: result.reason,
-            };
-            return Ok(Replay {
-                catalog,
-                changes,
-                conflicts: vec![conflict],
-            });
-        }
-        if result.outcome != DomainOutcome::Changes {
-            continue;
-        }
-        let record = result.record.unwrap();
+        let record = match result {
+            Reconciliation::Conflict {
+                conflicts, reason, ..
+            } => {
+                let conflict = ReplayConflict {
+                    operation: operation.id().to_owned(),
+                    target: ConflictTarget::from_record(operation.after()),
+                    origin: origin.clone(),
+                    fields: conflicts,
+                    reason,
+                };
+                return Ok(Replay::Blocked(conflict));
+            }
+            Reconciliation::Changes { record, .. } => *record,
+            Reconciliation::NoChange { .. } | Reconciliation::Superseded { .. } => continue,
+        };
         catalog = catalog
             .replacing(record.clone())
             .map_err(|e| RepairRequired::new(e.to_string()))?;
-        if operation.before.is_none()
-            && let Record::Stream(ref s) = operation.after
-        {
-            authorities.insert(
-                s.id.clone(),
-                Authority::new(&s.owner_host_id, &operation.id)
-                    .map_err(|e| RepairRequired::new(e.to_string()))?,
-            );
+        if let Some((id, authority)) = operation.created_authority() {
+            authorities.insert(id, authority);
         }
         changes.push(ReplayChange {
             operation: operation.clone(),
@@ -187,9 +178,5 @@ pub fn replay(local: &History, remote: &History) -> Result<Replay, RepairRequire
             record,
         });
     }
-    Ok(Replay {
-        catalog,
-        changes,
-        conflicts: Vec::new(),
-    })
+    Ok(Replay::Ready { catalog, changes })
 }

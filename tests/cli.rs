@@ -214,7 +214,7 @@ fn collections_keep_identity_and_reject_invalid_intent_before_save() {
         "main",
         "docs/design.md",
         "Design",
-        "--document-added-at",
+        "--document-commit",
         "repo",
         "docs/design.md",
         "abc123",
@@ -222,12 +222,12 @@ fn collections_keep_identity_and_reject_invalid_intent_before_save() {
         "https://example.test/issue",
         "Issue",
     ]);
-    assert_eq!(changed["stream"]["documents"][0]["added_at"], "abc123");
+    assert_eq!(changed["stream"]["documents"][0]["commit"], "abc123");
     let (code, error) = f.run(
         &[
             "update",
             id,
-            "--document-added-at",
+            "--document-commit",
             "repo",
             "missing.md",
             "abc",
@@ -363,6 +363,34 @@ fn accepted_save_keeps_receipt_when_directory_completion_fails() {
     assert_eq!(
         f.ok(&["show", value["stream"]["id"].as_str().unwrap()])["stream"],
         value["stream"]
+    );
+    let stream_id = value["stream"]["id"].as_str().unwrap();
+    let (code, attached) = f.run(
+        &[
+            "session",
+            "attach",
+            stream_id,
+            "--harness",
+            "pi",
+            "--session-id",
+            "completion-native",
+            "--title",
+            "Saved session",
+            "--cwd",
+            missing.to_str().unwrap(),
+        ],
+        None,
+    );
+    assert_eq!(code, 2, "{attached}");
+    assert_eq!(attached["save"]["local"], "persisted");
+    assert!(attached["runtime"]["error"].is_string());
+    assert_eq!(
+        f.ok(&[
+            "session",
+            "show",
+            attached["session"]["id"].as_str().unwrap()
+        ])["session"],
+        attached["session"]
     );
 }
 

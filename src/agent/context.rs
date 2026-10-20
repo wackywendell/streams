@@ -64,7 +64,7 @@ pub fn context(
     check_text(catalog_source, "catalog_source", false)?;
     check_text(request.native_id, "harness_session_id", false)?;
     let catalog = backend.snapshot()?.catalog;
-    let session = catalog.sessions.iter().find(|session| {
+    let session = catalog.sessions().iter().find(|session| {
         session.host_id == host_id
             && session.harness == request.harness.as_ref()
             && session.harness_session_id == request.native_id
@@ -98,7 +98,7 @@ pub fn context(
         .transpose()?
         .flatten();
     let sessions = catalog
-        .sessions
+        .sessions()
         .iter()
         .filter(|session| {
             stream

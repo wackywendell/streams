@@ -5,11 +5,7 @@ use proptest::prelude::*;
 use streams_temper::{
     model::{Record, Stream},
     operations::Operation,
-    sync::{
-        local::LocalCatalog,
-        outcomes::LocalStatus,
-        state::{RepairRequired, State},
-    },
+    sync::{local::LocalCatalog, outcomes::LocalStatus, state::RepairRequired},
     yaml_store::YamlStore,
 };
 
@@ -36,7 +32,7 @@ fn every_bookkeeping_failure_preserves_a_safe_restart() {
     ] {
         let dir = tempfile::tempdir().unwrap();
         let mut local = LocalCatalog::new(YamlStore::new(dir.path()), "host").unwrap();
-        local.state = State::new(dir.path()).with_hook(Arc::new(Mutex::new(
+        local.set_state_hook(Arc::new(Mutex::new(
             move |actual_op: &str, actual_name: &str| {
                 if actual_op == op && actual_name == name {
                     Err(RepairRequired::new("injected state failure"))
@@ -98,7 +94,7 @@ proptest! {
             let result = backend.save(&operation(&id), None).unwrap();
             prop_assert!(result.accepted());
             prop_assert_eq!(result.local, if seen.insert(id) { LocalStatus::Persisted } else { LocalStatus::Unchanged });
-            prop_assert_eq!(backend.snapshot().unwrap().catalog.streams.len(), seen.len());
+            prop_assert_eq!(backend.snapshot().unwrap().catalog.streams().len(), seen.len());
         }
     }
 }

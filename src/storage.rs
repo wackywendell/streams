@@ -2,37 +2,34 @@
 
 use std::collections::BTreeMap;
 
-use serde::{Deserialize, Serialize};
+use serde::Serialize;
 use serde_json::{Map, Value};
 
 use crate::model::{Catalog, Record, RecordKey};
 
 /// Catalog persistence and bookkeeping sharing one serialization scope.
 ///
-/// Journal handles must address the same persistence as transactions. Callers must
-/// access them inside `with_transaction`; journal methods do not acquire another lock.
+/// Journal access is borrowed from a transaction and cannot outlive its lock scope.
 pub trait Store {
     type Transaction<'a>: Transaction
     where
         Self: 'a;
-    type Journal: Journal;
 
     /// Holds serialization for the closure; its borrowed transaction cannot escape.
     /// Errors do not roll back earlier catalog or journal effects.
-    fn with_transaction<T>(
+    fn with_transaction<T, E: From<StorageError>>(
         &self,
-        f: impl FnOnce(&mut Self::Transaction<'_>) -> Result<T, StorageError>,
-    ) -> Result<T, StorageError>;
-
-    fn journal(&self) -> Self::Journal;
-
-    /// Rejects adapter-specific layouts incompatible with local-only operation.
-    /// The caller must hold the transaction's serialization scope.
-    fn check_local(&self) -> Result<(), StorageError>;
+        f: impl FnOnce(&mut Self::Transaction<'_>) -> Result<T, E>,
+    ) -> Result<T, E>;
 }
 
 /// Catalog access borrowed within a store's serialization scope.
 pub trait Transaction {
+    fn journal(&self) -> &dyn Journal;
+
+    /// Rejects adapter-specific layouts incompatible with local-only operation.
+    fn check_local(&self) -> Result<(), StorageError>;
+
     fn read(&self) -> Result<Snapshot, StorageError>;
 
     /// Saves one validated record only if the whole captured revision set is current.
@@ -123,7 +120,7 @@ impl StorageError {
 /// Tokens are not domain values and must not be interpreted or moved between stores.
 /// Equal catalogs can have different revisions; compare `catalog` for domain equality
 /// and the whole `revisions` map to detect stale captured input.
-#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize)]
 pub struct Snapshot {
     pub catalog: Catalog,
     pub revisions: BTreeMap<RecordKey, String>,

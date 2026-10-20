@@ -275,7 +275,8 @@ fn document_entries(snapshot: &CardSnapshot) -> Vec<Entry> {
                 qualifier + "/"
             };
             let added = doc
-                .effective_commit()
+                .commit
+                .as_deref()
                 .map(|s| format!(" (added {})", s.chars().take(8).collect::<String>()))
                 .unwrap_or_default();
             Entry {

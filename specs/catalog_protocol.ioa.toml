@@ -82,7 +82,7 @@ kind = "input"
 from = ["Ready"]
 to = "AttemptingPush"
 guard = "!save_marker && !adopting_marker && attempt_budget > 0"
-effect = ["publication_marker = true", "save_marker = false", "adopting_marker = false", "confirmed_evidence = false", "candidate_reusable = true"]
+effect = ["attempt_budget -= 1", "publication_marker = true", "save_marker = false", "adopting_marker = false", "confirmed_evidence = false", "candidate_reusable = true"]
 hint = "Reconcile pending operations against fetched remote, retain candidate commit, and persist publication.json (attempting)."
 
 [[action]]
@@ -91,7 +91,7 @@ kind = "input"
 from = ["Ready"]
 to = "AttemptingPush"
 guard = "!save_marker && !adopting_marker && publication_marker && candidate_reusable && attempt_budget > 0"
-effect = ["publication_marker = true", "save_marker = false", "adopting_marker = false", "confirmed_evidence = false"]
+effect = ["attempt_budget -= 1", "publication_marker = true", "save_marker = false", "adopting_marker = false", "confirmed_evidence = false"]
 hint = "Reuse prior publication.json candidate when remote base and local tip both still match."
 
 [[action]]
@@ -135,9 +135,9 @@ name = "RetryPushOnRemoteRace"
 kind = "internal"
 from = ["AttemptingPush"]
 to = "Ready"
-guard = "publication_marker && !save_marker && !adopting_marker && attempt_budget > 1"
-effect = ["attempt_budget -= 1", "save_marker = false", "adopting_marker = false", "candidate_reusable = false", "confirmed_evidence = false"]
-hint = "Remote branch tip advanced during push; consume one attempt and rebuild candidate against new remote tip."
+guard = "publication_marker && !save_marker && !adopting_marker"
+effect = ["save_marker = false", "adopting_marker = false", "candidate_reusable = false", "confirmed_evidence = false"]
+hint = "Remote branch tip advanced during push; rebuild against the new tip if dispatch capacity remains."
 
 [[action]]
 name = "LeavePushFailedOrUncertain"
@@ -154,7 +154,7 @@ kind = "internal"
 from = ["Adopting"]
 to = "Ready"
 guard = "adopting_marker && publication_marker && confirmed_evidence && !save_marker"
-effect = ["adopting_marker = false", "publication_marker = false", "confirmed_evidence = false", "save_marker = false", "candidate_reusable = false", "attempt_budget = 2"]
+effect = ["adopting_marker = false", "publication_marker = false", "confirmed_evidence = false", "save_marker = false", "candidate_reusable = false"]
 hint = "Retained old local history, updated working tree and branch ref, verified clean history, and cleared publication.json."
 
 [[action]]

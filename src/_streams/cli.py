@@ -143,7 +143,7 @@ def complete_publication(backend, payload, *, event, operation=None):
         return False
 
 
-def finish(backend, operation, saved, *, event, args, extra=None):
+def finish(backend, operation, saved, *, event, args, extra=None, completed=True):
     payload = {"operation_id": operation.id, "save": result_data(saved)}
     kind = "session" if isinstance(operation.after, Session) else "stream"
     accepted = saved.domain.record if saved.domain and saved.domain.record else operation.after
@@ -153,7 +153,7 @@ def finish(backend, operation, saved, *, event, args, extra=None):
         ok = complete_publication(backend, payload, event=event, operation=operation)
     payload.update(extra or {})
     emit(payload, args)
-    return 0 if ok else 2
+    return 0 if ok and completed else 2
 
 
 def text_value(args, name):
@@ -301,7 +301,7 @@ def command_create(args):
     operation = Operation(str(uuid4()), None, stream, "user")
     saved = save(backend, operation)
     extra = {}
-    code = 0
+    completed = True
     if saved.accepted:
         try:
             local = runtime()
@@ -311,9 +311,8 @@ def command_create(args):
         except (StreamError, OSError, ValueError) as error:
             failure = error if isinstance(error, StreamError) else StreamError(str(error))
             extra["runtime"] = {"error": failure.as_json(), "detail": "stream saved; retry open with its ID"}
-            code = 2
-    result = finish(backend, operation, saved, event="start" if args.command == "start" else "stream", args=args, extra=extra)
-    return code or result
+            completed = False
+    return finish(backend, operation, saved, event="start" if args.command == "start" else "stream", args=args, extra=extra, completed=completed)
 
 
 def command_update(args):
@@ -472,9 +471,9 @@ def command_session(args):
         try:
             runtime().remember_directory(stream.id, Path(args.cwd or Path.cwd()), session_id=session.id,
                                          repository_url=stream.repositories[args.repository].url if args.repository else None)
-        except (StreamError, OSError) as error:
+        except (StreamError, OSError, ValueError) as error:
             extra = {"runtime": {"error": str(error), "detail": "session saved; pass --cwd when resuming"}}
-    return finish(backend, operation, saved, event="attach" if args.session_command == "attach" else "session", args=args, extra=extra)
+    return finish(backend, operation, saved, event="attach" if args.session_command == "attach" else "session", args=args, extra=extra, completed=extra is None)
 
 
 def command_agent(args):

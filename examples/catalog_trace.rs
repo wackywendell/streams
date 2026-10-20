@@ -28,11 +28,14 @@ fn execute(local: &LocalCatalog, line: &str) -> Result<Value, String> {
         // Record's derived serde representation is not the persisted wire format.
         let domain = result.domain.as_ref().map(|domain| {
             json!({
-                "operation_id": domain.operation_id,
-                "outcome": domain.outcome,
-                "record": domain.record.as_ref().map(record_to_data),
-                "conflicts": domain.conflicts,
-                "reason": domain.reason,
+                "operation_id": domain.operation_id(),
+                "outcome": domain.outcome(),
+                "record": match domain {
+                    streams_temper::operations::Reconciliation::Changes { record, .. } => Some(record_to_data(record)),
+                    _ => None,
+                },
+                "conflicts": domain.conflicts(),
+                "reason": domain.reason(),
             })
         });
         response["result"] = json!({

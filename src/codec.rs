@@ -1,13 +1,35 @@
 //! Strict physical field mapping shared by JSON-compatible encoders and YAML.
 
-use std::collections::BTreeSet;
+use std::collections::BTreeMap;
 use std::fmt;
 
-use serde::de::{self, DeserializeSeed, MapAccess, SeqAccess, Visitor};
+use serde::Deserialize;
+use serde::de::{self, DeserializeOwned, DeserializeSeed, MapAccess, SeqAccess, Visitor};
 
 use serde_json::{Map, Value};
 
 use crate::model::{Host, Record, RecordKind, Session, Stream, ValidationError};
+
+// Unit enums must use strings, not Serde's alternative single-key map representation.
+macro_rules! deserialize_string_enum {
+    ($($ty:ty),+ $(,)?) => {
+        $(impl<'de> serde::Deserialize<'de> for $ty {
+            fn deserialize<D>(deserializer: D) -> std::result::Result<Self, D::Error>
+            where
+                D: serde::Deserializer<'de>,
+            {
+                let value = <String as serde::Deserialize>::deserialize(deserializer)?;
+                value.parse::<Self>().map_err(|_| {
+                    serde::de::Error::unknown_variant(
+                        &value,
+                        <Self as strum::VariantNames>::VARIANTS,
+                    )
+                })
+            }
+        })+
+    };
+}
+pub(crate) use deserialize_string_enum;
 
 /// Encode the exact Python json.dumps string spelling used in persisted identity hashes.
 pub(crate) fn ascii_json(value: &str) -> String {
@@ -25,26 +47,53 @@ pub(crate) fn ascii_json(value: &str) -> String {
     result
 }
 
-pub fn object_fields(
-    value: &Value,
-    allowed: &[&str],
-) -> Result<Map<String, Value>, ValidationError> {
-    let Some(obj) = value.as_object() else {
-        return Err(ValidationError::new("expected an object with string keys"));
-    };
-    let allowed_set: BTreeSet<&str> = allowed.iter().copied().collect();
-    let unknown: Vec<&str> = obj
-        .keys()
-        .map(String::as_str)
-        .filter(|k| !allowed_set.contains(k))
-        .collect();
-    if !unknown.is_empty() {
-        return Err(ValidationError::new(format!(
-            "unknown fields: {}",
-            unknown.join(", ")
-        )));
+/// Require a field to be present while accepting an explicit JSON null.
+pub(crate) fn required_nullable<'de, T, D>(deserializer: D) -> Result<Option<T>, D::Error>
+where
+    T: serde::Deserialize<'de>,
+    D: serde::Deserializer<'de>,
+{
+    Option::<T>::deserialize(deserializer)
+}
+
+/// Deserialize named fields without accepting Serde's positional struct arrays.
+pub(crate) fn object<'de, T: DeserializeOwned, D: serde::Deserializer<'de>>(
+    deserializer: D,
+) -> Result<T, D::Error> {
+    // A plain Value would overwrite duplicate keys before the struct can reject them.
+    let value = StrictJsonSeed.deserialize(deserializer)?;
+    if !value.is_object() {
+        return Err(de::Error::custom("value must be an object"));
     }
-    Ok(obj.clone())
+    serde_json::from_value(value).map_err(de::Error::custom)
+}
+
+struct Object<T>(T);
+
+impl<'de, T: DeserializeOwned> Deserialize<'de> for Object<T> {
+    fn deserialize<D: serde::Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
+        object(deserializer).map(Self)
+    }
+}
+
+pub(crate) fn objects<'de, T: DeserializeOwned, D: serde::Deserializer<'de>>(
+    deserializer: D,
+) -> Result<Vec<T>, D::Error> {
+    Vec::<Object<T>>::deserialize(deserializer)
+        .map(|items| items.into_iter().map(|item| item.0).collect())
+}
+
+pub(crate) fn object_map<'de, T: DeserializeOwned, D: serde::Deserializer<'de>>(
+    deserializer: D,
+) -> Result<BTreeMap<String, T>, D::Error> {
+    BTreeMap::<String, Object<T>>::deserialize(deserializer)
+        .map(|items| items.into_iter().map(|(key, item)| (key, item.0)).collect())
+}
+
+pub(crate) fn optional_object<'de, T: DeserializeOwned, D: serde::Deserializer<'de>>(
+    deserializer: D,
+) -> Result<Option<T>, D::Error> {
+    Option::<Object<T>>::deserialize(deserializer).map(|item| item.map(|item| item.0))
 }
 
 /// Emit untagged persisted fields, not the derived serde representation of `Record`.
@@ -57,14 +106,22 @@ pub fn record_to_data(record: &Record) -> Value {
     .expect("record fields are JSON-compatible")
 }
 
+/// Require named wire fields rather than Serde's positional struct representation.
+pub(crate) fn require_object<'a>(
+    value: &'a Value,
+    name: &str,
+) -> Result<&'a Map<String, Value>, ValidationError> {
+    value
+        .as_object()
+        .ok_or_else(|| ValidationError::new(format!("{name} must be an object")))
+}
+
 /// Decode a record's wire fields and check its logical constraints before use.
 pub fn record_from_data(kind: RecordKind, value: &Value) -> Result<Record, ValidationError> {
     let record = match kind {
-        RecordKind::Stream => serde_json::from_value::<Stream>(value.clone()).map(Record::Stream),
-        RecordKind::Session => {
-            serde_json::from_value::<Session>(value.clone()).map(Record::Session)
-        }
-        RecordKind::Host => serde_json::from_value::<Host>(value.clone()).map(Record::Host),
+        RecordKind::Stream => object::<Stream, _>(value.clone()).map(Record::Stream),
+        RecordKind::Session => object::<Session, _>(value.clone()).map(Record::Session),
+        RecordKind::Host => object::<Host, _>(value.clone()).map(Record::Host),
     }
     .map_err(|error| ValidationError::new(error.to_string()))?;
     record.validated()

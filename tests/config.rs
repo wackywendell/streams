@@ -3,6 +3,7 @@ use std::fs;
 use std::os::unix::fs::{MetadataExt, PermissionsExt, symlink};
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Barrier};
+use streams_temper::storage::StorageError;
 
 use serde_json::json;
 use sha2::{Digest, Sha256};
@@ -10,7 +11,7 @@ use streams_temper::config::{
     Config, ConfigKey, HostIdentity, Marker, Strategy, resolve_path, source_id,
 };
 use streams_temper::frontend::{FrontendId, FrontendMode};
-use streams_temper::storage::Store;
+use streams_temper::storage::Transaction;
 use streams_temper::yaml_store::YamlStore;
 use strum::IntoEnumIterator;
 
@@ -132,8 +133,8 @@ fn defaults_and_reads_create_nothing() {
     let settings = f.config.load().unwrap();
     assert_eq!(settings.catalog_root, f.home.join("data/streams/catalog"));
     assert_eq!(settings.frontend, FrontendMode::Auto);
-    assert_eq!(settings.sync.stream_seconds, 300.0);
-    assert_eq!(settings.sync.session_seconds, 3600.0);
+    assert_eq!(settings.sync.stream_seconds(), 300.0);
+    assert_eq!(settings.sync.session_seconds(), 3600.0);
     assert_eq!(
         f.config.checkout_state_dir(),
         f.home.join("state/streams/checkouts")
@@ -258,8 +259,8 @@ fn overrides_get_set_and_extensible_frontends() {
         settings.frontend,
         FrontendMode::Explicit(FrontendId("third-party-adapter".into()))
     );
-    assert_eq!(settings.sync.stream_seconds, 1.25);
-    assert_eq!(settings.sync.session_seconds, 200.0);
+    assert_eq!(settings.sync.stream_seconds(), 1.25);
+    assert_eq!(settings.sync.session_seconds(), 200.0);
     assert_eq!(
         f.config.get(ConfigKey::CatalogRoot).unwrap(),
         json!(f.home.join("Catalog"))
@@ -693,12 +694,67 @@ fn fingerprint_uses_python_ascii_json_and_physical_directory_identity() {
 }
 
 #[test]
+fn marker_write_uses_exact_versioned_state_schema() {
+    let f = Fixture::new();
+    let root = f.home.join("catalog");
+    assert!(!Marker::exists(&root).unwrap());
+    assert!(!root.exists());
+    let store = YamlStore::new(&root);
+    for strategy in [Strategy::None, Strategy::Git] {
+        let marker = Marker {
+            strategy,
+            host: HostIdentity::parse(HOST).unwrap(),
+        };
+        store
+            .with_transaction::<_, StorageError>(|tx| {
+                marker
+                    .write(&streams_temper::sync::state::State::from_journal(
+                        tx.journal(),
+                    ))
+                    .unwrap();
+                assert_eq!(Marker::read(tx.journal()).unwrap(), Some(marker.clone()));
+                Ok(())
+            })
+            .unwrap();
+        assert!(Marker::exists(&root).unwrap());
+        let data: serde_json::Value =
+            serde_json::from_slice(&fs::read(root.join(".catalog-sync/cli.json")).unwrap())
+                .unwrap();
+        assert_eq!(data, json!({"version":1,"strategy":strategy,"host":HOST}));
+    }
+}
+
+#[test]
+fn nonregular_markers_never_generate_host_identity() {
+    for directory in [false, true] {
+        let f = Fixture::new();
+        let root = f.config.load().unwrap().catalog_root;
+        let marker = root.join(".catalog-sync/cli.json");
+        fs::create_dir_all(marker.parent().unwrap()).unwrap();
+        if directory {
+            fs::create_dir(&marker).unwrap();
+        } else {
+            let path = std::ffi::CString::new(marker.as_os_str().as_encoded_bytes()).unwrap();
+            assert_eq!(unsafe { libc::mkfifo(path.as_ptr(), 0o600) }, 0);
+        }
+        assert!(Marker::exists(&root).is_err());
+        assert!(
+            f.config
+                .with_lock(|guard| guard.host_identity_for_new_catalog())
+                .is_err()
+        );
+        assert!(!f.config.host_path().exists());
+        assert!(!root.join(".catalog.lock").exists());
+    }
+}
+
+#[test]
 fn generic_marker_schema_and_host_matching() {
     let f = Fixture::new();
     let store = YamlStore::new(f.home.join("catalog"));
     store
-        .with_transaction(|_| {
-            assert_eq!(Marker::read(&store.journal()).unwrap(), None);
+        .with_transaction::<_, StorageError>(|tx| {
+            assert_eq!(Marker::read(tx.journal()).unwrap(), None);
             Ok(())
         })
         .unwrap();
@@ -709,7 +765,11 @@ fn generic_marker_schema_and_host_matching() {
             json!({"version":1,"strategy":strategy,"host":HOST}).to_string(),
         )
         .unwrap();
-        let marker = Marker::read(&store.journal()).unwrap().unwrap();
+        let marker = store
+            .with_transaction::<_, StorageError>(|tx| {
+                Ok(Marker::read(tx.journal()).unwrap().unwrap())
+            })
+            .unwrap();
         assert_eq!(
             marker.strategy,
             if strategy == "none" {
@@ -736,6 +796,11 @@ fn generic_marker_schema_and_host_matching() {
         json!({"version":1,"strategy":"none","host":HOST,"extra":null}),
     ] {
         fs::write(&path, data.to_string()).unwrap();
-        assert!(Marker::read(&store.journal()).is_err());
+        store
+            .with_transaction::<_, StorageError>(|tx| {
+                assert!(Marker::read(tx.journal()).is_err());
+                Ok(())
+            })
+            .unwrap();
     }
 }

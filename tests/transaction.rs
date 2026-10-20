@@ -27,13 +27,33 @@ fn storage_failures_have_one_noncontradictory_kind() {
 }
 
 #[test]
+fn catalog_lock_rejects_directory_and_fifo_without_running_transaction() {
+    for directory in [false, true] {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join(".catalog.lock");
+        if directory {
+            fs::create_dir(&path).unwrap();
+        } else {
+            let path = std::ffi::CString::new(path.as_os_str().as_encoded_bytes()).unwrap();
+            assert_eq!(unsafe { libc::mkfifo(path.as_ptr(), 0o600) }, 0);
+        }
+        let error = YamlStore::new(dir.path())
+            .with_transaction::<(), StorageError>(|_| panic!("invalid lock admitted transaction"))
+            .unwrap_err();
+        assert!(!error.is_uncertain());
+        assert!(!dir.path().join(".catalog-sync").exists());
+        assert_eq!(fs::read_dir(dir.path()).unwrap().count(), 1);
+    }
+}
+
+#[test]
 fn transaction_owns_lock_and_releases_it_on_unwind() {
     let dir = tempfile::tempdir().unwrap();
     let store = YamlStore::new(dir.path());
     assert!(
         catch_unwind(|| {
             store
-                .with_transaction::<(), _>(|_| panic!("interrupted transaction"))
+                .with_transaction::<(), StorageError>(|_| panic!("interrupted transaction"))
                 .unwrap();
         })
         .is_err()
