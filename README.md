@@ -120,17 +120,21 @@ The checkout's Pi extension maintains catalog records instead of generating scra
 - Card discussion can answer without edits, refresh descriptions, or carry out an explicitly requested edit. User direction is approval; uncertain intent produces a question rather than a management action.
 - `/streams report` requests a report now, not a draft awaiting Apply. Use `/streams report [instructions]` to give reporting direction. Explicit reporting can enroll an unbound conversation. `/streams reset [--auto]` regenerates automatic fields (and with `--auto`, restores automatic title/goal modes and reclaims Pi/Herdr names). The model-callable `checkpoint` tool remains unchanged.
 - `/streams attach` offers initial selection or creation; attached conversations cannot switch efforts.
-- `/streams settings` controls automatic/manual reporting, initial enrollment, completed responses between reports, context, model and Herdr startup/naming. Manual reporting disables background requests, not explicit commands.
+- `/streams settings` controls automatic/manual reporting, initial enrollment, completed responses between reports, context, model, helper session logging and Herdr startup/naming. Manual reporting disables background requests, not explicit commands.
 - `/streams pane` opens the native Herdr card; `/streams pane close` closes only its display. Neither requests a report or changes membership.
 - Tab completes `card`, `report`, `reset`, `settings`, `attach` and `pane`. Unknown subcommands or invalid management arguments show usage without reporting or saving. Free-text instructions must follow `report`.
 
 Settings live in `$PI_CODING_AGENT_DIR/stream-reporting.json`, defaulting to `~/.pi/agent/stream-reporting.json`. The defaults are:
 
 ```json
-{"reporting": "automatic", "enrollment": "automatic", "frequency": 1, "context": "trimmed"}
+{"reporting": "automatic", "enrollment": "automatic", "frequency": 1, "context": "trimmed", "session_logging": false}
 ```
 
 Add `"model": {"provider": "PROVIDER", "id": "MODEL_ID"}` to select a helper model; omit it to use the current Pi model. Unavailable models fail visibly without fallback. Trimmed context excludes tool calls/results and thinking; full context preserves the active projected conversation, excluding incomplete tool batches. Oversized input fails rather than silently dropping history.
+
+Enable “Helper session logging” in `/streams settings`, or set `"session_logging": true`, to record each helper inference as a Pi JSONL session. Logs live in `$PI_CODING_AGENT_DIR/stream-reporting-sessions/`, defaulting to `~/.pi/agent/stream-reporting-sessions/`. Each log captures the exact prompt, tool schema and supplied context before inference, raw model responses before normalization, retries, errors and the parsed result. Reports, resets, enrollment and card discussion all use this setting. The originating Pi session records a `stream-helper-session` entry linking to the log; catalog-save receipts remain in that originating session.
+
+Logging is disabled by default. Logs copy potentially sensitive conversation content and can be large; they have private file permissions and no automatic pruning. Disabling logging stops new captures without deleting existing logs. A logging failure stops that helper update and appears as a work-card error. Logging uses Pi's session storage only: it does not launch another agent or run capture extensions such as Trajectory.
 
 Session progress and effort metadata use separate inferences, so updating both takes two helper requests. Reports preserve captured records, ownership and conversation-lineage guards. They may update session status, but cannot park, finish or archive the whole effort. Historical conversation is evidence, not fresh verification of files or remote services.
 

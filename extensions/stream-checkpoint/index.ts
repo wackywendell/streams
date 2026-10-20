@@ -34,6 +34,7 @@ export default function registerWorkCard(pi: ExtensionAPI, options: Options = {}
  const agentDir = options.agentDir ?? process.env.PI_CODING_AGENT_DIR ?? join(homedir(), ".pi", "agent");
  let config = options.settings;
  const settings = () => config ??= loadSettings(agentDir);
+ const logging = () => settings().session_logging ? {directory: join(agentDir, "stream-reporting-sessions"), onCreate: (value: {session_id: string; session_file: string}) => pi.appendEntry("stream-helper-session", value)} : undefined;
  const scope = new SessionScope();
  let panelOpen = false;
  let shutdown: Promise<void> | undefined;
@@ -67,7 +68,7 @@ export default function registerWorkCard(pi: ExtensionAPI, options: Options = {}
   statusTimer.unref?.();
  };
  const reporter = new Reporter({
-  scope, cli, settings, infer: options.infer, notice: warning, receipt,
+  scope, cli, settings, logging, infer: options.infer, notice: warning, receipt,
   onUpdateNative: () => native?.update(),
   onReclaimNames: (target) => native?.reclaimNames(target).catch(() => {}),
   activity: (text, completed) => {
@@ -106,7 +107,7 @@ export default function registerWorkCard(pi: ExtensionAPI, options: Options = {}
      ctx.ui.setStatus?.("stream-reporting", "Work card · ⟳ Thinking...");
      let response;
      try {
-      response = await (options.infer ?? infer)(ctx, {type: "discussion", catalog, messages: evidence.messages, discussion: structuredClone(prospective)}, signal, settings().model);
+      response = await (options.infer ?? infer)(ctx, {type: "discussion", catalog, messages: evidence.messages, discussion: structuredClone(prospective)}, signal, settings().model, logging());
      } finally {
       if (fence.live()) ctx.ui.setStatus?.("stream-reporting", undefined);
      }

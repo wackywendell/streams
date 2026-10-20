@@ -6,8 +6,8 @@ import { DynamicBorder, getSettingsListTheme, getSelectListTheme } from "@earend
 import type { ExtensionContext } from "@earendil-works/pi-coding-agent";
 import { Container, Text, Input, SettingsList, SelectList, fuzzyFilter, matchesKey } from "@earendil-works/pi-tui";
 import type { SettingItem } from "@earendil-works/pi-tui";
-export type ReportingSettings = {reporting: "automatic" | "manual"; enrollment: "automatic" | "manual"; frequency: number; context: "trimmed" | "full"; model?: {provider: string; id: string}};
-export const defaults: ReportingSettings = {reporting: "automatic", enrollment: "automatic", frequency: 1, context: "trimmed"};
+export type ReportingSettings = {reporting: "automatic" | "manual"; enrollment: "automatic" | "manual"; frequency: number; context: "trimmed" | "full"; model?: {provider: string; id: string}; session_logging: boolean};
+export const defaults: ReportingSettings = {reporting: "automatic", enrollment: "automatic", frequency: 1, context: "trimmed", session_logging: false};
 const plainObject = (value: unknown): value is Record<string, unknown> => !!value && typeof value === "object" && (Object.getPrototypeOf(value) === Object.prototype || Object.getPrototypeOf(value) === null);
 function storedSettings(path: string): Record<string, unknown> {
  if (!existsSync(path)) return {};
@@ -19,6 +19,7 @@ function storedSettings(path: string): Record<string, unknown> {
 export function validateSettings(value: ReportingSettings): void {
  if (!plainObject(value)) throw Error("Reporting settings must be a plain object");
  if (!["automatic", "manual"].includes(value.reporting) || !["automatic", "manual"].includes(value.enrollment) || !["trimmed", "full"].includes(value.context) || !Number.isInteger(value.frequency) || value.frequency < 1) throw Error("Reporting settings require automatic/manual, trimmed/full and a positive integer response frequency");
+ if (typeof value.session_logging !== "boolean") throw Error("Helper session logging must be a boolean");
  if (value.model !== undefined && (!plainObject(value.model) || typeof value.model.provider !== "string" || !value.model.provider.trim() || typeof value.model.id !== "string" || !value.model.id.trim())) throw Error("Reporting model must be an object with nonempty string provider and model ID");
 }
 export function loadSettings(agentDir: string): ReportingSettings {
@@ -30,7 +31,7 @@ export function saveSettings(agentDir: string, value: ReportingSettings): void {
  validateSettings(value);mkdirSync(agentDir, {recursive: true});
  const path = join(agentDir, "stream-reporting.json"), temp = `${path}.${randomUUID()}.tmp`;
  const saved: Record<string, unknown> = {...value, ...storedSettings(path)};
- for (const key of ["reporting", "enrollment", "frequency", "context", "model"] as const) {
+ for (const key of ["reporting", "enrollment", "frequency", "context", "model", "session_logging"] as const) {
   if (value[key] === undefined) delete saved[key];else saved[key] = value[key];
  }
  writeFileSync(temp, JSON.stringify(saved, null, 2) + "\n", {mode: 0o600});renameSync(temp, path);
@@ -47,6 +48,7 @@ export async function settingsDialog(ctx: ExtensionContext, settings: ReportingS
   {id: "frequency", label: "Response frequency", currentValue: String(value.frequency), description: "How many completed agent responses to wait between automatic work-card updates.", values: ["1", "2", "3", "5", "10"]},
   {id: "context", label: "Context", currentValue: value.context, description: "What conversation history the summary model reads: 'trimmed' uses dialogue and compaction summaries; 'full' also includes tool calls and outputs.", values: ["trimmed", "full"]},
   {id: "model", label: "Model", currentValue: value.model ? `${value.model.provider}/${value.model.id}` : "current Pi model", description: "Model used to summarize progress and generate short titles. Press Enter to search and pick from available models."},
+  {id: "session_logging", label: "Helper session logging", currentValue: value.session_logging ? "enabled" : "disabled", description: "Save complete helper inputs, responses, retries and errors as Pi JSONL sessions in stream-reporting-sessions under the Pi agent directory. Copies conversation content; logs can be large. Local logging only, not another agent or capture extensions.", values: ["enabled", "disabled"]},
   ...(nativePath ? [
    {id: "workspace_startup", label: "Herdr workspace startup", currentValue: String(native.workspace_startup), description: "Automatically open the side-by-side Herdr work-card pane when a chat is attached, or only when you run /streams pane.", values: ["automatic", "manual"]},
    ...Object.entries({
@@ -71,6 +73,7 @@ export async function settingsDialog(ctx: ExtensionContext, settings: ReportingS
     if (model) {const slash = next.indexOf("/");updated.model = {provider: next.slice(0, slash), id: next.slice(slash + 1)};}
     else delete updated.model;
    } else if (id === "frequency") updated.frequency = Number(next);
+   else if (id === "session_logging") updated.session_logging = next === "enabled";
    else (updated as any)[id] = next;
    validateSettings(updated);save(updated);
    delete value.model;Object.assign(value, updated);

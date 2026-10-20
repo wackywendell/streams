@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
 import { spawn } from 'node:child_process';
-import { mkdtempSync, mkdirSync, readFileSync, statSync, writeFileSync, chmodSync, rmSync } from 'node:fs';
+import { mkdtempSync, mkdirSync, readdirSync, readFileSync, statSync, writeFileSync, chmodSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -174,6 +174,7 @@ test('settings change in place, pick searchable models, and preserve Herdr confi
     // Cursor stays on reporting after each toggle; move to the model submenu.
     for(let i=0;i<4;i++)press('\x1b[B');press('\r');press('a/first');press('\r');
     assert.deepEqual(saved.at(-1).model,{provider:'a',id:'first'});
+    press('\x1b[B');press('\r');assert.equal(saved.at(-1).session_logging,true);
     press('\x1b[B');press('\r'); // workspace startup
     press('\x1b[B');press('\r'); // workspace naming: enabled -> disabled
     const native=JSON.parse(readFileSync(join(root,'work-cards.json'),'utf8'));
@@ -204,7 +205,7 @@ test('settings revalidate concurrent native config changes before saving',async(
    const component=factory({terminal:{rows:30},requestRender(){}},{fg:(_color,text)=>text,bold:text=>text},{},done);
    const path=join(root,'work-cards.json'),bytes=JSON.stringify({workspace_startup:'invalid'});
    writeFileSync(path,bytes);
-   for(let i=0;i<6;i++)component.handleInput('\x1b[B');
+   for(let i=0;i<7;i++)component.handleInput('\x1b[B');
    component.handleInput('\r');
    assert.equal(readFileSync(path,'utf8'),bytes);
    assert.match(notices[0],/workspace_startup must be automatic or manual/);
@@ -223,6 +224,7 @@ test('all settings explain their effects and leave description room on short ter
     'How many completed agent responses to wait',
     'What conversation history the summary model reads',
     'Model used to summarize progress and generate short titles.',
+    'Save complete helper inputs, responses, retries and errors',
     'Automatically open the side-by-side Herdr work-card pane',
     "Sync the Herdr workspace name with the effort's short title",
     "Sync this Herdr tab's name with this session's short title",
@@ -252,7 +254,104 @@ test('automatic reset unlocks manual names before fresh inference and keeps life
 });
 test('reporting settings have explicit stable knobs and reject invalid cadence',()=>{
  const root=mkdtempSync(join(tmpdir(),'card-settings-'));
- try{assert.deepEqual(loadSettings(root),defaults);const custom={reporting:'manual',enrollment:'manual',frequency:3,context:'full',model:{provider:'custom',id:'helper'}};saveSettings(root,custom);assert.deepEqual(loadSettings(root),custom);for(const frequency of [0,-1,1.5,NaN,'2'])assert.throws(()=>validateSettings({...defaults,frequency}),/positive integer/);}finally{rmSync(root,{recursive:true,force:true});}
+ try{assert.deepEqual(loadSettings(root),defaults);const custom={...defaults,reporting:'manual',enrollment:'manual',frequency:3,context:'full',model:{provider:'custom',id:'helper'},session_logging:true};saveSettings(root,custom);assert.deepEqual(loadSettings(root),custom);for(const frequency of [0,-1,1.5,NaN,'2'])assert.throws(()=>validateSettings({...defaults,frequency}),/positive integer/);}finally{rmSync(root,{recursive:true,force:true});}
+});
+for(const type of ['session','stream','enroll','discussion'])test(`helper logging persists exact ${type} input and raw response as a linked Pi session`,async()=>{
+ const root=mkdtempSync(join(tmpdir(),'card-helper-log-')),directory=join(root,'logs'),created=[];
+ try {
+  const parent=SessionManager.create(root,join(root,'parent'));parent.appendMessage({role:'user',content:'Original conversation',timestamp:1});
+  const answer=type==='enroll'?{meaningful:false}:type==='discussion'?{reply:'Discuss only'}:{changes:{}};
+  const response={role:'assistant',api:'openai-responses',provider:'mock',model:'helper',stopReason:'toolUse',timestamp:2,usage:{input:10,output:5,cacheRead:0,cacheWrite:0,totalTokens:15,cost:{input:0,output:0,cacheRead:0,cacheWrite:0,total:0}},content:[{type:'thinking',thinking:'Exposed reasoning'},{type:'toolCall',id:'record',name:'record_card',arguments:answer}]};
+  let payload;
+  const ctx={cwd:root,sessionManager:parent,model:{provider:'mock',id:'helper',contextWindow:100000},modelRegistry:{complete:async(_model,value)=>{
+   payload=structuredClone(value);
+   assert.equal(created.length,1);
+   const before=SessionManager.open(created[0].session_file).getEntries().filter(entry=>entry.type==='message');
+   assert.deepEqual(before.slice(1).map(entry=>entry.message),payload.messages,'input is on disk before the model starts');
+   return response;
+  }}};
+  const request={type,catalog:context(),messages:[{role:'user',content:'Current work',timestamp:1}],...(type==='session'?{reset:true}:{}),...(type==='discussion'?{discussion:[{role:'user',text:'Question'}]}:{})};
+  assert.deepEqual(await infer(ctx,request,new AbortController().signal,undefined,{directory,onCreate:value=>created.push(value)}),answer);
+  assert.equal(readdirSync(directory).length,1);
+  const log=SessionManager.open(created[0].session_file),entries=log.getEntries(),messages=entries.filter(entry=>entry.type==='message').map(entry=>entry.message);
+  assert.equal(log.getSessionId(),created[0].session_id);assert.equal(log.getHeader().parentSession,parent.getSessionFile());
+  assert.match(log.getSessionName(),new RegExp(`Streams helper.*${type}`));
+  assert.equal(messages[0].role,'system');assert.equal(messages[0].content,payload.systemPrompt);assert.deepEqual(messages[0].toolsAdded,payload.tools);
+  assert.deepEqual(messages.slice(1,-1),payload.messages);assert.deepEqual(messages.at(-1),response);
+  const metadata=entries.find(entry=>entry.customType==='stream-helper-request').data;
+  assert.deepEqual(metadata,{parent_session_id:parent.getSessionId(),parent_leaf_id:parent.getLeafId(),task:type,reset:type==='session'});
+  assert.deepEqual(entries.find(entry=>entry.customType==='stream-helper-result').data,answer);
+  assert.doesNotMatch(readFileSync(created[0].session_file,'utf8'),/source-a|"token"/);
+  assert.equal(statSync(directory).mode&0o777,0o700);assert.equal(statSync(created[0].session_file).mode&0o777,0o600);
+ } finally {rmSync(root,{recursive:true,force:true});}
+});
+for(const failure of ['throw','response'])test(`helper logging retains every transient ${failure} attempt before retrying`,async()=>{
+ const root=mkdtempSync(join(tmpdir(),'card-helper-retry-'));let attempts=0;
+ try {
+  const ctx={cwd:root,sessionManager:SessionManager.inMemory(root),model:{provider:'mock',id:'helper'},modelRegistry:{complete:async()=>{
+   if(++attempts===1){if(failure==='throw')throw Error('503 upstream connect error');return {role:'assistant',stopReason:'error',errorMessage:'503 upstream connect error',content:[],timestamp:1};}
+   return {role:'assistant',stopReason:'toolUse',content:[{type:'toolCall',name:'record_card',arguments:{changes:{state:'Recovered'}}}],timestamp:2};
+  }}};
+  await infer(ctx,{type:'session',catalog:context(),messages:[]},new AbortController().signal,undefined,{directory:root});
+  const entries=SessionManager.open(join(root,readdirSync(root)[0])).getEntries();
+  assert.deepEqual(entries.filter(entry=>entry.customType==='stream-helper-attempt').map(entry=>entry.data.attempt),[1,2]);
+  if(failure==='throw')assert.match(entries.find(entry=>entry.customType==='stream-helper-attempt-error').data.error,/503/);
+  else assert.equal(entries.filter(entry=>entry.type==='message'&&entry.message.role==='assistant')[0].message.stopReason,'error');
+  assert.equal(entries.at(-1).customType,'stream-helper-result');assert.equal(attempts,2);
+ } finally {rmSync(root,{recursive:true,force:true});}
+});
+for(const failure of ['throw','aborted','invalid','budget'])test(`helper logging retains input and ${failure} failure without saving a result`,async()=>{
+ const root=mkdtempSync(join(tmpdir(),'card-helper-failure-'));let attempts=0;
+ try {
+  const controller=new AbortController();
+  const ctx={cwd:root,sessionManager:SessionManager.inMemory(root),model:{provider:'mock',id:'helper',contextWindow:failure==='budget'?1:100000},modelRegistry:{complete:async()=>{
+   attempts++;
+   if(failure==='throw')throw Error('401 unauthorized');
+   if(failure==='aborted'){controller.abort();return {role:'assistant',stopReason:'aborted',content:[],timestamp:1};}
+   return {role:'assistant',stopReason:'toolUse',content:[{type:'toolCall',name:'record_card',arguments:{changes:{title_mode:'manual'}}}],timestamp:1};
+  }}};
+  await assert.rejects(infer(ctx,{type:'session',catalog:context(),messages:[]},controller.signal,undefined,{directory:root}));
+  const entries=SessionManager.open(join(root,readdirSync(root)[0])).getEntries();
+  assert.equal(entries.at(-1).customType,'stream-helper-error');assert.equal(entries.at(-1).data.cancelled,failure==='aborted');
+  assert.ok(entries.some(entry=>entry.type==='message'&&entry.message.role==='user'));assert.ok(!entries.some(entry=>entry.customType==='stream-helper-result'));
+  assert.equal(attempts,failure==='budget'?0:1);
+ } finally {rmSync(root,{recursive:true,force:true});}
+});
+test('helper logging captures raw tool arguments before normalization and fails closed if input cannot be logged',async()=>{
+ const root=mkdtempSync(join(tmpdir(),'card-helper-raw-'));let calls=0;
+ try {
+  const ctx={cwd:root,sessionManager:SessionManager.inMemory(root),model:{provider:'mock',id:'helper'},modelRegistry:{complete:async()=>{calls++;return {role:'assistant',stopReason:'toolUse',content:[{type:'toolCall',name:'record_card',arguments:{changes:{title:' ',state:null}}}],timestamp:1};}}};
+  assert.deepEqual(await infer(ctx,{type:'session',catalog:context(),messages:[]},new AbortController().signal,undefined,{directory:root}),{changes:{state:''}});
+  const entries=SessionManager.open(join(root,readdirSync(root)[0])).getEntries();
+  assert.deepEqual(entries.find(entry=>entry.type==='message'&&entry.message.role==='assistant').message.content[0].arguments,{changes:{title:' ',state:null}});
+  const blocked=join(root,'not-a-directory');writeFileSync(blocked,'file');
+  await assert.rejects(infer(ctx,{type:'session',catalog:context(),messages:[]},new AbortController().signal,undefined,{directory:blocked}));assert.equal(calls,1);
+ } finally {rmSync(root,{recursive:true,force:true});}
+});
+test('helper response persistence errors never retry a successful model call',async t=>{
+ const root=mkdtempSync(join(tmpdir(),'card-helper-write-failure-'));let calls=0;
+ const append=SessionManager.prototype.appendMessage;
+ t.mock.method(SessionManager.prototype,'appendMessage',function(message){if(message.role==='assistant')throw Error('503 simulated log write failure');return append.call(this,message);});
+ try {
+  const ctx={cwd:root,sessionManager:SessionManager.inMemory(root),model:{provider:'mock',id:'helper'},modelRegistry:{complete:async()=>{calls++;return {role:'assistant',stopReason:'toolUse',content:[{type:'toolCall',name:'record_card',arguments:{changes:{}}}],timestamp:1};}}};
+  await assert.rejects(infer(ctx,{type:'session',catalog:context(),messages:[]},new AbortController().signal,undefined,{directory:root}),/503 simulated log write failure/);
+  assert.equal(calls,1);
+ } finally {rmSync(root,{recursive:true,force:true});}
+});
+test('helper inputs stay private in an existing permissive directory even when initial persistence fails',async t=>{
+ const root=mkdtempSync(join(tmpdir(),'card-helper-private-'));let calls=0;
+ chmodSync(root,0o755);
+ const append=SessionManager.prototype.appendMessage;
+ t.mock.method(SessionManager.prototype,'appendMessage',function(message){
+  assert.equal(statSync(root).mode&0o777,0o700);assert.equal(statSync(this.getSessionFile()).mode&0o777,0o600);
+  if(message.role==='user')throw Error('Initial persistence failed');
+  return append.call(this,message);
+ });
+ try {
+  const ctx={cwd:root,sessionManager:SessionManager.inMemory(root),model:{provider:'mock',id:'helper'},modelRegistry:{complete:async()=>{calls++;assert.fail('must not infer without a logged input');}}};
+  await assert.rejects(infer(ctx,{type:'session',catalog:context(),messages:[]},new AbortController().signal,undefined,{directory:root}),/Initial persistence failed/);
+  assert.equal(calls,0);assert.equal(readdirSync(root).length,1);assert.equal(statSync(join(root,readdirSync(root)[0])).mode&0o777,0o600);
+ } finally {rmSync(root,{recursive:true,force:true});}
 });
 test('model inference uses actual supported registry API, typed calls, no tools beyond record_card',async()=>{
  const requests=[];const ctx={model:{id:'current',contextWindow:100000},modelRegistry:{complete:async(model,payload,options)=>{requests.push({model,payload,options});return {stopReason:'toolUse',content:[{type:'toolCall',name:'record_card',arguments:{changes:{state:'Recorded'}}}]};},find:()=>undefined}};
@@ -372,7 +471,9 @@ test('actual local Pi runtime registry and projected compaction work without liv
   runtime.stream=(selected,payload)=>{assert.equal(payload.tools[0].name,'record_card');const events=createAssistantMessageEventStream();const message={role:'assistant',content:[{type:'toolCall',id:'record',name:'record_card',arguments:{changes:{state:'SDK verified'}}}],api:selected.api,provider:selected.provider,model:selected.id,stopReason:'toolUse',timestamp:Date.now(),usage:{input:1,output:1,cacheRead:0,cacheWrite:0,totalTokens:2,cost:{input:0,output:0,cacheRead:0,cacheWrite:0,total:0}}};events.push({type:'done',reason:'toolUse',message});events.end();return events;};
   const manager=SessionManager.inMemory(root);const user=manager.appendMessage({role:'user',content:'Original old content',timestamp:1});manager.appendCompaction('Compacted authoritative work',user,100);manager.appendContextEdit(user,{content:'Changed by active context projection'});
   const evidence=checkpointContext(manager,'trimmed');assert.match(JSON.stringify(evidence.messages),/Compacted authoritative work/);assert.match(JSON.stringify(evidence.messages),/Changed by active context projection/);assert.doesNotMatch(JSON.stringify(evidence.messages),/Original old content/);
-  const response=await infer({model,modelRegistry:registry},{type:'session',catalog:context(),messages:evidence.messages},new AbortController().signal);assert.equal(response.changes.state,'SDK verified');
+  const logs=[];
+  const response=await infer({cwd:root,sessionManager:manager,model,modelRegistry:registry},{type:'session',catalog:context(),messages:evidence.messages},new AbortController().signal,undefined,{directory:join(root,'logs'),onCreate:value=>logs.push(value)});assert.equal(response.changes.state,'SDK verified');
+  assert.equal(SessionManager.open(logs[0].session_file).getEntries().find(entry=>entry.type==='message'&&entry.message.role==='assistant').message.model,model.id);
  } finally {rmSync(root,{recursive:true,force:true});}
 });
 test('reference validation rejects unknown repos, absolute/traversal paths, malformed URLs, duplicate or arbitrary fields',()=>{
@@ -471,7 +572,7 @@ function commandFixture(options={}) {
  const catalog=options.catalog??context();let reads=0;
  const cli={context:async()=>{reads++;return structuredClone(catalog);},list:async()=>[stream],apply:async req=>{writes.push(req);Object.assign(catalog[req.kind],req.changes);return {save:{local:'persisted',sharing:'local-only',domain:{outcome:'changes'}}};},enroll:async req=>{writes.push(req);catalog.stream=stream;catalog.session=session;return {stream,session,saves:[]};}};
  const ctx={mode:'tui',hasUI:true,cwd:'/repo',sessionManager:{getSessionId:()=> 'native',getLeafId:()=> 'leaf',getBranch:()=>[{id:'leaf'}],buildSessionProjection:()=>({messages:[]})},ui:{notify:(text,level)=>notices.push({text,level}),setStatus:(_key,text)=>activity.push(text),select:async(title,rows)=>{dialogs.push({title,rows});return options.select?.(title,rows)??'Close';},editor:async()=> 'Contribution',confirm:async()=>true}};
- registerWorkCard({on:(name,fn)=>handlers.set(name,fn),registerCommand:(name,value)=>commands.set(name,value),registerTool:value=>tools.set(value.name,value),registerShortcut:()=>assert.fail('no shortcuts'),appendEntry:(type,value)=>receipts.push({type,value})},{settings:{...defaults,reporting:'manual',enrollment:'manual'},cli,infer:async(_ctx,req)=>{requests.push(req);return options.infer?await options.infer(req):{changes:{}};}});
+ registerWorkCard({on:(name,fn)=>handlers.set(name,fn),registerCommand:(name,value)=>commands.set(name,value),registerTool:value=>tools.set(value.name,value),registerShortcut:()=>assert.fail('no shortcuts'),appendEntry:(type,value)=>receipts.push({type,value})},{agentDir:options.agentDir,settings:{...defaults,reporting:'manual',enrollment:'manual',...options.settings},cli,infer:async(_ctx,req,_signal,_model,logging)=>{requests.push(req);return options.infer?await options.infer(req,logging):{changes:{}};}});
  return {commands,tools,handlers,ctx,notices,requests,writes,receipts,activity,dialogs,reads:()=>reads,run:args=>commands.get('streams').handler(args,ctx)};
 }
 test('only streams slash command registers; model checkpoint tool retains its interface',()=>{
@@ -596,6 +697,22 @@ test('streams settings dispatches to the existing reporting dialog without repor
  assert.equal(f.dialogs.length,1);assert.match(f.dialogs[0].title,/Work card & Herdr settings/);assert.ok(f.dialogs[0].rows.includes('Response frequency: 1'));
  assert.equal(f.reads(),0);assert.deepEqual(f.requests,[]);assert.deepEqual(f.writes,[]);
 });
+test('helper logging setting toggles in place and passes log options to reports and resets without changing model settings',async()=>{
+ const root=mkdtempSync(join(tmpdir(),'card-helper-setting-')),choices=['Helper session logging: disabled','Close','Helper session logging: enabled','Close'],seen=[];
+ try {
+  const f=commandFixture({agentDir:root,select:()=>choices.shift(),infer:async(req,logging)=>{
+   seen.push({type:req.type,logging});
+   if(logging){assert.equal(logging.directory,join(root,'stream-reporting-sessions'));logging.onCreate({session_id:'helper',session_file:'helper.jsonl'});}
+   return {changes:{}};
+  }});
+  await f.run('report');await until(()=>f.activity.length===2);assert.ok(seen.every(value=>value.logging===undefined));
+  await f.run('settings');assert.equal(loadSettings(root).session_logging,true);
+  await f.run('reset session --auto');await until(()=>f.activity.length===4);assert.ok(seen.at(-1).logging);
+  assert.deepEqual(f.receipts.filter(entry=>entry.type==='stream-helper-session'),[{type:'stream-helper-session',value:{session_id:'helper',session_file:'helper.jsonl'}}]);
+  await f.run('settings');assert.equal(loadSettings(root).session_logging,false);
+  await f.run('reset stream');await until(()=>f.activity.length===6);assert.equal(seen.at(-1).logging,undefined);
+ } finally {rmSync(root,{recursive:true,force:true});}
+});
 test('streams attach enrolls an initial selection but never switches a bound conversation',async()=>{
  const catalog=context();catalog.stream=null;catalog.session=null;catalog.sessions=[];
  const f=commandFixture({catalog,select:(_title,rows)=>rows.find(row=>row.startsWith('effort ·'))});
@@ -715,6 +832,8 @@ test('settings validate object roots/model types and preserve unknown on-disk ke
  const root=mkdtempSync(join(tmpdir(),'card-settings-invalid-'));const path=join(root,'stream-reporting.json');
  try{
   for(const value of [null,[],false,42,'text']){writeFileSync(path,JSON.stringify(value));assert.throws(()=>loadSettings(root),/object/i);}
+  for(const session_logging of [null,'enabled',0,{}]){writeFileSync(path,JSON.stringify({...defaults,session_logging}));assert.throws(()=>loadSettings(root),/logging.*boolean/i);}
+  writeFileSync(path,JSON.stringify({reporting:'manual'}));assert.equal(loadSettings(root).session_logging,false);
   for(const model of [null,[],42,{provider:42,id:'model'},{provider:'provider',id:false}]){writeFileSync(path,JSON.stringify({...defaults,model}));assert.throws(()=>loadSettings(root),/model|provider/i);}
   writeFileSync(path,JSON.stringify({...defaults,future:{keep:true}}));const loaded=loadSettings(root);
   writeFileSync(path,JSON.stringify({...defaults,future:{keep:'newer'},concurrent:'preserved'}));

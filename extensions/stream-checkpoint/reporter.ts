@@ -1,6 +1,7 @@
 import { randomUUID } from "node:crypto";
 import type { ExtensionContext } from "@earendil-works/pi-coding-agent";
 import { infer as modelInfer } from "./agent.ts";
+import type { InferenceLogOptions } from "./agent.ts";
 import { automaticFields, editRequest } from "./core.ts";
 import { receiptCanContinue } from "./streams.ts";
 import type { Receipt, StreamCli } from "./streams.ts";
@@ -9,7 +10,7 @@ import type { SessionFence } from "./session-scope.ts";
 import type { ReportingSettings } from "./settings.ts";
 
 export type ResetTarget = "all" | "session" | "stream";
-type Options = {scope?: SessionScope; cli(ctx: ExtensionContext): StreamCli; settings(): ReportingSettings; infer?: typeof modelInfer; notice(text: string): void; receipt(value: Receipt, deferNative?: boolean, quiet?: boolean): void; activity?(text?: string, completed?: boolean): void; onUpdateNative?(): void; onReclaimNames?(target: ResetTarget): Promise<void> | void};
+type Options = {scope?: SessionScope; cli(ctx: ExtensionContext): StreamCli; settings(): ReportingSettings; infer?: typeof modelInfer; logging?(): InferenceLogOptions | undefined; notice(text: string): void; receipt(value: Receipt, deferNative?: boolean, quiet?: boolean): void; activity?(text?: string, completed?: boolean): void; onUpdateNative?(): void; onReclaimNames?(target: ResetTarget): Promise<void> | void};
 type Pending = {ctx: ExtensionContext; force: boolean; instructions?: string; reset?: boolean; auto?: boolean; target?: ResetTarget};
 export class Reporter {
  readonly scope: SessionScope;
@@ -73,7 +74,7 @@ export class Reporter {
   if (!capture.valid() || signal.aborted) return false;
   const inferAndApply = async (kind: "session" | "stream"): Promise<boolean> => {
    for (let attempt = 0; ; attempt++) {
-    const inferred = await generate(ctx, {type: kind, catalog: capture.catalog, messages: capture.evidence.messages, instructions, reset}, signal, this.options.settings().model);
+    const inferred = await generate(ctx, {type: kind, catalog: capture.catalog, messages: capture.evidence.messages, instructions, reset}, signal, this.options.settings().model, this.options.logging?.());
     if (signal.aborted || !await capture.attached()) return false;
     if (kind === "session" && reset && capture.catalog.session!.state_short !== null && !Object.hasOwn(inferred.changes, "state_short")) inferred.changes.state_short = null;
     if (kind === "stream" && reset && capture.catalog.stream!.goal_mode === "automatic" && capture.catalog.stream!.goal_short !== null && !Object.hasOwn(inferred.changes, "goal_short")) inferred.changes.goal_short = null;
@@ -97,7 +98,7 @@ export class Reporter {
     if (reset) {this.options.notice("Reset requires an attached work card. Use /streams attach first.");return false;}
     if (!force && this.options.settings().enrollment !== "automatic") return false;
     const operationId = randomUUID();
-    const result = await generate(ctx, {type: "enroll", catalog: capture.catalog, messages: capture.evidence.messages, instructions}, signal, this.options.settings().model);
+    const result = await generate(ctx, {type: "enroll", catalog: capture.catalog, messages: capture.evidence.messages, instructions}, signal, this.options.settings().model, this.options.logging?.());
     if (signal.aborted || !await capture.attached() || (!result.meaningful && !force)) return false;
     if (!result.session?.title?.trim() || (!capture.catalog.stream && !result.stream?.title?.trim())) throw Error("Enrollment requires meaningful effort and session titles");
     const receipt = await cli.enroll({catalog_source: capture.catalog.catalog_source, operation_id: operationId, harness: "pi", harness_session_id: capture.native, ...(capture.catalog.stream ? {stream_id: capture.catalog.stream.id} : {stream: result.stream}), session: result.session, actor: "automatic", cwd: capture.cwd});

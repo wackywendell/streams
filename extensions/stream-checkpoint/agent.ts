@@ -1,8 +1,10 @@
-import { convertToLlm, estimateTokens } from "@earendil-works/pi-coding-agent";
+import { convertToLlm, estimateTokens, SessionManager } from "@earendil-works/pi-coding-agent";
+import { chmodSync, mkdirSync, writeFileSync } from "node:fs";
 import { setTimeout } from "node:timers/promises";
 import { Type } from "typebox";
 import { Check } from "typebox/value";
 import type { ExtensionContext } from "@earendil-works/pi-coding-agent";
+import type { AssistantMessage } from "@earendil-works/pi-ai";
 import type { LocalContext } from "./streams.ts";
 import { automaticFields, fields, statuses, validateChanges } from "./core.ts";
 
@@ -75,24 +77,28 @@ No repetition or filler: never repeat words from the effort title in the session
 For session reports, update session.status (active, waiting, blocked, parked, done) from conversation evidence: set done when the user indicates this session is done or wrapped up (e.g. "I think we're done here", "that's all for this", "looks good, thanks") or when this session's scoped task is finished with no remaining work for this chat; set parked when the user pauses or shelves this session for later; set waiting when waiting on CI, review, an external system, or another session; set blocked when unable to proceed due to an unresolved blocker; set active when work in this session is ongoing or resumes. Only whole-effort stream.status is manual-only.`;
 const sessionProgressPrompt = `Write state as a brief orientation for someone returning to the work: what meaningfully changed and where things stand. Use one or two short sentences, normally under 35 words; shorter is better. Do not enumerate completed steps, test counts, commit hashes, rollout inventories, or other specific details unless essential to understanding the result. Put unfinished scope and blockers in remaining. This is to provide the user a quick update/reminder of the current status, not a completion report.`;
 const transientError = /(?:\b(?:429|502|503|504)\b|upstream connect error|disconnect\/reset before headers|connection termination|overloaded|ECONNRESET|ETIMEDOUT)/i;
-async function completeWithRetry<T extends {stopReason: string; errorMessage?: string}>(complete: () => Promise<T>, signal: AbortSignal): Promise<T> {
+async function completeWithRetry(complete: () => Promise<AssistantMessage>, signal: AbortSignal, log?: SessionManager): Promise<AssistantMessage> {
  for (let attempt = 0; ; attempt++) {
   if (signal.aborted) throw Error("Reporting cancelled");
-  try {
-   const response = await complete();
-   if (response.stopReason === "error") throw Error(response.errorMessage ?? "Reporting model failed");
-   return response;
-  } catch(error) {
-   if (signal.aborted) throw Error("Reporting cancelled");
-   if (attempt >= 2 || !transientError.test(String(error))) throw error;
+  log?.appendCustomEntry("stream-helper-attempt", {attempt: attempt + 1});
+  let response: AssistantMessage | undefined, failure: unknown;
+  try {response = await complete();}
+  catch (error) {log?.appendCustomEntry("stream-helper-attempt-error", {attempt: attempt + 1, error: String(error)});failure = error;}
+  if (response) {
+   log?.appendMessage(response);
+   if (response.stopReason !== "error") return response;
+   failure = Error(response.errorMessage ?? "Reporting model failed");
   }
+  if (signal.aborted) throw Error("Reporting cancelled");
+  if (attempt >= 2 || !transientError.test(String(failure))) throw failure;
   await setTimeout(150 * (attempt + 1), undefined, {signal});
  }
 }
-export function infer(ctx: ExtensionContext, request: EnrollmentInference, signal: AbortSignal, configured?: {provider: string; id: string}): Promise<EnrollmentResult>;
-export function infer(ctx: ExtensionContext, request: ReportInference, signal: AbortSignal, configured?: {provider: string; id: string}): Promise<ReportResult>;
-export function infer(ctx: ExtensionContext, request: DiscussionInference, signal: AbortSignal, configured?: {provider: string; id: string}): Promise<DiscussionResult>;
-export async function infer(ctx: ExtensionContext, request: Inference, signal: AbortSignal, configured?: {provider: string; id: string}): Promise<Inferred> {
+export type InferenceLogOptions = {directory: string; onCreate?(value: {session_id: string; session_file: string}): void};
+export function infer(ctx: ExtensionContext, request: EnrollmentInference, signal: AbortSignal, configured?: {provider: string; id: string}, logging?: InferenceLogOptions): Promise<EnrollmentResult>;
+export function infer(ctx: ExtensionContext, request: ReportInference, signal: AbortSignal, configured?: {provider: string; id: string}, logging?: InferenceLogOptions): Promise<ReportResult>;
+export function infer(ctx: ExtensionContext, request: DiscussionInference, signal: AbortSignal, configured?: {provider: string; id: string}, logging?: InferenceLogOptions): Promise<DiscussionResult>;
+export async function infer(ctx: ExtensionContext, request: Inference, signal: AbortSignal, configured?: {provider: string; id: string}, logging?: InferenceLogOptions): Promise<Inferred> {
  const model = configured ? ctx.modelRegistry.find(configured.provider, configured.id) : ctx.model;
  if (!model) throw Error("Configured reporting model is unavailable. Choose an available provider/model; no fallback was used.");
  let schema: any;
@@ -121,34 +127,53 @@ export async function infer(ctx: ExtensionContext, request: Inference, signal: A
  const reset = resetting ? "Infer all allowed automatic fields fresh from conversation evidence, including a fresh short-handle title when title is an allowed automatic field. Do not anchor on the prior card or return an empty no-change delta. Respect manual fields and their modes." : undefined;
  messages.push({role: "user", content: JSON.stringify({task: request.type, catalog: visibleCatalog, instructions: request.instructions, reset, discussion: request.type === "discussion" ? request.discussion : undefined}), timestamp: Date.now()});
  const prompt = request.type === "session" ? `${systemPrompt}\n\n${sessionProgressPrompt}` : systemPrompt;
- assertContextFits(model, prompt + JSON.stringify(schema), messages);
- const response = await completeWithRetry(() => ctx.modelRegistry.complete(model, {systemPrompt: prompt, messages, tools: [{name: "record_card", description: "Return the structured report or discussion response", parameters: schema}]}, {signal}), signal);
- if (signal.aborted || response.stopReason === "aborted") throw Error("Reporting cancelled");
- const calls = response.content.filter((block) => block.type === "toolCall");
- if (calls.length !== 1 || calls[0].name !== "record_card") throw Error("Reporting model must return exactly one structured record_card call");
- const rawArgs = structuredClone(calls[0].arguments);
- if ((request.type === "session" || request.type === "stream") && rawArgs && typeof rawArgs === "object" && !Array.isArray(rawArgs) && rawArgs.changes && typeof rawArgs.changes === "object" && !Array.isArray(rawArgs.changes)) {
-  const before = request.catalog[request.type]!, allowed = automaticFields(request.type, before), changes = rawArgs.changes as Record<string, unknown>;
-  for (const [key, value] of Object.entries(changes)) {
-   if (!allowed.includes(key) && !key.endsWith("_mode") && Object.hasOwn(before, key)) {delete changes[key];continue;}
-   if ((key === "state" || key === "remaining") && value === null) changes[key] = "";
-   else if (key === "title" && typeof value === "string" && !value.trim()) delete changes[key];
-   else if (["goal", "goal_short", "state_short"].includes(key) && typeof value === "string") {
-    const cleaned = key === "goal" ? value.trim() : Array.from(value.replace(/[\r\n\t]+/g, " ").trim()).slice(0, 80).join("").trim();
-    changes[key] = cleaned || null;
+ const payload = {systemPrompt: prompt, messages, tools: [{name: "record_card", description: "Return the structured report or discussion response", parameters: schema}]};
+ let log: SessionManager | undefined;
+ if (logging) {
+  mkdirSync(logging.directory, {recursive: true, mode: 0o700});
+  chmodSync(logging.directory, 0o700);
+  log = SessionManager.create(ctx.cwd, logging.directory, {parentSession: ctx.sessionManager.getSessionFile()});
+  const file = log.getSessionFile()!;
+  writeFileSync(file, JSON.stringify(log.getHeader()) + "\n", {flag: "wx", mode: 0o600});
+  log = SessionManager.open(file);
+  log.appendSessionInfo(`Streams helper · ${request.type}${resetting ? " reset" : ""}`);
+  log.appendModelChange(model.provider, model.id);
+  log.appendCustomEntry("stream-helper-request", {parent_session_id: ctx.sessionManager.getSessionId(), parent_leaf_id: ctx.sessionManager.getLeafId(), task: request.type, reset: Boolean(resetting)});
+  log.appendMessage({role: "system", content: prompt, toolsAdded: payload.tools, timestamp: Date.now()});
+  for (const message of messages) log.appendMessage(message);
+  logging.onCreate?.({session_id: log.getSessionId(), session_file: file});
+ }
+ try {
+  assertContextFits(model, prompt + JSON.stringify(schema), messages);
+  const response = await completeWithRetry(() => ctx.modelRegistry.complete(model, payload, {signal}), signal, log);
+  if (signal.aborted || response.stopReason === "aborted") throw Error("Reporting cancelled");
+  const calls = response.content.filter((block) => block.type === "toolCall");
+  if (calls.length !== 1 || calls[0].name !== "record_card") throw Error("Reporting model must return exactly one structured record_card call");
+  const rawArgs = structuredClone(calls[0].arguments);
+  if ((request.type === "session" || request.type === "stream") && rawArgs && typeof rawArgs === "object" && !Array.isArray(rawArgs) && rawArgs.changes && typeof rawArgs.changes === "object" && !Array.isArray(rawArgs.changes)) {
+   const before = request.catalog[request.type]!, allowed = automaticFields(request.type, before), changes = rawArgs.changes as Record<string, unknown>;
+   for (const [key, value] of Object.entries(changes)) {
+    if (!allowed.includes(key) && !key.endsWith("_mode") && Object.hasOwn(before, key)) {delete changes[key];continue;}
+    if ((key === "state" || key === "remaining") && value === null) changes[key] = "";
+    else if (key === "title" && typeof value === "string" && !value.trim()) delete changes[key];
+    else if (["goal", "goal_short", "state_short"].includes(key) && typeof value === "string") {
+     const cleaned = key === "goal" ? value.trim() : Array.from(value.replace(/[\r\n\t]+/g, " ").trim()).slice(0, 80).join("").trim();
+     changes[key] = cleaned || null;
+    }
+   }
+   if (request.type === "stream" && Object.hasOwn(changes, "goal_short") && changes.goal_short !== null && (Object.hasOwn(changes, "goal") ? changes.goal : request.catalog.stream!.goal) === null) {
+    changes.goal_short = null;
    }
   }
-  if (request.type === "stream" && Object.hasOwn(changes, "goal_short") && changes.goal_short !== null && (Object.hasOwn(changes, "goal") ? changes.goal : request.catalog.stream!.goal) === null) {
-   changes.goal_short = null;
+  if (!Check(schema, rawArgs)) throw Error("Reporting model returned invalid structured card fields; nothing was saved");
+  if (request.type === "discussion") {
+   const result = rawArgs as DiscussionResult;
+   if (result.edit) validateChanges(result.edit.kind, request.catalog[result.edit.kind]!, result.edit.changes, result.edit.actor);
+  } else if (request.type === "session" || request.type === "stream") {
+   const result = rawArgs as ReportResult;
+   if (Object.keys(result.changes).length) validateChanges(request.type, request.catalog[request.type]!, result.changes, "automatic");
   }
- }
- if (!Check(schema, rawArgs)) throw Error("Reporting model returned invalid structured card fields; nothing was saved");
- if (request.type === "discussion") {
-  const result = rawArgs as DiscussionResult;
-  if (result.edit) validateChanges(result.edit.kind, request.catalog[result.edit.kind]!, result.edit.changes, result.edit.actor);
- } else if (request.type === "session" || request.type === "stream") {
-  const result = rawArgs as ReportResult;
-  if (Object.keys(result.changes).length) validateChanges(request.type, request.catalog[request.type]!, result.changes, "automatic");
- }
- return rawArgs as Inferred;
+  log?.appendCustomEntry("stream-helper-result", rawArgs);
+  return rawArgs as Inferred;
+ } catch (error) {log?.appendCustomEntry("stream-helper-error", {error: String(error), cancelled: signal.aborted});throw error;}
 }
