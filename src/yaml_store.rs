@@ -14,7 +14,8 @@ use uuid::Uuid;
 
 use crate::codec::{object_fields, record_from_data, record_to_data};
 use crate::model::{Catalog, Record, RecordKey, RecordKind, ValidationError, check_text};
-use crate::storage::{Snapshot, StorageError};
+use crate::storage::{Snapshot, StorageError, Store, Transaction};
+use crate::sync::state::FileJournal;
 
 /// Encode UTF-8 bytes for a single filename component, including traversal-only dot names.
 pub fn encode_component(id: &str) -> String {
@@ -301,6 +302,57 @@ impl YamlStore {
             _lock: file,
         };
         f(&mut tx)
+    }
+}
+
+impl Store for YamlStore {
+    type Transaction<'a> = YamlTransaction;
+    type Journal = FileJournal;
+
+    fn with_transaction<T>(
+        &self,
+        f: impl FnOnce(&mut Self::Transaction<'_>) -> Result<T, StorageError>,
+    ) -> Result<T, StorageError> {
+        YamlStore::with_transaction(self, f)
+    }
+
+    fn journal(&self) -> Self::Journal {
+        FileJournal {
+            root: self.root.join(".catalog-sync"),
+        }
+    }
+
+    fn check_local(&self) -> Result<(), StorageError> {
+        let allowed: BTreeSet<&str> = [
+            ".catalog.lock",
+            ".catalog-sync",
+            ".catalog-staging",
+            "streams",
+            "sessions",
+            "hosts",
+        ]
+        .into();
+        for entry in fs::read_dir(&self.root)
+            .map_err(|e| StorageError::new(format!("cannot read catalog root: {e}")))?
+        {
+            let entry = entry.map_err(|e| StorageError::new(e.to_string()))?;
+            if !allowed.contains(entry.file_name().to_string_lossy().as_ref()) {
+                return Err(StorageError::new(
+                    "unexpected contents in local catalog; inspect before continuing",
+                ));
+            }
+        }
+        Ok(())
+    }
+}
+
+impl Transaction for YamlTransaction {
+    fn read(&self) -> Result<Snapshot, StorageError> {
+        YamlTransaction::read(self)
+    }
+
+    fn save(&self, record: &Record, expected: &Snapshot) -> Result<Snapshot, StorageError> {
+        YamlTransaction::save(self, record, expected)
     }
 }
 

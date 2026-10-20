@@ -18,6 +18,7 @@ use serde_json::{Map, Value};
 
 use crate::model::check_text;
 use crate::operations::Operation;
+use crate::storage::{Journal, StorageError};
 
 use super::envelope::{check_fingerprints, load_json, operation_digest};
 
@@ -354,27 +355,111 @@ struct Receipts {
 /// Runs under its mutex; it must not recursively invoke hooked methods.
 pub type StateHook = Arc<Mutex<dyn FnMut(&str, &str) -> Result<(), RepairRequired> + Send>>;
 
-/// Access to `.catalog-sync` records; clones do not provide transaction isolation.
-///
-/// Names passed to raw record methods must be trusted bookkeeping filenames.
-/// Typed accessors validate their schema; raw reads validate only JSON and version.
-#[derive(Clone)]
-pub struct State {
+/// Filesystem object persistence; callers provide the catalog's serialization scope.
+#[derive(Debug, Clone)]
+pub struct FileJournal {
     pub root: PathBuf,
-    hook: Option<StateHook>,
 }
 
-impl std::fmt::Debug for State {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        f.debug_struct("State").field("root", &self.root).finish()
+impl FileJournal {
+    fn ensure_directory(&self) -> Result<(), StorageError> {
+        if self.root.is_symlink() {
+            return Err(StorageError::new("symlinked transport state"));
+        }
+        crate::yaml_store::ensure_directory(&self.root, true)
     }
 }
 
-impl State {
+impl Journal for FileJournal {
+    fn read(&self, name: &str) -> Result<Option<Map<String, Value>>, StorageError> {
+        self.ensure_directory()?;
+        let path = self.root.join(name);
+        if path.is_symlink() {
+            return Err(StorageError::new(format!(
+                "symlinked transport state: {}",
+                path.display()
+            )));
+        }
+        if !path.exists() {
+            return Ok(None);
+        }
+        let text = fs::read_to_string(&path)
+            .map_err(|e| StorageError::new(format!("cannot read {}: {e}", path.display())))?;
+        let val = load_json(&text)
+            .map_err(|e| StorageError::new(format!("cannot read {}: {e}", path.display())))?;
+        val.as_object().cloned().map(Some).ok_or_else(|| {
+            StorageError::new(format!(
+                "cannot read {}: unsupported transport state version",
+                path.display()
+            ))
+        })
+    }
+
+    fn write(&self, name: &str, data: Map<String, Value>) -> Result<(), StorageError> {
+        self.ensure_directory()?;
+        let bytes = serde_json::to_vec(&Value::Object(data))
+            .map_err(|e| StorageError::new(format!("cannot serialize {name}: {e}")))?;
+        crate::yaml_store::atomic_write(&self.root.join(name), &bytes, &self.root)
+    }
+
+    fn clear(&self, name: &str) -> Result<(), StorageError> {
+        self.ensure_directory()?;
+        let path = self.root.join(name);
+        let removed = path.exists();
+        if removed {
+            fs::remove_file(&path)
+                .map_err(|e| StorageError::new(format!("cannot clear {name}: {e}")))?;
+        }
+        crate::yaml_store::sync_directory(&self.root)
+            .map_err(|e| if removed { e.after_write() } else { e })
+    }
+
+    fn names(&self) -> Result<Vec<String>, StorageError> {
+        self.ensure_directory()?;
+        fs::read_dir(&self.root)
+            .map_err(|e| StorageError::new(format!("cannot read {}: {e}", self.root.display())))?
+            .map(|entry| {
+                entry
+                    .map(|e| e.file_name().to_string_lossy().into_owned())
+                    .map_err(|e| StorageError::new(e.to_string()))
+            })
+            .collect()
+    }
+
+    fn describe(&self, name: &str) -> String {
+        self.root.join(name).display().to_string()
+    }
+}
+
+/// Typed recovery state over durable objects; clones provide no transaction isolation.
+/// Raw names are trusted bookkeeping keys. Reads validate versions, while typed
+/// accessors also validate schemas. Callers must hold the owning store's lock.
+#[derive(Clone)]
+pub struct State<J: Journal = FileJournal> {
+    journal: J,
+    hook: Option<StateHook>,
+}
+
+impl<J: Journal> std::fmt::Debug for State<J> {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("State").finish_non_exhaustive()
+    }
+}
+
+impl State<FileJournal> {
     /// Selects the catalog's `.catalog-sync` directory without creating it yet.
     pub fn new(root: impl AsRef<Path>) -> Self {
-        Self {
+        Self::from_journal(FileJournal {
             root: root.as_ref().join(".catalog-sync"),
+        })
+    }
+}
+
+impl<J: Journal> State<J> {
+    /// Uses objects from the same persistence and serialization scope as the catalog.
+    pub fn from_journal(journal: J) -> Self {
+        Self {
+            journal,
             hook: None,
         }
     }
@@ -393,46 +478,20 @@ impl State {
         Ok(())
     }
 
-    fn ensure_directory(&self) -> Result<(), RepairRequired> {
-        if self.root.is_symlink() {
-            return Err(RepairRequired::new("symlinked transport state"));
-        }
-        crate::yaml_store::ensure_directory(&self.root, true)
-            .map_err(|e| RepairRequired::new(e.to_string()))
-    }
-
-    /// Reads a version-1 JSON object, rejecting duplicate keys and symlinked state.
-    ///
-    /// Ensures the state directory exists; returns `None` when the path existence
-    /// check reports absence. Record-specific fields are checked by typed readers,
-    /// not here, and reads do not provide an atomic view across multiple files.
+    /// Reads an object with a supported version; typed readers check its other fields.
     pub fn read(&self, name: &str) -> Result<Option<Map<String, Value>>, RepairRequired> {
-        self.ensure_directory()?;
-        let path = self.root.join(name);
-        if path.is_symlink() {
-            return Err(RepairRequired::new(format!(
-                "symlinked transport state: {}",
-                path.display()
-            )));
-        }
-        if !path.exists() {
+        let Some(obj) = self
+            .journal
+            .read(name)
+            .map_err(|e| RepairRequired::new(e.to_string()))?
+        else {
             return Ok(None);
-        }
-        let text = fs::read_to_string(&path)
-            .map_err(|e| RepairRequired::new(format!("cannot read {}: {e}", path.display())))?;
-        let val = load_json(&text)
-            .map_err(|e| RepairRequired::new(format!("cannot read {}: {e}", path.display())))?;
-        let Some(obj) = val.as_object() else {
-            return Err(RepairRequired::new(format!(
-                "cannot read {}: unsupported transport state version",
-                path.display()
-            )));
         };
         match obj.get("version") {
-            Some(Value::Number(n)) if n.as_i64() == Some(1) => Ok(Some(obj.clone())),
+            Some(Value::Number(n)) if n.as_i64() == Some(1) => Ok(Some(obj)),
             _ => Err(RepairRequired::new(format!(
                 "cannot read {}: unsupported transport state version",
-                path.display()
+                self.journal.describe(name)
             ))),
         }
     }
@@ -445,7 +504,7 @@ impl State {
             .map(|mut data| {
                 data.remove("version");
                 serde_json::from_value(Value::Object(data)).map_err(|e| {
-                    RepairRequired::new(format!("invalid {}: {e}", self.root.join(name).display()))
+                    RepairRequired::new(format!("invalid {}: {e}", self.journal.describe(name)))
                 })
             })
             .transpose()
@@ -520,33 +579,20 @@ impl State {
         self.write_record("publication.json", marker)
     }
 
-    /// Writes a version-1 object by atomic replacement and syncs its directory.
-    /// Failure may occur after replacement; it does not imply the old record remains.
+    /// Writes a version-1 object; failure does not imply the old object remains.
     pub fn write(&self, name: &str, mut data: Map<String, Value>) -> Result<(), RepairRequired> {
         self.run_hook("write", name)?;
-        self.ensure_directory()?;
         data.insert("version".into(), Value::Number(1.into()));
-        let bytes = serde_json::to_vec(&Value::Object(data))
-            .map_err(|e| RepairRequired::new(format!("cannot serialize {name}: {e}")))?;
-        crate::yaml_store::atomic_write(&self.root.join(name), &bytes, &self.root)
+        self.journal
+            .write(name, data)
             .map_err(|e| RepairRequired::new(e.to_string()))
     }
 
-    /// Removes a marker if present and syncs the directory, including on an absent file.
-    /// A sync failure can leave the removal's durability uncertain.
+    /// Removes a marker if present; failure can leave its durability uncertain.
     pub fn clear(&self, name: &str) -> Result<(), RepairRequired> {
         self.run_hook("clear", name)?;
-        self.ensure_directory()?;
-        let path = self.root.join(name);
-        if path.exists() {
-            fs::remove_file(&path)
-                .map_err(|e| RepairRequired::new(format!("cannot clear {name}: {e}")))?;
-        }
-        self.sync_dir()
-    }
-
-    fn sync_dir(&self) -> Result<(), RepairRequired> {
-        crate::yaml_store::sync_directory(&self.root)
+        self.journal
+            .clear(name)
             .map_err(|e| RepairRequired::new(e.to_string()))
     }
 
@@ -619,7 +665,7 @@ impl State {
         if self.read("save.json")?.is_some() {
             return Err(RepairRequired::new(format!(
                 "interrupted save; inspect {} before further writes",
-                self.root.join("save.json").display()
+                self.journal.describe("save.json")
             )));
         }
         Ok(())
@@ -630,13 +676,12 @@ impl State {
         self.check_save()?;
         let allowed: BTreeSet<&str> =
             ["cli.json", "local.json", "receipts.json", "save.json"].into();
-        for entry in fs::read_dir(&self.root)
-            .map_err(|e| RepairRequired::new(format!("cannot read {}: {e}", self.root.display())))?
+        for name in self
+            .journal
+            .names()
+            .map_err(|e| RepairRequired::new(e.to_string()))?
         {
-            let entry = entry.map_err(|e| RepairRequired::new(e.to_string()))?;
-            let name = entry.file_name();
-            let name_str = name.to_string_lossy();
-            if !allowed.contains(name_str.as_ref()) {
+            if !allowed.contains(name.as_str()) {
                 return Err(RepairRequired::new(
                     "unexpected local catalog bookkeeping; strategy cannot be switched",
                 ));

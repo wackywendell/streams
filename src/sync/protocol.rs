@@ -25,7 +25,11 @@ enum SaveAction {
 use temper_jit::table::{Effect, EvalContext, TransitionTable, effect_args};
 
 use super::state::{PublicationMarker, RepairRequired, State};
-use crate::{model::Record, operations::Operation, storage::Snapshot};
+use crate::{
+    model::Record,
+    operations::Operation,
+    storage::{Journal, Snapshot},
+};
 
 pub const CATALOG_PROTOCOL_IOA: &str = include_str!("../../specs/catalog_protocol.ioa.toml");
 
@@ -112,7 +116,10 @@ pub(crate) struct ProtocolMachine {
 }
 
 impl ProtocolMachine {
-    pub(crate) fn observe(state: &State, attempt_budget: usize) -> Result<Self, RepairRequired> {
+    pub(crate) fn observe<J: Journal>(
+        state: &State<J>,
+        attempt_budget: usize,
+    ) -> Result<Self, RepairRequired> {
         let save = state.read("save.json")?.is_some();
         let publication = state.publication()?;
         let adopting = matches!(publication, Some(PublicationMarker::Adopting(_)));

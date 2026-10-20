@@ -11,7 +11,11 @@ pub mod protocol;
 pub mod replay;
 pub mod state;
 
-use crate::{model::Catalog, storage::Snapshot};
+use crate::{
+    model::{Catalog, ValidationError},
+    operations::{Authority, Operation},
+    storage::{Snapshot, Store},
+};
 use serde::{Deserialize, Serialize};
 use strum::{AsRefStr, Display, EnumString};
 
@@ -26,6 +30,60 @@ pub enum Freshness {
     Cached,
     Refreshed,
     Failed,
+}
+
+/// Application-facing catalog operations, independent of storage and transport choice.
+///
+/// Implementations preserve operation IDs and captured preconditions across retries.
+/// Identical intent is idempotent; reuse of an ID with different intent fails closed.
+/// Local durability and sharing are separate facts, including after uncertain effects.
+/// This interface does not require Git history, branch adoption, or network access.
+/// See the architecture ADR for common and backend-specific conformance laws.
+pub trait CatalogBackend {
+    /// Returns actual locally persisted records and their storage preconditions.
+    fn snapshot(&self) -> Result<Snapshot, state::RepairRequired>;
+
+    /// Returns effective ownership evidence, never authority inferred from a proposal.
+    fn authority(&self, stream_id: &str) -> Result<Option<Authority>, state::RepairRequired>;
+
+    /// Applies original captured intent; a repair receipt must not be blindly retried.
+    fn save(
+        &self,
+        operation: &Operation,
+        origin: Option<&envelope::Origin>,
+    ) -> Result<outcomes::Result, ValidationError>;
+
+    /// Optionally refreshes a view without publishing outgoing operations.
+    fn read(&self, refresh: bool) -> Result<ReadResult, state::RepairRequired>;
+
+    /// Attempts synchronization under the event's timing policy, reporting its evidence.
+    fn sync(&self, event: policy::SyncEvent) -> outcomes::Result;
+}
+
+impl<S: Store> CatalogBackend for local::LocalCatalog<S> {
+    fn snapshot(&self) -> Result<Snapshot, state::RepairRequired> {
+        local::LocalCatalog::snapshot(self)
+    }
+
+    fn authority(&self, stream_id: &str) -> Result<Option<Authority>, state::RepairRequired> {
+        local::LocalCatalog::authority(self, stream_id)
+    }
+
+    fn save(
+        &self,
+        operation: &Operation,
+        origin: Option<&envelope::Origin>,
+    ) -> Result<outcomes::Result, ValidationError> {
+        local::LocalCatalog::save(self, operation, origin)
+    }
+
+    fn read(&self, refresh: bool) -> Result<ReadResult, state::RepairRequired> {
+        local::LocalCatalog::read(self, refresh)
+    }
+
+    fn sync(&self, event: policy::SyncEvent) -> outcomes::Result {
+        local::LocalCatalog::sync(self, event)
+    }
 }
 
 /// A projected read view alongside the actual local snapshot and known remote revision.

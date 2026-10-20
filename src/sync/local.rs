@@ -1,13 +1,12 @@
-//! Local file-store coordination with no Git or network dependency, stepped via CatalogProtocol.
+//! Local storage coordination with no Git or network dependency, stepped via CatalogProtocol.
 
-use std::collections::{BTreeMap, BTreeSet};
-use std::fs;
+use std::collections::BTreeMap;
 
 use serde::{Deserialize, Serialize};
 
 use crate::model::{Record, ValidationError, check_text};
 use crate::operations::{Actor, Authority, DomainOutcome, Operation, Reconciliation, reconcile};
-use crate::storage::{Snapshot, StorageError};
+use crate::storage::{Snapshot, StorageError, Store, Transaction};
 use crate::yaml_store::YamlStore;
 
 use super::ReadResult;
@@ -73,17 +72,17 @@ struct SaveMarker<'a> {
 
 /// Offline saves with durable retry receipts, without initializing Git or contacting a remote.
 #[derive(Debug, Clone)]
-pub struct LocalCatalog {
-    pub store: YamlStore,
+pub struct LocalCatalog<S: Store = YamlStore> {
+    pub store: S,
     pub host_id: String,
-    pub state: State,
+    pub state: State<S::Journal>,
 }
 
-impl LocalCatalog {
-    pub fn new(store: YamlStore, host_id: impl Into<String>) -> Result<Self, ValidationError> {
+impl<S: Store> LocalCatalog<S> {
+    pub fn new(store: S, host_id: impl Into<String>) -> Result<Self, ValidationError> {
         let host_id = host_id.into();
         check_text(&host_id, "host_id", false)?;
-        let state = State::new(&store.root);
+        let state = State::from_journal(store.journal());
         Ok(Self {
             store,
             host_id,
@@ -92,29 +91,11 @@ impl LocalCatalog {
     }
 
     /// Inspect recovery fences and creation evidence; the caller must hold the catalog lock.
-    pub fn ready(&self) -> Result<BTreeMap<String, Authority>, RepairRequired> {
+    pub(crate) fn ready(&self) -> Result<BTreeMap<String, Authority>, RepairRequired> {
         self.state.check_save()?;
-        let allowed: BTreeSet<&str> = [
-            ".catalog.lock",
-            ".catalog-sync",
-            ".catalog-staging",
-            "streams",
-            "sessions",
-            "hosts",
-        ]
-        .into();
-        for entry in fs::read_dir(&self.store.root)
-            .map_err(|e| RepairRequired::new(format!("cannot read catalog root: {e}")))?
-        {
-            let entry = entry.map_err(|e| RepairRequired::new(e.to_string()))?;
-            let name = entry.file_name();
-            let name_str = name.to_string_lossy();
-            if !allowed.contains(name_str.as_ref()) {
-                return Err(RepairRequired::new(
-                    "unexpected contents in local catalog; inspect before continuing",
-                ));
-            }
-        }
+        self.store
+            .check_local()
+            .map_err(|e| RepairRequired::new(e.to_string()))?;
         self.state.check_local()?;
         self.creations()
     }
