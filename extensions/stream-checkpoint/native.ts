@@ -1,3 +1,5 @@
+import { statSync } from "node:fs";
+import { fileURLToPath } from "node:url";
 import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent";
 
 export type NativeSnapshot = {
@@ -19,13 +21,18 @@ export type NativeAdapter = {
 };
 export type NativeFactory = (input: {pi: ExtensionAPI; ctx: ExtensionContext; sessionId: string; cwd: string; env: NodeJS.ProcessEnv}) => Promise<NativeAdapter>;
 
+function freshDistUrl(relPath: string): string {
+ const url = new URL(relPath, import.meta.url);
+ try {url.searchParams.set("t", String(statSync(fileURLToPath(url)).mtimeMs));} catch {}
+ return url.href;
+}
 // Compiled dependencies are deliberately resolved only inside a gated session lifetime.
 export const loadNative: NativeFactory = async ({pi, ctx, sessionId, cwd, env}) => {
  const [{loadConfig, configPath, namingEnabled}, {StreamsCardSource, createStreamsContextReader}, {StreamsWorkspaceClient}, naming] = await Promise.all([
-  import("../../integrations/herdr-work-cards/dist/config.js"),
-  import("../../integrations/herdr-work-cards/dist/herdr/streams-source.js"),
-  import("../../integrations/herdr-work-cards/dist/herdr/streams-workspace-client.js"),
-  import("../../integrations/herdr-work-cards/dist/pi/session-naming.js"),
+  import(freshDistUrl("../../integrations/herdr-work-cards/dist/config.js")),
+  import(freshDistUrl("../../integrations/herdr-work-cards/dist/herdr/streams-source.js")),
+  import(freshDistUrl("../../integrations/herdr-work-cards/dist/herdr/streams-workspace-client.js")),
+  import(freshDistUrl("../../integrations/herdr-work-cards/dist/pi/session-naming.js")),
  ]);
  let config = await loadConfig(configPath(env));
  const effectiveConfig = () => ({...config, workspace_naming: config.workspace_naming ?? true, tab_naming: config.tab_naming ?? true, session_naming: config.session_naming ?? true});
@@ -155,8 +162,8 @@ export class NativeController {
    const context = await adapter.bootstrap(signal);check();
    if (context.paneId !== this.env.HERDR_PANE_ID || this.env.HERDR_SOCKET_PATH && context.socket !== this.env.HERDR_SOCKET_PATH) throw Error("Native frontend endpoint changed");
    this.context = context;
+   await read();check();
   }
-  await read();check();
   if (kind === "close") {await adapter.close(this.context, signal);check();return;}
   if (kind === "open" || !kind && adapter.automatic) {await adapter.open(this.context, signal, kind ? "explicit" : "automatic");check();}
   await adapter.summaries(this.context, signal);check();

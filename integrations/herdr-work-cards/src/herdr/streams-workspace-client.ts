@@ -120,7 +120,12 @@ export class StreamsWorkspaceClient extends HerdrTransport {
   /** Read-only proof for deciding that no effect or provenance write is needed. */
   private async observeProjection(source: Source, context: StreamsNativeContext, config: WorkCardsConfig, signal?: AbortSignal): Promise<Verified> {
     const v = await this.guard(source, context, config, signal);
-    if (v.pair.kind !== 'empty') return this.marked(source, context, config, signal);
+    if (v.pair.kind !== 'empty') {
+      this.bound(v, context);
+      await this.evidence(v, context);
+      if (v.pair.kind === 'separated') throw new Error('Verified paired or absent owner markers required');
+      return v;
+    }
     if (v.caller.terminal_id !== v.owner.terminal_id) throw new Error('Only the attested Pi owner may initialize projections');
     if (pairKeys.some(k => Object.hasOwn(v.owner.tokens, k))) throw new Error('Incomplete Streams owner markers');
     if (Object.keys(v.owner.tokens).some(k => k.startsWith('wca_'))) throw new Error('Legacy publisher owns this pane; no Streams adoption');
@@ -261,8 +266,8 @@ export class StreamsWorkspaceClient extends HerdrTransport {
       if (!isDeepStrictEqual(card, returned) || pairKeys.some(k => Object.hasOwn(card.tokens, k))) throw new Error('New card identity changed; launch evidence retained');
       const markers = { strm_agent: v.identity, strm_nonce: nonce, strm_pi: v.owner.terminal_id, strm_card: card.terminal_id, strm_native: v.saved.scope.nativeSessionId };
       // Card first is temporarily incomplete. Validate only this durable reservation.
-      await this.stampReserved(source, context, card, { ...markers, strm_role: 'card' }, config, signal);
-      await this.stampReserved(source, context, v.owner, { ...markers, strm_role: 'agent' }, config, signal);
+      await this.stampReserved(source, context, card, { ...markers, strm_role: 'card' }, config, signal, true);
+      await this.stampReserved(source, context, v.owner, { ...markers, strm_role: 'agent' }, config, signal, true);
       v = await this.guard(source, context, config, signal);
       if (v.pair.kind !== 'paired' || v.pair.nonce !== nonce) throw new Error('New pair did not round-trip; evidence retained');
       await state.write({ version: 1, key: v.key, phase: 'ready', nonce, paneId: card.pane_id, terminalId: card.terminal_id, tabId: card.tab_id });
@@ -271,7 +276,7 @@ export class StreamsWorkspaceClient extends HerdrTransport {
   }
   // Establishing a pair has one incomplete intermediate snapshot, but never an
   // unreserved one. A separately synced reservation pins the returned card tuple.
-  private async stampReserved(source: Source, context: StreamsNativeContext, target: Pane, values: Record<string, string>, config: WorkCardsConfig, signal?: AbortSignal): Promise<void> {
+  private async stampReserved(source: Source, context: StreamsNativeContext, target: Pane, values: Record<string, string>, config: WorkCardsConfig, signal?: AbortSignal, skipInitialVerify = false): Promise<void> {
     const verify = async () => {
       signal?.throwIfAborted();
       const saved = await source.read(signal), captured = this.owners.get(context);
@@ -299,7 +304,7 @@ export class StreamsWorkspaceClient extends HerdrTransport {
       signal?.throwIfAborted();
       return snapshot.panes.find(p => p.pane_id === target.pane_id);
     };
-    if (!isDeepStrictEqual(await verify(), target)) throw new Error('Reserved metadata target changed');
+    if (!skipInitialVerify && !isDeepStrictEqual(await verify(), target)) throw new Error('Reserved metadata target changed');
     await this.run(['pane', 'report-metadata', target.pane_id, '--source', pluginId, ...Object.entries(values).flatMap(([k, v]) => ['--token', `${k}=${v}`])], config.herdr_timeout_ms, signal);
     const after = await verify();
     if (!after || !isDeepStrictEqual(tuple(after), tuple(target)) || Object.entries(values).some(([k, v]) => after.tokens[k] !== v)) throw new Error('Reserved pair metadata did not round-trip');

@@ -7,6 +7,7 @@ import os
 import re
 import subprocess
 import sys
+import time
 import tomllib
 import uuid
 from dataclasses import dataclass, replace
@@ -75,12 +76,37 @@ def _id(data: dict[str, Any], key: str) -> str:
     return value
 
 
+_HERDR_READ_CACHE: dict[tuple[object, ...], tuple[float, subprocess.CompletedProcess[str]]] = {}
+_HERDR_READ_ARGS = {
+    ("status", "--json"),
+    ("pane", "current", "--current", "--json"),
+    ("workspace", "list", "--json"),
+}
+
+
 class HerdrClient:
     def __init__(self) -> None:
         self.context = dict(os.environ)
         self.binary = self.context.get("HERDR_BIN_PATH") or "herdr"
 
     def run(self, args: list[str]) -> subprocess.CompletedProcess[str]:
+        arg_tuple = tuple(args)
+        can_cache = arg_tuple in _HERDR_READ_ARGS and not hasattr(subprocess.run, "side_effect") and not hasattr(subprocess.run, "return_value")
+        cache_key = (
+            id(subprocess.run),
+            self.binary,
+            self.context.get("HERDR_PANE_ID"),
+            self.context.get("HERDR_TAB_ID"),
+            self.context.get("HERDR_WORKSPACE_ID"),
+            self.context.get("HERDR_SOCKET_PATH"),
+            arg_tuple,
+        ) if can_cache else None
+        if cache_key is not None:
+            cached = _HERDR_READ_CACHE.get(cache_key)
+            if cached is not None and (time.monotonic() - cached[0]) < 0.25:
+                return cached[1]
+        elif arg_tuple not in _HERDR_READ_ARGS:
+            _HERDR_READ_CACHE.clear()
         try:
             result = subprocess.run(
                 [self.binary, *args], env=self.context,
@@ -97,6 +123,8 @@ class HerdrClient:
             raise StreamError(f"could not execute Herdr: {exc}") from exc
         if result.stderr:
             print(result.stderr, end="", file=sys.stderr)
+        if cache_key is not None:
+            _HERDR_READ_CACHE[cache_key] = (time.monotonic(), result)
         return result
 
     def json_from_command(self, args: list[str]) -> dict[str, Any]:

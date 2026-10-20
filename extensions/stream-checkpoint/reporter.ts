@@ -10,7 +10,7 @@ import type { SessionFence } from "./session-scope.ts";
 import type { ReportingSettings } from "./settings.ts";
 
 export type ResetTarget = "all" | "session" | "stream";
-type Options = {scope?: SessionScope; cli(ctx: ExtensionContext): StreamCli; settings(): ReportingSettings; infer?: typeof modelInfer; notice(text: string): void; receipt(value: Receipt, deferNative?: boolean, quiet?: boolean): void; activity?(text?: string): void; onBackgroundSuccess?(): void; onUpdateNative?(): void; onReclaimNames?(target: ResetTarget): Promise<void> | void};
+type Options = {scope?: SessionScope; cli(ctx: ExtensionContext): StreamCli; settings(): ReportingSettings; infer?: typeof modelInfer; notice(text: string): void; receipt(value: Receipt, deferNative?: boolean, quiet?: boolean): void; activity?(text?: string, completed?: boolean): void; onUpdateNative?(): void; onReclaimNames?(target: ResetTarget): Promise<void> | void};
 type Pending = {ctx: ExtensionContext; force: boolean; instructions?: string; reset?: boolean; auto?: boolean; target?: ResetTarget};
 export class Reporter {
  readonly scope: SessionScope;
@@ -61,8 +61,7 @@ export class Reporter {
    try {completed = await this.report(pending, fence);} catch (error) {if (fence.current()) this.options.notice(String(error));}
    finally {
     if (fence.live()) {
-     this.options.activity?.();
-     if (!pending.force && completed && !this.pending) this.options.onBackgroundSuccess?.();
+     this.options.activity?.(undefined, completed && !this.pending);
     }
    }
   }

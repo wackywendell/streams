@@ -59,20 +59,22 @@ export default function registerWorkCard(pi: ExtensionAPI, options: Options = {}
   if (!quiet || hasWarning) scope.context?.ui.notify(text, hasWarning ? "warning" : "info");
   if (!deferNative && receiptCanContinue(value)) native?.update();
  };
+ const showDoneStatus = (label = "Updated") => {
+  clearStatusTimer();
+  const check = (scope.context?.ui as any)?.theme?.fg?.("success", "✓") ?? "\x1b[32m✓\x1b[0m";
+  scope.context?.ui.setStatus("stream-reporting", `Work card · ${check} ${label}`);
+  statusTimer = setTimeout(() => {statusTimer = undefined;scope.context?.ui.setStatus("stream-reporting", undefined);}, 4000);
+  statusTimer.unref?.();
+ };
  const reporter = new Reporter({
   scope, cli, settings, infer: options.infer, notice: warning, receipt,
   onUpdateNative: () => native?.update(),
   onReclaimNames: (target) => native?.reclaimNames(target).catch(() => {}),
-  activity: (text) => {
+  activity: (text, completed) => {
    clearStatusTimer();
-   scope.context?.ui.setStatus("stream-reporting", text ? `Work card · ${text}` : undefined);
-  },
-  onBackgroundSuccess: () => {
-   clearStatusTimer();
-   const check = (scope.context?.ui as any)?.theme?.fg?.("success", "✓") ?? "\x1b[32m✓\x1b[0m";
-   scope.context?.ui.setStatus("stream-reporting", `Work card · ${check} Updated`);
-   statusTimer = setTimeout(() => {statusTimer = undefined;scope.context?.ui.setStatus("stream-reporting", undefined);}, 4000);
-   statusTimer.unref?.();
+   if (text) scope.context?.ui.setStatus("stream-reporting", `Work card · ${text}`);
+   else if (completed) showDoneStatus("Updated");
+   else scope.context?.ui.setStatus("stream-reporting", undefined);
   },
  });
  async function sync(ctx: ExtensionContext, event: "start" | "shutdown"): Promise<void> {
@@ -121,6 +123,7 @@ export default function registerWorkCard(pi: ExtensionAPI, options: Options = {}
      }
      state.discussion.messages = [...prospective, {role: "assistant", text: response.reply}];state.discussion.input = "";
      state.discussion.error = undefined;
+     if (fence.live()) showDoneStatus(request ? "Updated" : "Replied");
     });
    } catch(error) {if (fence.current()) {state.discussion.error = String(error);warning(String(error));}}
    if (!fence.live() || scope.stopped) return;
@@ -184,7 +187,13 @@ export default function registerWorkCard(pi: ExtensionAPI, options: Options = {}
     if (command === "" || command === "card") await show(ctx);
     else if (command === "pane") {
      if (!native) throw Error("Native work cards require session startup in an interactive Herdr pane.");
-     if (instructions === "close") await native.close();else await native.open();
+     clearStatusTimer();
+     ctx.ui.setStatus?.("stream-reporting", instructions === "close" ? "Work card · ⟳ Closing pane..." : "Work card · ⟳ Opening pane...");
+     try {
+      if (instructions === "close") await native.close();else await native.open();
+     } finally {
+      if (paneFence.current()) ctx.ui.setStatus?.("stream-reporting", undefined);
+     }
     }
     else if (command === "reset") reporter.reset(ctx, resetParsed!.auto, resetParsed!.target);
     else if (command === "settings") await configure(ctx);
