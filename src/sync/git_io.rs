@@ -91,6 +91,13 @@ impl Git {
         }
     }
 
+    /// Copy only command interception to a new root; object/history caches stay fresh.
+    pub(crate) fn fresh_root(&self, root: &Path) -> Self {
+        let mut fresh = Self::new(root, self.timeout);
+        fresh.hook = self.hook.clone();
+        fresh
+    }
+
     /// Returns the configured root, without resolving or validating the path.
     pub fn root(&self) -> &Path {
         &self.root

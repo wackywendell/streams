@@ -1,5 +1,6 @@
 //! Catalog backends keep local persistence and publication outcomes independent.
 
+pub mod adoption;
 pub mod baseline;
 pub mod envelope;
 pub mod git;

@@ -2,6 +2,7 @@
 //!
 //! Identity-bound save and publication permits execute the verified phase transitions.
 
+mod import;
 pub(crate) mod publication;
 
 use std::sync::OnceLock;
