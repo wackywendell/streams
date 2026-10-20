@@ -156,6 +156,16 @@ def _check_directory_selection(
                         "cwd": str(cwd),
                         "message": f"session directory {cwd} is in a VCS checkout that is not registered with a repository URL",
                     })
+                elif fix and session_id is not None:
+                    local.locations.remember(stream_id, cwd, session_id=session_id)
+                    fixed.append({
+                        "kind": "legacy-session-location-upgraded",
+                        "stream_id": stream_id,
+                        "session_id": session_id,
+                        "checkout_id": registered.id,
+                        "directory": str(found[0]),
+                    })
+                    return local.locations._selection(stream_id, session_id)
         else:
             loc = selection["location"]
             if loc["kind"] == "directory":
@@ -216,6 +226,7 @@ def _check_stream_locations(
 def _check_herdr_locks_and_state(
     herdr_dir: Path,
     *,
+    live_panes: list[dict[str, Any]] | None = None,
     unscoped: bool,
     fix: bool,
     issues: list[dict[str, Any]],
@@ -255,6 +266,7 @@ def _check_herdr_locks_and_state(
     state_dir = herdr_dir / ".streams-work-cards"
     if not state_dir.exists():
         return
+    live_by_pane = {p.get("pane_id") or p.get("id"): p for p in (live_panes or []) if isinstance(p, dict) and isinstance(p.get("pane_id") or p.get("id"), str)}
     for pending_path in sorted(state_dir.glob("*.json.pending")):
         json_path = pending_path.with_suffix("")
         record = None
@@ -263,6 +275,31 @@ def _check_herdr_locks_and_state(
                 record = json.loads(json_path.read_text())
             except (OSError, ValueError):
                 record = None
+        if fix and live_panes is not None and not pending_path.is_symlink() and not json_path.is_symlink():
+            rec_pane = record.get("paneId") if isinstance(record, dict) else None
+            rec_term = record.get("terminalId") if isinstance(record, dict) else None
+            rec_tab = record.get("tabId") if isinstance(record, dict) else None
+            live_card = live_by_pane.get(rec_pane) if isinstance(rec_pane, str) else None
+            try:
+                if live_card and live_card.get("terminal_id") == rec_term and live_card.get("tab_id") == rec_tab:
+                    record["phase"] = "ready"
+                    json_path.write_text(json.dumps(record) + "\n")
+                    pending_path.unlink(missing_ok=True)
+                    fixed.append({"kind": "pending-work-card-promoted-ready", "path": str(pending_path), "pane_id": rec_pane})
+                    continue
+                if isinstance(rec_pane, str) and live_card is None and isinstance(record, dict):
+                    record["phase"] = "closed"
+                    json_path.write_text(json.dumps(record) + "\n")
+                    pending_path.unlink(missing_ok=True)
+                    fixed.append({"kind": "pending-work-card-marked-closed", "path": str(pending_path), "pane_id": rec_pane})
+                    continue
+                if rec_pane is None:
+                    pending_path.unlink(missing_ok=True)
+                    json_path.unlink(missing_ok=True)
+                    fixed.append({"kind": "unlaunched-pending-work-card-removed", "path": str(pending_path)})
+                    continue
+            except OSError:
+                pass
         issues.append({
             "kind": "pending-work-card-launch",
             "path": str(pending_path),
@@ -300,16 +337,16 @@ def _check_herdr_live(
 
     herdr_dir = Path(endpoint.socket).parent
     scope = _key("herdr", endpoint.socket, endpoint.session)
+    workspaces = snapshot.get("workspaces") if isinstance(snapshot, dict) else None
+    panes = snapshot.get("panes") if isinstance(snapshot, dict) else None
     _check_herdr_locks_and_state(
         herdr_dir,
+        live_panes=panes if isinstance(panes, list) else None,
         unscoped=target_stream is None and pane_id is None,
         fix=fix,
         issues=issues,
         fixed=fixed,
     )
-
-    workspaces = snapshot.get("workspaces") if isinstance(snapshot, dict) else None
-    panes = snapshot.get("panes") if isinstance(snapshot, dict) else None
     if not isinstance(workspaces, list) or not isinstance(panes, list):
         issues.append({
             "kind": "invalid-herdr-snapshot",

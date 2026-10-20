@@ -179,6 +179,7 @@ class DirectoryBindings:
                 checkouts.append({"repository": alias, "checkout_id": checkout_id, "root": root})
 
         resolved, errors = {}, {}
+        session_selections: dict[str, object] = {}
         for alias, repository in stream.repositories.items():
             try:
                 if selection_error:
@@ -212,13 +213,15 @@ class DirectoryBindings:
                 candidate_sids = (
                     [document.source_session_id]
                     if document.source_session_id is not None
-                    else [s.id for s in sessions if s.id != session.id and s.stream_id == stream.id]
+                    else ([s.id for s in sessions if s.id != session.id and s.stream_id == stream.id] if not alternates else [])
                 )
                 for origin_sid in candidate_sids:
                     if not origin_sid or origin_sid == session.id:
                         continue
                     try:
-                        origin_sel = self.read(stream.id, origin_sid)
+                        if origin_sid not in session_selections:
+                            session_selections[origin_sid] = self.read(stream.id, origin_sid)
+                        origin_sel = session_selections[origin_sid]
                         cand_chk = self.checkouts.get(origin_sel.checkout_id) if origin_sel and origin_sel.checkout_id else None
                         if cand_chk is not None and repo_url in cand_chk.repository_urls:
                             origin_chk = cand_chk

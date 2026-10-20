@@ -67,6 +67,9 @@ def _run(args: list[str], cwd: Path) -> str:
         raise StreamError(f"checkout inspection failed in {cwd}: {' '.join(args)}") from error
 
 
+_MARKER_CACHE: dict[tuple[object, ...], Path] = {}
+
+
 def inspect_directory(cwd: Path) -> tuple[Path, str] | None:
     """Find the nearest marked worktree, without snapshotting a jj workspace."""
     current = _directory(cwd)
@@ -81,14 +84,24 @@ def inspect_directory(cwd: Path) -> tuple[Path, str] | None:
             if has_jj:
                 if jj.is_symlink() or not jj.is_dir():
                     raise StreamError(f"malformed jj marker: {jj}")
-                output = _run(["jj", "--ignore-working-copy", "--at-operation=@", "workspace", "root"], candidate)
+                marker = jj
             else:
                 if git.is_symlink() or not (git.is_dir() or git.is_file()):
                     raise StreamError(f"malformed Git marker: {git}")
-                output = _run(["git", "rev-parse", "--path-format=absolute", "--show-toplevel"], candidate)
-            root = _directory(Path(output))
-            if not Path(output).is_absolute() or root != candidate:
-                raise StreamError(f"VCS marker does not describe its exact checkout root: {candidate}")
+                marker = git
+            c_stat = candidate.stat()
+            m_stat = marker.stat()
+            cache_key = (id(_run), id(subprocess.run), str(candidate), c_stat.st_dev, c_stat.st_ino, has_jj, m_stat.st_dev, m_stat.st_ino, m_stat.st_mtime_ns, m_stat.st_size)
+            root = _MARKER_CACHE.get(cache_key)
+            if root is None:
+                if has_jj:
+                    output = _run(["jj", "--ignore-working-copy", "--at-operation=@", "workspace", "root"], candidate)
+                else:
+                    output = _run(["git", "rev-parse", "--path-format=absolute", "--show-toplevel"], candidate)
+                root = _directory(Path(output))
+                if not Path(output).is_absolute() or root != candidate:
+                    raise StreamError(f"VCS marker does not describe its exact checkout root: {candidate}")
+                _MARKER_CACHE[cache_key] = root
             return root, current.relative_to(root).as_posix()
         except (OSError, ValueError, RuntimeError) as error:
             raise StreamError(f"cannot inspect checkout marker in {candidate}: {error}") from error

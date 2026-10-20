@@ -147,7 +147,7 @@ export interface StreamsContextReaderOptions {
 }
 /** Owner-targeted read-only app boundary. Native effects separately verify live tuples. */
 export function createStreamsContextReader(options: StreamsContextReaderOptions = {}): (nativeSessionId: string, signal?: AbortSignal) => Promise<unknown> {
-  const { cwd, timeoutMs = 5000, maxBuffer = 1024 * 1024, owner } = options;
+  const { cwd, timeoutMs = 15000, maxBuffer = 1024 * 1024, owner } = options;
   const env = { ...(options.env ?? process.env), ...(owner ? {
     HERDR_PANE_ID: owner.pane_id, HERDR_TAB_ID: owner.tab_id, HERDR_WORKSPACE_ID: owner.workspace_id,
   } : {}) };
