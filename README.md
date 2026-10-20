@@ -68,7 +68,7 @@ Search is a case-insensitive literal substring of the title or goal. It has no o
 
 References accept an exact ID, an exact title or a unique title substring. IDs take precedence. Ambiguous references fail and report candidate IDs; they never select the first result.
 
-`show` prints the complete logical stream and its sessions as YAML. `--json` gives the same structure. Sharing diagnostics sit beside the saved records, not inside them. `check` validates saved records and relationships; it does not check whether remote branches, documents or native sessions still exist.
+`show` prints the complete logical stream and its sessions as YAML. `--json` gives the same structure. Sharing diagnostics sit beside the saved records, not inside them. `check` validates saved records, relationships and host-local runtime state. With Herdr active, it also checks live workspace and Work Card pairings. It does not probe remote branches or require saved conversations to be running.
 
 ## Edit work
 
@@ -79,7 +79,8 @@ streams update STREAM_ID --clear-goal
 streams update STREAM_ID --status parked
 streams update STREAM_ID --add-repository streams https://github.com/wackywendell/streams
 streams update STREAM_ID --add-document streams lifecycle-design docs/design.md "Design decisions"
-streams update STREAM_ID --document-added-at streams docs/design.md COMMIT_ID
+streams update STREAM_ID --document-commit streams docs/design.md COMMIT_ID
+streams update STREAM_ID --document-session streams docs/design.md SESSION_ID
 streams update STREAM_ID --remove-document streams docs/design.md
 streams update STREAM_ID --add-issue https://example.org/issues/42 "Tracking issue"
 streams update STREAM_ID --add-pr https://example.org/pulls/43 "Implementation"
@@ -163,7 +164,7 @@ streams checkout move CHECKOUT_ID ~/code/project-moved
 
 `--repository` on `checkout register` is an exact URL; on `session directory` it is the Stream's repository alias. A Session's selected checkout wins for its repository. Set a default explicitly for documents in other repositories. Reads never infer bindings from Git remotes, create checkouts or change defaults. A moved checkout keeps its ID; `session directory --cwd PATH` can replace an obsolete directory selection.
 
-Documents open at the viewing Session's current working file, including local edits, not the source agent's checkout or recorded revision. The optional `added_at` commit is provenance. Missing files or mappings are visible errors; the pane never opens another checkout or removes the shared reference. Host-local checkout registrations live under `$XDG_STATE_HOME/streams/checkouts`.
+Documents prefer the viewing Session's current working file, including local edits. Optional `commit` and `source_session_id` fields record provenance; they do not pin that working file. When it is unavailable, the card can use a known source checkout or recorded revision. Use Shift+letter to choose among available sources. The CLI extracts revision contents only when opened. Missing files or mappings remain visible errors and never remove the shared reference. Host-local checkout registrations live under `$XDG_STATE_HOME/streams/checkouts`.
 
 ## Open or resume work
 

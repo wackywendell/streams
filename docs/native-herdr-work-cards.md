@@ -42,17 +42,17 @@ Resizing repaints the current snapshot without waiting for catalog reads or nati
 
 Unchanged projections need no effect lock. Fresh attestation, ownership and naming-provenance reads may establish that nothing needs changing. Any effect still acquires the workspace lock and repeats its authority checks. This reduces contention without allowing a cached card to authorize a rename or launch.
 
-Workspace exclusion must survive process death without stale-lock theft. Retain a descriptor to a persistent, version-marked lock inode and use the operating system's advisory lock. A short isolated Python helper acquires through an inherited descriptor; Node retains the lock after the helper exits. Descriptor closure or process death releases ownership. This requires Python 3 with `fcntl` and adds interpreter startup cost when acquiring a lock. It avoids native-addon packaging and does not depend on asynchronous unlink cleanup.
+Workspace exclusion must survive process death without stale-lock theft. Retain a descriptor to a persistent lock inode and use the operating system's advisory lock. A short isolated Python helper acquires through an inherited descriptor; Node retains the lock after the helper exits. Descriptor closure or process death releases ownership. This requires Python 3 with `fcntl` and adds interpreter startup cost when acquiring a lock. It avoids native-addon packaging and does not depend on asynchronous unlink cleanup.
 
-New-format lock files remain after release. Never delete them to make progress. Legacy or unrecognized files require inspected recovery with old clients quiescent; they cannot be treated as available by guessing whether a recorded PID is alive. Cancellation stops subprocess groups and awaits closure. Shutdown and replacement drain retired native work before their lifetimes end. A complete reservation may be rolled back only when this invocation knows that no native effect was dispatched. Uncertain dispatched effects retain their launch evidence rather than permit duplicates.
+Lock files remain after release. Never delete or replace them to make progress. Their contents do not establish ownership. Clients that require marker contents or use file existence as a lock need a coordinated cutover; guessing whether a recorded PID is alive cannot make mixed protocols safe. Cancellation stops subprocess groups and awaits closure. Shutdown and replacement drain retired native work before their lifetimes end. A complete reservation may be rolled back only when this invocation knows that no native effect was dispatched. Uncertain dispatched effects retain their launch evidence rather than permit duplicates.
 
 These decisions are accepted; the [cutover plan](../plans/catalog-cutover.md) records review and activation separately from the already active native base.
 
-## Documents open in the viewing session
+## Documents prefer the viewing checkout
 
-Open a document in the viewing agent/tab's checkout, at that checkout's current state. Here A and B are separate tabs and jj workspaces inside one Herdr workspace, not separate Herdr workspaces. The shared reference supplies the repository and relative path; the viewing agent supplies the local checkout. The recorded ref supports recovery elsewhere, not revision-pinned navigation.
+Prefer the viewing agent/tab's working file, including uncommitted edits. Here A and B are separate tabs and jj workspaces inside one Herdr workspace, not separate Herdr workspaces. The shared reference supplies the repository and relative path; the viewing agent supplies the local checkout. Recovery metadata must not replace an available viewing file.
 
-For example, agent A adds a document at `a1` and advances to `a5`. Agent B's jj workspace is at `b5`. Opening the reference from B's card opens B's working file, including uncommitted edits. It must not open A's copy, retrieve `a1` or switch branches.
+For example, agent A adds a document at `a1` and advances to `a5`. Agent B's jj workspace is at `b5`. If B has the file, its card opens B's working copy, not A's copy or `a1`. A missing viewing file may instead resolve to a source Session's checkout or a captured revision. Neither choice switches branches.
 
 Streams owns checkout selection and document resolution; the pane receives resolved locations, not a policy to reimplement. Each host-local checkout has a stable ID and an exact canonical root. Explicit repository-URL bindings distinguish intentional mappings from remotes or similarly named directories. A move updates that ID's root rather than changing every Session selection.
 
@@ -60,7 +60,7 @@ Each Session selects its own checkout and relative cwd. A Herdr-workspace-wide m
 
 Revalidate the painted reference, viewing scope and resolved root before opening or reusing an editor. Editor reuse must match the viewing Session and canonical file, not merely its repository-relative path.
 
-If the document is absent, show “Document not present in this checkout.” Missing or ambiguous checkout bindings also remain visible errors. Never substitute another workspace's checkout, create one or remove the shared reference. The old package's automatic missing-document cleanup cannot carry over: absence in B says nothing about the file's existence in A.
+Use only the application-resolved targets. Lowercase document shortcuts open the default target; Shift+letter offers a source chooser. Revision files are extracted only on open, never during card polling. If no eligible target exists, show “Document not present in this checkout.” Missing or ambiguous checkout bindings also remain visible errors. Never create a checkout or remove the shared reference because a viewing file is missing.
 
 ## Restore work without inventing launch intent
 

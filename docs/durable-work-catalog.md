@@ -52,7 +52,8 @@ documents:
     ref: lifecycle-design
     path: docs/durable-work-catalog.md
     description: Lifecycle and data-model decisions
-    added_at: immutable-commit-id
+    commit: immutable-commit-id
+    source_session_id: ses_lifecycle
 
 issues: []
 prs: []
@@ -60,7 +61,7 @@ prs: []
 
 The naming modes distinguish automatic text from protected manual choices. `goal` describes the intended outcome and may be null while that outcome is unspecified. In that case `goal_short` is also null; creation must not invent placeholder text. An overall progress view can be assembled from session descriptions and reference documents when needed, rather than maintained as another record. Scope not assigned to a session belongs in the goal or a referenced plan.
 
-Repository aliases belong to the stream. A document's identity is its repository alias and relative path. Its `ref` is a recovery branch or bookmark, not part of its identity or a navigation pin. Optional `added_at` records an immutable commit known when the reference was added. It helps investigate a later move or deletion; it does not claim the commit created the document. Unknown or uncommitted-only provenance remains absent.
+Repository aliases belong to the stream. A document's identity is its repository alias and relative path. Its `ref` is a recovery branch or bookmark, not part of its identity or a navigation pin. Optional `commit` records the latest known immutable document revision, not its creation time. `source_session_id` identifies the Session whose checkout supplies the origin fallback. Unknown or uncommitted-only provenance remains absent.
 
 Two references to the same repository/path cannot become different documents by naming different refs. Existing historical operations must not be silently deduplicated to satisfy this rule. Issue and PR references contain URLs and descriptions. Missing local checkouts must not erase references. Non-repository work may have an empty repository map.
 
