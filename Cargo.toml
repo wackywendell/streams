@@ -17,6 +17,7 @@ temper-jit = { git = "https://github.com/nerdsane/temper.git", rev = "6255ac3b43
 temper-spec = { git = "https://github.com/nerdsane/temper.git", rev = "6255ac3b43028105b8c0a2cee773f01aed2480a2" }
 thiserror = "2"
 uuid = { version = "1", features = ["v4", "v5", "serde"] }
+strum = { version = "0.28.0", features = ["derive"] }
 
 [dev-dependencies]
 proptest = "1"

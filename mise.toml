@@ -8,8 +8,11 @@ rust = "1.95.0"
 RUSTUP_TOOLCHAIN = "1.95.0"
 
 [tasks."test:rust"]
-description = "Run Rust catalog and Temper verification tests (requires Z3 and libclang)"
-run = 'RUSTC=$(rustup which rustc) RUSTDOC=$(rustup which rustdoc) cargo test --locked --all-targets'
+description = "Run Rust catalog, documentation and Temper verification tests (requires Z3 and libclang)"
+run = [
+  'RUSTC=$(rustup which rustc) RUSTDOC=$(rustup which rustdoc) cargo test --locked --all-targets',
+  'RUSTC=$(rustup which rustc) RUSTDOC=$(rustup which rustdoc) cargo test --locked --doc',
+]
 
 [tasks."test:differential"]
 description = "Compare Python and Rust durable catalog traces"

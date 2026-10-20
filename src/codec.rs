@@ -4,7 +4,7 @@ use std::collections::BTreeSet;
 
 use serde_json::{Map, Value};
 
-use crate::model::{Host, Record, Session, Stream, ValidationError};
+use crate::model::{Host, Record, RecordKind, Session, Stream, ValidationError};
 
 pub fn object_fields(
     value: &Value,
@@ -28,6 +28,7 @@ pub fn object_fields(
     Ok(obj.clone())
 }
 
+/// Emit untagged persisted fields, not the derived serde representation of `Record`.
 pub fn record_to_data(record: &Record) -> Value {
     match record {
         Record::Stream(s) => serde_json::to_value(s),
@@ -37,12 +38,14 @@ pub fn record_to_data(record: &Record) -> Value {
     .expect("record fields are JSON-compatible")
 }
 
-pub fn record_from_data(kind: &str, value: &Value) -> Result<Record, ValidationError> {
+/// Decode a record's wire fields and check its logical constraints before use.
+pub fn record_from_data(kind: RecordKind, value: &Value) -> Result<Record, ValidationError> {
     let record = match kind {
-        "stream" => serde_json::from_value::<Stream>(value.clone()).map(Record::Stream),
-        "session" => serde_json::from_value::<Session>(value.clone()).map(Record::Session),
-        "host" => serde_json::from_value::<Host>(value.clone()).map(Record::Host),
-        _ => return Err(ValidationError::new(format!("unknown record kind: {kind}"))),
+        RecordKind::Stream => serde_json::from_value::<Stream>(value.clone()).map(Record::Stream),
+        RecordKind::Session => {
+            serde_json::from_value::<Session>(value.clone()).map(Record::Session)
+        }
+        RecordKind::Host => serde_json::from_value::<Host>(value.clone()).map(Record::Host),
     }
     .map_err(|error| ValidationError::new(error.to_string()))?;
     record.validated()

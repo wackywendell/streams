@@ -1,4 +1,5 @@
 use std::sync::{Arc, Mutex};
+use streams_temper::operations::Actor;
 
 use proptest::prelude::*;
 use streams_temper::{
@@ -17,7 +18,7 @@ fn operation(id: &str) -> Operation {
         id,
         None,
         Record::Stream(Stream::new(id, "Work", None, "host").unwrap()),
-        "user",
+        Actor::User,
         None,
         vec![],
     )
@@ -63,8 +64,15 @@ fn every_bookkeeping_failure_preserves_a_safe_restart() {
 fn operations_cannot_be_forged_through_the_wire_boundary() {
     use streams_temper::sync::envelope::{PREFIX, decode_operation, encode_operation};
     let record = operation("create").after().clone();
-    let update =
-        Operation::new("edit", Some(record.clone()), record, "user", None, vec![]).unwrap();
+    let update = Operation::new(
+        "edit",
+        Some(record.clone()),
+        record,
+        Actor::User,
+        None,
+        vec![],
+    )
+    .unwrap();
     let text = encode_operation(&update, None).unwrap();
     let mut wire: serde_json::Value =
         serde_json::from_str(text.strip_prefix(PREFIX).unwrap()).unwrap();

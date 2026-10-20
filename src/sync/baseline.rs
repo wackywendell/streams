@@ -1,4 +1,8 @@
-//! A validated snapshot root with retained creation evidence, not invented history.
+//! Snapshot roots retain original creation evidence instead of inventing history.
+//!
+//! A baseline starts operation history from existing records. Its original creation
+//! envelopes and intent fingerprints establish each stream's ownership authority;
+//! they need not describe the stream's current, possibly edited snapshot value.
 
 use std::collections::{BTreeMap, BTreeSet};
 
@@ -12,8 +16,13 @@ use super::envelope::{
     check_fingerprints, decode_operation, encode_operation, load_json, operation_digest,
 };
 
+/// Commit-message prefix identifying the supported baseline format.
 pub const BASELINE: &str = "Streams catalog baseline v1\n";
 
+/// Retained creation envelopes by stream ID and intent digests by operation ID.
+///
+/// Construction checks field shapes only. [`decode_baseline`] checks this evidence
+/// against the snapshot before deriving ownership authorities.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Baseline {
     pub host: String,
@@ -22,6 +31,7 @@ pub struct Baseline {
 }
 
 impl Baseline {
+    /// Checks nonempty identifiers and envelope text, and fingerprint syntax.
     pub fn new(
         host: impl Into<String>,
         creations: BTreeMap<String, String>,
@@ -51,6 +61,7 @@ struct BaselineEnvelope {
     fingerprints: BTreeMap<String, String>,
 }
 
+/// Encodes the versioned commit message; does not verify snapshot authority.
 pub fn encode_baseline(baseline: &Baseline) -> Result<String, ValidationError> {
     let envelope = BaselineEnvelope {
         version: 1,
@@ -64,6 +75,11 @@ pub fn encode_baseline(baseline: &Baseline) -> Result<String, ValidationError> {
     Ok(format!("{BASELINE}{json}\n"))
 }
 
+/// Validates a baseline message and its snapshot, then derives stream authorities.
+///
+/// Rejects unsupported versions, duplicate JSON keys, unknown fields, mismatched
+/// producers, and missing or noncanonical original creations. Each creation must
+/// have a unique operation ID whose fingerprint matches its original intent.
 pub fn decode_baseline(
     message: &str,
     files: &BTreeMap<String, Vec<u8>>,

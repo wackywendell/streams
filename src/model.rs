@@ -1,17 +1,71 @@
-//! Logical records and relationships with strict wire field mapping.
+//! Typed records with strict wire field mapping. Deserialization checks wire shapes;
+//! record validation checks local constraints, and catalog construction checks relationships.
+//! Validation rejects invalid values without normalizing them.
 
 use std::collections::{BTreeMap, BTreeSet};
 use std::fmt;
 
 use chrono::{DateTime, FixedOffset, SecondsFormat};
 use serde::{Deserialize, Deserializer, Serialize, Serializer};
+use strum::{AsRefStr, Display, EnumString};
 
-fn automatic() -> String {
-    "automatic".into()
+/// Personal lifecycle of a stream or contribution; completion does not close its workspace.
+#[derive(
+    Debug,
+    Clone,
+    Copy,
+    Default,
+    PartialEq,
+    Eq,
+    Serialize,
+    Deserialize,
+    EnumString,
+    Display,
+    AsRefStr,
+)]
+#[serde(rename_all = "kebab-case")]
+#[strum(serialize_all = "kebab-case")]
+pub enum Status {
+    #[default]
+    Active,
+    Waiting,
+    Blocked,
+    Parked,
+    Done,
 }
 
-fn active() -> String {
-    "active".into()
+/// Whether generated reports may replace text. Manual text remains user-owned.
+#[derive(
+    Debug,
+    Clone,
+    Copy,
+    Default,
+    PartialEq,
+    Eq,
+    Serialize,
+    Deserialize,
+    EnumString,
+    Display,
+    AsRefStr,
+)]
+#[serde(rename_all = "kebab-case")]
+#[strum(serialize_all = "kebab-case")]
+pub enum NamingMode {
+    #[default]
+    Automatic,
+    Manual,
+}
+
+/// The record schemas accepted by catalog files and operation envelopes.
+#[derive(
+    Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, EnumString, Display, AsRefStr,
+)]
+#[serde(rename_all = "kebab-case")]
+#[strum(serialize_all = "kebab-case")]
+pub enum RecordKind {
+    Host,
+    Session,
+    Stream,
 }
 
 fn checkout_directory() -> String {
@@ -59,6 +113,7 @@ fn serialize_checked_at<S: Serializer>(
     s.serialize_str(&checked_at.to_rfc3339_opts(precision, false))
 }
 
+/// A logical constraint violation in a record or catalog.
 #[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
 #[error("{0}")]
 pub struct ValidationError(pub String);
@@ -69,9 +124,7 @@ impl ValidationError {
     }
 }
 
-pub const STATUSES: &[&str] = &["active", "waiting", "blocked", "parked", "done"];
-pub const NAMING_MODES: &[&str] = &["automatic", "manual"];
-
+/// Rejects NULs and, unless allowed, empty or whitespace-only text; preserves input.
 pub fn check_text(value: &str, name: &str, empty_ok: bool) -> Result<(), ValidationError> {
     if value.contains('\0') || (!empty_ok && value.trim().is_empty()) {
         let kind = if empty_ok {
@@ -84,16 +137,7 @@ pub fn check_text(value: &str, name: &str, empty_ok: bool) -> Result<(), Validat
     Ok(())
 }
 
-pub fn check_choice(value: &str, name: &str, options: &[&str]) -> Result<(), ValidationError> {
-    if !options.contains(&value) {
-        return Err(ValidationError::new(format!(
-            "{name} must be one of {}",
-            options.join(", ")
-        )));
-    }
-    Ok(())
-}
-
+/// Rejects absolute paths, drive prefixes, backslashes, and parent traversal.
 pub fn check_relative_path(value: &str, name: &str) -> Result<(), ValidationError> {
     check_text(value, name, false)?;
     let has_drive = value.len() >= 2
@@ -111,6 +155,7 @@ pub fn check_relative_path(value: &str, name: &str) -> Result<(), ValidationErro
     Ok(())
 }
 
+/// A repository URL referenced by its alias within a stream.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct Repository {
@@ -118,13 +163,20 @@ pub struct Repository {
 }
 
 impl Repository {
+    /// Requires nonempty text, not a particular URL scheme or reachable repository.
     pub fn new(url: impl Into<String>) -> Result<Self, ValidationError> {
-        let url = url.into();
-        check_text(&url, "repository.url", false)?;
-        Ok(Self { url })
+        let repository = Self { url: url.into() };
+        repository.validate()?;
+        Ok(repository)
+    }
+
+    /// Checks the URL text without resolving or modifying it.
+    pub fn validate(&self) -> Result<(), ValidationError> {
+        check_text(&self.url, "repository.url", false)
     }
 }
 
+/// An issue or pull-request URL with optional descriptive text.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct Link {
@@ -134,18 +186,27 @@ pub struct Link {
 }
 
 impl Link {
+    /// Requires nonempty URL text; the description may be empty.
     pub fn new(
         url: impl Into<String>,
         description: impl Into<String>,
     ) -> Result<Self, ValidationError> {
-        let url = url.into();
-        let description = description.into();
-        check_text(&url, "link.url", false)?;
-        check_text(&description, "link.description", true)?;
-        Ok(Self { url, description })
+        let link = Self {
+            url: url.into(),
+            description: description.into(),
+        };
+        link.validate()?;
+        Ok(link)
+    }
+
+    /// Checks text constraints without resolving or modifying the link.
+    pub fn validate(&self) -> Result<(), ValidationError> {
+        check_text(&self.url, "link.url", false)?;
+        check_text(&self.description, "link.description", true)
     }
 }
 
+/// A repository-relative document tracked by a stream.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct Document {
@@ -154,11 +215,13 @@ pub struct Document {
     pub path: String,
     #[serde(default)]
     pub description: String,
+    /// Optional commit provenance for when the document was added, not a timestamp.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub added_at: Option<String>,
 }
 
 impl Document {
+    /// Checks text and portable-path constraints; repository membership is stream-local.
     pub fn new(
         repository: impl Into<String>,
         r#ref: impl Into<String>,
@@ -166,31 +229,36 @@ impl Document {
         description: impl Into<String>,
         added_at: Option<String>,
     ) -> Result<Self, ValidationError> {
-        let repository = repository.into();
-        let r#ref = r#ref.into();
-        let path = path.into();
-        let description = description.into();
-        check_text(&repository, "document.repository", false)?;
-        check_text(&r#ref, "document.ref", false)?;
-        check_relative_path(&path, "document.path")?;
-        check_text(&description, "document.description", true)?;
-        if let Some(ref commit) = added_at {
-            check_text(commit, "document.added_at", false)?;
-        }
-        Ok(Self {
-            repository,
-            r#ref,
-            path,
-            description,
+        let document = Self {
+            repository: repository.into(),
+            r#ref: r#ref.into(),
+            path: path.into(),
+            description: description.into(),
             added_at,
-        })
+        };
+        document.validate()?;
+        Ok(document)
     }
 
+    /// Checks local fields, not repository membership or ref existence.
+    pub fn validate(&self) -> Result<(), ValidationError> {
+        check_text(&self.repository, "document.repository", false)?;
+        check_text(&self.r#ref, "document.ref", false)?;
+        check_relative_path(&self.path, "document.path")?;
+        check_text(&self.description, "document.description", true)?;
+        if let Some(ref commit) = self.added_at {
+            check_text(commit, "document.added_at", false)?;
+        }
+        Ok(())
+    }
+
+    /// Identity within a stream excludes the ref and descriptive metadata.
     pub fn identity(&self) -> (&str, &str) {
         (&self.repository, &self.path)
     }
 }
 
+/// A session's repository ref and working directory within its checkout.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct Checkout {
@@ -201,28 +269,33 @@ pub struct Checkout {
 }
 
 impl Checkout {
+    /// Requires a portable relative directory; `.` denotes the checkout root.
     pub fn new(
         repository: impl Into<String>,
         r#ref: impl Into<String>,
         directory_within_checkout: impl Into<String>,
     ) -> Result<Self, ValidationError> {
-        let repository = repository.into();
-        let r#ref = r#ref.into();
-        let directory_within_checkout = directory_within_checkout.into();
-        check_text(&repository, "checkout.repository", false)?;
-        check_text(&r#ref, "checkout.ref", false)?;
+        let checkout = Self {
+            repository: repository.into(),
+            r#ref: r#ref.into(),
+            directory_within_checkout: directory_within_checkout.into(),
+        };
+        checkout.validate()?;
+        Ok(checkout)
+    }
+
+    /// Checks local fields; the catalog checks membership in the attached stream.
+    pub fn validate(&self) -> Result<(), ValidationError> {
+        check_text(&self.repository, "checkout.repository", false)?;
+        check_text(&self.r#ref, "checkout.ref", false)?;
         check_relative_path(
-            &directory_within_checkout,
+            &self.directory_within_checkout,
             "checkout.directory_within_checkout",
-        )?;
-        Ok(Self {
-            repository,
-            r#ref,
-            directory_within_checkout,
-        })
+        )
     }
 }
 
+/// A durable effort with stream-local repository aliases and supporting references.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct Stream {
@@ -231,15 +304,16 @@ pub struct Stream {
     pub title: String,
     #[serde(deserialize_with = "required_nullable")]
     pub goal: Option<String>,
+    /// Durable ownership, separate from any current runtime host binding.
     #[serde(rename = "owner", with = "owner")]
     pub owner_host_id: String,
-    #[serde(default = "automatic")]
-    pub title_mode: String,
+    #[serde(default)]
+    pub title_mode: NamingMode,
     pub goal_short: Option<String>,
-    #[serde(default = "automatic")]
-    pub goal_mode: String,
-    #[serde(default = "active")]
-    pub status: String,
+    #[serde(default)]
+    pub goal_mode: NamingMode,
+    #[serde(default)]
+    pub status: Status,
     #[serde(default)]
     pub archived: bool,
     #[serde(default)]
@@ -253,6 +327,7 @@ pub struct Stream {
 }
 
 impl Stream {
+    /// Creates an active, unarchived stream with automatic naming and no references.
     pub fn new(
         id: impl Into<String>,
         title: impl Into<String>,
@@ -264,10 +339,10 @@ impl Stream {
             title: title.into(),
             goal,
             owner_host_id: owner_host_id.into(),
-            title_mode: "automatic".to_string(),
+            title_mode: NamingMode::Automatic,
             goal_short: None,
-            goal_mode: "automatic".to_string(),
-            status: "active".to_string(),
+            goal_mode: NamingMode::Automatic,
+            status: Status::Active,
             archived: false,
             repositories: BTreeMap::new(),
             documents: Vec::new(),
@@ -277,7 +352,14 @@ impl Stream {
         .validated()
     }
 
+    /// Returns this stream unchanged after checking its local invariants.
     pub fn validated(self) -> Result<Self, ValidationError> {
+        self.validate()?;
+        Ok(self)
+    }
+
+    /// Checks fields, reference uniqueness, and document repository membership.
+    pub fn validate(&self) -> Result<(), ValidationError> {
         check_text(&self.id, "stream.id", false)?;
         check_text(&self.title, "stream.title", false)?;
         check_text(&self.owner_host_id, "stream.owner_host_id", false)?;
@@ -291,37 +373,28 @@ impl Stream {
         if let Some(ref goal_short) = self.goal_short {
             check_text(goal_short, "stream.goal_short", false)?;
         }
-        check_choice(&self.title_mode, "stream.title_mode", NAMING_MODES)?;
-        check_choice(&self.goal_mode, "stream.goal_mode", NAMING_MODES)?;
-        check_choice(&self.status, "stream.status", STATUSES)?;
         for (alias, repo) in &self.repositories {
             check_text(alias, "repository alias", false)?;
-            check_text(&repo.url, "repository.url", false)?;
+            repo.validate()?;
         }
         let mut doc_ids = BTreeSet::new();
         for doc in &self.documents {
-            Document::new(
-                &doc.repository,
-                &doc.r#ref,
-                &doc.path,
-                &doc.description,
-                doc.added_at.clone(),
-            )?;
-            if !doc_ids.insert((doc.repository.clone(), doc.path.clone())) {
+            doc.validate()?;
+            if !doc_ids.insert(doc.identity()) {
                 return Err(ValidationError::new("duplicate documents"));
             }
         }
         let mut issue_urls = BTreeSet::new();
         for issue in &self.issues {
-            Link::new(&issue.url, &issue.description)?;
-            if !issue_urls.insert(issue.url.clone()) {
+            issue.validate()?;
+            if !issue_urls.insert(issue.url.as_str()) {
                 return Err(ValidationError::new("duplicate issues"));
             }
         }
         let mut pr_urls = BTreeSet::new();
         for pr in &self.prs {
-            Link::new(&pr.url, &pr.description)?;
-            if !pr_urls.insert(pr.url.clone()) {
+            pr.validate()?;
+            if !pr_urls.insert(pr.url.as_str()) {
                 return Err(ValidationError::new("duplicate prs"));
             }
         }
@@ -333,10 +406,18 @@ impl Stream {
                 )));
             }
         }
-        Ok(self)
+        Ok(())
+    }
+
+    /// Returns the owned wire identity without copying the stream's contents.
+    pub fn key(&self) -> RecordKey {
+        RecordKey::Stream {
+            id: self.id.clone(),
+        }
     }
 }
 
+/// A harness contribution attached to one stream; its ID is scoped to its host.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct Session {
@@ -346,10 +427,11 @@ pub struct Session {
     pub harness: String,
     pub harness_session_id: String,
     pub title: String,
-    #[serde(default = "automatic")]
-    pub title_mode: String,
-    #[serde(default = "active")]
-    pub status: String,
+    #[serde(default)]
+    pub title_mode: NamingMode,
+    #[serde(default)]
+    pub status: Status,
+    /// Reported work state, distinct from status and the harness's native lifecycle.
     #[serde(default)]
     pub state: String,
     pub state_short: Option<String>,
@@ -359,6 +441,7 @@ pub struct Session {
 }
 
 impl Session {
+    /// Creates an active contribution; stream and checkout relationships are catalog checks.
     pub fn new(
         id: impl Into<String>,
         host_id: impl Into<String>,
@@ -374,8 +457,8 @@ impl Session {
             harness: harness.into(),
             harness_session_id: harness_session_id.into(),
             title: title.into(),
-            title_mode: "automatic".to_string(),
-            status: "active".to_string(),
+            title_mode: NamingMode::Automatic,
+            status: Status::Active,
             state: String::new(),
             state_short: None,
             remaining: String::new(),
@@ -384,7 +467,14 @@ impl Session {
         .validated()
     }
 
+    /// Returns this contribution unchanged after checking its local invariants.
     pub fn validated(self) -> Result<Self, ValidationError> {
+        self.validate()?;
+        Ok(self)
+    }
+
+    /// Checks fields and checkout shape, not catalog relationships or native ID uniqueness.
+    pub fn validate(&self) -> Result<(), ValidationError> {
         check_text(&self.id, "session.id", false)?;
         check_text(&self.host_id, "session.host_id", false)?;
         check_text(&self.stream_id, "session.stream_id", false)?;
@@ -395,24 +485,32 @@ impl Session {
             false,
         )?;
         check_text(&self.title, "session.title", false)?;
-        check_choice(&self.title_mode, "session.title_mode", NAMING_MODES)?;
-        check_choice(&self.status, "session.status", STATUSES)?;
         check_text(&self.state, "session.state", true)?;
         check_text(&self.remaining, "session.remaining", true)?;
         if let Some(ref state_short) = self.state_short {
             check_text(state_short, "session.state_short", false)?;
         }
         if let Some(ref co) = self.checkout {
-            Checkout::new(&co.repository, &co.r#ref, &co.directory_within_checkout)?;
+            co.validate()?;
         }
-        Ok(self)
+        Ok(())
     }
 
+    /// Returns the host-scoped owned identity without copying contribution contents.
+    pub fn key(&self) -> RecordKey {
+        RecordKey::Session {
+            id: self.id.clone(),
+            host_id: self.host_id.clone(),
+        }
+    }
+
+    /// Native harness identity must be unique across the catalog, independent of record ID.
     pub fn native_identity(&self) -> (&str, &str, &str) {
         (&self.host_id, &self.harness, &self.harness_session_id)
     }
 }
 
+/// A durable host identity and the time it was last checked.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct Host {
@@ -423,28 +521,46 @@ pub struct Host {
 }
 
 impl Host {
+    /// Requires nonempty identity/label text and a timestamp with at most microsecond precision.
     pub fn new(
         id: impl Into<String>,
         label: impl Into<String>,
         checked_at: DateTime<FixedOffset>,
     ) -> Result<Self, ValidationError> {
-        let id = id.into();
-        let label = label.into();
-        check_text(&id, "host.id", false)?;
-        check_text(&label, "host.label", false)?;
-        if !checked_at.timestamp_subsec_nanos().is_multiple_of(1000) {
+        let host = Self {
+            id: id.into(),
+            label: label.into(),
+            checked_at,
+        };
+        host.validate()?;
+        Ok(host)
+    }
+
+    /// Checks text and timestamp precision without rounding or changing the offset.
+    pub fn validate(&self) -> Result<(), ValidationError> {
+        check_text(&self.id, "host.id", false)?;
+        check_text(&self.label, "host.label", false)?;
+        if !self
+            .checked_at
+            .timestamp_subsec_nanos()
+            .is_multiple_of(1000)
+        {
             return Err(ValidationError::new(
                 "host.checked_at exceeds microsecond precision",
             ));
         }
-        Ok(Self {
-            id,
-            label,
-            checked_at,
-        })
+        Ok(())
+    }
+
+    /// Returns the owned identity without copying host metadata.
+    pub fn key(&self) -> RecordKey {
+        RecordKey::Host {
+            id: self.id.clone(),
+        }
     }
 }
 
+/// Any catalog record, used for operations that share an identity boundary.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub enum Record {
     Stream(Stream),
@@ -453,34 +569,40 @@ pub enum Record {
 }
 
 impl Record {
+    /// Returns this record unchanged after checking its local invariants.
     pub fn validated(self) -> Result<Self, ValidationError> {
+        self.validate()?;
+        Ok(self)
+    }
+
+    /// Checks the contained record; cross-record relationships require a catalog.
+    pub fn validate(&self) -> Result<(), ValidationError> {
         match self {
-            Self::Stream(s) => s.validated().map(Self::Stream),
-            Self::Session(s) => s.validated().map(Self::Session),
-            Self::Host(h) => Host::new(h.id, h.label, h.checked_at).map(Self::Host),
+            Self::Stream(s) => s.validate(),
+            Self::Session(s) => s.validate(),
+            Self::Host(h) => h.validate(),
         }
     }
 
+    /// Copies only the identity fields into an owned key.
     pub fn key(&self) -> RecordKey {
         match self {
-            Self::Stream(s) => RecordKey::Stream { id: s.id.clone() },
-            Self::Session(s) => RecordKey::Session {
-                id: s.id.clone(),
-                host_id: s.host_id.clone(),
-            },
-            Self::Host(h) => RecordKey::Host { id: h.id.clone() },
+            Self::Stream(s) => s.key(),
+            Self::Session(s) => s.key(),
+            Self::Host(h) => h.key(),
         }
     }
 
-    pub fn kind_str(&self) -> &'static str {
+    pub fn kind(&self) -> RecordKind {
         match self {
-            Record::Stream(_) => "stream",
-            Record::Session(_) => "session",
-            Record::Host(_) => "host",
+            Record::Stream(_) => RecordKind::Stream,
+            Record::Session(_) => RecordKind::Session,
+            Record::Host(_) => RecordKind::Host,
         }
     }
 }
 
+/// An owned catalog identity; only session identities include a host scope.
 #[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
 #[serde(tag = "kind", rename_all = "lowercase", deny_unknown_fields)]
 pub enum RecordKey {
@@ -491,11 +613,11 @@ pub enum RecordKey {
 }
 
 impl RecordKey {
-    pub fn kind_str(&self) -> &'static str {
+    pub fn kind(&self) -> RecordKind {
         match self {
-            Self::Stream { .. } => "stream",
-            Self::Session { .. } => "session",
-            Self::Host { .. } => "host",
+            Self::Stream { .. } => RecordKind::Stream,
+            Self::Session { .. } => RecordKind::Session,
+            Self::Host { .. } => RecordKind::Host,
         }
     }
     pub fn id(&self) -> &str {
@@ -503,6 +625,7 @@ impl RecordKey {
             Self::Stream { id } | Self::Session { id, .. } | Self::Host { id } => id,
         }
     }
+    /// Returns the session identity scope, not a stream owner or runtime binding.
     pub fn host_id(&self) -> Option<&str> {
         match self {
             Self::Session { host_id, .. } => Some(host_id),
@@ -514,8 +637,8 @@ impl RecordKey {
 impl fmt::Display for RecordKey {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self.host_id() {
-            Some(host) => write!(f, "{}:{host}/{}", self.kind_str(), self.id()),
-            None => write!(f, "{}:{}", self.kind_str(), self.id()),
+            Some(host) => write!(f, "{}:{host}/{}", self.kind(), self.id()),
+            None => write!(f, "{}:{}", self.kind(), self.id()),
         }
     }
 }
@@ -524,6 +647,8 @@ pub fn record_key(record: &Record) -> RecordKey {
     record.key()
 }
 
+/// Records checked together for identity uniqueness and attachment relationships.
+/// Public fields and deserialization can bypass these checks; use `new` to revalidate.
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Catalog {
     pub streams: Vec<Stream>,
@@ -532,6 +657,8 @@ pub struct Catalog {
 }
 
 impl Catalog {
+    /// Checks records, duplicate record/native identities, session streams, and checkout aliases.
+    /// Host references need not have corresponding host records.
     pub fn new(
         streams: Vec<Stream>,
         sessions: Vec<Session>,
@@ -539,30 +666,26 @@ impl Catalog {
     ) -> Result<Self, ValidationError> {
         let mut stream_keys = BTreeSet::new();
         for s in &streams {
-            s.clone().validated()?;
-            if !stream_keys.insert(Record::Stream(s.clone()).key()) {
+            s.validate()?;
+            if !stream_keys.insert(s.id.as_str()) {
                 return Err(ValidationError::new("duplicate streams record identity"));
             }
         }
         let mut session_keys = BTreeSet::new();
         let mut native_ids = BTreeSet::new();
         for s in &sessions {
-            s.clone().validated()?;
-            if !session_keys.insert(Record::Session(s.clone()).key()) {
+            s.validate()?;
+            if !session_keys.insert((s.id.as_str(), s.host_id.as_str())) {
                 return Err(ValidationError::new("duplicate sessions record identity"));
             }
-            if !native_ids.insert((
-                s.host_id.clone(),
-                s.harness.clone(),
-                s.harness_session_id.clone(),
-            )) {
+            if !native_ids.insert(s.native_identity()) {
                 return Err(ValidationError::new("duplicate native session identity"));
             }
         }
         let mut host_keys = BTreeSet::new();
         for h in &hosts {
-            Host::new(&h.id, &h.label, h.checked_at)?;
-            if !host_keys.insert(Record::Host(h.clone()).key()) {
+            h.validate()?;
+            if !host_keys.insert(h.id.as_str()) {
                 return Err(ValidationError::new("duplicate hosts record identity"));
             }
         }
@@ -595,6 +718,7 @@ impl Catalog {
         self.streams.iter().find(|s| s.id == id)
     }
 
+    /// Looks up a session by its host-scoped catalog ID, not its native harness ID.
     pub fn session(&self, host_id: &str, id: &str) -> Option<&Session> {
         self.sessions
             .iter()
@@ -605,6 +729,7 @@ impl Catalog {
         self.hosts.iter().find(|h| h.id == id)
     }
 
+    /// Returns owned snapshots in stream, session, then host order.
     pub fn records(&self) -> Vec<Record> {
         let mut out =
             Vec::with_capacity(self.streams.len() + self.sessions.len() + self.hosts.len());
@@ -614,6 +739,7 @@ impl Catalog {
         out
     }
 
+    /// Returns an owned snapshot; typed getters borrow instead.
     pub fn get(&self, key: &RecordKey) -> Option<Record> {
         match key {
             RecordKey::Stream { id } => self.stream(id).cloned().map(Record::Stream),
@@ -624,6 +750,7 @@ impl Catalog {
         }
     }
 
+    /// Inserts or replaces by identity in a new catalog, rechecking all catalog invariants.
     pub fn replacing(&self, record: Record) -> Result<Self, ValidationError> {
         let mut next = self.clone();
         match record {

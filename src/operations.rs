@@ -4,10 +4,38 @@ use std::collections::BTreeSet;
 
 use serde::{Deserialize, Serialize};
 use serde_json::{Map, Value};
+use strum::{AsRefStr, Display, EnumString};
 
 use crate::codec::{record_from_data, record_to_data};
-use crate::model::{Catalog, Host, Record, RecordKey, ValidationError, check_choice, check_text};
+use crate::model::{
+    Catalog, Host, NamingMode, Record, RecordKey, Status, ValidationError, check_text,
+};
 
+/// Who supplied the intent. Automatic writes cannot change lifecycle or manual naming modes.
+#[derive(
+    Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, EnumString, Display, AsRefStr,
+)]
+#[serde(rename_all = "kebab-case")]
+#[strum(serialize_all = "kebab-case")]
+pub enum Actor {
+    User,
+    Automatic,
+}
+
+/// Domain acceptance only; it says nothing about persistence or publication.
+#[derive(
+    Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, EnumString, Display, AsRefStr,
+)]
+#[serde(rename_all = "kebab-case")]
+#[strum(serialize_all = "kebab-case")]
+pub enum DomainOutcome {
+    Changes,
+    NoChange,
+    Superseded,
+    Conflict,
+}
+
+/// Effective ownership supplied from durable coordinator evidence, never from pending edits.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Authority {
     pub host_id: String,
@@ -27,6 +55,7 @@ impl Authority {
     }
 }
 
+/// Drop edits to manual text at capture time; reconciliation still checks the live modes.
 pub fn filter_automatic_changes(
     before: &Record,
     changes: &Map<String, Value>,
@@ -34,16 +63,16 @@ pub fn filter_automatic_changes(
     let mut protected = BTreeSet::new();
     match before {
         Record::Stream(s) => {
-            if s.title_mode == "manual" {
+            if s.title_mode == NamingMode::Manual {
                 protected.insert("title");
             }
-            if s.goal_mode == "manual" {
+            if s.goal_mode == NamingMode::Manual {
                 protected.insert("goal");
                 protected.insert("goal_short");
             }
         }
         Record::Session(s) => {
-            if s.title_mode == "manual" {
+            if s.title_mode == NamingMode::Manual {
                 protected.insert("title");
             }
         }
@@ -56,28 +85,30 @@ pub fn filter_automatic_changes(
         .collect()
 }
 
+/// Treat user text edits as manual by default and invalidate dependent short summaries.
+/// An explicitly supplied mode or summary is preserved rather than silently replaced.
 pub fn normalize_changes(
     before: &Record,
     changes: &Map<String, Value>,
-    actor: &str,
+    actor: Actor,
 ) -> Map<String, Value> {
     let mut out = changes.clone();
-    if actor == "user" {
+    if actor == Actor::User {
         match before {
             Record::Stream(_) => {
                 if out.contains_key("title") {
                     out.entry("title_mode".to_string())
-                        .or_insert_with(|| Value::String("manual".to_string()));
+                        .or_insert_with(|| Value::from(NamingMode::Manual.as_ref()));
                 }
                 if out.contains_key("goal") {
                     out.entry("goal_mode".to_string())
-                        .or_insert_with(|| Value::String("manual".to_string()));
+                        .or_insert_with(|| Value::from(NamingMode::Manual.as_ref()));
                 }
             }
             Record::Session(_) => {
                 if out.contains_key("title") {
                     out.entry("title_mode".to_string())
-                        .or_insert_with(|| Value::String("manual".to_string()));
+                        .or_insert_with(|| Value::from(NamingMode::Manual.as_ref()));
                 }
             }
             Record::Host(_) => {}
@@ -102,12 +133,16 @@ pub fn normalize_changes(
     out
 }
 
+/// Captured intent against an original base and optional dependent records.
+///
+/// Construction validates records and actor permissions. Fields stay private so decoding
+/// cannot bypass these checks; replay must not refresh the captured base or inputs.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 pub struct Operation {
     pub(crate) id: String,
     pub(crate) before: Option<Record>,
     pub(crate) after: Record,
-    pub(crate) actor: String,
+    pub(crate) actor: Actor,
     pub(crate) ownership_token: Option<String>,
     pub(crate) inputs: Vec<Record>,
 }
@@ -122,8 +157,8 @@ impl Operation {
     pub fn after(&self) -> &Record {
         &self.after
     }
-    pub fn actor(&self) -> &str {
-        &self.actor
+    pub fn actor(&self) -> Actor {
+        self.actor
     }
     pub fn ownership_token(&self) -> Option<&str> {
         self.ownership_token.as_deref()
@@ -132,16 +167,17 @@ impl Operation {
         &self.inputs
     }
 
+    /// Reject identity/ownership moves and edits the actor is not allowed to make.
+    /// A token records the captured ownership claim; reconciliation checks it against authority.
     pub fn new(
         id: impl Into<String>,
         before: Option<Record>,
         after: Record,
-        actor: impl Into<String>,
+        actor: Actor,
         ownership_token: Option<String>,
         inputs: Vec<Record>,
     ) -> Result<Self, ValidationError> {
         let id = id.into();
-        let actor = actor.into();
         let after = after.validated()?;
         let before = before.map(Record::validated).transpose()?;
         let inputs = inputs
@@ -157,7 +193,6 @@ impl Operation {
                 ));
             }
         }
-        check_choice(&actor, "operation.actor", &["user", "automatic"])?;
         let key = after.key();
         if keys.contains(&key) {
             return Err(ValidationError::new(
@@ -196,7 +231,9 @@ impl Operation {
             }
         }
         let needs_token = matches!(after, Record::Session(_))
-            || (matches!(after, Record::Stream(_)) && before.is_some() && actor == "automatic");
+            || (matches!(after, Record::Stream(_))
+                && before.is_some()
+                && actor == Actor::Automatic);
         if needs_token {
             let Some(ref tok) = ownership_token else {
                 return Err(ValidationError::new(
@@ -217,22 +254,23 @@ impl Operation {
             ownership_token,
             inputs,
         };
-        if op.actor == "automatic" {
+        if op.actor == Actor::Automatic {
             if op.before.is_none() {
                 if let Record::Stream(ref s) = op.after {
-                    if s.status != "active" || s.archived {
+                    if s.status != Status::Active || s.archived {
                         return Err(ValidationError::new(
                             "automatic enrollment cannot set personal lifecycle",
                         ));
                     }
-                    if s.title_mode != "automatic" || s.goal_mode != "automatic" {
+                    if s.title_mode != NamingMode::Automatic || s.goal_mode != NamingMode::Automatic
+                    {
                         return Err(ValidationError::new(
                             "automatic creation cannot set manual modes",
                         ));
                     }
                 }
                 if let Record::Session(ref s) = op.after
-                    && s.title_mode != "automatic"
+                    && s.title_mode != NamingMode::Automatic
                 {
                     return Err(ValidationError::new(
                         "automatic creation cannot set manual modes",
@@ -245,7 +283,7 @@ impl Operation {
                     prohibited.insert("status");
                     prohibited.insert("archived");
                 }
-                if changed.iter().any(|f| prohibited.contains(f.as_str())) {
+                if changed.iter().any(|f| prohibited.contains(f)) {
                     return Err(ValidationError::new(
                         "automatic operations cannot change personal lifecycle or naming modes",
                     ));
@@ -259,28 +297,25 @@ impl Operation {
         self.after.key()
     }
 
-    pub fn changed_fields(&self) -> BTreeSet<String> {
+    /// Logical domain field names, compared natively rather than through serialized values.
+    pub fn changed_fields(&self) -> BTreeSet<&'static str> {
         let Some(ref before) = self.before else {
-            return record_field_names(&self.after)
-                .iter()
-                .copied()
-                .map(str::to_string)
-                .collect();
+            return record_field_names(&self.after).iter().copied().collect();
         };
         record_field_names(&self.after)
             .iter()
             .copied()
             .filter(|name| field_eq(before, &self.after, name) == Some(false))
-            .map(str::to_string)
             .collect()
     }
 }
 
+/// Build validated intent from partial wire fields while retaining the caller's captured base.
 pub fn update(
     id: impl Into<String>,
     before: &Record,
     changes: &Map<String, Value>,
-    actor: &str,
+    actor: Actor,
     ownership_token: Option<String>,
     inputs: Vec<Record>,
 ) -> Result<Operation, ValidationError> {
@@ -298,7 +333,7 @@ pub fn update(
             wire.insert(k, v);
         }
     }
-    let after = record_from_data(before.kind_str(), &Value::Object(wire))?;
+    let after = record_from_data(before.kind(), &Value::Object(wire))?;
     Operation::new(
         id,
         Some(before.clone()),
@@ -309,10 +344,12 @@ pub fn update(
     )
 }
 
+/// The domain decision, separate from whether a coordinator saved or published it.
+/// `record` is present only for changes; refusals retain field names and a reason.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Reconciliation {
     pub operation_id: String,
-    pub outcome: String,
+    pub outcome: DomainOutcome,
     pub record: Option<Record>,
     pub conflicts: Vec<String>,
     pub reason: String,
@@ -322,7 +359,7 @@ impl Reconciliation {
     pub fn no_change(operation_id: impl Into<String>, reason: impl Into<String>) -> Self {
         Self {
             operation_id: operation_id.into(),
-            outcome: "no-change".to_string(),
+            outcome: DomainOutcome::NoChange,
             record: None,
             conflicts: Vec::new(),
             reason: reason.into(),
@@ -330,6 +367,8 @@ impl Reconciliation {
     }
 }
 
+// Keep names, equality and copying together. Native equality preserves timestamp instant
+// equality across offsets; logical owner_host_id is not the nested wire field owner.
 macro_rules! record_fields {
     ($($variant:ident {
         immutable: [$($immutable:ident),*],
@@ -385,23 +424,24 @@ record_fields! {
     },
 }
 
-fn guard_fields(operation: &Operation) -> BTreeSet<String> {
+// A concurrent edit to any member invalidates intent captured from the whole text group.
+fn guard_fields(operation: &Operation) -> BTreeSet<&'static str> {
     let mut fields = operation.changed_fields();
     let title_group = ["title", "title_mode"];
-    if fields.iter().any(|f| title_group.contains(&f.as_str())) {
-        fields.extend(title_group.into_iter().map(str::to_string));
+    if fields.iter().any(|f| title_group.contains(f)) {
+        fields.extend(title_group);
     }
     match operation.after {
         Record::Stream(_) => {
             let goal_group = ["goal", "goal_short", "goal_mode"];
-            if fields.iter().any(|f| goal_group.contains(&f.as_str())) {
-                fields.extend(goal_group.into_iter().map(str::to_string));
+            if fields.iter().any(|f| goal_group.contains(f)) {
+                fields.extend(goal_group);
             }
         }
         Record::Session(_) => {
             let state_group = ["state", "state_short", "remaining", "status"];
-            if fields.iter().any(|f| state_group.contains(&f.as_str())) {
-                fields.extend(state_group.into_iter().map(str::to_string));
+            if fields.iter().any(|f| state_group.contains(f)) {
+                fields.extend(state_group);
             }
         }
         Record::Host(_) => {}
@@ -434,20 +474,23 @@ fn merge_additive<T: Clone + PartialEq>(
     Some(merged)
 }
 
+/// Reconcile captured intent against the current catalog without performing effects.
+/// User edits may merge independent fields and additive collections. Stale automatic
+/// descriptions are superseded instead of overwriting newer inputs or manual text.
 pub fn reconcile(
     catalog: &Catalog,
     operation: &Operation,
     authority: Option<&Authority>,
 ) -> Reconciliation {
     let refuse = |reason: &str, conflicts: &[&str], superseded: bool| -> Reconciliation {
-        let outcome = if superseded && operation.actor == "automatic" {
-            "superseded"
+        let outcome = if superseded && operation.actor == Actor::Automatic {
+            DomainOutcome::Superseded
         } else {
-            "conflict"
+            DomainOutcome::Conflict
         };
         Reconciliation {
             operation_id: operation.id.clone(),
-            outcome: outcome.to_string(),
+            outcome,
             record: None,
             conflicts: conflicts.iter().map(|s| (*s).to_string()).collect(),
             reason: reason.to_string(),
@@ -496,20 +539,20 @@ pub fn reconcile(
         }
         (Some(before), Some(cur)) => {
             let changed = operation.changed_fields();
-            if operation.actor == "automatic" {
+            if operation.actor == Actor::Automatic {
                 match cur {
                     Record::Stream(cs) => {
-                        if cs.title_mode == "manual" && changed.contains("title") {
+                        if cs.title_mode == NamingMode::Manual && changed.contains("title") {
                             return refuse("manual text is protected", &["title_mode"], true);
                         }
-                        if cs.goal_mode == "manual"
+                        if cs.goal_mode == NamingMode::Manual
                             && (changed.contains("goal") || changed.contains("goal_short"))
                         {
                             return refuse("manual text is protected", &["goal_mode"], true);
                         }
                     }
                     Record::Session(cs) => {
-                        if cs.title_mode == "manual" && changed.contains("title") {
+                        if cs.title_mode == NamingMode::Manual && changed.contains("title") {
                             return refuse("manual text is protected", &["title_mode"], true);
                         }
                     }
@@ -552,15 +595,15 @@ pub fn reconcile(
             let mut candidate = cur.clone();
             let mut conflicts = Vec::new();
             for field in guard_fields(operation) {
-                let actual_eq_base = field_eq(cur, before, &field).unwrap_or(false);
-                let actual_eq_desired = field_eq(cur, after, &field).unwrap_or(false);
+                let actual_eq_base = field_eq(cur, before, field).unwrap_or(false);
+                let actual_eq_desired = field_eq(cur, after, field).unwrap_or(false);
                 if actual_eq_base || actual_eq_desired {
-                    if changed.contains(&field) {
-                        copy_field(&mut candidate, after, &field);
+                    if changed.contains(field) {
+                        copy_field(&mut candidate, after, field);
                     }
                     continue;
                 }
-                if operation.actor == "user"
+                if operation.actor == Actor::User
                     && let (
                         Record::Stream(bs),
                         Record::Stream(as_),
@@ -568,7 +611,7 @@ pub fn reconcile(
                         Record::Stream(cand),
                     ) = (before, after, cur, &mut candidate)
                 {
-                    match field.as_str() {
+                    match field {
                         "documents" => {
                             if let Some(merged) = merge_additive(
                                 &bs.documents,
@@ -604,10 +647,9 @@ pub fn reconcile(
                 conflicts.push(field);
             }
             if !conflicts.is_empty() {
-                let refs: Vec<&str> = conflicts.iter().map(String::as_str).collect();
                 return refuse(
                     "concurrent intent conflicts with captured base",
-                    &refs,
+                    &conflicts,
                     false,
                 );
             }
@@ -631,7 +673,7 @@ pub fn reconcile(
     }
     Reconciliation {
         operation_id: operation.id.clone(),
-        outcome: "changes".to_string(),
+        outcome: DomainOutcome::Changes,
         record: Some(proposed),
         conflicts: Vec::new(),
         reason: String::new(),

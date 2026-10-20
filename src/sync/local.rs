@@ -6,7 +6,7 @@ use std::fs;
 use serde::{Deserialize, Serialize};
 
 use crate::model::{Record, ValidationError, check_text};
-use crate::operations::{Authority, Operation, Reconciliation, reconcile};
+use crate::operations::{Actor, Authority, DomainOutcome, Operation, Reconciliation, reconcile};
 use crate::storage::{Snapshot, StorageError};
 use crate::yaml_store::YamlStore;
 
@@ -16,6 +16,7 @@ use super::outcomes::{LocalStatus, Result as SyncResult, SharingStatus};
 use super::protocol::ProtocolMachine;
 use super::state::{RepairRequired, State};
 
+/// Enforce host ownership of producer records before accepting or replaying intent.
 pub fn check_producer(operation: &Operation, host_id: &str) -> Result<(), ValidationError> {
     match &operation.after {
         Record::Session(s) => {
@@ -33,7 +34,7 @@ pub fn check_producer(operation: &Operation, host_id: &str) -> Result<(), Valida
             }
         }
         Record::Stream(s) => {
-            if (operation.before.is_none() || operation.actor == "automatic")
+            if (operation.before.is_none() || operation.actor == Actor::Automatic)
                 && s.owner_host_id != host_id
             {
                 return Err(ValidationError::new(
@@ -45,6 +46,7 @@ pub fn check_producer(operation: &Operation, host_id: &str) -> Result<(), Valida
     Ok(())
 }
 
+/// Select known stream authority; an operation's proposed values never create authority.
 pub fn authority_for(
     operation: &Operation,
     authorities: &BTreeMap<String, Authority>,
@@ -69,6 +71,7 @@ struct SaveMarker<'a> {
     start: Option<&'a str>,
 }
 
+/// Offline saves with durable retry receipts, without initializing Git or contacting a remote.
 #[derive(Debug, Clone)]
 pub struct LocalCatalog {
     pub store: YamlStore,
@@ -88,6 +91,7 @@ impl LocalCatalog {
         })
     }
 
+    /// Inspect recovery fences and creation evidence; the caller must hold the catalog lock.
     pub fn ready(&self) -> Result<BTreeMap<String, Authority>, RepairRequired> {
         self.state.check_save()?;
         let allowed: BTreeSet<&str> = [
@@ -138,22 +142,21 @@ impl LocalCatalog {
         Ok(result)
     }
 
+    /// Read under the catalog lock, refusing state that needs recovery before further use.
     pub fn snapshot(&self) -> Result<Snapshot, RepairRequired> {
         self.store
             .with_transaction(|tx| {
-                self.ready()
-                    .map_err(|e| StorageError::new(e.to_string(), false))?;
+                self.ready().map_err(|e| StorageError::new(e.to_string()))?;
                 tx.read()
             })
             .map_err(|e| RepairRequired::new(e.to_string()))
     }
 
+    /// Recover ownership from the original durable stream-creation envelope.
     pub fn authority(&self, stream_id: &str) -> Result<Option<Authority>, RepairRequired> {
         self.store
             .with_transaction(|tx| {
-                let authorities = self
-                    .ready()
-                    .map_err(|e| StorageError::new(e.to_string(), false))?;
+                let authorities = self.ready().map_err(|e| StorageError::new(e.to_string()))?;
                 let catalog = tx.read()?.catalog;
                 Ok(if catalog.stream(stream_id).is_some() {
                     authorities.get(stream_id).cloned()
@@ -164,6 +167,8 @@ impl LocalCatalog {
             .map_err(|e| RepairRequired::new(e.to_string()))
     }
 
+    /// Reconcile and persist locally before acknowledging acceptance.
+    /// Durable receipts fence changed-intent retries; a repair outcome must not be blindly retried.
     pub fn save(
         &self,
         operation: &Operation,
@@ -172,16 +177,14 @@ impl LocalCatalog {
         check_producer(operation, &self.host_id)?;
         let encoded = encode_operation(operation, origin)?;
         let outcome = self.store.with_transaction(|tx| {
-            let authorities = self
-                .ready()
-                .map_err(|e| StorageError::new(e.to_string(), false))?;
+            let authorities = self.ready().map_err(|e| StorageError::new(e.to_string()))?;
             let mut machine = ProtocolMachine::observe(&self.state, 1)
-                .map_err(|e| StorageError::new(e.to_string(), false))?;
+                .map_err(|e| StorageError::new(e.to_string()))?;
             let snapshot = tx.read()?;
             if self
                 .state
                 .seen(operation)
-                .map_err(|e| StorageError::new(e.to_string(), false))?
+                .map_err(|e| StorageError::new(e.to_string()))?
             {
                 return Ok(
                     SyncResult::new(SharingStatus::LocalOnly, LocalStatus::Unchanged).with_domain(
@@ -191,11 +194,11 @@ impl LocalCatalog {
             }
             let auth = authority_for(operation, &authorities);
             let result = reconcile(&snapshot.catalog, operation, auth.as_ref());
-            if result.outcome != "changes" {
-                if result.outcome == "no-change" {
+            if result.outcome != DomainOutcome::Changes {
+                if result.outcome == DomainOutcome::NoChange {
                     self.state
                         .remember(operation)
-                        .map_err(|e| StorageError::new(e.to_string(), false))?;
+                        .map_err(|e| StorageError::new(e.to_string()))?;
                 }
                 return Ok(
                     SyncResult::new(SharingStatus::LocalOnly, LocalStatus::Unchanged)
@@ -204,14 +207,14 @@ impl LocalCatalog {
             }
             let witness = machine
                 .begin_save(operation, result.record.as_ref().unwrap(), &snapshot, None)
-                .map_err(|e| StorageError::new(e.to_string(), false))?;
+                .map_err(|e| StorageError::new(e.to_string()))?;
             let save_marker = SaveMarker {
                 operation: &encoded,
                 start: witness.start_tip(),
             };
             if let Err(e) = self.state.write_record("save.json", &save_marker) {
                 let _ = witness.fail();
-                return Err(StorageError::new(e.to_string(), false));
+                return Err(StorageError::new(e.to_string()));
             }
             let step_res = (|| -> Result<(), StorageError> {
                 if operation.before.is_none()
@@ -220,20 +223,20 @@ impl LocalCatalog {
                     let mut receipts = self
                         .state
                         .read_record::<LocalReceipts>("local.json")
-                        .map_err(|e| StorageError::new(e.to_string(), false))?
+                        .map_err(|e| StorageError::new(e.to_string()))?
                         .unwrap_or_default();
                     receipts.creations.insert(s.id.clone(), encoded.clone());
                     self.state
                         .write_record("local.json", &receipts)
-                        .map_err(|e| StorageError::new(e.to_string(), false))?;
+                        .map_err(|e| StorageError::new(e.to_string()))?;
                 }
                 tx.save(witness.record(), witness.expected())?;
                 self.state
                     .remember(witness.operation())
-                    .map_err(|e| StorageError::new(e.to_string(), false))?;
+                    .map_err(|e| StorageError::new(e.to_string()))?;
                 self.state
                     .clear("save.json")
-                    .map_err(|e| StorageError::new(e.to_string(), false))?;
+                    .map_err(|e| StorageError::new(e.to_string()))?;
                 Ok(())
             })();
             if let Err(err) = step_res {
@@ -242,7 +245,7 @@ impl LocalCatalog {
             }
             witness
                 .complete()
-                .map_err(|e| StorageError::new(e.to_string(), false))?;
+                .map_err(|e| StorageError::new(e.to_string()))?;
             Ok(
                 SyncResult::new(SharingStatus::LocalOnly, LocalStatus::Persisted)
                     .with_domain(result),
@@ -258,20 +261,22 @@ impl LocalCatalog {
         }
     }
 
+    /// Return the local view; refresh has no network meaning for this backend.
     pub fn read(&self, _refresh: bool) -> Result<ReadResult, RepairRequired> {
         let snapshot = self.snapshot()?;
         Ok(ReadResult {
             catalog: snapshot.catalog.clone(),
             local: snapshot,
             confirmed: None,
-            freshness: "local-only".to_string(),
+            freshness: super::Freshness::LocalOnly,
             fetched_at: None,
             conflicts: Vec::new(),
             detail: String::new(),
         })
     }
 
-    pub fn sync(&self, _event: &str) -> SyncResult {
+    /// Check local readiness without implying that any publication occurred.
+    pub fn sync(&self, _event: super::policy::SyncEvent) -> SyncResult {
         match self.snapshot() {
             Ok(_) => SyncResult::new(SharingStatus::LocalOnly, LocalStatus::Unchanged),
             Err(err) => SyncResult::new(SharingStatus::LocalOnly, LocalStatus::RepairRequired)

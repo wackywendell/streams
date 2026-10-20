@@ -1,7 +1,26 @@
 //! Event eligibility only: no clock, file format, agent, or network dependencies.
 
 use serde::{Deserialize, Serialize};
+use strum::{AsRefStr, Display, EnumString};
 
+/// The caller's reason for syncing. Explicit, force and shutdown events bypass cooldowns.
+#[derive(
+    Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, EnumString, Display, AsRefStr,
+)]
+#[serde(rename_all = "kebab-case")]
+#[strum(serialize_all = "kebab-case")]
+pub enum SyncEvent {
+    Session,
+    Host,
+    Stream,
+    Start,
+    Attach,
+    Shutdown,
+    Explicit,
+    Force,
+}
+
+/// Publication scheduling timestamps, separate from read-refresh freshness.
 #[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
 pub struct Timing {
     pub last_sync: Option<f64>,
@@ -40,6 +59,8 @@ impl Timing {
     }
 }
 
+/// Independent read/publication intervals and bounded effect deadlines and attempts.
+/// Use `new` for configuration input so nonfinite durations and unbounded attempts are rejected.
 #[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
 pub struct Policy {
     pub stream_seconds: f64,
@@ -91,6 +112,7 @@ impl Policy {
         })
     }
 
+    /// Refresh on the read interval unless cooling down; forced reads bypass both.
     pub fn read_due(
         &self,
         fetched_at: Option<f64>,
@@ -114,9 +136,10 @@ impl Policy {
         })
     }
 
+    /// Use the shorter interval for stream intent, even when triggered by a session event.
     pub fn due(
         &self,
-        event: &str,
+        event: SyncEvent,
         timing: Timing,
         now: f64,
         pending_stream: bool,
@@ -125,16 +148,16 @@ impl Policy {
         if !now.is_finite() {
             return Err("sync timestamp must be a finite number".to_string());
         }
-        if matches!(event, "shutdown" | "explicit" | "force") {
+        if matches!(
+            event,
+            SyncEvent::Shutdown | SyncEvent::Explicit | SyncEvent::Force
+        ) {
             return Ok(true);
-        }
-        if !matches!(event, "session" | "host" | "stream" | "start" | "attach") {
-            return Err(format!("unknown sync event: {event}"));
         }
         if now < timing.retry_after {
             return Ok(false);
         }
-        if matches!(event, "session" | "host") && !pending_stream {
+        if matches!(event, SyncEvent::Session | SyncEvent::Host) && !pending_stream {
             return Ok(match timing.last_push {
                 None => true,
                 Some(ts) => now - ts >= self.session_seconds,

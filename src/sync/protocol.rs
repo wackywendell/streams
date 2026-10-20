@@ -4,6 +4,23 @@
 //! an abstract specification until the Git coordinator is migrated.
 
 use std::sync::OnceLock;
+use strum::{AsRefStr, EnumString};
+
+#[derive(Debug, Clone, Copy, EnumString, AsRefStr)]
+enum Phase {
+    Ready,
+    Saving,
+    AttemptingPush,
+    Adopting,
+    RepairRequired,
+}
+
+#[derive(Debug, Clone, Copy, AsRefStr)]
+enum SaveAction {
+    BeginSave,
+    CompleteSave,
+    FailSaveNeedsRepair,
+}
 
 use temper_jit::table::{Effect, EvalContext, TransitionTable, effect_args};
 
@@ -12,6 +29,7 @@ use crate::{model::Record, operations::Operation, storage::Snapshot};
 
 pub const CATALOG_PROTOCOL_IOA: &str = include_str!("../../specs/catalog_protocol.ioa.toml");
 
+/// Parse the embedded specification once; a malformed shipped spec is a programming error.
 pub fn protocol_table() -> &'static TransitionTable {
     static TABLE: OnceLock<TransitionTable> = OnceLock::new();
     TABLE.get_or_init(|| {
@@ -80,15 +98,16 @@ impl SavePermit<'_, '_> {
         self.start_tip
     }
     pub(crate) fn complete(self) -> Result<(), RepairRequired> {
-        self.machine.step("CompleteSave")
+        self.machine.step(SaveAction::CompleteSave)
     }
     pub(crate) fn fail(self) -> Result<(), RepairRequired> {
-        self.machine.step("FailSaveNeedsRepair")
+        self.machine.step(SaveAction::FailSaveNeedsRepair)
     }
 }
 
+/// Private phase and total projection; transitions are available only through borrowed permits.
 pub(crate) struct ProtocolMachine {
-    status: String,
+    status: Phase,
     context: EvalContext,
 }
 
@@ -111,24 +130,27 @@ impl ProtocolMachine {
         verify_total_context(protocol_table(), &context)?;
         Ok(Self {
             status: if save || adopting {
-                "RepairRequired"
+                Phase::RepairRequired
             } else {
-                "Ready"
-            }
-            .into(),
+                Phase::Ready
+            },
             context,
         })
     }
 
     // Raw dispatch is private: callers cannot bypass the evidence-bearing API.
-    fn step(&mut self, action: &str) -> Result<(), RepairRequired> {
+    fn step(&mut self, action: SaveAction) -> Result<(), RepairRequired> {
         let table = protocol_table();
+        let action = action.as_ref();
         verify_total_context(table, &self.context)?;
         let result = table
-            .evaluate_ctx(&self.status, &self.context, action)
+            .evaluate_ctx(self.status.as_ref(), &self.context, action)
             .filter(|r| r.success)
             .ok_or_else(|| {
-                RepairRequired::new(format!("protocol rejected {action} in {}", self.status))
+                RepairRequired::new(format!(
+                    "protocol rejected {action} in {}",
+                    self.status.as_ref()
+                ))
             })?;
         let mut next = self.context.clone();
         for effect in result.effects {
@@ -156,8 +178,12 @@ impl ProtocolMachine {
                 _ => return Err(invalid()),
             }
         }
+        let status = result
+            .new_state
+            .parse()
+            .map_err(|_| RepairRequired::new("protocol returned an unknown phase"))?;
         self.context = next;
-        self.status = result.new_state;
+        self.status = status;
         Ok(())
     }
 
@@ -173,7 +199,7 @@ impl ProtocolMachine {
                 "save result does not match operation target",
             ));
         }
-        self.step("BeginSave")?;
+        self.step(SaveAction::BeginSave)?;
         Ok(SavePermit {
             machine: self,
             operation,
@@ -187,14 +213,14 @@ impl ProtocolMachine {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::model::Stream;
+    use crate::{model::Stream, operations::Actor};
 
     #[test]
     fn save_permit_controls_completion_and_dropped_permit_stays_fenced() {
         let dir = tempfile::tempdir().unwrap();
         let state = State::new(dir.path());
         let record = Record::Stream(Stream::new("work", "Work", None, "host").unwrap());
-        let op = Operation::new("create", None, record.clone(), "user", None, vec![]).unwrap();
+        let op = Operation::new("create", None, record.clone(), Actor::User, None, vec![]).unwrap();
         let snapshot = Snapshot::default();
         let mut machine = ProtocolMachine::observe(&state, 1).unwrap();
         let permit = machine.begin_save(&op, &record, &snapshot, None).unwrap();

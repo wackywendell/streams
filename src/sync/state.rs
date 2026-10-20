@@ -1,4 +1,12 @@
-//! Durable transport state: parse supported records before making effects.
+//! Durable recovery markers, retry receipts and transport scheduling state.
+//!
+//! Reads reject duplicate JSON keys and unsupported versions; typed readers also
+//! reject unknown fields and invalid phase-specific data. Missing records may have
+//! defaults, but corrupt or unreadable records must not be treated as absent.
+//!
+//! Methods do not acquire a catalog lock. Callers must serialize read/modify/write
+//! sequences and stop effects when state needs repair. A failed write or clear may
+//! already have changed disk state; do not assume rollback or retry blindly.
 
 use std::collections::{BTreeMap, BTreeSet};
 use std::fs;
@@ -13,6 +21,7 @@ use crate::operations::Operation;
 
 use super::envelope::{check_fingerprints, load_json, operation_digest};
 
+/// State cannot safely support further effects without inspection or repair.
 #[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
 #[error("{0}")]
 pub struct RepairRequired(pub String);
@@ -23,6 +32,7 @@ impl RepairRequired {
     }
 }
 
+/// Checks lowercase SHA-1 or SHA-256 object-ID syntax, not object existence.
 pub fn check_oid(value: Option<&str>, nullable: bool) -> Result<(), String> {
     let Some(s) = value else {
         if nullable {
@@ -40,6 +50,7 @@ pub fn check_oid(value: Option<&str>, nullable: bool) -> Result<(), String> {
     Ok(())
 }
 
+/// Checks finiteness, allowing absence only when `nullable`; no clock ordering is checked.
 pub fn check_timestamp(value: Option<f64>, nullable: bool) -> Result<(), String> {
     let Some(v) = value else {
         if nullable {
@@ -62,6 +73,12 @@ where
     Option::<T>::deserialize(deserializer)
 }
 
+/// Independent publication and refresh clocks, expressed in seconds.
+///
+/// `last_sync` tracks successful sync completion; `last_push` is the publication
+/// scheduling baseline. Refresh uses `fetched_at`, `refresh_retry_after` and
+/// `refresh_error`, independently of publication's `retry_after`. These timestamps
+/// schedule work; none alone proves that a remote accepted a candidate.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct SyncMetadata {
@@ -74,6 +91,8 @@ pub struct SyncMetadata {
     pub retry_after: f64,
     #[serde(deserialize_with = "required_nullable")]
     pub fetched_at: Option<f64>,
+    /// Candidate whose confirmation established `last_push`, so recovery records
+    /// that baseline once rather than advancing it on every retry.
     pub last_confirmed_attempt: Option<String>,
     #[serde(default)]
     pub refresh_retry_after: f64,
@@ -97,6 +116,7 @@ impl Default for SyncMetadata {
 }
 
 impl SyncMetadata {
+    /// Checks ID and timestamp shapes and requires a baseline for a recorded attempt.
     pub fn validated(self) -> Result<Self, String> {
         check_oid(self.confirmed.as_deref(), true)?;
         check_oid(self.last_confirmed_attempt.as_deref(), true)?;
@@ -113,6 +133,7 @@ impl SyncMetadata {
     }
 }
 
+/// Stored transport selection; `None` for `remote` means local-only operation.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct GitConfig {
@@ -123,6 +144,7 @@ pub struct GitConfig {
 }
 
 impl GitConfig {
+    /// Checks nonempty text, not remote reachability or Git ref-name validity.
     pub fn new(
         remote: Option<String>,
         branch: impl Into<String>,
@@ -143,6 +165,12 @@ impl GitConfig {
     }
 }
 
+/// Recorded facts about a candidate publication, not verified confirmation evidence.
+///
+/// IDs, target and intended operations let recovery identify what was attempted.
+/// Even `confirmed_at` is stored data: callers must verify history and remote
+/// observations before treating the attempt as published. Public fields can be
+/// changed after construction, so persistence validates their shapes again.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct PublicationAttempt {
     pub base: Option<String>,
@@ -155,6 +183,7 @@ pub struct PublicationAttempt {
 }
 
 impl PublicationAttempt {
+    /// Checks field syntax and unique operation IDs, without inspecting Git history.
     pub fn new(
         base: Option<String>,
         candidate: impl Into<String>,
@@ -192,6 +221,7 @@ impl PublicationAttempt {
         })
     }
 
+    /// Adds the planned local-tip transition without verifying that it is safe.
     pub fn adopting(
         &self,
         old: impl Into<String>,
@@ -201,6 +231,10 @@ impl PublicationAttempt {
     }
 }
 
+/// An attempt plus the old and new tips recorded for local adoption recovery.
+///
+/// These are transition facts to check against Git, not proof that publication or
+/// adoption succeeded. Construction checks tip syntax only, not their relationship.
 #[derive(Debug, Clone, PartialEq, Serialize)]
 pub struct AdoptingAttempt {
     #[serde(flatten)]
@@ -210,6 +244,7 @@ pub struct AdoptingAttempt {
 }
 
 impl AdoptingAttempt {
+    /// Checks adoption-tip syntax; does not revalidate the supplied attempt.
     pub fn new(
         attempt: PublicationAttempt,
         adoption_from: impl Into<String>,
@@ -227,6 +262,9 @@ impl AdoptingAttempt {
     }
 }
 
+/// Durable recovery phase; disk parsing requires exactly the fields for that phase.
+///
+/// Retain the marker until recovery has verified and completed the relevant effects.
 #[derive(Debug, Clone, PartialEq, Serialize)]
 #[serde(tag = "phase", rename_all = "lowercase")]
 pub enum PublicationMarker {
@@ -235,6 +273,7 @@ pub enum PublicationMarker {
 }
 
 impl PublicationMarker {
+    /// Returns the common publication facts regardless of recovery phase.
     pub fn attempt(&self) -> &PublicationAttempt {
         match self {
             PublicationMarker::Attempting(a) => a,
@@ -243,8 +282,8 @@ impl PublicationMarker {
     }
 }
 
-// Flat disk schema keeps phase-specific fields strict without Serde's
-// flatten/deny_unknown_fields interaction. Semantic construction happens once.
+// A flat disk schema avoids Serde's flatten/deny_unknown_fields interaction,
+// so phase-specific fields can be rejected before constructing a marker.
 #[derive(Deserialize)]
 #[serde(rename_all = "lowercase")]
 enum PublicationPhase {
@@ -311,8 +350,14 @@ struct Receipts {
     operations: BTreeMap<String, String>,
 }
 
+/// Failure-injection hook called before a named write, clear or receipt update.
+/// Runs under its mutex; it must not recursively invoke hooked methods.
 pub type StateHook = Arc<Mutex<dyn FnMut(&str, &str) -> Result<(), RepairRequired> + Send>>;
 
+/// Access to `.catalog-sync` records; clones do not provide transaction isolation.
+///
+/// Names passed to raw record methods must be trusted bookkeeping filenames.
+/// Typed accessors validate their schema; raw reads validate only JSON and version.
 #[derive(Clone)]
 pub struct State {
     pub root: PathBuf,
@@ -326,6 +371,7 @@ impl std::fmt::Debug for State {
 }
 
 impl State {
+    /// Selects the catalog's `.catalog-sync` directory without creating it yet.
     pub fn new(root: impl AsRef<Path>) -> Self {
         Self {
             root: root.as_ref().join(".catalog-sync"),
@@ -333,6 +379,7 @@ impl State {
         }
     }
 
+    /// Installs a hook that may fail an operation before its state effects begin.
     pub fn with_hook(mut self, hook: StateHook) -> Self {
         self.hook = Some(hook);
         self
@@ -354,6 +401,11 @@ impl State {
             .map_err(|e| RepairRequired::new(e.to_string()))
     }
 
+    /// Reads a version-1 JSON object, rejecting duplicate keys and symlinked state.
+    ///
+    /// Ensures the state directory exists; returns `None` when the path existence
+    /// check reports absence. Record-specific fields are checked by typed readers,
+    /// not here, and reads do not provide an atomic view across multiple files.
     pub fn read(&self, name: &str) -> Result<Option<Map<String, Value>>, RepairRequired> {
         self.ensure_directory()?;
         let path = self.root.join(name);
@@ -412,6 +464,7 @@ impl State {
         self.write(name, data)
     }
 
+    /// Loads validated scheduling metadata, using defaults only when the file is absent.
     pub fn metadata(&self) -> Result<SyncMetadata, RepairRequired> {
         self.read_record::<SyncMetadata>("sync.json")?
             .unwrap_or_default()
@@ -419,31 +472,36 @@ impl State {
             .map_err(RepairRequired::new)
     }
 
+    /// Validates and persists scheduling state without deriving confirmation evidence.
     pub fn write_metadata(&self, metadata: &SyncMetadata) -> Result<(), RepairRequired> {
         metadata.clone().validated().map_err(RepairRequired::new)?;
         self.write_record("sync.json", metadata)
     }
 
+    /// Loads the transport selection; absence is distinct from invalid configuration.
     pub fn config(&self) -> Result<Option<GitConfig>, RepairRequired> {
         self.read_record::<GitConfig>("config.json")?
             .map(|c| GitConfig::new(c.remote, c.branch, c.host).map_err(RepairRequired::new))
             .transpose()
     }
 
+    /// Validates text fields and persists the transport selection.
     pub fn write_config(&self, config: &GitConfig) -> Result<(), RepairRequired> {
         GitConfig::new(config.remote.clone(), &config.branch, &config.host)
             .map_err(RepairRequired::new)?;
         self.write_record("config.json", config)
     }
 
+    /// Loads a recovery marker, rejecting unsupported phases or mismatched adoption fields.
+    /// The returned facts still need verification against Git before recovery effects.
     pub fn publication(&self) -> Result<Option<PublicationMarker>, RepairRequired> {
         self.read_record::<PublicationData>("publication.json")?
             .map(PublicationData::into_marker)
             .transpose()
     }
 
+    /// Revalidates marker field shapes and persists the recovery phase.
     pub fn write_publication(&self, marker: &PublicationMarker) -> Result<(), RepairRequired> {
-        // Validate typed fields too: callers can construct or update transport DTOs.
         let a = marker.attempt();
         PublicationAttempt::new(
             a.base.clone(),
@@ -462,6 +520,8 @@ impl State {
         self.write_record("publication.json", marker)
     }
 
+    /// Writes a version-1 object by atomic replacement and syncs its directory.
+    /// Failure may occur after replacement; it does not imply the old record remains.
     pub fn write(&self, name: &str, mut data: Map<String, Value>) -> Result<(), RepairRequired> {
         self.run_hook("write", name)?;
         self.ensure_directory()?;
@@ -472,6 +532,8 @@ impl State {
             .map_err(|e| RepairRequired::new(e.to_string()))
     }
 
+    /// Removes a marker if present and syncs the directory, including on an absent file.
+    /// A sync failure can leave the removal's durability uncertain.
     pub fn clear(&self, name: &str) -> Result<(), RepairRequired> {
         self.run_hook("clear", name)?;
         self.ensure_directory()?;
@@ -488,6 +550,7 @@ impl State {
             .map_err(|e| RepairRequired::new(e.to_string()))
     }
 
+    /// Loads validated retry receipts keyed by operation ID; absence means no receipts.
     pub fn fingerprints(&self) -> Result<BTreeMap<String, String>, RepairRequired> {
         let operations = self
             .read_record::<Receipts>("receipts.json")?
@@ -498,6 +561,7 @@ impl State {
         Ok(operations)
     }
 
+    /// Tests whether the same intent was recorded; reused IDs with different intent fail closed.
     pub fn seen(&self, operation: &Operation) -> Result<bool, RepairRequired> {
         let fps = self.fingerprints()?;
         if let Some(digest) = fps.get(&operation.id) {
@@ -512,6 +576,7 @@ impl State {
         Ok(false)
     }
 
+    /// Persists an intent receipt, rejecting any prior use of the ID for another intent.
     pub fn remember(&self, operation: &Operation) -> Result<(), RepairRequired> {
         self.run_hook("remember", &operation.id)?;
         let mut incoming = BTreeMap::new();
@@ -519,6 +584,8 @@ impl State {
         self.validate_fingerprints(&incoming, true)
     }
 
+    /// Checks incoming receipts against saved intent, optionally persisting new entries.
+    /// Callers must hold their lock across this read/modify/write sequence.
     pub fn validate_fingerprints(
         &self,
         fingerprints: &BTreeMap<String, String>,
@@ -547,6 +614,7 @@ impl State {
         Ok(())
     }
 
+    /// Blocks further writes while an interrupted-save marker remains for inspection.
     pub fn check_save(&self) -> Result<(), RepairRequired> {
         if self.read("save.json")?.is_some() {
             return Err(RepairRequired::new(format!(
@@ -557,6 +625,7 @@ impl State {
         Ok(())
     }
 
+    /// Rejects interrupted saves, invalid receipts or bookkeeping incompatible with local mode.
     pub fn check_local(&self) -> Result<(), RepairRequired> {
         self.check_save()?;
         let allowed: BTreeSet<&str> =

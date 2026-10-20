@@ -8,8 +8,8 @@ use serde_json::{Map, Value};
 use sha2::{Digest, Sha256};
 
 use crate::codec::{record_from_data, record_to_data};
-use crate::model::{ValidationError, check_text};
-use crate::operations::Operation;
+use crate::model::{RecordKind, ValidationError, check_text};
+use crate::operations::{Actor, Operation};
 
 pub const PREFIX: &str = "Streams operation v1\n\n";
 pub const BOOTSTRAP: &str = "Streams catalog v1\n";
@@ -96,6 +96,7 @@ impl<'de> DeserializeSeed<'de> for StrictJsonSeed {
     }
 }
 
+/// Parse JSON without silently accepting duplicate keys, including in nested objects.
 pub fn load_json(value: &str) -> Result<Value, ValidationError> {
     let mut de = serde_json::Deserializer::from_str(value);
     let parsed = StrictJsonSeed
@@ -106,12 +107,13 @@ pub fn load_json(value: &str) -> Result<Value, ValidationError> {
     Ok(parsed)
 }
 
+/// Transport provenance kept outside operation identity and reconciliation.
 pub type Origin = BTreeMap<String, String>;
 
 #[derive(serde::Serialize, serde::Deserialize)]
 #[serde(deny_unknown_fields)]
 struct CapturedRecord {
-    kind: String,
+    kind: RecordKind,
     record: Value,
 }
 
@@ -120,11 +122,11 @@ struct CapturedRecord {
 struct OperationEnvelope {
     version: u64,
     id: String,
-    kind: String,
+    kind: RecordKind,
     #[serde(deserialize_with = "Option::deserialize")]
     before: Option<Value>,
     after: Value,
-    actor: String,
+    actor: Actor,
     #[serde(deserialize_with = "Option::deserialize")]
     ownership_token: Option<String>,
     origin: Origin,
@@ -132,6 +134,7 @@ struct OperationEnvelope {
     inputs: Vec<CapturedRecord>,
 }
 
+/// Emit canonical versioned intent with separately supplied transport provenance.
 pub fn encode_operation(
     operation: &Operation,
     origin: Option<&Origin>,
@@ -139,17 +142,17 @@ pub fn encode_operation(
     let envelope = OperationEnvelope {
         version: 1,
         id: operation.id.clone(),
-        kind: operation.after.kind_str().to_string(),
+        kind: operation.after.kind(),
         before: operation.before.as_ref().map(record_to_data),
         after: record_to_data(&operation.after),
-        actor: operation.actor.clone(),
+        actor: operation.actor,
         ownership_token: operation.ownership_token.clone(),
         origin: origin.cloned().unwrap_or_default(),
         inputs: operation
             .inputs
             .iter()
             .map(|record| CapturedRecord {
-                kind: record.kind_str().to_string(),
+                kind: record.kind(),
                 record: record_to_data(record),
             })
             .collect(),
@@ -160,6 +163,7 @@ pub fn encode_operation(
     Ok(format!("{PREFIX}{json}\n"))
 }
 
+/// Hash intent with an empty origin so transport provenance cannot change retry identity.
 pub fn operation_digest(operation: &Operation) -> String {
     let encoded = encode_operation(operation, None).expect("valid operation encodes");
     let mut hasher = Sha256::new();
@@ -167,6 +171,7 @@ pub fn operation_digest(operation: &Operation) -> String {
     format!("{:x}", hasher.finalize())
 }
 
+/// Validate fingerprint syntax only, not the existence or intent of an operation.
 pub fn check_fingerprints(fingerprints: &BTreeMap<String, String>) -> Result<(), ValidationError> {
     for (id, digest) in fingerprints {
         check_text(id, "operation ID", false)?;
@@ -194,6 +199,7 @@ pub fn decode_fingerprints(value: &Value) -> Result<BTreeMap<String, String>, Va
     Ok(fingerprints)
 }
 
+/// Strictly decode the envelope and construct an operation through its validation boundary.
 pub fn decode_operation(message: &str) -> Result<(Operation, Origin), ValidationError> {
     let Some(body) = message.strip_prefix(PREFIX) else {
         return Err(ValidationError::new("unsupported operation commit message"));
@@ -208,14 +214,14 @@ pub fn decode_operation(message: &str) -> Result<(Operation, Origin), Validation
     let inputs = data
         .inputs
         .into_iter()
-        .map(|item| record_from_data(&item.kind, &item.record))
+        .map(|item| record_from_data(item.kind, &item.record))
         .collect::<Result<Vec<_>, _>>()?;
     let before = data
         .before
         .as_ref()
-        .map(|record| record_from_data(&data.kind, record))
+        .map(|record| record_from_data(data.kind, record))
         .transpose()?;
-    let after = record_from_data(&data.kind, &data.after)?;
+    let after = record_from_data(data.kind, &data.after)?;
     let operation = Operation::new(
         data.id,
         before,

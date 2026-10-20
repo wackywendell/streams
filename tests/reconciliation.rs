@@ -1,5 +1,7 @@
 use chrono::DateTime;
 use serde_json::{Value, json};
+use streams_temper::model::NamingMode;
+use streams_temper::operations::{Actor, DomainOutcome};
 use streams_temper::{
     model::{Catalog, Host, Record, Repository, Stream},
     operations::{Operation, reconcile, update},
@@ -19,7 +21,7 @@ fn edit(before: &Record, changes: Value) -> Operation {
         "edit",
         before,
         changes.as_object().unwrap(),
-        "user",
+        Actor::User,
         None,
         vec![],
     )
@@ -48,11 +50,21 @@ fn same_instant_at_different_offsets_is_not_a_changed_field() {
     };
     let before = host("2025-01-01T00:00:00Z");
     let after = host("2024-12-31T19:00:00-05:00");
-    let operation =
-        Operation::new("edit", Some(before.clone()), after, "user", None, vec![]).unwrap();
+    let operation = Operation::new(
+        "edit",
+        Some(before.clone()),
+        after,
+        Actor::User,
+        None,
+        vec![],
+    )
+    .unwrap();
     assert!(operation.changed_fields().is_empty());
     let catalog = Catalog::default().replacing(before).unwrap();
-    assert_eq!(reconcile(&catalog, &operation, None).outcome, "no-change");
+    assert_eq!(
+        reconcile(&catalog, &operation, None).outcome,
+        DomainOutcome::NoChange
+    );
 }
 
 #[test]
@@ -69,7 +81,7 @@ fn concurrent_additive_collections_keep_current_order_then_append_desired() {
             .clone();
         let catalog = Catalog::default().replacing(current).unwrap();
         let result = reconcile(&catalog, &operation, None);
-        assert_eq!(result.outcome, "changes", "{field}");
+        assert_eq!(result.outcome, DomainOutcome::Changes, "{field}");
         let merged = streams_temper::codec::record_to_data(&result.record.unwrap());
         assert_eq!(
             merged[field],
@@ -98,7 +110,7 @@ fn concurrent_removal_or_change_of_old_collection_entries_conflicts() {
                 let current = edit(&before, json!({field: current})).after().clone();
                 let catalog = Catalog::default().replacing(current).unwrap();
                 let result = reconcile(&catalog, &operation, None);
-                assert_eq!(result.outcome, "conflict", "{field}");
+                assert_eq!(result.outcome, DomainOutcome::Conflict, "{field}");
                 assert_eq!(result.conflicts, vec![field], "{field}");
                 assert!(result.record.is_none());
             }
@@ -121,7 +133,7 @@ fn concurrent_additions_with_same_identity_but_different_contents_conflict() {
         let current = edit(&before, json!({field: [current]})).after().clone();
         let catalog = Catalog::default().replacing(current).unwrap();
         let result = reconcile(&catalog, &operation, None);
-        assert_eq!(result.outcome, "conflict", "{field}");
+        assert_eq!(result.outcome, DomainOutcome::Conflict, "{field}");
         assert_eq!(result.conflicts, vec![field], "{field}");
     }
 }
@@ -133,18 +145,18 @@ fn unrelated_concurrent_field_edits_merge() {
     let current = edit(&before, json!({"archived": true})).after().clone();
     let catalog = Catalog::default().replacing(current).unwrap();
     let result = reconcile(&catalog, &operation, None);
-    assert_eq!(result.outcome, "changes");
+    assert_eq!(result.outcome, DomainOutcome::Changes);
     let Record::Stream(merged) = result.record.unwrap() else {
         panic!("expected a stream");
     };
     assert_eq!(merged.goal.as_deref(), Some("Ship the feature"));
-    assert_eq!(merged.goal_mode, "manual");
+    assert_eq!(merged.goal_mode, NamingMode::Manual);
     assert!(merged.archived);
 }
 
 #[test]
 fn creation_changed_fields_use_all_logical_names() {
-    let operation = Operation::new("create", None, stream(), "user", None, vec![]).unwrap();
+    let operation = Operation::new("create", None, stream(), Actor::User, None, vec![]).unwrap();
     let fields = operation.changed_fields();
     assert_eq!(fields.len(), 13);
     assert!(fields.contains("id"));

@@ -1,4 +1,5 @@
 use std::collections::BTreeMap;
+use streams_temper::operations::Actor;
 
 use chrono::DateTime;
 use serde_json::{Value, json};
@@ -26,7 +27,7 @@ fn creation() -> Operation {
         "create",
         None,
         Record::Stream(Stream::new("work", "Wörk 🦀", None, "host").unwrap()),
-        "user",
+        Actor::User,
         None,
         vec![],
     )
@@ -76,7 +77,7 @@ fn captures_preserve_unicode_host_microseconds_and_origin() {
         "create",
         None,
         creation().after().clone(),
-        "user",
+        Actor::User,
         None,
         vec![host],
     )

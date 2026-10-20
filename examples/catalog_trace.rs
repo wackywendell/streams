@@ -51,7 +51,7 @@ fn execute(local: &LocalCatalog, line: &str) -> Result<Value, String> {
     response["records"] = Value::Array(
         records
             .iter()
-            .map(|record| json!({"kind": record.kind_str(), "record": record_to_data(record)}))
+            .map(|record| json!({"kind": record.kind(), "record": record_to_data(record)}))
             .collect(),
     );
     Ok(response)

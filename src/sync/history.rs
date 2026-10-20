@@ -3,7 +3,7 @@
 use std::collections::{BTreeMap, BTreeSet};
 
 use crate::model::{Catalog, Record, RecordKey};
-use crate::operations::{Authority, Operation, reconcile};
+use crate::operations::{Authority, DomainOutcome, Operation, reconcile};
 use crate::yaml_store::{YamlStore, relative_record_path};
 
 use super::baseline::{BASELINE, Baseline, decode_baseline};
@@ -12,6 +12,7 @@ use super::git_io::Git;
 use super::local::authority_for;
 use super::state::RepairRequired;
 
+/// Index domain values by identity, independently of on-disk byte formatting.
 pub fn records(catalog: &Catalog) -> BTreeMap<RecordKey, Record> {
     catalog
         .records()
@@ -20,8 +21,15 @@ pub fn records(catalog: &Catalog) -> BTreeMap<RecordKey, Record> {
         .collect()
 }
 
-pub type HistoryOperations = Vec<(String, (Operation, Origin))>;
+/// An operation and its provenance, in replay order; its ID lives only in the operation.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct CommittedOperation {
+    pub operation: Operation,
+    pub origin: Origin,
+}
 
+/// A decoded linear catalog history, its provenance and remembered operation fingerprints.
+/// Only `read_history` verifies Git ancestry and each operation's exact file changes.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct History {
     pub tip: Option<String>,
@@ -29,12 +37,13 @@ pub struct History {
     pub catalog: Catalog,
     pub files: BTreeMap<String, Vec<u8>>,
     pub authorities: BTreeMap<String, Authority>,
-    pub operations: HistoryOperations,
+    pub operations: Vec<CommittedOperation>,
     pub baseline: Option<Baseline>,
     pub fingerprints: BTreeMap<String, String>,
 }
 
 impl History {
+    /// Check and combine fingerprint evidence; this alone does not validate Git commits.
     pub fn validated(mut self) -> Result<Self, String> {
         let mut fps = self
             .baseline
@@ -50,11 +59,9 @@ impl History {
             }
             fps.insert(id.clone(), digest.clone());
         }
-        for (id, (operation, _)) in &self.operations {
-            if id != &operation.id {
-                return Err("history operation key must match its ID".to_string());
-            }
-            let digest = operation_digest(operation);
+        for entry in &self.operations {
+            let id = &entry.operation.id;
+            let digest = operation_digest(&entry.operation);
             if let Some(existing) = fps.get(id)
                 && existing != &digest
             {
@@ -66,18 +73,21 @@ impl History {
         Ok(self)
     }
 
-    pub fn operation(&self, id: &str) -> Option<&(Operation, Origin)> {
+    /// Returns a replayable operation, which need not exist for baseline-only fingerprints.
+    pub fn operation(&self, id: &str) -> Option<&CommittedOperation> {
         self.operations
             .iter()
-            .find(|(k, _)| k == id)
-            .map(|(_, v)| v)
+            .find(|entry| entry.operation.id() == id)
     }
 
+    /// Includes compacted operations remembered only by a baseline fingerprint.
     pub fn has_operation(&self, id: &str) -> bool {
-        self.operations.iter().any(|(k, _)| k == id)
+        self.fingerprints.contains_key(id)
     }
 }
 
+/// Accept only supported linear roots and operation commits consistent with their record edits.
+/// Arbitrary Git history is a repair condition, not input to a textual merge or rebase.
 pub fn read_history(git: &Git, tip: Option<&str>) -> Result<History, RepairRequired> {
     read_history_inner(git, tip)
         .map_err(|e| RepairRequired::new(format!("unsupported catalog history: {e}")))
@@ -186,7 +196,7 @@ fn read_history_inner(git: &Git, tip: Option<&str>) -> Result<History, String> {
             }
             let auth = authority_for(&operation, &history.authorities);
             let result = reconcile(&history.catalog, &operation, auth.as_ref());
-            if result.outcome != "changes" {
+            if result.outcome != DomainOutcome::Changes {
                 return Err(format!(
                     "operation {} does not explain its commit: {}",
                     operation.id, result.outcome
@@ -241,7 +251,7 @@ fn read_history_inner(git: &Git, tip: Option<&str>) -> Result<History, String> {
             history.fingerprints.insert(operation.id.clone(), digest);
             history
                 .operations
-                .push((operation.id.clone(), (operation, origin)));
+                .push(CommittedOperation { operation, origin });
             history.tip = Some((*revision).to_string());
             history.catalog = actual;
             history.files = files;

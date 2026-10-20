@@ -13,9 +13,10 @@ use sha2::{Digest, Sha256};
 use uuid::Uuid;
 
 use crate::codec::{object_fields, record_from_data, record_to_data};
-use crate::model::{Catalog, Record, RecordKey, ValidationError, check_text};
+use crate::model::{Catalog, Record, RecordKey, RecordKind, ValidationError, check_text};
 use crate::storage::{Snapshot, StorageError};
 
+/// Encode UTF-8 bytes for a single filename component, including traversal-only dot names.
 pub fn encode_component(id: &str) -> String {
     const SAFE: &[u8] = b"abcdefghijklmnopqrstuvwxyz0123456789-_.~";
     let mut encoded = String::new();
@@ -33,6 +34,7 @@ pub fn encode_component(id: &str) -> String {
     }
 }
 
+/// Map an owned identity to its canonical catalog-relative location.
 pub fn relative_record_path(key: &RecordKey) -> PathBuf {
     let name = format!("{}.yaml", encode_component(key.id()));
     match key {
@@ -44,18 +46,19 @@ pub fn relative_record_path(key: &RecordKey) -> PathBuf {
     }
 }
 
+/// Flush directory entries; this does not flush the contents of files named there.
 pub fn sync_directory(path: &Path) -> Result<(), StorageError> {
     let file = File::open(path)
-        .map_err(|e| StorageError::new(format!("cannot open directory {path:?}: {e}"), false))?;
+        .map_err(|e| StorageError::new(format!("cannot open directory {path:?}: {e}")))?;
     file.sync_all()
-        .map_err(|e| StorageError::new(format!("cannot fsync directory {path:?}: {e}"), false))
+        .map_err(|e| StorageError::new(format!("cannot fsync directory {path:?}: {e}")))
 }
 
 pub(crate) fn atomic_write(path: &Path, bytes: &[u8], staging: &Path) -> Result<(), StorageError> {
     let parent = path.parent().expect("atomic destination has a parent");
     ensure_directory(parent, true)?;
     ensure_directory(staging, true)?;
-    let io_error = |e| StorageError::new(format!("cannot replace {}: {e}", path.display()), false);
+    let io_error = |e| StorageError::new(format!("cannot replace {}: {e}", path.display()));
     let mut tmp = tempfile::NamedTempFile::new_in(staging).map_err(io_error)?;
     tmp.write_all(bytes).map_err(io_error)?;
     tmp.as_file().sync_all().map_err(io_error)?;
@@ -67,18 +70,15 @@ pub(crate) fn atomic_write(path: &Path, bytes: &[u8], staging: &Path) -> Result<
             Ok(())
         }
     });
-    result.map_err(|mut e| {
-        e.uncertain = true;
-        e
-    })
+    result.map_err(StorageError::after_write)
 }
 
 pub(crate) fn ensure_directory(path: &Path, create: bool) -> Result<(), StorageError> {
     if path.is_symlink() {
-        return Err(StorageError::new(
-            format!("symlinked catalog directory: {}", path.display()),
-            false,
-        ));
+        return Err(StorageError::new(format!(
+            "symlinked catalog directory: {}",
+            path.display()
+        )));
     }
     if create && !path.exists() {
         let parent = path
@@ -92,10 +92,10 @@ pub(crate) fn ensure_directory(path: &Path, create: bool) -> Result<(), StorageE
                 ensure_directory(path, false)?;
             }
             Err(e) => {
-                return Err(StorageError::new(
-                    format!("cannot create directory {}: {e}", path.display()),
-                    false,
-                ));
+                return Err(StorageError::new(format!(
+                    "cannot create directory {}: {e}",
+                    path.display()
+                )));
             }
         }
         // The name must survive in its parent before any durable receipt relies on it.
@@ -103,10 +103,10 @@ pub(crate) fn ensure_directory(path: &Path, create: bool) -> Result<(), StorageE
         sync_directory(parent)?;
     }
     if path.exists() && !path.is_dir() {
-        return Err(StorageError::new(
-            format!("expected catalog directory: {}", path.display()),
-            false,
-        ));
+        return Err(StorageError::new(format!(
+            "expected catalog directory: {}",
+            path.display()
+        )));
     }
     Ok(())
 }
@@ -176,6 +176,7 @@ fn yaml_to_json(yaml: serde_yaml::Value) -> Result<Value, ValidationError> {
     }
 }
 
+/// Versioned record files; constructing a handle does not create or inspect the root.
 #[derive(Debug, Clone)]
 pub struct YamlStore {
     pub root: PathBuf,
@@ -194,18 +195,20 @@ impl YamlStore {
         Self { root: abs }
     }
 
+    /// Returns a path relative to this store, not an absolute filesystem path.
     pub fn record_path(&self, key: &RecordKey) -> PathBuf {
         relative_record_path(key)
     }
 
+    /// Check schema, identity and canonical relative location before accepting file bytes.
+    /// Legacy ambiguous YAML scalars may require manual quoting during migration.
     pub fn decode_record(path: &str, contents: &[u8]) -> Result<Record, StorageError> {
-        let map_err =
-            |e: ValidationError| StorageError::new(format!("cannot read catalog: {e}"), false);
+        let map_err = |e: ValidationError| StorageError::new(format!("cannot read catalog: {e}"));
         let text_str = std::str::from_utf8(contents)
-            .map_err(|e| StorageError::new(format!("cannot read catalog: {e}"), false))?;
+            .map_err(|e| StorageError::new(format!("cannot read catalog: {e}")))?;
         let raw_yaml: serde_yaml::Value = serde_yaml::LoadOptions::yaml_1_1()
             .from_str(text_str)
-            .map_err(|e| StorageError::new(format!("cannot read catalog: {e}"), false))?;
+            .map_err(|e| StorageError::new(format!("cannot read catalog: {e}")))?;
         let json_val = yaml_to_json(raw_yaml).map_err(map_err)?;
         let envelope = object_fields(&json_val, &["version", "revision", "kind", "record"])
             .map_err(map_err)?;
@@ -227,6 +230,9 @@ impl YamlStore {
             return Err(map_err(ValidationError::new("unknown record kind")));
         };
         let record_val = envelope.get("record").unwrap_or(&Value::Null);
+        let kind = kind
+            .parse::<RecordKind>()
+            .map_err(|_| map_err(ValidationError::new(format!("unknown record kind: {kind}"))))?;
         let record = record_from_data(kind, record_val).map_err(map_err)?;
         let expected_path = relative_record_path(&record.key())
             .to_string_lossy()
@@ -239,6 +245,7 @@ impl YamlStore {
         Ok(record)
     }
 
+    /// Decode files as one catalog and retain their exact byte digests for stale-save checks.
     pub fn decode_snapshot(files: &BTreeMap<String, Vec<u8>>) -> Result<Snapshot, StorageError> {
         let mut streams = Vec::new();
         let mut sessions = Vec::new();
@@ -257,15 +264,24 @@ impl YamlStore {
             }
         }
         let catalog = Catalog::new(streams, sessions, hosts)
-            .map_err(|e| StorageError::new(format!("cannot read catalog: {e}"), false))?;
+            .map_err(|e| StorageError::new(format!("cannot read catalog: {e}")))?;
         Ok(Snapshot { catalog, revisions })
     }
 
+    /// Hold the exclusive catalog lock for the entire closure, releasing it even on unwind.
+    ///
+    /// The transaction is borrowed, so it cannot be retained after the lock scope:
+    /// ```compile_fail
+    /// use streams_temper::yaml_store::YamlStore;
+    /// let store = YamlStore::new("catalog");
+    /// let escaped = store.with_transaction(|tx| Ok(tx));
+    /// ```
     pub fn with_transaction<T, F>(&self, f: F) -> Result<T, StorageError>
     where
         F: FnOnce(&mut YamlTransaction) -> Result<T, StorageError>,
     {
         ensure_directory(&self.root, true)?;
+        // Never unlink the lock file: another opener must lock this same inode.
         let lock_path = self.root.join(".catalog.lock");
         let file = OpenOptions::new()
             .create(true)
@@ -274,48 +290,36 @@ impl YamlStore {
             .mode(0o600)
             .custom_flags(libc::O_NOFOLLOW)
             .open(&lock_path)
-            .map_err(|e| StorageError::new(format!("cannot open catalog lock: {e}"), false))?;
+            .map_err(|e| StorageError::new(format!("cannot open catalog lock: {e}")))?;
         let rc = unsafe { libc::flock(file.as_raw_fd(), libc::LOCK_EX) };
         if rc != 0 {
             let err = std::io::Error::last_os_error();
-            return Err(StorageError::new(
-                format!("cannot lock catalog: {err}"),
-                false,
-            ));
+            return Err(StorageError::new(format!("cannot lock catalog: {err}")));
         }
         let mut tx = YamlTransaction {
             root: self.root.clone(),
-            active: true,
+            _lock: file,
         };
-        let result = f(&mut tx);
-        tx.active = false;
-        drop(file);
-        result
+        f(&mut tx)
     }
 }
 
+/// A catalog lock held by ownership; its borrowed handle cannot escape the transaction closure.
 pub struct YamlTransaction {
     root: PathBuf,
-    active: bool,
+    _lock: std::fs::File,
 }
 
 impl YamlTransaction {
-    fn check_active(&self) -> Result<(), StorageError> {
-        if !self.active {
-            return Err(StorageError::new("catalog transaction has ended", false));
-        }
-        Ok(())
-    }
-
     fn check_record_file(path: &Path) -> Result<PathBuf, StorageError> {
         if path.is_symlink()
             || !path.is_file()
             || path.extension().and_then(|e| e.to_str()) != Some("yaml")
         {
-            return Err(StorageError::new(
-                format!("unexpected catalog file: {}", path.display()),
-                false,
-            ));
+            return Err(StorageError::new(format!(
+                "unexpected catalog file: {}",
+                path.display()
+            )));
         }
         Ok(path.to_path_buf())
     }
@@ -329,9 +333,9 @@ impl YamlTransaction {
                 continue;
             }
             let mut entries: Vec<PathBuf> = fs::read_dir(&dir)
-                .map_err(|e| StorageError::new(format!("cannot read catalog: {e}"), false))?
+                .map_err(|e| StorageError::new(format!("cannot read catalog: {e}")))?
                 .collect::<Result<Vec<_>, _>>()
-                .map_err(|e| StorageError::new(format!("cannot read catalog: {e}"), false))?
+                .map_err(|e| StorageError::new(format!("cannot read catalog: {e}")))?
                 .into_iter()
                 .map(|e| e.path())
                 .collect();
@@ -340,9 +344,9 @@ impl YamlTransaction {
                 if name == "sessions" {
                     ensure_directory(&path, false)?;
                     let mut sub: Vec<PathBuf> = fs::read_dir(&path)
-                        .map_err(|e| StorageError::new(format!("cannot read catalog: {e}"), false))?
+                        .map_err(|e| StorageError::new(format!("cannot read catalog: {e}")))?
                         .collect::<Result<Vec<_>, _>>()
-                        .map_err(|e| StorageError::new(format!("cannot read catalog: {e}"), false))?
+                        .map_err(|e| StorageError::new(format!("cannot read catalog: {e}")))?
                         .into_iter()
                         .map(|e| e.path())
                         .collect();
@@ -358,24 +362,25 @@ impl YamlTransaction {
         Ok(out)
     }
 
+    /// Read a complete snapshot while this transaction owns the catalog lock.
     pub fn read(&self) -> Result<Snapshot, StorageError> {
-        self.check_active()?;
         let mut files = BTreeMap::new();
         for path in self.collect_files()? {
             let rel = path
                 .strip_prefix(&self.root)
-                .map_err(|e| StorageError::new(format!("cannot read catalog: {e}"), false))?
+                .map_err(|e| StorageError::new(format!("cannot read catalog: {e}")))?
                 .to_string_lossy()
                 .replace('\\', "/");
             let bytes = fs::read(&path)
-                .map_err(|e| StorageError::new(format!("cannot read catalog: {e}"), false))?;
+                .map_err(|e| StorageError::new(format!("cannot read catalog: {e}")))?;
             files.insert(rel, bytes);
         }
         YamlStore::decode_snapshot(&files)
     }
 
+    /// Replace one record only if the entire captured revision set is still current.
+    /// Failures after replacement are uncertain, even if a receipt has not been written.
     pub fn save(&self, record: &Record, expected: &Snapshot) -> Result<Snapshot, StorageError> {
-        self.check_active()?;
         let current = self.read()?;
         if current.revisions != expected.revisions {
             return Err(StorageError::revision_conflict(
@@ -385,7 +390,7 @@ impl YamlTransaction {
         current
             .catalog
             .replacing(record.clone())
-            .map_err(|e| StorageError::new(format!("cannot save catalog record: {e}"), false))?;
+            .map_err(|e| StorageError::new(format!("cannot save catalog record: {e}")))?;
         let key = record.key();
         if current.catalog.get(&key).as_ref() == Some(record) {
             return Ok(current);
@@ -393,12 +398,12 @@ impl YamlTransaction {
         let mut envelope = serde_json::Map::new();
         envelope.insert("version".into(), Value::Number(1.into()));
         envelope.insert("revision".into(), Value::String(Uuid::new_v4().to_string()));
-        envelope.insert("kind".into(), Value::String(key.kind_str().into()));
+        envelope.insert("kind".into(), Value::String(key.kind().to_string()));
         envelope.insert("record".into(), record_to_data(record));
         // JSON is a YAML subset. Quoting every string preserves YAML 1.1 readers
         // (including PyYAML) where bare yes/on/timestamp-looking values change type.
         let yaml_text = serde_json::to_string_pretty(&Value::Object(envelope))
-            .map_err(|e| StorageError::new(format!("cannot save catalog record: {e}"), false))?;
+            .map_err(|e| StorageError::new(format!("cannot save catalog record: {e}")))?;
         let path = self.root.join(relative_record_path(&key));
         atomic_write(
             &path,
@@ -406,9 +411,6 @@ impl YamlTransaction {
             &self.root.join(".catalog-staging"),
         )?;
         // A failed read after replacement cannot establish that the save failed.
-        self.read().map_err(|mut err| {
-            err.uncertain = true;
-            err
-        })
+        self.read().map_err(StorageError::after_write)
     }
 }

@@ -1,12 +1,17 @@
 //! Independent domain, local-save, and publication facts for every caller.
 
+use super::replay::ReplayConflict;
 use serde::{Deserialize, Serialize};
-use serde_json::Value;
+use strum::{AsRefStr, Display, EnumString};
 
-use crate::operations::Reconciliation;
+use crate::operations::{DomainOutcome, Reconciliation};
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+/// What happened to local persistence, independently of domain acceptance or sharing.
+#[derive(
+    Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, EnumString, Display, AsRefStr,
+)]
 #[serde(rename_all = "kebab-case")]
+#[strum(serialize_all = "kebab-case")]
 pub enum LocalStatus {
     Unchanged,
     Persisted,
@@ -14,8 +19,12 @@ pub enum LocalStatus {
     RepairRequired,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+/// Publication evidence only; confirmed publication can coexist with local repair.
+#[derive(
+    Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, EnumString, Display, AsRefStr,
+)]
 #[serde(rename_all = "kebab-case")]
+#[strum(serialize_all = "kebab-case")]
 pub enum SharingStatus {
     LocalOnly,
     Pending,
@@ -25,6 +34,7 @@ pub enum SharingStatus {
     Uncertain,
 }
 
+/// Orthogonal outcome dimensions; never infer acceptance or rollback from sharing alone.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Result {
     pub sharing: SharingStatus,
@@ -33,7 +43,7 @@ pub struct Result {
     pub local_revision: Option<String>,
     pub remote_revision: Option<String>,
     pub detail: String,
-    pub conflicts: Vec<Value>,
+    pub conflicts: Vec<ReplayConflict>,
 }
 
 impl Result {
@@ -69,17 +79,17 @@ impl Result {
         self
     }
 
-    pub fn with_conflicts(mut self, conflicts: Vec<Value>) -> Self {
+    pub fn with_conflicts(mut self, conflicts: Vec<ReplayConflict>) -> Self {
         self.conflicts = conflicts;
         self
     }
 
+    /// Domain acceptance is usable only while local state does not require repair.
     pub fn accepted(&self) -> bool {
         !self.requires_repair()
-            && self
-                .domain
-                .as_ref()
-                .is_some_and(|d| d.outcome == "changes" || d.outcome == "no-change")
+            && self.domain.as_ref().is_some_and(|d| {
+                matches!(d.outcome, DomainOutcome::Changes | DomainOutcome::NoChange)
+            })
     }
 
     pub fn requires_repair(&self) -> bool {

@@ -1,4 +1,8 @@
-//! Bounded Git subprocesses and object/index operations for a managed repository.
+//! Git subprocesses and cached objects bound to one repository root.
+//!
+//! Raw commands use a process group and a deadline that includes pipe I/O, even
+//! after Git exits while descendants still hold pipes open. Timeout or I/O failure
+//! triggers group termination and reaping; an error does not prove no effect occurred.
 
 use std::collections::{BTreeMap, BTreeSet};
 use std::io::{self, Read, Write};
@@ -13,6 +17,10 @@ use crate::storage::StorageError;
 
 use super::history::History;
 
+/// A Git failure with an exit code when one was observed.
+///
+/// Missing exit status is treated conservatively as uncertain, including failures
+/// before spawning. An exit code alone does not establish remote publication state.
 #[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
 #[error("{message}")]
 pub struct GitError {
@@ -22,6 +30,7 @@ pub struct GitError {
 }
 
 impl GitError {
+    /// Marks failures without an observed exit code as uncertain.
     pub fn new(message: impl Into<String>, code: Option<i32>) -> Self {
         Self {
             message: message.into(),
@@ -31,6 +40,10 @@ impl GitError {
     }
 }
 
+/// Intercepts [`Git::run`]; `None` falls through to the real subprocess.
+///
+/// The hook runs under its mutex. Call [`Git::run_raw`] from a hook, not `run`,
+/// to avoid recursively acquiring that mutex. Hooks are not deadline-bounded.
 pub type GitHook = Arc<
     Mutex<
         dyn FnMut(&Git, &[&str], Option<&[u8]>, Option<&Path>) -> Option<Result<Vec<u8>, GitError>>
@@ -40,9 +53,14 @@ pub type GitHook = Arc<
 
 type HistoryCache = Vec<(Option<String>, History)>;
 
+/// A repository handle whose clones share blob and validated-history caches.
+///
+/// The root cannot be changed through this handle: caches belong to that repository.
+/// Callers must not repoint the root path at a different repository while reusing it.
 #[derive(Clone)]
 pub struct Git {
     root: PathBuf,
+    /// Per-subprocess timeout in seconds; commands reject nonpositive or invalid values.
     pub timeout: f64,
     pub(crate) histories: Arc<Mutex<HistoryCache>>,
     blobs: Arc<Mutex<BTreeMap<String, Vec<u8>>>>,
@@ -119,6 +137,7 @@ impl Git {
             })
     }
 
+    /// Binds empty caches to `root`; repository access and timeout checks are deferred.
     pub fn new(root: impl AsRef<Path>, timeout: f64) -> Self {
         Self {
             root: root.as_ref().to_path_buf(),
@@ -129,15 +148,23 @@ impl Git {
         }
     }
 
+    /// Returns the configured root, without resolving or validating the path.
     pub fn root(&self) -> &Path {
         &self.root
     }
 
+    /// Installs an interceptor for commands issued through [`Self::run`].
     pub fn with_hook(mut self, hook: GitHook) -> Self {
         self.hook = Some(hook);
         self
     }
 
+    /// Executes Git without the hook, returning stdout only for `allowed` exit codes.
+    ///
+    /// Zero has no special treatment: include it explicitly. A signal exit or any
+    /// unlisted code is an error. `index` overrides the index for this command only.
+    /// Inherited `GIT_*` overrides are removed except global/system config selectors;
+    /// normal Git configuration still applies, and terminal prompts are disabled.
     pub fn run_raw(
         &self,
         args: &[&str],
@@ -248,6 +275,10 @@ impl Git {
         Ok(stdout)
     }
 
+    /// Checks arguments and timeout, then offers the command to the hook.
+    ///
+    /// An intercepted result is returned unchanged, without exit-code filtering.
+    /// Otherwise [`Self::run_raw`] starts its own subprocess deadline.
     pub fn run(
         &self,
         args: &[&str],
@@ -268,6 +299,7 @@ impl Git {
         self.run_raw(args, input, index, allowed)
     }
 
+    /// Runs a command, replacing invalid UTF-8 and trimming surrounding whitespace.
     pub fn text(
         &self,
         args: &[&str],
@@ -279,15 +311,21 @@ impl Git {
         Ok(String::from_utf8_lossy(&out).trim().to_string())
     }
 
+    /// Resolves `HEAD`; an unborn branch is an error.
     pub fn head(&self) -> Result<String, GitError> {
         self.text(&["rev-parse", "--verify", "HEAD"], None, None, &[0])
     }
 
+    /// Tests ancestry by comparing the merge base to `before` (a full object ID).
     pub fn ancestor(&self, before: &str, after: &str) -> Result<bool, GitError> {
         let out = self.text(&["merge-base", before, after], None, None, &[0, 1])?;
         Ok(out == before)
     }
 
+    /// Reads a revision's UTF-8 paths and blob bytes, caching blobs by object ID.
+    ///
+    /// Rejects non-regular entries, including symlinks, executable files and submodules;
+    /// decoding catalog records is the caller's responsibility.
     pub fn files(&self, revision: &str) -> Result<BTreeMap<String, Vec<u8>>, StorageError> {
         let raw = self
             .run(
@@ -296,24 +334,29 @@ impl Git {
                 None,
                 &[0],
             )
-            .map_err(|e| StorageError::new(e.message, e.uncertain))?;
+            .map_err(|e| {
+                if e.uncertain {
+                    StorageError::uncertain(e.message)
+                } else {
+                    StorageError::new(e.message)
+                }
+            })?;
         let mut paths = BTreeMap::new();
         for entry in raw.split(|&b| b == 0) {
             if entry.is_empty() {
                 continue;
             }
             let Some(tab_pos) = entry.iter().position(|&b| b == b'\t') else {
-                return Err(StorageError::new("invalid ls-tree entry", false));
+                return Err(StorageError::new("invalid ls-tree entry"));
             };
             let desc = std::str::from_utf8(&entry[..tab_pos])
-                .map_err(|e| StorageError::new(e.to_string(), false))?;
+                .map_err(|e| StorageError::new(e.to_string()))?;
             let path = std::str::from_utf8(&entry[tab_pos + 1..])
-                .map_err(|e| StorageError::new(e.to_string(), false))?;
+                .map_err(|e| StorageError::new(e.to_string()))?;
             let parts: Vec<&str> = desc.split_whitespace().collect();
             if parts.len() != 3 || parts[0] != "100644" || parts[1] != "blob" {
                 return Err(StorageError::new(
                     "catalog history contains a non-regular record",
-                    false,
                 ));
             }
             paths.insert(path.to_string(), parts[2].to_string());
@@ -335,26 +378,32 @@ impl Git {
                     None,
                     &[0],
                 )
-                .map_err(|e| StorageError::new(e.message, e.uncertain))?;
+                .map_err(|e| {
+                    if e.uncertain {
+                        StorageError::uncertain(e.message)
+                    } else {
+                        StorageError::new(e.message)
+                    }
+                })?;
             let mut offset = 0usize;
             let mut blobs = self.blobs.lock().unwrap();
             for expected in &missing {
                 let Some(rel_end) = output[offset..].iter().position(|&b| b == b'\n') else {
-                    return Err(StorageError::new("invalid Git blob batch response", false));
+                    return Err(StorageError::new("invalid Git blob batch response"));
                 };
                 let end = offset + rel_end;
                 let header = std::str::from_utf8(&output[offset..end])
-                    .map_err(|e| StorageError::new(e.to_string(), false))?;
+                    .map_err(|e| StorageError::new(e.to_string()))?;
                 let parts: Vec<&str> = header.split_whitespace().collect();
                 if parts.len() != 3 || parts[0] != expected || parts[1] != "blob" {
-                    return Err(StorageError::new("invalid Git blob batch response", false));
+                    return Err(StorageError::new("invalid Git blob batch response"));
                 }
                 let size: usize = parts[2]
                     .parse()
-                    .map_err(|_| StorageError::new("invalid Git blob batch response", false))?;
+                    .map_err(|_| StorageError::new("invalid Git blob batch response"))?;
                 offset = end + 1;
                 if offset + size > output.len() {
-                    return Err(StorageError::new("invalid Git blob batch response", false));
+                    return Err(StorageError::new("invalid Git blob batch response"));
                 }
                 blobs.insert(expected.clone(), output[offset..offset + size].to_vec());
                 offset += size + 1;
@@ -364,13 +413,17 @@ impl Git {
         let mut out = BTreeMap::new();
         for (path, oid) in paths {
             let Some(bytes) = blobs.get(&oid) else {
-                return Err(StorageError::new("missing cached Git blob", false));
+                return Err(StorageError::new("missing cached Git blob"));
             };
             out.insert(path, bytes.clone());
         }
         Ok(out)
     }
 
+    /// Creates a commit object without moving a ref or changing the working tree.
+    ///
+    /// Reads `commit.gpgsign` for each call and requests signing when enabled; identity,
+    /// signing keys and other behavior come from the current Git configuration.
     pub fn commit(
         &self,
         tree: &str,
