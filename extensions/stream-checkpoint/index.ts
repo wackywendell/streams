@@ -100,7 +100,14 @@ export default function registerWorkCard(pi: ExtensionAPI, options: Options = {}
      const {catalog, evidence} = capture;
      const operation = randomUUID();
      const prospective = structuredClone([...state.discussion.messages, {role: "user" as const, text: input}]);
-     const response = await (options.infer ?? infer)(ctx, {type: "discussion", catalog, messages: evidence.messages, discussion: structuredClone(prospective)}, signal, settings().model);
+     clearStatusTimer();
+     ctx.ui.setStatus?.("stream-reporting", "Work card · ⟳ Thinking...");
+     let response;
+     try {
+      response = await (options.infer ?? infer)(ctx, {type: "discussion", catalog, messages: evidence.messages, discussion: structuredClone(prospective)}, signal, settings().model);
+     } finally {
+      if (fence.live()) ctx.ui.setStatus?.("stream-reporting", undefined);
+     }
      if (!capture.valid()) return;
      if (typeof response.reply !== "string") throw Error("Discussion model did not return a typed reply");
      const edit = response.edit;

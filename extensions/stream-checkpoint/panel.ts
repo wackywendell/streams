@@ -199,11 +199,11 @@ export async function openCard(ctx: ExtensionContext, cli: StreamCli, state: Car
   if (ctx.ui.custom && action === "Whole effort — edit fields") {activeTab = "stream";continue;}
   if (ctx.ui.custom && action === "This session — edit fields") {activeTab = "session";continue;}
   if (action === "Discuss live card") {await actions.discuss();continue;}
-  if (action === "Reset generated fields" || action === "Re-enable automatic naming & reset") {actions.reset?.(action === "Re-enable automatic naming & reset", "all");continue;}
-  if (action === "Reset this session only" || action === "Re-enable session auto-naming & reset") {actions.reset?.(action === "Re-enable session auto-naming & reset", "session");continue;}
-  if (action === "Reset whole effort only" || action === "Re-enable effort auto-naming & reset") {actions.reset?.(action === "Re-enable effort auto-naming & reset", "stream");continue;}
+  if (action === "Reset generated fields" || action === "Re-enable automatic naming & reset") {actions.reset?.(action === "Re-enable automatic naming & reset", "all");return;}
+  if (action === "Reset this session only" || action === "Re-enable session auto-naming & reset") {actions.reset?.(action === "Re-enable session auto-naming & reset", "session");return;}
+  if (action === "Reset whole effort only" || action === "Re-enable effort auto-naming & reset") {actions.reset?.(action === "Re-enable effort auto-naming & reset", "stream");return;}
   if (action === "Reporting & Herdr settings") {await actions.settings();continue;}
-  if (action === "Report now") {actions.report();continue;}
+  if (action === "Report now") {actions.report();return;}
   let kind: "stream" | "session" = action.startsWith("This session") || action === "Finish this session" ? "session" : "stream";
   if (action.startsWith("Finish")) {
    if (!await ctx.ui.confirm(action, kind === "session" ? "Finish only this contribution; the effort remains unchanged?" : "Mark the entire effort done? Other contributions are not automatically finished.")) continue;
