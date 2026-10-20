@@ -547,6 +547,17 @@ for (const interruption of ['before-stamping', 'before-ready']) test(`openDispla
   assert.equal(records.length, 1);
   assert.equal((await state.read(records[0].slice(0, -5))).phase, 'ready');
 });
+test('unrecoverable duplicate owners rethrow without a redundant verification or native effects', async t => {
+  const f = await fixture(t), a = await f.owner(1);
+  await a.open();
+  f.panes.push({ ...structuredClone(f.panes[0]), pane_id: 'w:p99', terminal_id: 'term99' });
+  const before = structuredClone(f.snapshot());
+  f.calls.length = 0;
+  await assert.rejects(a.open(), /Conflicting duplicate live owners/);
+  assert.equal(f.calls.filter(args => args[0] === 'api').length, 3);
+  assert.equal(effects(f).length, 0);
+  assert.deepEqual(f.snapshot(), before);
+});
 test('card callers cannot recover a half-stamped reservation on behalf of the Pi owner', async t => {
   const f = await fixture(t), a = await f.owner(1), controller = new AbortController();
   f.hook((args, output) => {

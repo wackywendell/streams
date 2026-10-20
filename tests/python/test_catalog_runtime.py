@@ -249,6 +249,63 @@ class RuntimeTest(unittest.TestCase):
         self.herdr.command_result.assert_not_called()
         self.herdr.run.assert_not_called()
 
+    def test_check_state_validates_saved_arrangements_without_effects(self):
+        path = self.runtime._arrangement_path('endpoint', self.stream.id)
+        valid = {'stream_id': self.stream.id, 'workspace_id': 'w1', 'tabs': []}
+        self.runtime._write(path, valid)
+        before = path.read_bytes()
+        with patch.object(self.runtime, '_write', side_effect=AssertionError('check wrote state')):
+            issues = self.runtime.check_state(Catalog(), None)
+            self.assertEqual([(issue['kind'], issue['stream_id'], issue['workspace_id'], issue['path']) for issue in issues],
+                             [('dangling-saved-arrangement', self.stream.id, 'w1', str(path))])
+            self.assertEqual(self.runtime.check_state(Catalog(), {'unrelated'}), [])
+            self.assertEqual(self.runtime.check_state(Catalog(), set()), [])
+            self.assertEqual(self.runtime.check_state(Catalog(streams=(self.stream,)), None), [])
+            self.assertEqual(self.runtime._saved_arrangement('endpoint', self.stream.id), {'version': 1, **valid})
+            self.assertEqual(self.runtime._resume_arrangement(None, self.stream.id), {'version': 1, **valid})
+            self.assertIsNone(self.runtime._saved_arrangement('missing', self.stream.id))
+            self.assertIsNone(self.runtime._resume_arrangement(None, 'missing'))
+        self.assertEqual(path.read_bytes(), before)
+        self.herdr.endpoint.assert_not_called()
+        self.herdr.command_result.assert_not_called()
+        self.herdr.run.assert_not_called()
+
+    def test_saved_arrangement_validation_is_shared_by_open_resume_and_check(self):
+        path = self.runtime._arrangement_path('endpoint', self.stream.id)
+        valid = {'version': 1, 'stream_id': self.stream.id, 'workspace_id': 'w1', 'tabs': []}
+        path.parent.mkdir(parents=True)
+        bad_tabs = [None, {}, [None], [{'tab_id': 't1', 'label_mode': 'automatic', 'label': None, 'sessions': [None]}],
+                    [{'tab_id': 't1', 'label_mode': 'manual', 'label': 'bad\nlabel', 'sessions': []}]]
+        cases = [json.dumps(value) for value in (
+            None, [], {}, {**valid, 'version': True}, {**valid, 'version': 2},
+            {**valid, 'extra': True}, {**valid, 'stream_id': 'wrong-digest'},
+            {**valid, 'stream_id': ''}, {**valid, 'workspace_id': None},
+            *({**valid, 'tabs': tabs} for tabs in bad_tabs),
+        )] + ['{broken', json.dumps(valid)[:-1] + ', "version": 1}']
+        target = self.root / 'plan.json'
+        target.write_text(json.dumps(valid))
+        for content in [*cases, None]:
+            with self.subTest(content=content):
+                if content is None:
+                    path.unlink()
+                    path.symlink_to(target)
+                else:
+                    path.write_text(content)
+                before = path.read_bytes()
+                with patch.object(self.runtime, '_write', side_effect=AssertionError('check wrote state')):
+                    for filter_ids in (None, {self.stream.id}, {'unrelated'}, set()):
+                        issues = self.runtime.check_state(Catalog(), filter_ids)
+                        self.assertEqual([(issue['kind'], issue['path']) for issue in issues],
+                                         [('invalid-saved-arrangement', str(path))])
+                    with self.assertRaises(StreamError):
+                        self.runtime._saved_arrangement('endpoint', self.stream.id)
+                    with self.assertRaises(StreamError):
+                        self.runtime._resume_arrangement(None, self.stream.id)
+                self.assertEqual(path.read_bytes(), before)
+        self.herdr.endpoint.assert_not_called()
+        self.herdr.command_result.assert_not_called()
+        self.herdr.run.assert_not_called()
+
     def test_reporting_context_reads_unbound_claimed_and_bound_workspaces_without_writes(self):
         self.assertIsNone(self.runtime.context_stream_id())
         self.assertFalse(self.runtime.state_dir.exists())

@@ -208,14 +208,18 @@ export class StreamsWorkspaceClient extends HerdrTransport {
       }
     }
     return withWorkspaceLock(context.socket, context.workspaceId, async () => {
-      let checked: Verified | undefined;
-      try { checked = await this.guard(source, context, config, signal); }
-      catch (error) { if (!(error instanceof Error) || error.message !== 'Conflicting duplicate live owners') throw error; }
-      if (!checked || checked.pair.kind === 'empty') {
-        const recovered = await this.recoverHalfStamped(source, context, config, signal, checked);
+      let v: Verified;
+      try { v = await this.guard(source, context, config, signal); }
+      catch (error) {
+        if (!(error instanceof Error) || error.message !== 'Conflicting duplicate live owners') throw error;
+        const recovered = await this.recoverHalfStamped(source, context, config, signal);
+        if (recovered) return recovered;
+        throw error;
+      }
+      if (v.pair.kind === 'empty') {
+        const recovered = await this.recoverHalfStamped(source, context, config, signal, v);
         if (recovered) return recovered;
       }
-      let v = checked ?? await this.guard(source, context, config, signal);
       if (v.caller.terminal_id !== v.owner.terminal_id) throw new Error('Only the attested Pi owner may open a display');
       const state = this.state(context), attempt = await this.evidence(v, context);
       if (v.pair.kind === 'paired') { this.bound(v, context); await state.write(attempt!); return v.pair; }

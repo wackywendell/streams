@@ -5,10 +5,13 @@ from __future__ import annotations
 import hashlib
 import json
 import os
+import re
+import stat
 from pathlib import Path
 from typing import Any
 
 from .catalog.model import Catalog, Stream
+from .catalog.sync.envelope import load_json
 from .catalog_config import _atomic_json
 from .catalog_agent import source_id
 from .catalog_conversations import native_identity
@@ -75,6 +78,60 @@ def _check_herdr_locks(herdr_dir: Path, issues: list[dict[str, Any]]) -> None:
                 "kind": "invalid-work-cards-lock", "path": str(lock_path),
                 "message": f"invalid work-cards lock {lock_path}: {exc}; inspect before replacing",
             })
+
+
+def _work_card_state(state_dir: Path, keys: tuple[str, ...] | None, issues: list[dict[str, Any]]) -> dict[Path, dict | None] | None:
+    """Read native launch evidence without following links or blocking on special files."""
+    def invalid(path: Path, error: Exception) -> None:
+        if not any(issue.get("kind") == "invalid-work-card-state" and issue.get("path") == str(path) for issue in issues):
+            issues.append({
+                "kind": "invalid-work-card-state", "path": str(path),
+                "message": f"invalid work-card state {path}: {error}; inspect before retrying",
+            })
+
+    try:
+        directory = os.open(state_dir, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW | os.O_NONBLOCK)
+    except FileNotFoundError:
+        return {}
+    except OSError as error:
+        invalid(state_dir, error)
+        return None
+    records = {}
+    try:
+        names = sorted(name for name in os.listdir(directory) if name.endswith(".json")) if keys is None else [key + ".json" for key in keys]
+        for name in names:
+            path = state_dir / name
+            try:
+                descriptor = os.open(name, os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK, dir_fd=directory)
+                try:
+                    if not stat.S_ISREG(os.fstat(descriptor).st_mode):
+                        raise ValueError("native evidence must be a regular file")
+                    with os.fdopen(descriptor, "r", encoding="utf-8", closefd=False) as handle:
+                        record = load_json(handle.read())
+                finally:
+                    os.close(descriptor)
+                if (not re.fullmatch(r"[a-f0-9]{64}", path.stem)
+                        or not isinstance(record, dict)
+                        or type(record.get("version")) is not int or record["version"] != 1
+                        or record.get("key") != path.stem
+                        or record.get("phase") not in ("pending", "ready", "closed")
+                        or not isinstance(record.get("nonce"), str)
+                        or not re.fullmatch(r"[A-Za-z0-9_-]+", record["nonce"])
+                        or any(field in record and not isinstance(record[field], str) for field in ("paneId", "terminalId", "tabId"))
+                        or record["phase"] != "pending" and not all(record.get(field) for field in ("paneId", "terminalId", "tabId"))):
+                    raise ValueError("malformed native launch evidence")
+                records[path] = record
+            except FileNotFoundError:
+                continue
+            except (OSError, ValueError) as error:
+                invalid(path, error)
+                records[path] = None
+    except OSError as error:
+        invalid(state_dir, error)
+        return None
+    finally:
+        os.close(directory)
+    return records
 
 
 def _pending_launch(path: Path, record: dict) -> dict[str, Any]:
@@ -182,15 +239,10 @@ def _check_herdr_live(
                 })
 
     state_dir = herdr_dir / ".streams-work-cards"
-    if state_dir.exists() and target_stream is None and pane_id is None:
+    state_records = _work_card_state(state_dir, None if target_stream is None and pane_id is None else (), issues)
+    if target_stream is None and pane_id is None:
         live_by_pane = {p.get("pane_id"): p for p in panes if isinstance(p, dict) and isinstance(p.get("pane_id"), str)}
-        for rec_path in sorted(state_dir.glob("*.json")):
-            if rec_path.is_symlink():
-                continue
-            try:
-                rec = json.loads(rec_path.read_text())
-            except (OSError, ValueError):
-                continue
+        for rec_path, rec in (state_records or {}).items():
             if isinstance(rec, dict) and rec.get("phase") == "pending":
                 issues.append(_pending_launch(rec_path, rec))
             if not isinstance(rec, dict) or rec.get("phase") != "ready":
@@ -380,52 +432,55 @@ def _check_herdr_live(
         expected_identity = _js_digest(scope_obj)
         expected_key = _js_digest([endpoint.socket, scope_obj, [p_id, term_id, ws_id, tab_id]])
 
-        if state_dir.exists():
-            state_path = state_dir / f"{expected_key}.json"
-            state_rec = None
-            if state_path.exists() and not state_path.is_symlink():
-                try:
-                    state_rec = json.loads(state_path.read_text())
-                except (OSError, ValueError):
-                    state_rec = None
-            if (target_stream is not None or pane_id is not None) and isinstance(state_rec, dict) and state_rec.get("phase") == "pending":
-                issues.append(_pending_launch(state_path, state_rec))
+        if state_records is None:
+            continue
+        state_path = state_dir / f"{expected_key}.json"
+        if (target_stream is not None or pane_id is not None) and state_path not in state_records:
+            records = _work_card_state(state_dir, (expected_key,), issues)
+            if records is None:
+                continue
+            state_records.update(records)
+        if state_path in state_records and state_records[state_path] is None:
+            continue
+        state_rec = state_records.get(state_path)
+        if (target_stream is not None or pane_id is not None) and isinstance(state_rec, dict) and state_rec.get("phase") == "pending":
+            issues.append(_pending_launch(state_path, state_rec))
 
-            if isinstance(state_rec, dict):
-                rec_pane = state_rec.get("paneId")
-                rec_term = state_rec.get("terminalId")
-                rec_tab = state_rec.get("tabId")
-                rec_nonce = state_rec.get("nonce")
-                live_card = next(
-                    (cp for cp in panes if isinstance(cp, dict) and cp.get("pane_id") == rec_pane and cp.get("terminal_id") == rec_term),
-                    None,
-                )
-                if (
-                    live_card is not None
-                    and rec_tab == tab_id
-                    and live_card.get("tab_id") == tab_id
-                    and live_card.get("workspace_id") == ws_id
-                    and isinstance(rec_nonce, str)
-                    and rec_nonce
-                ):
-                    ctokens = live_card.get("tokens") if isinstance(live_card.get("tokens"), dict) else {}
-                    expected_pair = {
-                        "strm_agent": expected_identity,
-                        "strm_nonce": rec_nonce,
-                        "strm_pi": term_id,
-                        "strm_card": rec_term,
-                        "strm_native": native_session_id,
-                    }
-                    owner_ok = tokens.get("strm_role") == "agent" and all(tokens.get(k) == v for k, v in expected_pair.items())
-                    card_ok = ctokens.get("strm_role") == "card" and all(ctokens.get(k) == v for k, v in expected_pair.items())
-                    if not owner_ok or not card_ok:
-                        issues.append({
-                            "kind": "unstamped-work-card-pair", "pane_id": p_id, "card_pane_id": rec_pane,
-                            "workspace_id": ws_id, "tab_id": tab_id, "stream_id": session.stream_id,
-                            "session_id": session.id, "key": expected_key,
-                            "message": f"recorded work card {rec_pane} lacks matching pair markers; open its owner's card to reconcile the exact reservation",
-                        })
-                        continue
+        if isinstance(state_rec, dict):
+            rec_pane = state_rec.get("paneId")
+            rec_term = state_rec.get("terminalId")
+            rec_tab = state_rec.get("tabId")
+            rec_nonce = state_rec.get("nonce")
+            live_card = next(
+                (cp for cp in panes if isinstance(cp, dict) and cp.get("pane_id") == rec_pane and cp.get("terminal_id") == rec_term),
+                None,
+            )
+            if (
+                live_card is not None
+                and rec_tab == tab_id
+                and live_card.get("tab_id") == tab_id
+                and live_card.get("workspace_id") == ws_id
+                and isinstance(rec_nonce, str)
+                and rec_nonce
+            ):
+                ctokens = live_card.get("tokens") if isinstance(live_card.get("tokens"), dict) else {}
+                expected_pair = {
+                    "strm_agent": expected_identity,
+                    "strm_nonce": rec_nonce,
+                    "strm_pi": term_id,
+                    "strm_card": rec_term,
+                    "strm_native": native_session_id,
+                }
+                owner_ok = tokens.get("strm_role") == "agent" and all(tokens.get(k) == v for k, v in expected_pair.items())
+                card_ok = ctokens.get("strm_role") == "card" and all(ctokens.get(k) == v for k, v in expected_pair.items())
+                if not owner_ok or not card_ok:
+                    issues.append({
+                        "kind": "unstamped-work-card-pair", "pane_id": p_id, "card_pane_id": rec_pane,
+                        "workspace_id": ws_id, "tab_id": tab_id, "stream_id": session.stream_id,
+                        "session_id": session.id, "key": expected_key,
+                        "message": f"recorded work card {rec_pane} lacks matching pair markers; open its owner's card to reconcile the exact reservation",
+                    })
+                    continue
 
         present_pair_keys = [k for k in PAIR_KEYS if k in tokens]
         if present_pair_keys:
@@ -584,12 +639,6 @@ def check_all(
     if pane_id is None:
         pre_streams = (stream,) if stream is not None else catalog.streams
         for s in pre_streams:
-            if s.owner_host_id == backend.host_id and backend.authority(s.id) is None:
-                issues.append({
-                    "kind": "missing-stream-authority",
-                    "stream_id": s.id,
-                    "message": f"local owner stream {s.id!r} is missing its authority token in local.json",
-                })
             s_sessions = tuple(item for item in catalog.sessions if item.stream_id == s.id)
             _check_directory_selection(s.id, None, local, issues, fix=fix, fixed=fixed)
             for session in s_sessions:
@@ -611,18 +660,20 @@ def check_all(
 
     if stream is not None:
         target_stream_ids: set[str] | None = {stream.id}
-    elif pane_id is not None and herdr_streams is not None:
-        streams_to_check = tuple(s for s in catalog.streams if s.id in herdr_streams)
-        target_stream_ids = set(herdr_streams)
-        for s in streams_to_check:
-            if s.owner_host_id == backend.host_id and backend.authority(s.id) is None:
-                issues.append({
-                    "kind": "missing-stream-authority",
-                    "stream_id": s.id,
-                    "message": f"local owner stream {s.id!r} is missing its authority token in local.json",
-                })
+    elif pane_id is not None:
+        target_stream_ids = set(herdr_streams or ())
     else:
         target_stream_ids = None
+
+    for s in catalog.streams:
+        if target_stream_ids is not None and s.id not in target_stream_ids:
+            continue
+        if s.owner_host_id == backend.host_id and backend.authority(s.id) is None:
+            issues.append({
+                "kind": "missing-stream-authority",
+                "stream_id": s.id,
+                "message": f"local owner stream {s.id!r} is missing its authority token in local.json",
+            })
 
     issues.extend(local.check_state(catalog, target_stream_ids))
 

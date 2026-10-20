@@ -36,8 +36,8 @@ export class StreamsNativeState {
       if (!(await file.stat()).isFile()) throw new Error('Native evidence must be a regular file');
       const source = await file.readFile('utf8');
       const value = JSON.parse(source) as StreamsAttempt;
-      if (value.version !== 1 || value.key !== key || !['pending', 'ready', 'closed'].includes(value.phase)
-        || !/^[A-Za-z0-9_-]+$/.test(value.nonce) || ['paneId', 'terminalId', 'tabId'].some(k => value[k as keyof StreamsAttempt] !== undefined && typeof value[k as keyof StreamsAttempt] !== 'string')) throw new Error('Malformed native launch evidence');
+      if (!value || typeof value !== 'object' || Array.isArray(value) || value.version !== 1 || value.key !== key || !['pending', 'ready', 'closed'].includes(value.phase)
+        || typeof value.nonce !== 'string' || !/^[A-Za-z0-9_-]+$/.test(value.nonce) || ['paneId', 'terminalId', 'tabId'].some(k => value[k as keyof StreamsAttempt] !== undefined && typeof value[k as keyof StreamsAttempt] !== 'string')) throw new Error('Malformed native launch evidence');
       if (value.phase !== 'pending' && ![value.paneId, value.terminalId, value.tabId].every(v => typeof v === 'string' && v.length > 0)) throw new Error('Incomplete native launch evidence');
       return value;
     } finally { await file.close(); }

@@ -202,6 +202,22 @@ test('model inference uses actual supported registry API, typed calls, no tools 
  ctx.modelRegistry.complete=async()=>({stopReason:'toolUse',content:[{type:'toolCall',name:'record_card',arguments:{changes:{title_mode:'manual'}}}]});
  await assert.rejects(infer(ctx,{type:'session',catalog:context(),messages:[]},new AbortController().signal),/invalid structured/);
 });
+test('discussion document edits preserve optional provenance without broadening permissions',async()=>{
+ for(const provenance of [{},{commit:'abcdef012345',source_session_id:'session'},{commit:null,source_session_id:null}]) {
+  const catalog=context();
+  catalog.stream.documents=[{repository:'repo',ref:'main',path:'docs/plan.md',description:'Before',...provenance}];
+  const before=structuredClone(catalog),documents=catalog.stream.documents.map(row=>({...row,description:'Updated'}));
+  const answer={reply:'Updated the description.',edit:{kind:'stream',actor:'user',changes:{documents}}};
+  const ctx={model:{contextWindow:100000},modelRegistry:{complete:async()=>({stopReason:'toolUse',content:[{type:'toolCall',name:'record_card',arguments:answer}]})}};
+  const request={type:'discussion',catalog,messages:[],instructions:'Update the document description, retaining provenance.'};
+  assert.deepEqual(await infer(ctx,request,new AbortController().signal),answer);
+  assert.deepEqual(catalog,before);
+  answer.edit.actor='automatic';
+  await assert.rejects(infer(ctx,request,new AbortController().signal),/invalid structured/);
+  answer.edit.actor='user';answer.edit.changes.documents[0].unknown='unsupported';
+  await assert.rejects(infer(ctx,request,new AbortController().signal),/invalid structured/);
+ }
+});
 for(const failure of ['throw','response'])test(`inference retries transient gateway ${failure} and succeeds`,async()=>{
  let attempts=0;
  const ctx={model:{id:'current'},modelRegistry:{complete:async()=>{

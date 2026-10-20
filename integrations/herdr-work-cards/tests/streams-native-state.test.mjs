@@ -45,8 +45,9 @@ test('failed reservation sync leaves pending evidence and never authorizes a lau
 });
 test('malformed, invalid-schema and symlink evidence fails closed', async t => {
   const { root, state } = await fixture(t), path = join(root, `${key}.json`);
-  for (const value of ['{', JSON.stringify({ ...ready, phase: 'invalid' })]) {
-    await writeFile(path, value); await assert.rejects(state.read(key));
+  await writeFile(path, '{'); await assert.rejects(state.read(key), SyntaxError);
+  for (const value of [null, [], false, 1, { ...ready, phase: 'invalid' }, ...[undefined, null, 123, '', 'invalid nonce'].map(nonce => ({ ...ready, nonce }))]) {
+    await writeFile(path, JSON.stringify(value)); await assert.rejects(state.read(key), /Malformed native launch evidence/);
   }
   await rm(path); const other = join(root, 'other'); await writeFile(other, JSON.stringify(ready)); await symlink(other, path); await assert.rejects(state.read(key));
 });

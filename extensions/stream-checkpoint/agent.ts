@@ -46,7 +46,7 @@ export type Inferred = {meaningful?: boolean; stream?: {title: string; goal?: st
 export function changesSchema(kind: "stream" | "session", catalog: LocalContext, actor: "automatic" | "user", allowEmpty = true) {
  const before = catalog[kind];if (!before) return Type.Object({}, {additionalProperties: false});
  const link = Type.Object({url: Type.String(), description: Type.String()}, {additionalProperties: false});
- const document = Type.Object({repository: Type.String(), ref: Type.String(), path: Type.String(), description: Type.String()}, {additionalProperties: false});
+ const document = Type.Object({repository: Type.String(), ref: Type.String(), path: Type.String(), description: Type.String(), commit: Type.Optional(Type.Union([Type.String(), Type.Null()])), source_session_id: Type.Optional(Type.Union([Type.String(), Type.Null()]))}, {additionalProperties: false});
  return Type.Object(Object.fromEntries((actor === "automatic" ? automaticFields(kind, before) : fields[kind]).map((field) => {
   let schema: any = Type.String();
   if (["goal", "goal_short", "state_short"].includes(field)) schema = Type.Union([Type.String(), Type.Null()]);

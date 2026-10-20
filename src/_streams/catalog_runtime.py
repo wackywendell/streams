@@ -209,6 +209,22 @@ class Runtime:
                     "path": str(path),
                     "message": f"workspace {assoc['workspace_id']!r} is associated with missing stream {assoc['stream_id']!r}",
                 })
+        for path in sorted((self.state_dir / "arrangements").glob("*/*.json")):
+            try:
+                plan = self._arrangement(path)
+            except StreamError as exc:
+                issues.append({
+                    "kind": "invalid-saved-arrangement", "path": str(path), "message": str(exc),
+                })
+                continue
+            if plan is None or (target_stream_ids is not None and plan["stream_id"] not in target_stream_ids):
+                continue
+            if catalog.stream(plan["stream_id"]) is None:
+                issues.append({
+                    "kind": "dangling-saved-arrangement", "path": str(path),
+                    "stream_id": plan["stream_id"], "workspace_id": plan["workspace_id"],
+                    "message": f"saved arrangement at {path} references missing stream {plan['stream_id']!r}",
+                })
         return issues
 
     def _read(self, path: Path, fields: set[str]) -> dict | None:
@@ -542,9 +558,16 @@ class Runtime:
     def _arrangement_path(self, scope: str, stream_id: str) -> Path:
         return self.state_dir / 'arrangements' / scope / (_key(stream_id) + '.json')
 
+    def _arrangement(self, path: Path, stream_id: str | None = None) -> dict | None:
+        data = self._read(path, {'stream_id', 'workspace_id', 'tabs'})
+        if data is None:
+            return None
+        if not _text(data['stream_id']) or path.name != _key(data['stream_id']) + '.json':
+            raise StreamError(f'invalid saved arrangement identity: {path}')
+        return arrangement.validate_plan(data, stream_id if stream_id is not None else data['stream_id'])
+
     def _saved_arrangement(self, scope: str, stream_id: str) -> dict | None:
-        data = self._read(self._arrangement_path(scope, stream_id), {'stream_id', 'workspace_id', 'tabs'})
-        return arrangement.validate_plan(data, stream_id) if data is not None else None
+        return self._arrangement(self._arrangement_path(scope, stream_id), stream_id)
 
     def _capture_arrangement(self, stream, sessions, scope, binding, snapshot) -> dict:
         if not binding['ready'] or binding['stream_id'] != stream.id:
@@ -944,11 +967,10 @@ class Runtime:
             return plan
         plans = []
         for path in (self.state_dir / 'arrangements').glob('*/*.json'):
-            data = self._read(path, {'stream_id', 'workspace_id', 'tabs'})
-            if data is None or not _text(data['stream_id']) or path.name != _key(data['stream_id']) + '.json':
+            checked = self._arrangement(path)
+            if checked is None:
                 raise StreamError(f'invalid saved arrangement identity: {path}')
-            checked = arrangement.validate_plan(data, data['stream_id'])
-            if data['stream_id'] == stream_id:
+            if checked['stream_id'] == stream_id:
                 plans.append(checked)
         if len(plans) > 1:
             raise StreamError('multiple saved arrangements across scopes; inspect runtime state before resume')

@@ -213,19 +213,19 @@ class DirectoryBindings:
                             session_selections[origin_sid] = self.read(stream.id, origin_sid)
                         origin_sel = session_selections[origin_sid]
                         cand_chk = self.checkouts.get(origin_sel.checkout_id) if origin_sel and origin_sel.checkout_id else None
-                        if cand_chk is not None and repo_url in cand_chk.repository_urls:
+                        if (cand_chk is not None and (checkout is None or cand_chk.id != checkout.id)
+                                and repo_url in cand_chk.repository_urls):
                             origin_chk = cand_chk
-                            if checkout is None or cand_chk.id != checkout.id:
-                                origin_file = self.checkouts._contained(cand_chk, document.path, directory=False)
-                                add_checkout(document.repository, cand_chk.id, cand_chk.directory)
-                                alternates.append({
-                                    "kind": "origin",
-                                    "label": f"origin ({Path(cand_chk.directory).name})",
-                                    "checkout_id": cand_chk.id,
-                                    "root": cand_chk.directory,
-                                    "file": str(origin_file),
-                                })
-                                break
+                            origin_file = self.checkouts._contained(cand_chk, document.path, directory=False)
+                            add_checkout(document.repository, cand_chk.id, cand_chk.directory)
+                            alternates.append({
+                                "kind": "origin",
+                                "label": f"origin ({Path(cand_chk.directory).name})",
+                                "checkout_id": cand_chk.id,
+                                "root": cand_chk.directory,
+                                "file": str(origin_file),
+                            })
+                            break
                     except (StreamError, OSError, ValueError):
                         continue
             if selection_error is None and (document.commit is not None or (not alternates and document.source_session_id is not None)):

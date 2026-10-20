@@ -377,14 +377,14 @@ class CatalogCliTest(unittest.TestCase):
         key = _js_digest([socket, scope_obj, ["wH:p1", "owner", "wH", "wH:t1"]])
         state_path = Path(socket).parent / ".streams-work-cards" / (key + ".json")
         state_path.parent.mkdir(parents=True)
-        state_path.write_text(json.dumps({"phase": "pending", "key": key, "paneId": "wH:p2",
+        state_path.write_text(json.dumps({"version": 1, "phase": "pending", "key": key, "paneId": "wH:p2",
                                          "terminalId": "card", "tabId": "wH:t1", "nonce": "nonce"}))
         before = {path: path.read_bytes() for path in self.root.rglob("*") if path.is_file()}
         snapshot = {"workspaces": [{"workspace_id": "wH", "tokens": {}}], "panes": [owner, card]}
         with patch("_streams.catalog_check.HerdrClient.endpoint", return_value=HerdrEndpoint(socket, "default")), \
              patch("_streams.catalog_check.HerdrClient.command_result", return_value={"snapshot": snapshot}), \
              patch("_streams.catalog_check.HerdrClient.run", side_effect=AssertionError("native mutation")):
-            for args in (("--pane", "wH:p1"), (stream["id"],)):
+            for args in (("--pane", "wH:p1"), (stream["id"],), ()):
                 for fix in ((), ("--fix",)):
                     with self.subTest(args=args, fix=fix):
                         code, out, err = self.cli("check", *args, *fix, "--json")
@@ -393,7 +393,118 @@ class CatalogCliTest(unittest.TestCase):
                         self.assertEqual({issue["kind"] for issue in report["issues"]},
                                          {"pending-work-card-launch", "unstamped-work-card-pair"})
                         self.assertNotIn("fixed", report)
+                        self.assertEqual(len(report["issues"]), 2)
         self.assertEqual({path: path.read_bytes() for path in self.root.rglob("*") if path.is_file()}, before)
+
+        valid = {"version": 1, "phase": "pending", "key": key, "nonce": "nonce"}
+        contents = [json.dumps(value) for value in (
+            None, [], {}, {**valid, "version": True}, {**valid, "version": 2},
+            {**valid, "key": "0" * 64}, {k: v for k, v in valid.items() if k != "nonce"},
+            *({**valid, "nonce": nonce} for nonce in (None, 123, "", "bad nonce")),
+            {**valid, "phase": "unknown"}, {**valid, "paneId": None},
+            {**valid, "terminalId": 1}, {**valid, "tabId": []},
+            {**valid, "phase": "ready"}, {**valid, "phase": "closed", "paneId": "", "terminalId": "card", "tabId": "wH:t1"},
+        )] + ['{broken', json.dumps(valid)[:-1] + ', "nonce": "duplicate"}']
+        with patch("_streams.catalog_check.HerdrClient.endpoint", return_value=HerdrEndpoint(socket, "default")), \
+             patch("_streams.catalog_check.HerdrClient.command_result", return_value={"snapshot": snapshot}), \
+             patch("_streams.catalog_check.HerdrClient.run", side_effect=AssertionError("native mutation")):
+            def assert_invalid(expected_path):
+                for args in (("--pane", "wH:p1"), (stream["id"],), ()):
+                    for fix in ((), ("--fix",)):
+                        code, out, err = self.cli("check", *args, *fix, "--json")
+                        self.assertEqual((code, err), (2, ""), out)
+                        report = json.loads(out)
+                        self.assertFalse(report["valid"])
+                        self.assertNotIn("fixed", report)
+                        self.assertEqual([(issue["kind"], issue.get("path")) for issue in report["issues"]],
+                                         [("invalid-work-card-state", str(expected_path))])
+
+            for content in contents:
+                with self.subTest(content=content):
+                    state_path.write_text(content)
+                    assert_invalid(state_path)
+                    self.assertEqual(state_path.read_text(), content)
+
+            # Scoped checks must not discover unrelated corrupt launch evidence.
+            state_path.unlink()
+            unrelated = state_path.parent / ("f" * 64 + ".json")
+            unrelated.write_text("{broken")
+            for args in (("--pane", "wH:p1"), (stream["id"],)):
+                code, out, err = self.cli("check", *args, "--json")
+                self.assertEqual((code, err), (0, ""), out)
+                self.assertTrue(json.loads(out)["valid"])
+            unrelated.unlink()
+
+            target = self.root / "native-evidence.json"
+            target.write_text(json.dumps(valid))
+            state_path.symlink_to(target)
+            assert_invalid(state_path)
+            self.assertTrue(state_path.is_symlink())
+            self.assertEqual(json.loads(target.read_text()), valid)
+            state_path.unlink()
+            state_path.mkdir()
+            assert_invalid(state_path)
+            self.assertTrue(state_path.is_dir())
+            state_path.rmdir()
+            os.mkfifo(state_path)
+            assert_invalid(state_path)
+            state_path.unlink()
+
+            directory = state_path.parent
+            state_path.write_text(json.dumps(valid))
+            original_open = os.open
+            for denied in (state_path, directory):
+                def unreadable(path, flags, *args, **kwargs):
+                    if Path(path) == denied or kwargs.get("dir_fd") is not None and path == denied.name:
+                        raise PermissionError("unreadable native evidence")
+                    return original_open(path, flags, *args, **kwargs)
+                with self.subTest(unreadable=denied), patch("_streams.catalog_check.os.open", side_effect=unreadable):
+                    assert_invalid(denied)
+                self.assertEqual(json.loads(state_path.read_text()), valid)
+            state_path.unlink()
+            directory.rmdir()
+            directory.symlink_to(self.root, target_is_directory=True)
+            assert_invalid(directory)
+            self.assertTrue(directory.is_symlink())
+            directory.unlink()
+            directory.write_text("not a directory")
+            assert_invalid(directory)
+            self.assertEqual(directory.read_text(), "not a directory")
+
+    def test_work_card_state_accepts_native_schema_and_preserves_extra_fields(self):
+        from _streams.catalog_check import _work_card_state
+        directory = self.root / ".streams-work-cards"
+        issues = []
+        self.assertEqual(_work_card_state(directory, None, issues), {})
+        self.assertFalse(directory.exists())
+        directory.mkdir()
+        key = "a" * 64
+        path = directory / (key + ".json")
+        base = {"version": 1, "key": key, "phase": "pending", "nonce": "safe_NONCE-123", "extra": {"kept": True}}
+        for record in (base, {**base, "paneId": "", "terminalId": "", "tabId": ""},
+                       *({**base, "phase": phase, "paneId": "p", "terminalId": "terminal", "tabId": "tab"}
+                         for phase in ("ready", "closed"))):
+            path.write_text(json.dumps(record))
+            before = path.read_bytes()
+            for keys in (None, (key,)):
+                self.assertEqual(_work_card_state(directory, keys, issues), {path: record})
+                self.assertEqual(path.read_bytes(), before)
+        self.assertEqual(issues, [])
+
+    def test_check_pane_unavailable_does_not_report_unrelated_valid_runtime_records(self):
+        self.initialize()
+        self.create()
+        from _streams.cli import runtime
+        local = runtime()
+        local._write(local._arrangement_path("endpoint", "missing"),
+                     {"stream_id": "missing", "workspace_id": "w1", "tabs": []})
+        local._write(local._association_path("endpoint", "w1"),
+                     {"stream_id": "missing", "workspace_id": "w1", "session_id": None,
+                      "command": None, "ready": True})
+        with patch("_streams.catalog_check.HerdrClient.endpoint", side_effect=StreamError("unavailable")):
+            code, out, err = self.cli("check", "--pane", "p1", "--json")
+        self.assertEqual((code, err), (2, ""), out)
+        self.assertEqual([issue["kind"] for issue in json.loads(out)["issues"]], ["herdr-unavailable"])
 
     def test_check_fix_binds_unbound_session_checkout_from_origin_remote(self):
         self.initialize()

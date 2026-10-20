@@ -169,6 +169,41 @@ class DirectoryBindingsTest(unittest.TestCase):
         self.registry.set_default("repo", checkout.id)
         self.assertEqual(self.context()["document_locations"][0]["file"], str(root / "doc.md"))
 
+    def test_same_local_sibling_does_not_clobber_distinct_origin_revision(self):
+        from dataclasses import replace
+        local_root, local = self.repo("local", "repo")
+        origin_root, origin = self.repo("origin", "repo")
+        subprocess.run(["git", "add", "doc.md"], cwd=origin_root, check=True, capture_output=True, timeout=30)
+        subprocess.run(["git", "-c", "user.name=Test", "-c", "user.email=test@example.com", "-c", "commit.gpgsign=false",
+                        "commit", "-m", "origin document"], cwd=origin_root, check=True, capture_output=True, timeout=30)
+        revision = subprocess.run(["git", "rev-parse", "HEAD"], cwd=origin_root, check=True,
+                                  capture_output=True, text=True, timeout=30).stdout.strip()
+        (local_root / "doc.md").unlink()
+        (origin_root / "doc.md").unlink()
+        distinct = replace(self.session, id="distinct", harness_session_id="native-distinct")
+        same = replace(self.session, id="same-local", harness_session_id="native-same")
+        self.locations.remember("stream", local_root, session_id=self.session.id, repository_url="repo")
+        self.locations.remember("stream", origin_root, session_id=distinct.id, repository_url="repo")
+        self.locations.remember("stream", local_root, session_id=same.id, repository_url="repo")
+        stream = replace(self.stream, documents=(Document("code", "main", "doc.md", "Design", commit=revision),))
+        before = {path: path.read_bytes() for path in self.root.rglob("*") if path.is_file()}
+        with patch("_streams.catalog_checkouts._run", side_effect=AssertionError("context must not invoke VCS")):
+            context = self.locations.document_context(stream, self.session, sessions=(self.session, distinct, same))
+        location = context["document_locations"][0]
+        self.assertIsNone(location["error"])
+        self.assertEqual(location["kind"], "revision")
+        self.assertEqual(location["checkout_id"], origin.id)
+        self.assertNotEqual(location["checkout_id"], local.id)
+        self.assertEqual(location["root"], str(origin_root))
+        self.assertEqual(location["revision"], revision)
+        self.assertIsNone(location["file"])
+        self.assertEqual([alternate["kind"] for alternate in location["alternates"]], ["revision"])
+        self.assertEqual({path: path.read_bytes() for path in self.root.rglob("*") if path.is_file()}, before)
+        self.assertFalse((self.locations.state_dir / "revisions").exists())
+        materialized = self.registry.revision_document(origin.id, "doc.md", revision,
+                                                       cache_dir=self.locations.state_dir / "revisions")
+        self.assertEqual(Path(materialized["file"]).read_text(), "origin\n")
+
     def test_document_fallback_resolves_origin_session_checkout_and_vcs_commit(self):
         from dataclasses import replace
         one_root, _ = self.repo("one", "repo")
