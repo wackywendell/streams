@@ -76,22 +76,6 @@ pub struct DirectoryBindings {
     checkouts: CheckoutRegistry,
 }
 
-// Match Python json.dumps(..., ensure_ascii=True), including surrogate pairs.
-fn python_json_string(value: &str) -> String {
-    let encoded = serde_json::to_string(value).expect("string serialization is infallible");
-    let mut out = String::new();
-    for character in encoded.chars() {
-        if character.is_ascii() {
-            out.push(character);
-        } else {
-            for unit in character.encode_utf16(&mut [0; 2]) {
-                out.push_str(&format!("\\u{unit:04x}"));
-            }
-        }
-    }
-    out
-}
-
 impl DirectoryBindings {
     /// Construct a local binding store; no state is read or created.
     pub fn new(state_dir: impl AsRef<Path>, checkouts: CheckoutRegistry) -> Self {
@@ -105,9 +89,9 @@ impl DirectoryBindings {
     pub fn path(&self, stream_id: &str, session_id: Option<&str>) -> PathBuf {
         let key = format!(
             "[{}, {}]",
-            python_json_string(stream_id),
+            crate::codec::ascii_json(stream_id),
             session_id
-                .map(python_json_string)
+                .map(crate::codec::ascii_json)
                 .unwrap_or_else(|| "null".into())
         );
         self.state_dir

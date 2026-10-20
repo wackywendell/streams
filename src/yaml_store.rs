@@ -13,7 +13,7 @@ use sha2::{Digest, Sha256};
 use uuid::Uuid;
 
 use crate::codec::{object_fields, record_from_data, record_to_data};
-use crate::model::{Catalog, Record, RecordKey, RecordKind, ValidationError, check_text};
+use crate::model::{Catalog, Record, RecordKind, ValidationError, check_text};
 use crate::storage::{Snapshot, StorageError, Store, Transaction};
 use crate::sync::state::FileJournal;
 
@@ -36,14 +36,15 @@ pub fn encode_component(id: &str) -> String {
 }
 
 /// Map an owned identity to its canonical catalog-relative location.
-pub fn relative_record_path(key: &RecordKey) -> PathBuf {
-    let name = format!("{}.yaml", encode_component(key.id()));
-    match key {
-        RecordKey::Session { host_id, .. } => PathBuf::from("sessions")
-            .join(encode_component(host_id))
+pub fn relative_record_path(record: &Record) -> PathBuf {
+    let name = format!("{}.yaml", encode_component(record.key().id()));
+    match record {
+        Record::Session(session) => PathBuf::from("sessions")
+            .join(encode_component(&session.stream_id))
+            .join(encode_component(&session.host_id))
             .join(name),
-        RecordKey::Stream { .. } => PathBuf::from("streams").join(name),
-        RecordKey::Host { .. } => PathBuf::from("hosts").join(name),
+        Record::Stream(_) => PathBuf::from("streams").join(name),
+        Record::Host(_) => PathBuf::from("hosts").join(name),
     }
 }
 
@@ -197,8 +198,8 @@ impl YamlStore {
     }
 
     /// Returns a path relative to this store, not an absolute filesystem path.
-    pub fn record_path(&self, key: &RecordKey) -> PathBuf {
-        relative_record_path(key)
+    pub fn record_path(&self, record: &Record) -> PathBuf {
+        relative_record_path(record)
     }
 
     /// Check schema, identity and canonical relative location before accepting file bytes.
@@ -235,7 +236,7 @@ impl YamlStore {
             .parse::<RecordKind>()
             .map_err(|_| map_err(ValidationError::new(format!("unknown record kind: {kind}"))))?;
         let record = record_from_data(kind, record_val).map_err(map_err)?;
-        let expected_path = relative_record_path(&record.key())
+        let expected_path = relative_record_path(&record)
             .to_string_lossy()
             .replace('\\', "/");
         if path != expected_path {
@@ -377,39 +378,29 @@ impl YamlTransaction {
     }
 
     fn collect_files(&self) -> Result<Vec<PathBuf>, StorageError> {
-        let mut out = Vec::new();
-        for name in ["streams", "sessions", "hosts"] {
-            let dir = self.root.join(name);
-            ensure_directory(&dir, false)?;
+        fn collect(dir: &Path, depth: usize, out: &mut Vec<PathBuf>) -> Result<(), StorageError> {
+            ensure_directory(dir, false)?;
             if !dir.exists() {
-                continue;
+                return Ok(());
             }
-            let mut entries: Vec<PathBuf> = fs::read_dir(&dir)
+            let mut entries = fs::read_dir(dir)
                 .map_err(|e| StorageError::new(format!("cannot read catalog: {e}")))?
+                .map(|entry| entry.map(|entry| entry.path()))
                 .collect::<Result<Vec<_>, _>>()
-                .map_err(|e| StorageError::new(format!("cannot read catalog: {e}")))?
-                .into_iter()
-                .map(|e| e.path())
-                .collect();
+                .map_err(|e| StorageError::new(format!("cannot read catalog: {e}")))?;
             entries.sort();
             for path in entries {
-                if name == "sessions" {
-                    ensure_directory(&path, false)?;
-                    let mut sub: Vec<PathBuf> = fs::read_dir(&path)
-                        .map_err(|e| StorageError::new(format!("cannot read catalog: {e}")))?
-                        .collect::<Result<Vec<_>, _>>()
-                        .map_err(|e| StorageError::new(format!("cannot read catalog: {e}")))?
-                        .into_iter()
-                        .map(|e| e.path())
-                        .collect();
-                    sub.sort();
-                    for item in sub {
-                        out.push(Self::check_record_file(&item)?);
-                    }
+                if depth == 0 {
+                    out.push(YamlTransaction::check_record_file(&path)?);
                 } else {
-                    out.push(Self::check_record_file(&path)?);
+                    collect(&path, depth - 1, out)?;
                 }
             }
+            Ok(())
+        }
+        let mut out = Vec::new();
+        for (name, depth) in [("streams", 0), ("sessions", 2), ("hosts", 0)] {
+            collect(&self.root.join(name), depth, &mut out)?;
         }
         Ok(out)
     }
@@ -456,7 +447,7 @@ impl YamlTransaction {
         // (including PyYAML) where bare yes/on/timestamp-looking values change type.
         let yaml_text = serde_json::to_string_pretty(&Value::Object(envelope))
             .map_err(|e| StorageError::new(format!("cannot save catalog record: {e}")))?;
-        let path = self.root.join(relative_record_path(&key));
+        let path = self.root.join(relative_record_path(record));
         atomic_write(
             &path,
             yaml_text.as_bytes(),

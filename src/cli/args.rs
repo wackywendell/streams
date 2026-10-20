@@ -237,6 +237,10 @@ pub(super) struct StreamFields {
     pub(super) remove_document: Vec<String>,
     #[arg(long, num_args = 3, action = ArgAction::Append, value_names = ["REPOSITORY", "PATH", "COMMIT"])]
     pub(super) document_added_at: Vec<String>,
+    #[arg(long, num_args = 3, action = ArgAction::Append, value_names = ["REPOSITORY", "PATH", "COMMIT"])]
+    pub(super) document_commit: Vec<String>,
+    #[arg(long, num_args = 3, action = ArgAction::Append, value_names = ["REPOSITORY", "PATH", "SESSION_ID"])]
+    pub(super) document_session: Vec<String>,
     #[arg(long, num_args = 2, action = ArgAction::Append, value_names = ["URL", "DESCRIPTION"])]
     pub(super) add_issue: Vec<String>,
     #[arg(long, action = ArgAction::Append, value_name = "URL")]
@@ -413,6 +417,8 @@ mod tests {
             "--add-document",
             "--remove-document",
             "--document-added-at",
+            "--document-commit",
+            "--document-session",
             "--add-issue",
             "--add-pr",
         ] {
@@ -432,6 +438,40 @@ mod tests {
         assert!(
             matches!(parsed.command, Command::Create { fields, .. } if fields.add_repository == ["a", "url-a", "b", "url-b"])
         );
+    }
+
+    #[test]
+    fn document_provenance_flags_preserve_repeated_groups() {
+        let parsed = parse(&[
+            "update",
+            "work",
+            "--document-added-at",
+            "repo",
+            "doc",
+            "legacy",
+            "--document-commit",
+            "repo",
+            "doc",
+            "first",
+            "--document-commit",
+            "repo",
+            "doc",
+            "latest",
+            "--document-session",
+            "repo",
+            "doc",
+            "source",
+        ])
+        .unwrap();
+        let Command::Update { fields, .. } = parsed.command else {
+            panic!("expected update");
+        };
+        assert_eq!(fields.document_added_at, ["repo", "doc", "legacy"]);
+        assert_eq!(
+            fields.document_commit,
+            ["repo", "doc", "first", "repo", "doc", "latest"]
+        );
+        assert_eq!(fields.document_session, ["repo", "doc", "source"]);
     }
 
     #[test]

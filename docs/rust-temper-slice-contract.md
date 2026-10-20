@@ -24,7 +24,7 @@ Compare structured outcomes without changing status, nullness, receipt, ownershi
 
 The Rust implementation preserves record schemas and canonical operation-envelope bytes. Record YAML may be serialized as JSON (a YAML subset) to quote strings consistently for Python's YAML 1.1 reader:
 
-- **Record files:** `streams/<escaped-id>.yaml`, `sessions/<escaped-host>/<escaped-id>.yaml`, `hosts/<escaped-id>.yaml` with `{version: 1, revision, kind, record}` envelopes and percent-encoding of uppercase, non-ASCII, and path-reserved bytes.
+- **Record files:** `streams/<escaped-id>.yaml`, `sessions/<escaped-stream>/<escaped-host>/<escaped-id>.yaml`, `hosts/<escaped-id>.yaml` with `{version: 1, revision, kind, record}` envelopes and percent-encoding of uppercase, non-ASCII, and path-reserved bytes.
 - **Process coordination:** `.catalog.lock` opened with `O_CREAT | O_RDWR | O_NOFOLLOW` (`0600`) and held via `flock(LOCK_EX)` without unlinking the inode.
 - **Staging:** `.catalog-staging/` for atomic temporary writes + `fsync` of both file and parent directory.
 - **Transport state (`.catalog-sync/`):**

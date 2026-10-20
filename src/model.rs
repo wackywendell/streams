@@ -216,8 +216,12 @@ pub struct Document {
     #[serde(default)]
     pub description: String,
     /// Optional commit provenance for when the document was added, not a timestamp.
-    #[serde(skip_serializing_if = "Option::is_none")]
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub added_at: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub commit: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub source_session_id: Option<String>,
 }
 
 impl Document {
@@ -235,6 +239,8 @@ impl Document {
             path: path.into(),
             description: description.into(),
             added_at,
+            commit: None,
+            source_session_id: None,
         };
         document.validate()?;
         Ok(document)
@@ -246,10 +252,21 @@ impl Document {
         check_text(&self.r#ref, "document.ref", false)?;
         check_relative_path(&self.path, "document.path")?;
         check_text(&self.description, "document.description", true)?;
-        if let Some(ref commit) = self.added_at {
-            check_text(commit, "document.added_at", false)?;
+        for (name, value) in [
+            ("document.added_at", &self.added_at),
+            ("document.commit", &self.commit),
+            ("document.source_session_id", &self.source_session_id),
+        ] {
+            if let Some(value) = value {
+                check_text(value, name, false)?;
+            }
         }
         Ok(())
+    }
+
+    /// Prefers current commit provenance over the legacy added-at commit.
+    pub fn effective_commit(&self) -> Option<&str> {
+        self.commit.as_deref().or(self.added_at.as_deref())
     }
 
     /// Identity within a stream excludes the ref and descriptive metadata.

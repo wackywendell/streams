@@ -1,11 +1,11 @@
 use serde_json::json;
 use streams_temper::{
-    model::{Catalog, Record, RecordKey, Stream},
+    model::{Catalog, Host, Record, Session, Stream},
     operations::{Actor, Operation},
     sync::{
         envelope::Origin,
         history::{CommittedOperation, History},
-        replay::{ReplayConflict, replay},
+        replay::{ConflictTarget, ReplayConflict, replay},
     },
 };
 
@@ -62,7 +62,7 @@ fn conflicting_creations_keep_the_existing_conflict_wire_shape() {
     let conflict = &result.conflicts[0];
     let expected = json!({
         "operation": "local-create",
-        "target": {"kind": "stream", "id": "work", "host_id": null},
+        "target": {"kind": "stream", "id": "work", "host_id": null, "stream_id": null},
         "origin": {"host": "host"},
         "fields": ["identity"],
         "reason": "remote stream has a different creation",
@@ -76,26 +76,25 @@ fn conflicting_creations_keep_the_existing_conflict_wire_shape() {
 
 #[test]
 fn conflict_target_roundtrips_all_identity_shapes() {
-    for (target, wire) in [
+    for (record, wire) in [
         (
-            RecordKey::Host { id: "host".into() },
-            json!({"kind": "host", "id": "host", "host_id": null}),
+            Record::Host(Host::new("host", "Host", chrono::Utc::now().fixed_offset()).unwrap()),
+            json!({"kind": "host", "id": "host", "host_id": null, "stream_id": null}),
         ),
         (
-            RecordKey::Stream { id: "work".into() },
-            json!({"kind": "stream", "id": "work", "host_id": null}),
+            Record::Stream(Stream::new("work", "Work", None, "host").unwrap()),
+            json!({"kind": "stream", "id": "work", "host_id": null, "stream_id": null}),
         ),
         (
-            RecordKey::Session {
-                id: "session".into(),
-                host_id: "host".into(),
-            },
-            json!({"kind": "session", "id": "session", "host_id": "host"}),
+            Record::Session(
+                Session::new("session", "host", "work", "pi", "native", "Session").unwrap(),
+            ),
+            json!({"kind": "session", "id": "session", "host_id": "host", "stream_id": "work"}),
         ),
     ] {
         let conflict = ReplayConflict {
             operation: "op".into(),
-            target,
+            target: ConflictTarget::from_record(&record),
             origin: Origin::new(),
             fields: vec![],
             reason: String::new(),
@@ -107,10 +106,17 @@ fn conflict_target_roundtrips_all_identity_shapes() {
             conflict
         );
         let mut invalid = encoded.clone();
-        invalid["target"]["host_id"] = if conflict.target.host_id().is_some() {
+        invalid["target"]["host_id"] = if conflict.target.key().host_id().is_some() {
             json!(null)
         } else {
             json!("host")
+        };
+        assert!(serde_json::from_value::<ReplayConflict>(invalid).is_err());
+        let mut invalid = encoded;
+        invalid["target"]["stream_id"] = if conflict.target.key().host_id().is_some() {
+            json!(null)
+        } else {
+            json!("work")
         };
         assert!(serde_json::from_value::<ReplayConflict>(invalid).is_err());
     }

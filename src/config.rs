@@ -626,24 +626,10 @@ pub fn source_id(root: &Path, host: &HostIdentity) -> Result<String> {
     }
     let preimage = format!(
         "[{}, {}, {}, {}]",
-        ascii_json(path_text(&root)?),
+        crate::codec::ascii_json(path_text(&root)?),
         stat.dev(),
         stat.ino(),
-        ascii_json(host.as_str())
+        crate::codec::ascii_json(host.as_str())
     );
     Ok(format!("{:x}", Sha256::digest(preimage.as_bytes())))
-}
-fn ascii_json(value: &str) -> String {
-    let encoded = serde_json::to_string(value).expect("string serialization");
-    let mut result = String::new();
-    for ch in encoded.chars() {
-        if ch >= '\u{7f}' {
-            for unit in ch.encode_utf16(&mut [0; 2]) {
-                result.push_str(&format!("\\u{unit:04x}"));
-            }
-        } else {
-            result.push(ch);
-        }
-    }
-    result
 }

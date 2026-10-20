@@ -472,7 +472,7 @@ impl GitCatalog {
                     }),
                 )?;
                 tx.save(permit.record(), permit.expected())?;
-                let path = self.store.record_path(&permit.operation().target());
+                let path = self.store.record_path(permit.record());
                 let path = path.to_string_lossy();
                 self.git.run(&["add", "--", &path], None, None, &[0])?;
                 let tree = self.git.text(&["write-tree"], None, None, &[0])?;
@@ -686,7 +686,7 @@ impl GitCatalog {
                     let (operation, origin, record) =
                         (change.operation, change.origin, change.record);
                     tx.save(&record, &tx.read()?)?;
-                    let path = store.record_path(&operation.target());
+                    let path = store.record_path(&record);
                     let bytes = fs::read(root.join(&path))?;
                     let blob = self.git.text(
                         &["hash-object", "-w", "--stdin"],

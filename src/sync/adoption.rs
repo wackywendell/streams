@@ -112,8 +112,8 @@ fn bookkeeping(catalog: &GitCatalog) -> Result<Bookkeeping, RepairRequired> {
 
 fn local_files(catalog: &GitCatalog, snapshot: &Snapshot) -> Result<Files, RepairRequired> {
     let mut files = BTreeMap::new();
-    for key in snapshot.revisions.keys() {
-        let path = catalog.store.record_path(key);
+    for record in snapshot.catalog.records() {
+        let path = catalog.store.record_path(&record);
         files.insert(
             path.to_str()
                 .ok_or_else(|| repair("record path must be UTF-8"))?

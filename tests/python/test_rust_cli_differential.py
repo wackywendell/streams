@@ -7,6 +7,7 @@ import subprocess
 import sys
 import tempfile
 import unittest
+from uuid import NAMESPACE_URL, uuid5
 
 ROOT = Path(__file__).resolve().parents[2]
 RUST = ROOT / "target" / "debug" / "streams"
@@ -76,8 +77,41 @@ class RustCliDifferentialTests(unittest.TestCase):
         self.call("python", "restore", identity)
         self.call("rust", "update", identity, "--add-repository", "repo", "https://example.test/repo",
                   "--add-document", "repo", "main", "docs/design.md", "Design",
-                  "--document-added-at", "repo", "docs/design.md", "abc123")
+                  "--document-added-at", "repo", "docs/design.md", "abc123",
+                  "--document-commit", "repo", "docs/design.md", "def456",
+                  "--document-session", "repo", "docs/design.md", "source-session")
         self.assertEqual(self.call("rust", "show", identity), self.call("python", "show", identity))
+
+    def test_rust_attached_sessions_are_deterministic_and_visible_to_python_context(self):
+        stream = self.call("rust", "create", "Partitioned")["stream"]
+        native = "opaque/路径 😀"
+        session = self.call("rust", "session", "attach", stream["id"], "--harness", "pi",
+                            "--session-id", native, "--title", "Contribution")["session"]
+        expected = str(uuid5(NAMESPACE_URL, "streams:session:" + json.dumps([session["host_id"], "pi", native])))
+        self.assertEqual(session["id"], expected)
+        root = Path(self.call("rust", "config", "get", "catalog.root"))
+        self.assertTrue((root / "sessions" / stream["id"] / session["host_id"] / f"{expected}.yaml").is_file())
+        self.assertEqual(self.context("rust", native), self.context("python", native))
+        self.assertEqual(self.call("python", "session", "attach", stream["id"], "--harness", "pi",
+                                  "--session-id", native, "--title", "Contribution")["session"], session)
+
+    def test_generated_stream_intent_survives_unrelated_concurrent_changes(self):
+        stream = self.call("rust", "create", "Work")["stream"]
+        captured = self.context("rust", "unknown", stream["id"])
+        request = {"operation_id": "generated-stream-goal", "catalog_source": captured["catalog_source"],
+                   "kind": "stream", "actor": "automatic", "before": stream,
+                   "ownership_token": captured["authority"]["token"],
+                   "changes": {"goal": "Generated"}, "inputs": []}
+        self.call("python", "update", stream["id"], "--status", "waiting", "--add-issue",
+                  "https://example.test/issue", "Concurrent")
+        result = self.call("rust", "agent", "apply", request=request)
+        self.assertEqual(result["save"]["domain"]["outcome"], "changes")
+        self.assertEqual(self.call("rust", "agent", "apply", request=request),
+                         self.call("python", "agent", "apply", request=request))
+        current = self.call("rust", "show", stream["id"])["stream"]
+        self.assertEqual(current["goal"], "Generated")
+        self.assertEqual(current["status"], "waiting")
+        self.assertEqual(len(current["issues"]), 1)
 
     def test_conflicted_reads_preserve_the_confirmed_cli_schema(self):
         remote = self.base / "remote.git"

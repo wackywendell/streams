@@ -22,48 +22,80 @@ pub struct ReplayChange {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct ReplayConflict {
     pub operation: String,
-    #[serde(with = "conflict_target")]
-    pub target: RecordKey,
+    pub target: ConflictTarget,
     pub origin: Origin,
     pub fields: Vec<String>,
     pub reason: String,
 }
 
-// Conflict JSON historically includes host_id: null for non-session targets.
-mod conflict_target {
-    use super::*;
-    #[derive(Serialize, Deserialize)]
-    #[serde(deny_unknown_fields)]
-    struct Target {
-        kind: RecordKind,
-        id: String,
-        host_id: Option<String>,
+/// Conflict presentation includes physical routing without changing logical identity.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(try_from = "TargetData", into = "TargetData")]
+pub struct ConflictTarget {
+    key: RecordKey,
+    stream_id: Option<String>,
+}
+
+impl ConflictTarget {
+    pub fn from_record(record: &Record) -> Self {
+        Self {
+            key: record.key(),
+            stream_id: match record {
+                Record::Session(session) => Some(session.stream_id.clone()),
+                _ => None,
+            },
+        }
     }
 
-    pub(super) fn serialize<S: serde::Serializer>(
-        key: &RecordKey,
-        s: S,
-    ) -> Result<S::Ok, S::Error> {
-        Target {
-            kind: key.kind(),
-            id: key.id().into(),
-            host_id: key.host_id().map(str::to_owned),
-        }
-        .serialize(s)
+    pub fn key(&self) -> &RecordKey {
+        &self.key
     }
+}
 
-    pub(super) fn deserialize<'de, D: serde::Deserializer<'de>>(
-        d: D,
-    ) -> Result<RecordKey, D::Error> {
-        let Target { kind, id, host_id } = Target::deserialize(d)?;
-        match (kind, host_id) {
-            (RecordKind::Host, None) => Ok(RecordKey::Host { id }),
-            (RecordKind::Stream, None) => Ok(RecordKey::Stream { id }),
-            (RecordKind::Session, Some(host_id)) => Ok(RecordKey::Session { host_id, id }),
-            _ => Err(serde::de::Error::custom(
-                "host_id is required only for session conflict targets",
-            )),
+#[derive(Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct TargetData {
+    kind: RecordKind,
+    id: String,
+    host_id: Option<String>,
+    stream_id: Option<String>,
+}
+
+impl From<ConflictTarget> for TargetData {
+    fn from(target: ConflictTarget) -> Self {
+        Self {
+            kind: target.key.kind(),
+            id: target.key.id().into(),
+            host_id: target.key.host_id().map(str::to_owned),
+            stream_id: target.stream_id,
         }
+    }
+}
+
+impl TryFrom<TargetData> for ConflictTarget {
+    type Error = String;
+
+    fn try_from(data: TargetData) -> Result<Self, Self::Error> {
+        let key = match (data.kind, data.host_id, data.stream_id.as_deref()) {
+            (RecordKind::Host, None, None) => RecordKey::Host { id: data.id },
+            (RecordKind::Stream, None, None) => RecordKey::Stream { id: data.id },
+            (RecordKind::Session, Some(host_id), Some(stream_id)) => {
+                crate::model::check_text(&host_id, "session host id", false)
+                    .map_err(|e| e.to_string())?;
+                crate::model::check_text(stream_id, "session stream id", false)
+                    .map_err(|e| e.to_string())?;
+                RecordKey::Session {
+                    host_id,
+                    id: data.id,
+                }
+            }
+            _ => return Err("only session conflict targets require host_id and stream_id".into()),
+        };
+        crate::model::check_text(key.id(), "record id", false).map_err(|e| e.to_string())?;
+        Ok(Self {
+            key,
+            stream_id: data.stream_id,
+        })
     }
 }
 
@@ -122,7 +154,7 @@ pub fn replay(local: &History, remote: &History) -> Result<Replay, RepairRequire
         if result.outcome == DomainOutcome::Conflict {
             let conflict = ReplayConflict {
                 operation: operation.id.clone(),
-                target: operation.target(),
+                target: ConflictTarget::from_record(operation.after()),
                 origin: origin.clone(),
                 fields: result.conflicts,
                 reason: result.reason,

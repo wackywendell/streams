@@ -47,10 +47,12 @@ class RustContextDifferentialTest(unittest.TestCase):
             receipt = self.backend.save(Operation("create-" + identity, None, record, "user"))
             self.assertTrue(receipt.accepted)
         sessions = (
-            Session("local", HOST, "work", "pi", "local-native", "Local"),
-            Session("remote", "remote-host", "work", "pi", "remote-native", "Remote"),
+            Session(catalog_agent.session_id_for(HOST, "pi", "local-native"),
+                    HOST, "work", "pi", "local-native", "Local"),
+            Session(catalog_agent.session_id_for("remote-host", "pi", "remote-native"),
+                    "remote-host", "work", "pi", "remote-native", "Remote"),
         )
-        # Physical legacy records need not have been created by this process.
+        # Physical records need not have been created by this process.
         with self.store.transaction() as transaction:
             for session in sessions:
                 transaction.save(session, expected=transaction.read())

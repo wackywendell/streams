@@ -75,7 +75,6 @@ pub(super) fn stream(
                 None => documents.push(item),
             }
         }
-        changes.insert("documents".into(), serde_json::to_value(&documents)?);
     }
 
     links(
@@ -95,19 +94,41 @@ pub(super) fn stream(
         &input.remove_pr,
     )?;
 
-    for arguments in input.document_added_at.chunks_exact(3) {
-        let repository = &arguments[0];
-        let path = &arguments[1];
-        let item = documents
-            .iter_mut()
-            .find(|item| item.identity() == (repository.as_str(), path.as_str()))
-            .ok_or_else(|| {
-                CliError::message(format!(
-                    "no document matches repository/path: {repository}:{path}"
-                ))
-            })?;
-        item.added_at = Some(arguments[2].clone());
-        item.validate()?;
+    for (field, updates) in [
+        ("added_at", &input.document_added_at),
+        ("commit", &input.document_commit),
+        ("source_session_id", &input.document_session),
+    ] {
+        for arguments in updates.chunks_exact(3) {
+            let repository = &arguments[0];
+            let path = &arguments[1];
+            let item = documents
+                .iter_mut()
+                .find(|item| item.identity() == (repository.as_str(), path.as_str()))
+                .ok_or_else(|| {
+                    CliError::message(format!(
+                        "no document matches repository/path: {repository}:{path}"
+                    ))
+                })?;
+            let value = Some(arguments[2].clone());
+            match field {
+                "added_at" => item.added_at = value,
+                "commit" => item.commit = value,
+                _ => item.source_session_id = value,
+            }
+            item.validate()?;
+        }
+    }
+    if [
+        &input.add_document,
+        &input.remove_document,
+        &input.document_added_at,
+        &input.document_commit,
+        &input.document_session,
+    ]
+    .iter()
+    .any(|values| !values.is_empty())
+    {
         changes.insert("documents".into(), serde_json::to_value(&documents)?);
     }
     Ok(changes)
@@ -393,10 +414,26 @@ mod tests {
             "repo", "branch", "doc.md", "new", "repo", "branch", "doc.md", "new",
         ]);
         input.document_added_at = strings(&["repo", "doc.md", "first", "repo", "doc.md", "last"]);
+        input.document_commit = strings(&[
+            "repo",
+            "doc.md",
+            "first-sha",
+            "repo",
+            "doc.md",
+            "latest-sha",
+        ]);
+        input.document_session = strings(&[
+            "repo",
+            "doc.md",
+            "first-session",
+            "repo",
+            "doc.md",
+            "source-session",
+        ]);
         let changes = stream(&current, &input, &mut no_read).unwrap();
         assert_eq!(
             changes["documents"],
-            json!([{"repository": "repo", "ref": "branch", "path": "doc.md", "description": "new", "added_at": "last"}])
+            json!([{"repository": "repo", "ref": "branch", "path": "doc.md", "description": "new", "added_at": "last", "commit": "latest-sha", "source_session_id": "source-session"}])
         );
         assert_eq!(current.documents[0].added_at.as_deref(), Some("commit"));
     }
@@ -419,10 +456,51 @@ mod tests {
     }
 
     #[test]
+    fn new_provenance_requires_exact_existing_identity_and_valid_text() {
+        let mut current = current_stream();
+        current
+            .documents
+            .push(Document::new("repo", "main", "doc", "", None).unwrap());
+        for field in ["commit", "source_session_id"] {
+            for (repository, path, value, valid) in [
+                ("repo", "doc", "known", true),
+                ("other", "doc", "known", false),
+                ("repo", "other", "known", false),
+                ("repo", "doc", "", false),
+                ("repo", "doc", " \n", false),
+                ("repo", "doc", "bad\u{0}text", false),
+            ] {
+                let mut input = StreamFields::default();
+                let updates = strings(&[repository, path, value]);
+                if field == "commit" {
+                    input.document_commit = updates;
+                } else {
+                    input.document_session = updates;
+                }
+                let result = stream(&current, &input, &mut no_read);
+                assert_eq!(
+                    result.is_ok(),
+                    valid,
+                    "{field}: {repository}:{path} {value:?}"
+                );
+                if valid {
+                    let changes = result.unwrap();
+                    assert_eq!(changes["documents"][0][field], "known");
+                    assert_eq!(changes["documents"][0]["ref"], "main");
+                }
+                assert_eq!(current.documents[0].commit, None);
+                assert_eq!(current.documents[0].source_session_id, None);
+            }
+        }
+    }
+
+    #[test]
     fn unchanged_provenance_survives_other_document_changes() {
         let mut current = current_stream();
-        let original =
+        let mut original =
             Document::new("repo", "main", "original", "keep", Some("commit".into())).unwrap();
+        original.commit = Some("latest-sha".into());
+        original.source_session_id = Some("source-session".into());
         current.documents.push(original.clone());
         let input = StreamFields {
             add_document: strings(&["repo", "other", "new", "added"]),

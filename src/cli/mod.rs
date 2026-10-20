@@ -655,7 +655,7 @@ impl App {
                     }
                 };
                 let mut session = Session::new(
-                    Uuid::new_v4().to_string(),
+                    agent::session_id_for(opened.host().as_str(), harness, &session_id),
                     opened.host().as_str(),
                     &stream.id,
                     harness.to_string(),

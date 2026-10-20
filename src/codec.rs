@@ -9,6 +9,22 @@ use serde_json::{Map, Value};
 
 use crate::model::{Host, Record, RecordKind, Session, Stream, ValidationError};
 
+/// Encode the exact Python json.dumps string spelling used in persisted identity hashes.
+pub(crate) fn ascii_json(value: &str) -> String {
+    let encoded = serde_json::to_string(value).expect("string serialization");
+    let mut result = String::new();
+    for ch in encoded.chars() {
+        if ch >= '\u{7f}' {
+            for unit in ch.encode_utf16(&mut [0; 2]) {
+                result.push_str(&format!("\\u{unit:04x}"));
+            }
+        } else {
+            result.push(ch);
+        }
+    }
+    result
+}
+
 pub fn object_fields(
     value: &Value,
     allowed: &[&str],

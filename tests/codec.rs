@@ -1,7 +1,7 @@
 use serde_json::{Value, json};
 use streams_temper::{
     codec::{record_from_data, record_to_data},
-    model::RecordKind,
+    model::{Document, RecordKind},
 };
 
 fn stream() -> Value {
@@ -152,21 +152,47 @@ fn nested_descriptions_default_and_document_provenance_is_omitted_only_when_none
             "{field}"
         );
     }
-    assert!(encoded["documents"][0].get("added_at").is_none());
-    data["documents"][0]["added_at"] = Value::Null;
-    assert!(
-        roundtrip(RecordKind::Stream, &data)["documents"][0]
-            .get("added_at")
-            .is_none()
-    );
-    data["documents"][0]["added_at"] = json!("commit");
-    assert_eq!(
-        roundtrip(RecordKind::Stream, &data)["documents"][0]["added_at"],
-        "commit"
-    );
+    for field in ["added_at", "commit", "source_session_id"] {
+        assert!(encoded["documents"][0].get(field).is_none());
+        data["documents"][0][field] = Value::Null;
+        assert!(
+            roundtrip(RecordKind::Stream, &data)["documents"][0]
+                .get(field)
+                .is_none()
+        );
+        data["documents"][0][field] = json!("provenance");
+        assert_eq!(
+            roundtrip(RecordKind::Stream, &data)["documents"][0][field],
+            "provenance"
+        );
+        for invalid in [json!(""), json!(" \n"), json!("bad\u{0}text"), json!(42)] {
+            let mut invalid_data = data.clone();
+            invalid_data["documents"][0][field] = invalid;
+            assert!(
+                record_from_data(RecordKind::Stream, &invalid_data).is_err(),
+                "{field}"
+            );
+        }
+    }
     let json = serde_json::to_string(&encoded).unwrap();
     assert!(json.contains("Café"));
     assert!(json.starts_with("{\"archived\":"));
+}
+
+#[test]
+fn document_effective_commit_prefers_commit_without_changing_identity() {
+    let mut document = Document::new("repo", "main", "doc", "", None).unwrap();
+    assert_eq!(document.commit, None);
+    assert_eq!(document.source_session_id, None);
+    assert_eq!(document.effective_commit(), None);
+    document.added_at = Some("legacy".into());
+    assert_eq!(document.effective_commit(), Some("legacy"));
+    document.commit = Some("latest".into());
+    document.source_session_id = Some("session".into());
+    assert_eq!(document.effective_commit(), Some("latest"));
+    assert_eq!(document.identity(), ("repo", "doc"));
+    document.added_at = None;
+    assert_eq!(document.effective_commit(), Some("latest"));
 }
 
 #[test]

@@ -208,7 +208,7 @@ fn read_history_inner(git: &Git, tip: Option<&str>) -> Result<History, String> {
                 .filter(|k| files.get(*k) != history.files.get(*k))
                 .cloned()
                 .collect();
-            let expected_path = relative_record_path(&operation.target())
+            let expected_path = relative_record_path(&operation.after)
                 .to_string_lossy()
                 .replace('\\', "/");
             let mut expected_set = BTreeSet::new();

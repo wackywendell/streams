@@ -1,7 +1,7 @@
 //! Local agent capture and validated intent, never inferred enrollment or a refreshed base.
 
 mod context;
-pub use context::{AgentContext, ContextError, ContextRequest, context};
+pub use context::{AgentContext, ContextError, ContextRequest, context, session_id_for};
 
 use serde::Deserialize;
 use serde_json::{Map, Value};

@@ -490,7 +490,11 @@ fn session_references_and_candidates_keep_the_host_qualified_identity() {
     let mut foreign = local.clone();
     foreign["host_id"] = json!(foreign_host);
     foreign["harness_session_id"] = json!("foreign-native");
-    let directory = f.root().join("sessions").join(foreign_host);
+    let directory = f
+        .root()
+        .join("sessions")
+        .join(stream["id"].as_str().unwrap())
+        .join(foreign_host);
     fs::create_dir_all(&directory).unwrap();
     fs::write(
         directory.join(format!("{id}.yaml")),

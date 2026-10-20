@@ -177,7 +177,7 @@ fn baseline_canonical_roundtrip_and_creation_evidence() {
             Ok(())
         })
         .unwrap();
-    let path = store.record_path(&operation.target());
+    let path = store.record_path(operation.after());
     let files = BTreeMap::from([(
         path.to_string_lossy().into_owned(),
         std::fs::read(dir.path().join(path)).unwrap(),

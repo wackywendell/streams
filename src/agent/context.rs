@@ -40,6 +40,17 @@ pub struct AgentContext {
     pub authority: Option<Authority>,
 }
 
+/// Stable catalog identity for one host/harness/native conversation, matching Python.
+pub fn session_id_for(host_id: &str, harness: Harness, native_id: &str) -> String {
+    let identity = format!(
+        "streams:session:[{}, {}, {}]",
+        crate::codec::ascii_json(host_id),
+        crate::codec::ascii_json(harness.as_ref()),
+        crate::codec::ascii_json(native_id),
+    );
+    uuid::Uuid::new_v5(&uuid::Uuid::NAMESPACE_URL, identity.as_bytes()).to_string()
+}
+
 /// Resolve only exact native/catalog identities. Conflicting sources fail closed.
 /// The caller supplies the physical source fingerprint; live Pi lineage remains
 /// an in-process extension guard, not something this snapshot can establish.

@@ -350,6 +350,31 @@ fn stale_completion_failure_and_scope_switch_never_authorize_actions() {
 }
 
 #[test]
+fn document_revision_label_prefers_commit_and_preserves_legacy_fallback() {
+    let mut snapshot = snapshot();
+    let path = snapshot.stream.documents[0].path.clone();
+    snapshot.stream.documents[0].added_at = Some("legacy-123456".into());
+    for commit in [None, Some("current-123456")] {
+        snapshot.stream.documents[0].commit = commit.map(str::to_owned);
+        let rendered = super::render::render(Some(&snapshot), Rect::new(0, 0, 160, 30), None);
+        let expected = if commit.is_some() {
+            "current-"
+        } else {
+            "legacy-1"
+        };
+        assert!(
+            lines(&rendered.buffer)
+                .iter()
+                .any(|line| { line.contains(&format!("{path} (added {expected})")) })
+        );
+        assert_eq!(
+            rendered.documents[&'a'].document,
+            snapshot.stream.documents[0]
+        );
+    }
+}
+
+#[test]
 fn every_repaint_geometry_notice_and_target_change_invalidates_old_actions() {
     let mut view = view(snapshot());
     let action = view.paint(Rect::new(0, 0, 100, 12)).documents[&'a'].clone();
@@ -362,13 +387,27 @@ fn every_repaint_geometry_notice_and_target_change_invalidates_old_actions() {
     view.paint(Rect::new(0, 0, 100, 12));
     assert!(!view.is_current(&action));
     for field in [
-        "ref", "added", "url", "root", "file", "error", "order", "removed", "progress",
+        "ref",
+        "added",
+        "commit",
+        "source-session",
+        "url",
+        "root",
+        "file",
+        "error",
+        "order",
+        "removed",
+        "progress",
     ] {
         let mut changed = snapshot();
         let action = view.paint(Rect::new(0, 0, 100, 12)).documents[&'a'].clone();
         match field {
             "ref" => changed.stream.documents[0].r#ref = "other".into(),
             "added" => changed.stream.documents[0].added_at = Some("new-commit".into()),
+            "commit" => changed.stream.documents[0].commit = Some("latest-commit".into()),
+            "source-session" => {
+                changed.stream.documents[0].source_session_id = Some("source".into())
+            }
             "url" => {
                 changed.stream.repositories.get_mut("lib").unwrap().url =
                     "https://example.com/other".into()
@@ -447,6 +486,8 @@ fn editor_identity_preserves_viewing_file_and_checkout_lifetime_not_recovery_rev
     assert_eq!(identity.file, PathBuf::from("/code/library/docs/design.md"));
     target.document.r#ref = "recovery-branch".into();
     target.document.added_at = Some("a1".into());
+    target.document.commit = Some("b2".into());
+    target.document.source_session_id = Some("source".into());
     assert_eq!(identity, target.editor_identity().unwrap());
     if let ResolvedDocument::File { selection, .. } = &mut target.location {
         selection.checkout_id = "replacement-lifetime".into();

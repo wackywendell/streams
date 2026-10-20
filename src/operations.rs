@@ -561,7 +561,17 @@ pub fn reconcile(
                 if cur == after {
                     return Reconciliation::no_change(&operation.id, "");
                 }
-                if cur != before {
+                let inputs_changed = match (before, cur) {
+                    (Record::Stream(before), Record::Stream(current)) => {
+                        before.title != current.title
+                            || before.title_mode != current.title_mode
+                            || before.goal != current.goal
+                            || before.goal_short != current.goal_short
+                            || before.goal_mode != current.goal_mode
+                    }
+                    _ => cur != before,
+                };
+                if inputs_changed {
                     return refuse("generated description inputs changed", &["inputs"], true);
                 }
             }
