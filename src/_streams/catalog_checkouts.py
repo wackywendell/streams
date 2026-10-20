@@ -398,16 +398,74 @@ class CheckoutRegistry:
 
     def revision_document(self, checkout_id: str, path: str, revision: str, *, cache_dir: Path) -> dict:
         checkout = self.get(checkout_id)
-        _relative(path, allow_root=False)
+        relative = _relative(path, allow_root=False)
         _text(revision, "revision")
-        if revision.startswith("-"):
+        rev = revision.strip()
+        if rev.startswith("-"):
             raise StreamError("revision must not start with a dash")
-        extracted = extract_document_revision(checkout, path, commit=revision, cache_dir=cache_dir)
-        if extracted is None:
-            raise StreamError(f"document revision is unavailable: {path} at {revision}")
-        file, _ = extracted
-        root = file.parents[len(Path(path).parts) - 1]
-        return {"checkout_id": checkout.id, "root": str(root), "file": str(file), "revision": revision}
+        unavailable = StreamError(f"document revision is unavailable: {path} at {revision}")
+        root = Path(checkout.directory)
+        has_jj = (root / ".jj").is_dir()
+        is_immutable_hex = len(rev) >= 12 and all(ch in "0123456789abcdefABCDEF" for ch in rev)
+        resolved = rev
+        if not is_immutable_hex:
+            if has_jj:
+                try:
+                    cid = _run(["jj", "--ignore-working-copy", "--at-operation=@", "log", "--no-graph", "-r", rev, "-T", "commit_id ++ \"\\n\""], root).splitlines()
+                    if cid and cid[0].strip():
+                        resolved = cid[0].strip()
+                except StreamError:
+                    pass
+            if resolved == rev:
+                try:
+                    cid = _run(["git", "rev-parse", "--verify", f"{rev}^{{commit}}"], root).strip()
+                    if cid:
+                        resolved = cid
+                except StreamError:
+                    pass
+        rev_key = resolved[:12] if (len(resolved) >= 12 and all(ch in "0123456789abcdefABCDEF" for ch in resolved)) else hashlib.sha256(resolved.encode("utf-8")).hexdigest()[:12]
+        cache_root = cache_dir.resolve()
+        revision_root = cache_root / checkout.id / rev_key
+        dest = revision_root / relative
+        # A cache entry must not redirect extraction or reads through symlinks.
+        if (not revision_root.resolve().is_relative_to(cache_root)
+                or dest.resolve() != dest or not dest.is_relative_to(revision_root)):
+            raise unavailable
+        missing = dest.parent / f".{dest.name}.missing"
+        if missing.is_symlink():
+            raise unavailable
+        target = {"checkout_id": checkout.id, "root": str(revision_root),
+                  "file": str(dest), "revision": revision}
+        if is_immutable_hex or resolved != rev:
+            if dest.is_file():
+                return target
+            if missing.is_file():
+                raise unavailable
+        content: str | None = None
+        if has_jj:
+            try:
+                content = _run(["jj", "--ignore-working-copy", "--at-operation=@", "file", "show", "-r", resolved, relative], root) + "\n"
+            except StreamError:
+                content = None
+        if content is None:
+            try:
+                content = _run(["git", "show", f"{resolved}:{relative}"], root) + "\n"
+            except StreamError:
+                content = None
+        if content is not None:
+            try:
+                dest.parent.mkdir(mode=0o700, parents=True, exist_ok=True)
+                dest.write_text(content, encoding="utf-8")
+                return target
+            except OSError:
+                raise unavailable
+        elif is_immutable_hex or resolved != rev:
+            try:
+                missing.parent.mkdir(mode=0o700, parents=True, exist_ok=True)
+                missing.write_text("", encoding="utf-8")
+            except OSError:
+                pass
+        raise unavailable
 
     def document(self, repository_url: str, path: str, *, selected_checkout_id: str | None = None,
                  selected_repository_url: str | None = None) -> tuple[CheckoutLocation, Path]:
@@ -453,88 +511,5 @@ def infer_checkout_repository_urls(directory: Path, checkouts: CheckoutRegistry)
         except StreamError:
             pass
     return tuple(urls)
-
-
-def extract_document_revision(
-    checkout: CheckoutLocation,
-    path: str,
-    *,
-    ref: str | None = None,
-    commit: str | None = None,
-    cache_dir: Path,
-) -> tuple[Path, str] | None:
-    """Materialize a file from VCS at commit or ref into cache_dir, returning (file_path, rev_label)."""
-    try:
-        relative = _relative(path, allow_root=False)
-        root = Path(checkout.directory)
-        if not root.is_dir():
-            return None
-    except (OSError, StreamError):
-        return None
-    raw_candidates = (commit,) if (isinstance(commit, str) and commit.strip()) else (ref,)
-    candidates = [rev.strip() for rev in raw_candidates if isinstance(rev, str) and rev.strip() and not rev.strip().startswith("-")]
-    if not candidates:
-        return None
-    has_jj = (root / ".jj").is_dir()
-    for rev in candidates:
-        is_immutable_hex = len(rev) >= 12 and all(ch in "0123456789abcdefABCDEF" for ch in rev)
-        resolved = rev
-        if not is_immutable_hex:
-            if has_jj:
-                try:
-                    cid = _run(["jj", "--ignore-working-copy", "--at-operation=@", "log", "--no-graph", "-r", rev, "-T", "commit_id ++ \"\\n\""], root).splitlines()
-                    if cid and cid[0].strip():
-                        resolved = cid[0].strip()
-                except StreamError:
-                    pass
-            if resolved == rev:
-                try:
-                    cid = _run(["git", "rev-parse", "--verify", f"{rev}^{{commit}}"], root).strip()
-                    if cid:
-                        resolved = cid
-                except StreamError:
-                    pass
-        rev_key = resolved[:12] if (len(resolved) >= 12 and all(ch in "0123456789abcdefABCDEF" for ch in resolved)) else hashlib.sha256(resolved.encode("utf-8")).hexdigest()[:12]
-        rev_label = rev[:8] if len(rev) >= 8 else rev
-        cache_root = cache_dir.resolve()
-        revision_root = cache_root / checkout.id / rev_key
-        dest = revision_root / relative
-        # A cache entry must not redirect extraction or reads through symlinks.
-        if (not revision_root.resolve().is_relative_to(cache_root)
-                or dest.resolve() != dest or not dest.is_relative_to(revision_root)):
-            return None
-        missing = dest.parent / f".{dest.name}.missing"
-        if missing.is_symlink():
-            return None
-        if is_immutable_hex or resolved != rev:
-            if dest.is_file():
-                return dest, rev_label
-            if missing.is_file():
-                continue
-        content: str | None = None
-        if has_jj:
-            try:
-                content = _run(["jj", "--ignore-working-copy", "--at-operation=@", "file", "show", "-r", rev, relative], root) + "\n"
-            except StreamError:
-                content = None
-        if content is None:
-            try:
-                content = _run(["git", "show", f"{rev}:{relative}"], root) + "\n"
-            except StreamError:
-                content = None
-        if content is not None:
-            try:
-                dest.parent.mkdir(mode=0o700, parents=True, exist_ok=True)
-                dest.write_text(content, encoding="utf-8")
-                return dest, rev_label
-            except OSError:
-                return None
-        elif is_immutable_hex or resolved != rev:
-            try:
-                missing.parent.mkdir(mode=0o700, parents=True, exist_ok=True)
-                missing.write_text("", encoding="utf-8")
-            except OSError:
-                pass
-    return None
 
 

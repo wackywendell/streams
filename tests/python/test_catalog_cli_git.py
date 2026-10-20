@@ -10,6 +10,7 @@ from unittest.mock import patch
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "src"))
 import _streams.cli as cli_module
+from _streams.catalog.sync import Result
 import test_catalog_cli as fixtures
 
 
@@ -140,7 +141,7 @@ class GitCliTest(unittest.TestCase):
     def test_local_success_is_not_reported_as_failed_when_publication_fails(self):
         self.setup_git()
         backend = cli_module.config.open_catalog()
-        with patch("_streams.cli.config.open_catalog", return_value=backend), patch.object(backend, "sync", return_value=cli_module.Result("failed", detail="offline")):
+        with patch("_streams.cli.config.open_catalog", return_value=backend), patch.object(backend, "sync", return_value=Result("failed", detail="offline")):
             code, out, err = self.cli("create", "Offline edit", "--json")
         self.assertEqual((code, err), (0, ""))
         receipt = json.loads(out)

@@ -16,7 +16,7 @@ from .agent_sessions import Agent, AgentSessionCommand
 from .catalog.model import Catalog, Session, Stream
 from .catalog.operations import Authority
 from .catalog_checkouts import CheckoutRegistry
-from .catalog_locations import DirectoryBindings
+from .catalog_locations import DirectoryBinding, DirectoryBindings
 from . import catalog_arrangement as arrangement
 from .catalog_conversations import conversation_file, native_identity
 from .cmux import CmuxClient
@@ -143,20 +143,20 @@ class Runtime:
         issues = []
         for path in sorted((self.state_dir / "attempts").glob("*/*.json")):
             try:
-                raw = json.loads(path.read_text())
-            except (OSError, ValueError) as exc:
+                raw = self._attempt(path)
+            except StreamError as exc:
                 issues.append({
                     "kind": "invalid-open-attempt",
                     "path": str(path),
-                    "message": f"invalid open attempt at {path}: {exc}",
+                    "message": str(exc),
                 })
                 continue
-            stream_id = raw.get("stream_id") if isinstance(raw, dict) else None
+            stream_id = raw["stream_id"]
             if target_stream_ids is None or stream_id in target_stream_ids:
                 issues.append({
                     "kind": "pending-open-attempt",
                     "stream_id": stream_id,
-                    "workspace_id": raw.get("workspace_id") if isinstance(raw, dict) else None,
+                    "workspace_id": raw["workspace_id"],
                     "path": str(path),
                     "message": f"pending or partial open attempt at {path} blocks workspace open and lock acquisition",
                 })
@@ -271,19 +271,23 @@ class Runtime:
                     raise StreamError(f'known workspace association or enrollment claim in another scope at {path}; '
                                       'cannot verify native state; inspect runtime state before retrying')
         for path in (self.state_dir / 'attempts').glob('*/*.json'):
-            try:
-                attempt = self._read(path, {'stream_id', 'session_id', 'command', 'cwd', 'workspace_id', 'effects', 'launches'})
-            except StreamError as exc:
-                raise StreamError(f'invalid open attempt at {path}: {exc}') from exc
-            if (attempt is None or not _text(attempt['stream_id']) or not _text(attempt['cwd'])
-                    or path.name != _key(attempt['stream_id']) + '.json'
-                    or any(attempt[key] is not None and not _text(attempt[key])
-                           for key in ('session_id', 'command', 'workspace_id'))
-                    or (attempt['session_id'] is None) != (attempt['command'] is None)
-                    or not isinstance(attempt['effects'], list) or not isinstance(attempt['launches'], list)):
-                raise StreamError(f'invalid open attempt identity at {path}')
+            attempt = self._attempt(path)
             if attempt['stream_id'] == stream_id:
                 raise StreamError(f'pending or partial open at {path}; inspect native state before retrying; no automatic relaunch')
+
+    def _attempt(self, path: Path) -> dict:
+        try:
+            attempt = self._read(path, {'stream_id', 'session_id', 'command', 'cwd', 'workspace_id', 'effects', 'launches'})
+        except StreamError as exc:
+            raise StreamError(f'invalid open attempt at {path}: {exc}') from exc
+        if (attempt is None or not _text(attempt['stream_id']) or not _text(attempt['cwd'])
+                or path.name != _key(attempt['stream_id']) + '.json'
+                or any(attempt[key] is not None and not _text(attempt[key])
+                       for key in ('session_id', 'command', 'workspace_id'))
+                or (attempt['session_id'] is None) != (attempt['command'] is None)
+                or not isinstance(attempt['effects'], list) or not isinstance(attempt['launches'], list)):
+            raise StreamError(f'invalid open attempt identity at {path}')
+        return attempt
 
     @contextmanager
     def _enrollment_lock(self, path: Path):
@@ -301,9 +305,9 @@ class Runtime:
                 os.close(descriptor)
 
     def remember_directory(self, stream_id: str, cwd: Path, *, session_id: str | None = None, if_missing: bool = False,
-                           repository_url: str | None = None, checkout_id: str | None = None) -> None:
-        self.locations.remember(stream_id, cwd, session_id=session_id, if_missing=if_missing,
-                                repository_url=repository_url, checkout_id=checkout_id)
+                           repository_url: str | None = None, checkout_id: str | None = None) -> DirectoryBinding:
+        return self.locations.remember(stream_id, cwd, session_id=session_id, if_missing=if_missing,
+                                       repository_url=repository_url, checkout_id=checkout_id)
 
     def _cwd(self, stream: Stream, session: Session | None, cwd: Path | None) -> Path:
         if cwd is not None:

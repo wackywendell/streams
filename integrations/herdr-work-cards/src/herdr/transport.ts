@@ -2,10 +2,10 @@ import { runProcess } from './subprocess.js';
 import { isAbsolute } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import type { WorkCardsConfig } from '../config.js';
-import { nativeId as id, nativeObject as object, nativePane as parsePane, nativeTokens as tokens, type Pane } from './workspace-ownership.js';
+import { nativeId as id, nativeObject as object, nativePane as parsePane, type Pane } from './workspace-ownership.js';
 export type Run = (argv: string[], timeoutMs: number, signal?: AbortSignal) => Promise<string>;
 export interface ClientOptions { env?: NodeJS.ProcessEnv; run?: Run; pluginRoot?: string }
-export { id, object, parsePane, tokens };
+export { object };
 
 export class HerdrTransport {
   readonly env: NodeJS.ProcessEnv;
@@ -29,9 +29,7 @@ export class HerdrTransport {
     if (this.env.HERDR_ENV !== '1' || !this.env.HERDR_PANE_ID || !this.env.HERDR_SOCKET_PATH) {
       throw new Error('Not in a Herdr-managed pane. Run explicit work-card open inside Herdr; GUI focus is never used.');
     }
-    const p = parsePane((await this.result(['pane', 'current', '--current'], config, 'pane_current', signal)).pane);
-    delete p.label;
-    return p;
+    return parsePane((await this.result(['pane', 'current', '--current'], config, 'pane_current', signal)).pane);
   }
   protected async socket(config: WorkCardsConfig, signal?: AbortSignal): Promise<string> {
     const response = object(JSON.parse(await this.run(['status', '--json'], config.herdr_timeout_ms, signal)), 'status');

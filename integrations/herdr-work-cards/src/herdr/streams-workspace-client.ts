@@ -166,10 +166,12 @@ export class StreamsWorkspaceClient extends HerdrTransport {
     await verify(); check((await this.result(['plugin', 'link', manifest], config, 'plugin_linked', signal)).plugin);
     return true;
   }
-  private async recoverHalfStamped(source: Source, context: StreamsNativeContext, config: WorkCardsConfig, signal?: AbortSignal): Promise<PairState | null> {
-    const saved = await source.read(signal), snapshot = await this.snapshot(config, signal);
+  private async recoverHalfStamped(source: Source, context: StreamsNativeContext, config: WorkCardsConfig, signal?: AbortSignal, verified?: Verified): Promise<PairState | null> {
+    const saved = verified?.saved ?? await source.read(signal), snapshot = verified?.snapshot ?? await this.snapshot(config, signal);
     const owner = snapshot.panes.find(p => p.pane_id === saved.native.pane_id);
-    if (!owner || pairKeys.some(k => Object.hasOwn(owner.tokens, k))) return null;
+    if (!owner || owner.terminal_id !== context.terminalId || pairKeys.some(k => Object.hasOwn(owner.tokens, k))) return null;
+    const captured = this.owners.get(context);
+    if (captured && (!sameStreamsScope(captured.scope, saved.scope) || !isDeepStrictEqual(captured.tuple, tuple(owner)))) throw new Error('Attested owner tuple or scope changed');
     const identity = streamsDigest(saved.scope), key = streamsDigest([context.socket, saved.scope, tuple(owner)]);
     const state = this.state(context), attempt = await state.read(key);
     if (!attempt || attempt.phase !== 'pending' || !attempt.paneId || !attempt.terminalId || !attempt.tabId) return null;
@@ -206,14 +208,22 @@ export class StreamsWorkspaceClient extends HerdrTransport {
       }
     }
     return withWorkspaceLock(context.socket, context.workspaceId, async () => {
-      const recovered = await this.recoverHalfStamped(source, context, config, signal);
-      if (recovered) return recovered;
-      let v = await this.guard(source, context, config, signal);
+      let checked: Verified | undefined;
+      try { checked = await this.guard(source, context, config, signal); }
+      catch (error) { if (!(error instanceof Error) || error.message !== 'Conflicting duplicate live owners') throw error; }
+      if (!checked || checked.pair.kind === 'empty') {
+        const recovered = await this.recoverHalfStamped(source, context, config, signal, checked);
+        if (recovered) return recovered;
+      }
+      let v = checked ?? await this.guard(source, context, config, signal);
       if (v.caller.terminal_id !== v.owner.terminal_id) throw new Error('Only the attested Pi owner may open a display');
       const state = this.state(context), attempt = await this.evidence(v, context);
       if (v.pair.kind === 'paired') { this.bound(v, context); await state.write(attempt!); return v.pair; }
       if (v.pair.kind === 'separated') throw new Error('Owned card moved; no resource was closed or replaced');
-      if (mode === 'automatic' && (attempt || v.pair.kind === 'absent')) return { kind: 'suppressed' };
+      if (mode === 'automatic' && (attempt || v.pair.kind === 'absent')) {
+        if (attempt) await state.write(attempt);
+        return { kind: 'suppressed' };
+      }
       if (v.pair.kind === 'empty' && pairKeys.some(k => Object.hasOwn(v.owner.tokens, k))) throw new Error('Incomplete Streams owner markers');
       const linked = await this.ensureStreamsPlugin(config, () => this.guard(source, context, config, signal), signal);
       if (linked) v = await this.guard(source, context, config, signal);
@@ -275,11 +285,12 @@ export class StreamsWorkspaceClient extends HerdrTransport {
     const verify = async () => {
       signal?.throwIfAborted();
       const saved = await source.read(signal), captured = this.owners.get(context);
-      const current = await this.current(config, signal), snapshot = await this.snapshot(config, signal);
+      const snapshot = await this.snapshot(config, signal), caller = locateTerminal(snapshot, context.terminalId);
       const owner = snapshot.panes.find(p => p.pane_id === saved.native.pane_id);
       if (!captured || !owner || !sameStreamsScope(captured.scope, saved.scope) || !isDeepStrictEqual(captured.tuple, tuple(owner))
         || saved.native.tab_id !== owner.tab_id || saved.native.workspace_id !== owner.workspace_id
-        || !isDeepStrictEqual(tuple(current), contextTuple(context)) || await this.socket(config, signal) !== context.socket) throw new Error('Reserved owner or caller tuple changed');
+        || !isDeepStrictEqual(tuple(caller), contextTuple(context)) || caller.pane_id !== this.env.HERDR_PANE_ID
+        || await this.socket(config, signal) !== context.socket) throw new Error('Reserved owner or caller tuple changed');
       const key = streamsDigest([context.socket, saved.scope, tuple(owner)]), pending = await this.state(context).read(key);
       if (!pending || pending.phase !== 'pending' || pending.nonce !== values.strm_nonce || values.strm_agent !== streamsDigest(saved.scope)
         || values.strm_native !== saved.scope.nativeSessionId || values.strm_pi !== owner.terminal_id || values.strm_card !== pending.terminalId) throw new Error('Reserved pair identity or durable evidence changed');

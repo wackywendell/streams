@@ -158,6 +158,105 @@ class CheckoutRegistryTest(unittest.TestCase):
         (self.root / "doc.md").write_text("edited again")
         self.assertEqual(self.registry.document("repo", "doc.md", **kwargs)[1].read_text(), "edited again")
 
+    def test_revision_document_returns_nested_cache_root_and_reuses_immutable_content(self):
+        checkout = self.registry.register(self.root)
+        cache = self.home / "revisions"
+        revision = "a" * 40
+        expected_root = cache / checkout.id / revision[:12]
+        with patch("_streams.catalog_checkouts._run", return_value="historical") as run:
+            target = self.registry.revision_document(checkout.id, "docs/deep/design.md", revision, cache_dir=cache)
+            self.assertEqual(target, {"checkout_id": checkout.id, "root": str(expected_root),
+                                      "file": str(expected_root / "docs/deep/design.md"), "revision": revision})
+            self.assertEqual(Path(target["file"]).read_text(), "historical\n")
+            self.assertEqual(self.registry.revision_document(checkout.id, "docs/deep/design.md", revision,
+                                                            cache_dir=cache), target)
+            run.assert_called_once_with(["git", "show", f"{revision}:docs/deep/design.md"], self.root)
+            self.root.rename(self.home / "moved")
+            with self.assertRaises(StreamError):
+                self.registry.revision_document(checkout.id, "docs/deep/design.md", revision, cache_dir=cache)
+            self.assertEqual(run.call_count, 1)
+
+    def test_revision_document_resolves_existing_refs_and_keeps_revision_label(self):
+        checkout = self.registry.register(self.root)
+        revision = "feature/design"
+        cache = self.home / "revisions"
+        for commit in ("a" * 40, "b" * 40):
+            with self.subTest(commit=commit), patch("_streams.catalog_checkouts._run",
+                                                   side_effect=[commit, "historical"]) as run:
+                target = self.registry.revision_document(checkout.id, "doc.md", revision, cache_dir=cache)
+                self.assertEqual(target["root"], str(cache / checkout.id / commit[:12]))
+                self.assertEqual(target["revision"], revision)
+                self.assertEqual(run.call_args_list[0].args,
+                                 (["git", "rev-parse", "--verify", f"{revision}^{{commit}}"], self.root))
+                self.assertEqual(run.call_args_list[1].args,
+                                 (["git", "show", f"{commit}:doc.md"], self.root))
+        with patch("_streams.catalog_checkouts._run", return_value="b" * 40) as run:
+            self.registry.revision_document(checkout.id, "doc.md", revision, cache_dir=cache)
+            self.assertEqual(run.call_count, 1)
+
+    def test_revision_document_negative_cache_only_for_immutable_or_resolved_revision(self):
+        checkout = self.registry.register(self.root)
+        cache = self.home / "revisions"
+        for revision, resolved in (("a" * 40, None), ("feature", "b" * 40), ("unknown", None)):
+            def unavailable(args, cwd):
+                if args[1] == "rev-parse" and resolved is not None:
+                    return resolved
+                raise StreamError("unavailable")
+            with self.subTest(revision=revision), patch("_streams.catalog_checkouts._run",
+                                                       side_effect=unavailable) as run:
+                for _ in range(2):
+                    with self.assertRaisesRegex(StreamError, "document revision is unavailable"):
+                        self.registry.revision_document(checkout.id, "docs/missing.md", revision, cache_dir=cache)
+                self.assertEqual(run.call_count, 1 if revision == "a" * 40 else 3 if resolved else 4)
+        self.assertEqual(len(list(cache.rglob("*.missing"))), 2)
+
+    def test_revision_document_rejects_unsafe_paths_and_revisions_before_vcs(self):
+        checkout = self.registry.register(self.root)
+        cache = self.home / "revisions"
+        with patch("_streams.catalog_checkouts._run", side_effect=AssertionError("must not invoke VCS")):
+            for path in ("../escape", "/absolute", "docs/../doc.md", "docs\\doc.md", "."):
+                with self.subTest(path=path), self.assertRaises(StreamError):
+                    self.registry.revision_document(checkout.id, path, "a" * 40, cache_dir=cache)
+            for revision in ("", " ", "-option", " -option", "bad\nrevision", None):
+                with self.subTest(revision=revision), self.assertRaises(StreamError):
+                    self.registry.revision_document(checkout.id, "doc.md", revision, cache_dir=cache)
+        self.assertFalse(cache.exists())
+
+    def test_revision_document_rejects_symlinked_cache_entries(self):
+        checkout = self.registry.register(self.root)
+        revision = "a" * 40
+        outside = self.home / "outside"
+        outside.mkdir()
+        (outside / "doc.md").write_text("outside")
+        for entry in ("root", "directory", "file", "missing"):
+            cache = self.home / f"cache-{entry}"
+            root = cache / checkout.id / revision[:12]
+            root.parent.mkdir(parents=True)
+            if entry == "root":
+                root.symlink_to(outside, target_is_directory=True)
+            else:
+                root.mkdir()
+                if entry == "directory":
+                    (root / "docs").symlink_to(outside, target_is_directory=True)
+                else:
+                    (root / "docs").mkdir()
+                    name = "doc.md" if entry == "file" else ".doc.md.missing"
+                    (root / "docs" / name).symlink_to(outside / "doc.md")
+            with self.subTest(entry=entry), patch("_streams.catalog_checkouts._run",
+                                                  side_effect=AssertionError("must not invoke VCS")):
+                with self.assertRaises(StreamError):
+                    self.registry.revision_document(checkout.id, "docs/doc.md", revision, cache_dir=cache)
+        self.assertEqual((outside / "doc.md").read_text(), "outside")
+
+    def test_revision_document_extraction_has_subprocess_timeout(self):
+        checkout = self.registry.register(self.root)
+        with patch("_streams.catalog_checkouts.subprocess.run",
+                   side_effect=subprocess.TimeoutExpired("git", 15)) as run:
+            with self.assertRaisesRegex(StreamError, "document revision is unavailable"):
+                self.registry.revision_document(checkout.id, "doc.md", "a" * 40,
+                                                cache_dir=self.home / "revisions")
+            self.assertEqual(run.call_args.kwargs["timeout"], 15)
+
     def test_cwd_subdir_and_nested_repositories(self):
         subdir = self.root / "src/deep"
         subdir.mkdir(parents=True)

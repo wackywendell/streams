@@ -5,6 +5,7 @@ import json
 import os
 from pathlib import Path
 import shutil
+import subprocess
 import sys
 import tempfile
 import unittest
@@ -71,6 +72,19 @@ class CatalogAgentTest(unittest.TestCase):
         self.assertIsNone(result["authority"])
         self.assertEqual(result["sessions"], [])
         self.assertEqual(self.call("list")[1]["streams"], [])
+
+    def test_enrollment_binds_the_checkout_inferred_repository_url(self):
+        from _streams.cli import runtime
+        checkout = self.root / "checkout"
+        subprocess.run(["git", "init", "--quiet", str(checkout)], check=True, capture_output=True)
+        url = "git@github.com:example/streams.git"
+        subprocess.run(["git", "-C", str(checkout), "remote", "add", "origin", url],
+                       check=True, capture_output=True)
+        enrolled = self.enroll(cwd=str(checkout))
+        local = runtime()
+        binding = local.locations.read(enrolled["stream"]["id"], enrolled["session"]["id"])
+        self.assertIsNotNone(binding.checkout_id)
+        self.assertEqual(local.checkouts.get(binding.checkout_id).repository_urls, (url,))
 
     def test_automatic_enrollment_and_repeated_attach_use_the_same_durable_identity(self):
         first = self.enroll()

@@ -247,14 +247,13 @@ def open_catalog(*, validate_records: bool = True) -> LocalCatalog | GitCatalog:
         _check_host(marker, identity)
         if marker["strategy"] == "none":
             backend = LocalCatalog(YamlStore(root), host_id=identity)
-            if validate_records:
-                backend.snapshot()
-            else:
-                with backend.store.transaction():
-                    backend._ready()
-            return backend
-        backend = GitCatalog(root, host_id=identity, policy=Policy(**settings["sync"]))
-        backend.snapshot()
+        else:
+            backend = GitCatalog(root, host_id=identity, policy=Policy(**settings["sync"]))
+        if validate_records:
+            backend.snapshot()
+        else:
+            with backend.store.transaction():
+                backend._ready()
         return backend
     except (OSError, StorageError, ValueError) as error:
         raise StreamError(f"cannot open catalog: {error}; inspect catalog state or run streams init for a new catalog") from error

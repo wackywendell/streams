@@ -55,7 +55,9 @@ class DirectoryBindingsTest(unittest.TestCase):
         self.registry.set_default("repo", fallback.id)
         self.registry.set_default("notes", external.id)
         self.locations.remember("stream", root, session_id="session")
-        self.assertEqual([row["file"] for row in self.context()["document_locations"]], [str(root / "doc.md"), str(notes / "doc.md")])
+        locations = self.context()["document_locations"]
+        self.assertEqual([row["file"] for row in locations], [str(root / "doc.md"), str(notes / "doc.md")])
+        self.assertTrue(all("label" not in row for row in locations))
         (root / "doc.md").unlink()
         document = self.context()["document_locations"][0]
         self.assertEqual(document["checkout_id"], selected.id)
@@ -193,12 +195,16 @@ class DirectoryBindingsTest(unittest.TestCase):
         self.assertEqual(loc["checkout_id"], two_chk.id)
         self.assertEqual(loc["file"], str(two_root / "branch-only.md"))
         self.assertEqual([a["kind"] for a in loc["alternates"]], ["origin", "revision"])
+        self.assertNotIn("label", loc)
+        self.assertEqual([a["label"] for a in loc["alternates"]], ["origin (two)", f"revision {commit_sha}"])
         (two_root / "branch-only.md").unlink()
         ctx_after_unlink = self.locations.document_context(stream, self.session, sessions=(self.session, other))
         loc_after = ctx_after_unlink["document_locations"][0]
         self.assertIsNone(loc_after["error"])
         self.assertEqual(loc_after["alternates"][0]["kind"], "revision")
         self.assertEqual(loc_after["kind"], "revision")
+        self.assertNotIn("label", loc_after)
+        self.assertEqual(loc_after["alternates"][0]["label"], f"revision {commit_sha}")
         self.assertEqual(loc_after["checkout_id"], two_chk.id)
         self.assertEqual(loc_after["root"], str(two_root))
         self.assertEqual(loc_after["revision"], commit_sha)

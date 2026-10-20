@@ -206,7 +206,7 @@ def enroll(backend, runtime, source: str):
             payload.update(stream=stream, session=session, authority=authority)
             runtime.remember_directory(stream.id, directory, if_missing=True)
             binding = runtime.remember_directory(stream.id, directory, session_id=session.id, if_missing=True)
-            if binding is not None and binding.checkout_id is not None:
+            if binding.checkout_id is not None:
                 runtime.checkouts.bind_inferred_repositories(binding.checkout_id)
             scope.bind(stream, authority=authority)
     except (StreamError, StorageError, OSError, ValueError) as error:

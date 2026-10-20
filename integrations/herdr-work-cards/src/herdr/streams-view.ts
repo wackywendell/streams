@@ -1,7 +1,7 @@
 import { isDeepStrictEqual } from 'node:util';
 import { checkoutLabels } from '../presentation.js';
 import { renderDisplayCard, type RenderedCard } from './view.js';
-import { sameStreamsScope, type StreamsCardScope, type StreamsCardSnapshot, type StreamsCardSource, type StreamsDocumentLocation } from './streams-source.js';
+import { sameStreamsScope, type StreamsCardScope, type StreamsCardSnapshot, type StreamsCardSource, type StreamsDocumentLocation, type StreamsDocumentAlternate } from './streams-source.js';
 
 export type StreamsDocumentTarget = StreamsDocumentLocation & {
   scope: StreamsCardScope; repositoryUrl: string; ref: string;
@@ -43,6 +43,11 @@ export type StreamsKeyResult = { kind: 'exit' } | { kind: 'none' }
   | { kind: 'open-document'; snapshot: StreamsCardSnapshot; target: StreamsDocumentTarget };
 function sameTarget(left: StreamsDocumentTarget, right: StreamsDocumentTarget): boolean {
   return sameStreamsScope(left.scope, right.scope) && isDeepStrictEqual(left, right);
+}
+function alternateTarget(base: StreamsDocumentTarget, alternate: StreamsDocumentAlternate): StreamsDocumentTarget {
+  const { revision: _revision, ...reference } = base;
+  const { label: _label, ...descriptor } = alternate;
+  return { ...reference, ...descriptor, error: null };
 }
 export class StreamsCardView {
   current?: StreamsCardSnapshot;
@@ -95,7 +100,7 @@ export class StreamsCardView {
       const next = renderStreamsCard(this.current, columns, rows, notice).documents.get(active.key);
       const validTargets = next ? [
         next,
-        ...(next.alternates ?? []).map(alt => ({ ...next, ...alt, error: null } as StreamsDocumentTarget)),
+        ...(next.alternates ?? []).map(alt => alternateTarget(next, alt)),
       ] : [];
       if (paint !== this.paint || !next || !validTargets.some(cand => sameTarget(cand, chosen.target))) {
         this.documents.clear();
@@ -109,7 +114,7 @@ export class StreamsCardView {
       const displayed = this.documents.get(lower);
       if (!displayed) return { kind: 'none' };
       const options = displayed.alternates?.length
-        ? displayed.alternates.map(alt => ({ label: alt.label, target: { ...displayed, ...alt, error: null } as StreamsDocumentTarget }))
+        ? displayed.alternates.map(alt => ({ label: alt.label, target: alternateTarget(displayed, alt) }))
         : displayed.kind !== null ? [{ label: displayed.kind === 'revision' ? `revision ${displayed.revision}` : `${displayed.kind} (${displayed.root.split('/').at(-1) ?? displayed.repository})`, target: displayed }] : [];
       if (!options.length) return { kind: 'none' };
       this.chooser = { key: lower, options, notice: this.paintedNotice };

@@ -13,7 +13,6 @@ import hashlib
 import json
 import os
 from pathlib import Path
-import tempfile
 
 from .catalog.model import Session, Stream
 from .catalog.sync.envelope import load_json
@@ -247,7 +246,7 @@ class DirectoryBindings:
                 location: dict[str, object] = {
                     "repository": document.repository,
                     "path": document.path,
-                    **primary_target,
+                    **{key: value for key, value in primary_target.items() if key != "label"},
                     "error": None,
                 }
                 if len(alternates) > 1 or primary_target["kind"] != "local":

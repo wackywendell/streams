@@ -5,7 +5,7 @@ import { STREAMS_READ_ENV_KEYS, createStreamsContextReader, StreamsCardSource, t
 import { StreamsCardView } from './streams-view.js';
 import { StreamsWorkspaceClient, type StreamsNativeContext } from './streams-workspace-client.js';
 
-export function streamsPaneSource(env: NodeJS.ProcessEnv): StreamsCardSource {
+export function streamsPaneSetup(env: NodeJS.ProcessEnv): { source: StreamsCardSource; env: NodeJS.ProcessEnv } {
   let scope: StreamsCardScope, owner: StreamsNativeOwner;
   try { scope = JSON.parse(env.STREAMS_CARDS_SCOPE ?? ''); owner = JSON.parse(env.STREAMS_CARDS_OWNER ?? ''); }
   catch { throw new Error('Streams pane requires exact launcher scope and owner JSON'); }
@@ -20,18 +20,19 @@ export function streamsPaneSource(env: NodeJS.ProcessEnv): StreamsCardSource {
   const readerEnv = { ...env };
   for (const key of STREAMS_READ_ENV_KEYS) delete readerEnv[key];
   Object.assign(readerEnv, captured);
-  return new StreamsCardSource({ nativeSessionId: scope.nativeSessionId, expectedScope: scope,
-    readContext: createStreamsContextReader({ env: readerEnv, owner }) });
+  return { env: readerEnv, source: new StreamsCardSource({ nativeSessionId: scope.nativeSessionId, expectedScope: scope,
+    readContext: createStreamsContextReader({ env: readerEnv, owner }) }) };
 }
 
 /** Imported terminal loop: viewport/Unicode/keyboard behavior remains in the shared view. */
 export async function runStreamsPane(env: NodeJS.ProcessEnv = process.env): Promise<void> {
   const input = process.stdin, output = process.stdout;
   if (!input.isTTY || !output.isTTY) throw new Error('Streams card requires an interactive Herdr terminal');
-  const source = streamsPaneSource(env), client = new StreamsWorkspaceClient({ env, stateDirectory: env.STREAMS_CARDS_STATE_DIR });
+  const { source, env: paneEnv } = streamsPaneSetup(env);
+  const client = new StreamsWorkspaceClient({ env: paneEnv, stateDirectory: paneEnv.STREAMS_CARDS_STATE_DIR });
   const controller = new AbortController();
   const view = new StreamsCardView({ read: () => source.read(controller.signal) }), parser = new KeyInput();
-  const config = await loadConfig(env.STREAMS_CARDS_CONFIG || configPath(env));
+  const config = await loadConfig(paneEnv.STREAMS_CARDS_CONFIG || configPath(paneEnv));
   let context: StreamsNativeContext | undefined, stopped = false, closeRequested = false, selfClosing = false, wake: (() => void) | undefined;
   let keys: string[] = [], previous = '', repaintQueued = false;
   const render = () => {

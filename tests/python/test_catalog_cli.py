@@ -15,6 +15,7 @@ import yaml
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "src"))
 from _streams.cli import main
+from _streams.catalog.sync import Result
 from _streams.errors import StreamError
 
 
@@ -256,7 +257,7 @@ class CatalogCliTest(unittest.TestCase):
         import _streams.cli as module
         from _streams.catalog.storage import StorageError
         backend = module.config.open_catalog()
-        with patch("_streams.cli.config.open_catalog", return_value=backend), patch.object(backend, "sync", return_value=module.Result("local-only")), patch.object(backend, "snapshot", side_effect=StorageError("readback failed")):
+        with patch("_streams.cli.config.open_catalog", return_value=backend), patch.object(backend, "sync", return_value=Result("local-only")), patch.object(backend, "snapshot", side_effect=StorageError("readback failed")):
             code, out, _ = self.cli("create", "Retained", "--json")
         self.assertEqual(code, 2)
         receipt = json.loads(out)
@@ -324,6 +325,75 @@ class CatalogCliTest(unittest.TestCase):
             self.assertEqual(fixed["fixed"][0]["kind"], "stale-agent-owner-markers-cleared")
             self.assertEqual(len(runs), 1)
             self.assertEqual(runs[0][:5], ["pane", "report-metadata", "wH:p1", "--source", "streams-work-cards"])
+
+    def test_check_fix_reports_unavailable_unbound_checkout_without_aborting(self):
+        self.initialize()
+        stream = self.create()
+        checkout = self.root / "checkout"
+        subprocess.run(["git", "init", "--quiet", str(checkout)], check=True, capture_output=True)
+        from _streams.cli import runtime
+        local = runtime()
+        registered = local.checkouts.register(checkout)
+        checkout.rename(self.root / "moved-checkout")
+        before = local.checkouts.path.read_bytes()
+        code, out, err = self.cli("check", "--fix", "--json")
+        self.assertEqual((code, err), (2, ""), out)
+        report = json.loads(out)
+        self.assertFalse(report["valid"])
+        issue = next(issue for issue in report["issues"] if issue["kind"] == "invalid-checkout")
+        self.assertEqual(issue["checkout_id"], registered.id)
+        self.assertIn("unavailable", issue["message"])
+        self.assertEqual(report["streams"], 1)
+        self.assertEqual(self.cli("show", stream["id"])[0], 0)
+        self.assertEqual(local.checkouts.path.read_bytes(), before)
+
+    def test_scoped_check_reports_pending_and_unstamped_card_without_mutation(self):
+        self.initialize()
+        stream = self.create()
+        native_id = "native"
+        session = json.loads(self.cli("session", "attach", stream["id"], "--harness", "pi",
+                                     "--session-id", native_id, "--title", "Core", "--json")[1])["session"]
+        transcript = self.root / "session.jsonl"
+        transcript.write_text(json.dumps({"type": "session", "id": native_id}) + "\n")
+        from _streams import catalog_config as config
+        from _streams.catalog_agent import source_id
+        from _streams.catalog_check import _js_digest
+        from _streams.cli import runtime
+        from _streams.catalog_runtime import _key
+        from _streams.herdr import HerdrEndpoint
+        local = runtime()
+        socket = str(self.root / "herdr/herdr.sock")
+        scope = _key("herdr", socket, "default")
+        local._write(local._association_path(scope, "wH"),
+                     {"stream_id": stream["id"], "workspace_id": "wH", "session_id": None,
+                      "command": None, "ready": True})
+        owner = {"pane_id": "wH:p1", "terminal_id": "owner", "tab_id": "wH:t1",
+                 "workspace_id": "wH", "agent": "pi", "tokens": {},
+                 "agent_session": {"agent": "pi", "kind": "path", "value": str(transcript)}}
+        card = {"pane_id": "wH:p2", "terminal_id": "card", "tab_id": "wH:t1",
+                "workspace_id": "wH", "tokens": {}}
+        scope_obj = {"catalogSource": source_id(config.open_catalog()), "hostId": config.host_id(),
+                     "streamId": stream["id"], "sessionId": session["id"], "nativeSessionId": native_id}
+        key = _js_digest([socket, scope_obj, ["wH:p1", "owner", "wH", "wH:t1"]])
+        state_path = Path(socket).parent / ".streams-work-cards" / (key + ".json")
+        state_path.parent.mkdir(parents=True)
+        state_path.write_text(json.dumps({"phase": "pending", "key": key, "paneId": "wH:p2",
+                                         "terminalId": "card", "tabId": "wH:t1", "nonce": "nonce"}))
+        before = {path: path.read_bytes() for path in self.root.rglob("*") if path.is_file()}
+        snapshot = {"workspaces": [{"workspace_id": "wH", "tokens": {}}], "panes": [owner, card]}
+        with patch("_streams.catalog_check.HerdrClient.endpoint", return_value=HerdrEndpoint(socket, "default")), \
+             patch("_streams.catalog_check.HerdrClient.command_result", return_value={"snapshot": snapshot}), \
+             patch("_streams.catalog_check.HerdrClient.run", side_effect=AssertionError("native mutation")):
+            for args in (("--pane", "wH:p1"), (stream["id"],)):
+                for fix in ((), ("--fix",)):
+                    with self.subTest(args=args, fix=fix):
+                        code, out, err = self.cli("check", *args, *fix, "--json")
+                        self.assertEqual((code, err), (2, ""), out)
+                        report = json.loads(out)
+                        self.assertEqual({issue["kind"] for issue in report["issues"]},
+                                         {"pending-work-card-launch", "unstamped-work-card-pair"})
+                        self.assertNotIn("fixed", report)
+        self.assertEqual({path: path.read_bytes() for path in self.root.rglob("*") if path.is_file()}, before)
 
     def test_check_fix_binds_unbound_session_checkout_from_origin_remote(self):
         self.initialize()

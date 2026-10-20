@@ -4,7 +4,7 @@ from dataclasses import dataclass, field, replace
 from types import MappingProxyType
 from typing import Mapping
 
-from ..model import Catalog, RecordKey, Session, Stream, record_key
+from ..model import Catalog, Stream, record_key
 from ..operations import Authority, Operation, reconcile
 from ..yaml_store import YamlStore
 from ..storage import StorageError

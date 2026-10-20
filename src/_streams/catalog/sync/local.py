@@ -49,8 +49,6 @@ def read_context_records(
         host_id, harness, native_id, stream_id=hint_stream, deterministic_id=deterministic_id
     )
     candidates = [v for v in (stream_id, explicit_stream_id, workspace_stream_id, session.stream_id if session else None) if v is not None]
-    for identity in candidates:
-        text(identity, "stream_id")
     identities = set(candidates)
     if len(identities) > 1:
         from ...errors import StreamError

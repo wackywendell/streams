@@ -214,6 +214,41 @@ class RuntimeTest(unittest.TestCase):
         self.assertTrue(all(set(issue) == {'kind', 'path', 'message'} for issue in issues))
         self.assertTrue(all(path.read_text() == '{broken' for path in paths))
 
+    def test_check_state_validates_attempt_schema_digest_duplicates_and_symlinks(self):
+        from _streams.catalog_runtime import _key
+        path = self.runtime.state_dir / 'attempts' / 'endpoint' / (_key('other') + '.json')
+        valid = {'version': 1, 'stream_id': 'other', 'session_id': None, 'command': None,
+                 'cwd': str(self.cwd), 'workspace_id': 'w1', 'effects': [], 'launches': []}
+        path.parent.mkdir(parents=True)
+        cases = [
+            (json.dumps({**valid, 'version': 2}), 'invalid runtime state schema'),
+            (json.dumps({**valid, 'extra': True}), 'invalid runtime state schema'),
+            (json.dumps({**valid, 'stream_id': 'wrong-digest'}), 'invalid open attempt identity'),
+            (json.dumps({**valid, 'effects': {}}), 'invalid open attempt identity'),
+            (json.dumps(valid)[:-1] + ', "stream_id": "other"}', 'duplicate JSON key'),
+        ]
+        target = self.root / 'attempt.json'
+        target.write_text(json.dumps(valid))
+        for contents, message in [*cases, (None, 'must not be a symlink')]:
+            with self.subTest(message=message):
+                if contents is None:
+                    path.unlink()
+                    path.symlink_to(target)
+                else:
+                    path.write_text(contents)
+                before = path.read_bytes()
+                with patch.object(self.runtime, '_write', side_effect=AssertionError('check wrote state')):
+                    issues = self.runtime.check_state(Catalog(), {self.stream.id})
+                    self.assertEqual(len(issues), 1)
+                    self.assertEqual(issues[0]['kind'], 'invalid-open-attempt')
+                    self.assertIn(message, issues[0]['message'])
+                    with self.assertRaisesRegex(StreamError, message):
+                        self.runtime._check_stream_scopes('endpoint', self.stream.id)
+                self.assertEqual(path.read_bytes(), before)
+        self.herdr.endpoint.assert_not_called()
+        self.herdr.command_result.assert_not_called()
+        self.herdr.run.assert_not_called()
+
     def test_reporting_context_reads_unbound_claimed_and_bound_workspaces_without_writes(self):
         self.assertIsNone(self.runtime.context_stream_id())
         self.assertFalse(self.runtime.state_dir.exists())

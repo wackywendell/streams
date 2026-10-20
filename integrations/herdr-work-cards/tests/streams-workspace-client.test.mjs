@@ -77,7 +77,11 @@ const launches = f => f.calls.filter(a => a[0] === 'plugin' && a[2] === 'open');
 const effects = f => f.calls.filter(a => a[1] === 'report-metadata' || a[1] === 'rename' || a[1] === 'focus' || a[2] === 'open' || a[2] === 'close');
 test('automatic enrolled owner opens an isolated pair; reused display has no duplicate, catalog write or workspace launch', async t => {
   const f = await fixture(t), a = await f.owner(1); a.c.env.STREAMS_CARDS_CONFIG = '/native/presentation.json';
+  f.calls.length = 0;
   const pair = await a.open(); assert.equal(pair.kind, 'paired');
+  assert.ok(!f.calls.some(args => args[0] === 'pane' && args[1] === 'current'));
+  const pluginIndex = f.calls.findIndex(args => args[0] === 'plugin');
+  assert.equal(f.calls.slice(0, pluginIndex).filter(args => args[0] === 'api').length, 2);
   assert.equal(pair.agent.tokens.strm_native, native(1)); assert.ok(!Object.keys(pair.agent.tokens).some(k => k.startsWith('wca_')));
   assert.equal((await a.open()).nonce, pair.nonce); assert.equal(launches(f).length, 1);
   const launch = launches(f)[0]; assert.ok(launch.includes('streams-work-cards')); assert.ok(launch.includes('--no-focus'));
@@ -516,6 +520,10 @@ test('openDisplay resizes split immediately after launch and absent pair reconci
   f.panes.splice(f.panes.findIndex(p => p.terminal_id === pair.card.terminal_id), 1);
   await a.c.projectSummaries(a.s, a.context, config);
   assert.equal((await a.open('automatic')).kind, 'suppressed');
+  assert.equal((await state.read(key)).phase, 'closed');
+  await withWorkspaceLock(f.socket, 'w', async () => {
+    assert.equal((await a.open('automatic')).kind, 'suppressed');
+  });
   assert.equal((await a.open('explicit')).kind, 'paired');
   assert.ok(!(await readdir(f.stateDirectory)).includes(`${key}.json.pending`));
 });
@@ -538,6 +546,26 @@ for (const interruption of ['before-stamping', 'before-ready']) test(`openDispla
   const records = (await readdir(f.stateDirectory)).filter(name => name.endsWith('.json'));
   assert.equal(records.length, 1);
   assert.equal((await state.read(records[0].slice(0, -5))).phase, 'ready');
+});
+test('card callers cannot recover a half-stamped reservation on behalf of the Pi owner', async t => {
+  const f = await fixture(t), a = await f.owner(1), controller = new AbortController();
+  f.hook((args, output) => {
+    if (args[1] === 'report-metadata' && args.includes('strm_role=card')) controller.abort();
+    return output;
+  });
+  await assert.rejects(a.open('automatic', controller.signal));
+  f.hook(undefined);
+  const card = f.panes.find(p => p.tokens.strm_role === 'card');
+  const c = f.client(card.terminal_id, { STREAMS_CARDS_OWNER_TERMINAL: 'term1', STREAMS_CARDS_NONCE: card.tokens.strm_nonce });
+  const context = await c.bootstrap(config), before = structuredClone(f.snapshot()), count = effects(f).length;
+  const record = (await readdir(f.stateDirectory)).find(name => name.endsWith('.json'));
+  const contents = await readFile(join(f.stateDirectory, record), 'utf8');
+  await assert.rejects(c.openDisplay(a.s, context, config), /duplicate live owners|attested Pi owner/);
+  assert.deepEqual(f.snapshot(), before);
+  assert.equal(effects(f).length, count);
+  assert.equal(await readFile(join(f.stateDirectory, record), 'utf8'), contents);
+  assert.equal((await a.open()).kind, 'paired');
+  assert.equal(launches(f).length, 1);
 });
 test('openDisplay self-heals a half-stamped reserved pair without launching a duplicate card', async t => {
   const f = await fixture(t), a = await f.owner(1), controller = new AbortController();

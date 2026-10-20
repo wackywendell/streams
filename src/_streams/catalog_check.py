@@ -8,7 +8,7 @@ import os
 from pathlib import Path
 from typing import Any
 
-from .catalog.model import Catalog, Session, Stream
+from .catalog.model import Catalog, Stream
 from .catalog_config import _atomic_json
 from .catalog_agent import source_id
 from .catalog_conversations import native_identity
@@ -388,6 +388,9 @@ def _check_herdr_live(
                     state_rec = json.loads(state_path.read_text())
                 except (OSError, ValueError):
                     state_rec = None
+            if (target_stream is not None or pane_id is not None) and isinstance(state_rec, dict) and state_rec.get("phase") == "pending":
+                issues.append(_pending_launch(state_path, state_rec))
+
             if isinstance(state_rec, dict):
                 rec_pane = state_rec.get("paneId")
                 rec_term = state_rec.get("terminalId")
@@ -423,9 +426,6 @@ def _check_herdr_live(
                             "message": f"recorded work card {rec_pane} lacks matching pair markers; open its owner's card to reconcile the exact reservation",
                         })
                         continue
-
-            if (target_stream is not None or pane_id is not None) and isinstance(state_rec, dict) and state_rec.get("phase") == "pending":
-                issues.append(_pending_launch(state_path, state_rec))
 
         present_pair_keys = [k for k in PAIR_KEYS if k in tokens]
         if present_pair_keys:
@@ -562,18 +562,24 @@ def check_all(
         if chk.repository_urls:
             continue
         if fix:
-            urls = local.checkouts.bind_inferred_repositories(chk.id)
+            try:
+                urls = local.checkouts.bind_inferred_repositories(chk.id)
+            except StreamError as exc:
+                issues.append({
+                    "kind": "invalid-checkout", "checkout_id": chk.id, "directory": chk.directory,
+                    "message": str(exc),
+                })
+                continue
             if urls:
                 fixed.append({
                     "kind": "checkout-repository-bound", "checkout_id": chk.id,
                     "directory": chk.directory, "repository_urls": list(urls),
                 })
                 continue
-        if stream is None and pane_id is None:
-            issues.append({
-                "kind": "unbound-checkout", "checkout_id": chk.id, "directory": chk.directory,
-                "message": f"registered checkout {chk.directory} has no repository URL binding",
-            })
+        issues.append({
+            "kind": "unbound-checkout", "checkout_id": chk.id, "directory": chk.directory,
+            "message": f"registered checkout {chk.directory} has no repository URL binding",
+        })
 
     if pane_id is None:
         pre_streams = (stream,) if stream is not None else catalog.streams

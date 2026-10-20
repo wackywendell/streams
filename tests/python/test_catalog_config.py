@@ -302,6 +302,32 @@ class CatalogConfigTest(unittest.TestCase):
                                      capture_output=True, check=True).stdout
             self.assertEqual(tracked, b"")
 
+    def test_git_context_fast_open_skips_snapshot_but_keeps_readiness_checks(self):
+        from _streams.catalog_agent import context
+        from _streams.catalog.yaml_store import _YamlTransaction
+        gitconfig = self.home / "gitconfig"
+        gitconfig.write_text('[user]\n name = Test\n email = test@example.org\n[commit]\n gpgsign = false\n')
+        with patch.dict(os.environ, {"GIT_CONFIG_GLOBAL": str(gitconfig), "GIT_CONFIG_NOSYSTEM": "1"}):
+            config.initialize("git")
+            with patch.object(GitCatalog, "snapshot", side_effect=AssertionError("full snapshot")), \
+                 patch.object(_YamlTransaction, "read", side_effect=AssertionError("full record scan")):
+                backend = config.open_catalog(validate_records=False)
+                self.assertIsNone(context(backend, harness="pi", native_id="unattached")["stream"])
+                with self.assertRaisesRegex(AssertionError, "full snapshot"):
+                    config.open_catalog(validate_records=True)
+                root = config.catalog_root()
+                dirty = root / "unexplained.txt"
+                dirty.write_text("dirty baseline")
+                with self.assertRaisesRegex(StreamError, "unexplained catalog"):
+                    config.open_catalog(validate_records=False)
+                self.assertEqual(dirty.read_text(), "dirty baseline")
+                dirty.unlink()
+                marker = root / ".catalog-sync/save.json"
+                marker.write_text('{"version":1,"setup":true}')
+                with self.assertRaisesRegex(StreamError, "interrupted save"):
+                    config.open_catalog(validate_records=False)
+                self.assertEqual(marker.read_text(), '{"version":1,"setup":true}')
+
     def test_git_policy_is_configured_on_initialize_and_each_reopen(self):
         gitconfig = self.home / "gitconfig"
         gitconfig.write_text('[user]\n name = Test\n email = test@example.org\n[commit]\n gpgsign = false\n')

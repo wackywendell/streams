@@ -101,6 +101,7 @@ test('Shift+letter opens inline footer chooser for document alternates and 1..9 
   assert.equal(chosen.target.checkout_id, 'origin-chk');
   assert.equal(chosen.target.file, '/code/streams-temper/docs/design.md');
   assert.equal(chosen.target.kind, 'origin');
+  assert.ok(!Object.hasOwn(chosen.target, 'label'));
   view.render(120, 8); await view.key('A'); view.render(120, 8);
   const revision = await view.key('3');
   assert.equal(revision.kind, 'open-document');
@@ -115,10 +116,19 @@ test('Shift+letter opens inline footer chooser for document alternates and 1..9 
   assert.match(view.notice.text, /changed.*redraw/);
 
   Object.assign(value.document_locations[0], value.document_locations[0].alternates[2]);
+  delete value.document_locations[0].label;
   await view.refresh();
   const rendered = plain(renderStreamsCard(view.current, 160, 10).text);
   assert.equal((rendered.match(/revision changed-/g) ?? []).length, 1);
   assert.doesNotMatch(rendered, /origin-chk@|12345678/);
+  for (const [key, kind] of [['1', 'local'], ['2', 'origin']]) {
+    view.render(160, 10); await view.key('A'); view.render(160, 10);
+    const opened = await view.key(key);
+    assert.equal(opened.kind, 'open-document');
+    assert.equal(opened.target.kind, kind);
+    assert.ok(!Object.hasOwn(opened.target, 'revision'));
+    assert.ok(!Object.hasOwn(opened.target, 'label'));
+  }
 });
 test('missing bindings keep actionable references and their captured recovery ref and URL', async () => {
   const f = fixture(); f.roots({}); await f.view.refresh();

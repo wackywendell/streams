@@ -10,7 +10,7 @@ import tempfile
 import time
 from uuid import uuid4
 
-from ..model import RecordKey, Session, Stream, text
+from ..model import Session, Stream, text
 from ..operations import Authority, Operation, Reconciliation, reconcile
 from ..storage import Snapshot, StorageError
 from ..yaml_store import YamlStore

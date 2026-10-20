@@ -19,7 +19,6 @@ from .catalog.codec import record_to_data
 from .catalog.model import Checkout, Document, Link, Repository, Session, STATUSES, Stream, ValidationError
 from .catalog.operations import Operation, normalize_changes, update
 from .catalog.storage import StorageError
-from .catalog.sync import Result
 from .errors import StreamError
 from .frontend import Frontend, resolve_frontend
 
