@@ -1,5 +1,6 @@
 //! Durable catalog, pure reconciliation, and Temper-backed persistence protocols.
 
+pub mod agent;
 pub mod codec;
 pub mod model;
 pub mod operations;

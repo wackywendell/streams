@@ -17,8 +17,8 @@ run = [
 [tasks."test:differential"]
 description = "Compare Python and Rust durable catalog traces"
 run = [
-  'RUSTC=$(rustup which rustc) RUSTDOC=$(rustup which rustdoc) cargo build --locked --example catalog_trace',
-  "uv run python -m unittest discover -s tests/python -p test_rust_differential.py",
+  'RUSTC=$(rustup which rustc) RUSTDOC=$(rustup which rustdoc) cargo build --locked --examples',
+  "uv run python -m unittest discover -s tests/python -p 'test_rust*differential.py'",
 ]
 
 [tasks."test:python"]
