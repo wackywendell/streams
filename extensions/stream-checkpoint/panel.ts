@@ -1,5 +1,5 @@
-import { Editor, SelectList, matchesKey, truncateToWidth, wrapTextWithAnsi } from "@earendil-works/pi-tui";
-import { getSelectListTheme } from "@earendil-works/pi-coding-agent";
+import { Editor, SelectList, type SelectItem, matchesKey, truncateToWidth, wrapTextWithAnsi } from "@earendil-works/pi-tui";
+import { DynamicBorder, getSelectListTheme } from "@earendil-works/pi-coding-agent";
 import type { ExtensionContext } from "@earendil-works/pi-coding-agent";
 import type { LocalContext, Receipt, StreamCli } from "./streams.ts";
 import { FieldEdit, fields, statuses, validateReferences } from "./core.ts";
@@ -81,42 +81,123 @@ export async function editField(ctx: ExtensionContext, cli: StreamCli, catalog: 
   }
  } finally {if (!edit.dirty && !edit.error) state.edits.delete(key);}
 }
+function formatFieldPreview(value: unknown): string {
+ if (value === null || value === undefined || value === "") return "—";
+ if (Array.isArray(value)) return `${value.length} item${value.length === 1 ? "" : "s"}`;
+ return String(value).replace(/\s+/g, " ").trim();
+}
 export async function openCard(ctx: ExtensionContext, cli: StreamCli, state: CardState, actions: {receipt(value: Receipt): void; discuss(): Promise<void>; settings(): Promise<void>; report(): void; reset?(auto: boolean, target?: "all" | "session" | "stream"): void}): Promise<void> {
- let selectedIndex = 0;
+ let activeTab: "actions" | "stream" | "session" = "actions";
+ const selectedByTab: Record<"actions" | "stream" | "session", number> = {actions: 0, stream: 0, session: 0};
  for (;;) {
   const catalog = await cli.context(ctx.sessionManager.getSessionId(), process.env.STREAMS_STREAM_ID);
   if (!catalog.stream) {ctx.ui.notify("No attached work card. Use select_stream or create_stream for initial attachment.", "info");return;}
-  const rows = ["Report now", "Reset generated fields", "Re-enable automatic naming & reset", "Discuss live card", ...(catalog.session ? ["Reset this session only", "Re-enable session auto-naming & reset"] : []), "Reset whole effort only", "Re-enable effort auto-naming & reset", "Whole effort — edit fields", ...(catalog.session ? ["This session — edit fields", "Finish this session"] : []), "Finish whole effort", catalog.stream.archived ? "Restore effort" : "Archive effort", "Reporting & Herdr settings", "Close"];
+  const stream = catalog.stream, session = catalog.session;
+  const actionItems: SelectItem[] = [
+   {value: "Report now", label: "Report now", description: "Summarize recent conversation turns into the work card"},
+   {value: "Reset generated fields", label: "Reset generated fields", description: "Regenerate both session and effort fields"},
+   {value: "Re-enable automatic naming & reset", label: "Re-enable automatic naming & reset", description: "Unlock all manual names (Pi + Herdr) and regenerate"},
+   {value: "Discuss live card", label: "Discuss live card", description: "Chat with the reporting helper to refine fields"},
+   ...(session ? [
+    {value: "Reset this session only", label: "Reset this session only", description: "Regenerate only this tab's title, state, and remaining work"},
+    {value: "Re-enable session auto-naming & reset", label: "Re-enable session auto-naming & reset", description: "Unlock only this tab's Pi/Herdr names and regenerate"},
+   ] : []),
+   {value: "Reset whole effort only", label: "Reset whole effort only", description: "Regenerate only the shared effort title and goal"},
+   {value: "Re-enable effort auto-naming & reset", label: "Re-enable effort auto-naming & reset", description: "Unlock only the shared effort/workspace name and regenerate"},
+   {value: "Whole effort — edit fields", label: "Whole effort — edit fields", description: "Switch to the Stream tab to edit shared effort fields"},
+   ...(session ? [
+    {value: "This session — edit fields", label: "This session — edit fields", description: "Switch to the Session tab to edit this tab's fields"},
+    {value: "Finish this session", label: "Finish this session", description: "Mark this tab's contribution status as done"},
+   ] : []),
+   {value: "Finish whole effort", label: "Finish whole effort", description: "Mark the shared effort status as done"},
+   {value: stream.archived ? "Restore effort" : "Archive effort", label: stream.archived ? "Restore effort" : "Archive effort", description: stream.archived ? "Unarchive this effort" : "Hide this effort from default active lists"},
+   {value: "Reporting & Herdr settings", label: "Reporting & Herdr settings", description: "Configure automatic reporting cadence, model, and naming"},
+   {value: "Close", label: "Close", description: "Close this dialog (Esc)"},
+  ];
+  const streamFields = fields.stream.filter((f) => !(f === "goal_short" && stream.goal === null));
+  const streamItems: SelectItem[] = streamFields.map((field) => ({
+   value: `field:stream:${field}`,
+   label: `${field}${state.edits.has(`stream:${field}`) ? " *" : ""}`,
+   description: `${formatFieldPreview((stream as any)[field])}${state.edits.has(`stream:${field}`) ? " · retained unsaved edit" : ""}`,
+  }));
+  const sessionItems: SelectItem[] = session ? fields.session.map((field) => ({
+   value: `field:session:${field}`,
+   label: `${field}${state.edits.has(`session:${field}`) ? " *" : ""}`,
+   description: `${formatFieldPreview((session as any)[field])}${state.edits.has(`session:${field}`) ? " · retained unsaved edit" : ""}`,
+  })) : [{value: "noop", label: "Not yet enrolled", description: "Run /streams attach or /streams report to enroll this session"}];
+  const rows = actionItems.map((item) => item.value);
   const action = ctx.ui.custom ? await ctx.ui.custom<string | undefined>((tui, theme, _keys, done) => {
-   const list = new SelectList(rows.map((value) => ({value, label: value})), Math.max(1, Math.min(10, Math.floor(tui.terminal.rows / 2))), getSelectListTheme());
-   list.setSelectedIndex(selectedIndex);
-   list.onSelectionChange = (item) => {selectedIndex = rows.indexOf(item.value);};
-   list.onSelect = (item) => done(item.value);list.onCancel = () => done(undefined);
+   const topBorder = new DynamicBorder((text) => theme.fg("border", text));
+   const bottomBorder = new DynamicBorder((text) => theme.fg("border", text));
+   const tabOrder: ("actions" | "stream" | "session")[] = ["actions", "stream", "session"];
+   const itemsForTab = (tab: "actions" | "stream" | "session") => tab === "actions" ? actionItems : tab === "stream" ? streamItems : sessionItems;
+   let list: SelectList;
+   const buildList = () => {
+    const items = itemsForTab(activeTab);
+    list = new SelectList(items, Math.max(4, Math.min(12, tui.terminal.rows - 14)), getSelectListTheme());
+    list.setSelectedIndex(Math.min(selectedByTab[activeTab], Math.max(0, items.length - 1)));
+    list.onSelectionChange = (item) => {selectedByTab[activeTab] = Math.max(0, items.findIndex((i) => i.value === item.value));};
+    list.onSelect = (item) => done(item.value);
+    list.onCancel = () => done(undefined);
+   };
+   buildList();
    return {
-    invalidate() {list.invalidate();},
-    handleInput(data: string) {list.handleInput(data);tui.requestRender();},
+    invalidate() {topBorder.invalidate();bottomBorder.invalidate();list.invalidate();},
+    handleInput(data: string) {
+     if (matchesKey(data, "tab") || matchesKey(data, "right") || data === "1" || data === "2" || data === "3" || matchesKey(data, "shift+tab") || matchesKey(data, "left")) {
+      if (data === "1") activeTab = "actions";
+      else if (data === "2") activeTab = "stream";
+      else if (data === "3") activeTab = "session";
+      else {
+       const delta = matchesKey(data, "shift+tab") || matchesKey(data, "left") ? -1 : 1;
+       activeTab = tabOrder[(tabOrder.indexOf(activeTab) + delta + tabOrder.length) % tabOrder.length];
+      }
+      buildList();tui.requestRender();return;
+     }
+     list.handleInput(data);tui.requestRender();
+    },
     render(width: number) {
      const clean = (text: string) => text.replace(/[\x00-\x1f\x7f]/g, " ");
-     const stream = catalog.stream!, session = catalog.session;
      const section = (text: string) => theme.fg("accent", theme.bold(text));
-     const line = (text: string, limit = 2) => wrapTextWithAnsi(clean(text), width).slice(0, limit);
+     const line = (text: string, limit = 2) => wrapTextWithAnsi(clean(text), Math.max(10, width - 2)).slice(0, limit).map((l) => ` ${l}`);
+     const tabLabel = (id: "actions" | "stream" | "session", title: string) =>
+      activeTab === id ? theme.fg("accent", theme.bold(`[ ${title} ]`)) : theme.fg("muted", `  ${title}  `);
+     const tabBar = truncateToWidth(
+      ` ${tabLabel("actions", "1: Actions")} ${tabLabel("stream", "2: Stream (Whole Effort)")} ${tabLabel("session", "3: Session (This Tab)")}   ${theme.fg("dim", "Tab/←→/1-3 switch · Esc close")}`,
+      width,
+     );
      const summary = [
-      section("Whole effort"), ...line(stream.title, 1),
-      theme.fg("muted", truncateToWidth(clean(`${stream.id} · ${stream.status}${stream.archived ? " · archived" : ""} · title ${stream.title_mode} · goal ${stream.goal_mode}`), width)),
-      ...line(`Goal: ${stream.goal ?? "—"}`),
-      section("This session"), ...line(session?.title ?? "Not yet enrolled", 1),
+      ` ${section("Whole effort")} · ${clean(stream.title)} ${theme.fg("muted", `[${stream.status}${stream.archived ? " · archived" : ""} · title:${stream.title_mode} · goal:${stream.goal_mode}]`)}`,
+      ...line(`Goal: ${stream.goal ?? "—"}`, 2),
+      ` ${section("This session")} · ${clean(session?.title ?? "Not yet enrolled")} ${session ? theme.fg("muted", `[${session.status} · title:${session.title_mode}]`) : ""}`,
       ...(session ? [
-       theme.fg("muted", truncateToWidth(clean(`${session.id} · ${session.status} · title ${session.title_mode}`), width)),
-       ...line(`State: ${session.state || "—"}`), ...line(`Remaining: ${session.remaining || "—"}`),
+       ...line(`State: ${session.state || "—"}`, 2),
+       ...line(`Remaining: ${session.remaining || "—"}`, 1),
       ] : []),
-     ];
+     ].map((l) => truncateToWidth(l, width));
      const controls = list.render(width);
-     const budget = Math.max(0, tui.terminal.rows - controls.length - 2);
-     return [...summary.slice(0, budget), "", ...controls];
+     const budget = Math.max(2, tui.terminal.rows - controls.length - 5);
+     return [
+      ...topBorder.render(width),
+      tabBar,
+      "",
+      ...summary.slice(0, budget),
+      "",
+      ...controls,
+      ...bottomBorder.render(width),
+     ];
     },
    };
   }) : await ctx.ui.select("Work card", rows);
   if (!action || action === "Close") return;
+  if (action === "noop") continue;
+  if (action.startsWith("field:")) {
+   const [, kind, field] = action.split(":") as [string, "stream" | "session", string];
+   await editField(ctx, cli, catalog, kind, field, state, actions.receipt);
+   continue;
+  }
+  if (ctx.ui.custom && action === "Whole effort — edit fields") {activeTab = "stream";continue;}
+  if (ctx.ui.custom && action === "This session — edit fields") {activeTab = "session";continue;}
   if (action === "Discuss live card") {await actions.discuss();continue;}
   if (action === "Reset generated fields" || action === "Re-enable automatic naming & reset") {actions.reset?.(action === "Re-enable automatic naming & reset", "all");continue;}
   if (action === "Reset this session only" || action === "Re-enable session auto-naming & reset") {actions.reset?.(action === "Re-enable session auto-naming & reset", "session");continue;}

@@ -74,7 +74,7 @@ export async function runStreamsPane(env: NodeJS.ProcessEnv = process.env): Prom
         }
       } catch (error) {
         const message = (error as Error).message;
-        if (startupRetries < 3 && /exact owned Streams card|paired or absent owner markers|Incomplete|Conflicting duplicate live owners/i.test(message)) {
+        if (startupRetries < 6 && /exact owned Streams card|paired or absent owner markers|Incomplete|Conflicting duplicate live owners|Uncertain Streams launch retained/i.test(message)) {
           startupRetries++; quickRetry = true;
         } else {
           view.setNotice('projection', `Herdr projection unavailable: ${message}`);

@@ -140,7 +140,7 @@ export class StreamsWorkspaceClient extends HerdrTransport {
     return v;
   }
   /** Every metadata effect re-reads both app attestation and the exact native target. */
-  private async stamp(source: Source, context: StreamsNativeContext, target: Pane | NativeSnapshot['workspaces'][number], values: Record<string, string | null>, config: WorkCardsConfig, signal?: AbortSignal, expected?: StreamsCardSnapshot, beforeEffect?: () => void): Promise<void> {
+  private async stamp(source: Source, context: StreamsNativeContext, target: Pane | NativeSnapshot['workspaces'][number], values: Record<string, string | null>, config: WorkCardsConfig, signal?: AbortSignal, expected?: StreamsCardSnapshot, beforeEffect?: () => void): Promise<Verified> {
     const v = await this.guard(source, context, config, signal);
     if (expected && (!sameStreamsScope(v.saved.scope, expected.scope) || !isDeepStrictEqual(v.saved.native, expected.native))) throw new Error('Streams projection source changed before native effect');
     const kind = 'pane_id' in target ? 'pane' : 'workspace', targetId = 'pane_id' in target ? target.pane_id : target.workspace_id;
@@ -152,8 +152,9 @@ export class StreamsWorkspaceClient extends HerdrTransport {
     const after = await this.guard(source, context, config, signal);
     const surface = kind === 'pane' ? after.snapshot.panes.find(p => p.pane_id === targetId) : after.snapshot.workspaces.find(w => w.workspace_id === targetId);
     if (!surface || Object.entries(values).some(([k, value]) => value === null ? Object.hasOwn(surface.tokens, k) : surface.tokens[k] !== value)) throw new Error('Native metadata acknowledgement did not round-trip; effect may be partial');
+    return after;
   }
-  private async ensureStreamsPlugin(config: WorkCardsConfig, verify: () => Promise<unknown>, signal?: AbortSignal): Promise<void> {
+  private async ensureStreamsPlugin(config: WorkCardsConfig, verify: () => Promise<unknown>, signal?: AbortSignal): Promise<boolean> {
     const root = await realpath(this.pluginRoot), manifest = join(root, 'streams-herdr-plugin.toml');
     const check = (raw: unknown) => {
       const p = object(raw, 'Streams plugin');
@@ -163,8 +164,9 @@ export class StreamsWorkspaceClient extends HerdrTransport {
     };
     const plugins = (await this.result(['plugin', 'list', '--plugin', pluginId, '--json'], config, 'plugin_list', signal)).plugins;
     if (!Array.isArray(plugins) || plugins.length > 1) throw new Error('Unexpected Streams plugin registrations');
-    if (plugins.length) check(plugins[0]);
-    else { await verify(); check((await this.result(['plugin', 'link', manifest], config, 'plugin_linked', signal)).plugin); }
+    if (plugins.length) { check(plugins[0]); return false; }
+    await verify(); check((await this.result(['plugin', 'link', manifest], config, 'plugin_linked', signal)).plugin);
+    return true;
   }
   private async recoverHalfStamped(source: Source, context: StreamsNativeContext, config: WorkCardsConfig, signal?: AbortSignal): Promise<PairState | null> {
     const saved = await source.read(signal), snapshot = await this.snapshot(config, signal);
@@ -213,12 +215,11 @@ export class StreamsWorkspaceClient extends HerdrTransport {
       if (mode === 'automatic' && (attempt || v.pair.kind === 'absent')) return { kind: 'suppressed' };
       if (v.pair.kind === 'empty' && pairKeys.some(k => Object.hasOwn(v.owner.tokens, k))) throw new Error('Incomplete Streams owner markers');
       if (Object.keys(v.owner.tokens).some(k => k.startsWith('wca_'))) throw new Error('Legacy publisher owns this pane; no Streams adoption');
-      await this.ensureStreamsPlugin(config, () => this.guard(source, context, config, signal), signal);
-      v = await this.guard(source, context, config, signal);
+      const linked = await this.ensureStreamsPlugin(config, () => this.guard(source, context, config, signal), signal);
+      if (linked) v = await this.guard(source, context, config, signal);
       const workspace = v.snapshot.workspaces.find(w => w.workspace_id === context.workspaceId)!;
       if (!workspace.tokens.strm_binding) {
-        await this.stamp(source, context, workspace, { ...v.binding, strm_binding: randomUUID() }, config, signal);
-        v = await this.guard(source, context, config, signal);
+        v = await this.stamp(source, context, workspace, { ...v.binding, strm_binding: randomUUID() }, config, signal);
       }
       this.bound(v, context);
       const nonce = randomUUID(), root = await realpath(this.pluginRoot);
@@ -237,8 +238,7 @@ export class StreamsWorkspaceClient extends HerdrTransport {
       await state.write(pending);
       try {
         if (v.pair.kind === 'absent') {
-          await this.stamp(source, context, v.owner, Object.fromEntries(pairKeys.map(k => [k, null])), config, signal, undefined, () => { effectStarted = true; });
-          v = await this.guard(source, context, config, signal);
+          v = await this.stamp(source, context, v.owner, Object.fromEntries(pairKeys.map(k => [k, null])), config, signal, undefined, () => { effectStarted = true; });
           if (v.pair.kind !== 'empty') throw new Error('Pair changed before launch; evidence retained');
         }
         signal?.throwIfAborted(); effectStarted = true;

@@ -714,3 +714,38 @@ test('receiptText formats human-readable summaries on success and background rep
  assert.equal(statuses.at(-1),'Work card · <green>✓</green> Updated');
  await handlers.get('session_shutdown')({},ctx);
 });
+test('openCard renders 3-tab Pi TUI (Actions, Stream, Session) and edits fields directly from Stream/Session tabs',async()=>{
+ const state={discussion:{input:'',messages:[]},edits:new Map()},live=context();
+ const renders=[],saved=[];let step=0;
+ const ctx={
+  sessionManager:{getSessionId:()=> 'native'},
+  ui:{
+   notify:assert.fail,
+   editor:async(_title,val)=>`${val} (edited)`,
+   select:async()=>'Save field',
+   custom:async factory=>new Promise(resolve=>{
+    const comp=factory({terminal:{rows:30},requestRender(){}},{fg:(_c,t)=>t,bold:t=>t},{},resolve);
+    if(step===0){
+     renders.push(comp.render(100).join('\n'));
+     comp.handleInput('2');
+     renders.push(comp.render(100).join('\n'));
+     comp.handleInput('\r');
+    }else if(step===1){
+     comp.handleInput('3');
+     renders.push(comp.render(100).join('\n'));
+     comp.handleInput('\r');
+    }else{
+     comp.handleInput('\x1b');
+    }
+    step++;
+   }),
+  },
+ };
+ await openCard(ctx,{context:async()=>live,apply:async req=>{saved.push(req);return {operation_id:req.operation_id,save:{local:'persisted',sharing:'local-only',domain:{outcome:'changes'}}};}},state,{receipt:()=>{},discuss:assert.fail,settings:assert.fail,report:assert.fail});
+ assert.match(renders[0],/\[ 1: Actions \].*2: Stream \(Whole Effort\).*3: Session \(This Tab\)/);
+ assert.match(renders[1],/\[ 2: Stream \(Whole Effort\) \]/);
+ assert.match(renders[2],/\[ 3: Session \(This Tab\) \]/);
+ assert.equal(saved.length,2);
+ assert.deepEqual(saved[0].changes,{title:'Work (edited)'});
+ assert.deepEqual(saved[1].changes,{title:'Session (edited)'});
+});
