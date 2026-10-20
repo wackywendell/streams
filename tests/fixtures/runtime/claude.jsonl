@@ -1,0 +1,2 @@
+{"type":"user","sessionId":"native-claude","cwd":"/not-association","message":{"role":"user","content":"hello"}}
+{"type":"assistant","sessionId":"native-claude","message":{"role":"assistant","content":"hello"}}

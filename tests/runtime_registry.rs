@@ -1,0 +1,1017 @@
+//! Host-local behavior ported from test_catalog_checkouts.py and test_catalog_locations.py.
+
+use std::fs;
+use std::os::unix::fs::{MetadataExt, symlink};
+use std::os::unix::process::ExitStatusExt;
+use std::path::{Path, PathBuf};
+use std::sync::{Arc, Barrier, Mutex};
+
+use serde_json::{Value, json};
+use streams_temper::process::{ProcessError, ProcessOutput, ProcessRequest, ProcessRunner};
+use streams_temper::runtime::checkouts::{canonical_directory, inspect_directory_with_runner};
+use streams_temper::runtime::{
+    CheckoutRegistry, DirectoryBindings, RepositoryInspection, RuntimeError,
+};
+
+fn fake_inspector(path: &Path) -> Result<Option<RepositoryInspection>, RuntimeError> {
+    let current = canonical_directory(path)?;
+    for root in current.ancestors() {
+        if root.join(".fake-checkout").is_file() {
+            let relative = current.strip_prefix(root).unwrap();
+            return Ok(Some(RepositoryInspection {
+                root: root.to_owned(),
+                relative_cwd: if relative.as_os_str().is_empty() {
+                    ".".into()
+                } else {
+                    relative.to_str().unwrap().into()
+                },
+            }));
+        }
+    }
+    Ok(None)
+}
+
+struct Fixture {
+    _temp: tempfile::TempDir,
+    root: PathBuf,
+    registry: CheckoutRegistry,
+}
+impl Fixture {
+    fn new() -> Self {
+        let temp = tempfile::tempdir().unwrap();
+        let root = fs::canonicalize(temp.path()).unwrap();
+        let registry = CheckoutRegistry::new(root.join("state"), "test-host")
+            .unwrap()
+            .with_inspector(fake_inspector);
+        Self {
+            _temp: temp,
+            root,
+            registry,
+        }
+    }
+    fn repo(&self, name: &str) -> PathBuf {
+        let root = self.root.join(name);
+        fs::create_dir_all(&root).unwrap();
+        fs::write(root.join(".fake-checkout"), "").unwrap();
+        root
+    }
+    fn bindings(&self) -> DirectoryBindings {
+        DirectoryBindings::new(self.root.join("runtime"), self.registry.clone())
+    }
+    fn state(&self) -> Value {
+        serde_json::from_slice(&fs::read(&self.registry.path).unwrap()).unwrap()
+    }
+    fn overwrite(&self, state: &Value) {
+        fs::write(&self.registry.path, serde_json::to_vec(state).unwrap()).unwrap();
+    }
+}
+
+#[test]
+fn reads_create_nothing_and_host_scope_is_exact() {
+    let f = Fixture::new();
+    let root = f.repo("repo");
+    assert!(f.registry.list().unwrap().is_empty());
+    assert!(f.registry.find(&root).unwrap().is_none());
+    assert!(
+        f.registry
+            .get("b9345696-ffbf-42d1-8255-6fdc9d2ab7d2")
+            .is_err()
+    );
+    assert!(f.registry.resolve("repo", None, None).is_err());
+    assert!(matches!(
+        f.registry.get("missing"),
+        Err(RuntimeError::NotFound(_))
+    ));
+    for invalid_id in ["", " ", "bad\x7f"] {
+        assert!(matches!(
+            f.registry.get(invalid_id),
+            Err(RuntimeError::Invalid(_))
+        ));
+    }
+    assert!(!f.registry.path.parent().unwrap().exists());
+    let checkout = f.registry.register(&root, None).unwrap();
+    let same = CheckoutRegistry::new(f.root.join("state"), "test-host")
+        .unwrap()
+        .with_inspector(fake_inspector);
+    assert_eq!(same.get(&checkout.id).unwrap(), checkout);
+    let other = CheckoutRegistry::new(f.root.join("state"), "other-host").unwrap();
+    assert!(other.list().unwrap().is_empty());
+    assert_ne!(same.path, other.path);
+    assert!(CheckoutRegistry::new(f.root.join("state"), "bad\x7f").is_err());
+}
+
+#[test]
+fn aliases_reuse_uuid_and_urls_remain_exact_explicit_bindings() {
+    let f = Fixture::new();
+    let root = f.repo("root with trailing space ");
+    let first = f.registry.register(&root, None).unwrap();
+    uuid::Uuid::parse_str(&first.id).unwrap();
+    assert!(first.repository_urls.is_empty());
+    let alias = f.root.join("alias");
+    symlink(&root, &alias).unwrap();
+    assert_eq!(f.registry.register(&alias, None).unwrap(), first);
+    assert_eq!(f.registry.find(&alias).unwrap(), Some(first.clone()));
+    let checkout = f
+        .registry
+        .register(&root, Some("https://example/repo"))
+        .unwrap();
+    assert_eq!(checkout.id, first.id);
+    assert_eq!(
+        f.registry
+            .register(&root, Some("https://example/repo"))
+            .unwrap(),
+        checkout
+    );
+    assert!(
+        f.registry
+            .resolve("https://example/repo", None, None)
+            .is_err()
+    );
+    assert!(
+        f.registry
+            .set_default("https://example/repo.git", &first.id)
+            .is_err()
+    );
+    f.registry
+        .set_default("https://example/repo", &first.id)
+        .unwrap();
+    assert_eq!(
+        f.registry
+            .resolve("https://example/repo", None, None)
+            .unwrap(),
+        checkout
+    );
+}
+
+#[test]
+fn case_aliases_use_actual_directory_entry_spelling_when_supported() {
+    let f = Fixture::new();
+    let root = f.repo("mixedcase");
+    let alias = root.with_file_name("MIXEDCASE");
+    if !alias.exists() {
+        return;
+    }
+    let first = f.registry.register(&root, None).unwrap();
+    symlink(f.root.join("missing"), f.root.join("broken-sibling")).unwrap();
+    symlink(&root, f.root.join("resolving-sibling")).unwrap();
+    assert_eq!(f.registry.register(&alias, None).unwrap(), first);
+    assert_eq!(canonical_directory(&alias).unwrap(), root);
+}
+
+#[test]
+fn selected_precedence_explicit_defaults_and_ambiguity() {
+    let f = Fixture::new();
+    let selected = f
+        .registry
+        .register(&f.repo("selected"), Some("repo"))
+        .unwrap();
+    let fallback = f
+        .registry
+        .register(&f.repo("fallback"), Some("repo"))
+        .unwrap();
+    let external = f
+        .registry
+        .register(&f.repo("external"), Some("external"))
+        .unwrap();
+    match f.registry.resolve("repo", None, None).unwrap_err() {
+        RuntimeError::Ambiguous { candidates, .. } => {
+            assert_eq!(candidates, [selected.id.clone(), fallback.id.clone()])
+        }
+        error => panic!("unexpected {error}"),
+    }
+    f.registry.set_default("repo", &fallback.id).unwrap();
+    f.registry.set_default("external", &external.id).unwrap();
+    assert_eq!(
+        f.registry
+            .resolve("repo", Some(&selected.id), Some("repo"))
+            .unwrap(),
+        selected
+    );
+    assert_eq!(
+        f.registry
+            .resolve("repo", Some(&selected.id), None)
+            .unwrap(),
+        selected
+    );
+    assert_eq!(
+        f.registry
+            .resolve("external", Some(&selected.id), Some("repo"))
+            .unwrap(),
+        external
+    );
+    assert!(
+        f.registry
+            .resolve("external", Some(&selected.id), Some("external"))
+            .is_err()
+    );
+    assert!(f.registry.resolve("repo", None, Some("repo")).is_err());
+    let unbound = f.registry.register(&f.repo("unbound"), None).unwrap();
+    assert!(f.registry.resolve("repo", Some(&unbound.id), None).is_err());
+}
+
+#[test]
+fn explicit_move_preserves_identity_bindings_default_and_revalidates_selection() {
+    let f = Fixture::new();
+    let root = f.repo("first");
+    fs::create_dir(root.join("src")).unwrap();
+    let checkout = f.registry.register(&root, Some("repo")).unwrap();
+    f.registry.set_default("repo", &checkout.id).unwrap();
+    let bindings = f.bindings();
+    bindings
+        .remember(
+            "stream",
+            &root.join("src"),
+            Some("session"),
+            false,
+            Some("repo"),
+            None,
+        )
+        .unwrap();
+    let moved = f.root.join("moved");
+    fs::rename(&root, &moved).unwrap();
+    assert!(f.registry.register(&moved, None).is_err());
+    assert!(bindings.read("stream", Some("session")).is_err());
+    let updated = f.registry.move_checkout(&checkout.id, &moved).unwrap();
+    assert_eq!(updated.id, checkout.id);
+    assert_eq!(updated.repository_urls, checkout.repository_urls);
+    assert_eq!(f.registry.resolve("repo", None, None).unwrap(), updated);
+    assert_eq!(
+        bindings
+            .read("stream", Some("session"))
+            .unwrap()
+            .unwrap()
+            .cwd,
+        moved.join("src")
+    );
+    let other = f.registry.register(&f.repo("other"), None).unwrap();
+    assert!(
+        f.registry
+            .move_checkout(&checkout.id, &other.directory)
+            .is_err()
+    );
+    let fresh = f.repo("fresh");
+    f.registry.move_checkout(&checkout.id, &fresh).unwrap();
+    assert!(moved.is_dir());
+    assert!(bindings.read("stream", Some("session")).is_err());
+}
+
+#[test]
+fn replaced_or_missing_selected_roots_never_use_healthy_default() {
+    let f = Fixture::new();
+    let root = f.repo("first");
+    let selected = f.registry.register(&root, Some("repo")).unwrap();
+    let fallback = f
+        .registry
+        .register(&f.repo("fallback"), Some("repo"))
+        .unwrap();
+    f.registry.set_default("repo", &fallback.id).unwrap();
+    fs::rename(&root, f.root.join("old")).unwrap();
+    assert!(
+        f.registry
+            .resolve("repo", Some(&selected.id), Some("repo"))
+            .is_err()
+    );
+    f.repo("first");
+    for error in [
+        f.registry.get(&selected.id).unwrap_err(),
+        f.registry.find(&root).unwrap_err(),
+        f.registry.register(&root, None).unwrap_err(),
+        f.registry.set_default("repo", &selected.id).unwrap_err(),
+    ] {
+        assert!(error.to_string().contains("replaced"), "{error}");
+    }
+    assert_eq!(f.registry.resolve("repo", None, None).unwrap(), fallback);
+}
+
+#[test]
+fn documents_and_working_directories_reject_traversal_and_symlink_escapes() {
+    let f = Fixture::new();
+    let root = f.repo("checkout");
+    let checkout = f.registry.register(&root, Some("repo")).unwrap();
+    f.registry.set_default("repo", &checkout.id).unwrap();
+    fs::write(root.join("doc.md"), "current uncommitted contents").unwrap();
+    fs::write(f.root.join("outside.md"), "outside").unwrap();
+    symlink(f.root.join("outside.md"), root.join("escape.md")).unwrap();
+    symlink(&f.root, root.join("escape-dir")).unwrap();
+    symlink(root.join("doc.md"), root.join("inside.md")).unwrap();
+    assert_eq!(
+        f.registry
+            .document("repo", "inside.md", None, None)
+            .unwrap()
+            .1,
+        root.join("doc.md")
+    );
+    for path in [
+        "",
+        ".",
+        "..",
+        "../outside.md",
+        "/outside.md",
+        "a/../doc.md",
+        "a//b",
+        "a/./b",
+        "C:/doc.md",
+        "a\\b",
+        "doc.md/",
+        "escape.md",
+        "escape-dir/outside.md",
+        "missing.md",
+    ] {
+        assert!(
+            f.registry.document("repo", path, None, None).is_err(),
+            "accepted {path:?}"
+        );
+    }
+    for path in ["../", "/", "escape-dir", "doc.md", "a/../b"] {
+        assert!(
+            f.registry.directory(&checkout.id, path).is_err(),
+            "accepted {path:?}"
+        );
+    }
+    assert_eq!(f.registry.directory(&checkout.id, ".").unwrap(), root);
+    let before = fs::read(&f.registry.path).unwrap();
+    f.registry.document("repo", "doc.md", None, None).unwrap();
+    assert_eq!(fs::read(&f.registry.path).unwrap(), before);
+}
+
+#[test]
+fn malformed_registry_is_never_absence_or_overwritten() {
+    let f = Fixture::new();
+    let root = f.repo("checkout");
+    f.registry.register(&root, Some("repo")).unwrap();
+    let good = f.state();
+    let mut cases: Vec<Vec<u8>> = [
+        "not JSON",
+        "[]",
+        "null",
+        "{\"version\":1,\"version\":1}",
+        "{\"bad\":NaN}",
+    ]
+    .iter()
+    .map(|value| value.as_bytes().to_vec())
+    .collect();
+    for (key, value) in [
+        ("version", json!(2)),
+        ("version", json!(true)),
+        ("version", json!(1.0)),
+        ("host_id", json!("other-host")),
+        ("checkouts", json!({})),
+        ("defaults", json!([])),
+        ("extra", json!(1)),
+    ] {
+        let mut state = good.clone();
+        state[key] = value;
+        cases.push(serde_json::to_vec(&state).unwrap());
+    }
+    for (key, value) in [
+        ("id", json!("")),
+        ("id", json!("bad\x7f")),
+        ("id", json!(null)),
+        ("directory", json!("relative")),
+        ("directory", json!("//x/y")),
+        ("directory", json!("/x/../y")),
+        ("directory", json!("/x/./y")),
+        ("directory", json!("/x//y")),
+        ("directory", json!("/x/y/")),
+        ("device", json!(true)),
+        ("inode", json!(-1)),
+        ("repository_urls", json!(["repo", "repo"])),
+        ("repository_urls", json!([""])),
+        ("repository_urls", json!("repo")),
+        ("extra", json!(1)),
+    ] {
+        let mut state = good.clone();
+        state["checkouts"][0][key] = value;
+        cases.push(serde_json::to_vec(&state).unwrap());
+    }
+    let mut state = good.clone();
+    state["checkouts"]
+        .as_array_mut()
+        .unwrap()
+        .push(good["checkouts"][0].clone());
+    cases.push(serde_json::to_vec(&state).unwrap());
+    let mut state = good.clone();
+    state["defaults"] = json!({"repo": "not-registered"});
+    cases.push(serde_json::to_vec(&state).unwrap());
+    let mut state = good.clone();
+    state["checkouts"][0] = json!(["id", "path", [], 1, 2]);
+    cases.push(serde_json::to_vec(&state).unwrap());
+    let encoded = serde_json::to_string(&good).unwrap();
+    cases.push(
+        encoded
+            .replace(
+                "\"defaults\":{}",
+                "\"defaults\":{\"repo\":\"x\",\"repo\":\"y\"}",
+            )
+            .into_bytes(),
+    );
+    cases.push(
+        encoded
+            .replace("\"version\":1", "\"version\":1,\"version\":1")
+            .into_bytes(),
+    );
+    cases.push(
+        encoded
+            .replace(
+                "\"repository_urls\":[\"repo\"]",
+                "\"repository_urls\":[\"repo\"],\"repository_urls\":[\"repo\"]",
+            )
+            .into_bytes(),
+    );
+    for bytes in cases {
+        fs::write(&f.registry.path, &bytes).unwrap();
+        assert!(
+            f.registry.list().is_err(),
+            "accepted {}",
+            String::from_utf8_lossy(&bytes)
+        );
+        assert!(f.registry.register(&root, None).is_err());
+        assert_eq!(fs::read(&f.registry.path).unwrap(), bytes);
+    }
+}
+
+#[test]
+fn duplicate_live_physical_aliases_are_rejected_even_with_different_recorded_inodes() {
+    let f = Fixture::new();
+    let root = f.repo("root");
+    f.registry.register(&root, None).unwrap();
+    let alias = f.root.join("alias");
+    symlink(root, &alias).unwrap();
+    let mut state = f.state();
+    let mut other = state["checkouts"][0].clone();
+    other["id"] = json!(uuid::Uuid::new_v4().to_string());
+    other["directory"] = json!(alias);
+    other["inode"] = json!(1);
+    state["checkouts"].as_array_mut().unwrap().push(other);
+    f.overwrite(&state);
+    assert!(f.registry.list().is_err());
+}
+
+#[test]
+fn registry_state_lock_and_directory_binding_symlinks_are_refused() {
+    let f = Fixture::new();
+    let root = f.repo("repo");
+    fs::create_dir_all(f.registry.path.parent().unwrap()).unwrap();
+    let target = f.root.join("target");
+    fs::write(&target, "sentinel").unwrap();
+    symlink(&target, &f.registry.path).unwrap();
+    assert!(f.registry.list().is_err());
+    assert!(f.registry.register(&root, None).is_err());
+    fs::remove_file(&f.registry.path).unwrap();
+    let lock = f.registry.path.with_extension("lock");
+    fs::remove_file(&lock).unwrap();
+    symlink(&target, &lock).unwrap();
+    assert!(f.registry.register(&root, None).is_err());
+    let bindings = f.bindings();
+    let path = bindings.path("stream", Some("session"));
+    fs::create_dir_all(path.parent().unwrap()).unwrap();
+    symlink(&target, &path).unwrap();
+    assert!(bindings.read("stream", Some("session")).is_err());
+    assert!(
+        bindings
+            .remember("stream", &f.root, Some("session"), false, None, None)
+            .is_err()
+    );
+    assert_eq!(fs::read_to_string(target).unwrap(), "sentinel");
+}
+
+#[test]
+fn nonregular_registry_and_lock_files_are_rejected_without_blocking() {
+    use std::ffi::CString;
+    use std::os::unix::ffi::OsStrExt;
+    let f = Fixture::new();
+    let root = f.repo("repo");
+    fs::create_dir_all(f.registry.path.parent().unwrap()).unwrap();
+    fs::create_dir(&f.registry.path).unwrap();
+    assert!(f.registry.list().is_err());
+    assert!(f.registry.register(&root, None).is_err());
+    fs::remove_dir(&f.registry.path).unwrap();
+    let path = CString::new(f.registry.path.as_os_str().as_bytes()).unwrap();
+    assert_eq!(unsafe { libc::mkfifo(path.as_ptr(), 0o600) }, 0);
+    assert!(f.registry.list().is_err());
+    fs::remove_file(&f.registry.path).unwrap();
+    let lock = f.registry.path.with_extension("lock");
+    fs::remove_file(&lock).unwrap();
+    let path = CString::new(lock.as_os_str().as_bytes()).unwrap();
+    assert_eq!(unsafe { libc::mkfifo(path.as_ptr(), 0o600) }, 0);
+    assert!(f.registry.register(&root, None).is_err());
+}
+
+#[test]
+fn concurrent_registry_updates_preserve_every_registration() {
+    let f = Fixture::new();
+    let barrier = Arc::new(Barrier::new(8));
+    let roots: Vec<_> = (0..8)
+        .map(|index| f.repo(&format!("root-{index}")))
+        .collect();
+    let threads: Vec<_> = roots
+        .into_iter()
+        .map(|root| {
+            let registry = f.registry.clone();
+            let barrier = barrier.clone();
+            std::thread::spawn(move || {
+                barrier.wait();
+                registry.register(&root, Some("repo")).unwrap()
+            })
+        })
+        .collect();
+    for thread in threads {
+        thread.join().unwrap();
+    }
+    assert_eq!(f.registry.list().unwrap().len(), 8);
+}
+
+#[test]
+fn stream_and_session_directory_identity_and_if_missing_are_independent() {
+    let f = Fixture::new();
+    let bindings = f.bindings();
+    let first = f.repo("first");
+    let second = f.repo("second");
+    let stream = bindings
+        .remember("stream", &first, None, false, Some("repo"), None)
+        .unwrap();
+    assert!(bindings.read("stream", Some("session")).unwrap().is_none());
+    let session = bindings
+        .remember(
+            "stream",
+            &second,
+            Some("session"),
+            false,
+            Some("repo"),
+            None,
+        )
+        .unwrap();
+    assert_ne!(stream.checkout, session.checkout);
+    let path = bindings.path("stream", Some("session"));
+    let before = fs::read(&path).unwrap();
+    assert_eq!(
+        bindings
+            .remember("stream", &first, Some("session"), true, None, None)
+            .unwrap(),
+        session
+    );
+    assert_eq!(fs::read(&path).unwrap(), before);
+    assert_eq!(bindings.read("stream", None).unwrap(), Some(stream));
+    assert!(
+        bindings
+            .read("other-stream", Some("session"))
+            .unwrap()
+            .is_none()
+    );
+}
+
+#[test]
+fn missing_binding_targets_can_be_explicitly_repaired_but_not_with_if_missing() {
+    let f = Fixture::new();
+    let bindings = f.bindings();
+    let old = f.root.join("old");
+    fs::create_dir(&old).unwrap();
+    bindings
+        .remember("stream", &old, Some("session"), false, None, None)
+        .unwrap();
+    fs::remove_dir(old).unwrap();
+    let path = bindings.path("stream", Some("session"));
+    let before = fs::read(&path).unwrap();
+    assert!(bindings.read("stream", Some("session")).is_err());
+    assert!(
+        bindings
+            .remember("stream", &f.root, Some("session"), true, None, None)
+            .is_err()
+    );
+    assert_eq!(fs::read(&path).unwrap(), before);
+    bindings
+        .remember("stream", &f.root, Some("session"), false, None, None)
+        .unwrap();
+    assert_eq!(
+        bindings
+            .read("stream", Some("session"))
+            .unwrap()
+            .unwrap()
+            .cwd,
+        f.root
+    );
+}
+
+#[test]
+fn concurrent_if_missing_selection_keeps_the_first_locked_choice() {
+    let f = Fixture::new();
+    let first = f.repo("first");
+    let second = f.repo("second");
+    let bindings = f.bindings();
+    let barrier = Arc::new(Barrier::new(2));
+    let threads: Vec<_> = [first, second]
+        .into_iter()
+        .map(|cwd| {
+            let bindings = bindings.clone();
+            let barrier = barrier.clone();
+            std::thread::spawn(move || {
+                barrier.wait();
+                bindings
+                    .remember("stream", &cwd, Some("session"), true, None, None)
+                    .unwrap()
+            })
+        })
+        .collect();
+    let results: Vec<_> = threads
+        .into_iter()
+        .map(|thread| thread.join().unwrap())
+        .collect();
+    assert_eq!(results[0], results[1]);
+    assert_eq!(f.registry.list().unwrap().len(), 1);
+}
+
+#[test]
+fn legacy_absolute_checkout_selections_never_register_or_rewrite_on_read() {
+    let f = Fixture::new();
+    let root = f.repo("repo");
+    let bindings = f.bindings();
+    let path = bindings.path("stream", Some("session"));
+    fs::create_dir_all(path.parent().unwrap()).unwrap();
+    let legacy = json!({"version":1,"stream_id":"stream","session_id":"session","cwd":root});
+    fs::write(&path, serde_json::to_vec(&legacy).unwrap()).unwrap();
+    let before = fs::read(&path).unwrap();
+    assert!(
+        bindings
+            .read("stream", Some("session"))
+            .unwrap()
+            .unwrap()
+            .checkout
+            .is_none()
+    );
+    assert!(!f.registry.path.exists());
+    let registered = f.registry.register(&root, None).unwrap();
+    let registry_before = fs::read(&f.registry.path).unwrap();
+    let selected = bindings.read("stream", Some("session")).unwrap().unwrap();
+    let checkout = selected.checkout.unwrap();
+    assert_eq!(checkout.id, registered.id);
+    assert_eq!(checkout.relative_cwd, ".");
+    assert_eq!(fs::read(&path).unwrap(), before);
+    assert_eq!(fs::read(&f.registry.path).unwrap(), registry_before);
+}
+
+#[test]
+fn invalid_binding_identity_schema_and_relative_intent_cannot_be_overwritten() {
+    let f = Fixture::new();
+    let bindings = f.bindings();
+    let root = f.repo("repo");
+    bindings
+        .remember("stream", &root, Some("session"), false, None, None)
+        .unwrap();
+    let path = bindings.path("stream", Some("session"));
+    let good: Value = serde_json::from_slice(&fs::read(&path).unwrap()).unwrap();
+    let mut cases = Vec::new();
+    for (key, value) in [
+        ("version", json!(true)),
+        ("version", json!(3)),
+        ("stream_id", json!("wrong")),
+        ("session_id", json!(null)),
+        ("extra", json!(1)),
+    ] {
+        let mut state = good.clone();
+        state[key] = value;
+        cases.push(state);
+    }
+    for (key, value) in [
+        ("kind", json!("guess")),
+        ("within", json!("../escape")),
+        ("within", json!("/absolute")),
+        ("id", json!("bad\x7f")),
+        ("id", json!("")),
+        ("repository_url", json!("bad\x7f")),
+        ("extra", json!(1)),
+    ] {
+        let mut state = good.clone();
+        state["location"][key] = value;
+        cases.push(state);
+    }
+    let mut missing = good.clone();
+    missing.as_object_mut().unwrap().remove("session_id");
+    cases.push(missing);
+    let mut missing = good.clone();
+    missing["location"]
+        .as_object_mut()
+        .unwrap()
+        .remove("repository_url");
+    cases.push(missing);
+    for state in cases {
+        let bytes = serde_json::to_vec(&state).unwrap();
+        fs::write(&path, &bytes).unwrap();
+        assert!(
+            bindings.read("stream", Some("session")).is_err(),
+            "accepted {state}"
+        );
+        assert!(
+            bindings
+                .remember("stream", &f.root, Some("session"), false, None, None)
+                .is_err()
+        );
+        assert_eq!(fs::read(&path).unwrap(), bytes);
+    }
+}
+
+#[test]
+fn explicit_checkout_must_contain_cwd_and_have_requested_binding() {
+    let f = Fixture::new();
+    let bindings = f.bindings();
+    let root = f.repo("first");
+    let other = f.repo("other");
+    let checkout = f.registry.register(&root, Some("repo")).unwrap();
+    assert!(
+        bindings
+            .remember(
+                "stream",
+                &other,
+                Some("session"),
+                false,
+                None,
+                Some(&checkout.id)
+            )
+            .is_err()
+    );
+    assert!(
+        bindings
+            .remember(
+                "stream",
+                &root,
+                Some("session"),
+                false,
+                Some("other-repo"),
+                Some(&checkout.id)
+            )
+            .is_err()
+    );
+    assert!(
+        bindings
+            .remember(
+                "stream",
+                &f.root,
+                Some("session"),
+                false,
+                Some("repo"),
+                None
+            )
+            .is_err()
+    );
+    let binding = bindings
+        .remember(
+            "stream",
+            &root,
+            Some("session"),
+            false,
+            Some("repo"),
+            Some(&checkout.id),
+        )
+        .unwrap();
+    assert_eq!(
+        binding.checkout.unwrap().repository_url.as_deref(),
+        Some("repo")
+    );
+}
+
+#[test]
+fn python_wire_fixtures_remain_readable_without_rewriting_or_registering() {
+    let f = Fixture::new();
+    fs::create_dir_all(f.registry.path.parent().unwrap()).unwrap();
+    let registry_fixture = include_bytes!("fixtures/runtime/registry-v1.json");
+    fs::write(&f.registry.path, registry_fixture).unwrap();
+    let checkout = f.registry.list().unwrap().pop().unwrap();
+    assert_eq!(checkout.id, "b9345696-ffbf-42d1-8255-6fdc9d2ab7d2");
+    assert_eq!(checkout.repository_urls, ["https://example.test/repo.git"]);
+    assert_eq!(fs::read(&f.registry.path).unwrap(), registry_fixture);
+    let bindings = f.bindings();
+    let path = bindings.path("stream", Some("session"));
+    fs::create_dir_all(path.parent().unwrap()).unwrap();
+    let legacy = include_str!("fixtures/runtime/directory-v1.json")
+        .replace("/__streams_test_directory__", f.root.to_str().unwrap());
+    fs::write(&path, &legacy).unwrap();
+    let binding = bindings.read("stream", Some("session")).unwrap().unwrap();
+    assert_eq!(binding.cwd, f.root);
+    assert!(binding.checkout.is_none());
+    assert_eq!(fs::read_to_string(&path).unwrap(), legacy);
+    let root = f.repo("checkout");
+    let metadata = fs::metadata(&root).unwrap();
+    let mut state = f.state();
+    state["checkouts"][0]["directory"] = json!(root);
+    state["checkouts"][0]["device"] = json!(metadata.dev());
+    state["checkouts"][0]["inode"] = json!(metadata.ino());
+    f.overwrite(&state);
+    fs::write(&path, include_bytes!("fixtures/runtime/directory-v2.json")).unwrap();
+    assert_eq!(
+        bindings
+            .read("stream", Some("session"))
+            .unwrap()
+            .unwrap()
+            .cwd,
+        root
+    );
+    assert_eq!(
+        fs::read(&path).unwrap(),
+        include_bytes!("fixtures/runtime/directory-v2.json")
+    );
+}
+
+#[test]
+fn synthetic_legacy_registry_ids_load_in_v1_and_v2_directory_bindings() {
+    let f = Fixture::new();
+    let root = f.repo("imported");
+    let metadata = fs::metadata(&root).unwrap();
+    let fixture = include_str!("fixtures/runtime/registry-v1.json")
+        .replace("b9345696-ffbf-42d1-8255-6fdc9d2ab7d2", "legacy-checkout-1");
+    let mut registry: Value = serde_json::from_str(&fixture).unwrap();
+    registry["checkouts"][0]["directory"] = json!(root);
+    registry["checkouts"][0]["device"] = json!(metadata.dev());
+    registry["checkouts"][0]["inode"] = json!(metadata.ino());
+    fs::create_dir_all(f.registry.path.parent().unwrap()).unwrap();
+    f.overwrite(&registry);
+    let before = fs::read(&f.registry.path).unwrap();
+    let checkout = f.registry.get("legacy-checkout-1").unwrap();
+    assert_eq!(checkout.id, "legacy-checkout-1");
+    assert_eq!(
+        f.registry.list().unwrap().as_slice(),
+        std::slice::from_ref(&checkout)
+    );
+    assert_eq!(
+        f.registry
+            .resolve("https://example.test/repo.git", None, None)
+            .unwrap(),
+        checkout
+    );
+    assert!(matches!(
+        f.registry.get("missing"),
+        Err(RuntimeError::NotFound(_))
+    ));
+    let bindings = f.bindings();
+    let path = bindings.path("stream", Some("session"));
+    fs::create_dir_all(path.parent().unwrap()).unwrap();
+    let legacy = include_str!("fixtures/runtime/directory-v1.json")
+        .replace("/__streams_test_directory__", root.to_str().unwrap());
+    let current = include_str!("fixtures/runtime/directory-v2.json")
+        .replace("b9345696-ffbf-42d1-8255-6fdc9d2ab7d2", "legacy-checkout-1");
+    for fixture in [legacy, current] {
+        fs::write(&path, &fixture).unwrap();
+        let binding = bindings.read("stream", Some("session")).unwrap().unwrap();
+        assert_eq!(binding.cwd, root);
+        let bound = binding.checkout.unwrap();
+        assert_eq!(bound.id, "legacy-checkout-1");
+        assert_eq!(bound.relative_cwd, ".");
+        assert!(bound.repository_url.is_none());
+        assert_eq!(fs::read_to_string(&path).unwrap(), fixture);
+        assert_eq!(fs::read(&f.registry.path).unwrap(), before);
+    }
+    assert_eq!(f.registry.register(&root, None).unwrap(), checkout);
+}
+
+#[test]
+fn invalid_inferred_relative_cwd_never_creates_or_changes_registry_state() {
+    for invalid_name in ["bad\\child", "scheme:child"] {
+        let f = Fixture::new();
+        let root = f.repo("unregistered");
+        let cwd = root.join(invalid_name);
+        fs::create_dir(&cwd).unwrap();
+        let bindings = f.bindings();
+        assert!(
+            bindings
+                .remember("stream", &cwd, Some("session"), false, Some("repo"), None)
+                .is_err()
+        );
+        assert!(!f.registry.path.exists());
+        assert!(!bindings.path("stream", Some("session")).exists());
+        let existing = f.repo("existing");
+        f.registry
+            .register(&existing, Some("existing-repo"))
+            .unwrap();
+        let before = fs::read(&f.registry.path).unwrap();
+        assert!(
+            bindings
+                .remember("stream", &cwd, Some("session"), false, Some("repo"), None)
+                .is_err()
+        );
+        assert_eq!(fs::read(&f.registry.path).unwrap(), before);
+    }
+}
+
+#[test]
+fn directory_hash_matches_python_ascii_escaping_and_tuple_spacing() {
+    use sha2::{Digest, Sha256};
+    let f = Fixture::new();
+    let bindings = f.bindings();
+    for (stream, session, wire) in [
+        ("stream", Some("session"), "[\"stream\", \"session\"]"),
+        ("雪😀", None, "[\"\\u96ea\\ud83d\\ude00\", null]"),
+        ("quoted\"", Some("s\\"), "[\"quoted\\\"\", \"s\\\\\"]"),
+    ] {
+        let expected = format!("{:x}.json", Sha256::digest(wire.as_bytes()));
+        assert_eq!(
+            bindings.path(stream, session).file_name().unwrap(),
+            expected.as_str()
+        );
+    }
+}
+
+#[derive(Default)]
+struct FakeRunner {
+    calls: Mutex<Vec<ProcessRequest>>,
+    root: Mutex<Option<PathBuf>>,
+    fail: bool,
+}
+impl ProcessRunner for FakeRunner {
+    fn run(&self, request: &ProcessRequest) -> Result<ProcessOutput, ProcessError> {
+        self.calls.lock().unwrap().push(request.clone());
+        if self.fail {
+            return Err(ProcessError {
+                message: "timeout".into(),
+                code: None,
+                stdout: Vec::new(),
+                stderr: Vec::new(),
+            });
+        }
+        let root = self
+            .root
+            .lock()
+            .unwrap()
+            .clone()
+            .unwrap_or_else(|| request.cwd.clone().unwrap());
+        Ok(ProcessOutput {
+            status: std::process::ExitStatus::from_raw(0),
+            stdout: format!("{}\n", root.display()).into_bytes(),
+            stderr: Vec::new(),
+        })
+    }
+}
+
+#[test]
+fn production_inspection_uses_bounded_readonly_git_and_jj_and_preserves_root_spaces() {
+    let f = Fixture::new();
+    let root = f.repo("trailing space ");
+    fs::create_dir(root.join(".git")).unwrap();
+    fs::create_dir(root.join("src")).unwrap();
+    let runner = FakeRunner::default();
+    assert_eq!(
+        inspect_directory_with_runner(&root.join("src"), &runner).unwrap(),
+        Some(RepositoryInspection {
+            root: root.clone(),
+            relative_cwd: "src".into()
+        })
+    );
+    let git = runner.calls.lock().unwrap()[0].clone();
+    assert_eq!(git.program, Path::new("git"));
+    assert_eq!(git.timeout, 15.0);
+    assert_eq!(git.allowed, [0]);
+    assert_eq!(
+        git.args,
+        ["rev-parse", "--path-format=absolute", "--show-toplevel"]
+    );
+    assert!(
+        git.env
+            .keys()
+            .filter(|key| key.to_string_lossy().starts_with("GIT_"))
+            .all(|key| key == "GIT_OPTIONAL_LOCKS")
+    );
+    fs::create_dir(root.join(".jj")).unwrap();
+    inspect_directory_with_runner(&root, &runner).unwrap();
+    let jj = runner.calls.lock().unwrap().last().unwrap().clone();
+    assert_eq!(jj.program, Path::new("jj"));
+    assert_eq!(
+        jj.args,
+        [
+            "--ignore-working-copy",
+            "--at-operation=@",
+            "workspace",
+            "root"
+        ]
+    );
+    let failed = FakeRunner {
+        fail: true,
+        ..Default::default()
+    };
+    assert!(inspect_directory_with_runner(&root, &failed).is_err());
+}
+
+#[test]
+fn malformed_nearest_marker_and_mismatched_reported_root_do_not_fall_back() {
+    let f = Fixture::new();
+    let root = f.repo("root");
+    fs::create_dir(root.join(".git")).unwrap();
+    let nested = root.join("nested");
+    fs::create_dir(&nested).unwrap();
+    fs::write(nested.join(".jj"), "invalid").unwrap();
+    let runner = FakeRunner::default();
+    assert!(inspect_directory_with_runner(&nested, &runner).is_err());
+    assert!(runner.calls.lock().unwrap().is_empty());
+    fs::remove_file(nested.join(".jj")).unwrap();
+    symlink(root.join(".git"), nested.join(".git")).unwrap();
+    assert!(inspect_directory_with_runner(&nested, &runner).is_err());
+    fs::remove_file(nested.join(".git")).unwrap();
+    fs::create_dir(nested.join(".git")).unwrap();
+    *runner.root.lock().unwrap() = Some(root);
+    assert!(inspect_directory_with_runner(&nested, &runner).is_err());
+}
+
+#[test]
+fn post_replacement_uncertainty_is_preserved_in_runtime_errors() {
+    let uncertain = RuntimeError::from(streams_temper::storage::StorageError::uncertain(
+        "directory fsync failed after rename",
+    ));
+    assert!(uncertain.is_uncertain());
+    assert!(!RuntimeError::Invalid("bad schema".into()).is_uncertain());
+}

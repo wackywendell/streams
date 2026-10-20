@@ -1,0 +1,1 @@
+{"version":1,"host_id":"test-host","checkouts":[{"id":"b9345696-ffbf-42d1-8255-6fdc9d2ab7d2","directory":"/__streams_missing_checkout__","repository_urls":["https://example.test/repo.git"],"device":10,"inode":20}],"defaults":{"https://example.test/repo.git":"b9345696-ffbf-42d1-8255-6fdc9d2ab7d2"}}

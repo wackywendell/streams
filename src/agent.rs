@@ -1,4 +1,7 @@
-//! Captured agent requests become validated domain intent, never a refreshed base.
+//! Local agent capture and validated intent, never inferred enrollment or a refreshed base.
+
+mod context;
+pub use context::{AgentContext, ContextError, ContextRequest, context};
 
 use serde::Deserialize;
 use serde_json::{Map, Value};

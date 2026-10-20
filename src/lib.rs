@@ -7,6 +7,7 @@ pub mod frontend;
 pub mod model;
 pub mod operations;
 pub mod process;
+pub mod runtime;
 pub mod storage;
 pub mod sync;
 pub mod tui;
