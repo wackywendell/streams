@@ -1,25 +1,41 @@
 mod support {
+    pub mod git;
     pub mod memory;
 }
 
 use serde_json::json;
+use std::path::Path;
 use streams_temper::{
     model::{Host, Record, Session, Stream},
     operations::{Actor, DomainOutcome, Operation, update},
     storage::Store,
     sync::{
         CatalogBackend,
+        git::GitCatalog,
         local::LocalCatalog,
         outcomes::{LocalStatus, SharingStatus},
-        policy::SyncEvent,
+        policy::{Policy, SyncEvent},
         state::{RepairRequired, State},
     },
     yaml_store::YamlStore,
 };
 use support::memory::MemoryStore;
 
+fn local_git(root: &Path) -> GitCatalog {
+    let mut backend = GitCatalog::new(root, "host", Policy::default()).unwrap();
+    support::git::install_hook(&mut backend, |_, _, _, _| None);
+    backend
+}
+
 // The law takes only the application interface and a reopen factory, not concrete adapters.
 fn each_backend(law: impl Fn(&dyn Fn() -> Box<dyn CatalogBackend>)) {
+    each_local_backend(&law);
+    let dir = tempfile::tempdir().unwrap();
+    local_git(dir.path()).initialize(None, "main").unwrap();
+    law(&|| Box::new(local_git(dir.path())));
+}
+
+fn each_local_backend(law: impl Fn(&dyn Fn() -> Box<dyn CatalogBackend>)) {
     let dir = tempfile::tempdir().unwrap();
     law(&|| Box::new(LocalCatalog::new(YamlStore::new(dir.path()), "host").unwrap()));
     let memory = MemoryStore::default();
@@ -227,7 +243,7 @@ fn changed_cross_record_inputs_retire_generated_output_and_conflict_manual_inten
 
 #[test]
 fn local_only_read_refresh_and_sync_do_not_invent_publication() {
-    each_backend(|open| {
+    each_local_backend(|open| {
         let backend = open();
         backend.save(&creation(), None).unwrap();
         let saved = backend.snapshot().unwrap();

@@ -125,10 +125,10 @@ hint = "Push succeeded; record confirmation baseline and transition publication.
 name = "ConfirmLostPushAfterFetch"
 kind = "internal"
 from = ["AttemptingPush"]
-to = "Adopting"
+to = "Ready"
 guard = "publication_marker && !save_marker && !adopting_marker"
-effect = ["publication_marker = true", "adopting_marker = true", "confirmed_evidence = true", "save_marker = false", "candidate_reusable = false"]
-hint = "Push returned an error, but re-fetching confirmed the candidate on the remote and no remaining operations conflict."
+effect = ["publication_marker = true", "adopting_marker = false", "confirmed_evidence = true", "save_marker = false", "candidate_reusable = false"]
+hint = "Re-fetch confirmed this candidate; replay remaining local intent before pushing again or adopting."
 
 [[action]]
 name = "RetryPushOnRemoteRace"

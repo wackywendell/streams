@@ -364,10 +364,12 @@ class GitCatalog:
                     remote = read_history(self.git, self._fetch())
                     marker = self.state.publication()
                     reuse = False
+                    confirmed_marker = None
                     if marker is not None:
                         if self._confirmed_attempt(marker, remote):
                             had_publication = True
                             marker = self._record_confirmation(marker)
+                            confirmed_marker = marker
                         elif marker.base == remote.tip and marker.local_tip == local.tip:
                             reuse = True
                     if reuse:
@@ -379,10 +381,15 @@ class GitCatalog:
                                       detail="domain conflict blocks the outgoing batch", conflicts=conflicts)
                     changed = candidate != (remote.tip or local.root)
                     config = self._config()
-                    marker = PublicationAttempt(base=remote.tip, candidate=candidate,
-                                                local_tip=local.tip, branch=config.branch, remote=config.remote,
-                                                operations=tuple(id for id in read_history(self.git, candidate).operations
-                                                                 if id not in remote.operations))
+                    if not changed and remote.tip is not None and confirmed_marker is not None:
+                        # Keep the confirmed batch receipt; adoption may target a newer
+                        # descendant, whose checkout transition is recorded separately.
+                        marker = confirmed_marker
+                    else:
+                        marker = PublicationAttempt(base=remote.tip, candidate=candidate,
+                                                    local_tip=local.tip, branch=config.branch, remote=config.remote,
+                                                    operations=tuple(id for id in read_history(self.git, candidate).operations
+                                                                     if id not in remote.operations))
                     # Even an empty catalog needs its bootstrap published once.
                     if changed or remote.tip is None:
                         self._retain(candidate)

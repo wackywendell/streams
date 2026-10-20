@@ -348,6 +348,78 @@ class GitCatalogTest(unittest.TestCase):
         self.now += 301
         self.assertEqual(self.a.sync(event="session").sharing, "confirmed")
 
+    def assert_recovered_confirmation_survives_adoption_failure(self, restart):
+        self.a.save(create())
+        old = self.a.git.head()
+        original = self.a.git.run
+        attempted = []
+        pushed = False
+
+        def lost(*args, **kwargs):
+            nonlocal pushed
+            if args[0] == "push":
+                attempted.append(self.a.state.publication())
+                original(*args, **kwargs)
+                pushed = True
+                raise GitError("lost push response")
+            if restart and pushed and args[0] in ("ls-remote", "fetch"):
+                raise GitError("confirmation unavailable")
+            if not restart and args[:3] == ("read-tree", "-m", "-u"):
+                raise GitError("adoption failure", code=1)
+            return original(*args, **kwargs)
+
+        with patch.object(self.a.git, "run", side_effect=lost):
+            result = self.a.sync()
+        if restart:
+            self.assertEqual(result.sharing, "uncertain")
+            b = self.open("newer", "server")
+            self.assertTrue(b.save(create(effort("newer", "server"), "newer")).accepted)
+            self.assertEqual(b.sync().sharing, "confirmed")
+            self.now = 2000
+            self.a = GitCatalog(self.a.root, host_id="laptop", clock=lambda: self.now)
+            original = self.a.git.run
+
+            def fail_adoption(*args, **kwargs):
+                if args[:3] == ("read-tree", "-m", "-u"):
+                    raise GitError("adoption failure", code=1)
+                return original(*args, **kwargs)
+
+            with patch.object(self.a.git, "run", side_effect=fail_adoption):
+                result = self.a.sync()
+        self.assertEqual((result.sharing, result.local), ("confirmed", "repair-required"))
+        self.assertEqual(len(attempted), 1)
+        expected = replace(attempted[0], confirmed_at=self.now)
+        metadata = self.a.state.metadata()
+        self.assertEqual(self.a.state.publication(), expected.adopting(old, metadata.confirmed))
+        self.assertEqual(metadata.last_push, self.now)
+        self.assertEqual(metadata.last_confirmed_attempt, expected.candidate)
+        if restart:
+            self.assertNotEqual(metadata.confirmed, expected.candidate)
+            self.assertTrue(self.a.git.ancestor(expected.candidate, metadata.confirmed))
+        with self.assertRaises(RepairRequired):
+            self.a.snapshot()
+        self.assertTrue(self.a.sync(event="force").requires_repair)
+        self.assertEqual(self.a.state.metadata().last_push, self.now)
+
+    def test_same_sync_lost_confirmation_survives_failed_adoption(self):
+        self.assert_recovered_confirmation_survives_adoption_failure(False)
+
+    def test_restarted_confirmation_survives_failed_adoption_of_newer_remote(self):
+        self.assert_recovered_confirmation_survives_adoption_failure(True)
+
+    def test_pure_remote_adoption_failure_does_not_claim_outgoing_confirmation(self):
+        self.publish_initial()
+        b = self.open("reader", "server")
+        self.a.save(create(effort("later"), "later"))
+        self.assertEqual(self.a.sync().sharing, "confirmed")
+        with patch.object(b, "_adopt", side_effect=OSError("adoption failure")):
+            result = b.sync()
+        self.assertEqual((result.sharing, result.local), ("blocked", "repair-required"))
+        self.assertIsNone(b.state.publication().confirmed_at)
+        self.assertIsNone(b.state.metadata().last_push)
+        with self.assertRaises(RepairRequired):
+            b.snapshot()
+
     def test_remote_success_with_failed_adoption_is_confirmed_but_needs_repair(self):
         self.a.save(create())
         with patch.object(self.a, "_adopt", side_effect=OSError("adoption failure")):

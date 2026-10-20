@@ -1,6 +1,6 @@
 # Rust + Temper Save/Publication/Recovery Slice Contract
 
-Status: Stage 1 foundation implemented; Stage 2 publication/recovery adoption gate remains open. The Rust library currently executes only save actions through Temper. Publication witnesses and a Git coordinator must be implemented and reviewed together; the earlier disconnected witness scaffolding was removed because it could authorize unrelated attempts.
+Status: Stages 1–2 pass the adoption gate. The Rust library executes save, publication and recovery transitions through Temper. Catalog-bound witnesses and borrowing permits connect inspected histories to effects. CLI and native frontend cutover remain separate gates.
 
 ## Purpose and scope
 
@@ -8,13 +8,17 @@ This contract defines the preservation requirements, verification boundaries, an
 
 It addresses the five design-review findings before expanding the port to native Herdr workspace effects, the side-pane TUI renderer, or a remote service backend:
 
-1. **Typed evidence, not unanchored boolean bags:** Temper's `TransitionTable` governs the discrete protocol phase transitions, while a private borrow-checked `SavePermit` binds runtime saves to their originating machine and immutable inputs. Publication evidence witnesses (`ConfirmedAttemptWitness`, `CandidateReuseWitness`, `AdoptionWitness`) remain planned for Stage 2 and will bind each publication transition and its side effects to the exact inspected revisions, operation digests, and markers.
+1. **Typed evidence, not unanchored boolean bags:** Temper's `TransitionTable` governs the discrete protocol phase transitions, while a private borrow-checked `SavePermit` binds runtime saves to their originating machine and immutable inputs. Publication evidence witnesses (`ConfirmedAttemptWitness`, `CandidateReuseWitness`) and borrowing `PushPermit`/`AdoptionPermit` bind publication transitions and effects to the exact catalog, inspected revisions, operation digests, and markers.
 2. **Total context projection:** Because Temper's `EvalContext` defaults missing declared booleans to `false` and counters to `0`, the Rust bridge enforces total projection against `table.initial_values` before calling `evaluate_ctx`. Omitting any declared variable is an immediate error.
 3. **One unified save/publication/recovery protocol:** Save fencing (`save.json`), local persistence/commits, publication attempts (`publication.json` in `attempting` and `adopting`), confirmation recovery, and `repair-required` blocking are modeled in one automaton (`CatalogProtocol`) rather than split across disconnected specs.
 4. **Independent outcome dimensions:** `Result` retains independent `sharing` (`local-only`, `pending`, `confirmed`, `blocked`, `failed`, `uncertain`), `local` (`unchanged`, `persisted`, `committed`, `repair-required`), and `domain` (`changes`, `no-change`, `superseded`, `conflict`) dimensions. In particular, confirmed remote publication with failed local adoption (`sharing="confirmed"`, `local="repair-required"`) remains representable and tested.
 5. **Differential parity and fault-injected sequence testing:** Because `VerificationCascade` (L0 Z3 SMT, L1 Stateright BFS, L2 simulation, L3 `proptest`) verifies the abstract IOA specification rather than filesystem or Git subprocess execution, the Rust implementation is also verified by:
-   - stateful `proptest` sequences injecting faults at every persistence and Git boundary (`save.json`, record write, `commit-tree`, `update-ref`, `push`, lost push response, `fetch` failure, `read-tree`/`update-ref` during adoption); and
-   - a cross-language differential trace harness (`tests/python/test_rust_differential.py`) executing identical multi-step scenarios against Python and Rust and comparing outcomes, catalog snapshots, `.catalog-sync` files, and Git history.
+   - deterministic fault tests at persistence and Git boundaries, plus stateful `proptest` sequences covering lost responses, reopened saves, competing remote changes and interrupted adoption; and
+   - cross-language differential trace harnesses executing identical multi-step scenarios against Python and Rust and comparing outcomes, catalog snapshots, `.catalog-sync` files, and Git history.
+
+### Differential observations
+
+Compare structured outcomes without changing status, nullness, receipt, ownership or provenance semantics. Diagnostic prose is not compared. Git object IDs, serialization-dependent tree IDs and randomly named retention refs need not match across independent repositories. Compare distinct commit identities and their parent relationships using canonical operation/baseline messages, origins and decoded record contents. Compare managed history reachability from HEAD, retained refs and remote-tracking refs rather than the number of helper aliases: both pre-adoption and candidate histories must remain reachable, but an extra alias protecting an already-reachable graph is harmless. Do not collapse distinct commits merely because they contain equal operation lists.
 
 ## Preserved on-disk and wire contracts
 
@@ -53,4 +57,12 @@ Before proceeding to Stages 3–5 (CLI cutover, Herdr native effects, and TUI po
 1. `specs/catalog_protocol.ioa.toml` passes all levels of Temper's `VerificationCascade` (L0 Symbolic Z3, L1 Stateright Model Check, L2 Deterministic Simulation, L3 Property Tests), and intentionally broken spec mutations are rejected with counterexamples.
 2. The Rust transition bridge rejects incomplete `EvalContext` projections and requires typed evidence witnesses for every guarded transition.
 3. Stateful `proptest` fault-injection tests cover lost push acknowledgements, subsequent local saves across restarts, competing push races, reused operation IDs (same vs. mutated intent), and interrupted adoption.
-4. Differential traces run against both Python (`_streams.catalog.sync`) and Rust produce identical `Result` / `ReadResult` payloads, catalog records, `.catalog-sync` state, and Git commit graphs.
+4. Differential traces run against both Python (`_streams.catalog.sync`) and Rust produce identical structured `Result` / `ReadResult` facts, catalog records, `.catalog-sync` state, and Git commit graphs under the observations defined above.
+
+## Gate result
+
+The [Temper verification tests](../tests/verification.rs) pass all four cascade levels and reject deliberately broken marker effects with counterexamples. This supports retaining the embedded protocol table. It does not prove filesystem durability or concrete commit identity; Rust permits and effect tests remain responsible for those properties.
+
+The [Git recovery tests](../tests/git_catalog.rs) cover journal-write and clear failures, once-only confirmation timing, lost replies, later saves, failed adoption and restart fencing. Generated sequences combine these with competing remote changes and reused operation IDs. The [Git differential traces](../tests/python/test_rust_git_differential.py) compare real repositories, including graph reachability, original operation provenance and retained confirmation receipts.
+
+Review exposed a shared Python/Rust bug: restarted recovery could replace a confirmed batch receipt before a failed adoption. Both implementations now preserve that receipt, including when adoption targets a newer remote descendant. This is an approved correction to the oracle, not a normalized discrepancy. The original YAML migration limitation above remains unchanged.

@@ -1,6 +1,6 @@
 # ADR: Rust runtime and embedded Temper verification
 
-Status: proposed; the Stage 1–2 save, publication, and recovery slice is under evaluation against the [slice contract](rust-temper-slice-contract.md). The [durable work catalog ADR](durable-work-catalog.md), [Git sync ADR](catalog-git-sync.md), [protocol-boundary ADR](catalog-protocol-boundaries.md), [Pi work-card ADR](pi-work-card.md), and [native Herdr ADR](native-herdr-work-cards.md) remain the behavioral authorities during the staged port. A `temper-cloud` synchronization backend is specified separately in the [Temper Cloud sync ADR](catalog-temper-cloud-sync.md).
+Status: implementation in progress. The Stage 1–2 save, publication and recovery slice passes the [adoption gate](rust-temper-slice-contract.md#gate-result). CLI and native frontend cutover remain pending. The [durable work catalog ADR](durable-work-catalog.md), [Git sync ADR](catalog-git-sync.md), [protocol-boundary ADR](catalog-protocol-boundaries.md), [Pi work-card ADR](pi-work-card.md), and [native Herdr ADR](native-herdr-work-cards.md) remain the behavioral authorities during the staged port. A `temper-cloud` synchronization backend is specified separately in the [Temper Cloud sync ADR](catalog-temper-cloud-sync.md).
 
 ## Context and decision
 

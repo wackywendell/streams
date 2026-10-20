@@ -1,7 +1,8 @@
 //! Save fencing through the same IOA table used by Temper's verifier.
 //!
-//! This first slice executes the save actions only. Publication actions remain
-//! an abstract specification until the Git coordinator is migrated.
+//! Identity-bound save and publication permits execute the verified phase transitions.
+
+pub(crate) mod publication;
 
 use std::sync::OnceLock;
 use strum::{AsRefStr, EnumString};
@@ -16,10 +17,20 @@ enum Phase {
 }
 
 #[derive(Debug, Clone, Copy, AsRefStr)]
-enum SaveAction {
+enum Action {
     BeginSave,
     CompleteSave,
     FailSaveNeedsRepair,
+    PrepareFreshCandidate,
+    ReuseExistingCandidate,
+    RecoverConfirmedBeforePush,
+    NoPushNeededBeginAdopt,
+    ConfirmPushSuccess,
+    ConfirmLostPushAfterFetch,
+    RetryPushOnRemoteRace,
+    LeavePushFailedOrUncertain,
+    CompleteAdoption,
+    FailAdoptionNeedsRepair,
 }
 
 use temper_jit::table::{Effect, EvalContext, TransitionTable, effect_args};
@@ -102,10 +113,10 @@ impl SavePermit<'_, '_> {
         self.start_tip
     }
     pub(crate) fn complete(self) -> Result<(), RepairRequired> {
-        self.machine.step(SaveAction::CompleteSave)
+        self.machine.step(Action::CompleteSave)
     }
     pub(crate) fn fail(self) -> Result<(), RepairRequired> {
-        self.machine.step(SaveAction::FailSaveNeedsRepair)
+        self.machine.step(Action::FailSaveNeedsRepair)
     }
 }
 
@@ -146,7 +157,7 @@ impl ProtocolMachine {
     }
 
     // Raw dispatch is private: callers cannot bypass the evidence-bearing API.
-    fn step(&mut self, action: SaveAction) -> Result<(), RepairRequired> {
+    fn step(&mut self, action: Action) -> Result<(), RepairRequired> {
         let table = protocol_table();
         let action = action.as_ref();
         verify_total_context(table, &self.context)?;
@@ -206,7 +217,7 @@ impl ProtocolMachine {
                 "save result does not match operation target",
             ));
         }
-        self.step(SaveAction::BeginSave)?;
+        self.step(Action::BeginSave)?;
         Ok(SavePermit {
             machine: self,
             operation,

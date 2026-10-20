@@ -2,6 +2,7 @@
 
 pub mod baseline;
 pub mod envelope;
+pub mod git;
 pub mod git_io;
 pub mod history;
 pub mod local;
@@ -83,6 +84,32 @@ impl<S: Store> CatalogBackend for local::LocalCatalog<S> {
 
     fn sync(&self, event: policy::SyncEvent) -> outcomes::Result {
         local::LocalCatalog::sync(self, event)
+    }
+}
+
+impl CatalogBackend for git::GitCatalog {
+    fn snapshot(&self) -> Result<Snapshot, state::RepairRequired> {
+        git::GitCatalog::snapshot(self)
+    }
+
+    fn authority(&self, stream_id: &str) -> Result<Option<Authority>, state::RepairRequired> {
+        git::GitCatalog::authority(self, stream_id)
+    }
+
+    fn save(
+        &self,
+        operation: &Operation,
+        origin: Option<&envelope::Origin>,
+    ) -> Result<outcomes::Result, ValidationError> {
+        git::GitCatalog::save(self, operation, origin)
+    }
+
+    fn read(&self, refresh: bool) -> Result<ReadResult, state::RepairRequired> {
+        git::GitCatalog::read(self, refresh)
+    }
+
+    fn sync(&self, event: policy::SyncEvent) -> outcomes::Result {
+        git::GitCatalog::sync(self, event)
     }
 }
 
