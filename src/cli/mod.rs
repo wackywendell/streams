@@ -2,6 +2,7 @@
 //! Native activation is deliberately not installed by this experimental binary.
 
 mod args;
+mod cards;
 mod checkouts;
 mod documents;
 mod enrollment;
@@ -11,8 +12,8 @@ mod native_tests;
 mod workspaces;
 
 use args::{
-    AgentCommand, CheckoutCommand, Command, ConfigCommand, FrontendCommand, SessionCommand, Target,
-    WorkspaceCommand,
+    AgentCommand, CheckoutCommand, Command, ConfigCommand, FrontendCommand, NativeCommand,
+    SessionCommand, Target, WorkspaceCommand,
 };
 use clap::Parser;
 use icu_casemap::CaseMapper;
@@ -181,6 +182,12 @@ pub(super) fn run() -> ExitCode {
         }
     };
     let outcome = match parsed.command {
+        Command::Native {
+            command: NativeCommand::Pane,
+            ..
+        } if parsed.json => Err(CliError::message(
+            "native pane is interactive and does not support --json",
+        )),
         Command::Agent {
             command: AgentCommand::Preview,
         } => preview(),
@@ -223,6 +230,7 @@ pub(super) fn run() -> ExitCode {
     ExitCode::from(code)
 }
 
+#[derive(Clone)]
 struct App {
     config: Config,
     environment: BTreeMap<String, String>,
@@ -250,6 +258,22 @@ impl App {
             "CODEX_HOME",
             "CLAUDE_CONFIG_DIR",
             "PATH",
+            "HERDR_TAB_ID",
+            "HERDR_WORKSPACE_ID",
+            "WORK_CARDS_CONFIG_PATH",
+            "EDITOR",
+            "STREAMS_CARDS_SCOPE",
+            "STREAMS_CARDS_OWNER",
+            "STREAMS_CARDS_NONCE",
+            "STREAMS_CARDS_OWNER_TERMINAL",
+            "STREAMS_CARDS_READ_ENV",
+            "STREAMS_CARDS_READ_CWD",
+            "STREAMS_CARDS_STATE_DIR",
+            "STREAMS_RUST_BIN",
+            "DISPLAY",
+            "WAYLAND_DISPLAY",
+            "XDG_RUNTIME_DIR",
+            "DBUS_SESSION_BUS_ADDRESS",
         ] {
             match std::env::var(key) {
                 Ok(value) => {
@@ -400,6 +424,19 @@ impl App {
                 Ok(Output::value(value))
             }
             Command::Config { action } => self.configure(action),
+            Command::Native {
+                session_id,
+                plugin_root,
+                state_dir,
+                command,
+            } => self.native_cards(
+                cards::Options {
+                    session_id,
+                    plugin_root,
+                    state_dir,
+                },
+                command,
+            ),
             Command::Frontend {
                 command: FrontendCommand::Get { frontend },
             } => {
@@ -869,6 +906,104 @@ impl App {
         )?))
     }
 
+    fn agent_observation(
+        &self,
+        harness: streams_temper::runtime::conversations::Harness,
+        session_id: &str,
+        stream_id: Option<&str>,
+        attest: bool,
+        include_inventory: bool,
+        native_timeout: f64,
+    ) -> Result<AgentObservation> {
+        let opened = application::open(&self.config)?;
+        let state = self.state(&opened)?;
+        let connection = self.native_frontend(&self.selection(None)?, native_timeout)?;
+        let workspace_stream = connection
+            .as_ref()
+            .map(|frontend| {
+                frontend.caller()?.context_stream_id(
+                    &state,
+                    self.environment
+                        .get("STREAMS_STREAM_ID")
+                        .map(String::as_str),
+                )
+            })
+            .transpose()?
+            .flatten();
+        let source = opened.source_id()?;
+        let context = agent::context(
+            opened.backend(),
+            opened.host().as_str(),
+            &source,
+            ContextRequest {
+                harness,
+                native_id: session_id,
+                stream_id,
+                environment_stream_id: self
+                    .environment
+                    .get("STREAMS_STREAM_ID")
+                    .map(String::as_str),
+                workspace_stream_id: workspace_stream.as_deref(),
+            },
+        )
+        .map_err(|error| CliError::message(error.to_string()))?;
+        let documents = if let (Some(stream), Some(session)) = (&context.stream, &context.session) {
+            documents::context(
+                &self.registry(&opened)?,
+                &self.locations(&opened)?,
+                stream,
+                session,
+            )
+        } else {
+            json!({"checkouts":[],"document_locations":[]})
+        };
+        let native = if attest {
+            let (stream, session) = context
+                .stream
+                .as_ref()
+                .zip(context.session.as_ref())
+                .ok_or_else(|| {
+                    CliError::message("native projection requires an enrolled Stream and Session")
+                })?;
+            let client = connection
+                .as_ref()
+                .and_then(BuiltinFrontend::herdr)
+                .ok_or_else(|| {
+                    CliError::message(
+                        "native projection attestation requires an exact Herdr caller",
+                    )
+                })?;
+            Some(native::attest_context(
+                client,
+                &state,
+                stream,
+                session,
+                context.authority.as_ref(),
+            )?)
+        } else {
+            None
+        };
+        let native_inventory = if include_inventory {
+            if !attest {
+                return Err(CliError::message("native inventory requires --attest"));
+            }
+            Some(native::native_inventory(
+                connection
+                    .as_ref()
+                    .and_then(BuiltinFrontend::herdr)
+                    .expect("attestation requires Herdr"),
+            )?)
+        } else {
+            None
+        };
+        Ok(AgentObservation {
+            context,
+            documents,
+            native,
+            native_inventory,
+        })
+    }
+
     fn agent(&self, command: AgentCommand) -> Result<Output> {
         match command {
             AgentCommand::Enroll => self.enroll(),
@@ -896,97 +1031,39 @@ impl App {
                 attest,
                 native_inventory,
             } => {
-                let opened = application::open(&self.config)?;
-                let state = self.state(&opened)?;
-                let connection = self.native_frontend(&self.selection(None)?, 30.0)?;
-                let workspace_stream = connection
-                    .as_ref()
-                    .map(|frontend| {
-                        frontend.caller()?.context_stream_id(
-                            &state,
-                            self.environment
-                                .get("STREAMS_STREAM_ID")
-                                .map(String::as_str),
-                        )
-                    })
-                    .transpose()?
-                    .flatten();
-                let source = opened.source_id()?;
-                let context = agent::context(
-                    opened.backend(),
-                    opened.host().as_str(),
-                    &source,
-                    ContextRequest {
-                        harness,
-                        native_id: &session_id,
-                        stream_id: stream_id.as_deref(),
-                        environment_stream_id: self
-                            .environment
-                            .get("STREAMS_STREAM_ID")
-                            .map(String::as_str),
-                        workspace_stream_id: workspace_stream.as_deref(),
-                    },
-                )
-                .map_err(|error| CliError::message(error.to_string()))?;
-                let mut value = serde_json::to_value(&context)?;
-                let document_context =
-                    if let (Some(stream), Some(session)) = (&context.stream, &context.session) {
-                        documents::context(
-                            &self.registry(&opened)?,
-                            &self.locations(&opened)?,
-                            stream,
-                            session,
-                        )
-                    } else {
-                        json!({"checkouts":[],"document_locations":[]})
-                    };
+                let observed = self.agent_observation(
+                    harness,
+                    &session_id,
+                    stream_id.as_deref(),
+                    attest,
+                    native_inventory,
+                    30.0,
+                )?;
+                let mut value = serde_json::to_value(&observed.context)?;
                 value.as_object_mut().expect("context object").extend(
-                    document_context
+                    observed
+                        .documents
                         .as_object()
                         .expect("document context object")
                         .clone(),
                 );
-                if attest {
-                    let (stream, session) = context
-                        .stream
-                        .as_ref()
-                        .zip(context.session.as_ref())
-                        .ok_or_else(|| {
-                        CliError::message(
-                            "native projection requires an enrolled Stream and Session",
-                        )
-                    })?;
-                    let client = connection
-                        .as_ref()
-                        .and_then(BuiltinFrontend::herdr)
-                        .ok_or_else(|| {
-                            CliError::message(
-                                "native projection attestation requires an exact Herdr caller",
-                            )
-                        })?;
-                    value["native"] = serde_json::to_value(native::attest_context(
-                        client,
-                        &state,
-                        stream,
-                        session,
-                        context.authority.as_ref(),
-                    )?)?;
+                if let Some(native) = observed.native {
+                    value["native"] = serde_json::to_value(native)?;
                 }
-                if native_inventory {
-                    if !attest {
-                        return Err(CliError::message("native inventory requires --attest"));
-                    }
-                    let client = connection
-                        .as_ref()
-                        .and_then(BuiltinFrontend::herdr)
-                        .expect("attestation requires Herdr");
-                    value["native_inventory"] =
-                        serde_json::to_value(native::native_inventory(client)?)?;
+                if let Some(inventory) = observed.native_inventory {
+                    value["native_inventory"] = serde_json::to_value(inventory)?;
                 }
                 Ok(Output::value(value))
             }
         }
     }
+}
+
+struct AgentObservation {
+    context: agent::AgentContext,
+    documents: Value,
+    native: Option<native::NativeCaller>,
+    native_inventory: Option<native::NativeInventory>,
 }
 
 fn mode(mode: &FrontendMode) -> &str {

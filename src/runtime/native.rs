@@ -280,7 +280,7 @@ struct InventorySessionMetadata {
     value: String,
 }
 
-#[derive(Debug, Clone, Serialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 pub struct NativeInventoryPane {
     pane_id: String,
     terminal_id: String,
@@ -308,7 +308,7 @@ impl NativeInventoryPane {
 }
 
 /// Inventory is observation only. A native owner must refresh and match it under its lock.
-#[derive(Debug, Clone, Serialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 pub struct NativeInventory {
     socket: PathBuf,
     panes: Vec<NativeInventoryPane>,

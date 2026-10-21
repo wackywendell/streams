@@ -224,6 +224,16 @@ impl CardSnapshot {
     pub fn session(&self) -> &Session {
         &self.session
     }
+    pub fn owner(&self) -> &NativeOwnerObservation {
+        &self.context.owner
+    }
+    pub fn document_target(&self, repository: &str, path: &str) -> Option<DocumentTarget> {
+        self.stream
+            .documents
+            .iter()
+            .find(|document| document.repository == repository && document.path == path)
+            .map(|document| self.target(document))
+    }
 
     pub(super) fn target(&self, document: &Document) -> DocumentTarget {
         let location = self

@@ -152,6 +152,28 @@ impl HerdrClient {
         })
     }
 
+    /// Bounded coordinator transport. Effect authority and round-trip validation
+    /// stay in the native-card engine; this adapter never retries an operation.
+    pub(crate) fn card_request(
+        &self,
+        command: &[String],
+        expected: Option<&str>,
+        effect: bool,
+    ) -> Result<(Value, Vec<super::CommandEvidence>), FrontendError> {
+        let mut op = Operation::default();
+        self.verify_endpoint(&mut op)?;
+        let value = if let Some(expected) = expected {
+            self.result(&mut op, command, expected, effect)?
+        } else {
+            op.run(&self.transport, command, effect)?;
+            Value::Null
+        };
+        if effect {
+            op.acknowledge();
+        }
+        Ok((value, op.commands))
+    }
+
     pub fn endpoint(&self) -> &HerdrEndpoint {
         &self.endpoint
     }

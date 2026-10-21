@@ -1,4 +1,6 @@
-//! Pure work-card painting. Observations and returned targets confer no native authority.
+//! Work-card painting and terminal application. Targets confer no native authority.
+
+pub mod application;
 
 mod render;
 mod snapshot;

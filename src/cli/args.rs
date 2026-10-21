@@ -17,6 +17,32 @@ pub(super) struct Cli {
 }
 
 #[derive(Debug, Subcommand)]
+pub(super) enum NativeCommand {
+    /// Open an explicitly requested display, or a single automatic display.
+    Open {
+        #[arg(long)]
+        automatic: bool,
+    },
+    /// Publish bounded native hints and manual-safe names.
+    Project {
+        #[arg(long, value_enum)]
+        reclaim: Option<NativeReclaim>,
+    },
+    /// Inspect exact native evidence without creating locks or state.
+    Check,
+    Focus,
+    Close,
+    #[command(hide = true)]
+    Pane,
+}
+#[derive(Debug, Clone, Copy, clap::ValueEnum)]
+pub(super) enum NativeReclaim {
+    All,
+    Workspace,
+    Tab,
+}
+
+#[derive(Debug, Subcommand)]
 pub(super) enum Command {
     Init {
         #[arg(long)]
@@ -35,6 +61,17 @@ pub(super) enum Command {
     Frontend {
         #[command(subcommand)]
         command: FrontendCommand,
+    },
+    /// Explicit opt-in Herdr card trial; never changes installed defaults.
+    Native {
+        #[arg(long, global = true)]
+        session_id: Option<String>,
+        #[arg(long, global = true)]
+        plugin_root: Option<PathBuf>,
+        #[arg(long, global = true)]
+        state_dir: Option<PathBuf>,
+        #[command(subcommand)]
+        command: NativeCommand,
     },
     List {
         query: Option<String>,
