@@ -563,6 +563,7 @@ def add_stream_fields(parser):
 def build_parser():
     parser = argparse.ArgumentParser(description="Manage durable work streams.", allow_abbrev=False)
     sub = parser.add_subparsers(dest="command", required=True, parser_class=lambda **kwargs: argparse.ArgumentParser(allow_abbrev=False, **kwargs))
+    sub.add_parser("debug", help="non-interactive frozen prompt capture, preparation and replay", add_help=False)
     init = sub.add_parser("init", help="explicitly initialize a new local or shared catalog")
     init.add_argument("--sync", choices=("none", "git"), required=True)
     init.add_argument("--remote")
@@ -706,12 +707,20 @@ def build_parser():
         child.set_defaults(func=command_agent)
         add_output(child)
     for name, child in sub.choices.items():
-        if name not in ("frontend", "session", "agent", "checkout", "workspace"):
+        if name not in ("frontend", "session", "agent", "checkout", "workspace", "debug"):
             add_output(child)
     return parser
 
 
 def main(argv=None):
+    argv = list(sys.argv[1:] if argv is None else argv)
+    if argv and argv[0] == "debug":
+        from .prompt_lab_cli import forward
+        try:
+            return forward(argv[1:])
+        except OSError as error:
+            print(f"streams debug: {error}", file=sys.stderr)
+            return 2
     parser = build_parser()
     args = parser.parse_args(argv)
     try:

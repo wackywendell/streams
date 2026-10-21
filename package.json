@@ -19,6 +19,7 @@
     "prepack": "npm --prefix integrations/herdr-work-cards run build"
   },
   "dependencies": {
+    "jiti": "2.7.0",
     "string-width": "^8.3.0"
   },
   "pi": {
@@ -33,7 +34,6 @@
     "typebox": "*"
   },
   "devDependencies": {
-    "@earendil-works/pi-coding-agent": "0.99.2",
-    "jiti": "2.7.0"
+    "@earendil-works/pi-coding-agent": "0.99.2"
   }
 }
