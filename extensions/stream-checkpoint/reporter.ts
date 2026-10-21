@@ -58,7 +58,7 @@ export class Reporter {
    let completed = false;
    const label = pending.reset ? (pending.auto ? "⟳ Unlocking names & regenerating..." : "⟳ Regenerating fields...") : pending.force ? "⟳ Updating work card..." : "⟳ Updating...";
    this.options.activity?.(label);
-   try {completed = await this.report(pending, fence);} catch (error) {if (fence.current()) this.options.notice(String(error));}
+   try {completed = await this.report(pending, fence);} catch (error) {if (fence.current()) this.options.notice(error instanceof Error ? error.message : String(error));}
    finally {
     if (fence.live()) {
      this.options.activity?.(undefined, completed && !this.pending);

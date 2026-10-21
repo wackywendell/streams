@@ -583,6 +583,66 @@ test('only streams slash command registers; model checkpoint tool retains its in
  assert.deepEqual([...f.tools.keys()],['stream_read','checkpoint','select_stream','create_stream']);
  assert.ok(f.tools.get('checkpoint').parameters.properties.instructions);
 });
+test('bare debug gives gated informational help without model, CLI or dialog calls',async()=>{
+ for(const enabled of [true,false]) {
+  const f=commandFixture({settings:{debug_commands:enabled}});
+  f.ctx.modelRegistry={getAvailable:()=>assert.fail('help must not list models'),complete:()=>assert.fail('help must not infer')};
+  await f.run('  debug  ');
+  assert.equal(f.notices.length,1);assert.equal(f.notices[0].level,enabled?'info':'warning');
+  assert.match(f.notices[0].text,/^Streams — /);assert.doesNotMatch(f.notices[0].text,/Error:|Usage:/);
+  assert.match(f.notices[0].text,enabled?/debug capture[\s\S]*debug replay/:/Debug commands are disabled/);
+  assert.equal(f.reads(),0);
+  for(const effects of [f.requests,f.writes,f.receipts,f.dialogs,f.activity])assert.deepEqual(effects,[]);
+ }
+});
+test('Streams notifications use Error messages without stacked error branding',async()=>{
+ const f=commandFixture();await f.run('pane');
+ assert.deepEqual(f.notices,[{text:'Streams — Native work cards require session startup in an interactive Herdr pane.',level:'warning'}]);
+});
+test('report helper failures use Error messages without stacked branding',async()=>{
+ const f=commandFixture({infer:async()=>{throw Error('Synthetic helper failure');}});
+ await f.run('report');await until(()=>f.activity.length===2);
+ assert.deepEqual(f.notices,[{text:'Streams — Synthetic helper failure',level:'warning'}]);
+});
+test('catalog sync keeps full Error diagnostics internally but not in Streams notifications',async()=>{
+ const handlers=new Map(),entries=[],notices=[];
+ registerWorkCard({on:(name,fn)=>handlers.set(name,fn),registerCommand:()=>{},registerTool:()=>{},appendEntry:(type,value)=>entries.push({type,value})},{settings:{...defaults},cli:{sync:async()=>{throw Error('offline');}}});
+ const ctx={mode:'print',hasUI:false,cwd:'/repo',sessionManager:{getSessionId:()=> 'native'},ui:{notify:(text,level)=>notices.push({text,level}),setStatus:()=>{}}};
+ await handlers.get('session_start')({},ctx);
+ assert.equal(entries.find(entry=>entry.type==='stream-catalog-sync').value.error,'Error: offline');
+ assert.equal(notices.length,1);assert.match(notices[0].text,/^Streams — Catalog sync \(start\): offline\./);assert.doesNotMatch(notices[0].text,/Error:/);
+});
+test('explicit report receipt notifications use the Streams prefix',async()=>{
+ const f=commandFixture({infer:async req=>({changes:req.type==='session'?{state:'Fresh progress'}:{}})});
+ await f.run('report');await until(()=>f.activity.length===2);
+ assert.equal(f.notices.length,1);assert.match(f.notices[0].text,/^Streams — Work card/);
+});
+test('debug completion descends into children and replay flags without treating positional input as flags',async()=>{
+ const f=commandFixture({settings:{debug_commands:true}}),complete=f.commands.get('streams').getArgumentCompletions;
+ const labels=prefix=>(complete(prefix)??[]).map(item=>item.label);
+ assert.ok(labels('').includes('debug'));
+ for(const prefix of ['debug','debug '])assert.deepEqual(labels(prefix),['capture','replay']);
+ assert.deepEqual(labels('debug c'),['capture']);assert.deepEqual(labels('debug re'),['replay']);
+ assert.deepEqual(labels('debug capture '),['stream','workspace']);assert.deepEqual(labels('debug capture w'),['workspace']);
+ assert.deepEqual(labels('debug replay '),['--model','--reset']);
+ assert.deepEqual(labels('debug replay frozen-id --m'),['--model']);
+ assert.deepEqual(labels('debug replay --reset '),['session','stream','all']);
+ assert.deepEqual(labels('debug replay --reset s'),['session','stream']);
+ assert.deepEqual(labels('debug replay --reset session --a'),['--auto']);
+ assert.deepEqual(labels('debug replay --reset --a'),['--auto']);
+ assert.deepEqual(labels('debug replay frozen-id --reset all --auto '),['--model']);
+ for(const prefix of ['report --m','debug capture stream ','debug capture stream --m','debug capture workspace target ','debug replay frozen','debug replay --reset invalid ','debug replay --model ','debug replay --model --r','debug unknown '])assert.equal(complete(prefix),null,prefix);
+ for(const prefix of ['debug ','debug re','debug replay --m','debug replay --reset s'])for(const item of complete(prefix)) {
+  assert.ok(item.description);assert.ok(item.value.startsWith('debug '));assert.doesNotMatch(item.value,/PROVIDER|CAPTURE_ID/);
+ }
+ f.ctx.modelRegistry={getAvailable:()=>[{provider:'registered',id:'actual-model'}]};
+ await f.run('debug');
+ assert.deepEqual(complete('debug replay --model reg'),[{value:'debug replay --model registered/actual-model',label:'registered/actual-model',description:'Replay with this available model'}]);
+ assert.deepEqual(labels('debug replay --model registered/actual-model --r'),['--reset']);
+ const disabled=commandFixture().commands.get('streams').getArgumentCompletions;
+ for(const prefix of ['debug','debug ','debug c','debug replay ','debug replay --reset s'])assert.equal(disabled(prefix),null);
+ assert.ok(disabled('').every(item=>item.value!=='debug'));
+});
 test('streams completes subcommand prefixes with short descriptions but never report instructions or extra arguments',async()=>{
  const complete=commandFixture().commands.get('streams').getArgumentCompletions;
  const items=[
@@ -628,7 +688,7 @@ test('streams reset on an unattached conversation warns without inference, write
  for(const associated of [true,false]) {
   const catalog=context();catalog.session=null;catalog.sessions=[];if(!associated)catalog.stream=null;
   const f=commandFixture({catalog});await f.run('reset');await until(()=>f.activity.length===2);
-  assert.deepEqual(f.notices,[{text:'Work card: Reset requires an attached work card. Use /streams attach first.',level:'warning'}]);
+  assert.deepEqual(f.notices,[{text:'Streams — Reset requires an attached work card. Use /streams attach first.',level:'warning'}]);
   assert.deepEqual(f.requests,[]);assert.deepEqual(f.writes,[]);assert.deepEqual(f.receipts,[]);assert.deepEqual(f.dialogs,[]);
  }
 });
@@ -646,7 +706,7 @@ test('streams reset clears omitted short state and automatic short goal but pres
 });
 test('streams reset extra rejects arguments before reading the catalog or running a model',async()=>{
  const f=commandFixture();await f.run('reset extra');await turn();
- assert.deepEqual(f.notices,[{text:"Work card: Usage: /streams [card]; /streams report [instructions]; /streams reset [session|stream|all] [--auto]; /streams settings; /streams attach; /streams pane [close]. Put report instructions after 'report'.",level:'warning'}]);
+ assert.deepEqual(f.notices,[{text:"Streams — Usage: /streams [card]; /streams report [instructions]; /streams reset [session|stream|all] [--auto]; /streams settings; /streams attach; /streams pane [close]. Put report instructions after 'report'.",level:'warning'}]);
  assert.equal(f.reads(),0);for(const effects of [f.requests,f.writes,f.receipts,f.dialogs,f.activity])assert.deepEqual(effects,[]);
 });
 test('streams reset session and stream scopes unlock and infer only the targeted scope',async()=>{
@@ -912,7 +972,7 @@ test('receiptText formats human-readable summaries on success and background rep
  handlers.get('agent_end')({messages:[{role:'assistant',stopReason:'stop'}]},ctx);
  await until(()=>statuses.some(s=>s&&s.includes('Updated')));
  assert.equal(notices.length,0);
- assert.equal(statuses.at(-1),'Work card · <green>✓</green> Updated');
+ assert.equal(statuses.at(-1),'Streams · <green>✓</green> Updated');
  await handlers.get('session_shutdown')({},ctx);
 });
 test('openCard renders 3-tab Pi TUI (Actions, Stream, Session) and edits fields directly from Stream/Session tabs',async()=>{

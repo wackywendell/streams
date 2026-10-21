@@ -53,18 +53,18 @@ export default function registerWorkCard(pi: ExtensionAPI, options: Options = {}
  }
  const states = new Map<string, CardState>();
  const cli = (ctx: ExtensionContext) => options.cli ?? new StreamCli(ctx.cwd);
- const warning = (text: string) => {scope.context?.ui.notify(`Work card: ${text}`, "warning");};
+ const warning = (error: unknown) => {scope.context?.ui.notify(`Streams — ${error instanceof Error ? error.message : String(error)}`, "warning");};
  const receipt = (value: Receipt, deferNative = false, quiet = false) => {
   const text = receiptText(value), hasWarning = receiptHasWarning(value);
   // Receipts do not enter model context or count as fresh user work.
   pi.appendEntry("stream-catalog-receipt", value);
-  if (!quiet || hasWarning) scope.context?.ui.notify(text, hasWarning ? "warning" : "info");
+  if (!quiet || hasWarning) scope.context?.ui.notify(`Streams — ${text}`, hasWarning ? "warning" : "info");
   if (!deferNative && receiptCanContinue(value)) native?.update();
  };
  const showDoneStatus = (label = "Updated") => {
   clearStatusTimer();
   const check = (scope.context?.ui as any)?.theme?.fg?.("success", "✓") ?? "\x1b[32m✓\x1b[0m";
-  scope.context?.ui.setStatus("stream-reporting", `Work card · ${check} ${label}`);
+  scope.context?.ui.setStatus("stream-reporting", `Streams · ${check} ${label}`);
   statusTimer = setTimeout(() => {statusTimer = undefined;scope.context?.ui.setStatus("stream-reporting", undefined);}, 4000);
   statusTimer.unref?.();
  };
@@ -74,7 +74,7 @@ export default function registerWorkCard(pi: ExtensionAPI, options: Options = {}
   onReclaimNames: (target) => native?.reclaimNames(target).catch(() => {}),
   activity: (text, completed) => {
    clearStatusTimer();
-   if (text) scope.context?.ui.setStatus("stream-reporting", `Work card · ${text}`);
+   if (text) scope.context?.ui.setStatus("stream-reporting", `Streams · ${text}`);
    else if (completed) showDoneStatus("Updated");
    else scope.context?.ui.setStatus("stream-reporting", undefined);
   },
@@ -82,13 +82,14 @@ export default function registerWorkCard(pi: ExtensionAPI, options: Options = {}
  async function sync(ctx: ExtensionContext, event: "start" | "shutdown"): Promise<void> {
   const fence = scope.fence();
   let failure: {event: string; result?: unknown; error?: string} | undefined;
+  let message: string | undefined;
   try {
    const value = await cli(ctx).sync(event);
    if (resultNeedsAttention(value)) failure = {event, result: value};
-  } catch (error) {failure = {event, error: String(error)};}
+  } catch (error) {failure = {event, error: String(error)};message = error instanceof Error ? error.message : String(error);}
   if (failure && fence.live()) {
    pi.appendEntry("stream-catalog-sync", failure);
-   ctx.ui.notify(`Catalog sync (${event}): ${JSON.stringify(failure)}. Inspect with streams sync; local saves and publication are separate.`, "warning");
+   ctx.ui.notify(`Streams — Catalog sync (${event}): ${message ?? JSON.stringify(failure)}. Inspect with streams sync; local saves and publication are separate.`, "warning");
   }
  }
  const configure = async (ctx: ExtensionContext) => settingsDialog(ctx, settings(), (value) => {saveSettings(agentDir, value);config = value;}, agentDir);
@@ -105,7 +106,7 @@ export default function registerWorkCard(pi: ExtensionAPI, options: Options = {}
      const operation = randomUUID();
      const prospective = structuredClone([...state.discussion.messages, {role: "user" as const, text: input}]);
      clearStatusTimer();
-     ctx.ui.setStatus?.("stream-reporting", "Work card · ⟳ Thinking...");
+     ctx.ui.setStatus?.("stream-reporting", "Streams · ⟳ Thinking...");
      let response;
      try {
       response = await (options.infer ?? infer)(ctx, {type: "discussion", catalog, messages: evidence.messages, discussion: structuredClone(prospective)}, signal, settings().model, logging());
@@ -127,7 +128,7 @@ export default function registerWorkCard(pi: ExtensionAPI, options: Options = {}
      state.discussion.error = undefined;
      if (fence.live()) showDoneStatus(request ? "Updated" : "Replied");
     });
-   } catch(error) {if (fence.current()) {state.discussion.error = String(error);warning(String(error));}}
+   } catch(error) {if (fence.current()) {state.discussion.error = String(error);warning(error);}}
    if (!fence.live() || scope.stopped) return;
   }
  }
@@ -138,11 +139,11 @@ export default function registerWorkCard(pi: ExtensionAPI, options: Options = {}
   panelOpen = true;
   try {
    const catalog = await cli(ctx).context(ctx.sessionManager.getSessionId(), process.env.STREAMS_STREAM_ID);
-   if (!catalog.stream) {ctx.ui.notify("No work card attached. Use /streams attach to choose or create an effort, or start meaningful work for automatic enrollment.", "info");return;}
+   if (!catalog.stream) {ctx.ui.notify("Streams — No work card attached. Use /streams attach to choose or create an effort, or start meaningful work for automatic enrollment.", "info");return;}
    const key = JSON.stringify([ctx.sessionManager.getSessionId(), catalog.catalog_source, catalog.stream.id]);
    let state = states.get(key);if (!state) {state = {discussion: {input: "", messages: []}, edits: new Map()};states.set(key, state);}
    await openCard(ctx, cli(ctx), state, {receipt, discuss: () => discussion(ctx, state!), settings: () => configure(ctx), report: () => reporter.request(ctx), reset: (auto, target) => reporter.reset(ctx, auto, target)});
-  } catch(error) {warning(String(error));} finally {panelOpen = false;}
+  } catch(error) {warning(error);} finally {panelOpen = false;}
  }
  async function attach(ctx: ExtensionContext, args: {streamId?: string; title?: string; reason?: string}) {
   scope.use(ctx);
@@ -153,10 +154,41 @@ export default function registerWorkCard(pi: ExtensionAPI, options: Options = {}
  pi.registerCommand("streams", {
   description: "Open the work card, report or reset progress, configure reporting, attach a card, or open/close its native pane",
   getArgumentCompletions: (prefix) => {
-   if (prefix.startsWith("debug ")) {
+   if (prefix === "debug" || prefix.startsWith("debug ")) {
     if (!settings().debug_commands) return null;
-    const matches = [{value: "debug capture", label: "capture", description: "Freeze a stream or workspace"}, {value: "debug replay", label: "replay", description: "Replay frozen samples without live writes"}].filter(item => item.label.startsWith(prefix.slice(6)));
-    return matches.length ? matches : null;
+    const rest = prefix.slice(5).trimStart();
+    const children = [{value: "debug capture", label: "capture", description: "Freeze a stream or workspace"}, {value: "debug replay", label: "replay", description: "Replay frozen samples without live writes"}];
+    if (!/\s/.test(rest)) {
+     const matches = children.filter(item => item.label.startsWith(rest));
+     return matches.length ? matches : null;
+    }
+    const words = rest.split(/\s+/), child = words.shift();
+    const partial = words.pop() ?? "", base = `debug ${child} ${words.length ? words.join(" ") + " " : ""}`;
+    const choices = (items: {label: string; description: string}[]) => {
+     const matches = items.filter(item => item.label.startsWith(partial)).map(item => ({...item, value: base + item.label}));
+     return matches.length ? matches : null;
+    };
+    if (child === "capture") return words.length ? null : choices([{label: "stream", description: "Capture a stream by ID"}, {label: "workspace", description: "Capture a workspace by ID"}]);
+    if (child !== "replay") return null;
+    if (words[0] && !words[0].startsWith("--")) words.shift(); // A completed capture ID is positional, never a flag prefix.
+    const used = new Set<string>();
+    for (let i = 0; i < words.length; i++) {
+     const flag = words[i];
+     if (!["--model", "--reset", "--auto"].includes(flag) || used.has(flag)) return null;
+     used.add(flag);
+     if (flag === "--model") {
+      if (i === words.length - 1) return choices((scope.context?.modelRegistry?.getAvailable() ?? []).map(model => ({label: `${model.provider}/${model.id}`, description: "Replay with this available model"})));
+      if (words[++i].startsWith("--")) return null;
+     }
+     if (flag === "--reset" && i === words.length - 1 && !partial.startsWith("-")) return choices([{label: "session", description: "Reset session fields"}, {label: "stream", description: "Reset effort fields"}, {label: "all", description: "Reset both session and effort fields"}]);
+     if (flag === "--reset" && ["session", "stream", "all"].includes(words[i + 1])) i++;
+    }
+    if (partial && !partial.startsWith("-")) return null;
+    return choices([
+     {label: "--model", description: "Choose an available replay model"},
+     {label: "--reset", description: "Reset session, stream or all fields (default all)"},
+     ...(used.has("--reset") ? [{label: "--auto", description: "Re-enable automatic naming for reset"}] : []),
+    ].filter(item => !used.has(item.label)));
    }
    if (prefix.startsWith("reset ")) {
     const rest = prefix.slice(6);
@@ -195,12 +227,13 @@ export default function registerWorkCard(pi: ExtensionAPI, options: Options = {}
     if (command === "" || command === "card") await show(ctx);
     else if (command === "debug") {
      if (!settings().debug_commands) throw Error("Debug commands are disabled. Enable them in /streams settings → Debug → Debug commands.");
+     if (!instructions) {ctx.ui.notify("Streams — Debug commands\n/streams debug capture — freeze a stream or workspace\n/streams debug replay — choose a capture and model\nReplay options: --model PROVIDER/ID; --reset [session|stream|all]; --auto (with --reset).", "info");return;}
      await reporter.exclusive(signal => debugCommand(instructions, ctx, cli(ctx), agentDir, settings(), signal));
     }
     else if (command === "pane") {
      if (!native) throw Error("Native work cards require session startup in an interactive Herdr pane.");
      clearStatusTimer();
-     ctx.ui.setStatus?.("stream-reporting", instructions === "close" ? "Work card · ⟳ Closing pane..." : "Work card · ⟳ Opening pane...");
+     ctx.ui.setStatus?.("stream-reporting", instructions === "close" ? "Streams · ⟳ Closing pane..." : "Streams · ⟳ Opening pane...");
      let ok = false;
      try {
       if (instructions === "close") await native.close();else await native.open();
@@ -218,7 +251,7 @@ export default function registerWorkCard(pi: ExtensionAPI, options: Options = {}
     else if (command === "report") {settings();reporter.request(ctx, true, instructions);}
    } catch(error) {
     if ((command === "pane" || command === "debug") && !paneFence.current()) return;
-    warning(String(error));
+    warning(error);
    }
   },
  });
@@ -242,7 +275,7 @@ export default function registerWorkCard(pi: ExtensionAPI, options: Options = {}
   if (scope.stopped) return;
   scope.use(ctx);
   if (!event.messages.some((message) => message.role === "assistant" && ["stop", "length"].includes(message.stopReason))) return;
-  try {reporter.response(ctx);} catch(error) {warning(String(error));}
+  try {reporter.response(ctx);} catch(error) {warning(error);}
  });
  pi.on("session_tree", (_event, ctx) => {clearStatusTimer();ctx.ui.setStatus?.("stream-debug", undefined);scope.invalidate();native?.invalidate();});
  pi.on("session_shutdown", (_event, ctx) => shutdown ??= (async () => {

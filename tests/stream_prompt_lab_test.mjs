@@ -287,7 +287,7 @@ test('enabled Pi commands capture both cards and evidence, then replay reset thr
   }};
   const real=new StreamCli(f.dir),client={captureInputs:async target=>{assert.deepEqual(target,{kind:'stream',id:'effort'});return f.inventory;},preview:(input,signal)=>real.preview(input,signal)};
   extension({registerCommand:(_name,value)=>{command=value;},registerTool(){},on(){},appendEntry:()=>assert.fail('debug must not append to real history')},{agentDir:f.dir,cli:client,settings:{...defaults,debug_commands:true}});
-  assert.equal(command.getArgumentCompletions('debug')[0].value,'debug');
+  assert.equal(command.getArgumentCompletions('debug')[0].value,'debug capture');
   await command.handler('debug capture stream effort',ctx);assert.equal(calls,0);
   const root=join(f.dir,'stream-debug'),id=captureIds(root)[0];assert.ok(id,notices.join('\n'));
   const snapshot=loadCapture(root,id);assert.ok(snapshot.samples[0].evidence);assert.equal(snapshot.samples[0].catalog.session.title,'Lane');
