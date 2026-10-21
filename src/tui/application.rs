@@ -168,30 +168,36 @@ impl Controller {
         Some(Request::Read(token))
     }
     fn complete(&mut self, response: Response) -> Result<Option<Request>, String> {
-        match response {
+        if self.settle(response)? {
+            return Ok(self.refresh());
+        }
+        Ok(None)
+    }
+    // Apply the sole operation's result even when quitting, without dispatching more I/O.
+    fn settle(&mut self, response: Response) -> Result<bool, String> {
+        let refresh = match response {
             Response::Ready(result) if self.busy == Busy::Starting => {
                 result?;
                 self.busy = Busy::Idle;
-                return Ok(self.refresh());
+                true
             }
             Response::Read(token, result) if self.busy == Busy::Read(token) => {
-                let result = result.map(|snapshot| *snapshot);
-                let snapshot = result.as_ref().ok().cloned();
-                if self.view.complete_refresh(token, result) {
-                    self.snapshot = snapshot;
-                }
+                self.view
+                    .complete_refresh(token, result.map(|snapshot| *snapshot));
+                self.snapshot = self.view.current_snapshot().cloned();
                 self.busy = Busy::Idle;
+                false
             }
             Response::Activated(result) if self.busy == Busy::Activate => {
                 self.view
                     .set_notice(result.err().map(|e| format!("Activation failed: {e}")));
                 self.busy = Busy::Idle;
-                return Ok(self.refresh());
+                true
             }
-            _ => return Ok(None),
-        }
+            _ => return Ok(false),
+        };
         self.dirty = true;
-        Ok(None)
+        Ok(refresh)
     }
     fn resize(&mut self) {
         self.view.geometry_changed();
@@ -210,6 +216,7 @@ impl Controller {
         if matches!(&event, Event::Key(k) if k.kind == KeyEventKind::Press
             && k.code == KeyCode::Char('r') && k.modifiers == KeyModifiers::CONTROL)
         {
+            self.view.set_notice(None);
             return self.refresh();
         }
         let painted = self.painted.as_ref()?;
@@ -241,7 +248,7 @@ impl Controller {
         Some(request)
     }
     fn close(&mut self) -> Option<Request> {
-        if self.busy != Busy::Idle {
+        if self.busy != Busy::Idle || self.snapshot.is_none() {
             return None;
         }
         self.busy = Busy::Closing;
@@ -378,26 +385,28 @@ where
     );
     // Ratatui's Drop may show the cursor; run it BEFORE restoring saved modes.
     drop(terminal);
-    // A terminal failure or external signal never schedules native close.
-    match outcome {
-        Ok(true) => {
-            // Keep handlers alive, but do NOT translate the resulting Herdr HUP into
-            // cancellation while the one bounded close is awaiting acknowledgement.
-            state
-                .restore()
-                .map_err(|e| format!("Terminal restore failed; native card retained: {e}"))?;
-            explicit_close(&mut controller, &worker)?;
-        }
-        Ok(false) => {
-            worker.cancel.store(true, Ordering::SeqCst);
-        }
-        Err(error) => {
-            worker.cancel.store(true, Ordering::SeqCst);
-            return Err(error);
-        }
-    }
-    worker.finish()?;
-    state.restore().map_err(|e| e.to_string())
+    finish_interaction(&mut controller, &mut worker, outcome, || state.restore())
+}
+
+fn finish_interaction(
+    controller: &mut Controller,
+    worker: &mut Worker,
+    outcome: Result<bool, String>,
+    restore: impl FnOnce() -> io::Result<()>,
+) -> Result<(), String> {
+    // Restore on every exit before settling or joining any bounded native operation.
+    let restored =
+        restore().map_err(|e| format!("Terminal restore failed; native card retained: {e}"));
+    let result = restored.and_then(|()| match outcome {
+        // Keep handlers alive, but do NOT translate the resulting Herdr HUP into
+        // cancellation while the one bounded close is awaiting acknowledgement.
+        Ok(true) => explicit_close(controller, worker),
+        Ok(false) => Ok(()),
+        Err(error) => Err(error),
+    });
+    // Cancellation also happens when restoration or explicit close failed.
+    let joined = worker.finish();
+    result.and(joined)
 }
 
 fn interact(
@@ -476,17 +485,16 @@ fn explicit_close(controller: &mut Controller, worker: &Worker) -> Result<(), St
             .recv()
             .map_err(|e| retained(e.to_string()))?
         {
-            Response::Ready(result) => {
-                result.map_err(retained)?;
-                controller.busy = Busy::Idle;
-            }
-            Response::Read(..) | Response::Activated(..) => controller.busy = Busy::Idle,
             Response::Closed(result) => return result.map_err(retained),
+            response => {
+                controller.settle(response).map_err(retained)?;
+            }
         }
     }
-    if let Some(request) = controller.close() {
-        worker.send(request).map_err(retained)?;
-    }
+    let request = controller
+        .close()
+        .ok_or_else(|| retained("No current attested display snapshot".into()))?;
+    worker.send(request).map_err(retained)?;
     match worker
         .responses
         .recv()
@@ -697,13 +705,14 @@ mod tests {
         calls: Sender<&'static str>,
         release: Receiver<()>,
         fail_close: bool,
+        read_result: Result<CardSnapshot, String>,
         _not_send: std::rc::Rc<()>,
     }
     impl PaneHost for Fake {
         fn read(&mut self) -> Result<CardSnapshot, String> {
             self.calls.send("read").unwrap();
             self.release.recv().unwrap();
-            Ok(snapshot())
+            self.read_result.clone()
         }
         fn activate(&mut self, _: &CardSnapshot, _: &Target) -> Result<(), String> {
             self.calls.send("activate").unwrap();
@@ -718,6 +727,223 @@ mod tests {
             }
         }
     }
+    fn observation_worker(
+        result: Result<CardSnapshot, String>,
+    ) -> (Worker, Receiver<&'static str>, Sender<()>) {
+        let (calls, seen) = mpsc::channel();
+        let (release, blocked) = mpsc::channel();
+        let worker = Worker::start(move |_| {
+            Ok(Fake {
+                calls,
+                release: blocked,
+                fail_close: false,
+                read_result: result,
+                _not_send: std::rc::Rc::new(()),
+            })
+        })
+        .unwrap();
+        (worker, seen, release)
+    }
+
+    #[test]
+    fn starting_quit_does_not_read_or_close() {
+        let (mut worker, seen, _release) = observation_worker(Ok(snapshot()));
+        let mut c = Controller::new();
+        assert!(
+            explicit_close(&mut c, &worker)
+                .unwrap_err()
+                .contains("No current")
+        );
+        assert!(c.snapshot.is_none());
+        worker.finish().unwrap();
+        assert!(seen.try_recv().is_err());
+    }
+
+    #[test]
+    fn quitting_settles_initial_read_without_another_read() {
+        for result in [Err("initial read failed".into()), Ok(snapshot())] {
+            let succeeds = result.is_ok();
+            let (mut worker, seen, release) = observation_worker(result);
+            let mut c = Controller::new();
+            worker
+                .send(
+                    c.complete(worker.responses.recv().unwrap())
+                        .unwrap()
+                        .unwrap(),
+                )
+                .unwrap();
+            assert_eq!(seen.recv().unwrap(), "read");
+            release.send(()).unwrap();
+            assert_eq!(explicit_close(&mut c, &worker).is_ok(), succeeds);
+            assert_eq!(c.snapshot.is_some(), succeeds);
+            worker.finish().unwrap();
+            let remaining: Vec<_> = seen.try_iter().collect();
+            assert_eq!(remaining, if succeeds { vec!["close"] } else { vec![] });
+        }
+    }
+
+    #[test]
+    fn failed_initial_read_and_switched_scope_never_close() {
+        for switched in [false, true] {
+            let mut c = if switched { ready() } else { Controller::new() };
+            let request = if switched {
+                c.refresh()
+            } else {
+                c.complete(Response::Ready(Ok(()))).unwrap()
+            };
+            let Some(Request::Read(token)) = request else {
+                panic!()
+            };
+            let mut other = snapshot();
+            other.scope.catalog_source = "different".into();
+            let result = if switched {
+                Ok(Box::new(other))
+            } else {
+                Err("initial read failed".into())
+            };
+            c.complete(Response::Read(token, result)).unwrap();
+            assert!(c.snapshot.is_none());
+            assert!(c.view.current_snapshot().is_none());
+            let (mut worker, seen, _release) = observation_worker(Ok(snapshot()));
+            assert!(matches!(
+                worker.responses.recv().unwrap(),
+                Response::Ready(Ok(()))
+            ));
+            assert!(
+                explicit_close(&mut c, &worker)
+                    .unwrap_err()
+                    .contains("No current")
+            );
+            worker.finish().unwrap();
+            assert!(seen.try_recv().is_err());
+        }
+    }
+
+    #[test]
+    fn quitting_inflight_scope_switch_does_not_close() {
+        let mut other = snapshot();
+        other.scope.catalog_source = "different".into();
+        let (mut worker, seen, release) = observation_worker(Ok(other));
+        assert!(matches!(
+            worker.responses.recv().unwrap(),
+            Response::Ready(Ok(()))
+        ));
+        let mut c = ready();
+        worker.send(c.refresh().unwrap()).unwrap();
+        assert_eq!(seen.recv().unwrap(), "read");
+        release.send(()).unwrap();
+        assert!(
+            explicit_close(&mut c, &worker)
+                .unwrap_err()
+                .contains("No current")
+        );
+        assert!(c.snapshot.is_none());
+        worker.finish().unwrap();
+        assert!(seen.try_recv().is_err());
+    }
+
+    #[test]
+    fn manual_refresh_clears_activation_failure_notice() {
+        let mut c = ready();
+        assert!(matches!(c.input(key('a')), Some(Request::Activate(..))));
+        let Some(Request::Read(token)) = c
+            .complete(Response::Activated(Err("denied".into())))
+            .unwrap()
+        else {
+            panic!()
+        };
+        c.complete(Response::Read(token, Ok(Box::new(snapshot()))))
+            .unwrap();
+        let frame = c.paint(Rect::new(0, 0, 100, 30));
+        let text = (0..30)
+            .map(|y| super::super::render::buffer_line(&frame.buffer, y))
+            .collect::<String>();
+        assert!(text.contains("Activation failed: denied"));
+        let refresh = Event::Key(KeyEvent::new(KeyCode::Char('r'), KeyModifiers::CONTROL));
+        let Some(Request::Read(token)) = c.input(refresh) else {
+            panic!()
+        };
+        c.complete(Response::Read(token, Ok(Box::new(snapshot()))))
+            .unwrap();
+        let frame = c.paint(Rect::new(0, 0, 100, 30));
+        let text = (0..30)
+            .map(|y| super::super::render::buffer_line(&frame.buffer, y))
+            .collect::<String>();
+        assert!(!text.contains("Activation failed"));
+    }
+
+    struct TeardownHost {
+        restored: Arc<AtomicBool>,
+        calls: Sender<&'static str>,
+    }
+    impl PaneHost for TeardownHost {
+        fn read(&mut self) -> Result<CardSnapshot, String> {
+            unreachable!()
+        }
+        fn activate(&mut self, _: &CardSnapshot, _: &Target) -> Result<(), String> {
+            unreachable!()
+        }
+        fn close(&mut self) -> Result<(), String> {
+            assert!(self.restored.load(Ordering::SeqCst));
+            self.calls.send("close").unwrap();
+            Ok(())
+        }
+    }
+    impl Drop for TeardownHost {
+        fn drop(&mut self) {
+            assert!(self.restored.load(Ordering::SeqCst));
+            self.calls.send("drop").unwrap();
+        }
+    }
+
+    #[test]
+    fn restoration_precedes_close_and_worker_teardown_on_every_exit() {
+        for (outcome, restore_fails, closes) in [
+            (Ok(true), false, true),
+            (Ok(false), false, false),
+            (Err("draw failed".into()), false, false),
+            (Ok(true), true, false),
+            (Ok(false), true, false),
+            (Err("draw failed".into()), true, false),
+        ] {
+            let restored = Arc::new(AtomicBool::new(false));
+            let observed = restored.clone();
+            let (calls, seen) = mpsc::channel();
+            let mut worker = Worker::start(move |_| {
+                Ok(TeardownHost {
+                    restored: observed,
+                    calls,
+                })
+            })
+            .unwrap();
+            assert!(matches!(
+                worker.responses.recv().unwrap(),
+                Response::Ready(Ok(()))
+            ));
+            let mut c = ready();
+            let fails = restore_fails || outcome.is_err();
+            let result = finish_interaction(&mut c, &mut worker, outcome, || {
+                restored.store(true, Ordering::SeqCst);
+                if restore_fails {
+                    Err(io::Error::other("restore failed"))
+                } else {
+                    Ok(())
+                }
+            });
+            assert_eq!(result.is_err(), fails);
+            assert!(worker.cancel.load(Ordering::SeqCst));
+            assert!(worker.thread.is_none());
+            assert_eq!(
+                seen.try_iter().collect::<Vec<_>>(),
+                if closes {
+                    vec!["close", "drop"]
+                } else {
+                    vec!["drop"]
+                }
+            );
+        }
+    }
+
     #[test]
     fn signal_cancellation_joins_without_close() {
         let (calls, seen) = mpsc::channel();
@@ -727,6 +953,7 @@ mod tests {
                 calls,
                 release: blocked,
                 fail_close: false,
+                read_result: Ok(snapshot()),
                 _not_send: std::rc::Rc::new(()),
             })
         })
@@ -754,6 +981,7 @@ mod tests {
                 calls,
                 release: blocked,
                 fail_close: true,
+                read_result: Ok(snapshot()),
                 _not_send: std::rc::Rc::new(()),
             })
         })

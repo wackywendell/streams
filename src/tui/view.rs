@@ -168,6 +168,13 @@ impl CardView {
         true
     }
 
+    pub(super) fn current_snapshot(&self) -> Option<&CardSnapshot> {
+        match &self.observation {
+            Observation::Current(snapshot) => Some(snapshot),
+            _ => None,
+        }
+    }
+
     /// Invalidates captured targets before an asynchronous resize/repaint is scheduled.
     pub fn geometry_changed(&mut self) {
         self.invalidate();
