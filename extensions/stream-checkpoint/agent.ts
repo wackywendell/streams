@@ -2,7 +2,7 @@ import { convertToLlm, estimateTokens, SessionManager } from "@earendil-works/pi
 import { chmodSync, mkdirSync, writeFileSync } from "node:fs";
 import { setTimeout } from "node:timers/promises";
 import { Type } from "typebox";
-import { Check } from "typebox/value";
+import { Check, Errors } from "typebox/value";
 import type { ExtensionContext } from "@earendil-works/pi-coding-agent";
 import type { AssistantMessage } from "@earendil-works/pi-ai";
 import type { LocalContext } from "./streams.ts";
@@ -44,14 +44,15 @@ export function assertContextFits(model: {contextWindow?: number}, systemPrompt:
  if (model.contextWindow && tokens > model.contextWindow * 0.9) throw Error(`Report input exceeds the model context budget (${tokens} tokens). Compact the main conversation or choose a larger model. No history was dropped.`);
 }
 type InferenceInput = {catalog: LocalContext; messages: any[]; instructions?: string};
-type EnrollmentInference = InferenceInput & {type: "enroll"};
-type ReportInference = InferenceInput & {type: "session" | "stream"; reset?: boolean};
+export type EnrollmentInference = InferenceInput & {type: "enroll"};
+export type ReportInference = InferenceInput & {type: "session" | "stream"; reset?: boolean};
 type DiscussionInference = InferenceInput & {type: "discussion"; discussion?: {role: "user" | "assistant"; text: string}[]};
 export type Inference = EnrollmentInference | ReportInference | DiscussionInference;
-type EnrollmentResult = {meaningful: boolean; stream?: {title: string; goal?: string; goal_short?: string}; session?: {title: string}};
-type ReportResult = {changes: Record<string, unknown>};
+export type EnrollmentResult = {meaningful: boolean; stream?: {title: string; goal?: string; goal_short?: string}; session?: {title: string}};
+export type ReportResult = {changes: Record<string, unknown>};
 type DiscussionResult = {reply: string; edit?: {kind: "stream" | "session"; actor: "automatic" | "user"; changes: Record<string, unknown>}};
 export type Inferred = EnrollmentResult | ReportResult | DiscussionResult;
+export type InferenceResult<T extends Inference> = T extends EnrollmentInference ? EnrollmentResult : T extends ReportInference ? ReportResult : DiscussionResult;
 export function changesSchema(kind: "stream" | "session", catalog: LocalContext, actor: "automatic" | "user", allowEmpty = true) {
  const before = catalog[kind];if (!before) return Type.Object({}, {additionalProperties: false});
  const link = Type.Object({url: Type.String(), description: Type.String()}, {additionalProperties: false});
@@ -76,31 +77,8 @@ No repetition or filler: never repeat words from the effort title in the session
 
 For session reports, update session.status (active, waiting, blocked, parked, done) from conversation evidence: set done when the user indicates this session is done or wrapped up (e.g. "I think we're done here", "that's all for this", "looks good, thanks") or when this session's scoped task is finished with no remaining work for this chat; set parked when the user pauses or shelves this session for later; set waiting when waiting on CI, review, an external system, or another session; set blocked when unable to proceed due to an unresolved blocker; set active when work in this session is ongoing or resumes. Only whole-effort stream.status is manual-only.`;
 const sessionProgressPrompt = `Write state as a brief orientation for someone returning to the work: what meaningfully changed and where things stand. Use one or two short sentences, normally under 35 words; shorter is better. Do not enumerate completed steps, test counts, commit hashes, rollout inventories, or other specific details unless essential to understanding the result. Put unfinished scope and blockers in remaining. This is to provide the user a quick update/reminder of the current status, not a completion report.`;
-const transientError = /(?:\b(?:429|502|503|504)\b|upstream connect error|disconnect\/reset before headers|connection termination|overloaded|ECONNRESET|ETIMEDOUT)/i;
-async function completeWithRetry(complete: () => Promise<AssistantMessage>, signal: AbortSignal, log?: SessionManager): Promise<AssistantMessage> {
- for (let attempt = 0; ; attempt++) {
-  if (signal.aborted) throw Error("Reporting cancelled");
-  log?.appendCustomEntry("stream-helper-attempt", {attempt: attempt + 1});
-  let response: AssistantMessage | undefined, failure: unknown;
-  try {response = await complete();}
-  catch (error) {log?.appendCustomEntry("stream-helper-attempt-error", {attempt: attempt + 1, error: String(error)});failure = error;}
-  if (response) {
-   log?.appendMessage(response);
-   if (response.stopReason !== "error") return response;
-   failure = Error(response.errorMessage ?? "Reporting model failed");
-  }
-  if (signal.aborted) throw Error("Reporting cancelled");
-  if (attempt >= 2 || !transientError.test(String(failure))) throw failure;
-  await setTimeout(150 * (attempt + 1), undefined, {signal});
- }
-}
-export type InferenceLogOptions = {directory: string; onCreate?(value: {session_id: string; session_file: string}): void};
-export function infer(ctx: ExtensionContext, request: EnrollmentInference, signal: AbortSignal, configured?: {provider: string; id: string}, logging?: InferenceLogOptions): Promise<EnrollmentResult>;
-export function infer(ctx: ExtensionContext, request: ReportInference, signal: AbortSignal, configured?: {provider: string; id: string}, logging?: InferenceLogOptions): Promise<ReportResult>;
-export function infer(ctx: ExtensionContext, request: DiscussionInference, signal: AbortSignal, configured?: {provider: string; id: string}, logging?: InferenceLogOptions): Promise<DiscussionResult>;
-export async function infer(ctx: ExtensionContext, request: Inference, signal: AbortSignal, configured?: {provider: string; id: string}, logging?: InferenceLogOptions): Promise<Inferred> {
- const model = configured ? ctx.modelRegistry.find(configured.provider, configured.id) : ctx.model;
- if (!model) throw Error("Configured reporting model is unavailable. Choose an available provider/model; no fallback was used.");
+export type InferencePayload = {systemPrompt: string; messages: ReturnType<typeof convertToLlm>; tools: {name: string; description: string; parameters: any}[]};
+export function buildInferencePayload(request: Inference, timestamp = 0): InferencePayload {
  let schema: any;
  if (request.type === "enroll") schema = Type.Object({meaningful: Type.Boolean(), stream: Type.Optional(Type.Object({title: Type.String(), goal: Type.Optional(Type.String()), goal_short: Type.Optional(Type.String())})), session: Type.Optional(Type.Object({title: Type.String()}))}, {additionalProperties: false});
  else if (request.type === "discussion") schema = Type.Object({reply: Type.String(), edit: Type.Optional(Type.Union((["stream", "session"] as const).filter((kind) => request.catalog[kind]).flatMap((kind) => (["automatic", "user"] as const).map((actor) => Type.Object({kind: Type.Literal(kind), actor: Type.Literal(actor), changes: changesSchema(kind, request.catalog, actor, false)}, {additionalProperties: false})))))}, {additionalProperties: false});
@@ -125,55 +103,113 @@ export async function infer(ctx: ExtensionContext, request: Inference, signal: A
   }
  }
  const reset = resetting ? "Infer all allowed automatic fields fresh from conversation evidence, including a fresh short-handle title when title is an allowed automatic field. Do not anchor on the prior card or return an empty no-change delta. Respect manual fields and their modes." : undefined;
- messages.push({role: "user", content: JSON.stringify({task: request.type, catalog: visibleCatalog, instructions: request.instructions, reset, discussion: request.type === "discussion" ? request.discussion : undefined}), timestamp: Date.now()});
+ messages.push({role: "user", content: JSON.stringify({task: request.type, catalog: visibleCatalog, instructions: request.instructions, reset, discussion: request.type === "discussion" ? request.discussion : undefined}), timestamp});
  const prompt = request.type === "session" ? `${systemPrompt}\n\n${sessionProgressPrompt}` : systemPrompt;
- const payload = {systemPrompt: prompt, messages, tools: [{name: "record_card", description: "Return the structured report or discussion response", parameters: schema}]};
- let log: SessionManager | undefined;
- if (logging) {
-  mkdirSync(logging.directory, {recursive: true, mode: 0o700});
-  chmodSync(logging.directory, 0o700);
-  log = SessionManager.create(ctx.cwd, logging.directory, {parentSession: ctx.sessionManager.getSessionFile()});
-  const file = log.getSessionFile()!;
-  writeFileSync(file, JSON.stringify(log.getHeader()) + "\n", {flag: "wx", mode: 0o600});
-  log = SessionManager.open(file);
-  log.appendSessionInfo(`Streams helper · ${request.type}${resetting ? " reset" : ""}`);
-  log.appendModelChange(model.provider, model.id);
-  log.appendCustomEntry("stream-helper-request", {parent_session_id: ctx.sessionManager.getSessionId(), parent_leaf_id: ctx.sessionManager.getLeafId(), task: request.type, reset: Boolean(resetting)});
-  log.appendMessage({role: "system", content: prompt, toolsAdded: payload.tools, timestamp: Date.now()});
-  for (const message of messages) log.appendMessage(message);
-  logging.onCreate?.({session_id: log.getSessionId(), session_file: file});
+ return {systemPrompt: prompt, messages, tools: [{name: "record_card", description: "Return the structured report or discussion response", parameters: schema}]};
+}
+export function parseInferenceResponse<T extends Inference>(request: T, response: AssistantMessage, payload = buildInferencePayload(request)): InferenceResult<T> {
+ const schema = payload.tools[0].parameters;
+ const calls = response.content.filter((block) => block.type === "toolCall");
+ if (calls.length !== 1 || calls[0].name !== "record_card") throw Error("Reporting model must return exactly one structured record_card call");
+ const rawArgs = structuredClone(calls[0].arguments);
+ if ((request.type === "session" || request.type === "stream") && rawArgs && typeof rawArgs === "object" && !Array.isArray(rawArgs) && rawArgs.changes && typeof rawArgs.changes === "object" && !Array.isArray(rawArgs.changes)) {
+  const before = request.catalog[request.type]!, allowed = automaticFields(request.type, before), changes = rawArgs.changes as Record<string, unknown>;
+  for (const [key, value] of Object.entries(changes)) {
+   if (!allowed.includes(key) && !key.endsWith("_mode") && Object.hasOwn(before, key)) {delete changes[key];continue;}
+   if ((key === "state" || key === "remaining") && value === null) changes[key] = "";
+   else if (key === "title" && typeof value === "string" && !value.trim()) delete changes[key];
+   else if (["goal", "goal_short", "state_short"].includes(key) && typeof value === "string") {
+    const cleaned = key === "goal" ? value.trim() : Array.from(value.replace(/[\r\n\t]+/g, " ").trim()).slice(0, 80).join("").trim();
+    changes[key] = cleaned || null;
+   }
+  }
+  if (request.type === "stream" && Object.hasOwn(changes, "goal_short") && changes.goal_short !== null && (Object.hasOwn(changes, "goal") ? changes.goal : request.catalog.stream!.goal) === null) {
+   changes.goal_short = null;
+  }
  }
+ if (!Check(schema, rawArgs)) {
+  const paths = [...Errors(schema, rawArgs)].map((error) => `${error.instancePath || "/"}: ${error.message}`);
+  throw Error(`Reporting model returned invalid structured card fields; nothing was saved (${paths.join("; ")})`);
+ }
+ if (request.type === "discussion") {
+  const result = rawArgs as DiscussionResult;
+  if (result.edit) validateChanges(result.edit.kind, request.catalog[result.edit.kind]!, result.edit.changes, result.edit.actor);
+ } else if (request.type === "session" || request.type === "stream") {
+  const result = rawArgs as ReportResult;
+  if (Object.keys(result.changes).length) validateChanges(request.type, request.catalog[request.type]!, result.changes, "automatic");
+ }
+ return rawArgs as InferenceResult<T>;
+}
+export type InferenceRuntime = {model: ExtensionContext["model"]; modelRegistry: Pick<ExtensionContext["modelRegistry"], "find" | "complete">};
+export type ModelSelection = {provider: string; id: string};
+export type InferenceEvent =
+ | {type: "request"; request: Inference; payload: InferencePayload; model: ModelSelection}
+ | {type: "attempt"; attempt: number}
+ | {type: "attempt-error"; attempt: number; error: string}
+ | {type: "response"; response: AssistantMessage}
+ | {type: "result"; result: Inferred}
+ | {type: "error"; error: string; cancelled: boolean};
+export type InferenceObserver = (event: InferenceEvent) => void;
+const transientError = /(?:\b(?:429|502|503|504)\b|upstream connect error|disconnect\/reset before headers|connection termination|overloaded|ECONNRESET|ETIMEDOUT)/i;
+async function completeWithRetry(complete: () => Promise<AssistantMessage>, signal: AbortSignal, observe?: InferenceObserver): Promise<AssistantMessage> {
+ for (let attempt = 0; ; attempt++) {
+  if (signal.aborted) throw Error("Reporting cancelled");
+  observe?.({type: "attempt", attempt: attempt + 1});
+  let response: AssistantMessage | undefined, failure: unknown;
+  try {response = await complete();}
+  catch (error) {failure = error;observe?.({type: "attempt-error", attempt: attempt + 1, error: String(error)});}
+  if (response) {
+   observe?.({type: "response", response});
+   if (response.stopReason !== "error") return response;
+   failure = Error(response.errorMessage ?? "Reporting model failed");
+  }
+  if (signal.aborted) throw Error("Reporting cancelled");
+  if (attempt >= 2 || !transientError.test(String(failure))) throw failure;
+  await setTimeout(150 * (attempt + 1), undefined, {signal});
+ }
+}
+/** Model execution has no session, UI, catalog-write or native capabilities. */
+export async function runInference<T extends Inference>(runtime: InferenceRuntime, request: T, signal: AbortSignal, configured?: ModelSelection, observe?: InferenceObserver): Promise<InferenceResult<T>> {
+ const model = configured ? runtime.modelRegistry.find(configured.provider, configured.id) : runtime.model;
+ if (!model) throw Error("Configured reporting model is unavailable. Choose an available provider/model; no fallback was used.");
+ const payload = buildInferencePayload(request, Date.now());
+ observe?.({type: "request", request, payload, model: {provider: model.provider, id: model.id}});
  try {
-  assertContextFits(model, prompt + JSON.stringify(schema), messages);
-  const response = await completeWithRetry(() => ctx.modelRegistry.complete(model, payload, {signal}), signal, log);
+  assertContextFits(model, payload.systemPrompt + JSON.stringify(payload.tools[0].parameters), payload.messages);
+  const response = await completeWithRetry(() => runtime.modelRegistry.complete(model, payload, {signal}), signal, observe);
   if (signal.aborted || response.stopReason === "aborted") throw Error("Reporting cancelled");
-  const calls = response.content.filter((block) => block.type === "toolCall");
-  if (calls.length !== 1 || calls[0].name !== "record_card") throw Error("Reporting model must return exactly one structured record_card call");
-  const rawArgs = structuredClone(calls[0].arguments);
-  if ((request.type === "session" || request.type === "stream") && rawArgs && typeof rawArgs === "object" && !Array.isArray(rawArgs) && rawArgs.changes && typeof rawArgs.changes === "object" && !Array.isArray(rawArgs.changes)) {
-   const before = request.catalog[request.type]!, allowed = automaticFields(request.type, before), changes = rawArgs.changes as Record<string, unknown>;
-   for (const [key, value] of Object.entries(changes)) {
-    if (!allowed.includes(key) && !key.endsWith("_mode") && Object.hasOwn(before, key)) {delete changes[key];continue;}
-    if ((key === "state" || key === "remaining") && value === null) changes[key] = "";
-    else if (key === "title" && typeof value === "string" && !value.trim()) delete changes[key];
-    else if (["goal", "goal_short", "state_short"].includes(key) && typeof value === "string") {
-     const cleaned = key === "goal" ? value.trim() : Array.from(value.replace(/[\r\n\t]+/g, " ").trim()).slice(0, 80).join("").trim();
-     changes[key] = cleaned || null;
-    }
-   }
-   if (request.type === "stream" && Object.hasOwn(changes, "goal_short") && changes.goal_short !== null && (Object.hasOwn(changes, "goal") ? changes.goal : request.catalog.stream!.goal) === null) {
-    changes.goal_short = null;
-   }
-  }
-  if (!Check(schema, rawArgs)) throw Error("Reporting model returned invalid structured card fields; nothing was saved");
-  if (request.type === "discussion") {
-   const result = rawArgs as DiscussionResult;
-   if (result.edit) validateChanges(result.edit.kind, request.catalog[result.edit.kind]!, result.edit.changes, result.edit.actor);
-  } else if (request.type === "session" || request.type === "stream") {
-   const result = rawArgs as ReportResult;
-   if (Object.keys(result.changes).length) validateChanges(request.type, request.catalog[request.type]!, result.changes, "automatic");
-  }
-  log?.appendCustomEntry("stream-helper-result", rawArgs);
-  return rawArgs as Inferred;
- } catch (error) {log?.appendCustomEntry("stream-helper-error", {error: String(error), cancelled: signal.aborted});throw error;}
+  const result = parseInferenceResponse(request, response, payload);
+  observe?.({type: "result", result});
+  return result;
+ } catch (error) {observe?.({type: "error", error: String(error), cancelled: signal.aborted});throw error;}
+}
+export type InferenceLogOptions = {directory: string; onCreate?(value: {session_id: string; session_file: string}): void};
+export type InferenceSource = {cwd: string; sessionId: string; leafId: string | null; sessionFile?: string};
+export function helperSessionLogger(source: InferenceSource, options: InferenceLogOptions): InferenceObserver {
+ let log: SessionManager | undefined;
+ return (event) => {
+  if (event.type === "request") {
+   mkdirSync(options.directory, {recursive: true, mode: 0o700});chmodSync(options.directory, 0o700);
+   log = SessionManager.create(source.cwd, options.directory, {parentSession: source.sessionFile});
+   const file = log.getSessionFile()!;
+   writeFileSync(file, JSON.stringify(log.getHeader()) + "\n", {flag: "wx", mode: 0o600});
+   log = SessionManager.open(file);
+   const reset = "reset" in event.request && Boolean(event.request.reset);
+   log.appendSessionInfo(`Streams helper · ${event.request.type}${reset ? " reset" : ""}`);
+   log.appendModelChange(event.model.provider, event.model.id);
+   log.appendCustomEntry("stream-helper-request", {parent_session_id: source.sessionId, parent_leaf_id: source.leafId, task: event.request.type, reset});
+   log.appendMessage({role: "system", content: event.payload.systemPrompt, toolsAdded: event.payload.tools, timestamp: Date.now()});
+   for (const message of event.payload.messages) log.appendMessage(message);
+   options.onCreate?.({session_id: log.getSessionId(), session_file: file});
+  } else if (event.type === "response") log!.appendMessage(event.response);
+  else if (event.type === "attempt") log!.appendCustomEntry("stream-helper-attempt", {attempt: event.attempt});
+  else if (event.type === "attempt-error") log!.appendCustomEntry("stream-helper-attempt-error", {attempt: event.attempt, error: event.error});
+  else if (event.type === "result") log!.appendCustomEntry("stream-helper-result", event.result);
+  else log!.appendCustomEntry("stream-helper-error", {error: event.error, cancelled: event.cancelled});
+ };
+}
+type InferenceContext = InferenceRuntime & Pick<ExtensionContext, "cwd" | "sessionManager">;
+export function infer<T extends Inference>(ctx: InferenceContext, request: T, signal: AbortSignal, configured?: ModelSelection, logging?: InferenceLogOptions): Promise<InferenceResult<T>> {
+ const source = logging ? {cwd: ctx.cwd, sessionId: ctx.sessionManager.getSessionId(), leafId: ctx.sessionManager.getLeafId(), sessionFile: ctx.sessionManager.getSessionFile()} : undefined;
+ return runInference(ctx, request, signal, configured, source && helperSessionLogger(source, logging!));
 }
