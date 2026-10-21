@@ -422,6 +422,19 @@ impl CheckoutRegistry {
         }
     }
 
+    /// Extract a historical document hint; this grants no native-effect authority.
+    pub fn revision_document(
+        &self,
+        id: &str,
+        path: &str,
+        revision: &str,
+        runner: &dyn crate::process::ProcessRunner,
+        timeout: f64,
+        cache_root: &Path,
+    ) -> Result<super::revisions::RevisionDocument> {
+        super::revisions::extract(&self.get(id)?, path, revision, runner, timeout, cache_root)
+    }
+
     /// Resolve a relative working directory with strict existence and containment checks.
     pub fn directory(&self, id: &str, relative: &str) -> Result<PathBuf> {
         self.get(id)?.contained(relative, true)

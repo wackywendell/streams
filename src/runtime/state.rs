@@ -47,6 +47,11 @@ fn key(parts: &[&str]) -> String {
     )
 }
 
+/// Python-compatible namespace for one pinned CMUX endpoint.
+pub fn cmux_scope(socket: &Path) -> String {
+    key(&["cmux", &socket.to_string_lossy()])
+}
+
 /// Python-compatible namespace for one pinned Herdr endpoint.
 pub fn herdr_scope(socket: &Path, session: Option<&str>) -> String {
     digest(

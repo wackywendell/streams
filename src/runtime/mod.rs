@@ -6,6 +6,8 @@
 pub mod checkouts;
 pub mod conversations;
 pub mod locations;
+pub mod native;
+pub mod revisions;
 pub mod state;
 
 pub use checkouts::{CheckoutLocation, CheckoutRegistry, RepositoryInspection};
@@ -38,6 +40,8 @@ pub enum RuntimeError {
     Storage(#[from] StorageError),
     #[error("repository inspection failed: {0}")]
     Inspection(String),
+    #[error("{0}")]
+    Frontend(#[from] crate::frontend::FrontendError),
 }
 
 impl RuntimeError {

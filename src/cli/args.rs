@@ -133,6 +133,12 @@ pub(super) enum CheckoutCommand {
     Show {
         checkout_id: String,
     },
+    Document {
+        checkout_id: String,
+        path: String,
+        #[arg(long)]
+        revision: String,
+    },
     Move {
         checkout_id: String,
         directory: PathBuf,
@@ -207,6 +213,8 @@ pub(super) enum AgentCommand {
         stream_id: Option<String>,
         #[arg(long)]
         attest: bool,
+        #[arg(long)]
+        native_inventory: bool,
     },
     Apply,
     /// Simulate captured intent without opening catalog or native runtime state.

@@ -19,6 +19,14 @@ const WORKSPACE_KEY: &str = "54d2f7dd1bee8efcf49681349de679f40745c8dd5681d57414c
 const STREAM_KEY: &str = "e42d5ae88f18e4b353fb6b45ead902d587a9ea78ee7bae58621c5a19426309e1";
 
 #[test]
+fn cmux_scope_preserves_python_ascii_identity() {
+    assert_eq!(
+        streams_temper::runtime::state::cmux_scope(Path::new("/tmp/cmux-😀.sock")),
+        "61613c57cc2cc3a1dcf2cee93359682c3b0cf4eae39b8bf9483affb75de72087"
+    );
+}
+
+#[test]
 fn herdr_scope_preserves_python_ascii_and_nullable_namespace() {
     let socket = Path::new("/tmp/streams-😀.sock");
     assert_eq!(

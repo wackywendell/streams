@@ -136,7 +136,7 @@ fn current_target_requires_supported_policy_even_with_an_explicit_environment_id
                 value["error"]["message"]
                     .as_str()
                     .unwrap()
-                    .contains("not enabled")
+                    .contains("unsupported")
             );
         }
     }

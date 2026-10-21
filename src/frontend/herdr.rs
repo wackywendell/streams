@@ -84,6 +84,15 @@ impl HerdrPane {
     }
 }
 
+/// The native agent record is an observation, not catalog or saved-file authority.
+#[derive(Debug, Clone)]
+pub(crate) struct HerdrAgentInfo {
+    pub pane_id: String,
+    pub workspace_id: String,
+    pub agent: String,
+    pub metadata: Value,
+}
+
 /// Herdr's richer creation result is deliberately not imposed on CMUX.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct HerdrCreatedWorkspace {
@@ -255,18 +264,48 @@ impl HerdrClient {
         self.pane(&mut op)
     }
 
-    /// Complete structural topology for the later arrangement/attestation layer.
-    /// Missing collections, duplicate IDs and contradictory ownership fail closed.
-    pub fn topology(&self) -> Result<HerdrTopology, FrontendError> {
+    pub(crate) fn agent_info(&self, pane_id: &str) -> Result<HerdrAgentInfo, FrontendError> {
+        nonempty(pane_id, "Herdr pane ID")?;
         let mut op = Operation::default();
         self.verify_endpoint(&mut op)?;
         let result = self.result(
             &mut op,
-            &args(&["api", "snapshot"]),
-            "session_snapshot",
+            &args(&["agent", "get", pane_id]),
+            "agent_info",
             false,
         )?;
-        op.capture(HerdrTopology::parse(&result["snapshot"]))
+        let agent = &result["agent"];
+        Ok(HerdrAgentInfo {
+            pane_id: op.capture(string(agent, "pane_id"))?,
+            workspace_id: op.capture(string(agent, "workspace_id"))?,
+            agent: op.capture(string(agent, "agent"))?,
+            metadata: agent
+                .get("agent_session")
+                .cloned()
+                .ok_or_else(|| op.error("missing native agent_session"))?,
+        })
+    }
+
+    pub(crate) fn session_snapshot(&self) -> Result<Value, FrontendError> {
+        self.read_snapshot(&mut Operation::default())
+    }
+
+    fn read_snapshot(&self, op: &mut Operation) -> Result<Value, FrontendError> {
+        self.verify_endpoint(op)?;
+        let result = self.result(op, &args(&["api", "snapshot"]), "session_snapshot", false)?;
+        result
+            .get("snapshot")
+            .filter(|v| v.is_object())
+            .cloned()
+            .ok_or_else(|| op.error("invalid Herdr snapshot"))
+    }
+
+    /// Complete structural topology for the later arrangement/attestation layer.
+    /// Missing collections, duplicate IDs and contradictory ownership fail closed.
+    pub fn topology(&self) -> Result<HerdrTopology, FrontendError> {
+        let mut op = Operation::default();
+        let snapshot = self.read_snapshot(&mut op)?;
+        op.capture(HerdrTopology::parse(&snapshot))
     }
 
     /// Create only the native shell workspace and verify its exact root tuple.

@@ -72,6 +72,16 @@ A workspace frontend interface identifies, resolves, creates, focuses, and updat
 
 Capabilities that are not shared stay separate. Herdr pane attestation carries the exact pane, tab, workspace, and native-session identities. CMUX does not need to fabricate that evidence or claim support for arrangement restoration. Unsupported capture or launch capabilities fail explicitly; incomplete inventory is not an empty workspace, and uncertain native effects are not blindly retried. Frontend selection continues to reject ambiguous caller contexts instead of choosing whichever adapter answers first.
 
+Caller inspection and effect authority have different lifetimes. Reporting checks the exact inherited workspace against ready associations, enrollment claims and explicit Stream identity. A partial open blocks reporting, but remains inspectable through `--current`. A claim can identify reporting context before enrollment completes; it cannot establish an open workspace. Neither read creates native-state locks or bindings.
+
+`agent context --attest` additionally requires effective authority for this host, the exact local Pi Session, and fresh matching pane metadata. Optional `--native-inventory` reports every pane tuple, including conversations in other workspaces and panes with no Pi identity. Missing transcripts do not prove process death. These observations cannot authorize a later launch, replacement or cleanup: the native effect engine must obtain its own lock and recheck live evidence. This keeps reporting usable without exporting a reusable effect permit.
+
+### Historical documents do not change checkouts
+
+Explicit revision lookup extracts a document into a host-local cache rather than switching branches or snapshotting a jj working copy. Card polling still resolves working files only. Named revisions are resolved again on each request; immutable identities may reuse cached content or missing-file hints. The returned revision retains the caller's spelling, while the cache key follows Python's resolved-revision convention.
+
+The Rust cache requires private, user-owned directories and regular files. It rejects links and nonregular entries instead of following or repairing them. Broadly accessible caches created by Python therefore require a separate permissions audit before cutover; this slice does not silently chmod existing state. Cache extraction and native effect authorization remain separate capabilities.
+
 ### Conformance defines substitutability
 
 Adapter tests must exercise the interfaces, not only concrete implementations. An independent non-filesystem store must pass the same storage and catalog laws as YAML, including journal durability/retry behavior. This establishes that the boundary does not depend on paths or byte hashes; it does not by itself establish production database crash durability. Native frontend implementations require their own transport and lifecycle acceptance tests before activation.
@@ -108,7 +118,7 @@ The Rust stack is rebased onto Python `main` at `a6f11e5c`. Documents retain com
 
 Only the current partitioned session layout is accepted. All 48 session files on this machine already use it, and the live catalog is local-only, so Rust does not carry the obsolete two-level reader or Git-history migration paths. Agent context retains a full local snapshot behind `CatalogBackend`, rather than copying Python's storage-specific lookup and cache fallbacks.
 
-Native start, open, resume, workspace capture, enrollment and attestation remain separate work. The Rust CLI rejects unsupported operations rather than inventing native identity or authority. Stages 3 to 5 still require their native acceptance tests before cutover.
+The Rust CLI now resolves exact Herdr and CMUX caller context, attests enrolled Herdr/Pi callers, supplies requested native inventory, and extracts explicit historical document revisions. Native start, open, resume, workspace capture and enrollment remain separate work. The CLI rejects unsupported operations rather than inventing native identity or authority. Stages 3 to 5 still require their native acceptance tests before cutover.
 
 ### TUI Unicode compatibility
 

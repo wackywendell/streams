@@ -2,8 +2,11 @@
 //! Native activation is deliberately not installed by this experimental binary.
 
 mod args;
+mod checkouts;
 mod documents;
 mod fields;
+#[cfg(test)]
+mod native_tests;
 
 use args::{
     AgentCommand, CheckoutCommand, Command, ConfigCommand, FrontendCommand, SessionCommand, Target,
@@ -26,7 +29,11 @@ use streams_temper::{
     frontend::{self, FrontendMode, FrontendRequest, FrontendSelection},
     model::{Catalog, Checkout, NamingMode, Record, Session, Stream, ValidationError},
     operations::{self, Actor, Operation},
-    runtime::{self, CheckoutRegistry, DirectoryBindings},
+    runtime::{
+        self, CheckoutRegistry, DirectoryBindings,
+        native::{self, BuiltinFrontend},
+        state::RuntimeState,
+    },
     sync::{CatalogBackend, ReadResult, envelope::Origin, outcomes, policy::SyncEvent},
 };
 use uuid::Uuid;
@@ -228,6 +235,7 @@ impl App {
             "XDG_DATA_HOME",
             "XDG_STATE_HOME",
             "CMUX_WORKSPACE_ID",
+            "CMUX_SOCKET_PATH",
             "HERDR_ENV",
             "HERDR_PANE_ID",
             "STREAMS_STREAM_ID",
@@ -268,15 +276,59 @@ impl App {
             opened.host().as_str(),
         )?)
     }
+    fn state(&self, opened: &OpenedCatalog) -> Result<RuntimeState> {
+        Ok(RuntimeState::new(
+            self.config.runtime_state_dir_for(opened.root())?,
+            opened.host().as_str(),
+        )?)
+    }
     fn locations(&self, opened: &OpenedCatalog) -> Result<DirectoryBindings> {
-        use sha2::{Digest, Sha256};
-        // Python Runtime scopes each catalog's local state by its host identity.
-        let host = serde_json::to_vec(&[opened.host().as_str()])?;
-        let state = self
-            .config
-            .runtime_state_dir_for(opened.root())?
-            .join(format!("{:x}", Sha256::digest(host)));
-        Ok(DirectoryBindings::new(state, self.registry(opened)?))
+        Ok(DirectoryBindings::new(
+            self.state(opened)?.root(),
+            self.registry(opened)?,
+        ))
+    }
+    fn native_frontend(
+        &self,
+        selection: &FrontendSelection,
+        timeout: f64,
+    ) -> Result<Option<BuiltinFrontend>> {
+        selection
+            .resolved
+            .as_ref()
+            .map(|id| {
+                BuiltinFrontend::connect(
+                    id,
+                    std::sync::Arc::new(streams_temper::process::NativeProcessRunner),
+                    self.environment.clone(),
+                    timeout,
+                )
+                .map_err(Into::into)
+            })
+            .transpose()
+    }
+    fn current_stream_id(
+        &self,
+        opened: &OpenedCatalog,
+        requested: Option<FrontendRequest>,
+    ) -> Result<String> {
+        let explicit = self
+            .environment
+            .get("STREAMS_STREAM_ID")
+            .map(String::as_str);
+        if let Some(id) = explicit {
+            streams_temper::model::check_text(id, "STREAMS_STREAM_ID", false)?;
+        }
+        let configured = self.config.load()?.frontend;
+        let selection = match frontend::resolve_frontend(configured, requested, &self.environment) {
+            Ok(selection) => selection,
+            // Only policy ambiguity/incompleteness permits this historical --current fallback.
+            Err(error) => return explicit.map(str::to_owned).ok_or_else(|| error.into()),
+        };
+        match self.native_frontend(&selection, 30.0)? {
+            Some(frontend) => Ok(frontend.caller()?.current_stream_id(&self.state(opened)?, explicit)?),
+            None => explicit.map(str::to_owned).ok_or_else(|| CliError::message("no native frontend selected; pass --frontend herdr or --frontend cmux (or use resume)")),
+        }
     }
     fn path(&self, path: &Path) -> Result<PathBuf> {
         if path == Path::new("~") || path.starts_with("~/") {
@@ -298,25 +350,20 @@ impl App {
             Ok(fs::read_to_string(self.path(path)?)?)
         }
     }
-    fn target<'a>(&self, catalog: &'a Catalog, target: &Target) -> Result<&'a Stream> {
+    fn target<'a>(
+        &self,
+        opened: &OpenedCatalog,
+        catalog: &'a Catalog,
+        target: &Target,
+    ) -> Result<&'a Stream> {
         if target.current {
             if target.reference.is_some() {
                 return Err(CliError::message(
                     "--current cannot be combined with a reference",
                 ));
             }
-            if self.selection(target.frontend.clone())?.resolved.is_some() {
-                return Err(CliError::message(
-                    "native current-workspace targeting is not enabled in this Rust slice",
-                ));
-            }
-            let id = self.environment.get("STREAMS_STREAM_ID").ok_or_else(|| {
-                CliError::message(
-                    "native current-workspace targeting is not enabled in this Rust slice",
-                )
-            })?;
-            streams_temper::model::check_text(id, "STREAMS_STREAM_ID", false)?;
-            return catalog.stream(id).ok_or_else(|| {
+            let id = self.current_stream_id(opened, target.frontend.clone())?;
+            return catalog.stream(&id).ok_or_else(|| {
                 CliError::NotFound(format!("current stream {id:?} is not in the local catalog"))
             });
         }
@@ -414,7 +461,7 @@ impl App {
             Command::Show { target, refresh } => {
                 let opened = application::open(&self.config)?;
                 let (catalog, sharing) = read_catalog(opened.backend(), refresh)?;
-                let stream = self.target(&catalog, &target)?;
+                let stream = self.target(&opened, &catalog, &target)?;
                 let sessions: Vec<_> = catalog
                     .sessions()
                     .iter()
@@ -466,7 +513,7 @@ impl App {
             } => {
                 let opened = application::open(&self.config)?;
                 let snapshot = opened.backend().snapshot()?;
-                let stream = self.target(&snapshot.catalog, &target)?;
+                let stream = self.target(&opened, &snapshot.catalog, &target)?;
                 let mut changes =
                     fields::stream(stream, &fields, &mut |path| self.read_text(path))?;
                 if let Some(title) = title {
@@ -510,46 +557,14 @@ impl App {
                 Ok(Output::receipt(result_data(&result)?, ok))
             }
             Command::Session { command } => self.session(command),
-            Command::Checkout { command } => {
-                let opened = application::open(&self.config)?;
-                let registry = self.registry(&opened)?;
-                let value = match command {
-                    CheckoutCommand::List => json!({"checkouts":registry.list()?}),
-                    CheckoutCommand::Register {
-                        directory,
-                        repository,
-                    } => {
-                        json!({"checkout":registry.register(&self.path(&directory)?,repository.as_deref())?})
-                    }
-                    CheckoutCommand::Show { checkout_id } => {
-                        json!({"checkout":registry.get(&checkout_id)?})
-                    }
-                    CheckoutCommand::Move {
-                        checkout_id,
-                        directory,
-                    } => {
-                        json!({"checkout":registry.move_checkout(&checkout_id,&self.path(&directory)?)?})
-                    }
-                    CheckoutCommand::Default {
-                        repository,
-                        checkout_id,
-                    } => {
-                        registry.set_default(&repository, &checkout_id)?;
-                        json!({"repository":repository,"checkout_id":checkout_id})
-                    }
-                    CheckoutCommand::Resolve { repository } => {
-                        json!({"checkout":registry.resolve(&repository,None,None)?})
-                    }
-                };
-                Ok(Output::value(value))
-            }
+            Command::Checkout { command } => self.checkout(command),
             Command::Agent { command } => self.agent(command),
         }
     }
     fn archive(&self, target: &Target, archived: bool) -> Result<Output> {
         let opened = application::open(&self.config)?;
         let catalog = opened.backend().snapshot()?.catalog;
-        let stream = self.target(&catalog, target)?;
+        let stream = self.target(&opened, &catalog, target)?;
         let operation = operations::update(
             Uuid::new_v4().to_string(),
             &Record::Stream(stream.clone()),
@@ -630,7 +645,7 @@ impl App {
                 vcs_ref,
                 directory_within_checkout,
             } => {
-                let stream = self.target(&catalog, &target)?;
+                let stream = self.target(&opened, &catalog, &target)?;
                 let repository_url = repository
                     .as_deref()
                     .map(|alias| {
@@ -809,13 +824,9 @@ impl App {
     }
     fn capture_inputs(&self, stream: Option<&str>, workspace: Option<&str>) -> Result<Output> {
         use agent::CaptureTarget;
-        use streams_temper::{
-            frontend::{FrontendId, herdr::HerdrClient},
-            process::NativeProcessRunner,
-            runtime::{
-                conversations::ConversationRoots,
-                state::{RuntimeState, herdr_scope},
-            },
+        use streams_temper::runtime::{
+            conversations::ConversationRoots,
+            state::{RuntimeState, herdr_scope},
         };
         let inspected = application::inspect(&self.config)?;
         let state = RuntimeState::new(
@@ -823,17 +834,16 @@ impl App {
             inspected.host.as_str(),
         )?;
         let native = (|| -> Result<_> {
-            if self.selection(None)?.resolved != Some(FrontendId("herdr".into())) {
-                return Err(CliError::message(
-                    "Herdr topology unavailable; open state unknown",
-                ));
-            }
-            let client = HerdrClient::connect(
-                std::sync::Arc::new(NativeProcessRunner),
-                self.environment.clone(),
+            let connection = self.native_frontend(
+                &self.selection(None)?,
                 self.config.load()?.sync.timeout_seconds(),
-            )
-            .map_err(|error| CliError::message(error.to_string()))?;
+            )?;
+            let client = connection
+                .as_ref()
+                .and_then(BuiltinFrontend::herdr)
+                .ok_or_else(|| {
+                    CliError::message("Herdr topology unavailable; open state unknown")
+                })?;
             let endpoint = client.endpoint();
             let scope = herdr_scope(&endpoint.socket, endpoint.session.as_deref());
             Ok((
@@ -887,13 +897,23 @@ impl App {
                 session_id,
                 stream_id,
                 attest,
+                native_inventory,
             } => {
                 let opened = application::open(&self.config)?;
-                if self.selection(None)?.resolved.is_some() {
-                    return Err(CliError::message(
-                        "native caller association inspection is not enabled in this Rust slice",
-                    ));
-                }
+                let state = self.state(&opened)?;
+                let connection = self.native_frontend(&self.selection(None)?, 30.0)?;
+                let workspace_stream = connection
+                    .as_ref()
+                    .map(|frontend| {
+                        frontend.caller()?.context_stream_id(
+                            &state,
+                            self.environment
+                                .get("STREAMS_STREAM_ID")
+                                .map(String::as_str),
+                        )
+                    })
+                    .transpose()?
+                    .flatten();
                 let source = opened.source_id()?;
                 let context = agent::context(
                     opened.backend(),
@@ -907,19 +927,10 @@ impl App {
                             .environment
                             .get("STREAMS_STREAM_ID")
                             .map(String::as_str),
-                        workspace_stream_id: None,
+                        workspace_stream_id: workspace_stream.as_deref(),
                     },
                 )
                 .map_err(|error| CliError::message(error.to_string()))?;
-                if attest {
-                    return Err(CliError::message(
-                        if context.stream.is_none() || context.session.is_none() {
-                            "native projection requires an enrolled Stream and Session"
-                        } else {
-                            "native projection attestation is not enabled in this Rust slice"
-                        },
-                    ));
-                }
                 let mut value = serde_json::to_value(&context)?;
                 let document_context =
                     if let (Some(stream), Some(session)) = (&context.stream, &context.session) {
@@ -938,6 +949,43 @@ impl App {
                         .expect("document context object")
                         .clone(),
                 );
+                if attest {
+                    let (stream, session) = context
+                        .stream
+                        .as_ref()
+                        .zip(context.session.as_ref())
+                        .ok_or_else(|| {
+                        CliError::message(
+                            "native projection requires an enrolled Stream and Session",
+                        )
+                    })?;
+                    let client = connection
+                        .as_ref()
+                        .and_then(BuiltinFrontend::herdr)
+                        .ok_or_else(|| {
+                            CliError::message(
+                                "native projection attestation requires an exact Herdr caller",
+                            )
+                        })?;
+                    value["native"] = serde_json::to_value(native::attest_context(
+                        client,
+                        &state,
+                        stream,
+                        session,
+                        context.authority.as_ref(),
+                    )?)?;
+                }
+                if native_inventory {
+                    if !attest {
+                        return Err(CliError::message("native inventory requires --attest"));
+                    }
+                    let client = connection
+                        .as_ref()
+                        .and_then(BuiltinFrontend::herdr)
+                        .expect("attestation requires Herdr");
+                    value["native_inventory"] =
+                        serde_json::to_value(native::native_inventory(client)?)?;
+                }
                 Ok(Output::value(value))
             }
         }
