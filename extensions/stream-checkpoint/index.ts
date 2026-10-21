@@ -7,6 +7,7 @@ import { StreamCli, receiptText, receiptCanContinue, receiptHasWarning, resultNe
 import type { Receipt } from "./streams.ts";
 import { Reporter } from "./reporter.ts";
 import { infer } from "./agent.ts";
+import { debugCommand } from "./debug.ts";
 import { SessionScope, captureInputs } from "./session-scope.ts";
 import { editRequest } from "./core.ts";
 import { loadSettings, saveSettings, settingsDialog } from "./settings.ts";
@@ -152,6 +153,11 @@ export default function registerWorkCard(pi: ExtensionAPI, options: Options = {}
  pi.registerCommand("streams", {
   description: "Open the work card, report or reset progress, configure reporting, attach a card, or open/close its native pane",
   getArgumentCompletions: (prefix) => {
+   if (prefix.startsWith("debug ")) {
+    if (!settings().debug_commands) return null;
+    const matches = [{value: "debug capture", label: "capture", description: "Freeze a stream or workspace"}, {value: "debug replay", label: "replay", description: "Replay frozen samples without live writes"}].filter(item => item.label.startsWith(prefix.slice(6)));
+    return matches.length ? matches : null;
+   }
    if (prefix.startsWith("reset ")) {
     const rest = prefix.slice(6);
     const resetItems = [
@@ -173,6 +179,7 @@ export default function registerWorkCard(pi: ExtensionAPI, options: Options = {}
     {value: "settings", label: "settings", description: "Configure reporting"},
     {value: "attach", label: "attach", description: "Attach an initial work card"},
     {value: "pane", label: "pane", description: "Open native pane; 'pane close' hides it"},
+    ...(settings().debug_commands ? [{value: "debug", label: "debug", description: "Capture and replay private prompt samples"}] : []),
    ].filter((item) => item.value.startsWith(prefix));
    return matches.length ? matches : null;
   },
@@ -181,11 +188,15 @@ export default function registerWorkCard(pi: ExtensionAPI, options: Options = {}
    const paneFence = scope.fence();
    const input = args.trim(), command = input.split(/\s+/, 1)[0], instructions = input.slice(command.length).trim();
    const resetParsed = command === "reset" ? parseResetArgs(instructions) : null;
-   if (!["", "card", "report", "reset", "settings", "attach", "pane"].includes(command) || instructions && command !== "report" && !(command === "pane" && instructions === "close") && !(command === "reset" && resetParsed)) {
+   if (!["", "card", "report", "reset", "settings", "attach", "pane", "debug"].includes(command) || instructions && command !== "report" && command !== "debug" && !(command === "pane" && instructions === "close") && !(command === "reset" && resetParsed)) {
     warning("Usage: /streams [card]; /streams report [instructions]; /streams reset [session|stream|all] [--auto]; /streams settings; /streams attach; /streams pane [close]. Put report instructions after 'report'.");return;
    }
    try {
     if (command === "" || command === "card") await show(ctx);
+    else if (command === "debug") {
+     if (!settings().debug_commands) throw Error("Debug commands are disabled. Enable them in /streams settings → Debug → Debug commands.");
+     await reporter.exclusive(signal => debugCommand(instructions, ctx, cli(ctx), agentDir, settings(), signal));
+    }
     else if (command === "pane") {
      if (!native) throw Error("Native work cards require session startup in an interactive Herdr pane.");
      clearStatusTimer();
@@ -206,7 +217,7 @@ export default function registerWorkCard(pi: ExtensionAPI, options: Options = {}
     else if (command === "attach") await attach(ctx, {});
     else if (command === "report") {settings();reporter.request(ctx, true, instructions);}
    } catch(error) {
-    if (command === "pane" && !paneFence.current()) return;
+    if ((command === "pane" || command === "debug") && !paneFence.current()) return;
     warning(String(error));
    }
   },
@@ -216,7 +227,7 @@ export default function registerWorkCard(pi: ExtensionAPI, options: Options = {}
  pi.registerTool({name: "select_stream", label: "Attach initial effort", description: "Ask the user to attach this unbound Pi conversation to an exact catalog stream ID. An enrolled conversation cannot switch; membership moves/forks are not implemented.", parameters: Type.Object({stream_id: Type.Optional(Type.String()), reason: Type.String()}), async execute(_id, args, _signal, _update, ctx) {return result(await attach(ctx, {streamId: args.stream_id, reason: args.reason}));}});
  pi.registerTool({name: "create_stream", label: "Create initial effort", description: "Ask the user to create an initial durable effort and enroll this conversation. Never switches existing membership or launches workspaces.", parameters: Type.Object({title: Type.String(), reason: Type.String()}), async execute(_id, args, _signal, _update, ctx) {return result(await attach(ctx, args));}});
  pi.on("session_start", async (_event, ctx) => {
-  clearStatusTimer();
+  clearStatusTimer();ctx.ui.setStatus?.("stream-debug", undefined);
   const retired = retireNative();shutdown = undefined;scope.reset(ctx);
   const fence = scope.fence();
   if (retired) await retired;
@@ -233,9 +244,9 @@ export default function registerWorkCard(pi: ExtensionAPI, options: Options = {}
   if (!event.messages.some((message) => message.role === "assistant" && ["stop", "length"].includes(message.stopReason))) return;
   try {reporter.response(ctx);} catch(error) {warning(String(error));}
  });
- pi.on("session_tree", () => {clearStatusTimer();scope.invalidate();native?.invalidate();});
+ pi.on("session_tree", (_event, ctx) => {clearStatusTimer();ctx.ui.setStatus?.("stream-debug", undefined);scope.invalidate();native?.invalidate();});
  pi.on("session_shutdown", (_event, ctx) => shutdown ??= (async () => {
-  clearStatusTimer();
+  clearStatusTimer();ctx.ui.setStatus?.("stream-debug", undefined);
   const retired = retireNative();
   scope.reset(ctx, true);
   const fence = scope.fence();
