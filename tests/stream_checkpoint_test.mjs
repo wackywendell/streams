@@ -252,7 +252,7 @@ test('automatic reset unlocks manual names before fresh inference and keeps life
 });
 test('reporting settings have explicit stable knobs and reject invalid cadence',()=>{
  const root=mkdtempSync(join(tmpdir(),'card-settings-'));
- try{assert.deepEqual(loadSettings(root),defaults);const custom={reporting:'manual',enrollment:'manual',frequency:3,context:'full',model:{provider:'custom',id:'helper'}};saveSettings(root,custom);assert.deepEqual(loadSettings(root),custom);for(const frequency of [0,-1,1.5,NaN,'2'])assert.throws(()=>validateSettings({...defaults,frequency}),/positive integer/);}finally{rmSync(root,{recursive:true,force:true});}
+ try{assert.deepEqual(loadSettings(root),defaults);const custom={reporting:'manual',enrollment:'manual',frequency:3,context:'full',model:{provider:'custom',id:'helper'}};saveSettings(root,custom);assert.deepEqual(loadSettings(root),{...defaults,...custom});for(const frequency of [0,-1,1.5,NaN,'2'])assert.throws(()=>validateSettings({...defaults,frequency}),/positive integer/);}finally{rmSync(root,{recursive:true,force:true});}
 });
 test('model inference uses actual supported registry API, typed calls, no tools beyond record_card',async()=>{
  const requests=[];const ctx={model:{id:'current',contextWindow:100000},modelRegistry:{complete:async(model,payload,options)=>{requests.push({model,payload,options});return {stopReason:'toolUse',content:[{type:'toolCall',name:'record_card',arguments:{changes:{state:'Recorded'}}}]};},find:()=>undefined}};

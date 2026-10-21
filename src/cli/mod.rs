@@ -143,6 +143,11 @@ impl Output {
     }
 }
 
+fn preview() -> Result<Output> {
+    let source = io::read_to_string(io::stdin())?;
+    Ok(Output::value(agent::preview(&source)?))
+}
+
 pub(super) fn run() -> ExitCode {
     let argv: Vec<_> = std::env::args_os().collect();
     let requested_json = argv
@@ -165,7 +170,12 @@ pub(super) fn run() -> ExitCode {
             return ExitCode::from(code);
         }
     };
-    let outcome = App::new().and_then(|app| app.execute(parsed.command));
+    let outcome = match parsed.command {
+        Command::Agent {
+            command: AgentCommand::Preview,
+        } => preview(),
+        command => App::new().and_then(|app| app.execute(command)),
+    };
     let (text, code) = match outcome {
         Ok(output) => {
             if !parsed.json {
@@ -221,6 +231,13 @@ impl App {
             "HERDR_ENV",
             "HERDR_PANE_ID",
             "STREAMS_STREAM_ID",
+            "HERDR_BIN_PATH",
+            "HERDR_SOCKET_PATH",
+            "HERDR_SESSION",
+            "PI_CODING_AGENT_DIR",
+            "CODEX_HOME",
+            "CLAUDE_CONFIG_DIR",
+            "PATH",
         ] {
             match std::env::var(key) {
                 Ok(value) => {
@@ -790,10 +807,71 @@ impl App {
             }
         }
     }
+    fn capture_inputs(&self, stream: Option<&str>, workspace: Option<&str>) -> Result<Output> {
+        use agent::CaptureTarget;
+        use streams_temper::{
+            frontend::{FrontendId, herdr::HerdrClient},
+            process::NativeProcessRunner,
+            runtime::{
+                conversations::ConversationRoots,
+                state::{RuntimeState, herdr_scope},
+            },
+        };
+        let inspected = application::inspect(&self.config)?;
+        let state = RuntimeState::new(
+            self.config.runtime_state_dir_for(&inspected.root)?,
+            inspected.host.as_str(),
+        )?;
+        let native = (|| -> Result<_> {
+            if self.selection(None)?.resolved != Some(FrontendId("herdr".into())) {
+                return Err(CliError::message(
+                    "Herdr topology unavailable; open state unknown",
+                ));
+            }
+            let client = HerdrClient::connect(
+                std::sync::Arc::new(NativeProcessRunner),
+                self.environment.clone(),
+                self.config.load()?.sync.timeout_seconds(),
+            )
+            .map_err(|error| CliError::message(error.to_string()))?;
+            let endpoint = client.endpoint();
+            let scope = herdr_scope(&endpoint.socket, endpoint.session.as_deref());
+            Ok((
+                client
+                    .topology()
+                    .map_err(|error| CliError::message(error.to_string()))?,
+                scope,
+            ))
+        })()
+        .map_err(|error| error.to_string());
+        let native = native
+            .as_ref()
+            .map(|(topology, scope)| (topology, scope.as_str()))
+            .map_err(Clone::clone);
+        let target = match (stream, workspace) {
+            (Some(id), None) => CaptureTarget::Stream(id),
+            (None, Some(id)) => CaptureTarget::Workspace(id),
+            (None, None) => CaptureTarget::Inventory,
+            _ => return Err(CliError::message("select a stream or workspace, not both")),
+        };
+        Ok(Output::value(agent::capture_inputs(
+            &inspected,
+            &state,
+            native,
+            target,
+            &ConversationRoots::from_environment()?,
+        )?))
+    }
+
     fn agent(&self, command: AgentCommand) -> Result<Output> {
-        let opened = application::open(&self.config)?;
         match command {
+            AgentCommand::Preview => preview(),
+            AgentCommand::CaptureInputs {
+                stream_id,
+                workspace_id,
+            } => self.capture_inputs(stream_id.as_deref(), workspace_id.as_deref()),
             AgentCommand::Apply => {
+                let opened = application::open(&self.config)?;
                 let source = io::read_to_string(io::stdin())?;
                 let operation = agent::parse_update(&source, &opened.source_id()?)?;
                 let saved = save(opened.backend(), &operation)?;
@@ -810,6 +888,7 @@ impl App {
                 stream_id,
                 attest,
             } => {
+                let opened = application::open(&self.config)?;
                 if self.selection(None)?.resolved.is_some() {
                     return Err(CliError::message(
                         "native caller association inspection is not enabled in this Rust slice",

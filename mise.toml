@@ -27,7 +27,14 @@ run = "uv run python -m unittest discover tests/python"
 
 [tasks."test:pi"]
 description = "Run Pi checkpoint extension tests"
-run = "node --test tests/stream_checkpoint_test.mjs tests/stream_sync_test.mjs tests/stream_outcomes_test.mjs tests/stream_native_test.mjs"
+run = "node --test tests/stream_checkpoint_test.mjs tests/stream_sync_test.mjs tests/stream_outcomes_test.mjs tests/stream_native_test.mjs tests/stream_prompt_replay_test.mjs tests/stream_debug_settings_test.mjs"
+
+[tasks."test:replay"]
+description = "Replay production Pi helpers through the Rust CLI in isolated homes"
+run = [
+  'RUSTC=$(rustup which rustc) RUSTDOC=$(rustup which rustdoc) cargo build --locked --bin streams',
+  "node --test tests/stream_rust_replay_test.mjs",
+]
 
 [tasks."test:herdr"]
 description = "Run native Herdr work-card regression tests"
@@ -35,4 +42,4 @@ run = "npm --prefix integrations/herdr-work-cards test"
 
 [tasks.test]
 description = "Run all tests"
-depends = ["test:rust", "test:differential", "test:python", "test:pi", "test:herdr"]
+depends = ["test:rust", "test:differential", "test:python", "test:pi", "test:herdr", "test:replay"]

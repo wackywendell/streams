@@ -7,6 +7,8 @@ import { StreamCli, receiptText, receiptCanContinue, receiptHasWarning, resultNe
 import type { Receipt } from "./streams.ts";
 import { Reporter } from "./reporter.ts";
 import { infer } from "./agent.ts";
+import { helperSessionLogger } from "./helper-log.ts";
+import { debugCommand } from "./debug.ts";
 import { SessionScope, captureInputs } from "./session-scope.ts";
 import { editRequest } from "./core.ts";
 import { loadSettings, saveSettings, settingsDialog } from "./settings.ts";
@@ -67,7 +69,7 @@ export default function registerWorkCard(pi: ExtensionAPI, options: Options = {}
   statusTimer.unref?.();
  };
  const reporter = new Reporter({
-  scope, cli, settings, infer: options.infer, notice: warning, receipt,
+  scope, cli, settings, infer: options.infer, observe: logging, notice: warning, receipt,
   onUpdateNative: () => native?.update(),
   onReclaimNames: (target) => native?.reclaimNames(target).catch(() => {}),
   activity: (text, completed) => {
@@ -77,6 +79,9 @@ export default function registerWorkCard(pi: ExtensionAPI, options: Options = {}
    else scope.context?.ui.setStatus("stream-reporting", undefined);
   },
  });
+ function logging(ctx: ExtensionContext) {
+  return settings().session_logging ? helperSessionLogger(ctx, join(agentDir, "stream-reporting-sessions"), value => pi.appendEntry("stream-helper-session", value)) : undefined;
+ }
  async function sync(ctx: ExtensionContext, event: "start" | "shutdown"): Promise<void> {
   const fence = scope.fence();
   let failure: {event: string; result?: unknown; error?: string} | undefined;
@@ -106,7 +111,7 @@ export default function registerWorkCard(pi: ExtensionAPI, options: Options = {}
      ctx.ui.setStatus?.("stream-reporting", "Work card · ⟳ Thinking...");
      let response;
      try {
-      response = await (options.infer ?? infer)(ctx, {type: "discussion", catalog, messages: evidence.messages, discussion: structuredClone(prospective)}, signal, settings().model);
+      response = await (options.infer ?? infer)(ctx, {type: "discussion", catalog, messages: evidence.messages, discussion: structuredClone(prospective)}, signal, settings().model, logging(ctx));
      } finally {
       if (fence.live()) ctx.ui.setStatus?.("stream-reporting", undefined);
      }
@@ -164,6 +169,10 @@ export default function registerWorkCard(pi: ExtensionAPI, options: Options = {}
     ].filter((item) => item.label.startsWith(rest));
     return resetItems.length ? resetItems : null;
    }
+   if (settings().debug_commands && prefix.startsWith("debug ")) {
+    const matches = ["capture", "replay"].map(kind => ({value: `debug ${kind}`, label: kind, description: kind === "capture" ? "Freeze private conversation samples" : "Replay frozen samples with consent"})).filter(item => item.value.startsWith(prefix));
+    return matches.length ? matches : null;
+   }
    if (/\s/.test(prefix)) return null;
    const matches = [
     {value: "card", label: "card", description: "Open the work card panel"},
@@ -172,6 +181,7 @@ export default function registerWorkCard(pi: ExtensionAPI, options: Options = {}
     {value: "settings", label: "settings", description: "Configure reporting"},
     {value: "attach", label: "attach", description: "Attach an initial work card"},
     {value: "pane", label: "pane", description: "Open native pane; 'pane close' hides it"},
+    ...(settings().debug_commands ? [{value: "debug", label: "debug", description: "Capture or replay frozen samples"}] : []),
    ].filter((item) => item.value.startsWith(prefix));
    return matches.length ? matches : null;
   },
@@ -180,11 +190,15 @@ export default function registerWorkCard(pi: ExtensionAPI, options: Options = {}
    const paneFence = scope.fence();
    const input = args.trim(), command = input.split(/\s+/, 1)[0], instructions = input.slice(command.length).trim();
    const resetParsed = command === "reset" ? parseResetArgs(instructions) : null;
-   if (!["", "card", "report", "reset", "settings", "attach", "pane"].includes(command) || instructions && command !== "report" && !(command === "pane" && instructions === "close") && !(command === "reset" && resetParsed)) {
+   if (!["", "card", "report", "reset", "settings", "attach", "pane", "debug"].includes(command) || instructions && command !== "report" && command !== "debug" && !(command === "pane" && instructions === "close") && !(command === "reset" && resetParsed)) {
     warning("Usage: /streams [card]; /streams report [instructions]; /streams reset [session|stream|all] [--auto]; /streams settings; /streams attach; /streams pane [close]. Put report instructions after 'report'.");return;
    }
    try {
-    if (command === "" || command === "card") await show(ctx);
+    if (command === "debug") {
+     if (!settings().debug_commands) throw Error("Debug commands are disabled. Enable them in /streams settings → Debug.");
+     await reporter.exclusive(signal => debugCommand(instructions, ctx, cli(ctx), agentDir, settings(), signal));
+    }
+    else if (command === "" || command === "card") await show(ctx);
     else if (command === "pane") {
      if (!native) throw Error("Native work cards require session startup in an interactive Herdr pane.");
      clearStatusTimer();

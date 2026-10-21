@@ -23,10 +23,10 @@ const DISCOVERY_LIMIT: usize = 10000;
     PartialEq,
     Eq,
     Serialize,
-    Deserialize,
     strum::EnumString,
     strum::Display,
     strum::AsRefStr,
+    strum::VariantNames,
 )]
 #[serde(rename_all = "lowercase")]
 #[strum(serialize_all = "lowercase")]
@@ -44,10 +44,10 @@ pub enum Harness {
     PartialEq,
     Eq,
     Serialize,
-    Deserialize,
     strum::EnumString,
     strum::Display,
     strum::AsRefStr,
+    strum::VariantNames,
 )]
 #[serde(rename_all = "lowercase")]
 #[strum(serialize_all = "lowercase")]
@@ -55,6 +55,8 @@ pub enum NativeIdentityKind {
     Id,
     Path,
 }
+
+crate::codec::deserialize_string_enum!(Harness, NativeIdentityKind);
 
 /// Native metadata is only a hint until its harness and saved file are checked.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]

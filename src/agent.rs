@@ -1,7 +1,13 @@
 //! Local agent capture and validated intent, never inferred enrollment or a refreshed base.
 
+mod capture;
 mod context;
+pub use capture::{CaptureTarget, capture_inputs};
+mod enrollment;
+mod preview;
 pub use context::{AgentContext, ContextError, ContextRequest, context, session_id_for};
+pub use enrollment::{EnrollmentRequest, StreamProposal, effort_id_for};
+pub use preview::preview;
 
 use serde::Deserialize;
 use serde_json::{Map, Value};

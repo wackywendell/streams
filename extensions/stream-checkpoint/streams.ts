@@ -86,6 +86,14 @@ export class StreamCli {
   if (!Array.isArray(rows) || !rows.every(stream)) throw new StreamsCliError("Invalid catalog list");
   return rows;
  }
+ async captureInputs(target?: {kind: "stream" | "workspace"; id: string}, signal?: AbortSignal): Promise<unknown> {
+  return this.run(["agent", "capture-inputs", ...(target ? [`--${target.kind}-id`, target.id] : []), "--json"], undefined, "read", {timeout: 10000, signal});
+ }
+ async preview(input: {catalog: LocalContext; action: "apply" | "enroll"; request: unknown}, signal?: AbortSignal): Promise<{catalog: LocalContext; receipt: Receipt}> {
+  const value = await this.run(["agent", "preview", "--json"], input, "read", {timeout: 10000, signal});
+  if (!object(value) || !receipt(value.receipt)) throw new StreamsCliError("Invalid simulated catalog receipt");
+  try {return {catalog: parseLocalContext(value.catalog), receipt: value.receipt};} catch {throw new StreamsCliError("Invalid preview catalog context");}
+ }
  async captureArrangement(streamId: string, signal?: AbortSignal): Promise<unknown> {return this.run(["workspace", "capture", streamId, "--json"], undefined, "read", {timeout: 10000, ...(signal ? {signal} : {})});}
  async sync(event: "start" | "shutdown"): Promise<PublicationResult> {return this.run(["sync", "--event", event, "--json"], undefined, "publication");}
  async enroll(request: unknown): Promise<Receipt> {return this.run(["agent", "enroll", "--json"], request, "save");}

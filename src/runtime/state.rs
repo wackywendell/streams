@@ -47,6 +47,18 @@ fn key(parts: &[&str]) -> String {
     )
 }
 
+/// Python-compatible namespace for one pinned Herdr endpoint.
+pub fn herdr_scope(socket: &Path, session: Option<&str>) -> String {
+    digest(
+        format!(
+            "[\"herdr\", {}, {}]",
+            ascii_json(&socket.to_string_lossy()),
+            session.map(ascii_json).unwrap_or_else(|| "null".into()),
+        )
+        .as_bytes(),
+    )
+}
+
 fn version(value: u32) -> Result<()> {
     if value != 1 {
         return Err(invalid("unsupported runtime state version"));

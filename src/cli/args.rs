@@ -209,6 +209,15 @@ pub(super) enum AgentCommand {
         attest: bool,
     },
     Apply,
+    /// Simulate captured intent without opening catalog or native runtime state.
+    Preview,
+    /// Inspect saved replay inputs without enrolling or repairing native resources.
+    CaptureInputs {
+        #[arg(long, conflicts_with = "workspace_id")]
+        stream_id: Option<String>,
+        #[arg(long)]
+        workspace_id: Option<String>,
+    },
 }
 
 #[derive(Debug, Default, Args)]

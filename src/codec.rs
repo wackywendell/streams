@@ -32,7 +32,7 @@ macro_rules! deserialize_string_enum {
 pub(crate) use deserialize_string_enum;
 
 /// Encode the exact Python json.dumps string spelling used in persisted identity hashes.
-pub(crate) fn ascii_json(value: &str) -> String {
+pub fn ascii_json(value: &str) -> String {
     let encoded = serde_json::to_string(value).expect("string serialization");
     let mut result = String::new();
     for ch in encoded.chars() {

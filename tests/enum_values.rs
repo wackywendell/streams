@@ -9,6 +9,7 @@ use streams_temper::{
     codec::record_from_data,
     model::{NamingMode, RecordKind, Status},
     operations::{Actor, DomainOutcome},
+    runtime::conversations::{Harness, NativeIdentityKind},
     sync::{
         Freshness,
         outcomes::{LocalStatus, SharingStatus},
@@ -65,6 +66,19 @@ fn domain_enums_have_one_strict_wire_spelling() {
     ]);
     assert_eq!(Status::default(), Status::Active);
     assert_eq!(NamingMode::default(), NamingMode::Automatic);
+}
+
+#[test]
+fn native_enums_require_string_wire_values() {
+    roundtrip(&[
+        (Harness::Pi, "pi"),
+        (Harness::Codex, "codex"),
+        (Harness::Claude, "claude"),
+    ]);
+    roundtrip(&[
+        (NativeIdentityKind::Id, "id"),
+        (NativeIdentityKind::Path, "path"),
+    ]);
 }
 
 #[test]

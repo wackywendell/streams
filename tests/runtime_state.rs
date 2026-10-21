@@ -11,12 +11,25 @@ use std::time::Duration;
 use serde_json::{Value, json};
 use sha2::{Digest, Sha256};
 use streams_temper::operations::Authority;
-use streams_temper::runtime::state::{Association, LaunchReference, RuntimeState};
+use streams_temper::runtime::state::{Association, LaunchReference, RuntimeState, herdr_scope};
 
 const SCOPE: &str = "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa";
 const OTHER: &str = "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb";
 const WORKSPACE_KEY: &str = "54d2f7dd1bee8efcf49681349de679f40745c8dd5681d57414c5bcb75d499ba5";
 const STREAM_KEY: &str = "e42d5ae88f18e4b353fb6b45ead902d587a9ea78ee7bae58621c5a19426309e1";
+
+#[test]
+fn herdr_scope_preserves_python_ascii_and_nullable_namespace() {
+    let socket = Path::new("/tmp/streams-😀.sock");
+    assert_eq!(
+        herdr_scope(socket, None),
+        "88c190d06d2fc57cb400a16fcb7b869e768760b29365649c61dc18f8a51f6ebc"
+    );
+    assert_eq!(
+        herdr_scope(socket, Some("space / ☃")),
+        "1dcb503ee65305358cf0ed778e2a8da304ef09559c49e841441f6768ba57dd87"
+    );
+}
 
 fn fixture() -> tempfile::TempDir {
     let base = std::env::temp_dir().canonicalize().unwrap();

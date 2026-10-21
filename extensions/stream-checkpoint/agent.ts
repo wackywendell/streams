@@ -1,6 +1,7 @@
 import { convertToLlm, estimateTokens } from "@earendil-works/pi-coding-agent";
 import { setTimeout } from "node:timers/promises";
 import { Type } from "typebox";
+import type { AssistantMessage } from "@earendil-works/pi-ai";
 import { Check } from "typebox/value";
 import type { ExtensionContext } from "@earendil-works/pi-coding-agent";
 import type { LocalContext } from "./streams.ts";
@@ -42,9 +43,9 @@ export function assertContextFits(model: {contextWindow?: number}, systemPrompt:
  if (model.contextWindow && tokens > model.contextWindow * 0.9) throw Error(`Report input exceeds the model context budget (${tokens} tokens). Compact the main conversation or choose a larger model. No history was dropped.`);
 }
 type InferenceInput = {catalog: LocalContext; messages: any[]; instructions?: string};
-type EnrollmentInference = InferenceInput & {type: "enroll"};
-type ReportInference = InferenceInput & {type: "session" | "stream"; reset?: boolean};
-type DiscussionInference = InferenceInput & {type: "discussion"; discussion?: {role: "user" | "assistant"; text: string}[]};
+export type EnrollmentInference = InferenceInput & {type: "enroll"};
+export type ReportInference = InferenceInput & {type: "session" | "stream"; reset?: boolean};
+export type DiscussionInference = InferenceInput & {type: "discussion"; discussion?: {role: "user" | "assistant"; text: string}[]};
 export type Inference = EnrollmentInference | ReportInference | DiscussionInference;
 type EnrollmentResult = {meaningful: boolean; stream?: {title: string; goal?: string; goal_short?: string}; session?: {title: string}};
 type ReportResult = {changes: Record<string, unknown>};
@@ -74,27 +75,9 @@ No repetition or filler: never repeat words from the effort title in the session
 
 For session reports, update session.status (active, waiting, blocked, parked, done) from conversation evidence: set done when the user indicates this session is done or wrapped up (e.g. "I think we're done here", "that's all for this", "looks good, thanks") or when this session's scoped task is finished with no remaining work for this chat; set parked when the user pauses or shelves this session for later; set waiting when waiting on CI, review, an external system, or another session; set blocked when unable to proceed due to an unresolved blocker; set active when work in this session is ongoing or resumes. Only whole-effort stream.status is manual-only.`;
 const sessionProgressPrompt = `Write state as a brief orientation for someone returning to the work: what meaningfully changed and where things stand. Use one or two short sentences, normally under 35 words; shorter is better. Do not enumerate completed steps, test counts, commit hashes, rollout inventories, or other specific details unless essential to understanding the result. Put unfinished scope and blockers in remaining. This is to provide the user a quick update/reminder of the current status, not a completion report.`;
-const transientError = /(?:\b(?:429|502|503|504)\b|upstream connect error|disconnect\/reset before headers|connection termination|overloaded|ECONNRESET|ETIMEDOUT)/i;
-async function completeWithRetry<T extends {stopReason: string; errorMessage?: string}>(complete: () => Promise<T>, signal: AbortSignal): Promise<T> {
- for (let attempt = 0; ; attempt++) {
-  if (signal.aborted) throw Error("Reporting cancelled");
-  try {
-   const response = await complete();
-   if (response.stopReason === "error") throw Error(response.errorMessage ?? "Reporting model failed");
-   return response;
-  } catch(error) {
-   if (signal.aborted) throw Error("Reporting cancelled");
-   if (attempt >= 2 || !transientError.test(String(error))) throw error;
-  }
-  await setTimeout(150 * (attempt + 1), undefined, {signal});
- }
-}
-export function infer(ctx: ExtensionContext, request: EnrollmentInference, signal: AbortSignal, configured?: {provider: string; id: string}): Promise<EnrollmentResult>;
-export function infer(ctx: ExtensionContext, request: ReportInference, signal: AbortSignal, configured?: {provider: string; id: string}): Promise<ReportResult>;
-export function infer(ctx: ExtensionContext, request: DiscussionInference, signal: AbortSignal, configured?: {provider: string; id: string}): Promise<DiscussionResult>;
-export async function infer(ctx: ExtensionContext, request: Inference, signal: AbortSignal, configured?: {provider: string; id: string}): Promise<Inferred> {
- const model = configured ? ctx.modelRegistry.find(configured.provider, configured.id) : ctx.model;
- if (!model) throw Error("Configured reporting model is unavailable. Choose an available provider/model; no fallback was used.");
+export type InferenceResult<T extends Inference> = T extends EnrollmentInference ? EnrollmentResult : T extends DiscussionInference ? DiscussionResult : ReportResult;
+export type InferencePayload = {systemPrompt: string; messages: ReturnType<typeof convertToLlm>; tools: {name: string; description: string; parameters: any}[]};
+export function buildInferencePayload(request: Inference, timestamp = 0): InferencePayload {
  let schema: any;
  if (request.type === "enroll") schema = Type.Object({meaningful: Type.Boolean(), stream: Type.Optional(Type.Object({title: Type.String(), goal: Type.Optional(Type.String()), goal_short: Type.Optional(Type.String())})), session: Type.Optional(Type.Object({title: Type.String()}))}, {additionalProperties: false});
  else if (request.type === "discussion") schema = Type.Object({reply: Type.String(), edit: Type.Optional(Type.Union((["stream", "session"] as const).filter((kind) => request.catalog[kind]).flatMap((kind) => (["automatic", "user"] as const).map((actor) => Type.Object({kind: Type.Literal(kind), actor: Type.Literal(actor), changes: changesSchema(kind, request.catalog, actor, false)}, {additionalProperties: false})))))}, {additionalProperties: false});
@@ -119,11 +102,12 @@ export async function infer(ctx: ExtensionContext, request: Inference, signal: A
   }
  }
  const reset = resetting ? "Infer all allowed automatic fields fresh from conversation evidence, including a fresh short-handle title when title is an allowed automatic field. Do not anchor on the prior card or return an empty no-change delta. Respect manual fields and their modes." : undefined;
- messages.push({role: "user", content: JSON.stringify({task: request.type, catalog: visibleCatalog, instructions: request.instructions, reset, discussion: request.type === "discussion" ? request.discussion : undefined}), timestamp: Date.now()});
+ messages.push({role: "user", content: JSON.stringify({task: request.type, catalog: visibleCatalog, instructions: request.instructions, reset, discussion: request.type === "discussion" ? request.discussion : undefined}), timestamp});
  const prompt = request.type === "session" ? `${systemPrompt}\n\n${sessionProgressPrompt}` : systemPrompt;
- assertContextFits(model, prompt + JSON.stringify(schema), messages);
- const response = await completeWithRetry(() => ctx.modelRegistry.complete(model, {systemPrompt: prompt, messages, tools: [{name: "record_card", description: "Return the structured report or discussion response", parameters: schema}]}, {signal}), signal);
- if (signal.aborted || response.stopReason === "aborted") throw Error("Reporting cancelled");
+ return {systemPrompt: prompt, messages, tools: [{name: "record_card", description: "Return the structured report or discussion response", parameters: schema}]};
+}
+export function parseInferenceResponse<T extends Inference>(request: T, response: AssistantMessage, payload = buildInferencePayload(request)): InferenceResult<T> {
+ const schema = payload.tools[0].parameters;
  const calls = response.content.filter((block) => block.type === "toolCall");
  if (calls.length !== 1 || calls[0].name !== "record_card") throw Error("Reporting model must return exactly one structured record_card call");
  const rawArgs = structuredClone(calls[0].arguments);
@@ -150,5 +134,51 @@ export async function infer(ctx: ExtensionContext, request: Inference, signal: A
   const result = rawArgs as ReportResult;
   if (Object.keys(result.changes).length) validateChanges(request.type, request.catalog[request.type]!, result.changes, "automatic");
  }
- return rawArgs as Inferred;
+ return rawArgs as InferenceResult<T>;
+}
+export type InferenceRuntime = Pick<ExtensionContext, "model" | "modelRegistry">;
+export type ModelSelection = {provider: string; id: string};
+export type InferenceEvent =
+ | {type: "request"; request: Inference; payload: InferencePayload; model: ModelSelection}
+ | {type: "attempt"; attempt: number}
+ | {type: "attempt-error"; attempt: number; error: string}
+ | {type: "response"; response: AssistantMessage}
+ | {type: "result"; result: Inferred}
+ | {type: "error"; error: string; cancelled: boolean};
+export type InferenceObserver = (event: InferenceEvent) => void;
+const transientError = /(?:\b(?:429|502|503|504)\b|upstream connect error|disconnect\/reset before headers|connection termination|overloaded|ECONNRESET|ETIMEDOUT)/i;
+async function completeWithRetry(complete: () => Promise<AssistantMessage>, signal: AbortSignal, observe?: InferenceObserver): Promise<AssistantMessage> {
+ for (let attempt = 0; ; attempt++) {
+  if (signal.aborted) throw Error("Reporting cancelled");
+  observe?.({type: "attempt", attempt: attempt + 1});
+  let response: AssistantMessage | undefined, failure: unknown;
+  try {response = await complete();}
+  catch (error) {failure = error;observe?.({type: "attempt-error", attempt: attempt + 1, error: String(error)});}
+  if (response) {
+   observe?.({type: "response", response});
+   if (response.stopReason !== "error") return response;
+   failure = Error(response.errorMessage ?? "Reporting model failed");
+  }
+  if (signal.aborted) throw Error("Reporting cancelled");
+  if (attempt >= 2 || !transientError.test(String(failure))) throw failure;
+  await setTimeout(150 * (attempt + 1), undefined, {signal});
+ }
+}
+/** Model execution has no session, UI, catalog-write or native capabilities. */
+export async function runInference<T extends Inference>(runtime: InferenceRuntime, request: T, signal: AbortSignal, configured?: ModelSelection, observe?: InferenceObserver): Promise<InferenceResult<T>> {
+ const model = configured ? runtime.modelRegistry.find(configured.provider, configured.id) : runtime.model;
+ if (!model) throw Error("Configured reporting model is unavailable. Choose an available provider/model; no fallback was used.");
+ const payload = buildInferencePayload(request, Date.now());
+ observe?.({type: "request", request, payload, model: {provider: model.provider, id: model.id}});
+ try {
+  assertContextFits(model, payload.systemPrompt + JSON.stringify(payload.tools[0].parameters), payload.messages);
+  const response = await completeWithRetry(() => runtime.modelRegistry.complete(model, payload, {signal}), signal, observe);
+  if (signal.aborted || response.stopReason === "aborted") throw Error("Reporting cancelled");
+  const result = parseInferenceResponse(request, response, payload);
+  observe?.({type: "result", result});
+  return result;
+ } catch (error) {observe?.({type: "error", error: String(error), cancelled: signal.aborted});throw error;}
+}
+export function infer<T extends Inference>(ctx: ExtensionContext, request: T, signal: AbortSignal, configured?: ModelSelection, observe?: InferenceObserver): Promise<InferenceResult<T>> {
+ return runInference(ctx, request, signal, configured, observe);
 }
