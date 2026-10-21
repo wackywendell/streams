@@ -4,8 +4,10 @@
 //! catalog/session attestation. Runtime ownership proofs must remain separate.
 
 mod launch;
+mod ownership;
 mod topology;
 pub use launch::HerdrStartedAgent;
+pub use ownership::{HerdrNativeSnapshot, PairState};
 pub use topology::{HerdrAgent, HerdrInventoryPane, HerdrLayout, HerdrTab, HerdrTopology};
 
 use super::transport::{Operation, Transport, args, launch_args, string};
