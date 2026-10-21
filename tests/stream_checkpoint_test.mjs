@@ -174,7 +174,9 @@ test('settings change in place, pick searchable models, and preserve Herdr confi
     // Cursor stays on reporting after each toggle; move to the model submenu.
     for(let i=0;i<4;i++)press('\x1b[B');press('\r');press('a/first');press('\r');
     assert.deepEqual(saved.at(-1).model,{provider:'a',id:'first'});
+    press('\x1b[B');press('\r'); // Debug subsection
     press('\x1b[B');press('\r');assert.equal(saved.at(-1).session_logging,true);
+    assert.equal(saved.at(-1).debug_commands,false);press('\x1b');
     press('\x1b[B');press('\r'); // workspace startup
     press('\x1b[B');press('\r'); // workspace naming: enabled -> disabled
     const native=JSON.parse(readFileSync(join(root,'work-cards.json'),'utf8'));
@@ -224,7 +226,7 @@ test('all settings explain their effects and leave description room on short ter
     'How many completed agent responses to wait',
     'What conversation history the summary model reads',
     'Model used to summarize progress and generate short titles.',
-    'Save complete helper inputs, responses, retries and errors',
+    'Configure debug commands and optional helper session logging.',
     'Automatically open the side-by-side Herdr work-card pane',
     "Sync the Herdr workspace name with the effort's short title",
     "Sync this Herdr tab's name with this session's short title",
@@ -698,7 +700,7 @@ test('streams settings dispatches to the existing reporting dialog without repor
  assert.equal(f.reads(),0);assert.deepEqual(f.requests,[]);assert.deepEqual(f.writes,[]);
 });
 test('helper logging setting toggles in place and passes log options to reports and resets without changing model settings',async()=>{
- const root=mkdtempSync(join(tmpdir(),'card-helper-setting-')),choices=['Helper session logging: disabled','Close','Helper session logging: enabled','Close'],seen=[];
+ const root=mkdtempSync(join(tmpdir(),'card-helper-setting-')),choices=['Debug','Helper session logging: disabled','Back','Close','Debug','Helper session logging: enabled','Back','Close'],seen=[];
  try {
   const f=commandFixture({agentDir:root,select:()=>choices.shift(),infer:async(req,logging)=>{
    seen.push({type:req.type,logging});
