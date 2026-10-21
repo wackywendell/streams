@@ -51,7 +51,7 @@ export function validateReferences(field: string, rows: unknown, stream: StreamW
   if (seen.has(id)) throw Error("Duplicate reference row");seen.add(id);
  }
 }
-export function editRequest(context: LocalContext, kind: "stream" | "session", changes: Record<string, unknown>, actor: "automatic" | "user", operationId = randomUUID(), guardInputs = actor === "automatic"): ApplyRequest {
+export function editRequest(context: LocalContext, kind: "stream" | "session", changes: Record<string, unknown>, actor: "automatic" | "user", operationId: string = randomUUID(), guardInputs = actor === "automatic"): ApplyRequest {
  const before = context[kind];if (!before) throw Error(`No attached ${kind}`);
  validateChanges(kind, before, changes, actor);
  if ((kind === "session" || actor === "automatic") && !context.authority) throw Error("No reporting authority; resume ownership with the CLI");

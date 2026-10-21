@@ -14,6 +14,7 @@ mod application;
 mod catalog;
 mod catalog_conformance;
 mod cli;
+mod cli_debug;
 mod cli_revisions;
 mod codec;
 mod config;

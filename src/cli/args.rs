@@ -48,6 +48,12 @@ pub(super) enum NativeReclaim {
 
 #[derive(Debug, Subcommand)]
 pub(super) enum Command {
+    /// Inspect and replay private, frozen helper requests without live catalog writes.
+    #[command(disable_help_flag = true)]
+    Debug {
+        #[arg(trailing_var_arg = true, allow_hyphen_values = true)]
+        arguments: Vec<String>,
+    },
     Init {
         #[arg(long)]
         sync: Strategy,

@@ -2,6 +2,7 @@ import { join } from "node:path";
 import type { ExtensionContext } from "@earendil-works/pi-coding-agent";
 import { captureIds, captureSessions, loadCapture, parseCaptureInventory } from "./capture.ts";
 import { replayCapture } from "./replay.ts";
+import { confirmCapture } from "./capture-dialog.ts";
 import type { ModelSelection } from "./agent.ts";
 import type { ReportAction, ResetTarget } from "./report-workflow.ts";
 import type { StreamCli } from "./streams.ts";
@@ -46,13 +47,12 @@ export async function debugCommand(input: string, ctx: ExtensionContext, client:
    target = targets[labels.indexOf(chosen)];if (!target) return;
   }
   const inventory = parseCaptureInventory(await client.captureInputs(target, signal));current();
-  const samples = inventory.samples ?? [], available = samples.filter(sample => !sample.unavailable || sample.host_id === inventory.host_id && sample.native_session_id === ctx.sessionManager.getSessionId()).length;
-  const selection = samples.map(sample => `${sample.catalog.session?.title ?? "no card"} · ${sample.native_session_id} · ${sample.open === null ? "open unknown" : sample.open ? "open" : "closed"}${sample.unavailable ? ` · ${sample.unavailable}` : ""}`).join("\n");
-  const proceed = await ctx.ui.confirm("Capture private session samples?", `${samples.length} Pi conversations; ${available} locally available; ${samples.filter(sample => sample.open === true).length} observed open; ${inventory.unsupported?.length ?? 0} unsupported non-Pi entries. Copies transcripts, cards and available helper logs into ${root}. Other-host/missing transcripts remain listed.${inventory.topology_error ? `\nOpen-state warning: ${inventory.topology_error}` : ""}\n\n${selection}`, {signal});current();
+  const proceed = await confirmCapture(ctx, inventory, root, signal);current();
   if (!proceed) return;
-  const {capture, directory} = captureSessions(inventory, root, settings.context, ctx.sessionManager, signal, join(agentDir, "stream-reporting-sessions"));
+  const {capture, directory} = captureSessions(inventory, root, ctx.sessionManager, signal, join(agentDir, "stream-reporting-sessions"));
   const captured = capture.samples.filter(sample => sample.evidence).length;
-  ctx.ui.notify(`Captured ${captured}/${capture.samples.length} conversations: ${directory}/capture.json`, captured === capture.samples.length ? "info" : "warning");
+  const partial = !!capture.topology_error || !!capture.unresolved?.length;
+  ctx.ui.notify(`${partial ? "Partial capture" : "Captured"}: ${captured}/${capture.samples.length} identified conversations; ${capture.unresolved?.length ?? 0} unresolved panes: ${directory}/capture.json`, !partial && captured === capture.samples.length ? "info" : "warning");
   return;
  }
  let id = command.id;
@@ -77,11 +77,11 @@ export async function debugCommand(input: string, ctx: ExtensionContext, client:
  }
  if (!ctx.modelRegistry.find(model.provider, model.id)) throw Error("Replay model is unavailable; no fallback was used");
  const count = capture.samples.filter(sample => sample.evidence && !sample.unavailable).length;
- if (!await ctx.ui.confirm("Run model inference on frozen samples?", `${count} available conversations using ${model.provider}/${model.id}. Sends frozen private conversation evidence and cards to that provider. Each may run enrollment, session and effort helpers. Normal provider requests/costs apply. Results stay local; real cards, sessions, names and layout are not changed.`, {signal})) return;
+ if (!await ctx.ui.confirm("Run model inference on frozen samples?", `${count} available conversations using ${model.provider}/${model.id}. Each may run enrollment, session and effort helpers. Normal provider requests/costs apply. Results stay local; real cards, sessions, names and layout are not changed.`, {signal})) return;
  current();
  ctx.ui.setStatus("stream-debug", "Streams debug · Replaying...");
  try {
   const {run, directory} = await replayCapture(capture, root, ctx, model, command.action, (input, signal) => client.preview(input, signal), signal);
-  if (!signal.aborted) ctx.ui.notify(`Replay ${run.id}: ${run.samples.filter(sample => sample.status === "completed").length} completed, ${run.samples.filter(sample => sample.status === "failed").length} failed, ${run.samples.filter(sample => sample.status === "unavailable").length} unavailable, ${run.samples.filter(sample => sample.status === "not-run" || sample.status === "cancelled").length} unrun/cancelled. Comparison: ${directory}/comparison.md`, run.samples.some(sample => sample.status !== "completed") ? "warning" : "info");
+  if (!signal.aborted) ctx.ui.notify(`Replay ${run.id}: ${run.samples.filter(sample => sample.status === "completed").length} completed, ${run.samples.filter(sample => sample.status === "failed").length} failed, ${run.samples.filter(sample => sample.status === "skipped").length} skipped, ${run.samples.filter(sample => sample.status === "unavailable").length} unavailable, ${run.samples.filter(sample => sample.status === "not-run" || sample.status === "cancelled").length} unrun/cancelled. Comparison: ${directory}/comparison.md`, run.samples.some(sample => sample.status !== "completed") ? "warning" : "info");
  } finally {ctx.ui.setStatus("stream-debug", undefined);}
 }

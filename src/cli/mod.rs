@@ -4,6 +4,7 @@
 mod args;
 mod cards;
 mod checkouts;
+mod debug;
 mod documents;
 mod enrollment;
 mod fields;
@@ -188,6 +189,7 @@ pub(super) fn run() -> ExitCode {
         }
     };
     let outcome = match parsed.command {
+        Command::Debug { arguments } => debug::forward(arguments, parsed.json),
         Command::Native {
             command: NativeCommand::Pane,
             ..
@@ -410,6 +412,7 @@ impl App {
     }
     fn execute(&self, command: Command) -> Result<Output> {
         match command {
+            Command::Debug { arguments } => debug::forward(arguments, false),
             Command::Init {
                 sync,
                 remote,

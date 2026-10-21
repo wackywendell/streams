@@ -5,16 +5,15 @@ import { privateDirectory, privateRead, privateWrite } from "./private-storage.t
 export { privateDirectory, privateWrite } from "./private-storage.ts";
 import { CURRENT_SESSION_VERSION, SessionManager } from "@earendil-works/pi-coding-agent";
 import type { ExtensionContext } from "@earendil-works/pi-coding-agent";
-import { checkpointContext } from "./agent.ts";
 import { parseLocalContext } from "../../integrations/herdr-work-cards/src/streams-context.ts";
 import type { LocalContext, StreamWire } from "./streams.ts";
 
 export type CaptureTarget = {kind: "stream" | "workspace"; id: string; title: string};
 export type Location = {workspace_id: string; tab_id: string; pane_id: string; terminal_id: string};
 export type InventorySample = {host_id: string; harness: "pi"; native_session_id: string; open: boolean | null; locations: Location[]; catalog: LocalContext; transcript_file: string | null; unavailable: string | null};
-export type CaptureInventory = {version: 1; host_id: string; streams: StreamWire[]; workspaces: {id: string; label: string; stream_id: string | null}[]; topology_error: string | null; target?: CaptureTarget; samples?: InventorySample[]; unsupported?: unknown[]};
+export type CaptureInventory = {version: 1; host_id: string; streams: StreamWire[]; workspaces: {id: string; label: string; stream_id: string | null}[]; topology_error: string | null; target?: CaptureTarget; samples?: InventorySample[]; unsupported?: unknown[]; unresolved?: (Location & {harness: "pi" | "codex" | "claude"; error: string})[]};
 export type FrozenSample = InventorySample & {captured_at: string; cwd?: string; snapshot_file?: string; snapshot_hash?: string; projection_source?: "current-session" | "persisted-leaf"; evidence?: {messages: any[]; leafId: string | null}; evidence_hash?: string; warnings: string[]; helper_logs: {file?: string; session_id: string; error?: string}[]};
-export type Capture = {version: 1; id: string; captured_at: string; context_mode: "trimmed" | "full"; target: CaptureTarget; host_id: string; workspaces: CaptureInventory["workspaces"]; topology_error: string | null; unsupported: unknown[]; source_files: Record<string, string>; samples: FrozenSample[]};
+export type Capture = {version: 1; id: string; captured_at: string; context_mode: "trimmed" | "full"; target: CaptureTarget; host_id: string; workspaces: CaptureInventory["workspaces"]; topology_error: string | null; unsupported: unknown[]; unresolved?: CaptureInventory["unresolved"]; source_files: Record<string, string>; samples: FrozenSample[]};
 const object = (value: any): value is Record<string, any> => !!value && typeof value === "object" && !Array.isArray(value);
 const identity = (value: any): value is string => typeof value === "string" && !!value.trim() && !/[\x00-\x1f]/.test(value);
 export function parseCaptureInventory(value: any): CaptureInventory {
@@ -23,6 +22,10 @@ export function parseCaptureInventory(value: any): CaptureInventory {
  for (const stream of value.streams) parseLocalContext({catalog_source: "inventory", host_id: value.host_id, stream, session: null, sessions: [], authority: null});
  for (const workspace of value.workspaces) if (!object(workspace) || !identity(workspace.id) || typeof workspace.label !== "string" || !(workspace.stream_id === null || identity(workspace.stream_id))) throw Error("Invalid capture workspace");
  if (value.target !== undefined && (!object(value.target) || !["stream", "workspace"].includes(value.target.kind) || !identity(value.target.id) || typeof value.target.title !== "string")) throw Error("Invalid capture target");
+ if (value.unresolved !== undefined) {
+  if (!Array.isArray(value.unresolved)) throw Error("Invalid unresolved capture observations");
+  for (const observation of value.unresolved) if (!object(observation) || !["pi", "codex", "claude"].includes(observation.harness) || !["workspace_id", "tab_id", "pane_id", "terminal_id"].every(key => identity(observation[key])) || typeof observation.error !== "string" || !observation.error.trim()) throw Error("Invalid unresolved capture observation");
+ }
  if (value.samples !== undefined) {
   if (!value.target || !Array.isArray(value.samples)) throw Error("Invalid capture samples");
   const seen = new Set<string>();
@@ -43,7 +46,7 @@ export function parseCaptureInventory(value: any): CaptureInventory {
 }
 export const digest = (value: string): string => createHash("sha256").update(value).digest("hex");
 export function sourceFiles(): Record<string, string> {
- return Object.fromEntries(["agent.ts", "core.ts", "report-workflow.ts", "capture.ts", "replay.ts", "private-storage.ts"].map(name => [name, digest(readFileSync(new URL(name, import.meta.url), "utf8"))]));
+ return Object.fromEntries(["agent.ts", "core.ts", "report-workflow.ts", "capture.ts", "prompt-lab.ts", "replay.ts", "private-storage.ts", "helper-log.ts"].map(name => [name, digest(readFileSync(new URL(name, import.meta.url), "utf8"))]));
 }
 function transcript(content: string, expected: string): {entries: any[]; partial: boolean} {
  const lines = content.split("\n");if (lines.at(-1) === "") lines.pop();
@@ -60,12 +63,13 @@ function transcript(content: string, expected: string): {entries: any[]; partial
  return {entries, partial};
 }
 /** Snapshot data only. Never open a source file with a mutating SessionManager. */
-export function captureSessions(inventory: CaptureInventory, root: string, mode: "trimmed" | "full", current?: ExtensionContext["sessionManager"], signal?: AbortSignal, helperRoot?: string): {capture: Capture; directory: string} {
+export function captureSessions(inventory: CaptureInventory, root: string, current?: ExtensionContext["sessionManager"], signal?: AbortSignal, helperRoot?: string): {capture: Capture; directory: string} {
  inventory = parseCaptureInventory(structuredClone(inventory));
  if (!inventory.target || !inventory.samples) throw Error("Select a capture target first");
+ signal?.throwIfAborted();
  const id = randomUUID(), directory = join(root, "captures", id);
  privateDirectory(directory, root);
- const capture: Capture = {version: 1, id, captured_at: new Date().toISOString(), context_mode: mode, target: inventory.target, host_id: inventory.host_id, workspaces: structuredClone(inventory.workspaces), topology_error: inventory.topology_error, unsupported: inventory.unsupported ?? [], source_files: sourceFiles(), samples: []};
+ const capture: Capture = {version: 1, id, captured_at: new Date().toISOString(), context_mode: "full", target: inventory.target, host_id: inventory.host_id, workspaces: structuredClone(inventory.workspaces), topology_error: inventory.topology_error, unsupported: inventory.unsupported ?? [], unresolved: structuredClone(inventory.unresolved ?? []), source_files: sourceFiles(), samples: []};
  for (const [index, source] of inventory.samples.entries()) {
   signal?.throwIfAborted();
   const sample: FrozenSample = {...structuredClone(source), captured_at: new Date().toISOString(), warnings: [], helper_logs: []};
@@ -75,13 +79,13 @@ export function captureSessions(inventory: CaptureInventory, root: string, mode:
   const live = source.host_id === inventory.host_id && current?.getSessionId() === source.native_session_id ? current : undefined;
   if (source.unavailable && !live) continue;
   try {
-   if (live) sample.unavailable = null;
+   if (live) {sample.unavailable = null;sample.open = true;}
    else if (source.open) sample.warnings.push("Evidence uses the persisted leaf, not another running process's unsaved branch selection.");
    const content = live ? [live.getHeader(), ...live.getEntries()].map(entry => JSON.stringify(entry)).join("\n") + "\n" : readFileSync(source.transcript_file!, "utf8");
    const parsed = transcript(content, source.native_session_id);
    const manager = live ?? SessionManager.inMemory(parsed.entries[0].cwd, undefined, parsed.entries);
    if (parsed.partial) sample.warnings.push("Incomplete final JSONL record excluded from projected evidence; raw snapshot retained.");
-   const evidence = checkpointContext(manager, mode), snapshot_file = `session-${index}.jsonl`;
+   const evidence = structuredClone({messages: manager.buildSessionProjection().messages, leafId: manager.getLeafId()}), snapshot_file = `session-${index}.jsonl`;
    const metadata = {cwd: manager.getCwd(), projection_source: live ? "current-session" as const : "persisted-leaf" as const, evidence, evidence_hash: digest(JSON.stringify(evidence)), snapshot_file, snapshot_hash: digest(content)};
    privateWrite(join(directory, snapshot_file), content, root);
    Object.assign(sample, metadata);
@@ -120,12 +124,12 @@ export function loadCapture(root: string, id: string): Capture {
  if (!captureId.test(id)) throw Error("Choose an exact capture ID");
  const directory = join(root, "captures", id);
  const value = JSON.parse(privateRead(directory, "capture.json", root));
- if (!object(value) || value.id !== id || !["trimmed", "full"].includes(value.context_mode) || !identity(value.captured_at) || !object(value.source_files)) throw Error("Invalid frozen capture");
- parseCaptureInventory({...value, streams: value.samples?.flatMap((s: FrozenSample) => s.catalog.stream ? [s.catalog.stream] : [])});
+ if (!object(value) || value.id !== id || !["trimmed", "full"].includes(value.context_mode) || !identity(value.captured_at) || !object(value.source_files) || !Array.isArray(value.samples)) throw Error("Invalid frozen capture");
+ parseCaptureInventory({...value, streams: []});
  for (const sample of value.samples) {
   if (!Array.isArray(sample.warnings) || !Array.isArray(sample.helper_logs) || !(sample.evidence === undefined || object(sample.evidence) && Array.isArray(sample.evidence.messages) && (sample.evidence.leafId === null || identity(sample.evidence.leafId)))) throw Error("Invalid frozen evidence");
   if (sample.evidence && digest(JSON.stringify(sample.evidence)) !== sample.evidence_hash) throw Error("Frozen evidence hash mismatch");
-  if (sample.evidence && (!sample.snapshot_file || typeof sample.cwd !== "string" || !["current-session", "persisted-leaf"].includes(sample.projection_source))) throw Error("Frozen evidence missing source identity");
+  if (sample.evidence && (sample.unavailable !== null || !identity(sample.snapshot_file) || !/^session-[0-9]+[.]jsonl$/.test(sample.snapshot_file) || !identity(sample.cwd) || !["current-session", "persisted-leaf"].includes(sample.projection_source))) throw Error("Frozen evidence missing source identity");
   if (sample.snapshot_file !== undefined) {
    const raw = privateRead(directory, sample.snapshot_file, root);
    if (digest(raw) !== sample.snapshot_hash) throw Error("Frozen transcript hash mismatch");

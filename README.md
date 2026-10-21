@@ -6,14 +6,16 @@ This checkout includes the catalog CLI, Pi work-card extension and bundled agent
 
 ## Run from this checkout
 
-Use [uv](https://docs.astral.sh/uv/) to run the CLI without replacing your installed version:
+This branch uses Rust for the CLI, catalog, native lifecycle and terminal card. Build it without replacing your installed CLI:
 
 ```sh
-uv sync
-uv run streams --help
+mise run build
+./target/debug/streams --help
 ```
 
-The examples below use `streams`. During development, run them as `uv run streams ...` from this checkout. Use isolated XDG directories when testing; commands otherwise use your normal configuration and catalog.
+The examples below use `streams`; from this checkout, substitute `./target/debug/streams`. If `CARGO_TARGET_DIR` is set, use its `debug/streams` instead. Use isolated XDG directories when testing; commands otherwise use your normal configuration and catalog.
+
+The Pi extension selects this checkout's debug Rust build by default. `STREAMS_BIN_PATH` can select another absolute Rust executable. `STREAMS_RUST_BIN` remains an alias; if both are set, they must identify the same executable. There is no Python or `PATH` fallback. Loading this checkout does not update installed tools; native PTY and live-platform acceptance are still required before a trial.
 
 ## Initialise a catalog
 
@@ -138,11 +140,24 @@ The menu refreshes on action or reopen, not while waiting for a selection. Discu
 
 When testing, keep the CLI and extension from the same checkout, use isolated XDG/agent directories and do not also load the published scratch-based extension. Restart running Pi sessions after updating the extension; existing processes retain their previously loaded code. The [bundled skill](skills/streams/SKILL.md) covers record semantics and guarded reporting from other harnesses.
 
+### Frozen report experiments
+
+Enable “Debug commands” in `/streams settings` to capture full conversation samples, prepare a helper request and rerun its saved input without changing live cards:
+
+```sh
+streams debug --help
+streams debug capture stream STREAM_ID --json
+streams debug prepare CAPTURE_ID --sample 0 --task session --json
+streams debug run REQUEST_ID --model PROVIDER/MODEL --json
+```
+
+Capture, preparation and inspection stay local. Run and replay send evidence to the selected provider using normal credentials and request costs. They require Pi 1.3 or newer; `STREAMS_PI_SDK_ENTRY` can select an absolute matching SDK entry. Prepared requests preserve the rendered input rather than rebuilding it at execution. Private files live under `$PI_CODING_AGENT_DIR/stream-debug`; the [frozen-request ADR](docs/pi-prompt-replay.md) defines the boundaries.
+
 ## Native Herdr work cards
 
-The original Work Cards source, tests and design documents are imported under [`integrations/herdr-work-cards`](integrations/herdr-work-cards), with its original commit history intact through `e7d74ce22f95893fa8eed570ef2e6a14d61f74bd`. The [native projection decision](docs/native-herdr-work-cards.md) identifies which behavior carries forward and which legacy authority is superseded.
+Work Cards history is retained through `e7d74ce22f95893fa8eed570ef2e6a14d61f74bd`. Its surviving support code and design documents live under [`integrations/herdr-work-cards`](integrations/herdr-work-cards); the duplicate native implementation is retired. The [native projection decision](docs/native-herdr-work-cards.md) identifies which behavior carries forward and which legacy authority is superseded.
 
-The read-only Streams adapter and Pi lifecycle wiring passed isolated native acceptance and are active in the local runtime. The [cutover plan](plans/catalog-cutover.md) distinguishes that activated base from follow-up changes awaiting their own verification and activation. The standalone Work Cards runtime is retired. The root Streams extension loads the projection and naming modules after exact Herdr/Pi attestation; they do not run a separate summarizer or write another catalog.
+The root Pi extension delegates native effects and the terminal card to Rust after exact Herdr/Pi attestation. TypeScript retains Pi events, inline UI and session-name provenance. Neither boundary runs a separate summarizer or writes another catalog. The earlier [cutover plan](plans/catalog-cutover.md) describes the Python installation, not activation of this Rust branch.
 
 Native presentation settings remain in `$PI_CODING_AGENT_DIR/work-cards.json`, separate from reporting settings. `workspace_startup` selects automatic or manual pane startup. `workspace_naming`, `tab_naming` and `session_naming` are independent booleans, each defaulting to `true` regardless of startup; `null` is invalid. Manual native names remain protected. `document_command` selects a trusted editor command, otherwise `$EDITOR` or `less` is used. Removed inference settings are rejected; see the [presentation configuration](integrations/herdr-work-cards/README.md#presentation-configuration).
 
@@ -216,17 +231,15 @@ If reconciliation finds a conflict, reads retain the complete local view and exp
 ## Develop
 
 ```sh
-uv sync
 npm ci
 npm --prefix integrations/herdr-work-cards ci --ignore-scripts
+mise run test:fast
 mise run test
 ```
 
-Python tests cover the catalog, CLI, sync library, guarded agent API and runtime adapters. Node tests cover reporting, the card editor, discussion, settings and real checkout-CLI integration inside and outside a repository. An isolated two-host Git test covers Pi lifecycle hooks, guarded reports, second-host refresh, offline saves and fresh-process retry. The native deadline test checks that the CLI and a child process stop. Tests use no live credentials or model inference. Native workspace effects remain mocked.
+Rust tests cover the catalog, CLI, persistence, Git recovery, native effects, terminal card and embedded Temper specifications. Frozen wire and renderer fixtures remain after retiring the Python and duplicate TypeScript implementations. Node tests cover the Pi boundary, frozen helper requests, session names, configuration and subprocess shutdown. Real Rust CLI acceptance exercises checkout integration, two-host Git publication, offline saves and fresh-process recovery.
 
-`mise run test:herdr` builds and runs the native work-card regression suite; it also runs as part of `mise run test`. It covers the Streams adapter, renderer, naming and document opening. Native effects use mocked protocols; run isolated native acceptance before activating changed launch code.
-
-The Python package requires Python 3.11 or newer. See the [durable catalog decision](docs/durable-work-catalog.md), [sync decision](docs/catalog-git-sync.md) and temporary [cutover plan](plans/catalog-cutover.md) for scope and remaining integration work.
+`test:fast` omits Git recovery and the full Temper cascade; run `test` before a trial or release. Tests use isolated homes, fake native endpoints and deterministic model responses, not live credentials or inference. See [Contributing](CONTRIBUTING.md) for requirements and focused commands, and the [Rust runtime decision](docs/rust-temper-architecture.md) for the cutover boundary.
 
 ## License
 

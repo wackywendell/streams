@@ -7,7 +7,7 @@ export type LocalStatus = "unchanged" | "persisted" | "committed" | "repair-requ
 export type SharingStatus = "local-only" | "pending" | "confirmed" | "blocked" | "failed" | "uncertain";
 export type Result = { local: LocalStatus; sharing: SharingStatus; domain: { outcome: "changes" | "no-change" | "superseded" | "conflict"; [key: string]: unknown } | null; detail?: string; [key: string]: unknown };
 export type PublicationResult = Result & {domain: null};
-export type Receipt = {stream?: StreamWire; session?: SessionWire; authority?: LocalContext["authority"]; publication?: PublicationResult; completion_error?: unknown} & ({operation_id: string; save: Result; saves?: never} | {operation_id?: never; save?: never; saves: {operation_id: string; save: Result}[]});
+export type Receipt = {simulated?: true; stream?: StreamWire; session?: SessionWire; authority?: LocalContext["authority"]; publication?: PublicationResult; completion_error?: unknown} & ({operation_id: string; save: Result; saves?: never} | {operation_id?: never; save?: never; saves: {operation_id: string; save: Result}[]});
 export type ApplyRequest = {catalog_source: string; operation_id: string; kind: "stream" | "session"; actor: "automatic" | "user"; before: StreamWire | SessionWire; changes: Record<string, unknown>; ownership_token: string | null; inputs: {kind: "stream" | "session"; record: StreamWire | SessionWire}[]};
 type CommandResult = {code: number | null; stdout: string; stderr: string};
 export type Runner = (args: string[], input?: string, options?: {timeout: number; signal?: AbortSignal}) => Promise<CommandResult>;
@@ -87,12 +87,12 @@ export class StreamCli {
   return rows;
  }
  async captureInputs(target?: {kind: "stream" | "workspace"; id: string}, signal?: AbortSignal): Promise<unknown> {
-  return this.run(["agent", "capture-inputs", ...(target ? [`--${target.kind}-id`, target.id] : []), "--json"], undefined, "read", {timeout: 10000, signal});
+  return this.run(["agent", "capture-inputs", ...(target ? [target.kind === "stream" ? "--stream-id" : "--workspace-id", target.id] : []), "--json"], undefined, "read", {timeout: 10000, signal});
  }
  async preview(input: {catalog: LocalContext; action: "apply" | "enroll"; request: unknown}, signal?: AbortSignal): Promise<{catalog: LocalContext; receipt: Receipt}> {
   const value = await this.run(["agent", "preview", "--json"], input, "read", {timeout: 10000, signal});
-  if (!object(value) || !receipt(value.receipt)) throw new StreamsCliError("Invalid simulated catalog receipt");
-  try {return {catalog: parseLocalContext(value.catalog), receipt: value.receipt};} catch {throw new StreamsCliError("Invalid preview catalog context");}
+  if (!object(value) || !receipt(value.receipt) || value.receipt.simulated !== true) throw new StreamsCliError("Invalid simulated catalog receipt");
+  return {catalog: parseLocalContext(value.catalog), receipt: value.receipt};
  }
  async captureArrangement(streamId: string, signal?: AbortSignal): Promise<unknown> {return this.run(["workspace", "capture", streamId, "--json"], undefined, "read", {timeout: 10000, ...(signal ? {signal} : {})});}
  async sync(event: "start" | "shutdown"): Promise<PublicationResult> {return this.run(["sync", "--event", event, "--json"], undefined, "publication");}

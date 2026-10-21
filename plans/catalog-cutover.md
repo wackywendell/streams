@@ -1,6 +1,6 @@
 # Durable catalog cutover
 
-Temporary implementation plan. Remove after the CLI and integration cutover. The [catalog ADR](../docs/durable-work-catalog.md) remains the design authority; implementation contracts live beside the code in `src/_streams/catalog`.
+Historical Python catalog cutover plan. Its activation and test counts describe the earlier installation, not this Rust branch. The [catalog ADR](../docs/durable-work-catalog.md) remains the record authority; see the [Rust runtime ADR](../docs/rust-temper-architecture.md) and [Contributing](../CONTRIBUTING.md) for current implementation and verification.
 
 ## Current state
 

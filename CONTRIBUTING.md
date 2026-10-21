@@ -5,70 +5,72 @@
 Install [mise](https://mise.jdx.dev/), then:
 
 ```sh
-mise install   # Node 26, uv and pinned Rust
-uv sync
+mise install   # Node 26 and pinned Rust
 npm ci
 npm --prefix integrations/herdr-work-cards ci --ignore-scripts
+mise run build
 ```
 
-The Rust verification tests need Z3 headers/libraries, pkg-config and libclang:
-`brew install z3 pkg-config` on macOS (with Xcode command-line tools), or
+This branch has no Python implementation or Python test dependency. Rust owns the
+CLI, catalog, native effects and terminal card. TypeScript owns the in-process Pi
+boundary and its supporting configuration, wire parsing, naming and subprocess code.
+
+Rust verification needs Z3 headers/libraries, pkg-config and libclang:
+`brew install z3 pkg-config` on macOS with Xcode command-line tools, or
 `sudo apt-get install libz3-dev libclang-dev pkg-config` on Ubuntu. Production
-builds do not link Z3. Temper is pinned in `Cargo.toml`; the workspace compiler
-is pinned in `rust-toolchain.toml` and `mise.toml`.
+builds do not link Z3. Temper is pinned in `Cargo.toml`; the compiler is pinned
+in `rust-toolchain.toml` and `mise.toml`.
 
 ## Test
 
 ```sh
-mise run test:fast     # development: Rust contracts and Pi extension tests
-mise run test          # full acceptance, including Git and cross-language parity
-mise run test:rust     # all Rust tests, fault sequences, Temper L0–L3 and doctests
-mise run test:differential # build adapters, compare Python/Rust traces once
-mise run test:python   # Python reference tests, excluding the differential gate
-mise run test:pi       # Pi extension tests
-mise run test:herdr    # imported native Work Cards regression tests
+mise run test:fast         # Rust contracts and Pi boundary
+mise run test              # full acceptance, including real Git and Temper
+mise run test:rust         # all Rust targets, recovery, Temper L0–L3 and doctests
+mise run test:rust:fast    # Rust library, binary and consolidated contracts
+mise run test:pi           # Pi reporting, capture and helper-request tests
+mise run test:herdr        # configuration, naming and subprocess boundaries
+mise run test:replay       # production helper replay with real Rust preview
+mise run test:native:rust  # Pi-to-Rust lifecycle with fake Herdr endpoints
 ```
 
-For a Rust-only edit, run `mise run test:rust:fast`. To target one area, use:
+Target one Rust area with:
 
 ```sh
 mise exec -- sh -c 'RUSTC=$(rustup which rustc) cargo test --locked --test contracts runtime_state'
 ```
 
-Contract files share one integration-test binary, so a library edit no longer
-links a binary for every small test file. The separate `git_catalog` and
-`verification` targets retain all real Git recovery traces and the catalog
-Temper cascade. `test:fast` does not replace full acceptance before a trial or
-release. It keeps the complete contract suite, including native-open model checks,
-without running Git publication traces, Python parity, or the legacy Herdr suite.
+Contract files share one test binary. `git_catalog` and `verification` remain
+separate targets for real Git recovery and the full Temper cascade. The fast gate
+retains native-open model checks, but does not replace full acceptance before a
+trial or release. Python differential suites and tests importing the retired
+TypeScript coordinator are gone; frozen wire/rendering fixtures and Rust contract,
+fault-injection and process tests remain. Test counts across the cutover are not
+comparable measures of coverage.
 
-Test tasks suppress inherited global/system Git configuration only for their
-subprocesses. Personal hooks, fsmonitor and signing settings must not run inside
-fixture repositories. This changes neither your Git configuration nor production
-signing. Signing-failure tests still set and verify their explicit fixture policy.
+Tasks isolate fixture repositories from personal Git configuration, hooks,
+fsmonitor and signing. They do not change your Git configuration or production
+signing; signing-failure tests still set their own fixture policy. CI runs the
+Rust-only acceptance graph on Ubuntu and macOS.
 
-The Git parity observer batches exact blob bytes and caches them by immutable
-object ID. It still compares every requested step, record and reachable history.
-No recovery traces, property-test cases or parity checks were removed.
+Use mise for builds: it resolves the compiler before Cargo enters Temper's checkout,
+whose toolchain file could otherwise switch a mise/rustup shim mid-build. Node tests
+that invoke a real CLI use this checkout's requested Cargo target, not an installed
+`streams`. The task graph builds that CLI before starting those tests.
 
-The full task graph builds Rust probes once. Python reference and differential
-gates select disjoint modules; full Python discovery would run parity twice.
-Direct `uv run python -m unittest discover tests/python` still runs both groups.
+## Try local changes without installing
 
-Set `UV_PYTHON` to test another Python version, for example `UV_PYTHON=3.11 mise run test:python`. CI runs `mise run test` on Ubuntu and macOS with Python 3.11 and 3.14.
+Use `target/debug/streams`, or `$CARGO_TARGET_DIR/debug/streams` when configured.
+The Pi package resolves the same debug target by default. An absolute
+`STREAMS_BIN_PATH` overrides it; `STREAMS_RUST_BIN` is a compatibility alias, not an
+independent native-backend selector. Conflicting selectors fail rather than mixing
+builds. Packaged users must select their matching Rust executable explicitly.
 
-Use the mise tasks for Rust builds in this environment: they resolve the
-compiler to an absolute path before Cargo enters the Temper checkout, whose
-own toolchain file would otherwise switch a mise/rustup shim mid-build.
-The Rust slice is not yet the installed `streams` CLI; Python remains active.
+Load only one checkout's Pi extension. Building or testing this branch does not
+replace globally installed tools, reload Pi or activate native effects. Isolated
+PTY and live-platform acceptance remain required before a trial.
 
-## Try local changes
-
-```sh
-uv tool install -e .   # streams CLI from this checkout
-pi install .           # Pi extension and skill from this checkout
-```
-
-The [catalog ADR](docs/durable-work-catalog.md) defines record meaning and the [Pi ADR](docs/pi-work-card.md) defines reporting and card interaction. The [native Herdr ADR](docs/native-herdr-work-cards.md) governs adaptation of the imported Work Cards UI. Keep usage in the README and implementation contracts beside code; the scratch-format and checkpoint specifications are historical.
-
-Do not install the imported package's old Pi entrypoint. Its regression suite preserves the standalone implementation's coverage; the Streams-backed native adapter is not yet active.
+The [catalog ADR](docs/durable-work-catalog.md) defines records, the
+[Pi ADR](docs/pi-work-card.md) defines reporting, and the
+[Rust runtime ADR](docs/rust-temper-architecture.md) defines the backend boundary.
+The old scratch/checkpoint specifications and Python cutover plans are historical.

@@ -2,6 +2,8 @@
 
 # Selectable streams frontends
 
+Historical scratch/Python frontend plan. Paths, commands, activation and test counts below describe that implementation, not the current Rust-only branch. See the [Rust runtime ADR](../../docs/rust-temper-architecture.md) and [Contributing](../../CONTRIBUTING.md) for current boundaries.
+
 ## Objective and scope
 
 Provide a usable Herdr frontend alongside CMUX. Scratch notes remain the source of truth. Automation uses configured selection; frontend-dependent CLI calls select explicitly.

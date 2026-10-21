@@ -8,11 +8,15 @@
     "node": ">=22"
   },
   "files": [
-    "src",
-    "dist",
+    "src/config.ts",
+    "src/streams-bin.ts",
+    "src/streams-context.ts",
+    "src/herdr/subprocess.ts",
+    "src/pi/session-naming.ts",
+    "dist/config.js",
+    "dist/config.d.ts",
+    "dist/config.js.map",
     "bin",
-    "docs",
-    "streams-herdr-plugin.toml",
     "streams-rust-herdr-plugin.toml"
   ],
   "exports": {
@@ -22,9 +26,6 @@
     "build": "tsc",
     "test": "npm run build && node --test tests/*.test.mjs",
     "check": "tsc --noEmit"
-  },
-  "dependencies": {
-    "string-width": "^8.3.0"
   },
   "peerDependencies": {
     "@earendil-works/pi-coding-agent": "*"

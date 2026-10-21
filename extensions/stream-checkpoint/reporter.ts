@@ -1,16 +1,16 @@
 import { randomUUID } from "node:crypto";
 import type { ExtensionContext } from "@earendil-works/pi-coding-agent";
 import { infer as modelInfer } from "./agent.ts";
+import type { InferenceLogOptions } from "./agent.ts";
 import { runReport } from "./report-workflow.ts";
-import type { InferenceObserver } from "./agent.ts";
+import type { ResetTarget } from "./report-workflow.ts";
+export type { ResetTarget } from "./report-workflow.ts";
 import type { Receipt, StreamCli } from "./streams.ts";
 import { SessionScope, captureInputs } from "./session-scope.ts";
 import type { SessionFence } from "./session-scope.ts";
 import type { ReportingSettings } from "./settings.ts";
 
-import type { ResetTarget } from "./report-workflow.ts";
-export type { ResetTarget } from "./report-workflow.ts";
-type Options = {scope?: SessionScope; cli(ctx: ExtensionContext): StreamCli; settings(): ReportingSettings; infer?: typeof modelInfer; observe?(ctx: ExtensionContext): InferenceObserver | undefined; notice(text: string): void; receipt(value: Receipt, deferNative?: boolean, quiet?: boolean): void; activity?(text?: string, completed?: boolean): void; onUpdateNative?(): void; onReclaimNames?(target: ResetTarget): Promise<void> | void};
+type Options = {scope?: SessionScope; cli(ctx: ExtensionContext): StreamCli; settings(): ReportingSettings; infer?: typeof modelInfer; logging?(): InferenceLogOptions | undefined; notice(text: string): void; receipt(value: Receipt, deferNative?: boolean, quiet?: boolean): void; activity?(text?: string, completed?: boolean): void; onUpdateNative?(): void; onReclaimNames?(target: ResetTarget): Promise<void> | void};
 type Pending = {ctx: ExtensionContext; force: boolean; instructions?: string; reset?: boolean; auto?: boolean; target?: ResetTarget};
 export class Reporter {
  readonly scope: SessionScope;
@@ -58,7 +58,7 @@ export class Reporter {
    let completed = false;
    const label = pending.reset ? (pending.auto ? "⟳ Unlocking names & regenerating..." : "⟳ Regenerating fields...") : pending.force ? "⟳ Updating work card..." : "⟳ Updating...";
    this.options.activity?.(label);
-   try {completed = await this.report(pending, fence);} catch (error) {if (fence.current()) this.options.notice(String(error));}
+   try {completed = await this.report(pending, fence);} catch (error) {if (fence.current()) this.options.notice(error instanceof Error ? error.message : String(error));}
    finally {
     if (fence.live()) {
      this.options.activity?.(undefined, completed && !this.pending);
@@ -67,15 +67,17 @@ export class Reporter {
   }
  }
  private async report({ctx, force, instructions, reset, auto, target = "all"}: Pending, fence: SessionFence): Promise<boolean> {
-  const cli = this.options.cli(ctx), quiet = !force;
-  const generate = this.options.infer ?? modelInfer;
-  return runReport(reset ? {kind: "reset", target, auto: !!auto, instructions} : {kind: "report", force, instructions}, {
-   signal: fence.signal, live: fence.live, automaticEnrollment: this.options.settings().enrollment === "automatic", operationId: randomUUID,
+  const cli = this.options.cli(ctx), generate = this.options.infer ?? modelInfer;
+  return runReport(reset ? {kind: "reset", target, auto: Boolean(auto), instructions} : {kind: "report", force, instructions}, {
+   signal: fence.signal, operationId: randomUUID, automaticEnrollment: this.options.settings().enrollment === "automatic",
    capture: () => captureInputs(ctx, cli, this.options.settings().context, fence),
-   generate: request => generate(ctx, request, fence.signal, this.options.settings().model, this.options.observe?.(ctx)),
-   apply: request => cli.apply(request), enroll: request => cli.enroll(request),
-   receipt: value => this.options.receipt(value, true, quiet), notice: text => this.options.notice(text),
-   reclaimNames: target => this.options.onReclaimNames?.(target), updateNative: () => this.options.onUpdateNative?.(),
+   generate: request => generate(ctx, request, fence.signal, this.options.settings().model, this.options.logging?.()),
+   apply: (request) => cli.apply(request), enroll: (request) => cli.enroll(request),
+   receipt: (receipt) => {if (fence.live()) this.options.receipt(receipt, true, !force);},
+   notice: (text) => this.options.notice(text),
+   completed: async ({savedAny, reclaimReady, target}) => {
+    if (reclaimReady && fence.live()) await this.options.onReclaimNames?.(target);
+    else if (savedAny && fence.live()) this.options.onUpdateNative?.();
+   },
   });
- }
-}
+ }}

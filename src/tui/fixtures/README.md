@@ -1,17 +1,13 @@
 # Active Streams renderer fixtures
 
-`active-renderer.json` records 140 deterministic outputs of the active
-`renderStreamsCard` implementation, before replacing or retiring any JavaScript.
-The extractor imports only the pure renderer. It does not run a pane, read a
-catalog, resolve documents on disk, or call Herdr/CMUX.
+`active-renderer.json` preserves 140 deterministic outputs from the retired
+JavaScript `renderStreamsCard` implementation. Rust tests still consume these
+unchanged goldens; removing the duplicate renderer does not remove its fixtures.
 
-To reproduce from the repository root:
-
-```sh
-mise exec -- npm ci --ignore-scripts --prefix integrations/herdr-work-cards
-mise exec -- npm --prefix integrations/herdr-work-cards run build
-mise exec -- node src/tui/fixtures/extract.mjs
-```
+The original renderer, tests and `extract.mjs` remain in revision `fd744307`.
+Reproduce them in a separate workspace at that revision, not from the current Rust
+renderer. The historical extractor used only the pure renderer: no pane, catalog
+read, document resolution or Herdr/CMUX call.
 
 Cases come from the active `streams-view`, `streams-documents`, `quiet-view` and
 `link-display` tests: domain statuses; exact viewing contribution; combining
@@ -45,7 +41,7 @@ The fixture test asserts 135 exact matches and the five approved Rust outputs,
 including their unchanged document targets and links. No parity tests are ignored,
 and no broader Unicode differences are accepted. Native activation is not included.
 
-The active JavaScript sanitizer strips all Cc/Cf scalars, including ZWJ, before
+The historical JavaScript sanitizer stripped all Cc/Cf scalars, including ZWJ, before
 layout. Rust preserves that policy: a supplied woman-technologist sequence is
 painted as separate woman and laptop glyphs. Combining marks and emoji skin-tone
 modifiers are not stripped. Ratatui owns wrapping and grapheme-safe painting;

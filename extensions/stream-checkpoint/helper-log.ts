@@ -1,12 +1,12 @@
 import { randomUUID } from "node:crypto";
 import { constants, closeSync, fstatSync, openSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
-import type { ExtensionContext } from "@earendil-works/pi-coding-agent";
-import type { InferenceObserver } from "./agent.ts";
+import type { InferenceObserver, InferenceSource, InferenceLogOptions } from "./agent.ts";
 import { privateDirectory, privateWrite } from "./private-storage.ts";
 
 /** Opt-in JSONL sessions retain provider diagnostics without starting a second agent. */
-export function helperSessionLogger(ctx: ExtensionContext, directory: string, onCreate: (value: {session_id: string; session_file: string}) => void): InferenceObserver {
+export function helperSessionLogger(source: InferenceSource, options: InferenceLogOptions): InferenceObserver {
+ const {directory, onCreate} = options;
  let file: string | undefined, parentId: string | null = null, inode: number | undefined;
  const encode = (type: string, fields: Record<string, unknown>) => {
   const id = randomUUID(), line = JSON.stringify({type, id, parentId, timestamp: new Date().toISOString(), ...fields}) + "\n";
@@ -26,8 +26,9 @@ export function helperSessionLogger(ctx: ExtensionContext, directory: string, on
   if (event.type === "request") {
    file = undefined;parentId = null;
    const id = randomUUID(), path = join(directory, `${id}.jsonl`);
-   const lines = [JSON.stringify({type: "session", version: 3, id, cwd: ctx.cwd, timestamp: new Date().toISOString(), parentSession: ctx.sessionManager.getSessionFile()}) + "\n",
-    encode("custom", {customType: "stream-helper-request", data: {parent_session_id: ctx.sessionManager.getSessionId(), parent_leaf_id: ctx.sessionManager.getLeafId(), task: event.request.type}}),
+   const lines = [JSON.stringify({type: "session", version: 3, id, cwd: source.cwd, timestamp: new Date().toISOString(), parentSession: source.sessionFile}) + "\n",
+    encode("session_info", {name: `Streams helper · ${event.request.type}${"reset" in event.request && event.request.reset ? " reset" : ""}`}),
+    encode("custom", {customType: "stream-helper-request", data: {parent_session_id: source.sessionId, parent_leaf_id: source.leafId, task: event.request.type, reset: "reset" in event.request && Boolean(event.request.reset)}}),
     encode("model_change", {provider: event.model.provider, modelId: event.model.id}),
     encode("message", {message: {role: "system", content: event.payload.systemPrompt, toolsAdded: event.payload.tools, timestamp: Date.now()}}),
     ...event.payload.messages.map(message => encode("message", {message})),
@@ -36,8 +37,8 @@ export function helperSessionLogger(ctx: ExtensionContext, directory: string, on
    const fd = openSync(path, constants.O_RDONLY | constants.O_NOFOLLOW | constants.O_NONBLOCK);
    try {inode = fstatSync(fd).ino;} finally {closeSync(fd);}
    file = path;
-   onCreate({session_id: id, session_file: file});
+   onCreate?.({session_id: id, session_file: file});
   } else if (event.type === "response") entry("message", {message: event.response});
-  else entry("custom", {customType: `stream-helper-${event.type}`, data: event});
+  else entry("custom", {customType: `stream-helper-${event.type}`, data: event.type === "result" ? event.result : event});
  };
 }

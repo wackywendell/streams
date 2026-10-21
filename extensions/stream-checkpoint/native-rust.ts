@@ -1,6 +1,6 @@
-import { realpathSync, statSync } from "node:fs";
 import { isAbsolute } from "node:path";
 import { fileURLToPath } from "node:url";
+import { resolveStreamsBin } from "../../integrations/herdr-work-cards/src/streams-bin.ts";
 import { ProcessExitError, runProcess } from "../../integrations/herdr-work-cards/src/herdr/subprocess.ts";
 import { projectSessionName } from "../../integrations/herdr-work-cards/src/pi/session-naming.ts";
 import type { NativeContext, NativeFactory, NativeSnapshot } from "./native.ts";
@@ -30,9 +30,7 @@ function observation(value: unknown, sessionId: string): Observation {
 
 /** Pi keeps its event lane and session-name provenance; Rust owns native effects and evidence. */
 export const loadRustNative: NativeFactory = async ({pi, ctx, sessionId, cwd, env}) => {
- if (!env.STREAMS_RUST_BIN || !isAbsolute(env.STREAMS_RUST_BIN)) throw Error("STREAMS_RUST_BIN must name an absolute Rust executable");
- const binary = realpathSync(env.STREAMS_RUST_BIN);
- if (!statSync(binary).isFile()) throw Error("STREAMS_RUST_BIN must name a regular executable");
+ const binary = resolveStreamsBin(env);
  const environment = {...env, STREAMS_RUST_BIN:binary};
  const pluginRoot = fileURLToPath(new URL("../../integrations/herdr-work-cards", import.meta.url));
  let expected: Expectation | undefined, current: Observation | undefined, switched = false;

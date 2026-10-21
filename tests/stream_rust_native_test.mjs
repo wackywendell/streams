@@ -2,7 +2,7 @@ import assert from 'node:assert/strict';
 import test from 'node:test';
 import { spawnSync } from 'node:child_process';
 import { createHash, randomUUID } from 'node:crypto';
-import { existsSync, mkdtempSync, mkdirSync, readFileSync, readdirSync, realpathSync, rmSync, writeFileSync } from 'node:fs';
+import { existsSync, mkdtempSync, mkdirSync, readFileSync, readdirSync, realpathSync, rmSync, symlinkSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { dirname, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -10,7 +10,7 @@ import { createJiti } from 'jiti';
 const jiti=createJiti(import.meta.url);
 const {loadNative, NativeController}=await jiti.import('../extensions/stream-checkpoint/native.ts');
 const root=fileURLToPath(new URL('../',import.meta.url));
-const binary=join(resolve(process.env.CARGO_TARGET_DIR ?? join(root,'target')),'debug','streams');
+const binary=join(resolve(root,process.env.CARGO_TARGET_DIR ?? 'target'),'debug','streams');
 const plugin=join(root,'integrations/herdr-work-cards');
 function temporary(t) {
  const directory=mkdtempSync(join(realpathSync(tmpdir()),'streams-rust-native-'));
@@ -33,15 +33,15 @@ function fake(t) {
  const file=join(directory,'observation.json'),log=join(directory,'commands.jsonl'),executable=join(directory,'rust cli');
  const observation={version:1,scope:{catalogSource:'catalog',hostId:'host',streamId:'stream',sessionId:'session',nativeSessionId:id},native:{pane_id:'pane',tab_id:'tab',workspace_id:'workspace'},context:{socket:join(directory,'not-live.sock'),paneId:'pane',terminalId:'terminal',tabId:'tab',workspaceId:'workspace',binding:null},session:{title:'Saved title',title_mode:'automatic'},config:{automatic:false,sessionNaming:true}};
  const put=value=>writeFileSync(file,JSON.stringify(value));put(observation);
- writeFileSync(executable,`#!${process.execPath}\nconst fs=require('node:fs');const args=process.argv.slice(2);fs.appendFileSync(${JSON.stringify(log)},JSON.stringify(args)+'\\n');const value=JSON.parse(fs.readFileSync(${JSON.stringify(file)},'utf8'));const command=args.find(arg=>['observe','open','close','project','capture'].includes(arg));if(value.fail===command){console.log(JSON.stringify({error:{kind:value.failureKind??'error',message:value.failMessage??'uncertain native effect; pending retained'}}));process.exit(1);}if(value.wait===command){setInterval(()=>{},1000);}else{const native={workspace_id:value.context.workspaceId,owner_pane_id:value.context.paneId,owner_terminal_id:value.context.terminalId,session_id:value.scope.sessionId,native_session_id:value.scope.nativeSessionId,binding:value.ackBinding??value.context.binding};console.log(JSON.stringify(value.invalid===command?{}:command==='observe'?value:command==='open'?{display:'opened',native}:command==='close'?{closed:true}:command==='project'?{names:{workspace:'disabled',tab:'disabled'},native}:{captured:true}));}\n`,{mode:0o700});
- lifetime(t,directory,{STREAMS_RUST_BIN:executable,STREAMS_BIN_PATH:'/must-not-run-python'});
+ writeFileSync(executable,`#!${process.execPath}\nconst fs=require('node:fs');if(process.env.STREAMS_RUST_BIN!==fs.realpathSync(${JSON.stringify(executable)}))throw Error('native launch binary was not canonicalized');const args=process.argv.slice(2);fs.appendFileSync(${JSON.stringify(log)},JSON.stringify(args)+'\\n');const value=JSON.parse(fs.readFileSync(${JSON.stringify(file)},'utf8'));const command=args.find(arg=>['observe','open','close','project','capture'].includes(arg));if(value.fail===command){console.log(JSON.stringify({error:{kind:value.failureKind??'error',message:value.failMessage??'uncertain native effect; pending retained'}}));process.exit(1);}if(value.wait===command){setInterval(()=>{},1000);}else{const native={workspace_id:value.context.workspaceId,owner_pane_id:value.context.paneId,owner_terminal_id:value.context.terminalId,session_id:value.scope.sessionId,native_session_id:value.scope.nativeSessionId,binding:value.ackBinding??value.context.binding};console.log(JSON.stringify(value.invalid===command?{}:command==='observe'?value:command==='open'?{display:'opened',native}:command==='close'?{closed:true}:command==='project'?{names:{workspace:'disabled',tab:'disabled'},native}:{captured:true}));}\n`,{mode:0o700});
+ lifetime(t,directory,{STREAMS_BIN_PATH:executable});
  const commands=()=>existsSync(log)?readFileSync(log,'utf8').trim().split('\n').filter(Boolean).map(JSON.parse):[];
  return {...f,directory,id,executable,observation,put,commands,load:()=>loadNative({pi:f.pi,ctx:f.ctx,sessionId:id,cwd:directory,env:{...process.env}})};
 }
 function command(args) {return args.find(arg=>['observe','open','close','project','capture'].includes(arg));}
 async function until(check) {const deadline=Date.now()+5000;while(!check()&&Date.now()<deadline) await new Promise(resolve=>setTimeout(resolve,5));assert.ok(check(),'child did not reach requested command');}
 
-test('Rust opt-in stays lazy and routes the Pi lane without TypeScript native effects or Python capture',async t=>{
+test('Rust routing stays lazy and routes the Pi lane without TypeScript native effects or Python capture',async t=>{
  const f=fake(t),notices=[];
  const adapter=await f.load();assert.deepEqual(f.commands(),[]);
  const controller=new NativeController({pi:f.pi,ctx:f.ctx,factory:async()=>adapter,capture:assert.fail,warning:text=>notices.push(text)});
@@ -109,10 +109,34 @@ test('Rust native cancellation drains the subprocess before shutdown and never i
  controller.stop();await controller.idle();assert.deepEqual(notices,[]);
  assert.equal(f.commands().some(args=>command(args)==='close'||command(args)==='capture'),false);
 });
-test('an explicit invalid Rust binary never falls back to the legacy coordinator',async t=>{
+test('native defaults to the requested Cargo debug Rust CLI without either explicit selector',async t=>{
+ const f=fake(t),target=join(f.directory,'cargo-target');mkdirSync(join(target,'debug'),{recursive:true});
+ symlinkSync(f.executable,join(target,'debug','streams'));
+ delete process.env.STREAMS_BIN_PATH;process.env.CARGO_TARGET_DIR=target;
+ const adapter=await f.load();assert.deepEqual(f.commands(),[]);
+ await adapter.read();assert.deepEqual(f.commands().map(command),['observe']);
+});
+test('an explicit invalid binary never falls back to the Cargo binary or legacy coordinator',async t=>{
  const f=fake(t);
- for(const value of ['', 'relative',join(f.directory,'absent')]) await assert.rejects(loadNative({pi:f.pi,ctx:f.ctx,sessionId:f.id,cwd:f.directory,env:{...process.env,STREAMS_RUST_BIN:value}}));
+ for(const selector of ['STREAMS_BIN_PATH','STREAMS_RUST_BIN']) {
+  for(const value of ['', 'relative',join(f.directory,'absent'),f.directory]) {
+   const env={...process.env};delete env.STREAMS_BIN_PATH;delete env.STREAMS_RUST_BIN;env[selector]=value;
+   await assert.rejects(loadNative({pi:f.pi,ctx:f.ctx,sessionId:f.id,cwd:f.directory,env}),new RegExp(selector));
+  }
+ }
  assert.deepEqual(f.commands(),[]);
+});
+test('native rejects conflicting reporting and compatibility selectors before any subprocess',async t=>{
+ const f=fake(t),other=join(f.directory,'other-cli');symlinkSync(process.execPath,other);
+ process.env.STREAMS_RUST_BIN=other;
+ await assert.rejects(f.load(),/STREAMS_BIN_PATH and STREAMS_RUST_BIN select different/);
+ assert.deepEqual(f.commands(),[]);
+});
+test('native accepts the compatibility alias and canonically matching selectors',async t=>{
+ const f=fake(t),alias=join(f.directory,'alias');symlinkSync(f.executable,alias);
+ delete process.env.STREAMS_BIN_PATH;process.env.STREAMS_RUST_BIN=alias;
+ await (await f.load()).read();process.env.STREAMS_BIN_PATH=f.executable;
+ await (await f.load()).read();assert.deepEqual(f.commands().map(command),['observe','observe']);
 });
 test('Rust launch manifest and packaged launcher match the coordinator and require the protected envelope',t=>{
  const directory=temporary(t),script=join(plugin,'bin/open-rust-streams-pane.sh'),log=join(directory,'launch.json');
@@ -129,9 +153,11 @@ test('Rust launch manifest and packaged launcher match the coordinator and requi
  const result=run(env);assert.equal(result.status,0,result.stderr);assert.deepEqual(JSON.parse(readFileSync(log,'utf8')),{args:['native','pane'],scope:'protected'});
  const manifest=readFileSync(join(plugin,'streams-rust-herdr-plugin.toml'),'utf8');
  assert.match(manifest,/id = "streams-rust-work-cards"/);assert.match(manifest,/command = \["\/bin\/sh", "bin\/open-rust-streams-pane.sh"\]/);
- for(const file of ['package.json','integrations/herdr-work-cards/package.json']) assert.ok(JSON.parse(readFileSync(join(root,file),'utf8')).files.some(path=>path.endsWith('streams-rust-herdr-plugin.toml')));
- const files=JSON.parse(readFileSync(join(root,'package.json'),'utf8')).files;
- for(const file of ['src/herdr/subprocess.ts','src/pi/session-naming.ts']) assert.ok(files.includes('integrations/herdr-work-cards/'+file));
+ for(const file of ['package.json','integrations/herdr-work-cards/package.json']) {
+  const files=JSON.parse(readFileSync(join(root,file),'utf8')).files;
+  assert.ok(files.some(path=>path.endsWith('streams-rust-herdr-plugin.toml')));
+  for(const shared of ['src/herdr/subprocess.ts','src/pi/session-naming.ts','src/streams-context.ts']) assert.ok(files.includes(file==='package.json'?'integrations/herdr-work-cards/'+shared:shared));
+ }
 });
 
 function real(t) {
@@ -173,7 +199,7 @@ test('real Rust owner observation is read-only and rejects stale context before 
  assert.ok(f.commands().every(args=>!args.includes('report-metadata')));
 });
 test('Pi lifecycle projects and captures through the real Rust CLI with an isolated fake Herdr',async t=>{
- const f=real(t);process.env.STREAMS_RUST_BIN=binary;process.env.STREAMS_BIN_PATH='/must-not-run-python';
+ const f=real(t);
  const notices=[],controller=new NativeController({pi:f.pi,ctx:f.ctx,capture:assert.fail,warning:text=>notices.push(text)});t.after(()=>controller.stop());
  controller.start();await controller.idle();assert.deepEqual(notices,[]);
  assert.equal(f.name(),'Real Rust lane');assert.ok(f.commands().some(args=>args.includes('report-metadata')));

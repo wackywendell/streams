@@ -35,9 +35,11 @@ struct VerifiedAgent<'a> {
 fn workspace_agents<'a>(
     topology: &'a HerdrTopology,
     workspace: &str,
-) -> Result<Vec<VerifiedAgent<'a>>, ValidationError> {
-    let mut verified = Vec::new();
-    let mut seen = BTreeSet::new();
+    unresolved: &mut Vec<Value>,
+    errors: &mut Vec<String>,
+) -> Vec<VerifiedAgent<'a>> {
+    let mut candidates = Vec::new();
+    let mut counts = BTreeMap::new();
     for agent in topology
         .agents
         .iter()
@@ -49,26 +51,69 @@ fn workspace_agents<'a>(
             Some("claude") => Harness::Claude,
             _ => continue,
         };
-        let metadata = agent
-            .native
-            .get("agent_session")
-            .ok_or_else(|| ValidationError::new("missing native agent_session"))?;
-        let metadata: NativeSessionMetadata = object(metadata.clone())
-            .map_err(|e| ValidationError::new(format!("invalid native agent_session: {e}")))?;
-        let identity =
-            native_identity(&metadata, harness).map_err(|e| ValidationError::new(e.to_string()))?;
-        if !seen.insert((harness.as_ref().to_owned(), identity.id.clone())) {
-            return Err(ValidationError::new(
-                "ambiguous live native conversation identity",
-            ));
+        let identity = (|| {
+            let metadata = agent
+                .native
+                .get("agent_session")
+                .ok_or_else(|| ValidationError::new("missing native agent_session"))?;
+            let metadata: NativeSessionMetadata = object(metadata.clone())
+                .map_err(|e| ValidationError::new(format!("invalid native agent_session: {e}")))?;
+            native_identity(&metadata, harness).map_err(|e| ValidationError::new(e.to_string()))
+        })();
+        match identity {
+            Ok(identity) => {
+                *counts
+                    .entry((harness.as_ref().to_owned(), identity.id.clone()))
+                    .or_insert(0) += 1;
+                candidates.push(VerifiedAgent {
+                    agent,
+                    harness,
+                    identity,
+                });
+            }
+            Err(error) => unresolved_agent(agent, harness, &error.to_string(), unresolved, errors),
         }
-        verified.push(VerifiedAgent {
-            agent,
-            harness,
-            identity,
-        });
     }
-    Ok(verified)
+    // Only verified identities can conflict; unidentified neighbors cannot hide them.
+    candidates
+        .into_iter()
+        .filter(|candidate| {
+            if counts[&(
+                candidate.harness.as_ref().to_owned(),
+                candidate.identity.id.clone(),
+            )] > 1
+            {
+                unresolved_agent(
+                    candidate.agent,
+                    candidate.harness,
+                    "ambiguous live native conversation identity",
+                    unresolved,
+                    errors,
+                );
+                false
+            } else {
+                true
+            }
+        })
+        .collect()
+}
+
+fn unresolved_agent(
+    agent: &HerdrAgent,
+    harness: Harness,
+    error: &str,
+    unresolved: &mut Vec<Value>,
+    errors: &mut Vec<String>,
+) {
+    unresolved.push(json!({
+        "workspace_id": agent.workspace_id, "tab_id": agent.tab_id,
+        "pane_id": agent.pane_id, "terminal_id": agent.terminal_id,
+        "harness": harness, "error": error,
+    }));
+    errors.push(format!(
+        "workspace {:?}, pane {:?}: {error}",
+        agent.workspace_id, agent.pane_id,
+    ));
 }
 
 fn topology_error(errors: &[String]) -> Option<String> {
@@ -212,25 +257,20 @@ pub fn capture_inputs(
     };
     let mut live: BTreeMap<String, Vec<VerifiedAgent<'_>>> = BTreeMap::new();
     let mut unsupported = Vec::new();
+    let mut unresolved = Vec::new();
     if let Some(topology) = topology {
         for workspace in &workspace_ids {
-            match workspace_agents(topology, workspace) {
-                Ok(agents) => {
-                    // No member of a workspace is retained until all supported identities agree.
-                    for agent in agents {
-                        if agent.harness != Harness::Pi {
-                            unsupported.push(json!({
-                                "harness": agent.harness, "native_session_id": agent.identity.id,
-                                "workspace_id": workspace,
-                            }));
-                        } else {
-                            live.entry(agent.identity.id.clone())
-                                .or_default()
-                                .push(agent);
-                        }
-                    }
+            for agent in workspace_agents(topology, workspace, &mut unresolved, &mut errors) {
+                if agent.harness != Harness::Pi {
+                    unsupported.push(json!({
+                        "harness": agent.harness, "native_session_id": agent.identity.id,
+                        "workspace_id": workspace,
+                    }));
+                } else {
+                    live.entry(agent.identity.id.clone())
+                        .or_default()
+                        .push(agent);
                 }
-                Err(error) => errors.push(format!("workspace {workspace:?}: {error}")),
             }
         }
     }
@@ -345,6 +385,7 @@ pub fn capture_inputs(
     result["target"] = target;
     result["samples"] = json!(captured);
     result["unsupported"] = json!(unsupported);
+    result["unresolved"] = json!(unresolved);
     result["topology_error"] = json!(topology_error(&errors));
     Ok(result)
 }

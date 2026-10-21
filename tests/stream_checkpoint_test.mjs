@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
 import { spawn } from 'node:child_process';
-import { mkdtempSync, mkdirSync, readFileSync, statSync, writeFileSync, chmodSync, rmSync } from 'node:fs';
+import { mkdtempSync, mkdirSync, readdirSync, readFileSync, statSync, writeFileSync, chmodSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -10,7 +10,6 @@ import { createJiti } from 'jiti';
 const jiti = createJiti(import.meta.url);
 const load = (name) => jiti.import(new URL(`../extensions/stream-checkpoint/${name}.ts`, import.meta.url).pathname);
 const { StreamCli, StreamsCliError, receiptText } = await load('streams');
-const { parseStreamsCardContext } = await jiti.import(new URL('../integrations/herdr-work-cards/src/herdr/streams-source.ts', import.meta.url).pathname);
 const { automaticFields, editRequest, FieldEdit } = await load('core');
 const { checkpointContext, infer, changesSchema } = await load('agent');
 const { chooseInitial } = await load('chooser');
@@ -51,7 +50,7 @@ test('CLI rejects invalid payload and nonreceipt failures',async()=>{
   await assert.rejects(cli.apply({}),StreamsCliError);
  }
 });
-test('extension and native consumers share strict catalog fields and nullable document provenance',async()=>{
+test('StreamCli validates strict catalog fields and nullable document provenance',async()=>{
  const initial=context(), id=randomUUID();
  initial.session.harness_session_id=id;
  initial.stream.documents=[{repository:'repo',ref:'main',path:'design.md',description:'Design'}];
@@ -61,8 +60,8 @@ test('extension and native consumers share strict catalog fields and nullable do
  const read=value=>new StreamCli('/tmp',async()=>({code:0,stdout:JSON.stringify(value),stderr:''})).context(id);
  for(const provenance of [{},{commit:'abc',source_session_id:'origin'},{commit:null,source_session_id:null}]) {
   const value=structuredClone(initial);Object.assign(value.stream.documents[0],provenance);
-  const app=await read(value), native=parseStreamsCardContext(value,id);
-  assert.deepEqual(app.stream,native.stream);assert.deepEqual(app.session,native.session);
+  const app=await read(value);
+  assert.deepEqual(app.stream,value.stream);assert.deepEqual(app.session,value.session);
  }
  for(const change of [
   value=>{value.session.title_mode='other';},
@@ -78,7 +77,6 @@ test('extension and native consumers share strict catalog fields and nullable do
  ]) {
   const value=structuredClone(initial);change(value);
   await assert.rejects(read(value),StreamsCliError);
-  assert.throws(()=>parseStreamsCardContext(value,id));
  }
 });
 test('catalog list accepts only the current object contract',async()=>{
@@ -174,6 +172,9 @@ test('settings change in place, pick searchable models, and preserve Herdr confi
     // Cursor stays on reporting after each toggle; move to the model submenu.
     for(let i=0;i<4;i++)press('\x1b[B');press('\r');press('a/first');press('\r');
     assert.deepEqual(saved.at(-1).model,{provider:'a',id:'first'});
+    press('\x1b[B');press('\r'); // Debug subsection
+    press('\x1b[B');press('\r');assert.equal(saved.at(-1).session_logging,true);
+    assert.equal(saved.at(-1).debug_commands,false);press('\x1b');
     press('\x1b[B');press('\r'); // workspace startup
     press('\x1b[B');press('\r'); // workspace naming: enabled -> disabled
     const native=JSON.parse(readFileSync(join(root,'work-cards.json'),'utf8'));
@@ -204,7 +205,7 @@ test('settings revalidate concurrent native config changes before saving',async(
    const component=factory({terminal:{rows:30},requestRender(){}},{fg:(_color,text)=>text,bold:text=>text},{},done);
    const path=join(root,'work-cards.json'),bytes=JSON.stringify({workspace_startup:'invalid'});
    writeFileSync(path,bytes);
-   for(let i=0;i<6;i++)component.handleInput('\x1b[B');
+   for(let i=0;i<7;i++)component.handleInput('\x1b[B');
    component.handleInput('\r');
    assert.equal(readFileSync(path,'utf8'),bytes);
    assert.match(notices[0],/workspace_startup must be automatic or manual/);
@@ -223,6 +224,7 @@ test('all settings explain their effects and leave description room on short ter
     'How many completed agent responses to wait',
     'What conversation history the summary model reads',
     'Model used to summarize progress and generate short titles.',
+    'Configure debug commands and optional helper session logging.',
     'Automatically open the side-by-side Herdr work-card pane',
     "Sync the Herdr workspace name with the effort's short title",
     "Sync this Herdr tab's name with this session's short title",
@@ -252,7 +254,97 @@ test('automatic reset unlocks manual names before fresh inference and keeps life
 });
 test('reporting settings have explicit stable knobs and reject invalid cadence',()=>{
  const root=mkdtempSync(join(tmpdir(),'card-settings-'));
- try{assert.deepEqual(loadSettings(root),defaults);const custom={reporting:'manual',enrollment:'manual',frequency:3,context:'full',model:{provider:'custom',id:'helper'}};saveSettings(root,custom);assert.deepEqual(loadSettings(root),{...defaults,...custom});for(const frequency of [0,-1,1.5,NaN,'2'])assert.throws(()=>validateSettings({...defaults,frequency}),/positive integer/);}finally{rmSync(root,{recursive:true,force:true});}
+ try{assert.deepEqual(loadSettings(root),defaults);const custom={...defaults,reporting:'manual',enrollment:'manual',frequency:3,context:'full',model:{provider:'custom',id:'helper'},session_logging:true};saveSettings(root,custom);assert.deepEqual(loadSettings(root),custom);for(const frequency of [0,-1,1.5,NaN,'2'])assert.throws(()=>validateSettings({...defaults,frequency}),/positive integer/);}finally{rmSync(root,{recursive:true,force:true});}
+});
+for(const type of ['session','stream','enroll','discussion'])test(`helper logging persists exact ${type} input and raw response as a linked Pi session`,async()=>{
+ const root=mkdtempSync(join(tmpdir(),'card-helper-log-')),directory=join(root,'logs'),created=[];
+ try {
+  const parent=SessionManager.create(root,join(root,'parent'));parent.appendMessage({role:'user',content:'Original conversation',timestamp:1});
+  const answer=type==='enroll'?{meaningful:false}:type==='discussion'?{reply:'Discuss only'}:{changes:{}};
+  const response={role:'assistant',api:'openai-responses',provider:'mock',model:'helper',stopReason:'toolUse',timestamp:2,usage:{input:10,output:5,cacheRead:0,cacheWrite:0,totalTokens:15,cost:{input:0,output:0,cacheRead:0,cacheWrite:0,total:0}},content:[{type:'thinking',thinking:'Exposed reasoning'},{type:'toolCall',id:'record',name:'record_card',arguments:answer}]};
+  let payload;
+  const ctx={cwd:root,sessionManager:parent,model:{provider:'mock',id:'helper',contextWindow:100000},modelRegistry:{complete:async(_model,value)=>{
+   payload=structuredClone(value);
+   assert.equal(created.length,1);
+   const before=SessionManager.open(created[0].session_file).getEntries().filter(entry=>entry.type==='message');
+   assert.deepEqual(before.slice(1).map(entry=>entry.message),payload.messages,'input is on disk before the model starts');
+   return response;
+  }}};
+  const request={type,catalog:context(),messages:[{role:'user',content:'Current work',timestamp:1}],...(type==='session'?{reset:true}:{}),...(type==='discussion'?{discussion:[{role:'user',text:'Question'}]}:{})};
+  assert.deepEqual(await infer(ctx,request,new AbortController().signal,undefined,{directory,onCreate:value=>created.push(value)}),answer);
+  assert.equal(readdirSync(directory).length,1);
+  const log=SessionManager.open(created[0].session_file),entries=log.getEntries(),messages=entries.filter(entry=>entry.type==='message').map(entry=>entry.message);
+  assert.equal(log.getSessionId(),created[0].session_id);assert.equal(log.getHeader().parentSession,parent.getSessionFile());
+  assert.match(log.getSessionName(),new RegExp(`Streams helper.*${type}`));
+  assert.equal(messages[0].role,'system');assert.equal(messages[0].content,payload.systemPrompt);assert.deepEqual(messages[0].toolsAdded,payload.tools);
+  assert.deepEqual(messages.slice(1,-1),payload.messages);assert.deepEqual(messages.at(-1),response);
+  const metadata=entries.find(entry=>entry.customType==='stream-helper-request').data;
+  assert.deepEqual(metadata,{parent_session_id:parent.getSessionId(),parent_leaf_id:parent.getLeafId(),task:type,reset:type==='session'});
+  assert.deepEqual(entries.find(entry=>entry.customType==='stream-helper-result').data,answer);
+  assert.doesNotMatch(readFileSync(created[0].session_file,'utf8'),/source-a|"token"/);
+  assert.equal(statSync(directory).mode&0o777,0o700);assert.equal(statSync(created[0].session_file).mode&0o777,0o600);
+ } finally {rmSync(root,{recursive:true,force:true});}
+});
+for(const failure of ['throw','response'])test(`helper logging retains every transient ${failure} attempt before retrying`,async()=>{
+ const root=mkdtempSync(join(tmpdir(),'card-helper-retry-'));let attempts=0;
+ try {
+  const ctx={cwd:root,sessionManager:SessionManager.inMemory(root),model:{provider:'mock',id:'helper'},modelRegistry:{complete:async()=>{
+   if(++attempts===1){if(failure==='throw')throw Error('503 upstream connect error');return {role:'assistant',stopReason:'error',errorMessage:'503 upstream connect error',content:[],timestamp:1};}
+   return {role:'assistant',stopReason:'toolUse',content:[{type:'toolCall',name:'record_card',arguments:{changes:{state:'Recovered'}}}],timestamp:2};
+  }}};
+  await infer(ctx,{type:'session',catalog:context(),messages:[]},new AbortController().signal,undefined,{directory:root});
+  const entries=SessionManager.open(join(root,readdirSync(root)[0])).getEntries();
+  assert.deepEqual(entries.filter(entry=>entry.customType==='stream-helper-attempt').map(entry=>entry.data.attempt),[1,2]);
+  if(failure==='throw')assert.match(entries.find(entry=>entry.customType==='stream-helper-attempt-error').data.error,/503/);
+  else assert.equal(entries.filter(entry=>entry.type==='message'&&entry.message.role==='assistant')[0].message.stopReason,'error');
+  assert.equal(entries.at(-1).customType,'stream-helper-result');assert.equal(attempts,2);
+ } finally {rmSync(root,{recursive:true,force:true});}
+});
+for(const failure of ['throw','aborted','invalid','budget'])test(`helper logging retains input and ${failure} failure without saving a result`,async()=>{
+ const root=mkdtempSync(join(tmpdir(),'card-helper-failure-'));let attempts=0;
+ try {
+  const controller=new AbortController();
+  const ctx={cwd:root,sessionManager:SessionManager.inMemory(root),model:{provider:'mock',id:'helper',contextWindow:failure==='budget'?1:100000},modelRegistry:{complete:async()=>{
+   attempts++;
+   if(failure==='throw')throw Error('401 unauthorized');
+   if(failure==='aborted'){controller.abort();return {role:'assistant',stopReason:'aborted',content:[],timestamp:1};}
+   return {role:'assistant',stopReason:'toolUse',content:[{type:'toolCall',name:'record_card',arguments:{changes:{title_mode:'manual'}}}],timestamp:1};
+  }}};
+  await assert.rejects(infer(ctx,{type:'session',catalog:context(),messages:[]},controller.signal,undefined,{directory:root}));
+  const entries=SessionManager.open(join(root,readdirSync(root)[0])).getEntries();
+  assert.equal(entries.at(-1).customType,'stream-helper-error');assert.equal(entries.at(-1).data.cancelled,failure==='aborted');
+  assert.ok(entries.some(entry=>entry.type==='message'&&entry.message.role==='user'));assert.ok(!entries.some(entry=>entry.customType==='stream-helper-result'));
+  assert.equal(attempts,failure==='budget'?0:1);
+ } finally {rmSync(root,{recursive:true,force:true});}
+});
+test('helper logging captures raw tool arguments before normalization and fails closed if input cannot be logged',async()=>{
+ const root=mkdtempSync(join(tmpdir(),'card-helper-raw-'));let calls=0;
+ try {
+  const ctx={cwd:root,sessionManager:SessionManager.inMemory(root),model:{provider:'mock',id:'helper'},modelRegistry:{complete:async()=>{calls++;return {role:'assistant',stopReason:'toolUse',content:[{type:'toolCall',name:'record_card',arguments:{changes:{title:' ',state:null}}}],timestamp:1};}}};
+  assert.deepEqual(await infer(ctx,{type:'session',catalog:context(),messages:[]},new AbortController().signal,undefined,{directory:root}),{changes:{state:''}});
+  const entries=SessionManager.open(join(root,readdirSync(root)[0])).getEntries();
+  assert.deepEqual(entries.find(entry=>entry.type==='message'&&entry.message.role==='assistant').message.content[0].arguments,{changes:{title:' ',state:null}});
+  const blocked=join(root,'not-a-directory');writeFileSync(blocked,'file');
+  await assert.rejects(infer(ctx,{type:'session',catalog:context(),messages:[]},new AbortController().signal,undefined,{directory:blocked}));assert.equal(calls,1);
+ } finally {rmSync(root,{recursive:true,force:true});}
+});
+test('helper response persistence errors never retry a successful model call',async()=>{
+ const root=mkdtempSync(join(tmpdir(),'card-helper-write-failure-'));let calls=0;
+ try {
+  let file;
+  const ctx={cwd:root,sessionManager:SessionManager.inMemory(root),model:{provider:'mock',id:'helper'},modelRegistry:{complete:async()=>{calls++;chmodSync(file,0o644);return {role:'assistant',stopReason:'toolUse',content:[{type:'toolCall',name:'record_card',arguments:{changes:{}}}],timestamp:1};}}};
+  await assert.rejects(infer(ctx,{type:'session',catalog:context(),messages:[]},new AbortController().signal,undefined,{directory:root,onCreate:link=>{file=link.session_file;}}),/identity or permissions changed/);
+  assert.equal(calls,1);
+ } finally {rmSync(root,{recursive:true,force:true});}
+});
+test('helper logging refuses an existing permissive directory before exposing inputs',async()=>{
+ const root=mkdtempSync(join(tmpdir(),'card-helper-private-'));let calls=0;
+ chmodSync(root,0o755);
+ try {
+  const ctx={cwd:root,sessionManager:SessionManager.inMemory(root),model:{provider:'mock',id:'helper'},modelRegistry:{complete:async()=>{calls++;assert.fail('must not infer without a logged input');}}};
+  await assert.rejects(infer(ctx,{type:'session',catalog:context(),messages:[]},new AbortController().signal,undefined,{directory:root}),/0700/);
+  assert.equal(calls,0);assert.equal(readdirSync(root).length,0);assert.equal(statSync(root).mode&0o777,0o755);
+ } finally {rmSync(root,{recursive:true,force:true});}
 });
 test('model inference uses actual supported registry API, typed calls, no tools beyond record_card',async()=>{
  const requests=[];const ctx={model:{id:'current',contextWindow:100000},modelRegistry:{complete:async(model,payload,options)=>{requests.push({model,payload,options});return {stopReason:'toolUse',content:[{type:'toolCall',name:'record_card',arguments:{changes:{state:'Recorded'}}}]};},find:()=>undefined}};
@@ -317,25 +409,28 @@ for(const when of ['before','during','delay','response'])test(`inference aborts 
  await assert.rejects(infer(ctx,{type:'session',catalog:context(),messages:[]},controller.signal),/cancelled|aborted/i);
  assert.equal(attempts,when==='before'?0:1);
 });
-test('session progress uses the agreed brevity prompt without hard limits or changes to other helper tasks',async()=>{
- const guidance='Write state as a brief orientation for someone returning to the work: what meaningfully changed and where things stand. Use one or two short sentences, normally under 35 words; shorter is better. Do not enumerate completed steps, test counts, commit hashes, rollout inventories, or other specific details unless essential to understanding the result. Put unfinished scope and blockers in remaining. This is to provide the user a quick update/reminder of the current status, not a completion report.';
+test('report prompts separate contribution state from whole-effort purpose without hard text limits',async()=>{
  const state=Array(40).fill('context').join(' ');const prompts={};
  for(const type of ['session','stream','enroll','discussion']){
   const answer=type==='session'?{changes:{state,remaining:'Resolve the blocker'}}:type==='enroll'?{meaningful:false}:type==='discussion'?{reply:'Discuss only'}:{changes:{}};
   const ctx={model:{contextWindow:100000},modelRegistry:{complete:async(_model,payload)=>{prompts[type]=payload.systemPrompt;return {stopReason:'toolUse',content:[{type:'toolCall',name:'record_card',arguments:answer}]};}}};
   assert.deepEqual(await infer(ctx,{type,catalog:context(),messages:[]},new AbortController().signal),answer);
  }
- assert.equal(prompts.session,`${prompts.stream}\n\n${guidance}`);
- assert.equal(prompts.enroll,prompts.stream);assert.equal(prompts.discussion,prompts.stream);
- assert.ok(!prompts.stream.includes(guidance));
+ assert.match(prompts.session,/usually one short sentence/);assert.match(prompts.session,/empty string when none remains/);
+ assert.match(prompts.session,/work inherited from or performed by other sessions/);
+ assert.match(prompts.stream,/relatively stable purpose/);assert.match(prompts.stream,/using all catalog.sessions as contributions/);
+ assert.doesNotMatch(prompts.stream,/actor user|update session.status|10–18 words/);
+ assert.doesNotMatch(prompts.session,/actor user|In discussion answer/);
+ assert.equal(prompts.enroll,prompts.discussion);assert.notEqual(prompts.stream,prompts.enroll);
+ for(const type of ['session','stream'])assert.match(prompts[type],/allowed field names directly inside changes/);
 });
 test('inference prompt requires short handles rather than work descriptions',async()=>{
  let prompt;
  const ctx={model:{contextWindow:100000},modelRegistry:{complete:async(_model,payload)=>{prompt=payload.systemPrompt;return {stopReason:'toolUse',content:[{type:'toolCall',name:'record_card',arguments:{changes:{}}}]};}}};
  await infer(ctx,{type:'session',catalog:context(),messages:[]},new AbortController().signal);
- for(const rule of [/short, recognizable handles for the sidebar and tab bar/,/descriptions belong in goal and state/,/stream.title.*1–3 words \(target <= 20 chars\)/,/subject, project, or system/,/Never name the objective or use a sentence/,/session.title.*1–2 words, 3 max \(target <= 18 chars\)/,/specific lane, topic, or role/,/never repeat words from the effort title in the session title/,/Investigate, Implement, Explore, Disable, Fix, Organize/,/Integration, Implementation, Work, Task/,/X & Y compound lists/,/update session\.status \(active, waiting, blocked, parked, done\) from conversation evidence/,/I think we're done here/])assert.match(prompt,rule);
+ for(const rule of [/short, recognizable handles for the sidebar and tab bar/,/descriptions belong in goal and state/,/session.title.*1–2 words, 3 max/,/specific lane, topic, or role/,/not a task sentence or a repetition of the effort title/,/Infer session\.status \(active, waiting, blocked, parked, done\) from the evidence/])assert.match(prompt,rule);
 });
-test('reset inference scrubs only target automatic text without mutating captured catalog or field modes',async()=>{
+test('session reset omits existing descriptions; stream reset retains contribution evidence and protects manual fields',async()=>{
  for(const type of ['session','stream'])for(const sessionMode of ['automatic','manual'])for(const titleMode of ['automatic','manual'])for(const goalMode of ['automatic','manual']) {
   const catalog=context();Object.assign(catalog.session,{title_mode:sessionMode,state:'Prior state',state_short:'Prior short state',remaining:'Prior remaining'});
   Object.assign(catalog.stream,{title_mode:titleMode,goal_mode:goalMode,goal_short:'Prior short goal'});
@@ -344,13 +439,17 @@ test('reset inference scrubs only target automatic text without mutating capture
   const ctx={model:{contextWindow:100000},modelRegistry:{complete:async(_model,value)=>{payload=value;return {stopReason:'toolUse',content:[{type:'toolCall',name:'record_card',arguments:{changes:{}}}]};}}};
   await infer(ctx,{type,catalog,messages:[],reset:true},new AbortController().signal);
   const sent=JSON.parse(payload.messages.at(-1).content),visible=sent.catalog;
-  assert.match(sent.reset,/all allowed automatic fields fresh from conversation evidence/);assert.match(sent.reset,/fresh short-handle title/);assert.match(sent.reset,/empty no-change delta/);
-  for(const record of [visible.session,visible.sessions[0]]) {
-   assert.equal(record.title,sessionMode==='automatic'?'':before.session.title);assert.equal(record.title_mode,sessionMode);
-   assert.equal(record.state,'');assert.equal(record.state_short,null);assert.equal(record.remaining,'');
+  assert.match(sent.reset,/all allowed automatic fields fresh from provided evidence/);assert.match(sent.reset,/fresh short-handle title/);assert.match(sent.reset,/empty no-change delta/);
+  if(type==='session') {
+   assert.deepEqual(visible.sessions,[]);
+   for(const field of ['title','state','state_short','remaining','status'])assert.equal(Object.hasOwn(visible.session,field),false);
+   for(const field of ['title','goal','goal_short'])assert.equal(Object.hasOwn(visible.stream,field),false);
+   assert.equal(visible.session.id,before.session.id);assert.equal(visible.session.harness_session_id,before.session.harness_session_id);
+   assert.deepEqual(visible.stream.repositories,before.stream.repositories);
+  } else {
+   assert.equal(Object.hasOwn(visible,'session'),false);assert.deepEqual(visible.sessions,before.sessions);
+   assert.deepEqual(visible.stream,{...before.stream,...(titleMode==='automatic'?{title:''}:{}),...(goalMode==='automatic'?{goal:null,goal_short:null}:{})});
   }
-  assert.deepEqual(visible.sessions.slice(1),before.sessions.slice(1));
-  assert.deepEqual(visible.stream,{...before.stream,...(type==='stream'?{...(titleMode==='automatic'?{title:''}:{}),...(goalMode==='automatic'?{goal:null,goal_short:null}:{})}:{})});
   const properties=payload.tools[0].parameters.properties.changes.properties;
   assert.equal(Object.hasOwn(properties,'title'),(type==='session'?sessionMode:titleMode)==='automatic');
   if(type==='stream')assert.equal(Object.hasOwn(properties,'goal'),goalMode==='automatic');
@@ -372,7 +471,9 @@ test('actual local Pi runtime registry and projected compaction work without liv
   runtime.stream=(selected,payload)=>{assert.equal(payload.tools[0].name,'record_card');const events=createAssistantMessageEventStream();const message={role:'assistant',content:[{type:'toolCall',id:'record',name:'record_card',arguments:{changes:{state:'SDK verified'}}}],api:selected.api,provider:selected.provider,model:selected.id,stopReason:'toolUse',timestamp:Date.now(),usage:{input:1,output:1,cacheRead:0,cacheWrite:0,totalTokens:2,cost:{input:0,output:0,cacheRead:0,cacheWrite:0,total:0}}};events.push({type:'done',reason:'toolUse',message});events.end();return events;};
   const manager=SessionManager.inMemory(root);const user=manager.appendMessage({role:'user',content:'Original old content',timestamp:1});manager.appendCompaction('Compacted authoritative work',user,100);manager.appendContextEdit(user,{content:'Changed by active context projection'});
   const evidence=checkpointContext(manager,'trimmed');assert.match(JSON.stringify(evidence.messages),/Compacted authoritative work/);assert.match(JSON.stringify(evidence.messages),/Changed by active context projection/);assert.doesNotMatch(JSON.stringify(evidence.messages),/Original old content/);
-  const response=await infer({model,modelRegistry:registry},{type:'session',catalog:context(),messages:evidence.messages},new AbortController().signal);assert.equal(response.changes.state,'SDK verified');
+  const logs=[];
+  const response=await infer({cwd:root,sessionManager:manager,model,modelRegistry:registry},{type:'session',catalog:context(),messages:evidence.messages},new AbortController().signal,undefined,{directory:join(root,'logs'),onCreate:value=>logs.push(value)});assert.equal(response.changes.state,'SDK verified');
+  assert.equal(SessionManager.open(logs[0].session_file).getEntries().find(entry=>entry.type==='message'&&entry.message.role==='assistant').message.model,model.id);
  } finally {rmSync(root,{recursive:true,force:true});}
 });
 test('reference validation rejects unknown repos, absolute/traversal paths, malformed URLs, duplicate or arbitrary fields',()=>{
@@ -471,7 +572,7 @@ function commandFixture(options={}) {
  const catalog=options.catalog??context();let reads=0;
  const cli={context:async()=>{reads++;return structuredClone(catalog);},list:async()=>[stream],apply:async req=>{writes.push(req);Object.assign(catalog[req.kind],req.changes);return {save:{local:'persisted',sharing:'local-only',domain:{outcome:'changes'}}};},enroll:async req=>{writes.push(req);catalog.stream=stream;catalog.session=session;return {stream,session,saves:[]};}};
  const ctx={mode:'tui',hasUI:true,cwd:'/repo',sessionManager:{getSessionId:()=> 'native',getLeafId:()=> 'leaf',getBranch:()=>[{id:'leaf'}],buildSessionProjection:()=>({messages:[]})},ui:{notify:(text,level)=>notices.push({text,level}),setStatus:(_key,text)=>activity.push(text),select:async(title,rows)=>{dialogs.push({title,rows});return options.select?.(title,rows)??'Close';},editor:async()=> 'Contribution',confirm:async()=>true}};
- registerWorkCard({on:(name,fn)=>handlers.set(name,fn),registerCommand:(name,value)=>commands.set(name,value),registerTool:value=>tools.set(value.name,value),registerShortcut:()=>assert.fail('no shortcuts'),appendEntry:(type,value)=>receipts.push({type,value})},{settings:{...defaults,reporting:'manual',enrollment:'manual'},cli,infer:async(_ctx,req)=>{requests.push(req);return options.infer?await options.infer(req):{changes:{}};}});
+ registerWorkCard({on:(name,fn)=>handlers.set(name,fn),registerCommand:(name,value)=>commands.set(name,value),registerTool:value=>tools.set(value.name,value),registerShortcut:()=>assert.fail('no shortcuts'),appendEntry:(type,value)=>receipts.push({type,value})},{agentDir:options.agentDir,settings:{...defaults,reporting:'manual',enrollment:'manual',...options.settings},cli,infer:async(_ctx,req,_signal,_model,logging)=>{requests.push(req);return options.infer?await options.infer(req,logging):{changes:{}};}});
  return {commands,tools,handlers,ctx,notices,requests,writes,receipts,activity,dialogs,reads:()=>reads,run:args=>commands.get('streams').handler(args,ctx)};
 }
 test('only streams slash command registers; model checkpoint tool retains its interface',()=>{
@@ -479,6 +580,66 @@ test('only streams slash command registers; model checkpoint tool retains its in
  for(const old of ['checkpoint','checkpoint:settings','checkpoint:attach','streams:settings','streams:attach'])assert.equal(f.commands.has(old),false);
  assert.deepEqual([...f.tools.keys()],['stream_read','checkpoint','select_stream','create_stream']);
  assert.ok(f.tools.get('checkpoint').parameters.properties.instructions);
+});
+test('bare debug gives gated informational help without model, CLI or dialog calls',async()=>{
+ for(const enabled of [true,false]) {
+  const f=commandFixture({settings:{debug_commands:enabled}});
+  f.ctx.modelRegistry={getAvailable:()=>assert.fail('help must not list models'),complete:()=>assert.fail('help must not infer')};
+  await f.run('  debug  ');
+  assert.equal(f.notices.length,1);assert.equal(f.notices[0].level,enabled?'info':'warning');
+  assert.match(f.notices[0].text,/^Streams — /);assert.doesNotMatch(f.notices[0].text,/Error:|Usage:/);
+  assert.match(f.notices[0].text,enabled?/debug capture[\s\S]*debug replay/:/Debug commands are disabled/);
+  assert.equal(f.reads(),0);
+  for(const effects of [f.requests,f.writes,f.receipts,f.dialogs,f.activity])assert.deepEqual(effects,[]);
+ }
+});
+test('Streams notifications use Error messages without stacked error branding',async()=>{
+ const f=commandFixture();await f.run('pane');
+ assert.deepEqual(f.notices,[{text:'Streams — Native work cards require session startup in an interactive Herdr pane.',level:'warning'}]);
+});
+test('report helper failures use Error messages without stacked branding',async()=>{
+ const f=commandFixture({infer:async()=>{throw Error('Synthetic helper failure');}});
+ await f.run('report');await until(()=>f.activity.length===2);
+ assert.deepEqual(f.notices,[{text:'Streams — Synthetic helper failure',level:'warning'}]);
+});
+test('catalog sync keeps full Error diagnostics internally but not in Streams notifications',async()=>{
+ const handlers=new Map(),entries=[],notices=[];
+ registerWorkCard({on:(name,fn)=>handlers.set(name,fn),registerCommand:()=>{},registerTool:()=>{},appendEntry:(type,value)=>entries.push({type,value})},{settings:{...defaults},cli:{sync:async()=>{throw Error('offline');}}});
+ const ctx={mode:'print',hasUI:false,cwd:'/repo',sessionManager:{getSessionId:()=> 'native'},ui:{notify:(text,level)=>notices.push({text,level}),setStatus:()=>{}}};
+ await handlers.get('session_start')({},ctx);
+ assert.equal(entries.find(entry=>entry.type==='stream-catalog-sync').value.error,'Error: offline');
+ assert.equal(notices.length,1);assert.match(notices[0].text,/^Streams — Catalog sync \(start\): offline\./);assert.doesNotMatch(notices[0].text,/Error:/);
+});
+test('explicit report receipt notifications use the Streams prefix',async()=>{
+ const f=commandFixture({infer:async req=>({changes:req.type==='session'?{state:'Fresh progress'}:{}})});
+ await f.run('report');await until(()=>f.activity.length===2);
+ assert.equal(f.notices.length,1);assert.match(f.notices[0].text,/^Streams — Work card/);
+});
+test('debug completion descends into children and replay flags without treating positional input as flags',async()=>{
+ const f=commandFixture({settings:{debug_commands:true}}),complete=f.commands.get('streams').getArgumentCompletions;
+ const labels=prefix=>(complete(prefix)??[]).map(item=>item.label);
+ assert.ok(labels('').includes('debug'));
+ for(const prefix of ['debug','debug '])assert.deepEqual(labels(prefix),['capture','replay']);
+ assert.deepEqual(labels('debug c'),['capture']);assert.deepEqual(labels('debug re'),['replay']);
+ assert.deepEqual(labels('debug capture '),['stream','workspace']);assert.deepEqual(labels('debug capture w'),['workspace']);
+ assert.deepEqual(labels('debug replay '),['--model','--reset']);
+ assert.deepEqual(labels('debug replay frozen-id --m'),['--model']);
+ assert.deepEqual(labels('debug replay --reset '),['session','stream','all']);
+ assert.deepEqual(labels('debug replay --reset s'),['session','stream']);
+ assert.deepEqual(labels('debug replay --reset session --a'),['--auto']);
+ assert.deepEqual(labels('debug replay --reset --a'),['--auto']);
+ assert.deepEqual(labels('debug replay frozen-id --reset all --auto '),['--model']);
+ for(const prefix of ['report --m','debug capture stream ','debug capture stream --m','debug capture workspace target ','debug replay frozen','debug replay --reset invalid ','debug replay --model ','debug replay --model --r','debug unknown '])assert.equal(complete(prefix),null,prefix);
+ for(const prefix of ['debug ','debug re','debug replay --m','debug replay --reset s'])for(const item of complete(prefix)) {
+  assert.ok(item.description);assert.ok(item.value.startsWith('debug '));assert.doesNotMatch(item.value,/PROVIDER|CAPTURE_ID/);
+ }
+ f.ctx.modelRegistry={getAvailable:()=>[{provider:'registered',id:'actual-model'}]};
+ await f.run('debug');
+ assert.deepEqual(complete('debug replay --model reg'),[{value:'debug replay --model registered/actual-model',label:'registered/actual-model',description:'Replay with this available model'}]);
+ assert.deepEqual(labels('debug replay --model registered/actual-model --r'),['--reset']);
+ const disabled=commandFixture().commands.get('streams').getArgumentCompletions;
+ for(const prefix of ['debug','debug ','debug c','debug replay ','debug replay --reset s'])assert.equal(disabled(prefix),null);
+ assert.ok(disabled('').every(item=>item.value!=='debug'));
 });
 test('streams completes subcommand prefixes with short descriptions but never report instructions or extra arguments',async()=>{
  const complete=commandFixture().commands.get('streams').getArgumentCompletions;
@@ -525,7 +686,7 @@ test('streams reset on an unattached conversation warns without inference, write
  for(const associated of [true,false]) {
   const catalog=context();catalog.session=null;catalog.sessions=[];if(!associated)catalog.stream=null;
   const f=commandFixture({catalog});await f.run('reset');await until(()=>f.activity.length===2);
-  assert.deepEqual(f.notices,[{text:'Work card: Reset requires an attached work card. Use /streams attach first.',level:'warning'}]);
+  assert.deepEqual(f.notices,[{text:'Streams — Reset requires an attached work card. Use /streams attach first.',level:'warning'}]);
   assert.deepEqual(f.requests,[]);assert.deepEqual(f.writes,[]);assert.deepEqual(f.receipts,[]);assert.deepEqual(f.dialogs,[]);
  }
 });
@@ -543,7 +704,7 @@ test('streams reset clears omitted short state and automatic short goal but pres
 });
 test('streams reset extra rejects arguments before reading the catalog or running a model',async()=>{
  const f=commandFixture();await f.run('reset extra');await turn();
- assert.deepEqual(f.notices,[{text:"Work card: Usage: /streams [card]; /streams report [instructions]; /streams reset [session|stream|all] [--auto]; /streams settings; /streams attach; /streams pane [close]. Put report instructions after 'report'.",level:'warning'}]);
+ assert.deepEqual(f.notices,[{text:"Streams — Usage: /streams [card]; /streams report [instructions]; /streams reset [session|stream|all] [--auto]; /streams settings; /streams attach; /streams pane [close]. Put report instructions after 'report'.",level:'warning'}]);
  assert.equal(f.reads(),0);for(const effects of [f.requests,f.writes,f.receipts,f.dialogs,f.activity])assert.deepEqual(effects,[]);
 });
 test('streams reset session and stream scopes unlock and infer only the targeted scope',async()=>{
@@ -596,6 +757,22 @@ test('streams settings dispatches to the existing reporting dialog without repor
  assert.equal(f.dialogs.length,1);assert.match(f.dialogs[0].title,/Work card & Herdr settings/);assert.ok(f.dialogs[0].rows.includes('Response frequency: 1'));
  assert.equal(f.reads(),0);assert.deepEqual(f.requests,[]);assert.deepEqual(f.writes,[]);
 });
+test('helper logging setting toggles in place and passes log options to reports and resets without changing model settings',async()=>{
+ const root=mkdtempSync(join(tmpdir(),'card-helper-setting-')),choices=['Debug','Helper session logging: disabled','Back','Close','Debug','Helper session logging: enabled','Back','Close'],seen=[];
+ try {
+  const f=commandFixture({agentDir:root,select:()=>choices.shift(),infer:async(req,logging)=>{
+   seen.push({type:req.type,logging});
+   if(logging){assert.equal(logging.directory,join(root,'stream-reporting-sessions'));logging.onCreate({session_id:'helper',session_file:'helper.jsonl'});}
+   return {changes:{}};
+  }});
+  await f.run('report');await until(()=>f.activity.length===2);assert.ok(seen.every(value=>value.logging===undefined));
+  await f.run('settings');assert.equal(loadSettings(root).session_logging,true);
+  await f.run('reset session --auto');await until(()=>f.activity.length===4);assert.ok(seen.at(-1).logging);
+  assert.deepEqual(f.receipts.filter(entry=>entry.type==='stream-helper-session'),[{type:'stream-helper-session',value:{session_id:'helper',session_file:'helper.jsonl'}}]);
+  await f.run('settings');assert.equal(loadSettings(root).session_logging,false);
+  await f.run('reset stream');await until(()=>f.activity.length===6);assert.equal(seen.at(-1).logging,undefined);
+ } finally {rmSync(root,{recursive:true,force:true});}
+});
 test('streams attach enrolls an initial selection but never switches a bound conversation',async()=>{
  const catalog=context();catalog.stream=null;catalog.session=null;catalog.sessions=[];
  const f=commandFixture({catalog,select:(_title,rows)=>rows.find(row=>row.startsWith('effort ·'))});
@@ -610,8 +787,7 @@ test('unattached card directs users to streams attach',async()=>{
 for(const inside of [true,false])test(`real checkout CLI enroll/context/guarded apply ${inside?'inside':'outside'} repository`,async()=>{
  const root=mkdtempSync(join(tmpdir(),'streams-pi-catalog-'));const checkout=fileURLToPath(new URL('..',import.meta.url));
  const cwd=inside?checkout:join(root,'outside');mkdirSync(cwd,{recursive:true});
- const bin=join(root,'bin');mkdirSync(bin);const shim=join(bin,'streams');
- writeFileSync(shim,`#!/bin/sh\nexec uv run --project '${checkout.replaceAll("'", "'\\''")}' streams "$@"\n`);chmodSync(shim,0o755);
+ const shim=join(process.env.CARGO_TARGET_DIR ?? join(checkout,'target'),'debug','streams');
  const env={...process.env,HOME:root,XDG_CONFIG_HOME:join(root,'config'),XDG_DATA_HOME:join(root,'data'),XDG_STATE_HOME:join(root,'state')};
  for(const key of Object.keys(env))if(key.startsWith('STREAMS_'))delete env[key];
  const run=(args,input)=>new Promise((resolve,reject)=>{const child=spawn(shim,args,{cwd,env,stdio:['pipe','pipe','pipe']});let stdout='',stderr='';child.stdout.on('data',chunk=>stdout+=chunk);child.stderr.on('data',chunk=>stderr+=chunk);child.on('error',reject);child.on('close',code=>resolve({code,stdout,stderr}));child.stdin.on('error',error=>{if(error.code!=='EPIPE')reject(error);});child.stdin.end(input);});
@@ -715,6 +891,8 @@ test('settings validate object roots/model types and preserve unknown on-disk ke
  const root=mkdtempSync(join(tmpdir(),'card-settings-invalid-'));const path=join(root,'stream-reporting.json');
  try{
   for(const value of [null,[],false,42,'text']){writeFileSync(path,JSON.stringify(value));assert.throws(()=>loadSettings(root),/object/i);}
+  for(const session_logging of [null,'enabled',0,{}]){writeFileSync(path,JSON.stringify({...defaults,session_logging}));assert.throws(()=>loadSettings(root),/logging.*boolean/i);}
+  writeFileSync(path,JSON.stringify({reporting:'manual'}));assert.equal(loadSettings(root).session_logging,false);
   for(const model of [null,[],42,{provider:42,id:'model'},{provider:'provider',id:false}]){writeFileSync(path,JSON.stringify({...defaults,model}));assert.throws(()=>loadSettings(root),/model|provider/i);}
   writeFileSync(path,JSON.stringify({...defaults,future:{keep:true}}));const loaded=loadSettings(root);
   writeFileSync(path,JSON.stringify({...defaults,future:{keep:'newer'},concurrent:'preserved'}));
@@ -791,7 +969,7 @@ test('receiptText formats human-readable summaries on success and background rep
  handlers.get('agent_end')({messages:[{role:'assistant',stopReason:'stop'}]},ctx);
  await until(()=>statuses.some(s=>s&&s.includes('Updated')));
  assert.equal(notices.length,0);
- assert.equal(statuses.at(-1),'Work card · <green>✓</green> Updated');
+ assert.equal(statuses.at(-1),'Streams · <green>✓</green> Updated');
  await handlers.get('session_shutdown')({},ctx);
 });
 test('openCard renders 3-tab Pi TUI (Actions, Stream, Session) and edits fields directly from Stream/Session tabs',async()=>{

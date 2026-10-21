@@ -4,14 +4,15 @@ import { spawnSync } from 'node:child_process';
 import { createHash } from 'node:crypto';
 import { mkdtempSync, mkdirSync, readFileSync, readdirSync, realpathSync, rmSync, statSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
-import { dirname, join } from 'node:path';
+import { dirname, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { createJiti } from 'jiti';
 const jiti = createJiti(import.meta.url);
 const { captureSessions } = await jiti.import('../extensions/stream-checkpoint/capture.ts');
 const { replayCapture } = await jiti.import('../extensions/stream-checkpoint/replay.ts');
 const { StreamCli } = await jiti.import('../extensions/stream-checkpoint/streams.ts');
-const binary = process.env.STREAMS_RUST_BIN ?? fileURLToPath(new URL('../target/debug/streams', import.meta.url));
+const packageRoot = fileURLToPath(new URL('../', import.meta.url));
+const binary = join(resolve(packageRoot, process.env.CARGO_TARGET_DIR ?? 'target'), 'debug', 'streams');
 const model = {provider:'fixture', id:'deterministic', contextWindow:100000};
 const response = arguments_ => ({role:'assistant', content:[{type:'toolCall',id:'call',name:'record_card',arguments:arguments_}],api:'fixture',provider:model.provider,model:model.id,stopReason:'toolUse',timestamp:0});
 const runtime = generate => ({model, modelRegistry:{find:(provider,id)=>provider===model.provider && id===model.id?model:undefined,complete:async(_model,payload)=>generate(JSON.parse(payload.messages.at(-1).content))}});
@@ -53,13 +54,15 @@ test('production replay invokes real Rust preview for ordered reports without op
  const session={id:'card',host_id:'host',stream_id:stream.id,harness:'pi',harness_session_id:id,title:'Lane',title_mode:'automatic',status:'active',state:'Old state',state_short:null,remaining:'Old remaining',checkout:null};
  const catalog={catalog_source:'frozen-source',host_id:'host',stream,session,sessions:[session],authority:{host_id:'host',token:'[redacted]'}};
  const file=transcript(root,id);
- const {capture}=captureSessions({version:1,host_id:'host',streams:[stream],workspaces:[],topology_error:null,target:{kind:'stream',id:stream.id,title:stream.title},samples:[{host_id:'host',harness:'pi',native_session_id:id,open:false,locations:[],catalog,transcript_file:file,unavailable:null}],unsupported:[]},join(root,'private'),'trimmed');
+ const {capture}=captureSessions({version:1,host_id:'host',streams:[stream],workspaces:[],topology_error:null,target:{kind:'stream',id:stream.id,title:stream.title},samples:[{host_id:'host',harness:'pi',native_session_id:id,open:false,locations:[],catalog,transcript_file:file,unavailable:null}],unsupported:[]},join(root,'private'));
  mkdirSync(join(root,'config','streams'),{recursive:true});writeFileSync(join(root,'config','streams','settings.json'),'INVALID CONFIGURATION');
  const before=files(join(root,'config')), evidence=readFileSync(file,'utf8'), tasks=[], client=new StreamCli(root);
  const {run}=await replayCapture(capture,join(root,'private'),runtime(input=>{
   tasks.push(input.task);
   if(input.task==='session') return response({changes:{state:'Simulated session state'}});
-  assert.equal(input.catalog.session.state,'Simulated session state');
+  const contribution=input.catalog.sessions.find(row=>row.harness_session_id===id);
+  assert.ok(contribution,'stream report must include the current session contribution');
+  assert.equal(contribution.state,'Simulated session state');
   return response({changes:{goal:'Simulated effort goal'}});
  }),model,{kind:'report',force:true},(input,signal)=>client.preview(input,signal),new AbortController().signal);
  assert.equal(run.samples[0].status,'completed',run.samples[0].error);
@@ -72,7 +75,7 @@ test('production replay invokes real Rust preview for ordered reports without op
 test('unattached setup uses real Rust enrollment preview before reporting',async()=>isolated(async root=>{
  const id='00000000-0000-4000-8000-000000000002', file=transcript(root,id);
  const catalog={catalog_source:'frozen-source',host_id:'host',stream:null,session:null,sessions:[],authority:null};
- const {capture}=captureSessions({version:1,host_id:'host',streams:[],workspaces:[],topology_error:null,target:{kind:'workspace',id:'workspace',title:'Workspace'},samples:[{host_id:'host',harness:'pi',native_session_id:id,open:null,locations:[],catalog,transcript_file:file,unavailable:null}],unsupported:[]},join(root,'private'),'trimmed');
+ const {capture}=captureSessions({version:1,host_id:'host',streams:[],workspaces:[],topology_error:null,target:{kind:'workspace',id:'workspace',title:'Workspace'},samples:[{host_id:'host',harness:'pi',native_session_id:id,open:null,locations:[],catalog,transcript_file:file,unavailable:null}],unsupported:[]},join(root,'private'));
  const tasks=[], client=new StreamCli(root);
  const {run}=await replayCapture(capture,join(root,'private'),runtime(input=>{
   tasks.push(input.task);return response(input.task==='enroll'?{meaningful:true,stream:{title:'Effort'},session:{title:'Lane'}}:{changes:input.task==='session'?{state:'New state'}:{goal:'New goal'}});

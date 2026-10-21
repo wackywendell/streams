@@ -391,7 +391,7 @@ fn redaction_preserves_foreign_effective_authority_presence_and_host() {
 }
 
 #[test]
-fn each_workspace_identity_check_is_all_or_nothing() {
+fn malformed_supported_agent_does_not_hide_verified_neighbors() {
     let f = Fixture::new(vec![session(HOST, "good", "pi", "good-native")]);
     f.association(SCOPE, "workspace", "effort", true);
     for malformed in [
@@ -411,24 +411,34 @@ fn each_workspace_identity_check_is_all_or_nothing() {
             vec![
                 ("workspace", native("pi", "good-native")),
                 ("workspace", bad),
+                ("workspace", native("claude", "healthy-claude")),
             ],
         );
         let result = f.capture(&topology, CaptureTarget::Stream("effort"));
         let captured = sample(&result, HOST, "good-native");
-        assert_eq!(captured["open"], Value::Null, "{result}");
-        assert_eq!(captured["locations"], json!([]));
-        assert_eq!(result["unsupported"], json!([]));
+        assert_eq!(captured["open"], true, "{result}");
+        assert_eq!(captured["locations"].as_array().unwrap().len(), 1);
+        assert_eq!(
+            result["unsupported"],
+            json!([{
+                "harness": "claude", "native_session_id": "healthy-claude",
+                "workspace_id": "workspace",
+            }])
+        );
+        assert_eq!(result["unresolved"].as_array().unwrap().len(), 1);
+        assert_eq!(result["unresolved"][0]["harness"], "codex");
+        assert_eq!(result["unresolved"][0]["pane_id"], "pane-1");
         assert!(
             result["topology_error"]
                 .as_str()
                 .unwrap()
-                .contains("workspace")
+                .contains("pane-1")
         );
     }
 }
 
 #[test]
-fn duplicate_live_native_identity_rejects_whole_workspace_not_just_the_duplicate() {
+fn duplicate_pi_identity_only_blocks_the_conflicting_panes() {
     let f = Fixture::new(vec![session(HOST, "old", "pi", "same-native")]);
     f.association(SCOPE, "workspace", "effort", true);
     let topology = topology(
@@ -439,15 +449,145 @@ fn duplicate_live_native_identity_rejects_whole_workspace_not_just_the_duplicate
             ("workspace", native("pi", "another-native")),
         ],
     );
+    f.transcript("another-native.jsonl", "another-native");
     let result = f.capture(&topology, CaptureTarget::Stream("effort"));
-    assert_eq!(result["samples"].as_array().unwrap().len(), 1);
-    assert_eq!(sample(&result, HOST, "same-native")["open"], Value::Null);
-    assert!(
-        result["topology_error"]
-            .as_str()
-            .unwrap()
-            .contains("ambiguous live native conversation identity")
+    assert_eq!(result["samples"].as_array().unwrap().len(), 2);
+    let conflicting = sample(&result, HOST, "same-native");
+    assert_eq!(conflicting["open"], Value::Null);
+    assert_eq!(conflicting["locations"], json!([]));
+    let healthy = sample(&result, HOST, "another-native");
+    assert_eq!(healthy["open"], true);
+    assert_eq!(healthy["locations"].as_array().unwrap().len(), 1);
+    assert_eq!(healthy["unavailable"], Value::Null);
+    let unresolved = result["unresolved"].as_array().unwrap();
+    assert_eq!(unresolved.len(), 2);
+    for (index, observation) in unresolved.iter().enumerate() {
+        assert_eq!(
+            observation,
+            &json!({
+                "workspace_id": "workspace", "tab_id": "tab-workspace",
+                "pane_id": format!("pane-{index}"), "terminal_id": format!("terminal-{index}"),
+                "harness": "pi", "error": "ambiguous live native conversation identity",
+            })
+        );
+    }
+}
+
+#[test]
+fn unidentified_pi_pane_cannot_hide_verified_carded_or_uncarded_conversations() {
+    let f = Fixture::new(vec![
+        session(HOST, "carded", "pi", "native"),
+        session(FOREIGN, "remote", "pi", "remote-native"),
+    ]);
+    f.association(SCOPE, "workspace", "effort", true);
+    f.transcript("native.jsonl", "native");
+    f.transcript("uncarded.jsonl", "uncarded");
+    for metadata in [
+        Value::Null,
+        json!({"agent": "other"}),
+        json!({"agent": "pi", "kind": "invalid", "value": "unknown"}),
+    ] {
+        let mut unidentified = native("pi", "unidentified");
+        unidentified["agent_session"] = metadata;
+        let topology = topology(
+            &["workspace"],
+            vec![
+                ("workspace", native("pi", "native")),
+                ("workspace", native("pi", "uncarded")),
+                ("workspace", unidentified),
+            ],
+        );
+        let result = f.capture(&topology, CaptureTarget::Workspace("workspace"));
+        assert_eq!(result["samples"].as_array().unwrap().len(), 3);
+        for identity in ["native", "uncarded"] {
+            let captured = sample(&result, HOST, identity);
+            assert_eq!(captured["open"], true);
+            assert_eq!(captured["locations"].as_array().unwrap().len(), 1);
+            assert_eq!(captured["unavailable"], Value::Null);
+        }
+        assert_eq!(
+            sample(&result, HOST, "uncarded")["catalog"]["session"],
+            Value::Null
+        );
+        assert_eq!(
+            sample(&result, FOREIGN, "remote-native")["open"],
+            Value::Null
+        );
+        assert_eq!(result["unsupported"], json!([]));
+        let unresolved = result["unresolved"].as_array().unwrap();
+        assert_eq!(unresolved.len(), 1);
+        let observation = &unresolved[0];
+        assert_eq!(observation["workspace_id"], "workspace");
+        assert_eq!(observation["tab_id"], "tab-workspace");
+        assert_eq!(observation["pane_id"], "pane-2");
+        assert_eq!(observation["terminal_id"], "terminal-2");
+        assert_eq!(observation["harness"], "pi");
+        assert!(
+            observation["error"]
+                .as_str()
+                .unwrap()
+                .contains("native agent_session")
+        );
+        assert!(observation.get("native_session_id").is_none());
+        assert!(
+            result["topology_error"]
+                .as_str()
+                .unwrap()
+                .contains("pane-2")
+        );
+    }
+}
+
+#[test]
+fn unidentified_pi_pane_keeps_unmatched_history_unknown_not_closed() {
+    let f = Fixture::new(vec![
+        session(HOST, "historical", "pi", "historical"),
+        session(FOREIGN, "remote", "pi", "remote-native"),
+    ]);
+    f.association(SCOPE, "workspace", "effort", true);
+    let topology = topology(
+        &["workspace"],
+        vec![(
+            "workspace",
+            json!({
+                "agent": "pi", "agent_session": null,
+            }),
+        )],
     );
+    let result = f.capture(&topology, CaptureTarget::Stream("effort"));
+    assert_eq!(result["samples"].as_array().unwrap().len(), 2);
+    for captured in result["samples"].as_array().unwrap() {
+        assert_eq!(captured["open"], Value::Null);
+        assert_eq!(captured["locations"], json!([]));
+    }
+    assert_eq!(result["unresolved"].as_array().unwrap().len(), 1);
+}
+
+#[test]
+fn one_unidentified_pane_preserves_verified_conversations_across_bound_workspaces() {
+    let f = Fixture::new(vec![]);
+    f.association(SCOPE, "one", "effort", true);
+    f.association(SCOPE, "two", "effort", true);
+    f.transcript("first.jsonl", "first");
+    f.transcript("second.jsonl", "second");
+    let topology = topology(
+        &["one", "two"],
+        vec![
+            ("one", native("pi", "first")),
+            ("two", json!({"agent": "pi", "agent_session": null})),
+            ("two", native("pi", "second")),
+        ],
+    );
+    let result = f.capture(&topology, CaptureTarget::Stream("effort"));
+    assert_eq!(result["samples"].as_array().unwrap().len(), 2);
+    for identity in ["first", "second"] {
+        let captured = sample(&result, HOST, identity);
+        assert_eq!(captured["open"], true);
+        assert_eq!(captured["unavailable"], Value::Null);
+        assert_eq!(captured["locations"].as_array().unwrap().len(), 1);
+    }
+    assert_eq!(result["unresolved"].as_array().unwrap().len(), 1);
+    assert_eq!(result["unresolved"][0]["workspace_id"], "two");
 }
 
 #[test]

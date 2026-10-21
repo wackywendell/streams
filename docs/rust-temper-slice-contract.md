@@ -1,6 +1,6 @@
 # Rust + Temper Save/Publication/Recovery Slice Contract
 
-Status: Stages 1–2 pass the adoption gate. The Rust library executes save, publication and recovery transitions through Temper. Catalog-bound witnesses and borrowing permits connect inspected histories to effects. CLI and native frontend cutover remain separate gates.
+Status: Stages 1–2 pass the adoption gate. The Rust library executes save, publication and recovery transitions through Temper. Catalog-bound witnesses and borrowing permits connect inspected histories to effects. The [Rust runtime ADR](rust-temper-architecture.md) records the subsequent Rust-only source cutover. The Python reference and cross-language runners are retired; wire fixtures, concrete Rust recovery tests and Temper verification remain required.
 
 ## Purpose and scope
 
@@ -52,7 +52,7 @@ rules remain preservation requirements.
 
 ## Adoption gate criteria
 
-Before proceeding to Stages 3–5 (CLI cutover, Herdr native effects, and TUI port), this slice must demonstrate:
+The original gate required these results before the CLI, native effects and TUI port:
 
 1. `specs/catalog_protocol.ioa.toml` passes all levels of Temper's `VerificationCascade` (L0 Symbolic Z3, L1 Stateright Model Check, L2 Deterministic Simulation, L3 Property Tests), and intentionally broken spec mutations are rejected with counterexamples.
 2. The Rust transition bridge rejects incomplete `EvalContext` projections and requires typed evidence witnesses for every guarded transition.
@@ -63,6 +63,6 @@ Before proceeding to Stages 3–5 (CLI cutover, Herdr native effects, and TUI po
 
 The [Temper verification tests](../tests/verification.rs) pass all four cascade levels and reject deliberately broken marker effects with counterexamples. This supports retaining the embedded protocol table. It does not prove filesystem durability or concrete commit identity; Rust permits and effect tests remain responsible for those properties.
 
-The [Git recovery tests](../tests/git_catalog.rs) cover journal-write and clear failures, once-only confirmation timing, lost replies, later saves, failed adoption and restart fencing. Generated sequences combine these with competing remote changes and reused operation IDs. The [Git differential traces](../tests/python/test_rust_git_differential.py) compare real repositories, including graph reachability, original operation provenance and retained confirmation receipts.
+The [Git recovery tests](../tests/git_catalog.rs) cover journal-write and clear failures, once-only confirmation timing, lost replies, later saves, failed adoption and restart fencing. Generated sequences combine these with competing remote changes and reused operation IDs. Before retirement, Python/Rust differential traces also compared real repositories, graph reachability, original operation provenance and retained confirmation receipts. Their original runners remain in revision `fd744307`; they are not dependencies of the Rust-only test graph.
 
-Review exposed a shared Python/Rust bug: restarted recovery could replace a confirmed batch receipt before a failed adoption. Both implementations now preserve that receipt, including when adoption targets a newer remote descendant. This is an approved correction to the oracle, not a normalized discrepancy. The original YAML migration limitation above remains unchanged.
+Review exposed a shared Python/Rust bug: restarted recovery could replace a confirmed batch receipt before a failed adoption. The fix preserved that receipt in both implementations before retirement, including when adoption targets a newer remote descendant. This is an approved correction to the oracle, not a normalized discrepancy. The original YAML migration limitation above remains unchanged.
