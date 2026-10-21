@@ -217,6 +217,8 @@ pub(super) enum AgentCommand {
         native_inventory: bool,
     },
     Apply,
+    /// Enroll the exact conversation without launching native resources.
+    Enroll,
     /// Simulate captured intent without opening catalog or native runtime state.
     Preview,
     /// Inspect saved replay inputs without enrolling or repairing native resources.
@@ -419,7 +421,6 @@ mod tests {
             vec!["open"],
             vec!["resume"],
             vec!["workspace", "capture"],
-            vec!["agent", "enroll"],
         ] {
             assert!(parse(&args).is_err(), "{args:?}");
         }

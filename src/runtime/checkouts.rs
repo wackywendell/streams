@@ -314,6 +314,82 @@ impl CheckoutRegistry {
         })
     }
 
+    /// Fill absent repository locators from a jj backing checkout or the origin remote.
+    /// Existing explicit bindings win; discovery never selects a default or contacts a remote.
+    pub fn bind_inferred_repositories(
+        &self,
+        id: &str,
+        runner: &dyn crate::process::ProcessRunner,
+    ) -> Result<Vec<String>> {
+        let checkout = self.get(id)?;
+        if !checkout.repository_urls.is_empty() {
+            return Ok(checkout.repository_urls);
+        }
+        let root = &checkout.directory;
+        let mut urls = Vec::new();
+        let jj_repo = root.join(".jj/repo");
+        if jj_repo.is_file()
+            && let Ok(pointer) = fs::read_to_string(&jj_repo)
+            && !pointer.trim().is_empty()
+            && let Ok(backing) = jj_repo
+                .parent()
+                .expect("repo has a parent")
+                .join(pointer.trim())
+                .canonicalize()
+            && backing.file_name().is_some_and(|name| name == "repo")
+            && let Some(jj) = backing
+                .parent()
+                .filter(|path| path.file_name().is_some_and(|name| name == ".jj"))
+            && let Some(directory) = jj.parent()
+            && let Ok(Some(backing)) = self.find(directory)
+        {
+            urls.extend(backing.repository_urls);
+        }
+        let push = |urls: &mut Vec<String>, raw: &str| -> Result<()> {
+            let url = raw.trim();
+            if !url.is_empty() && !urls.iter().any(|bound| bound == url) {
+                text(url)?;
+                urls.push(url.into());
+            }
+            Ok(())
+        };
+        if let Ok(origin) = inspect_command(
+            "git",
+            &["config", "--get", "remote.origin.url"],
+            root,
+            runner,
+        ) {
+            push(&mut urls, &origin)?;
+        }
+        if urls.is_empty()
+            && (jj_repo.is_dir() || jj_repo.is_file())
+            && let Ok(remotes) = inspect_command(
+                "jj",
+                &[
+                    "--ignore-working-copy",
+                    "--at-operation=@",
+                    "git",
+                    "remote",
+                    "list",
+                ],
+                root,
+                runner,
+            )
+        {
+            for line in remotes.lines() {
+                if let Some((name, url)) = line.trim_start().split_once(char::is_whitespace)
+                    && name == "origin"
+                {
+                    push(&mut urls, url)?;
+                }
+            }
+        }
+        for url in &urls {
+            self.register(root, Some(url))?;
+        }
+        Ok(urls)
+    }
+
     /// Reassociate an ID with an exact root without moving any files or changing defaults.
     pub fn move_checkout(&self, id: &str, directory: &Path) -> Result<CheckoutLocation> {
         self.update(|state| {

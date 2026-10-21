@@ -4,6 +4,7 @@
 mod args;
 mod checkouts;
 mod documents;
+mod enrollment;
 mod fields;
 #[cfg(test)]
 mod native_tests;
@@ -875,6 +876,7 @@ impl App {
 
     fn agent(&self, command: AgentCommand) -> Result<Output> {
         match command {
+            AgentCommand::Enroll => self.enroll(),
             AgentCommand::Preview => preview(),
             AgentCommand::CaptureInputs {
                 stream_id,

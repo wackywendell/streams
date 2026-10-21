@@ -66,6 +66,10 @@ Saved replay inputs need an inspection boundary separate from ordinary catalog r
 
 Host-local native state keeps endpoint-scoped associations, enrollment claims and pending-open evidence separate from portable catalog records. Endpoint scopes select files; a global per-Stream lock excludes competing opens across scopes. Session and launch command form one optional pair. Enrollment claims survive partial completion, and loaded pending-open records are diagnostic evidence, not resumable effect permits. Runtime orchestration must still establish live ownership and native identity before issuing effects; this storage layer does not attest either.
 
+Enrollment does not open workspaces. For a native caller, it claims the workspace before creating catalog records and records each save separately. Failed directory binding leaves accepted records and the claim intact; the response reports incomplete completion rather than undoing saved work. Automatic Herdr/Pi enrollment checks the conversation before and after acquiring its locks, so a helper cannot enroll its parent's workspace.
+
+Checkout identities use the shared host-wide registry; directory intent and native claims remain catalog-scoped. Enrollment and ordinary checkout commands must resolve the same registrations. Missing remotes are allowed, but malformed discovered locators remain errors, matching Python's explicit-binding validation.
+
 ### Frontends control workspaces, not the catalog
 
 A workspace frontend interface identifies, resolves, creates, focuses, and updates native workspaces. Workspace references are scoped to a frontend and endpoint, rather than assumed to be Herdr pane identities. Runtime orchestration owns catalog associations, checkout selection, open/resume policy, and recording partial completion. Native transports do not choose catalog authority or save domain changes.
@@ -118,7 +122,7 @@ The Rust stack is rebased onto Python `main` at `a6f11e5c`. Documents retain com
 
 Only the current partitioned session layout is accepted. All 48 session files on this machine already use it, and the live catalog is local-only, so Rust does not carry the obsolete two-level reader or Git-history migration paths. Agent context retains a full local snapshot behind `CatalogBackend`, rather than copying Python's storage-specific lookup and cache fallbacks.
 
-The Rust CLI now resolves exact Herdr and CMUX caller context, attests enrolled Herdr/Pi callers, supplies requested native inventory, and extracts explicit historical document revisions. Native start, open, resume, workspace capture and enrollment remain separate work. The CLI rejects unsupported operations rather than inventing native identity or authority. Stages 3 to 5 still require their native acceptance tests before cutover.
+The Rust CLI now resolves exact Herdr and CMUX caller context, attests enrolled Herdr/Pi callers, supplies requested native inventory, enrolls conversations without launching resources, and extracts explicit historical document revisions. Native start, open, resume and workspace capture remain separate work. The CLI rejects unsupported operations rather than inventing native identity or authority. Stages 3 to 5 still require their native acceptance tests before cutover.
 
 ### TUI Unicode compatibility
 

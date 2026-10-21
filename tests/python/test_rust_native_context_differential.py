@@ -1,4 +1,4 @@
-"""Read-only native context parity through isolated physical state and fake CLIs."""
+"""Native context and enrollment parity with isolated state and observational fake CLIs."""
 
 import hashlib
 import json
@@ -107,10 +107,11 @@ class RustNativeContextDifferentialTests(unittest.TestCase):
     def put(self, name, value):
         (self.fixtures / (name + ".json")).write_text(json.dumps(value), encoding="utf-8")
 
-    def invoke(self, implementation, *arguments):
+    def invoke(self, implementation, *arguments, request=None):
         command = [str(RUST)] if implementation == "rust" else [sys.executable, "-m", "_streams.cli"]
         result = subprocess.run(command + list(arguments) + ["--json"], cwd=self.cwd,
-                                env=self.env, text=True, capture_output=True, timeout=30)
+                                env=self.env, input=None if request is None else json.dumps(request),
+                                text=True, capture_output=True, timeout=30)
         try:
             data = json.loads(result.stdout)
         except json.JSONDecodeError:
@@ -174,6 +175,151 @@ class RustNativeContextDifferentialTests(unittest.TestCase):
     def commands(self):
         path = self.fixtures / "commands.jsonl"
         return path.read_text().splitlines() if path.exists() else []
+
+    def enrollment_request(self, *, actor="automatic", native="native-local"):
+        captured = self.call("python", "agent", "context", "--harness", "pi", "--session-id", native)
+        return {"operation_id": "enroll-fixture", "catalog_source": captured["catalog_source"],
+                "harness": "pi", "harness_session_id": native, "actor": actor,
+                "stream": {"title": "Enrollment work", "goal": "Retain original intent"},
+                "session": {"title": "Enrollment conversation"}, "cwd": str(self.cwd)}, captured
+
+    def test_rust_enrollment_is_readable_and_retryable_by_python(self):
+        request, _ = self.enrollment_request()
+        code, created = self.invoke("rust", "agent", "enroll", request=request)
+        self.assertEqual(code, 0, created)
+        self.assertEqual([saved["operation_id"] for saved in created["saves"]],
+                         ["enroll-fixture:stream", "enroll-fixture:session"])
+        python_request = {**request, "operation_id": "python-enroll", "harness_session_id": "python-created"}
+        python_code, python_created = self.invoke("python", "agent", "enroll", request=python_request)
+        self.assertEqual(python_code, 0, python_created)
+        for name, saved, python_saved in zip(("stream", "session"), created["saves"], python_created["saves"], strict=True):
+            domain, python_domain = saved["save"]["domain"], python_saved["save"]["domain"]
+            self.assertEqual(domain.keys(), python_domain.keys())
+            self.assertEqual(domain["record"], created[name])
+            self.assertEqual(python_domain["record"], python_created[name])
+        python_code, python = self.invoke("python", "agent", "enroll", request=request)
+        rust_code, rust = self.invoke("rust", "agent", "enroll", request=request)
+        self.assertEqual((python_code, rust_code), (0, 0), (python, rust))
+        self.assertEqual(python, rust)
+        self.assertEqual(rust["saves"], [])
+        self.assertEqual(self.context()["stream"], created["stream"])
+        request["stream"]["title"] = "Do not overwrite existing work"
+        self.assertEqual(self.invoke("rust", "agent", "enroll", request=request)[1]["stream"], created["stream"])
+
+    def test_herdr_enrollment_claim_and_binding_interoperate_with_python(self):
+        self.herdr()
+        request, captured = self.enrollment_request()
+        code, created = self.invoke("rust", "agent", "enroll", request=request)
+        self.assertEqual(code, 0, created)
+        self.state = self.runtime_root / key(captured["host_id"])
+        binding = self.state / "associations" / self.scope / (key("workspace-local") + ".json")
+        claim = self.state / "enrollments" / self.scope / (key("workspace-local") + ".json")
+        self.assertTrue(json.loads(binding.read_text())["ready"])
+        self.assertEqual(json.loads(claim.read_text())["stream_id"], created["stream"]["id"])
+        self.context("--attest")
+        python_code, python = self.invoke("python", "agent", "enroll", request=request)
+        rust_code, rust = self.invoke("rust", "agent", "enroll", request=request)
+        self.assertEqual((python_code, rust_code), (0, 0), (python, rust))
+        self.assertEqual(python, rust)
+
+    def test_automatic_helper_enrollment_cannot_claim_the_parent_workspace(self):
+        self.herdr()
+        request, _ = self.enrollment_request(native="background-helper")
+        before = self.files()
+        for implementation in ("python", "rust"):
+            code, data = self.invoke(implementation, "agent", "enroll", request=request)
+            self.assertNotEqual(code, 0, data)
+            self.assertIn("error", data)
+            self.assertEqual(self.files(), before)
+
+    def test_incomplete_enrollment_keeps_receipts_and_claim_until_directory_is_repaired(self):
+        from uuid import NAMESPACE_URL, uuid5
+        self.herdr()
+        request, captured = self.enrollment_request()
+        identity = json.dumps([captured["host_id"], "pi", "native-local"])
+        stream_id = str(uuid5(NAMESPACE_URL, "streams:effort:" + identity))
+        self.state = self.runtime_root / key(captured["host_id"])
+        location = self.state / "directories" / (key(stream_id, None) + ".json")
+        location.parent.mkdir(parents=True)
+        location.write_text("invalid directory intent")
+        code, partial = self.invoke("rust", "agent", "enroll", request=request)
+        self.assertEqual(code, 2, partial)
+        self.assertEqual(len(partial["saves"]), 2)
+        self.assertIn("completion_error", partial)
+        claim = self.state / "enrollments" / self.scope / (key("workspace-local") + ".json")
+        binding = self.state / "associations" / self.scope / (key("workspace-local") + ".json")
+        self.assertEqual(json.loads(claim.read_text())["stream_id"], stream_id)
+        self.assertFalse(binding.exists())
+        for implementation in ("python", "rust"):
+            code, retry = self.invoke(implementation, "agent", "enroll", request=request)
+            self.assertEqual(code, 2, retry)
+            self.assertEqual(retry["saves"], [])
+            self.assertIn("completion_error", retry)
+            self.assertEqual(retry["session"], partial["session"])
+        location.unlink()
+        code, completed = self.invoke("rust", "agent", "enroll", request=request)
+        self.assertEqual(code, 0, completed)
+        self.assertEqual(completed["saves"], [])
+        self.assertTrue(json.loads(binding.read_text())["ready"])
+        self.context("--attest")
+
+    def test_manual_creation_retries_original_receipt_and_rejects_changed_intent(self):
+        request, _ = self.enrollment_request(actor="user")
+        code, created = self.invoke("rust", "agent", "enroll", request=request)
+        self.assertEqual(code, 0, created)
+        self.assertEqual(created["stream"]["title_mode"], "manual")
+        retries = []
+        for implementation in ("python", "rust"):
+            code, retry = self.invoke(implementation, "agent", "enroll", request=request)
+            self.assertEqual(code, 0, retry)
+            self.assertEqual(len(retry["saves"]), 1)
+            retries.append(retry)
+        self.assertEqual(retries[0], retries[1])
+        request["stream"]["title"] = "Changed intent must not be replayed"
+        for implementation in ("python", "rust"):
+            code, rejected = self.invoke(implementation, "agent", "enroll", request=request)
+            self.assertEqual(code, 2, rejected)
+            self.assertIn("completion_error", rejected)
+        self.assertEqual(self.context()["stream"], created["stream"])
+
+    def test_enrollment_infers_origin_without_selecting_a_default_or_changing_git(self):
+        subprocess.run(["git", "init", "--quiet", "--template=", str(self.cwd)],
+                       cwd=self.cwd, env=self.env, check=True, capture_output=True, timeout=30)
+        subprocess.run(["git", "config", "--local", "remote.origin.url", "https://example.test/inferred"],
+                       cwd=self.cwd, env=self.env, check=True, capture_output=True, timeout=30)
+        before = {str(path.relative_to(self.cwd)): path.read_bytes()
+                  for path in self.cwd.rglob("*") if path.is_file()}
+        request, _ = self.enrollment_request()
+        code, created = self.invoke("rust", "agent", "enroll", request=request)
+        self.assertEqual(code, 0, created)
+        registry = next((self.home / "state/streams/checkouts").glob("checkouts-*.json"))
+        self.assertFalse(list(self.runtime_root.rglob("checkouts-*.json")))
+        state = json.loads(registry.read_text())
+        self.assertEqual(state["checkouts"][0]["repository_urls"], ["https://example.test/inferred"])
+        self.assertEqual(state["defaults"], {})
+        for implementation in ("python", "rust"):
+            listed = self.call(implementation, "checkout", "list")
+            self.assertEqual(listed["checkouts"], state["checkouts"])
+        after = {str(path.relative_to(self.cwd)): path.read_bytes()
+                 for path in self.cwd.rglob("*") if path.is_file()}
+        self.assertEqual(before, after)
+
+    def test_malformed_inferred_locator_retains_the_claim_in_both_implementations(self):
+        subprocess.run(["git", "init", "--quiet", "--template=", str(self.cwd)],
+                       cwd=self.cwd, env=self.env, check=True, capture_output=True, timeout=30)
+        subprocess.run(["git", "config", "--local", "remote.origin.url", "https://example.test/a\tb"],
+                       cwd=self.cwd, env=self.env, check=True, capture_output=True, timeout=30)
+        self.herdr()
+        request, captured = self.enrollment_request()
+        self.state = self.runtime_root / key(captured["host_id"])
+        for implementation in ("rust", "python"):
+            code, partial = self.invoke(implementation, "agent", "enroll", request=request)
+            self.assertEqual(code, 2, partial)
+            self.assertIn("completion_error", partial)
+            claim = self.state / "enrollments" / self.scope / (key("workspace-local") + ".json")
+            self.assertTrue(claim.exists())
+            binding = self.state / "associations" / self.scope / (key("workspace-local") + ".json")
+            self.assertFalse(binding.exists())
 
     def test_unbound_context_without_runtime_state_or_binding_creates_no_locks(self):
         self.assertFalse(self.runtime_root.exists())
