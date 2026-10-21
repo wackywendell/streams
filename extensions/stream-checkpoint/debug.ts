@@ -49,7 +49,7 @@ export async function debugCommand(input: string, ctx: ExtensionContext, client:
   const inventory = parseCaptureInventory(await client.captureInputs(target, signal));current();
   const proceed = await confirmCapture(ctx, inventory, root, signal);current();
   if (!proceed) return;
-  const {capture, directory} = captureSessions(inventory, root, settings.context, ctx.sessionManager, signal);
+  const {capture, directory} = captureSessions(inventory, root, ctx.sessionManager, signal);
   const captured = capture.samples.filter(sample => sample.evidence).length;
   ctx.ui.notify(`Captured ${captured}/${capture.samples.length} conversations: ${directory}/capture.json`, captured === capture.samples.length ? "info" : "warning");
   return;

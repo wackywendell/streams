@@ -3,7 +3,6 @@ import { constants, chmodSync, closeSync, existsSync, lstatSync, mkdirSync, open
 import { dirname, join, resolve } from "node:path";
 import { CURRENT_SESSION_VERSION, SessionManager } from "@earendil-works/pi-coding-agent";
 import type { ExtensionContext } from "@earendil-works/pi-coding-agent";
-import { checkpointContext } from "./agent.ts";
 import { parseLocalContext } from "../../integrations/herdr-work-cards/src/streams-context.ts";
 import type { LocalContext, StreamWire } from "./streams.ts";
 
@@ -36,7 +35,7 @@ export function parseCaptureInventory(value: any): CaptureInventory {
  }
  return value as CaptureInventory;
 }
-function checkStoragePath(path: string): void {
+export function checkStoragePath(path: string): void {
  let ancestor = resolve(path), entry = lstatSync(ancestor, {throwIfNoEntry: false});
  while (!entry) {ancestor = dirname(ancestor);entry = lstatSync(ancestor, {throwIfNoEntry: false});}
  if (entry.isSymbolicLink() && !existsSync(ancestor)) throw Error("Debug storage contains a dangling symbolic link");
@@ -59,7 +58,7 @@ export function privateWrite(path: string, content: string): void {
 }
 export const digest = (value: string): string => createHash("sha256").update(value).digest("hex");
 export function sourceFiles(): Record<string, string> {
- return Object.fromEntries(["agent.ts", "core.ts", "report-workflow.ts", "replay.ts"].map(name => [name, digest(readFileSync(new URL(name, import.meta.url), "utf8"))]));
+ return Object.fromEntries(["agent.ts", "core.ts", "report-workflow.ts", "prompt-lab.ts", "replay.ts"].map(name => [name, digest(readFileSync(new URL(name, import.meta.url), "utf8"))]));
 }
 function transcript(content: string, expected: string): {entries: any[]; partial: boolean} {
  const lines = content.split("\n");if (lines.at(-1) === "") lines.pop();
@@ -76,12 +75,12 @@ function transcript(content: string, expected: string): {entries: any[]; partial
  return {entries, partial};
 }
 /** Snapshot data only. Never open a source file with a mutating SessionManager. */
-export function captureSessions(inventory: CaptureInventory, root: string, mode: "trimmed" | "full", current?: ExtensionContext["sessionManager"], signal?: AbortSignal): {capture: Capture; directory: string} {
+export function captureSessions(inventory: CaptureInventory, root: string, current?: ExtensionContext["sessionManager"], signal?: AbortSignal): {capture: Capture; directory: string} {
  if (!inventory.target || !inventory.samples) throw Error("Select a capture target first");
  signal?.throwIfAborted();
  const id = randomUUID(), directory = join(root, "captures", id);
  privateDirectory(root);privateDirectory(join(root, "captures"));privateDirectory(directory);
- const capture: Capture = {version: 1, id, captured_at: new Date().toISOString(), context_mode: mode, target: inventory.target, host_id: inventory.host_id, workspaces: structuredClone(inventory.workspaces), topology_error: inventory.topology_error, unsupported: inventory.unsupported ?? [], source_files: sourceFiles(), samples: []};
+ const capture: Capture = {version: 1, id, captured_at: new Date().toISOString(), context_mode: "full", target: inventory.target, host_id: inventory.host_id, workspaces: structuredClone(inventory.workspaces), topology_error: inventory.topology_error, unsupported: inventory.unsupported ?? [], source_files: sourceFiles(), samples: []};
  for (const [index, source] of inventory.samples.entries()) {
   signal?.throwIfAborted();
   const sample: FrozenSample = {...structuredClone(source), captured_at: new Date().toISOString(), warnings: [], helper_logs: []};
@@ -98,7 +97,7 @@ export function captureSessions(inventory: CaptureInventory, root: string, mode:
    const manager = live ?? SessionManager.inMemory(parsed.entries[0].cwd, undefined, parsed.entries);
    if (parsed.partial) sample.warnings.push("Incomplete final JSONL record excluded from projected evidence; raw snapshot retained.");
    sample.cwd = manager.getCwd();sample.projection_source = live ? "current-session" : "persisted-leaf";
-   sample.evidence = checkpointContext(manager, mode);
+   sample.evidence = structuredClone({messages: manager.buildSessionProjection().messages, leafId: manager.getLeafId()});
    sample.snapshot_file = `session-${index}.jsonl`;
    privateWrite(join(directory, sample.snapshot_file), content);
    for (const entry of parsed.entries) {

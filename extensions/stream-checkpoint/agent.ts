@@ -28,8 +28,8 @@ export function completedMessages(messages: any[]): any[] {
  }
  return kept;
 }
-export function checkpointContext(manager: ExtensionContext["sessionManager"], mode: "trimmed" | "full" = "trimmed"): {messages: any[]; leafId: string | null} {
- let messages = completedMessages(manager.buildSessionProjection().messages);
+export function projectMessages(source: any[], mode: "trimmed" | "full" = "trimmed"): any[] {
+ let messages = completedMessages(source);
  if (mode === "trimmed") messages = messages.flatMap((message: any) => {
   if (["toolResult", "bashExecution", "system"].includes(message.role)) return [];
   if (message.role !== "assistant" && message.role !== "user") return [message];
@@ -37,7 +37,10 @@ export function checkpointContext(manager: ExtensionContext["sessionManager"], m
   const content = message.content.filter((block: any) => block.type === "text" || (message.role === "user" && block.type === "image"));
   return content.length ? [{...message, content, ...(message.role === "assistant" ? {stopReason: "stop"} : {})}] : [];
  });
- return structuredClone({messages, leafId: manager.getLeafId()});
+ return structuredClone(messages);
+}
+export function checkpointContext(manager: ExtensionContext["sessionManager"], mode: "trimmed" | "full" = "trimmed"): {messages: any[]; leafId: string | null} {
+ return {messages: projectMessages(manager.buildSessionProjection().messages, mode), leafId: manager.getLeafId()};
 }
 export function assertContextFits(model: {contextWindow?: number}, systemPrompt: string, messages: any[]): void {
  const tokens = Math.ceil(systemPrompt.length / 4) + messages.reduce((total, message) => total + estimateTokens(message), 0);
@@ -169,19 +172,22 @@ async function completeWithRetry(complete: () => Promise<AssistantMessage>, sign
  }
 }
 /** Model execution has no session, UI, catalog-write or native capabilities. */
-export async function runInference<T extends Inference>(runtime: InferenceRuntime, request: T, signal: AbortSignal, configured?: ModelSelection, observe?: InferenceObserver): Promise<InferenceResult<T>> {
+export async function runPreparedInference<T extends Inference>(runtime: InferenceRuntime, prepared: {input: T; model_request: InferencePayload}, signal: AbortSignal, configured?: ModelSelection, observe?: InferenceObserver): Promise<InferenceResult<T>> {
  const model = configured ? runtime.modelRegistry.find(configured.provider, configured.id) : runtime.model;
  if (!model) throw Error("Configured reporting model is unavailable. Choose an available provider/model; no fallback was used.");
- const payload = buildInferencePayload(request, Date.now());
+ const request = structuredClone(prepared.input), payload = structuredClone(prepared.model_request);
  observe?.({type: "request", request, payload, model: {provider: model.provider, id: model.id}});
  try {
   assertContextFits(model, payload.systemPrompt + JSON.stringify(payload.tools[0].parameters), payload.messages);
-  const response = await completeWithRetry(() => runtime.modelRegistry.complete(model, payload, {signal}), signal, observe);
+  const response = await completeWithRetry(() => runtime.modelRegistry.complete(model, structuredClone(payload), {signal}), signal, observe);
   if (signal.aborted || response.stopReason === "aborted") throw Error("Reporting cancelled");
   const result = parseInferenceResponse(request, response, payload);
   observe?.({type: "result", result});
   return result;
  } catch (error) {observe?.({type: "error", error: String(error), cancelled: signal.aborted});throw error;}
+}
+export function runInference<T extends Inference>(runtime: InferenceRuntime, request: T, signal: AbortSignal, configured?: ModelSelection, observe?: InferenceObserver): Promise<InferenceResult<T>> {
+ return runPreparedInference(runtime, {input: request, model_request: buildInferencePayload(request, Date.now())}, signal, configured, observe);
 }
 export type InferenceLogOptions = {directory: string; onCreate?(value: {session_id: string; session_file: string}): void};
 export type InferenceSource = {cwd: string; sessionId: string; leafId: string | null; sessionFile?: string};
