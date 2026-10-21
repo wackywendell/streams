@@ -49,6 +49,18 @@ test('pure payload construction and strict parsing share schemas without mutatin
  assert.equal(raw.content[0].arguments.changes.status,'active');
  assert.throws(()=>parseInferenceResponse({type:'session',catalog:context(),messages:[]},response({changes:{session_state:'wrong alias'}})),/invalid structured/);
 });
+test('stream preparation centers all contributions without singling out the reporting conversation',()=>{
+ const catalog=context(),sibling={...session,id:'sibling',title:'Other lane',state:'Independent contribution'};
+ catalog.sessions=[{...catalog.session,state:'Stale target'},sibling];catalog.session.state='Latest target';
+ const request={type:'stream',catalog,messages:[{role:'user',content:'Rename this effort to my local task',timestamp:1}]},before=structuredClone(request);
+ const payload=buildInferencePayload(request),sent=JSON.parse(payload.messages.at(-1).content);
+ assert.equal(payload.messages.length,1);assert.deepEqual(Object.keys(sent.catalog),['stream','sessions']);
+ assert.deepEqual(sent.catalog.sessions,[catalog.session,sibling]);assert.deepEqual(sent.catalog.stream,catalog.stream);
+ assert.doesNotMatch(JSON.stringify(payload),/Rename this effort to my local task|Stale target/);
+ assert.deepEqual(request,before);
+ catalog.sessions=[sibling];
+ assert.deepEqual(JSON.parse(buildInferencePayload(request).messages[0].content).catalog.sessions,[sibling,catalog.session]);
+});
 test('capture freezes cards, projected context, open locations and source bytes with private permissions',()=>{
  const f = fixture();try {
   const {capture,directory} = captureSessions(parseCaptureInventory(f.inventory),f.root);
@@ -86,7 +98,7 @@ test('replay is incremental, runs the shared session-to-stream workflow, and nev
   const rt=runtime(async(_model,payload)=>{const task=JSON.parse(payload.messages.at(-1).content);requests.push(task);return response({changes:task.task==='session'?{state:'Updated state'}:{goal:'Updated goal'}});});
   const {run,directory}=await replayCapture(capture,f.root,rt,model,update,project,new AbortController().signal);
   assert.equal(requests[0].catalog.session.state,'Original state');assert.equal(requests[0].reset,undefined);
-  assert.equal(requests[1].catalog.session.state,'Updated state');assert.equal(run.samples[0].after.stream.goal,'Updated goal');
+  assert.equal(requests[1].catalog.sessions[0].state,'Updated state');assert.equal(run.samples[0].after.stream.goal,'Updated goal');
   assert.equal(capture.samples[0].catalog.session.state,'Original state');assert.equal(run.samples[0].status,'completed');
   assert.equal(run.samples[0].tasks.length,2);assert.ok(run.samples[0].tasks.every(t=>t.helper_file&&t.prompt_hash));
   assert.match(readFileSync(join(directory,'comparison.md'),'utf8'),/incremental|simulated/);
@@ -99,7 +111,7 @@ test('reset --auto unlocks only the sandbox scope and preserves captured manual 
   const {capture}=captureSessions(f.inventory,f.root),requests=[];
   const rt=runtime(async(_model,payload)=>{requests.push(JSON.parse(payload.messages.at(-1).content));return response({changes:{title:'Fresh',state:'Regenerated'}});});
   const {run}=await replayCapture(capture,f.root,rt,model,{kind:'reset',target:'session',auto:true},project,new AbortController().signal);
-  assert.equal(requests.length,1);assert.match(requests[0].reset,/Infer all allowed/);assert.equal(requests[0].catalog.session.title,'');
+  assert.equal(requests.length,1);assert.match(requests[0].reset,/Infer all allowed/);assert.equal(Object.hasOwn(requests[0].catalog.session,'title'),false);
   assert.equal(run.samples[0].after.session.title_mode,'automatic');assert.equal(capture.samples[0].catalog.session.title_mode,'manual');
   assert.equal(run.samples[0].after.session.state_short,null);
  }finally{f.dispose();}

@@ -418,25 +418,28 @@ for(const when of ['before','during','delay','response'])test(`inference aborts 
  await assert.rejects(infer(ctx,{type:'session',catalog:context(),messages:[]},controller.signal),/cancelled|aborted/i);
  assert.equal(attempts,when==='before'?0:1);
 });
-test('session progress uses the agreed brevity prompt without hard limits or changes to other helper tasks',async()=>{
- const guidance='Write state as a brief orientation for someone returning to the work: what meaningfully changed and where things stand. Use one or two short sentences, normally under 35 words; shorter is better. Do not enumerate completed steps, test counts, commit hashes, rollout inventories, or other specific details unless essential to understanding the result. Put unfinished scope and blockers in remaining. This is to provide the user a quick update/reminder of the current status, not a completion report.';
+test('report prompts separate contribution state from whole-effort purpose without hard text limits',async()=>{
  const state=Array(40).fill('context').join(' ');const prompts={};
  for(const type of ['session','stream','enroll','discussion']){
   const answer=type==='session'?{changes:{state,remaining:'Resolve the blocker'}}:type==='enroll'?{meaningful:false}:type==='discussion'?{reply:'Discuss only'}:{changes:{}};
   const ctx={model:{contextWindow:100000},modelRegistry:{complete:async(_model,payload)=>{prompts[type]=payload.systemPrompt;return {stopReason:'toolUse',content:[{type:'toolCall',name:'record_card',arguments:answer}]};}}};
   assert.deepEqual(await infer(ctx,{type,catalog:context(),messages:[]},new AbortController().signal),answer);
  }
- assert.equal(prompts.session,`${prompts.stream}\n\n${guidance}`);
- assert.equal(prompts.enroll,prompts.stream);assert.equal(prompts.discussion,prompts.stream);
- assert.ok(!prompts.stream.includes(guidance));
+ assert.match(prompts.session,/usually one short sentence/);assert.match(prompts.session,/empty string when none remains/);
+ assert.match(prompts.session,/work inherited from or performed by other sessions/);
+ assert.match(prompts.stream,/relatively stable purpose/);assert.match(prompts.stream,/using all catalog.sessions as contributions/);
+ assert.doesNotMatch(prompts.stream,/actor user|update session.status|10–18 words/);
+ assert.doesNotMatch(prompts.session,/actor user|In discussion answer/);
+ assert.equal(prompts.enroll,prompts.discussion);assert.notEqual(prompts.stream,prompts.enroll);
+ for(const type of ['session','stream'])assert.match(prompts[type],/allowed field names directly inside changes/);
 });
 test('inference prompt requires short handles rather than work descriptions',async()=>{
  let prompt;
  const ctx={model:{contextWindow:100000},modelRegistry:{complete:async(_model,payload)=>{prompt=payload.systemPrompt;return {stopReason:'toolUse',content:[{type:'toolCall',name:'record_card',arguments:{changes:{}}}]};}}};
  await infer(ctx,{type:'session',catalog:context(),messages:[]},new AbortController().signal);
- for(const rule of [/short, recognizable handles for the sidebar and tab bar/,/descriptions belong in goal and state/,/stream.title.*1–3 words \(target <= 20 chars\)/,/subject, project, or system/,/Never name the objective or use a sentence/,/session.title.*1–2 words, 3 max \(target <= 18 chars\)/,/specific lane, topic, or role/,/never repeat words from the effort title in the session title/,/Investigate, Implement, Explore, Disable, Fix, Organize/,/Integration, Implementation, Work, Task/,/X & Y compound lists/,/update session\.status \(active, waiting, blocked, parked, done\) from conversation evidence/,/I think we're done here/])assert.match(prompt,rule);
+ for(const rule of [/short, recognizable handles for the sidebar and tab bar/,/descriptions belong in goal and state/,/session.title.*1–2 words, 3 max/,/specific lane, topic, or role/,/not a task sentence or a repetition of the effort title/,/Infer session\.status \(active, waiting, blocked, parked, done\) from the evidence/])assert.match(prompt,rule);
 });
-test('reset inference scrubs only target automatic text without mutating captured catalog or field modes',async()=>{
+test('session reset omits existing descriptions; stream reset retains contribution evidence and protects manual fields',async()=>{
  for(const type of ['session','stream'])for(const sessionMode of ['automatic','manual'])for(const titleMode of ['automatic','manual'])for(const goalMode of ['automatic','manual']) {
   const catalog=context();Object.assign(catalog.session,{title_mode:sessionMode,state:'Prior state',state_short:'Prior short state',remaining:'Prior remaining'});
   Object.assign(catalog.stream,{title_mode:titleMode,goal_mode:goalMode,goal_short:'Prior short goal'});
@@ -445,13 +448,17 @@ test('reset inference scrubs only target automatic text without mutating capture
   const ctx={model:{contextWindow:100000},modelRegistry:{complete:async(_model,value)=>{payload=value;return {stopReason:'toolUse',content:[{type:'toolCall',name:'record_card',arguments:{changes:{}}}]};}}};
   await infer(ctx,{type,catalog,messages:[],reset:true},new AbortController().signal);
   const sent=JSON.parse(payload.messages.at(-1).content),visible=sent.catalog;
-  assert.match(sent.reset,/all allowed automatic fields fresh from conversation evidence/);assert.match(sent.reset,/fresh short-handle title/);assert.match(sent.reset,/empty no-change delta/);
-  for(const record of [visible.session,visible.sessions[0]]) {
-   assert.equal(record.title,sessionMode==='automatic'?'':before.session.title);assert.equal(record.title_mode,sessionMode);
-   assert.equal(record.state,'');assert.equal(record.state_short,null);assert.equal(record.remaining,'');
+  assert.match(sent.reset,/all allowed automatic fields fresh from provided evidence/);assert.match(sent.reset,/fresh short-handle title/);assert.match(sent.reset,/empty no-change delta/);
+  if(type==='session') {
+   assert.deepEqual(visible.sessions,[]);
+   for(const field of ['title','state','state_short','remaining','status'])assert.equal(Object.hasOwn(visible.session,field),false);
+   for(const field of ['title','goal','goal_short'])assert.equal(Object.hasOwn(visible.stream,field),false);
+   assert.equal(visible.session.id,before.session.id);assert.equal(visible.session.harness_session_id,before.session.harness_session_id);
+   assert.deepEqual(visible.stream.repositories,before.stream.repositories);
+  } else {
+   assert.equal(Object.hasOwn(visible,'session'),false);assert.deepEqual(visible.sessions,before.sessions);
+   assert.deepEqual(visible.stream,{...before.stream,...(titleMode==='automatic'?{title:''}:{}),...(goalMode==='automatic'?{goal:null,goal_short:null}:{})});
   }
-  assert.deepEqual(visible.sessions.slice(1),before.sessions.slice(1));
-  assert.deepEqual(visible.stream,{...before.stream,...(type==='stream'?{...(titleMode==='automatic'?{title:''}:{}),...(goalMode==='automatic'?{goal:null,goal_short:null}:{})}:{})});
   const properties=payload.tools[0].parameters.properties.changes.properties;
   assert.equal(Object.hasOwn(properties,'title'),(type==='session'?sessionMode:titleMode)==='automatic');
   if(type==='stream')assert.equal(Object.hasOwn(properties,'goal'),goalMode==='automatic');
