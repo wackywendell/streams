@@ -159,6 +159,8 @@ Enable “Debug commands” under `/streams settings` → Debug. This does not e
 
 Capture includes associated stream history and open Pi conversations in the selected workspace or the stream's bound workspaces, including conversations without cards. The snapshot always contains available cards, full conversation evidence and raw transcripts. Trimming happens during preparation, not capture. It records open state and observed locations separately from card status. Missing or foreign-host transcripts and unsupported harnesses remain listed. The current session uses its in-memory leaf; other sessions use their persisted leaf, which cannot reveal another process's unsaved branch selection.
 
+An unidentified Pi pane does not hide other verified conversations. Capture lists unresolved panes with their locations and errors, and leaves uncertain historical open states unknown. Incomplete topology or identity verification produces a `partial` capture summary, CLI exit status 2 and an agent-tool error result; the saved capture remains available for inspection and replay. Live attachment and restoration retain their strict identity checks.
+
 Replay uses current shared prompts and strict production validation with the chosen Pi-registry model. Incremental updates include captured cards by default. `--reset` regenerates the selected automatic text; `--auto` also restores its automatic naming modes in the working copy. Neither option changes the capture. Each conversation starts independently from its frozen cards, while later helpers for that conversation see its earlier simulated updates. Replay never saves real cards, attaches conversations, changes names or alters layout.
 
 #### Compare prompts without changing production

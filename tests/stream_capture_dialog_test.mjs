@@ -57,6 +57,20 @@ test('capture confirmation aborts and disposes its listener without accepting',a
  assert.equal(getEventListeners(controller.signal,'abort').length,0);
 });
 
+test('capture review explicitly lists unidentified Pi panes with their locations and reasons',async()=>{
+ const data=inventory(),controller=new AbortController();let menus=0,reviewed=false;
+ data.topology_error='Synthetic missing identity';
+ data.unresolved=[{workspace_id:'w1',tab_id:'t1',pane_id:'p2',terminal_id:'term2',harness:'pi',error:'Identity not available'}];
+ const accepted=await confirmCapture({...context({select:async(title,entries)=>{
+  if(title.startsWith('Capture inventory')){
+   assert.ok(entries.some(line=>line.includes('Unresolved Pi')&&line.includes('w1/p2')&&line.includes('Identity not available')));reviewed=true;return undefined;
+  }
+  assert.match(title,/1 unresolved/);assert.match(title,/incomplete visibility/);
+  return menus++===0?entries[1]:undefined;
+ }}),mode:'rpc'},data,'/private/captures',controller.signal);
+ assert.equal(reviewed,true);assert.equal(accepted,false);
+});
+
 test('RPC confirmation uses built-in dialogs and cancelling review never authorizes a capture',async()=>{
  const controller=new AbortController(),data=inventory();let menus=0;
  const accepted=await confirmCapture({...context({select:async(title,entries,{signal})=>{

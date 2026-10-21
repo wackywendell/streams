@@ -6,7 +6,7 @@ import { join } from 'node:path';
 import { createJiti } from 'jiti';
 import { SessionManager } from '@earendil-works/pi-coding-agent';
 const jiti=createJiti(import.meta.url),load=name=>jiti.import(new URL(`../extensions/stream-checkpoint/${name}.ts`,import.meta.url).pathname);
-const {captureSessions}=await load('capture'),{prepare,run}=await load('prompt-lab'),{executeLab}=await load('lab'),{loadPrepared,savePrepared}=await load('lab-artifacts');
+const {captureSessions,loadCapture}=await load('capture'),{prepare,run}=await load('prompt-lab'),{executeLab}=await load('lab'),{loadPrepared,savePrepared}=await load('lab-artifacts');
 const model={provider:'test',id:'model',contextWindow:100000},selection={provider:model.provider,id:model.id};
 const response=changes=>({role:'assistant',api:'openai-responses',provider:'test',model:'model',timestamp:1,stopReason:'toolUse',usage:{input:0,output:0,cacheRead:0,cacheWrite:0,totalTokens:0,cost:{input:0,output:0,cacheRead:0,cacheWrite:0,total:0}},content:[{type:'toolCall',id:'r',name:'record_card',arguments:{changes}}]});
 const runtime=complete=>({model,modelRegistry:{find:(p,id)=>p===model.provider&&id===model.id?model:undefined,complete}});
@@ -24,7 +24,7 @@ function fixture(){
  const inventory={version:1,host_id:'host',streams:[stream],workspaces:[],topology_error:null,target:{kind:'stream',id:'effort',title:'Work'},samples:[{host_id:'host',harness:'pi',native_session_id:'native',open:true,locations:[],catalog,transcript_file:null,unavailable:null}]};
  const {capture}=captureSessions(inventory,root,manager);
  const client={captureInputs:async()=>inventory,preview:()=>assert.fail('no live or simulated apply in single-task operations')};
- return {directory,root,manager,capture,client,dispose:()=>rmSync(directory,{recursive:true,force:true})};
+ return {directory,root,manager,capture,client,inventory,dispose:()=>rmSync(directory,{recursive:true,force:true})};
 }
 const signal=()=>new AbortController().signal;
 
@@ -70,6 +70,23 @@ test('capture/prepare/run/inspect adapters need no UI, preserve recordings, and 
   const entries=await executeLab({operation:'list',kind:'request'},environment,signal());assert.equal(entries.artifacts.length,2);
   assert.equal(readFileSync(join(f.root,'captures',f.capture.id,'capture.json'),'utf8'),before);
   assert.doesNotMatch(JSON.stringify(request),/Synthetic evidence|messages|Saved prompt/);
+ }finally{f.dispose();}
+});
+test('partial capture preserves verified evidence and unresolved locations without claiming complete coverage',async()=>{
+ const f=fixture();try{
+  const environment={root:f.root,client:f.client,current:f.manager};
+  const complete=await executeLab({operation:'capture',target:{kind:'stream',id:'effort'}},environment,signal());
+  assert.equal(complete.status,'completed');assert.deepEqual(complete.unresolved,[]);
+  const observation={workspace_id:'w1',tab_id:'t1',pane_id:'p2',terminal_id:'term2',harness:'pi',error:'Synthetic missing Pi identity'};
+  f.inventory.topology_error='Unidentified pane p2';f.inventory.unresolved=[observation];
+  const partial=await executeLab({operation:'capture',target:{kind:'stream',id:'effort'}},environment,signal());
+  assert.equal(partial.status,'partial');assert.equal(partial.samples.length,1);assert.equal(partial.samples[0].open,true);assert.equal(partial.samples[0].available,true);
+  assert.deepEqual(partial.unresolved,[observation]);assert.deepEqual(loadCapture(f.root,partial.id).unresolved,[observation]);
+  f.inventory.unresolved[0].error='Changed live diagnostic';
+  assert.equal(loadCapture(f.root,partial.id).unresolved[0].error,'Synthetic missing Pi identity');
+  assert.equal(partial.unresolved[0].error,'Synthetic missing Pi identity');
+  f.inventory.unresolved=[{...observation,terminal_id:undefined}];
+  await assert.rejects(executeLab({operation:'capture',target:{kind:'stream',id:'effort'}},environment,signal()),/Invalid unresolved capture observation/);
  }finally{f.dispose();}
 });
 test('tampered task/schema/input and symlinked manifests fail before inference',async()=>{

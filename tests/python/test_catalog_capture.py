@@ -176,7 +176,7 @@ class CaptureInputsTest(unittest.TestCase):
         self.live('native', 'unrelated')
         self.topology['agents'][0]['agent_session'] = {'agent': 'pi', 'kind': 'path',
                                                       'value': '/must-not-open.jsonl'}
-        with patch('_streams.catalog_arrangement.native_identity', side_effect=AssertionError('unrelated identity')):
+        with patch('_streams.catalog_capture.native_identity', side_effect=AssertionError('unrelated identity')):
             result = self.capture(stream_id='stream')
         local = next(s for s in result['samples'] if s['host_id'] == 'host')
         self.assertIsNone(local['open'])
@@ -209,7 +209,7 @@ class CaptureInputsTest(unittest.TestCase):
             agent = self.topology['agents'][-1]
             agent.update(agent=harness, agent_session={'agent': harness, 'kind': 'path',
                                                        'value': '/must-not-open.jsonl'})
-        with patch('_streams.catalog_arrangement.native_identity', wraps=native_identity) as verified:
+        with patch('_streams.catalog_capture.native_identity', wraps=native_identity) as verified:
             result = self.capture(workspace_id='w1')
         verified.assert_called_once_with(self.topology['agents'][0]['agent_session'], 'pi')
         self.assertIsNone(result['topology_error'])
@@ -218,6 +218,73 @@ class CaptureInputsTest(unittest.TestCase):
         sample = next(s for s in result['samples'] if s['native_session_id'] == 'uncarded')
         self.assertTrue(sample['open'])
         self.assertEqual(len(sample['locations']), 1)
+
+    def test_unidentified_pi_pane_cannot_hide_verified_carded_or_uncarded_conversations(self):
+        from _streams.catalog_arrangement import workspace_inventory
+        self.live('native')
+        self.live('uncarded')
+        self.live('unidentified')
+        self.saved('native')
+        self.saved('uncarded')
+        for metadata in (None, {'agent': 'other'}, {'agent': 'pi', 'kind': 'invalid', 'value': 'unknown'}):
+            with self.subTest(metadata=metadata):
+                self.topology['agents'][-1]['agent_session'] = metadata
+                with self.assertRaises(StreamError):
+                    workspace_inventory(self.topology, 'w1')
+                result = self.capture(workspace_id='w1')
+                local = {s['native_session_id']: s for s in result['samples'] if s['host_id'] == 'host'}
+                self.assertEqual(set(local), {'native', 'uncarded'})
+                for sample in local.values():
+                    self.assertTrue(sample['open'])
+                    self.assertEqual(len(sample['locations']), 1)
+                    self.assertIsNone(sample['unavailable'])
+                self.assertIsNone(local['uncarded']['catalog']['session'])
+                self.assertEqual(result['unsupported'], [])
+                self.assertEqual(len(result['unresolved']), 1)
+                observation = result['unresolved'][0]
+                self.assertEqual(observation['pane_id'], self.topology['agents'][-1]['pane_id'])
+                self.assertEqual(observation['workspace_id'], 'w1')
+                self.assertEqual(observation['harness'], 'pi')
+                self.assertIn('native agent_session', observation['error'])
+                self.assertNotIn('native_session_id', observation)
+                self.assertIn(observation['pane_id'], result['topology_error'])
+                self.assertIsNone(next(s for s in result['samples'] if s['host_id'] == 'remote')['open'])
+
+    def test_duplicate_pi_identity_only_blocks_the_conflicting_panes(self):
+        self.live('native')
+        self.live('native')
+        self.live('uncarded')
+        self.saved('uncarded')
+        result = self.capture(stream_id='stream')
+        self.assertEqual(len(result['unresolved']), 2)
+        self.assertTrue(all('ambiguous live' in a['error'] for a in result['unresolved']))
+        local = {s['native_session_id']: s for s in result['samples'] if s['host_id'] == 'host'}
+        self.assertIsNone(local['native']['open'])
+        self.assertEqual(local['native']['locations'], [])
+        self.assertTrue(local['uncarded']['open'])
+        self.assertEqual(len(local['uncarded']['locations']), 1)
+
+    def test_unidentified_pi_pane_keeps_unmatched_history_unknown_not_closed(self):
+        self.live('unknown')
+        self.topology['agents'][-1]['agent_session'] = None
+        result = self.capture(stream_id='stream')
+        self.assertTrue(all(s['open'] is None for s in result['samples']))
+        self.assertEqual(len(result['unresolved']), 1)
+
+    def test_one_unidentified_pane_preserves_verified_conversations_across_bound_workspaces(self):
+        self.catalog()
+        self.workspace('w2')
+        self.bindings.return_value.append({'ready': True, 'workspace_id': 'w2', 'stream_id': 'stream'})
+        self.live('first')
+        self.live('unknown', 'w2')
+        self.topology['agents'][-1]['agent_session'] = None
+        self.live('second', 'w2')
+        self.saved('first')
+        self.saved('second')
+        result = self.capture(stream_id='stream')
+        self.assertEqual({s['native_session_id'] for s in result['samples']}, {'first', 'second'})
+        self.assertTrue(all(s['open'] is True for s in result['samples']))
+        self.assertEqual(result['unresolved'][0]['workspace_id'], 'w2')
 
     def test_unbound_workspace_has_null_context(self):
         self.bindings.return_value = []

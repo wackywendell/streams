@@ -9,9 +9,9 @@ import type { LocalContext, StreamWire } from "./streams.ts";
 export type CaptureTarget = {kind: "stream" | "workspace"; id: string; title: string};
 export type Location = {workspace_id: string; tab_id: string; pane_id: string; terminal_id: string};
 export type InventorySample = {host_id: string; harness: "pi"; native_session_id: string; open: boolean | null; locations: Location[]; catalog: LocalContext; transcript_file: string | null; unavailable: string | null};
-export type CaptureInventory = {version: 1; host_id: string; streams: StreamWire[]; workspaces: {id: string; label: string; stream_id: string | null}[]; topology_error: string | null; target?: CaptureTarget; samples?: InventorySample[]; unsupported?: unknown[]};
+export type CaptureInventory = {version: 1; host_id: string; streams: StreamWire[]; workspaces: {id: string; label: string; stream_id: string | null}[]; topology_error: string | null; target?: CaptureTarget; samples?: InventorySample[]; unsupported?: unknown[]; unresolved?: (Location & {harness: "pi"; error: string})[]};
 export type FrozenSample = InventorySample & {captured_at: string; cwd?: string; snapshot_file?: string; projection_source?: "current-session" | "persisted-leaf"; evidence?: {messages: any[]; leafId: string | null}; warnings: string[]; helper_logs: {file?: string; session_id: string; error?: string}[]};
-export type Capture = {version: 1; id: string; captured_at: string; context_mode: "trimmed" | "full"; target: CaptureTarget; host_id: string; workspaces: CaptureInventory["workspaces"]; topology_error: string | null; unsupported: unknown[]; source_files: Record<string, string>; samples: FrozenSample[]};
+export type Capture = {version: 1; id: string; captured_at: string; context_mode: "trimmed" | "full"; target: CaptureTarget; host_id: string; workspaces: CaptureInventory["workspaces"]; topology_error: string | null; unsupported: unknown[]; unresolved?: CaptureInventory["unresolved"]; source_files: Record<string, string>; samples: FrozenSample[]};
 const object = (value: any): value is Record<string, any> => !!value && typeof value === "object" && !Array.isArray(value);
 const identity = (value: any): value is string => typeof value === "string" && !!value.trim() && !/[\x00-\x1f]/.test(value);
 export function parseCaptureInventory(value: any): CaptureInventory {
@@ -20,6 +20,10 @@ export function parseCaptureInventory(value: any): CaptureInventory {
  for (const stream of value.streams) parseLocalContext({catalog_source: "inventory", host_id: value.host_id, stream, session: null, sessions: [], authority: null});
  for (const workspace of value.workspaces) if (!object(workspace) || !identity(workspace.id) || typeof workspace.label !== "string" || !(workspace.stream_id === null || identity(workspace.stream_id))) throw Error("Invalid capture workspace");
  if (value.target !== undefined && (!object(value.target) || !["stream", "workspace"].includes(value.target.kind) || !identity(value.target.id) || typeof value.target.title !== "string")) throw Error("Invalid capture target");
+ if (value.unresolved !== undefined) {
+  if (!Array.isArray(value.unresolved)) throw Error("Invalid unresolved capture observations");
+  for (const observation of value.unresolved) if (!object(observation) || observation.harness !== "pi" || !["workspace_id", "tab_id", "pane_id", "terminal_id"].every(key => identity(observation[key])) || typeof observation.error !== "string" || !observation.error.trim()) throw Error("Invalid unresolved capture observation");
+ }
  if (value.samples !== undefined) {
   if (!value.target || !Array.isArray(value.samples)) throw Error("Invalid capture samples");
   const seen = new Set<string>();
@@ -80,7 +84,7 @@ export function captureSessions(inventory: CaptureInventory, root: string, curre
  signal?.throwIfAborted();
  const id = randomUUID(), directory = join(root, "captures", id);
  privateDirectory(root);privateDirectory(join(root, "captures"));privateDirectory(directory);
- const capture: Capture = {version: 1, id, captured_at: new Date().toISOString(), context_mode: "full", target: inventory.target, host_id: inventory.host_id, workspaces: structuredClone(inventory.workspaces), topology_error: inventory.topology_error, unsupported: inventory.unsupported ?? [], source_files: sourceFiles(), samples: []};
+ const capture: Capture = {version: 1, id, captured_at: new Date().toISOString(), context_mode: "full", target: inventory.target, host_id: inventory.host_id, workspaces: structuredClone(inventory.workspaces), topology_error: inventory.topology_error, unsupported: inventory.unsupported ?? [], unresolved: structuredClone(inventory.unresolved ?? []), source_files: sourceFiles(), samples: []};
  for (const [index, source] of inventory.samples.entries()) {
   signal?.throwIfAborted();
   const sample: FrozenSample = {...structuredClone(source), captured_at: new Date().toISOString(), warnings: [], helper_logs: []};

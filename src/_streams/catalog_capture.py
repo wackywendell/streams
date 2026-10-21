@@ -4,7 +4,7 @@ from __future__ import annotations
 from . import catalog_arrangement as arrangement
 from .catalog.codec import record_to_data
 from .catalog_agent import source_id
-from .catalog_conversations import conversation_file
+from .catalog_conversations import conversation_file, native_identity
 from .errors import StreamError
 from .frontend import Frontend
 
@@ -58,20 +58,36 @@ def capture_inputs(backend, runtime, *, stream_id=None, workspace_id=None):
         target = {'kind': 'stream', 'id': selected.id, 'title': selected.title}
         workspace_ids = [w['id'] for w in workspaces if w['stream_id'] == selected.id]
 
-    live, unsupported = {}, []
+    live, unsupported, unresolved = {}, [], []
+
+    def unresolved_agent(agent, error):
+        unresolved.append({key: agent[key] for key in ('workspace_id', 'tab_id', 'pane_id', 'terminal_id')}
+                          | {'harness': 'pi', 'error': str(error)})
+        errors.append(f"workspace {agent['workspace_id']!r}, pane {agent['pane_id']!r}: {error}")
+
     for identity in workspace_ids:
         agents = [a for a in topology['agents'] if a['workspace_id'] == identity]
         # Unsupported panes are observations, not identities to resolve from disk.
         unsupported.extend({'harness': a.get('agent'), 'agent_session': a.get('agent_session'),
                             'workspace_id': identity, 'pane_id': a['pane_id']}
                            for a in agents if a.get('agent') != 'pi')
-        pi_topology = {**topology, 'agents': [a for a in agents if a.get('agent') == 'pi']}
-        try:
-            inventory = arrangement.workspace_inventory(pi_topology, identity)
-            for agent in inventory['agents']:
-                live.setdefault(agent['native_id'], []).append(agent)
-        except (StreamError, OSError, ValueError) as exc:
-            errors.append(f'workspace {identity!r}: {exc}')
+        # Capture may retain partial observations; live attachment/restore keeps
+        # its strict all-or-nothing workspace inventory and duplicate guards.
+        candidates = {}
+        for agent in agents:
+            if agent.get('agent') != 'pi':
+                continue
+            try:
+                native_id, locator = native_identity(agent.get('agent_session'), 'pi')
+                candidates.setdefault(native_id, []).append({**agent, 'native_id': native_id, 'locator': locator})
+            except (StreamError, OSError, ValueError) as exc:
+                unresolved_agent(agent, exc)
+        for native_id, matches in candidates.items():
+            if len(matches) > 1:
+                for agent in matches:
+                    unresolved_agent(agent, 'ambiguous live native conversation identity')
+                continue
+            live.setdefault(native_id, []).extend(matches)
 
     known = {}
     for session in catalog.sessions:
@@ -135,6 +151,6 @@ def capture_inputs(backend, runtime, *, stream_id=None, workspace_id=None):
                          'open': True if agents else None if errors or not local else False,
                          'locations': locations, 'catalog': context(session, fallback),
                          'transcript_file': transcript, 'unavailable': unavailable})
-    result.update(target=target, samples=captured, unsupported=unsupported,
+    result.update(target=target, samples=captured, unsupported=unsupported, unresolved=unresolved,
                   topology_error='; '.join(errors) or None)
     return result

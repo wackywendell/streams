@@ -51,7 +51,8 @@ export async function debugCommand(input: string, ctx: ExtensionContext, client:
   if (!proceed) return;
   const {capture, directory} = captureSessions(inventory, root, ctx.sessionManager, signal);
   const captured = capture.samples.filter(sample => sample.evidence).length;
-  ctx.ui.notify(`Captured ${captured}/${capture.samples.length} conversations: ${directory}/capture.json`, captured === capture.samples.length ? "info" : "warning");
+  const partial = !!capture.topology_error || !!capture.unresolved?.length;
+  ctx.ui.notify(`${partial ? "Partial capture" : "Captured"}: ${captured}/${capture.samples.length} identified conversations; ${capture.unresolved?.length ?? 0} unresolved Pi panes: ${directory}/capture.json`, !partial && captured === capture.samples.length ? "info" : "warning");
   return;
  }
  let id = command.id;

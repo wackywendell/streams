@@ -195,7 +195,7 @@ export async function main(argv = process.argv.slice(2), dependencies = {}) {
    const inspection = parsed.operation.operation === "inspect" && parsed.operation.section && parsed.operation.section !== "summary" && typeof result?.text === "string";
    stdout((!parsed.json && inspection ? result.text : typeof result === "string" && !parsed.json ? result : JSON.stringify(result, null, 2)) + "\n");
    if (controller.signal.aborted || result?.status === "cancelled") return 130;
-   return result?.status === "failed" || typeof result?.failed === "number" && result.failed > 0 || typeof result?.unrun === "number" && result.unrun > 0 ? 2 : 0;
+   return result?.status === "partial" || result?.status === "failed" || typeof result?.failed === "number" && result.failed > 0 || typeof result?.unrun === "number" && result.unrun > 0 ? 2 : 0;
   } finally {
    process.removeListener("SIGINT", cancel); process.removeListener("SIGTERM", cancel);
   }

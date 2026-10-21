@@ -116,8 +116,10 @@ test('delegate errors propagate without fabricating a successful summary', async
  const {tools} = setup(async () => {throw failure;});
  await assert.rejects(call(tools, 'prepare'), error => error === failure);
 });
-test('single-run and partial-replay failures are error results with retained details', async () => {
+test('partial captures and failed runs are error results with retained details', async () => {
  for (const [verb, summary, error] of [
+  ['capture', {status: 'completed'}, false],
+  ['capture', {status: 'partial', unresolved: [{pane_id: 'synthetic-pane'}]}, true],
   ['run', {status: 'completed'}, false],
   ['run', {status: 'failed', error: 'synthetic failure'}, true],
   ['run', {status: 'cancelled'}, true],
@@ -126,6 +128,7 @@ test('single-run and partial-replay failures are error results with retained det
   ['replay', {completed: 1, failed: 0, unrun: 1}, true],
   ['replay', {completed: 0, failed: 0, unrun: 0, skipped: 1, unavailable: 1}, false],
   ['inspect', {status: 'failed', failed: 1, unrun: 1}, false],
+  ['inspect', {status: 'partial'}, false],
  ]) {
   const {tools} = setup(async () => summary);
   const result = await call(tools, verb);

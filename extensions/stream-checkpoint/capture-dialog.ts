@@ -14,9 +14,9 @@ export async function confirmCapture(ctx: ExtensionContext, inventory: CaptureIn
  const available = samples.filter(locallyAvailable).length;
  const summary = [
   `${samples.length} Pi conversations; ${available} available`,
-  `${samples.filter(sample => sample.open === true).length} observed open; ${inventory.unsupported?.length ?? 0} unsupported`,
+  `${samples.filter(sample => sample.open === true).length} observed open; ${inventory.unsupported?.length ?? 0} unsupported; ${inventory.unresolved?.length ?? 0} unresolved`,
   "Copies transcripts, cards and helper logs locally.",
-  ...(inventory.topology_error ? ["Open-state warning: review details before capturing."] : []),
+  ...(inventory.topology_error || inventory.unresolved?.length ? ["Capture warning: review incomplete visibility before capturing."] : []),
  ];
  async function choose(title: string, body: string[], items: SelectItem[]): Promise<string | undefined> {
   signal.throwIfAborted();
@@ -43,7 +43,7 @@ export async function confirmCapture(ctx: ExtensionContext, inventory: CaptureIn
      render(width: number) {
       rebuild();
       const lines = [new TruncatedText(theme.fg("accent", theme.bold(title)), 0, 0),
-       ...body.map(line => new TruncatedText(line.startsWith("Open-state warning:") ? theme.fg("warning", line) : line, 0, 0))];
+       ...body.map(line => new TruncatedText(line.startsWith("Capture warning:") ? theme.fg("warning", line) : line, 0, 0))];
       return [...lines.flatMap(line => line.render(width)), ...list.render(width),
        ...new TruncatedText(theme.fg("dim", "↑↓ choose · Enter select · Esc cancel"), 0, 0).render(width)];
      },
@@ -60,7 +60,8 @@ export async function confirmCapture(ctx: ExtensionContext, inventory: CaptureIn
   const rows = [
    `Storage: ${root}`,
    "Copies transcripts, cards and available helper logs; no model calls or live card changes.",
-   ...(inventory.topology_error ? [`Open-state warning: ${inventory.topology_error}`] : []),
+   ...(inventory.topology_error ? [`Capture warning: ${inventory.topology_error}`] : []),
+   ...(inventory.unresolved ?? []).map(observation => `Unresolved Pi · ${observation.workspace_id}/${observation.pane_id} · ${observation.error}`),
    ...samples.map(sample => `${sample.open === null ? "open unknown" : sample.open ? "open" : "closed"} · ${locallyAvailable(sample) ? "available" : "unavailable"} · ${sample.catalog.session?.title ?? "no card"} · ${sample.native_session_id}${sample.unavailable ? locallyAvailable(sample) ? " · using current Pi session" : ` · ${sample.unavailable}` : ""}`),
   ];
   await choose("Capture inventory — Enter/Esc returns", [], rows.map((label, index) => ({value: String(index), label})));

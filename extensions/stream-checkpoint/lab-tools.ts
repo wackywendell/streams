@@ -21,7 +21,8 @@ export function registerLabTools(pi: ExtensionAPI, options: {enabled: () => bool
     if (!signal) throw Error("Tool abort signal is unavailable");
     const details = await options.execute({...args, operation} as LabOperation, signal, ctx);
     const summary = details && typeof details === "object" ? details as {status?: unknown; failed?: unknown; unrun?: unknown; usage?: Usage} : undefined;
-    const isError = operation === "run" && (summary?.status === "failed" || summary?.status === "cancelled")
+    const isError = operation === "capture" && summary?.status === "partial"
+     || operation === "run" && (summary?.status === "failed" || summary?.status === "cancelled")
      || operation === "replay" && (typeof summary?.failed === "number" && summary.failed > 0 || typeof summary?.unrun === "number" && summary.unrun > 0);
     return {content: [{type: "text" as const, text: JSON.stringify(details)}], details, ...(summary?.usage ? {usage: summary.usage} : {}), ...(isError ? {isError: true} : {})};
    },

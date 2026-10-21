@@ -101,8 +101,8 @@ test("prompt files become literal operation text and output preserves inspection
  assert.equal(raw.output, "literal input\n");
 });
 
-test("new failed results and replay failure counts produce nonzero exits", async t => {
- for (const result of [{status: "failed", path: "/saved"}, {failed: 2}, {unrun: 1}]) {
+test("partial capture, failed results and replay failure counts produce nonzero exits", async t => {
+ for (const result of [{status: "partial", path: "/saved"}, {status: "failed", path: "/saved"}, {failed: 2}, {unrun: 1}]) {
   const value = await invoke(t, ["list", "run", "--json"], {result});
   assert.equal(value.code, 2); assert.deepEqual(JSON.parse(value.output), result);
  }
