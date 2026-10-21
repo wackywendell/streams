@@ -150,7 +150,7 @@ test('native capture abort settles only after CLI and descendants stop', {timeou
  const root=mkdtempSync(join(tmpdir(),'streams-capture-abort-'));t.after(()=>rmSync(root,{recursive:true,force:true}));
  const bin=join(root,'bin');mkdirSync(bin);const pidfile=join(root,'pids.json');
  const shim=join(bin,'streams');
- writeFileSync(shim,`#!${process.execPath}\nconst {spawn}=require('node:child_process');const fs=require('node:fs');process.on('SIGTERM',()=>{});const child=spawn(process.execPath,['-e','process.on("SIGTERM",()=>{});setInterval(()=>{},1000)'],{stdio:'inherit'});fs.writeFileSync(${JSON.stringify(pidfile)},JSON.stringify([process.pid,child.pid]));setInterval(()=>{},1000);\n`);chmodSync(shim,0o755);
+ writeFileSync(shim,`#!${process.execPath}\nconst {spawn}=require('node:child_process');const fs=require('node:fs');process.on('SIGTERM',()=>{});const child=spawn(process.execPath,['-e','process.on("SIGTERM",()=>{});setInterval(()=>{},1000)'],{stdio:'inherit'});fs.writeFileSync(${JSON.stringify(pidfile+'.tmp')},JSON.stringify([process.pid,child.pid]));fs.renameSync(${JSON.stringify(pidfile+'.tmp')},${JSON.stringify(pidfile)});setInterval(()=>{},1000);\n`);chmodSync(shim,0o755);
  const before=process.env.STREAMS_BIN_PATH;process.env.STREAMS_BIN_PATH=shim;t.after(()=>{if(before===undefined)delete process.env.STREAMS_BIN_PATH;else process.env.STREAMS_BIN_PATH=before;});
  const controller=new AbortController(), pending=new StreamCli(root).captureArrangement('effort',controller.signal);
  const rejected=assert.rejects(pending,/abort/i), deadline=performance.now()+5000;
