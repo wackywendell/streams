@@ -120,19 +120,19 @@ The checkout's Pi extension maintains catalog records instead of generating scra
 - Card discussion can answer without edits, refresh descriptions, or carry out an explicitly requested edit. User direction is approval; uncertain intent produces a question rather than a management action.
 - `/streams report` requests a report now, not a draft awaiting Apply. Use `/streams report [instructions]` to give reporting direction. Explicit reporting can enroll an unbound conversation. `/streams reset [--auto]` regenerates automatic fields (and with `--auto`, restores automatic title/goal modes and reclaims Pi/Herdr names). The model-callable `checkpoint` tool remains unchanged.
 - `/streams attach` offers initial selection or creation; attached conversations cannot switch efforts.
-- `/streams settings` controls automatic/manual reporting, initial enrollment, completed responses between reports, context, model, helper session logging and Herdr startup/naming. Manual reporting disables background requests, not explicit commands.
+- `/streams settings` controls automatic/manual reporting, initial enrollment, completed responses between reports, context, model and Herdr startup/naming. Its Debug section contains independent “Debug commands” and “Helper session logging” switches. Manual reporting disables background requests, not explicit commands.
 - `/streams pane` opens the native Herdr card; `/streams pane close` closes only its display. Neither requests a report or changes membership.
 - Tab completes `card`, `report`, `reset`, `settings`, `attach` and `pane`. Unknown subcommands or invalid management arguments show usage without reporting or saving. Free-text instructions must follow `report`.
 
 Settings live in `$PI_CODING_AGENT_DIR/stream-reporting.json`, defaulting to `~/.pi/agent/stream-reporting.json`. The defaults are:
 
 ```json
-{"reporting": "automatic", "enrollment": "automatic", "frequency": 1, "context": "trimmed", "session_logging": false}
+{"reporting": "automatic", "enrollment": "automatic", "frequency": 1, "context": "trimmed", "session_logging": false, "debug_commands": false}
 ```
 
 Add `"model": {"provider": "PROVIDER", "id": "MODEL_ID"}` to select a helper model; omit it to use the current Pi model. Unavailable models fail visibly without fallback. Trimmed context excludes tool calls/results and thinking; full context preserves the active projected conversation, excluding incomplete tool batches. Oversized input fails rather than silently dropping history.
 
-Enable “Helper session logging” in `/streams settings`, or set `"session_logging": true`, to record each helper inference as a Pi JSONL session. Logs live in `$PI_CODING_AGENT_DIR/stream-reporting-sessions/`, defaulting to `~/.pi/agent/stream-reporting-sessions/`. Each log captures the exact prompt, tool schema and supplied context before inference, raw model responses before normalization, retries, errors and the parsed result. Reports, resets, enrollment and card discussion all use this setting. The originating Pi session records a `stream-helper-session` entry linking to the log; catalog-save receipts remain in that originating session.
+Enable “Helper session logging” in `/streams settings` → Debug, or set `"session_logging": true`, to record each helper inference as a Pi JSONL session. Logs live in `$PI_CODING_AGENT_DIR/stream-reporting-sessions/`, defaulting to `~/.pi/agent/stream-reporting-sessions/`. Each log captures the exact prompt, tool schema and supplied context before inference, raw model responses before normalization, retries, errors and the parsed result. Reports, resets, enrollment and card discussion all use this setting. The originating Pi session records a `stream-helper-session` entry linking to the log; catalog-save receipts remain in that originating session.
 
 Logging is disabled by default. Logs copy potentially sensitive conversation content and can be large; they have private file permissions and no automatic pruning. Disabling logging stops new captures without deleting existing logs. A logging failure stops that helper update and appears as a work-card error. Logging uses Pi's session storage only: it does not launch another agent or run capture extensions such as Trajectory.
 
@@ -141,6 +141,29 @@ Session progress and effort metadata use separate inferences, so updating both t
 The menu refreshes on action or reopen, not while waiting for a selection. Discussion and unsent inputs survive closing and reopening the card in the same Pi process, not extension reload. The native Herdr card reads the same saved records; it does not run another summarizer.
 
 When testing, keep the CLI and extension from the same checkout, use isolated XDG/agent directories and do not also load the published scratch-based extension. Restart running Pi sessions after updating the extension; existing processes retain their previously loaded code. The [bundled skill](skills/streams/SKILL.md) covers record semantics and guarded reporting from other harnesses.
+
+### Debug prompt capture and replay
+
+Enable “Debug commands” under `/streams settings` → Debug to expose these commands. This does not enable live helper logging or begin recording.
+
+```text
+/streams debug capture
+/streams debug capture stream STREAM_ID
+/streams debug capture workspace HERDR_WORKSPACE_ID
+/streams debug replay
+/streams debug replay CAPTURE_ID --model PROVIDER/MODEL_ID
+/streams debug replay CAPTURE_ID --reset session
+/streams debug replay CAPTURE_ID --reset stream --auto
+/streams debug replay CAPTURE_ID --reset --auto
+```
+
+Capture includes associated stream history and open Pi conversations in the selected workspace or the stream's bound workspaces, including conversations without cards. The snapshot always contains available cards and conversation evidence. It records open state and observed locations separately from card status. Missing or foreign-host transcripts and unsupported harnesses remain listed. The current session uses its in-memory leaf; other sessions use their persisted leaf, which cannot reveal another process's unsaved branch selection.
+
+Replay uses current shared prompts and strict production validation with the chosen Pi-registry model. Incremental updates include captured cards by default. `--reset` regenerates the selected automatic text; `--auto` also restores its automatic naming modes in the working copy. Neither option changes the capture. Each conversation starts independently from its frozen cards, while later helpers for that conversation see its earlier simulated updates. Replay never saves real cards, attaches conversations, changes names or alters layout.
+
+Edit the actual shared prompts and reload the extension before replaying to compare prompt revisions. This reconstructs requests from frozen evidence; it does not resend historical helper calls unchanged. Replay confirms provider use and normal inference costs before running.
+
+Captures live under `$PI_CODING_AGENT_DIR/stream-debug/captures/`; runs live under `stream-debug/runs/`. Storage has private permissions and is rejected inside version control, even in ignored directories. Each run writes `comparison.md`, `run.json`, reconstructed inputs and private helper JSONL containing rendered prompts, schemas, raw responses and per-task failures. A successful session task does not hide a failed effort task. Skipped actions and refused simulated saves are distinct from successful empty model deltas. Saved files have no automatic pruning; disabling debug retains them. See the [capture and replay ADR](docs/pi-prompt-replay.md) for boundaries and rationale.
 
 ## Native Herdr work cards
 
