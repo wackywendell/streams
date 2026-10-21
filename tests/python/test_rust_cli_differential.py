@@ -203,6 +203,28 @@ class RustCliDifferentialTests(unittest.TestCase):
             self.assertTrue(attached["runtime"]["error"])
             self.assertEqual(self.call(other, "session", "show", attached["session"]["id"])["session"], attached["session"])
 
+    def test_unregistered_checkout_markers_are_detected_without_vcs(self):
+        stream = self.call("rust", "create", "Documents", "--add-repository", "repo", "https://example.test/repo",
+                           "--add-document", "repo", "main", "docs/design.md", "Design")["stream"]
+        self.call("rust", "session", "attach", stream["id"], "--harness", "pi",
+                  "--session-id", "unregistered-native", "--title", "Writing")
+        tools = self.base / "tools"
+        tools.mkdir()
+        invoked = self.base / "vcs-invoked"
+        for program in ("git", "jj"):
+            script = tools / program
+            script.write_text(f"#!/bin/sh\necho invoked >> '{invoked}'\nexit 99\n", encoding="utf-8")
+            script.chmod(0o700)
+        self.env["PATH"] = str(tools)
+        for marker in (".git", ".jj"):
+            path = self.cwd / marker
+            path.symlink_to(self.base / "missing-checkout")
+            rust = self.context("rust", "unregistered-native")
+            self.assertEqual(rust, self.context("python", "unregistered-native"))
+            self.assertIn("checkout is not registered", rust["document_locations"][0]["error"])
+            self.assertFalse(invoked.exists())
+            path.unlink()
+
     def test_current_document_locations_share_checkout_and_directory_identity(self):
         checkout = self.base / "checkout"
         checkout.mkdir()
@@ -224,7 +246,7 @@ class RustCliDifferentialTests(unittest.TestCase):
         self.assertEqual(rust["document_locations"][0]["file"], str(document))
         self.assertEqual(rust["document_locations"][0]["checkout_id"], registered["id"])
         self.assertEqual(rust["document_locations"][0]["kind"], "local")
-        self.assertEqual(rust["document_locations"][0]["label"], f"local ({checkout.name})")
+        self.assertNotIn("label", rust["document_locations"][0])
         self.assertEqual(self.call("rust", "session", "directory", session["id"]),
                          self.call("python", "session", "directory", session["id"]))
         document.unlink()

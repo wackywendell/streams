@@ -4,7 +4,7 @@ use serde_json::{Value, json};
 use std::collections::BTreeMap;
 use streams_temper::{
     model::{Session, Stream},
-    runtime::{CheckoutRegistry, DirectoryBindings, checkouts::inspect_directory},
+    runtime::{CheckoutRegistry, DirectoryBindings},
 };
 
 pub(super) fn context(
@@ -25,10 +25,12 @@ pub(super) fn context(
             if primary.repository_urls.is_empty() {
                 return Err("the Session checkout has no repository binding; register its repository URL explicitly".into());
             }
-        } else if inspect_directory(&selected.cwd)
-            .map_err(|error| error.to_string())?
-            .is_some()
-        {
+        } else if selected.cwd.ancestors().any(|directory| {
+            [".git", ".jj"].iter().any(|name| {
+                let marker = directory.join(name);
+                marker.exists() || marker.is_symlink()
+            })
+        }) {
             return Err(
                 "the Session checkout is not registered; use streams checkout register".into(),
             );
@@ -81,7 +83,6 @@ pub(super) fn context(
                 Ok(file)=>{
                     location["file"]=json!(file);
                     location["kind"]=json!("local");
-                    location["label"]=json!(format!("local ({})",checkout.directory.file_name().unwrap_or_default().to_string_lossy()));
                 },
                 Err(error)=>location["error"]=json!(format!("Document not present in this checkout: {}. {error}",document.path)),
             }

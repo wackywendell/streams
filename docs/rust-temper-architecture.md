@@ -96,7 +96,7 @@ The Rust `streams` binary supports catalog setup, configuration, discovery, edit
 
 An accepted save remains usable when ordinary publication fails. The receipt retains that warning; explicit `sync` returns exit 2 for sharing failures. Repair conditions and incomplete command effects also return exit 2 without discarding earlier save receipts.
 
-The Rust stack is rebased onto Python `main` at `36068142`. Documents retain commit and source-session provenance, session files use stream/host partitions without changing logical identity, and attached sessions use the same host/harness/native UUIDv5 identity as Python. Generated Stream text can merge unrelated concurrent changes; Session inference still guards the whole captured target and explicit supporting inputs.
+The Rust stack is rebased onto Python `main` at `a6f11e5c`. Documents retain commit and source-session provenance, session files use stream/host partitions without changing logical identity, and attached sessions use the same host/harness/native UUIDv5 identity as Python. Generated Stream text can merge unrelated concurrent changes; Session inference still guards the whole captured target and explicit supporting inputs.
 
 Only the current partitioned session layout is accepted. All 48 session files on this machine already use it, and the live catalog is local-only, so Rust does not carry the obsolete two-level reader or Git-history migration paths. Agent context retains a full local snapshot behind `CatalogBackend`, rather than copying Python's storage-specific lookup and cache fallbacks.
 
