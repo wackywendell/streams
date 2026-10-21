@@ -28,6 +28,7 @@ mod local_faults;
 mod local_git_adoption;
 mod main_alignment;
 mod native_open;
+mod native_reconciliation;
 mod process;
 mod reconciliation;
 mod runtime_arrangements;
