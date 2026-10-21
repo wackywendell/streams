@@ -1,7 +1,4 @@
-mod support {
-    pub mod git;
-    pub mod memory;
-}
+use crate::support;
 
 use serde_json::json;
 use std::path::Path;

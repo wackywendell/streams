@@ -39,7 +39,9 @@ from _streams.catalog.yaml_store import YamlStore
 
 DRIVER = ROOT / "target/debug/examples/git_catalog_trace"
 CONFIG = ("-c", "user.name=Streams differential", "-c",
-          "user.email=streams@example.invalid", "-c", "commit.gpgsign=false")
+          "user.email=streams@example.invalid", "-c", "commit.gpgsign=false",
+          "-c", "core.hooksPath=/dev/null", "-c", "core.fsmonitor=false",
+          "-c", "core.untrackedCache=false")
 ORIGIN = {"host": "a", "session": "original/会話\nsource"}
 
 
@@ -132,12 +134,16 @@ def python_request(root, host, request):
             return {"error": "storage"}
 
 
-def git(root, *args, allowed=(0,)):
+def git_bytes(root, *args, allowed=(0,), input=None):
     result = subprocess.run(["git", "-C", str(root), *CONFIG, *args],
-                            capture_output=True, timeout=30)
+                            capture_output=True, input=input, timeout=30)
     if result.returncode not in allowed:
         raise AssertionError(result.stderr.decode())
-    return result.stdout.decode().strip()
+    return result.stdout
+
+
+def git(root, *args, allowed=(0,)):
+    return git_bytes(root, *args, allowed=allowed).decode().strip()
 
 
 def state_file(root, name, default):
@@ -152,6 +158,35 @@ class Observations:
         self.identities = {}
         self.histories = {}
         self.parents = {}
+        self.blobs = {}
+
+    def files(self, root, revision):
+        # Git object IDs are immutable; do not re-read unchanged blobs per commit.
+        entries = {}
+        for row in git_bytes(root, "ls-tree", "-r", "-z", revision).split(b"\0"):
+            if not row:
+                continue
+            header, name = row.split(b"\t", 1)
+            _, kind, oid = header.split()
+            if kind != b"blob":
+                raise AssertionError("fixture catalog unexpectedly contains a non-blob entry")
+            entries[name.decode()] = oid
+        missing = sorted(set(entries.values()) - self.blobs.keys())
+        if missing:
+            output = git_bytes(root, "cat-file", "--batch", input=b"".join(oid + b"\n" for oid in missing))
+            cursor = 0
+            for expected in missing:
+                end = output.index(b"\n", cursor)
+                oid, kind, size = output[cursor:end].split()
+                size = int(size)
+                cursor = end + 1
+                if oid != expected or kind != b"blob" or size < 0 or output[cursor + size:cursor + size + 1] != b"\n":
+                    raise AssertionError("invalid Git batch response")
+                self.blobs[oid] = output[cursor:cursor + size]
+                cursor += size + 1
+            if cursor != len(output):
+                raise AssertionError("unexpected trailing Git batch output")
+        return {name: self.blobs[oid] for name, oid in entries.items()}
 
     def history(self, root, oid):
         if oid not in self.histories:
@@ -165,8 +200,7 @@ class Observations:
                 if len(parents) > 1:
                     raise AssertionError("fixture catalog unexpectedly contains a merge commit")
                 self.parents[commit] = parents[0] if parents else None
-                files = {name: git(root, "show", f"{commit}:{name}").encode()
-                         for name in git(root, "ls-tree", "-r", "--name-only", commit).splitlines()}
+                files = self.files(root, commit)
                 records = wire_records(YamlStore.decode_snapshot(files).catalog)
                 history.append({"message": message, "records": records})
                 self.histories[commit] = list(history)

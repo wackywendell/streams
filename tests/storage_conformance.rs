@@ -1,5 +1,4 @@
-#[path = "support/memory.rs"]
-mod memory;
+use crate::support::memory;
 
 use serde_json::json;
 use streams_temper::{

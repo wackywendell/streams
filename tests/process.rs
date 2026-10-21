@@ -62,8 +62,8 @@ fn runner_drains_both_pipes_while_feeding_stdin() {
 fn timeout_preserves_partial_output_and_kills_descendants() {
     let root = tempfile::tempdir().unwrap();
     let mut request = fixture(
-        "printf created-workspace; printf native-diagnostic >&2; trap '' TERM; (sleep 0.5; printf survived > survivor) & wait",
-        0.15,
+        "printf created-workspace; printf native-diagnostic >&2; trap '' TERM; (sleep 2; printf survived > survivor) & wait",
+        1.0,
     );
     request.cwd = Some(root.path().to_path_buf());
     let start = Instant::now();
@@ -73,7 +73,7 @@ fn timeout_preserves_partial_output_and_kills_descendants() {
     assert_eq!(error.code, None);
     assert_eq!(error.stdout, b"created-workspace");
     assert_eq!(error.stderr, b"native-diagnostic");
-    std::thread::sleep(Duration::from_millis(650));
+    std::thread::sleep(Duration::from_millis(2100));
     assert!(!root.path().join("survivor").exists());
 }
 

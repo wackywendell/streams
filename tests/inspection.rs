@@ -17,9 +17,7 @@ use streams_temper::{
     yaml_store::{YamlStore, relative_record_path},
 };
 
-mod support {
-    pub mod git;
-}
+use crate::support;
 
 type Files = BTreeMap<PathBuf, (Option<Vec<u8>>, SystemTime, u32)>;
 fn files(root: &Path) -> Files {

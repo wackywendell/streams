@@ -42,6 +42,8 @@ pub fn test_command(
         "-c",
         "core.fsmonitor=false",
         "-c",
+        "core.hooksPath=/dev/null",
+        "-c",
         "core.untrackedCache=false",
     ];
     configured.extend_from_slice(args);

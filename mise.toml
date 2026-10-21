@@ -7,23 +7,38 @@ rust = "1.95.0"
 # Temper has its own toolchain file; use one compiler for the entire Cargo graph.
 RUSTUP_TOOLCHAIN = "1.95.0"
 
+[tasks."test:fast"]
+description = "Development gate: Rust contracts and Pi tests, no Git publication/parity runs"
+depends = ["test:rust:fast", "test:pi"]
+
+[tasks."test:rust:fast"]
+# Fixture repositories must not inherit personal hooks, fsmonitor or signing policy.
+env = { GIT_CONFIG_GLOBAL = "/dev/null", GIT_CONFIG_SYSTEM = "/dev/null", GIT_CONFIG_NOSYSTEM = "1" }
+description = "Run Rust contracts in one harness; filter with cargo test --test contracts <module>"
+run = 'RUSTC=$(rustup which rustc) RUSTDOC=$(rustup which rustdoc) cargo test --locked --lib --bins --test contracts -- --test-threads=4'
+
+[tasks."test:build"]
+description = "Build production Rust CLI and differential probes once per task graph"
+run = 'RUSTC=$(rustup which rustc) RUSTDOC=$(rustup which rustdoc) cargo build --locked --examples --bin streams'
+
 [tasks."test:rust"]
+env = { GIT_CONFIG_GLOBAL = "/dev/null", GIT_CONFIG_SYSTEM = "/dev/null", GIT_CONFIG_NOSYSTEM = "1" }
 description = "Run Rust catalog, documentation and Temper verification tests (requires Z3 and libclang)"
 run = [
-  'RUSTC=$(rustup which rustc) RUSTDOC=$(rustup which rustdoc) cargo test --locked --all-targets',
+  'RUSTC=$(rustup which rustc) RUSTDOC=$(rustup which rustdoc) cargo test --locked --all-targets -- --test-threads=4',
   'RUSTC=$(rustup which rustc) RUSTDOC=$(rustup which rustdoc) cargo test --locked --doc',
 ]
 
 [tasks."test:differential"]
-description = "Compare Python and Rust catalog traces and CLI contracts"
-run = [
-  'RUSTC=$(rustup which rustc) RUSTDOC=$(rustup which rustdoc) cargo build --locked --examples --bin streams',
-  "uv run python -m unittest discover -s tests/python -p 'test_rust*differential.py'",
-]
+env = { GIT_CONFIG_GLOBAL = "/dev/null", GIT_CONFIG_SYSTEM = "/dev/null", GIT_CONFIG_NOSYSTEM = "1" }
+description = "Compare Python and Rust catalog traces and CLI contracts (including Git)"
+depends = ["test:build"]
+run = "uv run python tests/python/suites.py differential"
 
 [tasks."test:python"]
-description = "Run streams CLI unit tests"
-run = "uv run python -m unittest discover tests/python"
+env = { GIT_CONFIG_GLOBAL = "/dev/null", GIT_CONFIG_SYSTEM = "/dev/null", GIT_CONFIG_NOSYSTEM = "1" }
+description = "Run Python reference tests only; differential tests have their own gate"
+run = "uv run python tests/python/suites.py reference"
 
 [tasks."test:pi"]
 description = "Run Pi checkpoint extension tests"
@@ -31,15 +46,13 @@ run = "node --test tests/stream_checkpoint_test.mjs tests/stream_sync_test.mjs t
 
 [tasks."test:replay"]
 description = "Replay production Pi helpers through the Rust CLI in isolated homes"
-run = [
-  'RUSTC=$(rustup which rustc) RUSTDOC=$(rustup which rustdoc) cargo build --locked --bin streams',
-  "node --test tests/stream_rust_replay_test.mjs",
-]
+depends = ["test:build"]
+run = "node --test tests/stream_rust_replay_test.mjs"
 
 [tasks."test:herdr"]
 description = "Run native Herdr work-card regression tests"
 run = "npm --prefix integrations/herdr-work-cards test"
 
 [tasks.test]
-description = "Run all tests"
+description = "Full acceptance: every Rust/reference/parity/Pi/Herdr/replay test, without duplicate parity runs"
 depends = ["test:rust", "test:differential", "test:python", "test:pi", "test:herdr", "test:replay"]

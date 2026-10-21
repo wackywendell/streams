@@ -70,6 +70,12 @@ fn command(
         "user.email=streams@example.invalid",
         "-c",
         "commit.gpgsign=false",
+        "-c",
+        "core.hooksPath=/dev/null",
+        "-c",
+        "core.fsmonitor=false",
+        "-c",
+        "core.untrackedCache=false",
     ];
     configured.extend_from_slice(args);
     let allowed: &[i32] = if matches!(args.first(), Some(&"config" | &"merge-base")) {

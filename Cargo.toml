@@ -4,10 +4,23 @@ version = "0.1.0"
 edition = "2024"
 license = "MIT"
 description = "Streams durable catalog and synchronization protocol backed by Temper IOA verification"
+autotests = false
 
 [[bin]]
 name = "streams"
 path = "src/main.rs"
+
+[[test]]
+name = "contracts"
+path = "tests/contracts.rs"
+
+[[test]]
+name = "git_catalog"
+path = "tests/git_catalog.rs"
+
+[[test]]
+name = "verification"
+path = "tests/verification.rs"
 
 [dependencies]
 chrono = { version = "0.4", features = ["serde"] }

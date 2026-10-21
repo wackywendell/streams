@@ -1,6 +1,4 @@
-mod support {
-    pub mod git;
-}
+use crate::support;
 
 use std::collections::BTreeMap;
 use std::fs;
