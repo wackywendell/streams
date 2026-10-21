@@ -276,14 +276,14 @@ test('debug argument grammar keeps incremental default and scoped reset/--auto s
 });
 test('enabled Pi commands capture both cards and evidence, then replay reset through the real preview adapter',async()=>{
  const f=fixture();try {
-  let command,calls=0;const notices=[],statuses=[],dialogs=[],before=f.manager.getEntries();
+  let command,calls=0;const notices=[],statuses=[],dialogs=[],menus=[],before=f.manager.getEntries();
   f.inventory.samples[0].catalog.session.title_mode='manual';
   const rt=runtime(async()=>{calls++;return response({changes:{title:'Regenerated',state:'Verified synthetic result'}});});
   rt.modelRegistry.getAvailable=()=>[model];
   const ctx={cwd:f.dir,hasUI:true,sessionManager:f.manager,...rt,ui:{
    notify:text=>notices.push(text),setStatus:(...args)=>statuses.push(args),
    confirm:async(title,message,options)=>{assert.ok(options.signal);dialogs.push([title,message]);return true;},
-   select:async(_title,labels,options)=>{assert.ok(options.signal);return labels[0];},
+   select:async(title,labels,options)=>{assert.ok(options.signal);menus.push([title,labels]);return labels[0];},
   }};
   const real=new StreamCli(f.dir),client={captureInputs:async target=>{assert.deepEqual(target,{kind:'stream',id:'effort'});return f.inventory;},preview:(input,signal)=>real.preview(input,signal)};
   extension({registerCommand:(_name,value)=>{command=value;},registerTool(){},on(){},appendEntry:()=>assert.fail('debug must not append to real history')},{agentDir:f.dir,cli:client,settings:{...defaults,debug_commands:true}});
@@ -296,7 +296,8 @@ test('enabled Pi commands capture both cards and evidence, then replay reset thr
   const comparison=notices.at(-1).split('Comparison: ')[1],run=JSON.parse(readFileSync(comparison.replace(/comparison\.md$/,'run.json'),'utf8'));
   assert.equal(run.samples[0].status,'completed',run.samples[0].error);assert.equal(run.samples[0].after.session.title,'Regenerated');
   assert.equal(loadCapture(root,id).samples[0].catalog.session.title_mode,'manual');assert.deepEqual(f.manager.getEntries(),before);
-  assert.equal(readFileSync(f.source,'utf8'),f.raw);assert.ok(dialogs[0][1].includes('Lane · native · open'));
+  assert.equal(readFileSync(f.source,'utf8'),f.raw);assert.match(menus[0][0],/1 Pi conversations; 1 available/);assert.equal(menus[0][1][0],'Capture private samples');
+  assert.match(dialogs[0][0],/Run model inference/);
   assert.deepEqual(statuses.at(-1),['stream-debug',undefined]);
  }finally{f.dispose();}
 });

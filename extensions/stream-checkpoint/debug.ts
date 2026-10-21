@@ -2,6 +2,7 @@ import { join } from "node:path";
 import type { ExtensionContext } from "@earendil-works/pi-coding-agent";
 import { captureIds, captureSessions, loadCapture, parseCaptureInventory } from "./capture.ts";
 import { replayCapture } from "./replay.ts";
+import { confirmCapture } from "./capture-dialog.ts";
 import type { ModelSelection } from "./agent.ts";
 import type { ReportAction, ResetTarget } from "./report-workflow.ts";
 import type { StreamCli } from "./streams.ts";
@@ -46,9 +47,7 @@ export async function debugCommand(input: string, ctx: ExtensionContext, client:
    target = targets[labels.indexOf(chosen)];if (!target) return;
   }
   const inventory = parseCaptureInventory(await client.captureInputs(target, signal));current();
-  const samples = inventory.samples ?? [], available = samples.filter(sample => !sample.unavailable || sample.host_id === inventory.host_id && sample.native_session_id === ctx.sessionManager.getSessionId()).length;
-  const selection = samples.map(sample => `${sample.catalog.session?.title ?? "no card"} · ${sample.native_session_id} · ${sample.open === null ? "open unknown" : sample.open ? "open" : "closed"}${sample.unavailable ? ` · ${sample.unavailable}` : ""}`).join("\n");
-  const proceed = await ctx.ui.confirm("Capture private session samples?", `${samples.length} Pi conversations; ${available} locally available; ${samples.filter(sample => sample.open === true).length} observed open; ${inventory.unsupported?.length ?? 0} unsupported non-Pi entries. Copies transcripts, cards and available helper logs into ${root}. Other-host/missing transcripts remain listed.${inventory.topology_error ? `\nOpen-state warning: ${inventory.topology_error}` : ""}\n\n${selection}`, {signal});current();
+  const proceed = await confirmCapture(ctx, inventory, root, signal);current();
   if (!proceed) return;
   const {capture, directory} = captureSessions(inventory, root, settings.context, ctx.sessionManager, signal);
   const captured = capture.samples.filter(sample => sample.evidence).length;
