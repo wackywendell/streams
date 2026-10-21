@@ -144,7 +144,7 @@ When testing, keep the CLI and extension from the same checkout, use isolated XD
 
 ### Debug prompt capture and replay
 
-Enable “Debug commands” under `/streams settings` → Debug to expose these commands. This does not enable live helper logging or begin recording.
+Enable “Debug commands” under `/streams settings` → Debug. This does not enable live helper logging or begin recording. Run `/reload` after enabling it to expose the agent tools.
 
 ```text
 /streams debug capture
@@ -157,13 +157,44 @@ Enable “Debug commands” under `/streams settings` → Debug to expose these 
 /streams debug replay CAPTURE_ID --reset --auto
 ```
 
-Capture includes associated stream history and open Pi conversations in the selected workspace or the stream's bound workspaces, including conversations without cards. The snapshot always contains available cards and conversation evidence. It records open state and observed locations separately from card status. Missing or foreign-host transcripts and unsupported harnesses remain listed. The current session uses its in-memory leaf; other sessions use their persisted leaf, which cannot reveal another process's unsaved branch selection.
+Capture includes associated stream history and open Pi conversations in the selected workspace or the stream's bound workspaces, including conversations without cards. The snapshot always contains available cards, full conversation evidence and raw transcripts. Trimming happens during preparation, not capture. It records open state and observed locations separately from card status. Missing or foreign-host transcripts and unsupported harnesses remain listed. The current session uses its in-memory leaf; other sessions use their persisted leaf, which cannot reveal another process's unsaved branch selection.
 
 Replay uses current shared prompts and strict production validation with the chosen Pi-registry model. Incremental updates include captured cards by default. `--reset` regenerates the selected automatic text; `--auto` also restores its automatic naming modes in the working copy. Neither option changes the capture. Each conversation starts independently from its frozen cards, while later helpers for that conversation see its earlier simulated updates. Replay never saves real cards, attaches conversations, changes names or alters layout.
 
-Edit the actual shared prompts and reload the extension before replaying to compare prompt revisions. This reconstructs requests from frozen evidence; it does not resend historical helper calls unchanged. Replay confirms provider use and normal inference costs before running.
+#### Compare prompts without changing production
 
-Captures live under `$PI_CODING_AGENT_DIR/stream-debug/captures/`; runs live under `stream-debug/runs/`. Storage has private permissions and is rejected inside version control, even in ignored directories. Each run writes `comparison.md`, `run.json`, reconstructed inputs and private helper JSONL containing rendered prompts, schemas, raw responses and per-task failures. A successful session task does not hide a failed effort task. Skipped actions and refused simulated saves are distinct from successful empty model deltas. Saved files have no automatic pruning; disabling debug retains them. See the [capture and replay ADR](docs/pi-prompt-replay.md) for boundaries and rationale.
+The non-interactive CLI separates capture, preparation and inference. Capture once, prepare different prompts, then run the saved requests:
+
+```sh
+streams debug capture stream STREAM_ID --json
+streams debug prepare CAPTURE_ID --sample 0 --task session --json
+streams debug prepare --request REQUEST_ID --prompt ./candidate.txt --json
+streams debug inspect request CANDIDATE_REQUEST_ID --section input --json
+streams debug run CANDIDATE_REQUEST_ID --model PROVIDER/MODEL_ID --json
+streams debug inspect run RUN_ID --section output --json
+```
+
+Each command returns artifact IDs and paths. `list capture`, `list request` and `list run` discover saved artifacts. Sample indexes start at 0; capture summaries list them. `--task` selects `enroll`, `session` or `stream`. Enrollment requires an unbound conversation. A prompt file contains plain text that replaces the whole system prompt for that request. The production tool schema and strict response validation remain unchanged.
+
+Preparation defaults to `trim=true`, using production trimming. Add `--full` to prepare full context from the same capture. Both modes remove incomplete tool-call batches and perform normal model-input cleanup. Preparation reads only frozen evidence, never the original transcript. Older trimmed captures need recapturing before full-context preparation. To change trimming on a saved request, prepare from its capture again.
+
+`prepare` saves the actual model messages, prompt and schema without calling a model. `run` submits that saved input without rerendering it and records the raw response plus the validated value or error. It does not apply the value to cards. A rerun creates another result; changing a prompt creates another request. Inspection defaults to summaries; explicit input, output and error views support `--offset` and `--limit` character paging.
+
+Full-workflow replay uses the same preparation and inference:
+
+```sh
+streams debug replay CAPTURE_ID --model PROVIDER/MODEL_ID --json
+streams debug replay CAPTURE_ID --model PROVIDER/MODEL_ID --prompt ./candidate.txt --full --json
+streams debug replay CAPTURE_ID --model PROVIDER/MODEL_ID --reset stream --auto --json
+```
+
+Replay's `--prompt` replaces the system prompt for every helper in that workflow. Use a single prepared task when testing a task-specific prompt. Omitting an override uses the shared production prompts. Interactive replay asks for confirmation; explicit CLI and tool calls authorise provider use and normal inference costs. Failed or cancelled runs and partial replay failures return a nonzero CLI status while retaining their artifacts.
+
+The agent tools are `stream_debug_capture`, `stream_debug_prepare`, `stream_debug_run`, `stream_debug_replay`, `stream_debug_inspect` and `stream_debug_list`. They use the same operations and require Debug commands to remain enabled. Tools take prompt text directly; CLI `--prompt` reads a file. Disabling the setting blocks registered tools immediately; enabling it requires `/reload` to discover them.
+
+The CLI requires Node and an installed Pi SDK with `createAgentSessionServices` (Pi 1.3 or later). It uses that installation's providers and authentication, not the repository's test SDK. It loads configured extension factories to register providers, but creates no Pi session and dispatches no session-start events. Source checkouts find the paired runner automatically. For a Python wheel install, set `STREAMS_PROMPT_LAB_RUNNER` to `extensions/stream-checkpoint/lab-cli.mjs` in the matching installed Pi Streams package.
+
+Captures live under `$PI_CODING_AGENT_DIR/stream-debug/captures/`; requests under `stream-debug/requests/`; runs under `stream-debug/runs/`. Storage has private permissions and is rejected inside version control, even in ignored directories. Each replay writes `comparison.md`, `run.json`, prepared-request IDs, reconstructed inputs and private helper JSONL containing rendered prompts, schemas, raw responses and per-task failures. A successful session task does not hide a failed effort task. Skipped actions and refused simulated saves are distinct from successful empty model deltas. Saved files have no automatic pruning; disabling debug retains them. See the [capture and replay ADR](docs/pi-prompt-replay.md) for boundaries and rationale.
 
 ## Native Herdr work cards
 
