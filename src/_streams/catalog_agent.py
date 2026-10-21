@@ -128,16 +128,11 @@ def _conversation_lock(runtime, harness, native_id):
         os.close(descriptor)
 
 
-def enroll(backend, runtime, source: str):
-    """Enroll the caller without launching native resources or rebinding a conversation.
-
-    Related saves have distinct stable receipts and are not a cross-record
-    transaction. A partial save retains its receipt; the caller must inspect
-    context rather than reinterpret a failed request as fresh intent.
-    """
+def parse_enrollment(source: str, *, catalog_source: str):
+    """Construct validated enrollment card inputs without consulting runtime state."""
     data = _fields(load_json(source), {"operation_id", "catalog_source", "harness", "harness_session_id", "stream_id", "stream", "session", "actor", "cwd"},
                    {"operation_id", "catalog_source", "harness", "harness_session_id", "session", "actor", "cwd"})
-    _check_source(data, source_id(backend))
+    _check_source(data, catalog_source)
     _identity(data["harness"], data["harness_session_id"])
     text(data["operation_id"], "operation_id")
     choice(data["actor"], "actor", ("automatic", "user"))
@@ -149,6 +144,29 @@ def enroll(backend, runtime, source: str):
     if stream_data is not None:
         stream_data = {"goal": None, **stream_data}
     text(data["cwd"], "cwd")
+    return data, session_data, stream_data
+
+
+def enrollment_stream(data, stream_data, *, host_id, stream_id):
+    return Stream(id=stream_id, owner_host_id=host_id,
+                  title_mode="manual" if data["actor"] == "user" else "automatic",
+                  goal_mode="manual" if data["actor"] == "user" and stream_data.get("goal") is not None else "automatic", **stream_data)
+
+
+def enrollment_session(data, session_data, *, host_id, stream_id):
+    return Session(id=session_id_for(host_id, data["harness"], data["harness_session_id"]), host_id=host_id,
+                   stream_id=stream_id, harness=data["harness"], harness_session_id=data["harness_session_id"],
+                   title=session_data["title"], title_mode="manual" if data["actor"] == "user" else "automatic")
+
+
+def enroll(backend, runtime, source: str):
+    """Enroll the caller without launching native resources or rebinding a conversation.
+
+    Related saves have distinct stable receipts and are not a cross-record
+    transaction. A partial save retains its receipt; the caller must inspect
+    context rather than reinterpret a failed request as fresh intent.
+    """
+    data, session_data, stream_data = parse_enrollment(source, catalog_source=source_id(backend))
     directory = Path(data["cwd"]).expanduser().resolve(strict=True)
     if not directory.is_dir():
         raise StreamError("enrollment cwd must be an existing directory")
@@ -157,9 +175,7 @@ def enroll(backend, runtime, source: str):
     payload = {"catalog_source": source_id(backend), "saves": []}
 
     def new_stream(stream_id):
-        return Stream(id=stream_id, owner_host_id=backend.host_id,
-                      title_mode="manual" if data["actor"] == "user" else "automatic",
-                      goal_mode="manual" if data["actor"] == "user" and stream_data.get("goal") is not None else "automatic", **stream_data)
+        return enrollment_stream(data, stream_data, host_id=backend.host_id, stream_id=stream_id)
 
     def persist(operation):
         saved = backend.save(operation, origin={"command": "streams-agent"})
@@ -199,9 +215,7 @@ def enroll(backend, runtime, source: str):
                 raise StreamError("effective ownership on this host is required to attach a conversation")
             scope.claim(stream.id)
             if session is None:
-                session = Session(id=str(uuid5(NAMESPACE_URL, "streams:session:" + identity)), host_id=backend.host_id,
-                                  stream_id=stream.id, harness=data["harness"], harness_session_id=data["harness_session_id"],
-                                  title=session_data["title"], title_mode="manual" if data["actor"] == "user" else "automatic")
+                session = enrollment_session(data, session_data, host_id=backend.host_id, stream_id=stream.id)
                 persist(Operation(data["operation_id"] + ":session", None, session, data["actor"], ownership_token=authority.token))
             payload.update(stream=stream, session=session, authority=authority)
             runtime.remember_directory(stream.id, directory, if_missing=True)

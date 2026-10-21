@@ -484,6 +484,12 @@ def command_capture_inputs(args):
     return 0
 
 
+def command_preview(args):
+    from .catalog_preview import preview
+    emit(preview(sys.stdin.read()), args)
+    return 0
+
+
 def command_agent(args):
     from . import catalog_agent
     backend = config.open_catalog(validate_records=args.agent_command != "context")
@@ -691,6 +697,9 @@ def build_parser():
     selector.add_argument("--workspace-id", help="exact observed Herdr workspace ID")
     capture_inputs.set_defaults(func=command_capture_inputs)
     add_output(capture_inputs)
+    preview = agent_sub.add_parser("preview", allow_abbrev=False, help="simulate a card proposal over a supplied snapshot without local state access")
+    preview.set_defaults(func=command_preview)
+    add_output(preview)
     enroll = agent_sub.add_parser("enroll", allow_abbrev=False, help="enroll the caller from a structured stdin request")
     apply = agent_sub.add_parser("apply", allow_abbrev=False, help="apply a captured-record update from stdin")
     for child in (context, enroll, apply):
