@@ -51,6 +51,8 @@ pub(super) enum CliError {
     #[error("{0}")]
     InvalidRef(String),
     #[error("{0}")]
+    NativeContextChanged(String),
+    #[error("{0}")]
     NotFound(String),
     #[error("{message}")]
     Ambiguous {
@@ -67,6 +69,7 @@ impl CliError {
         let kind = match self {
             Self::Message(_) => "error",
             Self::InvalidRef(_) => "invalid-ref",
+            Self::NativeContextChanged(_) => "native-context-changed",
             Self::NotFound(_) => "not-found",
             Self::Ambiguous { .. } => "ambiguous",
         };
@@ -108,6 +111,9 @@ impl From<frontend::FrontendSelectionError> for CliError {
 impl From<runtime::RuntimeError> for CliError {
     fn from(error: runtime::RuntimeError) -> Self {
         match error {
+            runtime::RuntimeError::NativeContextChanged(message) => {
+                Self::NativeContextChanged(message)
+            }
             runtime::RuntimeError::NotFound(message) => Self::NotFound(message),
             runtime::RuntimeError::Ambiguous {
                 message,
@@ -429,12 +435,14 @@ impl App {
                 session_id,
                 plugin_root,
                 state_dir,
+                expect,
                 command,
             } => self.native_cards(
                 cards::Options {
                     session_id,
                     plugin_root,
                     state_dir,
+                    expect,
                 },
                 command,
             ),

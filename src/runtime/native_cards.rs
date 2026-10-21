@@ -14,7 +14,7 @@ mod projection;
 mod tests;
 
 pub use config::NativeCardsConfig;
-pub use inspection::{DisplayCondition, NativeCardStatus};
+pub use inspection::{DisplayCondition, NativeCardStatus, NativeOwnerContext, NativeOwnerView};
 pub use launch_context::LaunchedCardContext;
 pub use projection::{NameOutcome, NameProjectionIntent, NameReport};
 
@@ -366,7 +366,9 @@ impl NativeCardEngine {
                     .as_ref()
                     .is_some_and(|binding| tokens.get("strm_binding") != Some(binding))
         }) {
-            return Err(self.refuse("attested owner scope, tuple or binding lifetime changed"));
+            return Err(super::RuntimeError::NativeContextChanged(
+                "attested owner scope, tuple or binding lifetime changed".into(),
+            ));
         }
         if tokens.keys().any(|key| key.starts_with("strm_"))
             && (tokens.get("strm_binding").is_none_or(String::is_empty)

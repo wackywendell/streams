@@ -49,10 +49,15 @@ description = "Replay production Pi helpers through the Rust CLI in isolated hom
 depends = ["test:build"]
 run = "node --test tests/stream_rust_replay_test.mjs"
 
+[tasks."test:native:rust"]
+description = "Exercise Pi native routing and launch assets through an isolated Rust CLI"
+depends = ["test:build"]
+run = "node --test tests/stream_rust_native_test.mjs"
+
 [tasks."test:herdr"]
 description = "Run native Herdr work-card regression tests"
 run = "npm --prefix integrations/herdr-work-cards test"
 
 [tasks.test]
 description = "Full acceptance: every Rust/reference/parity/Pi/Herdr/replay test, without duplicate parity runs"
-depends = ["test:rust", "test:differential", "test:python", "test:pi", "test:herdr", "test:replay"]
+depends = ["test:rust", "test:differential", "test:python", "test:pi", "test:herdr", "test:replay", "test:native:rust"]

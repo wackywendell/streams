@@ -18,6 +18,10 @@ pub(super) struct Cli {
 
 #[derive(Debug, Subcommand)]
 pub(super) enum NativeCommand {
+    /// Read the attested owner and lifecycle configuration without native effects.
+    Observe,
+    /// Capture the current attested owner's arrangement through the Rust runtime.
+    Capture,
     /// Open an explicitly requested display, or a single automatic display.
     Open {
         #[arg(long)]
@@ -70,6 +74,9 @@ pub(super) enum Command {
         plugin_root: Option<PathBuf>,
         #[arg(long, global = true)]
         state_dir: Option<PathBuf>,
+        /// Captured version-1 owner envelope; re-attested before effects.
+        #[arg(long, global = true)]
+        expect: Option<String>,
         #[command(subcommand)]
         command: NativeCommand,
     },

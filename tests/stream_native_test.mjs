@@ -29,7 +29,7 @@ function fixture(t, options = {}) {
   read:async signal => {if (options.readSignal) await options.readSignal(signal);return source.read();}, bootstrap:async signal => {events.push('bootstrap');if (options.bootstrap) await options.bootstrap(signal);return {socket:'/socket', paneId:'pane', terminalId:'terminal', tabId:'tab', workspaceId:'workspace'};},
   open:async (_context, signal, mode) => {events.push(`open:${mode}`);if (options.open) await options.open(signal);if (mode === 'explicit') closed = false;return {kind:closed ? 'suppressed' : 'paired'};},
   close:async () => {events.push('close');closed = true;},
-  summaries:async () => {events.push('summaries');}, names:async (_context, _signal, intent) => {events.push('names');options.names?.(intent);},
+  project:async (_context, _signal, intent) => {events.push('summaries', 'names');options.names?.(intent);},
   sessionName:(snapshot, check, intent) => {events.push('sessionName');naming.projectSessionName(pi, ctx.sessionManager, id, snapshot.session.title, check, intent);},
  };
  let loads = 0, captured;
@@ -40,6 +40,16 @@ function fixture(t, options = {}) {
  return {id, ctx, pi, saved, entries, adapter, controller, events, notices, factory, capture, loads:() => loads, captured:() => captured, name:() => name};
 }
 
+test('the legacy projection boundary refuses names after the Pi lifetime changes', async t => {
+ environment(t);const f=fixture(t);
+ f.adapter.project=async (_context,_signal,_intent,check)=>{
+  f.events.push('summaries');f.ctx.cwd='/different';check();f.events.push('names');
+ };
+ f.controller.start();await f.controller.idle();
+ assert.ok(f.events.includes('summaries'));assert.equal(f.events.includes('names'),false);
+ assert.equal(f.events.some(event=>event.startsWith('capture:')),false);
+ assert.match(f.notices[0],/session or environment changed/);
+});
 test('explicit naming reclaim shares the effect lane without reopening the display', async t => {
  environment(t);const intents=[],f=fixture(t,{sessionNaming:false,names:intent=>intents.push(intent)});
  f.controller.start();await f.controller.idle();f.pi.setSessionName('Manual name');

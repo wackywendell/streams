@@ -616,6 +616,75 @@ impl Fixture {
 }
 
 #[test]
+fn owner_observation_is_readonly_and_lifetime_expectations_fail_closed() {
+    let f = Fixture::new();
+    let mut engine = f.engine();
+    let observed = engine.observe_owner().unwrap();
+    assert_eq!(observed.context.pane_id, "owner");
+    assert!(!f.runner.state.directory().exists());
+    assert!(f.effects().is_empty());
+    engine
+        .pin_owner(observed.card.scope(), &observed.context)
+        .unwrap();
+    for field in 0..6 {
+        let mut changed = observed.context.clone();
+        match field {
+            0 => changed.socket = PathBuf::from("/different/socket"),
+            1 => changed.pane_id = "different".into(),
+            2 => changed.terminal_id = "different".into(),
+            3 => changed.workspace_id = "different".into(),
+            4 => changed.tab_id = "different".into(),
+            _ => changed.binding = Some("different".into()),
+        }
+        assert!(
+            f.engine()
+                .pin_owner(observed.card.scope(), &changed)
+                .is_err()
+        );
+    }
+    for field in 0..6 {
+        let mut changed = observed.card.scope().clone();
+        match field {
+            0 => changed.catalog_source = "different".into(),
+            1 => changed.host_id = "different".into(),
+            2 => changed.stream_id = "different".into(),
+            3 => changed.session_id = "different".into(),
+            4 => changed.native_session_id = "different".into(),
+            _ => changed.harness = "different".into(),
+        }
+        assert!(f.engine().pin_owner(&changed, &observed.context).is_err());
+    }
+    assert!(f.effects().is_empty());
+    assert!(!f.runner.state.directory().exists());
+    engine.open_display(OpenMode::Explicit).unwrap();
+    let current = f.engine().observe_owner().unwrap();
+    assert!(current.context.binding.is_some());
+    f.engine()
+        .pin_owner(observed.card.scope(), &observed.context)
+        .unwrap();
+    f.engine()
+        .pin_owner(current.card.scope(), &current.context)
+        .unwrap();
+    f.runner.world.lock().unwrap().snapshot["workspaces"][0]["tokens"]["strm_binding"] =
+        json!("replacement");
+    let before = f.effects().len();
+    assert!(
+        f.engine()
+            .pin_owner(current.card.scope(), &current.context)
+            .is_err()
+    );
+    assert_eq!(before, f.effects().len());
+}
+#[test]
+fn card_pane_cannot_use_the_owner_bridge() {
+    let f = Fixture::new();
+    f.engine().open_display(OpenMode::Explicit).unwrap();
+    let mut engine = f.engine_with(f.launched_environment());
+    let before = f.effects().len();
+    assert!(engine.observe_owner().is_err());
+    assert_eq!(before, f.effects().len());
+}
+#[test]
 fn bootstrap_and_verify_are_read_only_and_require_pair_and_durable_evidence() {
     let f = Fixture::new();
     let mut engine = f.engine();
@@ -866,6 +935,17 @@ fn forged_card_nonce_or_owner_terminal_cannot_focus() {
     }
 }
 
+#[test]
+fn manual_startup_projects_without_requiring_or_creating_a_display() {
+    let f = Fixture::new();
+    let mut engine = f.engine();
+    engine.project_summaries().unwrap();
+    let before = f.effects().len();
+    engine.project_caption().unwrap();
+    assert_eq!(before, f.effects().len());
+    assert_eq!(f.launches(), 0);
+    assert!(engine.observe_owner().unwrap().context.binding.is_some());
+}
 #[test]
 fn summary_projection_only_publishes_bounded_hints_and_is_idempotent() {
     for hint in [

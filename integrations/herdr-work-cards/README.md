@@ -57,6 +57,18 @@ Timer settings must be integers from 1 to 2,147,483,647. Pane height must be str
 
 Inference settings belong to the root extension's `stream-reporting.json`. Removed fields such as `model`, `thinking_level`, `show_refresh_spinner`, `check_every_n_responses`, `max_output_tokens` and `request_timeout_ms` are rejected in `work-cards.json`.
 
+## Rust lifecycle routing
+
+Rust routing is opt-in and has not been activated. Set `STREAMS_RUST_BIN` to an absolute path to the matching Rust executable for one Pi invocation. An invalid path fails; it never falls back to Python or the TypeScript coordinator. Without this variable, the existing coordinator remains selected.
+
+The Pi extension keeps commands, tools, event serialization and Pi session-name provenance. Rust handles native card open/close, metadata, Herdr names and arrangement capture. Every effect re-attests the captured catalog, host, conversation, endpoint, terminal and workspace binding. A changed scope permanently suspends the old adapter until reload. Cancellation drains the child process group; it does not clear uncertain launch evidence or close displays.
+
+`STREAMS_BIN_PATH` independently selects the reporting/catalog CLI. Selecting Rust for both requires both variables to reference the same build. Load only one checkout's Streams extension.
+
+The Rust card uses `streams-rust-herdr-plugin.toml` and `bin/open-rust-streams-pane.sh`. The launcher requires the protected launch envelope and executes that explicit Rust binary, not a CLI found on `PATH`.
+
+Run `mise run test:native:rust` for isolated Pi/Rust CLI acceptance with fake Herdr endpoints. PTY and live-platform acceptance remain required before a trial.
+
 ## Development
 
 Use Node.js 22 or later. From the repository root:

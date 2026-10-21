@@ -148,7 +148,7 @@ impl NativeCardEngine {
             self.config.timeout_seconds,
             &self.cancelled,
         )?;
-        let before = self.marked()?;
+        let before = self.projection_observation()?;
         let PairState::Paired { card, .. } = before.pair()? else {
             return Ok(());
         };

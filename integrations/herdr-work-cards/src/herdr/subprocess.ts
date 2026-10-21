@@ -1,5 +1,11 @@
 import { spawn } from 'node:child_process';
 
+export class ProcessExitError extends Error {
+  constructor(command: string, status: number | NodeJS.Signals | null, readonly stdout: string, readonly stderr: string) {
+    super(`${command} failed (${status}): ${stderr}`);
+  }
+}
+
 /** Cancellation settles only after the command's process group and stdio have closed. */
 export function runProcess(command: string, args: string[], options: {
   env: NodeJS.ProcessEnv; cwd?: string; timeoutMs: number; maxBuffer?: number; signal?: AbortSignal;
@@ -38,7 +44,7 @@ export function runProcess(command: string, args: string[], options: {
       if (failure && terminationFailure) reject(new AggregateError([failure, terminationFailure],
         `${failure.message}; process group termination failed: ${terminationFailure.message}; effects may be partial`, { cause: failure }));
       else if (failure) reject(failure);
-      else if (code !== 0) reject(new Error(`${command} failed (${code ?? exitSignal}): ${stderr}`));
+      else if (code !== 0) reject(new ProcessExitError(command, code ?? exitSignal, stdout, stderr));
       else resolve(stdout);
     });
     if (signal?.aborted) abort();

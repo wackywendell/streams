@@ -155,6 +155,15 @@ impl<'a> WorkspaceRuntime<'a> {
         })
     }
     pub fn capture(&self, stream: &Stream, sessions: &[Session]) -> Result<Arrangement> {
+        self.capture_guarded(stream, sessions, |_| Ok(()))
+    }
+    /// Recheck caller-specific restrictions under the Stream lock and before persistence.
+    pub fn capture_guarded(
+        &self,
+        stream: &Stream,
+        sessions: &[Session],
+        mut verify: impl FnMut(&Association) -> Result<()>,
+    ) -> Result<Arrangement> {
         let client = self
             .frontend()?
             .herdr()
@@ -163,6 +172,7 @@ impl<'a> WorkspaceRuntime<'a> {
         let binding = guard
             .check_open()?
             .ok_or_else(|| invalid("capture requires one ready bound workspace"))?;
+        verify(&binding)?;
         let plan = arrangements::capture(
             &client.topology()?,
             binding.workspace_id(),
@@ -171,6 +181,7 @@ impl<'a> WorkspaceRuntime<'a> {
             self.state.host_id(),
         )?;
         self.recheck(stream, &authority)?;
+        verify(&binding)?;
         if !plan.tabs().is_empty() {
             guard.write_arrangement(&plan)?;
         }

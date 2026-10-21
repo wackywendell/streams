@@ -20,8 +20,66 @@ pub struct NativeCardStatus {
     pub native_session_id: String,
     pub key: String,
     pub evidence: Option<NativeAttempt>,
+    pub binding: Option<String>,
+}
+/// A captured owner lifetime is a restriction on later effects, never authority.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, serde::Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct NativeOwnerContext {
+    pub socket: PathBuf,
+    pub pane_id: String,
+    pub terminal_id: String,
+    pub workspace_id: String,
+    pub tab_id: String,
+    #[serde(deserialize_with = "deserialize_binding")]
+    pub binding: Option<String>,
+}
+fn deserialize_binding<'de, D: serde::Deserializer<'de>>(
+    value: D,
+) -> std::result::Result<Option<String>, D::Error> {
+    serde::Deserialize::deserialize(value)
+}
+pub struct NativeOwnerView {
+    pub card: CardSnapshot,
+    pub context: NativeOwnerContext,
 }
 impl NativeCardEngine {
+    /// Observe the attested Pi owner without retiring markers or preparing state.
+    pub fn observe_owner(&mut self) -> Result<NativeOwnerView> {
+        let v = self.inspect(false)?;
+        if v.caller != v.owner || self.launched.is_some() {
+            return Err(self.refuse("only the attested Pi owner may drive lifecycle effects"));
+        }
+        Ok(NativeOwnerView {
+            context: NativeOwnerContext {
+                socket: self.client.endpoint().socket.clone(),
+                pane_id: v.owner.pane_id,
+                terminal_id: v.owner.terminal_id,
+                workspace_id: v.owner.workspace_id,
+                tab_id: v.owner.tab_id,
+                binding: v
+                    .snapshot
+                    .workspace_tokens(&v.caller.workspace_id)
+                    .and_then(|tokens| tokens.get("strm_binding"))
+                    .cloned(),
+            },
+            card: v.saved.card,
+        })
+    }
+    /// Re-attest the caller and pin the CLI process before any lifecycle mutation.
+    pub fn pin_owner(&mut self, scope: &Scope, expected: &NativeOwnerContext) -> Result<()> {
+        let observed = self.observe_owner()?;
+        let mut context = observed.context;
+        if expected.binding.is_none() {
+            context.binding = None;
+        }
+        if observed.card.scope() != scope || context != *expected {
+            return Err(super::super::RuntimeError::NativeContextChanged(
+                "captured native owner scope, endpoint, tuple or binding changed".into(),
+            ));
+        }
+        Ok(())
+    }
     /// Read-only: does not acquire/create the workspace lock, repair evidence,
     /// retire predecessors, register plugins or initialize a native binding.
     pub fn status(&mut self) -> Result<NativeCardStatus> {
@@ -57,8 +115,10 @@ impl NativeCardEngine {
                 _ => DisplayCondition::Unbound,
             }
         };
+        let binding = v.workspace_tokens().get("strm_binding").cloned();
         Ok(NativeCardStatus {
             condition,
+            binding,
             workspace_id: v.owner.workspace_id,
             owner_pane_id: v.owner.pane_id,
             owner_terminal_id: v.owner.terminal_id,

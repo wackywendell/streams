@@ -12,7 +12,8 @@
     "dist",
     "bin",
     "docs",
-    "streams-herdr-plugin.toml"
+    "streams-herdr-plugin.toml",
+    "streams-rust-herdr-plugin.toml"
   ],
   "exports": {
     "./config": "./dist/config.js"
