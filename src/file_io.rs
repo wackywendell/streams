@@ -78,12 +78,20 @@ pub(crate) fn ensure_directory(path: &Path, create: bool) -> Result<(), StorageE
 
 /// Open without following symlinks or waiting on special files, then serialize writers.
 pub(crate) fn lock(path: &Path) -> Result<File, StorageError> {
-    ensure_directory(path.parent().expect("lock parent"), true)?;
+    open_lock(path, false)
+}
+
+pub(crate) fn inspection_lock(path: &Path) -> Result<File, StorageError> {
+    open_lock(path, true)
+}
+
+fn open_lock(path: &Path, read_only: bool) -> Result<File, StorageError> {
+    ensure_directory(path.parent().expect("lock parent"), !read_only)?;
     let file = OpenOptions::new()
-        .create(true)
+        .create(!read_only)
         .truncate(false)
         .read(true)
-        .write(true)
+        .write(!read_only)
         .mode(0o600)
         .custom_flags(libc::O_NOFOLLOW | libc::O_NONBLOCK)
         .open(path)
@@ -99,7 +107,12 @@ pub(crate) fn lock(path: &Path) -> Result<File, StorageError> {
         )));
     }
     // Never unlink the lock: other writers must keep locking this same inode.
-    if unsafe { libc::flock(file.as_raw_fd(), libc::LOCK_EX) } != 0 {
+    let operation = if read_only {
+        libc::LOCK_SH
+    } else {
+        libc::LOCK_EX
+    };
+    if unsafe { libc::flock(file.as_raw_fd(), operation) } != 0 {
         return Err(StorageError::new(format!(
             "cannot lock {}: {}",
             path.display(),

@@ -74,8 +74,35 @@ fn opened(
     })
 }
 
+/// Frozen inspection data has no backend write or native effect capability.
+pub struct InspectedCatalog {
+    pub root: PathBuf,
+    pub host: HostIdentity,
+    pub source: String,
+    pub inspection: crate::sync::Inspection,
+}
+
+pub fn inspect(config: &Config) -> Result<InspectedCatalog> {
+    let (root, host, backend) = open_backend(config, true)?;
+    let inspection = backend.inspect()?;
+    Ok(InspectedCatalog {
+        source: source_id(&root, &host)?,
+        root,
+        host,
+        inspection,
+    })
+}
+
 /// Open existing state only; missing producer identity is never repaired by generation.
 pub fn open(config: &Config) -> Result<OpenedCatalog> {
+    let (root, host, backend) = open_backend(config, false)?;
+    opened(root, host, backend)
+}
+
+fn open_backend(
+    config: &Config,
+    read_only: bool,
+) -> Result<(PathBuf, HostIdentity, Box<dyn CatalogBackend>)> {
     let settings = config.load()?;
     let root = settings.catalog_root;
     check_catalog_root(&root)?;
@@ -83,16 +110,22 @@ pub fn open(config: &Config) -> Result<OpenedCatalog> {
         return Err(invalid("catalog is not initialized; run streams init"));
     }
     let store = YamlStore::new(&root);
-    let marker = store
-        .with_transaction(|tx| -> Result<_> { Ok(Marker::read(tx.journal())?) })?
-        .ok_or_else(|| invalid("catalog is not initialized; run streams init"))?;
+    let read_marker = |tx: &mut crate::yaml_store::YamlTransaction| -> Result<_> {
+        Ok(Marker::read(tx.journal())?)
+    };
+    let marker = if read_only {
+        store.with_inspection(read_marker)?
+    } else {
+        store.with_transaction(read_marker)?
+    }
+    .ok_or_else(|| invalid("catalog is not initialized; run streams init"))?;
     let host = config.host_identity()?;
     marker.check_host(&host)?;
     let backend: Box<dyn CatalogBackend> = match marker.strategy {
         Strategy::None => Box::new(LocalCatalog::new(store, host.as_str())?),
         Strategy::Git => Box::new(GitCatalog::new(&root, host.as_str(), settings.sync)?),
     };
-    opened(root, host, backend)
+    Ok((root, host, backend))
 }
 
 /// Initialize under the config lock; only explicit adoption may change an existing strategy.

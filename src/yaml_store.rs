@@ -243,12 +243,34 @@ impl YamlStore {
         &self,
         f: impl FnOnce(&mut YamlTransaction) -> Result<T, E>,
     ) -> Result<T, E> {
-        ensure_directory(&self.root, true)?;
-        let file = lock(&self.root.join(".catalog.lock"))?;
+        self.with_access(false, f)
+    }
+
+    /// Shares the existing catalog lock and forbids every persistence entry point.
+    pub fn with_inspection<T, E: From<StorageError>>(
+        &self,
+        f: impl FnOnce(&mut YamlTransaction) -> Result<T, E>,
+    ) -> Result<T, E> {
+        self.with_access(true, f)
+    }
+
+    fn with_access<T, E: From<StorageError>>(
+        &self,
+        read_only: bool,
+        f: impl FnOnce(&mut YamlTransaction) -> Result<T, E>,
+    ) -> Result<T, E> {
+        ensure_directory(&self.root, !read_only)?;
+        let path = self.root.join(".catalog.lock");
+        let file = if read_only {
+            crate::file_io::inspection_lock(&path)?
+        } else {
+            lock(&path)?
+        };
         let mut tx = YamlTransaction {
             root: self.root.clone(),
             journal: FileJournal {
                 root: self.root.join(".catalog-sync"),
+                read_only,
             },
             _lock: file,
         };
@@ -264,6 +286,13 @@ impl Store for YamlStore {
         f: impl FnOnce(&mut Self::Transaction<'_>) -> Result<T, E>,
     ) -> Result<T, E> {
         YamlStore::with_transaction(self, f)
+    }
+
+    fn with_inspection<T, E: From<StorageError>>(
+        &self,
+        f: impl FnOnce(&mut Self::Transaction<'_>) -> Result<T, E>,
+    ) -> Result<T, E> {
+        YamlStore::with_inspection(self, f)
     }
 }
 
@@ -314,30 +343,40 @@ pub struct YamlTransaction {
 /// Object persistence owned exclusively by a locked YAML transaction.
 struct FileJournal {
     root: PathBuf,
+    read_only: bool,
 }
 
 impl FileJournal {
-    fn ensure_directory(&self) -> Result<(), StorageError> {
+    fn writable(&self) -> Result<(), StorageError> {
+        if self.read_only {
+            return Err(StorageError::new("read-only catalog inspection"));
+        }
+        Ok(())
+    }
+
+    fn ensure_directory(&self, create: bool) -> Result<(), StorageError> {
         if self.root.is_symlink() {
             return Err(StorageError::new("symlinked transport state"));
         }
-        crate::file_io::ensure_directory(&self.root, true)
+        crate::file_io::ensure_directory(&self.root, create)
     }
 }
 
 impl Journal for FileJournal {
     fn read(&self, name: &str) -> Result<Option<Map<String, Value>>, StorageError> {
-        self.ensure_directory()?;
+        self.ensure_directory(!self.read_only)?;
         crate::file_io::read_json(&self.root.join(name))
     }
 
     fn write(&self, name: &str, data: Map<String, Value>) -> Result<(), StorageError> {
-        self.ensure_directory()?;
+        self.writable()?;
+        self.ensure_directory(true)?;
         crate::file_io::write_json(&self.root.join(name), &data)
     }
 
     fn clear(&self, name: &str) -> Result<(), StorageError> {
-        self.ensure_directory()?;
+        self.writable()?;
+        self.ensure_directory(true)?;
         let path = self.root.join(name);
         let removed = path.exists();
         if removed {
@@ -349,7 +388,10 @@ impl Journal for FileJournal {
     }
 
     fn names(&self) -> Result<Vec<String>, StorageError> {
-        self.ensure_directory()?;
+        self.ensure_directory(!self.read_only)?;
+        if !self.root.exists() {
+            return Ok(Vec::new());
+        }
         fs::read_dir(&self.root)
             .map_err(|e| StorageError::new(format!("cannot read {}: {e}", self.root.display())))?
             .map(|entry| {
@@ -426,6 +468,7 @@ impl YamlTransaction {
     /// Replace one record only if the entire captured revision set is still current.
     /// Failures after replacement are uncertain, even if a receipt has not been written.
     pub fn save(&self, record: &Record, expected: &Snapshot) -> Result<Snapshot, StorageError> {
+        self.journal.writable()?;
         let current = self.read()?;
         if current.revisions != expected.revisions {
             return Err(StorageError::revision_conflict(

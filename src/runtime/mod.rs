@@ -6,6 +6,7 @@
 pub mod checkouts;
 pub mod conversations;
 pub mod locations;
+pub mod state;
 
 pub use checkouts::{CheckoutLocation, CheckoutRegistry, RepositoryInspection};
 pub use locations::{BoundCheckout, DirectoryBinding, DirectoryBindings};

@@ -139,6 +139,8 @@ impl Git {
         }
         cmd.env("GIT_TERMINAL_PROMPT", "0");
         cmd.env("GIT_LITERAL_PATHSPECS", "1");
+        // Status must not refresh the index during read-only catalog inspection.
+        cmd.env("GIT_OPTIONAL_LOCKS", "0");
         if let Some(idx) = index {
             cmd.env("GIT_INDEX_FILE", idx);
         }

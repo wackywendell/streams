@@ -58,6 +58,14 @@ The transaction supplies the coordinator's recovery journal as a borrowed `&dyn 
 
 These choices are not an unrestricted cross-product. Git requires a versioned file representation, beyond the common store contract. A table-backed local store need not implement Git operations. Combining tables with Git would require a separately designed export/import adapter; it is not implied by implementing `Store`.
 
+### Inspection does not enter a writer protocol
+
+Saved replay inputs need an inspection boundary separate from ordinary catalog reads. A Git snapshot can establish missing retry receipts, and Git status can refresh its index. Neither effect belongs in capture.
+
+`CatalogBackend::inspect` returns durable local records and effective ownership from one read-only scope. Backends and stores must opt into inspection; there is no fallback to an ordinary snapshot or transaction. The YAML adapter shares the existing catalog lock without creating it, rejects record and journal writes, and leaves missing bookkeeping absent. Git inspection validates history and recovery fences without remembering receipts or refreshing the index. The application returns detached inspection data, not the selected backend's write capability.
+
+Host-local native state keeps endpoint-scoped associations, enrollment claims and pending-open evidence separate from portable catalog records. Endpoint scopes select files; a global per-Stream lock excludes competing opens across scopes. Session and launch command form one optional pair. Enrollment claims survive partial completion, and loaded pending-open records are diagnostic evidence, not resumable effect permits. Runtime orchestration must still establish live ownership and native identity before issuing effects; this storage layer does not attest either.
+
 ### Frontends control workspaces, not the catalog
 
 A workspace frontend interface identifies, resolves, creates, focuses, and updates native workspaces. Workspace references are scoped to a frontend and endpoint, rather than assumed to be Herdr pane identities. Runtime orchestration owns catalog associations, checkout selection, open/resume policy, and recording partial completion. Native transports do not choose catalog authority or save domain changes.

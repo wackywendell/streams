@@ -94,6 +94,27 @@ impl<S: Store> LocalCatalog<S> {
         })
     }
 
+    /// Inspect durable records and ownership without creating or repairing state.
+    pub fn inspect(&self) -> Result<super::Inspection, RepairRequired> {
+        self.store.with_inspection(|tx| {
+            let state = State::from_journal(tx.journal());
+            let authorities = ready(tx, &state)?;
+            let snapshot = tx.read()?;
+            if authorities
+                .keys()
+                .any(|id| snapshot.catalog.stream(id).is_none())
+            {
+                return Err(RepairRequired::new(
+                    "creation receipt references a missing stream",
+                ));
+            }
+            Ok(super::Inspection {
+                snapshot,
+                authorities,
+            })
+        })
+    }
+
     /// Recover ownership from the original durable stream-creation envelope.
     pub fn authority(&self, stream_id: &str) -> Result<Option<Authority>, RepairRequired> {
         self.store.with_transaction(|tx| {

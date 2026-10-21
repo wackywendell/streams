@@ -21,6 +21,15 @@ pub trait Store {
         &self,
         f: impl FnOnce(&mut Self::Transaction<'_>) -> Result<T, E>,
     ) -> Result<T, E>;
+
+    /// Read existing state without creating locks, directories, or bookkeeping.
+    /// Adapters must opt in; ordinary transactions are not a read-only fallback.
+    fn with_inspection<T, E: From<StorageError>>(
+        &self,
+        _f: impl FnOnce(&mut Self::Transaction<'_>) -> Result<T, E>,
+    ) -> Result<T, E> {
+        Err(StorageError::new("storage adapter does not support read-only inspection").into())
+    }
 }
 
 /// Catalog access borrowed within a store's serialization scope.

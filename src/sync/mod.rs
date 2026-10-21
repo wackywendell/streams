@@ -39,6 +39,13 @@ pub enum Freshness {
 
 crate::codec::deserialize_string_enum!(Freshness);
 
+/// Durable records and effective authority captured in one read-only scope.
+#[derive(Debug, Clone)]
+pub struct Inspection {
+    pub snapshot: Snapshot,
+    pub authorities: std::collections::BTreeMap<String, Authority>,
+}
+
 /// Application-facing catalog operations, independent of storage and transport choice.
 ///
 /// Implementations preserve operation IDs and captured preconditions across retries.
@@ -49,6 +56,13 @@ crate::codec::deserialize_string_enum!(Freshness);
 pub trait CatalogBackend {
     /// Returns actual locally persisted records and their storage preconditions.
     fn snapshot(&self) -> Result<Snapshot, state::RepairRequired>;
+
+    /// Never repairs receipts, refreshes projected state, or creates local machinery.
+    fn inspect(&self) -> Result<Inspection, state::RepairRequired> {
+        Err(state::RepairRequired::new(
+            "backend does not support read-only inspection",
+        ))
+    }
 
     /// Returns effective ownership evidence, never authority inferred from a proposal.
     fn authority(&self, stream_id: &str) -> Result<Option<Authority>, state::RepairRequired>;
@@ -68,6 +82,10 @@ pub trait CatalogBackend {
 }
 
 impl<S: Store> CatalogBackend for local::LocalCatalog<S> {
+    fn inspect(&self) -> Result<Inspection, state::RepairRequired> {
+        local::LocalCatalog::inspect(self)
+    }
+
     fn snapshot(&self) -> Result<Snapshot, state::RepairRequired> {
         local::LocalCatalog::snapshot(self)
     }
@@ -94,6 +112,10 @@ impl<S: Store> CatalogBackend for local::LocalCatalog<S> {
 }
 
 impl CatalogBackend for git::GitCatalog {
+    fn inspect(&self) -> Result<Inspection, state::RepairRequired> {
+        git::GitCatalog::inspect(self)
+    }
+
     fn snapshot(&self) -> Result<Snapshot, state::RepairRequired> {
         git::GitCatalog::snapshot(self)
     }

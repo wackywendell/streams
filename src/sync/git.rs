@@ -553,23 +553,24 @@ impl GitCatalog {
         self.clock = clock;
     }
 
+    fn locked<'tx>(&'tx self, tx: &'tx YamlTransaction) -> LockedCatalog<'tx> {
+        LockedCatalog {
+            root: &self.root,
+            store: &self.store,
+            git: &self.git,
+            host_id: &self.host_id,
+            policy: &self.policy,
+            clock: &self.clock,
+            tx,
+            state: State::from_journal(tx.journal()).with_optional_hook(self.hook.clone()),
+        }
+    }
+
     pub(super) fn with_lock<T>(
         &self,
         f: impl FnOnce(&LockedCatalog<'_>) -> Result<T, CatalogError>,
     ) -> Result<T, CatalogError> {
-        self.store.with_transaction(|tx| {
-            let catalog = LockedCatalog {
-                root: &self.root,
-                store: &self.store,
-                git: &self.git,
-                host_id: &self.host_id,
-                policy: &self.policy,
-                clock: &self.clock,
-                tx,
-                state: State::from_journal(tx.journal()).with_optional_hook(self.hook.clone()),
-            };
-            f(&catalog)
-        })
+        self.store.with_transaction(|tx| f(&self.locked(tx)))
     }
 
     /// Initialize an empty directory from a remote or a new bootstrap; failed setup stays fenced.
@@ -586,6 +587,29 @@ impl GitCatalog {
             Ok(catalog.saved()?.1)
         })
         .map_err(repair)
+    }
+
+    /// Read actual local records and authority without repairing retry evidence.
+    pub fn inspect(&self) -> Result<super::Inspection, RepairRequired> {
+        self.store
+            .with_inspection(|tx| -> Result<_, CatalogError> {
+                let catalog = self.locked(tx);
+                catalog.ready()?;
+                let history = read_history(&self.git, Some(&self.git.head()?))?;
+                catalog
+                    .state
+                    .validate_fingerprints(history.fingerprints(), false)?;
+                let snapshot = tx.read()?;
+                if &snapshot.catalog != history.catalog() {
+                    return Err(repair("working records disagree with supported history").into());
+                }
+                let authorities = catalog.authorities(&history)?;
+                Ok(super::Inspection {
+                    snapshot,
+                    authorities,
+                })
+            })
+            .map_err(repair)
     }
 
     /// Combine confirmed ownership with provenance for locally created streams.
