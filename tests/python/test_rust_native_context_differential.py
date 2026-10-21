@@ -51,7 +51,7 @@ def key(*parts):
 
 
 @unittest.skipUnless(RUST.is_file(), "build the Rust streams binary first")
-class RustNativeContextDifferentialTests(unittest.TestCase):
+class NativeFixture(unittest.TestCase):
     maxDiff = None
 
     def setUp(self):
@@ -183,6 +183,8 @@ class RustNativeContextDifferentialTests(unittest.TestCase):
                 "stream": {"title": "Enrollment work", "goal": "Retain original intent"},
                 "session": {"title": "Enrollment conversation"}, "cwd": str(self.cwd)}, captured
 
+
+class RustNativeContextDifferentialTests(NativeFixture):
     def test_rust_enrollment_is_readable_and_retryable_by_python(self):
         request, _ = self.enrollment_request()
         code, created = self.invoke("rust", "agent", "enroll", request=request)

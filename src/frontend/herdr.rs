@@ -3,7 +3,9 @@
 //! Topology and pane observations are structural native evidence only, not
 //! catalog/session attestation. Runtime ownership proofs must remain separate.
 
+mod launch;
 mod topology;
+pub use launch::HerdrStartedAgent;
 pub use topology::{HerdrAgent, HerdrInventoryPane, HerdrLayout, HerdrTab, HerdrTopology};
 
 use super::transport::{Operation, Transport, args, launch_args, string};

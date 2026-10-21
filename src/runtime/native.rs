@@ -63,19 +63,27 @@ impl BuiltinFrontend {
         }
     }
 
+    pub fn adapter(&self) -> &dyn WorkspaceFrontend {
+        match self {
+            Self::Herdr(client) => client,
+            Self::Cmux(client) => client,
+        }
+    }
+
+    pub fn scope(&self) -> String {
+        match self {
+            Self::Herdr(client) => herdr_scope(
+                &client.endpoint().socket,
+                client.endpoint().session.as_deref(),
+            ),
+            Self::Cmux(client) => cmux_scope(&client.endpoint().socket),
+        }
+    }
+
     /// Resolve only the exact inherited caller, never GUI focus or a display label.
     pub fn caller(&self) -> Result<CallingWorkspace> {
-        let (frontend, scope): (&dyn WorkspaceFrontend, _) = match self {
-            Self::Herdr(client) => (
-                client,
-                herdr_scope(
-                    &client.endpoint().socket,
-                    client.endpoint().session.as_deref(),
-                ),
-            ),
-            Self::Cmux(client) => (client, cmux_scope(&client.endpoint().socket)),
-        };
-        let workspace = frontend.resolve(WorkspaceSelector::Caller)?;
+        let scope = self.scope();
+        let workspace = self.adapter().resolve(WorkspaceSelector::Caller)?;
         Ok(CallingWorkspace {
             scope,
             workspace_id: workspace.reference.native_id,

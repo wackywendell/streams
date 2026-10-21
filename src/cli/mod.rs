@@ -8,9 +8,11 @@ mod enrollment;
 mod fields;
 #[cfg(test)]
 mod native_tests;
+mod workspaces;
 
 use args::{
     AgentCommand, CheckoutCommand, Command, ConfigCommand, FrontendCommand, SessionCommand, Target,
+    WorkspaceCommand,
 };
 use clap::Parser;
 use icu_casemap::CaseMapper;
@@ -244,6 +246,7 @@ impl App {
             "HERDR_SOCKET_PATH",
             "HERDR_SESSION",
             "PI_CODING_AGENT_DIR",
+            "PI_OFFLINE",
             "CODEX_HOME",
             "CLAUDE_CONFIG_DIR",
             "PATH",
@@ -473,40 +476,32 @@ impl App {
                 ))
             }
             Command::Create { title, fields, cwd } => {
-                let opened = application::open(&self.config)?;
-                let mut stream = Stream::new(
-                    Uuid::new_v4().to_string(),
-                    title,
-                    None,
-                    opened.host().as_str(),
-                )?;
-                stream.title_mode = NamingMode::Manual;
-                let changes = fields::stream(&stream, &fields, &mut |path| self.read_text(path))?;
-                let base = Record::Stream(stream);
-                let desired = operations::apply_changes(&base, &changes, Actor::User)?;
-                let operation = Operation::new(
-                    Uuid::new_v4().to_string(),
-                    None,
-                    desired,
-                    Actor::User,
-                    None,
-                    vec![],
-                )?;
-                let saved = save(opened.backend(), &operation)?;
-                let extra = if saved.accepted() {
-                    self.locations(&opened).and_then(|locations| Ok(locations.remember(operation.target().id(), &self.path(cwd.as_deref().unwrap_or(&self.cwd))?, None, false, None, None)?))
-                        .err().map(|error|json!({"runtime":{"error":error.data()["error"],"detail":"stream saved; retry open with its ID"}}))
-                } else {
-                    None
-                };
-                finish(
-                    opened.backend(),
-                    &operation,
-                    saved,
-                    SyncEvent::Stream,
-                    extra,
-                )
+                self.create_stream(title, fields, cwd, workspaces::Creation::Record)
             }
+            Command::Start {
+                title,
+                fields,
+                cwd,
+                frontend,
+            } => self.create_stream(
+                title,
+                fields,
+                cwd,
+                workspaces::Creation::Workspace(frontend),
+            ),
+            Command::Open {
+                target,
+                session,
+                cwd,
+            } => self.open_workspace(target, session, cwd),
+            Command::Resume {
+                target,
+                session,
+                cwd,
+            } => self.resume_session(target, session, cwd),
+            Command::Workspace {
+                command: WorkspaceCommand::Capture { target },
+            } => self.capture_workspace(target),
             Command::Update {
                 target,
                 title,
@@ -1144,7 +1139,9 @@ fn finish(
             ok = false;
         }
     }
-    let completed = extra.is_none();
+    let completed = extra
+        .as_ref()
+        .is_none_or(|extra| extra["runtime"].get("error").is_none());
     if let Some(Value::Object(extra)) = extra {
         payload
             .as_object_mut()

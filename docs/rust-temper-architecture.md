@@ -80,6 +80,14 @@ Caller inspection and effect authority have different lifetimes. Reporting check
 
 `agent context --attest` additionally requires effective authority for this host, the exact local Pi Session, and fresh matching pane metadata. Optional `--native-inventory` reports every pane tuple, including conversations in other workspaces and panes with no Pi identity. Missing transcripts do not prove process death. These observations cannot authorize a later launch, replacement or cleanup: the native effect engine must obtain its own lock and recheck live evidence. This keeps reporting usable without exporting a reusable effect permit.
 
+### Workspace effects retain uncertainty
+
+Native open rechecks effective backend authority under global per-Stream exclusion and before each resource effect. Catalog owner fields alone cannot grant permission. A fresh attempt writes its journal and marks any existing binding not ready before dispatch. Its one-shot effect boundary persists intent, calls the adapter, then persists the checked response before allowing another effect. The embedded [native-open protocol](../specs/native_open.ioa.toml) prevents dispatch after uncertainty and prevents completion before a ready binding. Loaded journals cannot enter that protocol.
+
+Herdr restore uses exact saved conversations and native layout order. A successful start receipt establishes interactive readiness, not conversation identity. Before advancing to another launch, the coordinator checks fresh host inventory for the just-started conversation in its acknowledged pane and confirms that launch durably. It rechecks the complete restored set before marking the workspace ready. A closed workspace binding can be archived only after complete, identity-verified host inventory establishes its absence. Missing session files do not establish that absence. CMUX retains its single-workspace command launch contract and does not claim multi-tab restoration.
+
+An interrupted open can leave native resources and local intent behind. It keeps the pending attempt and refuses another automatic launch; there is no rollback or speculative recovery. This costs manual inspection after an ambiguous response but avoids creating another copy of a conversation. Terminal `resume` instead keeps the stream lock through `exec`, using an exact verified command. The lock closes at process replacement; it does not prove future process liveness or prevent independent launches outside native inventory.
+
 ### Historical documents do not change checkouts
 
 Explicit revision lookup extracts a document into a host-local cache rather than switching branches or snapshotting a jj working copy. Card polling still resolves working files only. Named revisions are resolved again on each request; immutable identities may reuse cached content or missing-file hints. The returned revision retains the caller's spelling, while the cache key follows Python's resolved-revision convention.
@@ -122,7 +130,7 @@ The Rust stack is rebased onto Python `main` at `a6f11e5c`. Documents retain com
 
 Only the current partitioned session layout is accepted. All 48 session files on this machine already use it, and the live catalog is local-only, so Rust does not carry the obsolete two-level reader or Git-history migration paths. Agent context retains a full local snapshot behind `CatalogBackend`, rather than copying Python's storage-specific lookup and cache fallbacks.
 
-The Rust CLI now resolves exact Herdr and CMUX caller context, attests enrolled Herdr/Pi callers, supplies requested native inventory, enrolls conversations without launching resources, and extracts explicit historical document revisions. Native start, open, resume and workspace capture remain separate work. The CLI rejects unsupported operations rather than inventing native identity or authority. Stages 3 to 5 still require their native acceptance tests before cutover.
+The Rust CLI resolves exact Herdr and CMUX caller context, attests enrolled Herdr/Pi callers, supplies requested native inventory, enrolls conversations, and extracts explicit historical document revisions. It also implements native start, open, terminal resume and workspace capture. Isolated fake-service tests exercise Python/Rust handoff, launch uncertainty, live identity checks and authority loss between effects. These do not establish live deployment readiness. The native card/editor effect engine, pane application and remaining native acceptance tests are still required before cutover; Python remains installed.
 
 ### TUI Unicode compatibility
 

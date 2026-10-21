@@ -60,6 +60,35 @@ pub(super) enum Command {
         #[arg(long)]
         cwd: Option<PathBuf>,
     },
+    Start {
+        title: String,
+        #[command(flatten)]
+        fields: StreamFields,
+        #[arg(long)]
+        cwd: Option<PathBuf>,
+        #[arg(short = 'f', long)]
+        frontend: Option<FrontendRequest>,
+    },
+    Open {
+        #[command(flatten)]
+        target: Target,
+        #[arg(long)]
+        session: Option<String>,
+        #[arg(long)]
+        cwd: Option<PathBuf>,
+    },
+    Resume {
+        #[command(flatten)]
+        target: Target,
+        #[arg(long)]
+        session: Option<String>,
+        #[arg(long)]
+        cwd: Option<PathBuf>,
+    },
+    Workspace {
+        #[command(subcommand)]
+        command: WorkspaceCommand,
+    },
     Update {
         #[command(flatten)]
         target: Target,
@@ -106,6 +135,14 @@ pub(super) struct Target {
     pub(super) current: bool,
     #[arg(short = 'f', long)]
     pub(super) frontend: Option<FrontendRequest>,
+}
+
+#[derive(Debug, Subcommand)]
+pub(super) enum WorkspaceCommand {
+    Capture {
+        #[command(flatten)]
+        target: Target,
+    },
 }
 
 #[derive(Debug, Subcommand)]
@@ -417,10 +454,6 @@ mod tests {
                 "id",
             ],
             vec!["sync", "--event", "force"],
-            vec!["start", "title"],
-            vec!["open"],
-            vec!["resume"],
-            vec!["workspace", "capture"],
         ] {
             assert!(parse(&args).is_err(), "{args:?}");
         }

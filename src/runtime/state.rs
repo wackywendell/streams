@@ -10,7 +10,10 @@ use crate::codec::{ascii_json, required_nullable};
 use crate::file_io;
 use crate::operations::Authority;
 
-use super::{Result, digest, invalid, lock, read_json, write_json};
+use super::open_protocol::{Action, Protocol};
+use super::{
+    Result, RuntimeError, arrangements::Arrangement, digest, invalid, lock, read_json, write_json,
+};
 
 fn state_text(value: &str) -> Result<()> {
     // Preserve Python's persisted text contract, including its accepted whitespace.
@@ -435,6 +438,40 @@ impl RuntimeState {
             .transpose()
     }
 
+    pub fn arrangement(&self, scope: &str, stream: &str) -> Result<Option<Arrangement>> {
+        let path = self.path("arrangements", scope, stream)?;
+        self.read_arrangement(&path)
+    }
+
+    fn read_arrangement(&self, path: &Path) -> Result<Option<Arrangement>> {
+        let Some(mut value) = read_json::<Value>(path)? else {
+            return Ok(None);
+        };
+        if value.get("version").and_then(Value::as_u64) != Some(1) {
+            return Err(invalid("unsupported arrangement version"));
+        }
+        value
+            .as_object_mut()
+            .ok_or_else(|| invalid("invalid arrangement object"))?
+            .remove("version");
+        let plan: Arrangement =
+            serde_json::from_value(value).map_err(|e| invalid(e.to_string()))?;
+        filename(path, plan.stream_id())?;
+        Ok(Some(plan))
+    }
+
+    pub fn arrangements(&self) -> Result<Vec<Scoped<Arrangement>>> {
+        self.entries("arrangements", None)?
+            .into_iter()
+            .map(|(scope, path)| {
+                let record = self
+                    .read_arrangement(&path)?
+                    .ok_or_else(|| invalid("arrangement disappeared during inventory"))?;
+                Ok(Scoped { scope, record })
+            })
+            .collect()
+    }
+
     fn entries(&self, collection: &str, selected: Option<&str>) -> Result<Vec<(String, PathBuf)>> {
         if let Some(scope) = selected {
             scope_text(scope)?;
@@ -737,6 +774,66 @@ impl<'s> StreamGuard<'s> {
         self.write_association_available(binding, None)
     }
 
+    pub fn write_arrangement(&self, plan: &Arrangement) -> Result<()> {
+        let scope = self
+            .scope()
+            .ok_or_else(|| invalid("arrangement requires native scope"))?;
+        if plan.stream_id() != self.stream_id
+            || self
+                .association()?
+                .is_none_or(|b| b.workspace_id() != plan.workspace_id())
+        {
+            return Err(invalid("arrangement differs from locked association"));
+        }
+        let path = self.state.path("arrangements", scope, &self.stream_id)?;
+        self.state.writable(&path)?;
+        let mut value = serde_json::to_value(plan).map_err(|e| invalid(e.to_string()))?;
+        value["version"] = Value::from(1);
+        write_json(&path, &value)
+    }
+
+    /// Retain all closed binding/claim evidence before retiring either live record.
+    /// The orchestrator must first verify complete host inventory and workspace absence.
+    pub(crate) fn archive_closed(&mut self, binding: &Association) -> Result<()> {
+        if self.association()?.as_ref() != Some(binding) {
+            return Err(invalid("closed association changed"));
+        }
+        let scope = self
+            .scope()
+            .ok_or_else(|| invalid("closed binding requires native scope"))?;
+        let claim = self.state.enrollment_claim(scope, binding.workspace_id())?;
+        if claim
+            .as_ref()
+            .is_some_and(|c| c.stream_id() != self.stream_id)
+        {
+            return Err(invalid("closed binding claim mismatch"));
+        }
+        let archive = self
+            .state
+            .root
+            .join("closed")
+            .join(scope)
+            .join(format!("{}.json", uuid::Uuid::new_v4().simple()));
+        self.state.writable(&archive)?;
+        let evidence = serde_json::json!({"version":1,"binding":binding.wire(),"claim":claim.as_ref().map(|c| ClaimWire {version:1,stream_id:c.stream_id.clone(),workspace_id:c.workspace_id.clone()})});
+        write_json(&archive, &evidence)?;
+        if claim.is_some() {
+            let path = self
+                .state
+                .path("enrollments", scope, binding.workspace_id())?;
+            fs::remove_file(&path)?;
+            file_io::sync_directory(path.parent().expect("claim parent"))
+                .map_err(crate::storage::StorageError::after_write)?;
+        }
+        let path = self
+            .state
+            .path("associations", scope, binding.workspace_id())?;
+        fs::remove_file(&path)?;
+        file_io::sync_directory(path.parent().expect("association parent"))
+            .map_err(crate::storage::StorageError::after_write)?;
+        Ok(())
+    }
+
     fn write_association_available(
         &mut self,
         binding: &Association,
@@ -810,10 +907,20 @@ impl<'s> StreamGuard<'s> {
         };
         self.state.writable(&path)?;
         write_json(&path, &record.wire())?;
+        if let Some(binding) = binding {
+            let partial = Association::new(
+                &self.stream_id,
+                binding.workspace_id(),
+                binding.launch().cloned(),
+                false,
+            )?;
+            self.write_association_available(&partial, Some(&record))?;
+        }
         Ok(AttemptGuard {
             stream: self,
             scope,
             record,
+            protocol: Protocol::new()?,
         })
     }
 }
@@ -910,15 +1017,84 @@ impl<'s> EnrollmentGuard<'s> {
 }
 
 /// A current-process journal capability, borrowed from the still-held global stream lock.
+#[derive(Debug, Clone, Serialize)]
+#[serde(tag = "kind", rename_all = "snake_case")]
+pub enum OpenEffect {
+    WorkspaceCreate,
+    TabCreate,
+    TabRename {
+        tab_id: String,
+        label: String,
+    },
+    PaneSplit {
+        pane_id: String,
+    },
+    AgentStart {
+        session_id: String,
+        pane_id: String,
+        name: String,
+    },
+}
+
 pub struct AttemptGuard<'g, 's> {
     stream: &'g mut StreamGuard<'s>,
     scope: String,
     record: PendingAttempt,
+    protocol: Protocol,
 }
 
 impl AttemptGuard<'_, '_> {
     pub fn record(&self) -> &PendingAttempt {
         &self.record
+    }
+
+    /// Persist before the one-shot effect, then retain its checked result before allowing another.
+    pub fn effect<T>(
+        &mut self,
+        evidence: OpenEffect,
+        execute: impl FnOnce() -> Result<T>,
+        returned: impl FnOnce(&T) -> Value,
+    ) -> Result<T> {
+        let next = self.protocol.next(Action::Dispatch)?;
+        let mut effects = self.record.effects.clone();
+        effects.push(serde_json::to_value(evidence).map_err(|e| invalid(e.to_string()))?);
+        if let Err(error) = self.checkpoint(
+            self.record.workspace_id.clone().as_deref(),
+            effects,
+            self.record.launches.clone(),
+        ) {
+            self.protocol = self.protocol.next(Action::Fail)?;
+            return Err(error);
+        }
+        self.protocol = next;
+        match execute() {
+            Ok(value) => {
+                let mut effects = self.record.effects.clone();
+                effects.last_mut().expect("effect was journalled")["returned"] = returned(&value);
+                self.checkpoint(
+                    self.record.workspace_id.clone().as_deref(),
+                    effects,
+                    self.record.launches.clone(),
+                )?;
+                self.protocol = self.protocol.next(Action::Acknowledge)?;
+                Ok(value)
+            }
+            Err(error) => {
+                self.protocol = self.protocol.next(Action::Fail)?;
+                let mut effects = self.record.effects.clone();
+                effects.last_mut().expect("effect was journalled")["error"] = effect_error(&error);
+                self.checkpoint(
+                    self.record.workspace_id.clone().as_deref(),
+                    effects,
+                    self.record.launches.clone(),
+                )?;
+                Err(error)
+            }
+        }
+    }
+
+    pub fn write_arrangement(&self, plan: &Arrangement) -> Result<()> {
+        self.stream.write_arrangement(plan)
     }
 
     /// Evidence is opaque: the orchestrator owns native effect semantics, not this journal.
@@ -965,12 +1141,25 @@ impl AttemptGuard<'_, '_> {
         if self.record.workspace_id.as_deref() != Some(binding.workspace_id()) {
             return Err(invalid("association differs from attempt workspace"));
         }
-        self.stream
+        let next = if binding.ready() {
+            self.protocol.next(Action::Bind)?
+        } else {
+            self.protocol.clone()
+        };
+        if let Err(error) = self
+            .stream
             .write_association_available(binding, Some(&self.record))
+        {
+            self.protocol = self.protocol.next(Action::Fail)?;
+            return Err(error);
+        }
+        self.protocol = next;
+        Ok(())
     }
 
     /// Clear only this fresh attempt after its association is ready. No loaded retry API exists.
     pub fn complete(self) -> Result<()> {
+        self.protocol.next(Action::Complete)?;
         let binding = self
             .stream
             .association()?
@@ -997,5 +1186,14 @@ impl AttemptGuard<'_, '_> {
         file_io::sync_directory(path.parent().expect("attempt parent"))
             .map_err(crate::storage::StorageError::after_write)?;
         Ok(())
+    }
+}
+
+fn effect_error(error: &RuntimeError) -> Value {
+    match error {
+        RuntimeError::Frontend(error) => {
+            serde_json::json!({"message":error.message,"commands":error.commands})
+        }
+        _ => serde_json::json!({"message":error.to_string()}),
     }
 }

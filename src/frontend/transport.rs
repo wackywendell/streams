@@ -1,13 +1,14 @@
 use std::collections::BTreeMap;
 use std::ffi::OsString;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
 use crate::process::{self, ProcessRequest, ProcessRunner};
 use serde_json::Value;
 
 /// Native effect state, never proof of catalog ownership or pane attestation.
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize)]
+#[serde(rename_all = "kebab-case")]
 pub enum CommandOutcome {
     ReadOnly,
     Uncertain,
@@ -15,7 +16,7 @@ pub enum CommandOutcome {
 }
 
 /// Recovery evidence includes malformed replies and partial output on timeout.
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize)]
 pub struct CommandEvidence {
     pub args: Vec<String>,
     pub outcome: CommandOutcome,
@@ -161,11 +162,18 @@ pub(super) fn string(value: &Value, key: &str) -> Result<String, FrontendError> 
 
 pub(super) fn launch_args(request: &super::CreateWorkspace) -> Result<Vec<String>, FrontendError> {
     super::nonempty(&request.title, "workspace title")?;
-    if !request.cwd.is_absolute() {
+    launch_environment(&request.cwd, &request.environment)
+}
+
+pub(super) fn launch_environment(
+    cwd: &Path,
+    environment: &BTreeMap<String, String>,
+) -> Result<Vec<String>, FrontendError> {
+    if !cwd.is_absolute() {
         return Err(FrontendError::invalid("workspace cwd must be absolute"));
     }
     let mut result = Vec::new();
-    for (key, value) in &request.environment {
+    for (key, value) in environment {
         if key.is_empty()
             || key.contains('=')
             || key.chars().any(char::is_control)

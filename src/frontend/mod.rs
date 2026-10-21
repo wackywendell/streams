@@ -14,7 +14,8 @@ use std::path::PathBuf;
 pub use transport::{CommandEvidence, CommandOutcome, FrontendError};
 
 /// Extensible frontend identity. Third-party adapters may use their own IDs.
-#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash)]
+#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash, serde::Serialize)]
+#[serde(transparent)]
 pub struct FrontendId(pub String);
 
 impl FrontendId {

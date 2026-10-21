@@ -86,6 +86,43 @@ impl CmuxClient {
         &self.endpoint
     }
 
+    pub fn create_session(
+        &self,
+        request: &CreateWorkspace,
+        session_command: Option<&str>,
+    ) -> Result<Workspace, FrontendError> {
+        let environment = launch_args(request)?;
+        let cwd = request
+            .cwd
+            .to_str()
+            .ok_or_else(|| FrontendError::invalid("CMUX cwd is not UTF-8"))?;
+        let mut command = args(&[
+            "--json",
+            "--id-format",
+            "uuids",
+            "new-workspace",
+            "--name",
+            &request.title,
+            "--cwd",
+            cwd,
+        ]);
+        command.extend(environment);
+        command.extend(args(&["--focus", "true"]));
+        if let Some(session_command) = session_command {
+            nonempty(session_command, "CMUX session command")?;
+            command.extend(["--command".into(), session_command.into()]);
+        }
+        let mut op = Operation::default();
+        let data = op.json(&self.transport, &command, true, true)?;
+        let id = op.capture(string(&data, "workspace_id"))?;
+        op.acknowledge();
+        Ok(Workspace {
+            reference: self.reference(id),
+            title: request.title.clone(),
+            cwd: cwd.into(),
+        })
+    }
+
     fn reference(&self, id: String) -> WorkspaceRef {
         WorkspaceRef {
             frontend: self.frontend_id(),
@@ -247,32 +284,7 @@ impl WorkspaceFrontend for CmuxClient {
         Ok(matches.into_iter().next().unwrap().workspace)
     }
     fn create(&self, request: &CreateWorkspace) -> Result<Workspace, FrontendError> {
-        let environment = launch_args(request)?;
-        let cwd = request
-            .cwd
-            .to_str()
-            .ok_or_else(|| FrontendError::invalid("CMUX cwd is not UTF-8"))?;
-        let mut command = args(&[
-            "--json",
-            "--id-format",
-            "uuids",
-            "new-workspace",
-            "--name",
-            &request.title,
-            "--cwd",
-            cwd,
-        ]);
-        command.extend(environment);
-        command.extend(args(&["--focus", "true"]));
-        let mut op = Operation::default();
-        let data = op.json(&self.transport, &command, true, true)?;
-        let id = op.capture(string(&data, "workspace_id"))?;
-        op.acknowledge();
-        Ok(Workspace {
-            reference: self.reference(id),
-            title: request.title.clone(),
-            cwd: cwd.into(),
-        })
+        self.create_session(request, None)
     }
     fn focus(&self, reference: &WorkspaceRef) -> Result<(), FrontendError> {
         let mut op = Operation::default();

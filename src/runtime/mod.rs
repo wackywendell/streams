@@ -3,12 +3,16 @@
 //! These files are execution-host state, never shared catalog records. Callers must
 //! not publish their paths or use them to infer conversation membership.
 
+pub mod arrangements;
 pub mod checkouts;
 pub mod conversations;
+pub mod launch;
 pub mod locations;
 pub mod native;
+pub mod open_protocol;
 pub mod revisions;
 pub mod state;
+pub mod workspace;
 
 pub use checkouts::{CheckoutLocation, CheckoutRegistry, RepositoryInspection};
 pub use locations::{BoundCheckout, DirectoryBinding, DirectoryBindings};
@@ -42,12 +46,24 @@ pub enum RuntimeError {
     Inspection(String),
     #[error("{0}")]
     Frontend(#[from] crate::frontend::FrontendError),
+    #[error(
+        "native open may be partial; {0}. Inspect native state before retrying; no rollback or automatic relaunch"
+    )]
+    OpenIncomplete(String),
 }
 
 impl RuntimeError {
     /// A failure after atomic replacement requires inspection before retrying.
     pub fn is_uncertain(&self) -> bool {
-        matches!(self, Self::Storage(error) if error.is_uncertain())
+        match self {
+            Self::Storage(error) => error.is_uncertain(),
+            Self::OpenIncomplete(_) => true,
+            Self::Frontend(error) => error
+                .commands
+                .iter()
+                .any(|c| c.outcome == crate::frontend::CommandOutcome::Uncertain),
+            _ => false,
+        }
     }
 }
 
