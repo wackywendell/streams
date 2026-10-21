@@ -45,6 +45,8 @@ struct World {
     ambiguous_close: bool,
     fail_after_open: bool,
     deny_read: bool,
+    inventory_reads: usize,
+    clear_binding_after_caption_rename: bool,
 }
 struct Source {
     world: Arc<Mutex<World>>,
@@ -52,7 +54,10 @@ struct Source {
 }
 impl NativeCardSource for Source {
     fn read(&mut self, inventory: bool) -> Result<CardObservation> {
-        let world = self.world.lock().unwrap();
+        let mut world = self.world.lock().unwrap();
+        if inventory {
+            world.inventory_reads += 1;
+        }
         if world.deny_read || inventory {
             return Err(invalid(
                 "fake application authority/creation context unavailable",
@@ -231,7 +236,7 @@ impl ProcessRunner for FakeHerdr {
                         .unwrap()
                         .push(editor.clone());
                     w.snapshot["tabs"].as_array_mut().unwrap().push(json!({
-                        "workspace_id":"w","tab_id":tab,"label":"Document","number":launch + 1,
+                        "workspace_id":"w","tab_id":tab,"label":(launch+1).to_string(),"number":launch + 1,
                     }));
                     w.snapshot["layouts"].as_array_mut().unwrap().push(json!({
                         "workspace_id":"w","tab_id":tab,"panes":[{"pane_id":editor["pane_id"]}],
@@ -246,6 +251,26 @@ impl ProcessRunner for FakeHerdr {
                 }
                 json!({"result":{"type":"plugin_pane_opened","plugin_pane":{
                     "plugin_id":PLUGIN_ID,"entrypoint":entrypoint,"pane":created}}})
+            }
+            [kind @ ("tab" | "pane"), "rename", id, label] => {
+                w.effects.push(args.clone());
+                let (collection, key, result) = if *kind == "tab" {
+                    ("tabs", "tab_id", "tab_info")
+                } else {
+                    ("panes", "pane_id", "pane_info")
+                };
+                let target = w.snapshot[collection]
+                    .as_array_mut()
+                    .unwrap()
+                    .iter_mut()
+                    .find(|p| p[key] == *id)
+                    .unwrap();
+                target["label"] = json!(label);
+                let target = target.clone();
+                if *kind == "pane" && w.clear_binding_after_caption_rename {
+                    w.snapshot["workspaces"][0]["tokens"] = json!({});
+                }
+                json!({"result":{"type":result,*kind:target}})
             }
             ["tab", "focus", id] => {
                 let target = w
@@ -400,6 +425,8 @@ impl Fixture {
             ambiguous_close: false,
             fail_after_open: false,
             deny_read: false,
+            inventory_reads: 0,
+            clear_binding_after_caption_rename: false,
         }));
         let plugin = json!({"plugin_id":PLUGIN_ID,"enabled":true,"plugin_root":plugin_root,
         "manifest_path":plugin_root.join("streams-rust-herdr-plugin.toml"),
@@ -425,6 +452,9 @@ impl Fixture {
         self.engine_with(self.environment.clone())
     }
     fn engine_with(&self, environment: BTreeMap<String, String>) -> NativeCardEngine {
+        self.try_engine_with(environment).unwrap()
+    }
+    fn try_engine_with(&self, environment: BTreeMap<String, String>) -> Result<NativeCardEngine> {
         self.runner.world.lock().unwrap().current = environment["HERDR_PANE_ID"].clone();
         NativeCardEngine::new(
             HerdrClient::connect(self.runner.clone(), environment.clone(), 1.0).unwrap(),
@@ -440,7 +470,48 @@ impl Fixture {
             environment,
             Arc::new(AtomicBool::new(false)),
         )
-        .unwrap()
+    }
+    fn launched_environment(&self) -> BTreeMap<String, String> {
+        let mut environment = self.environment.clone();
+        let scope = self
+            .runner
+            .world
+            .lock()
+            .unwrap()
+            .observation
+            .card
+            .scope()
+            .clone();
+        environment.extend(BTreeMap::from([
+            ("HERDR_PANE_ID".into(), "display".into()),
+            (
+                "STREAMS_CARDS_SCOPE".into(),
+                serde_json::to_string(&ScopeWire::from(&scope)).unwrap(),
+            ),
+            (
+                "STREAMS_CARDS_OWNER".into(),
+                json!({"pane_id":"owner","workspace_id":"w","tab_id":"t"}).to_string(),
+            ),
+            ("STREAMS_CARDS_NONCE".into(), self.record().nonce().into()),
+            (
+                "STREAMS_CARDS_OWNER_TERMINAL".into(),
+                "owner-terminal".into(),
+            ),
+            ("STREAMS_CARDS_READ_ENV".into(), "{}".into()),
+            (
+                "STREAMS_CARDS_READ_CWD".into(),
+                self._temp.path().to_str().unwrap().into(),
+            ),
+            (
+                "STREAMS_CARDS_STATE_DIR".into(),
+                self.runner.state.directory().to_str().unwrap().into(),
+            ),
+            (
+                "STREAMS_CARDS_PLUGIN_ROOT".into(),
+                self.config.plugin_root.to_str().unwrap().into(),
+            ),
+        ]));
+        environment
     }
     fn document(&self) -> DocumentTarget {
         let root = self
@@ -631,7 +702,8 @@ fn authority_loss_after_creation_stops_stamping_and_retains_pending() {
     let f = Fixture::new();
     f.runner.world.lock().unwrap().fail_after_open = true;
     assert!(f.engine().open_display(OpenMode::Explicit).is_err());
-    assert!(matches!(f.record().phase(), NativePhase::Unlaunched));
+    assert!(matches!(f.record().phase(), NativePhase::Reserved(_)));
+    assert_eq!(f.record().resources().unwrap().pane_id(), "display");
     let effects = f.effects();
     assert_eq!(&effects.last().unwrap()[..3], &["plugin", "pane", "open"]);
     let w = f.runner.world.lock().unwrap();
@@ -784,15 +856,7 @@ fn forged_card_nonce_or_owner_terminal_cannot_focus() {
     for field in ["STREAMS_CARDS_NONCE", "STREAMS_CARDS_OWNER_TERMINAL"] {
         let f = Fixture::new();
         f.engine().open_display(OpenMode::Explicit).unwrap();
-        let mut environment = f.environment.clone();
-        environment.extend(BTreeMap::from([
-            ("HERDR_PANE_ID".into(), "display".into()),
-            ("STREAMS_CARDS_NONCE".into(), f.record().nonce().into()),
-            (
-                "STREAMS_CARDS_OWNER_TERMINAL".into(),
-                "owner-terminal".into(),
-            ),
-        ]));
+        let mut environment = f.launched_environment();
         environment.insert(field.into(), "forged".into());
         let mut engine = f.engine_with(environment);
         let effects = f.effects();
@@ -876,8 +940,17 @@ fn document_launch_persists_pending_and_exact_editor_then_reuses_by_focus() {
             })
         );
     }
+    {
+        let mut w = f.runner.world.lock().unwrap();
+        assert_eq!(w.snapshot["tabs"][1]["label"], "docs/design.md");
+        w.snapshot["tabs"][1]["label"] = json!("My document");
+    }
     let effects = f.effects();
     engine.open_document(&target).unwrap();
+    assert_eq!(
+        f.runner.world.lock().unwrap().snapshot["tabs"][1]["label"],
+        "My document"
+    );
     assert_eq!(f.launches(), 2); // One display and one document, never a duplicate editor.
     let after = f.effects();
     assert_eq!(&after[..effects.len()], effects.as_slice());
@@ -907,6 +980,200 @@ fn malformed_document_ack_retains_pending_and_fences_duplicate_creation() {
     assert_eq!(f.runner.state.read(&evidence).unwrap().unwrap(), pending);
 }
 
+#[test]
+fn launch_carries_custom_plugin_root_and_original_editor_configuration() {
+    let mut f = Fixture::new();
+    f.environment.insert("EDITOR".into(), "nano -w".into());
+    f.engine().open_display(OpenMode::Explicit).unwrap();
+    let effects = f.effects();
+    let launch = effects
+        .iter()
+        .find(|args| args.starts_with(&argv(&["plugin", "pane", "open"])))
+        .unwrap();
+    assert!(launch.contains(&format!(
+        "STREAMS_CARDS_PLUGIN_ROOT={}",
+        f.config.plugin_root.display()
+    )));
+    assert!(launch.contains(&"EDITOR=nano -w".to_owned()));
+    let reader = launch
+        .iter()
+        .find_map(|arg| arg.strip_prefix("STREAMS_CARDS_READ_ENV="))
+        .unwrap();
+    assert_eq!(
+        serde_json::from_str::<Value>(reader).unwrap()["EDITOR"],
+        "nano -w"
+    );
+}
+#[test]
+fn fully_paired_reserved_card_completes_without_restamping() {
+    let f = Fixture::new();
+    let mut engine = f.engine();
+    engine.open_display(OpenMode::Explicit).unwrap();
+    let ready = f.record();
+    let mut crash = serde_json::to_value(&ready).unwrap();
+    crash["phase"] = json!("pending");
+    std::fs::write(
+        f.runner
+            .state
+            .directory()
+            .join(format!("{}.json", ready.key())),
+        serde_json::to_vec(&crash).unwrap(),
+    )
+    .unwrap();
+    let effects = f.effects();
+    engine.open_display(OpenMode::Explicit).unwrap();
+    assert_eq!(f.record(), ready);
+    assert_eq!(f.effects(), effects);
+}
+#[test]
+fn exact_reserved_editor_promotes_without_relaunch_or_renaming() {
+    let f = Fixture::new();
+    let target = f.document();
+    let (_, key) = document_keys(&f.runner.socket, &target);
+    let mut engine = f.engine();
+    engine.open_display(OpenMode::Explicit).unwrap();
+    engine.open_document(&target).unwrap();
+    let ready = f.runner.state.read(&key).unwrap().unwrap();
+    // Simulate the crash boundary after exact editor markers but before Ready persisted.
+    let mut crash = serde_json::to_value(&ready).unwrap();
+    crash["phase"] = json!("pending");
+    std::fs::write(
+        f.runner.state.directory().join(format!("{key}.json")),
+        serde_json::to_vec(&crash).unwrap(),
+    )
+    .unwrap();
+    f.runner.world.lock().unwrap().snapshot["tabs"][1]["label"] = json!("Manual title");
+    let effects = f.effects();
+    engine.open_document(&target).unwrap();
+    assert_eq!(f.runner.state.read(&key).unwrap().unwrap(), ready);
+    assert_eq!(f.launches(), 2);
+    assert_eq!(
+        &f.effects()[effects.len()..],
+        &[argv(&["tab", "focus", "editor-tab-1"])]
+    );
+    assert_eq!(
+        f.runner.world.lock().unwrap().snapshot["tabs"][1]["label"],
+        "Manual title"
+    );
+}
+#[test]
+fn launched_context_requires_every_protected_field_and_never_becomes_an_owner() {
+    let f = Fixture::new();
+    f.engine().open_display(OpenMode::Explicit).unwrap();
+    let valid = f.launched_environment();
+    f.engine_with(valid.clone()).verify_display().unwrap();
+    let effects = f.effects();
+    for key in [
+        "STREAMS_CARDS_SCOPE",
+        "STREAMS_CARDS_OWNER",
+        "STREAMS_CARDS_NONCE",
+        "STREAMS_CARDS_OWNER_TERMINAL",
+        "STREAMS_CARDS_READ_ENV",
+        "STREAMS_CARDS_READ_CWD",
+        "STREAMS_CARDS_STATE_DIR",
+        "STREAMS_CARDS_PLUGIN_ROOT",
+    ] {
+        let mut missing = valid.clone();
+        missing.remove(key);
+        assert!(f.try_engine_with(missing).is_err(), "{key}");
+    }
+    for (key, value) in [
+        ("HERDR_PANE_ID", "owner"),
+        ("STREAMS_CARDS_SCOPE", "{}"),
+        (
+            "STREAMS_CARDS_READ_ENV",
+            r#"{"TOKEN":"not a reader capability"}"#,
+        ),
+    ] {
+        let mut forged = valid.clone();
+        forged.insert(key.into(), value.into());
+        assert!(f.try_engine_with(forged).is_err(), "{key}");
+    }
+    assert_eq!(f.effects(), effects);
+}
+#[test]
+fn focus_and_close_do_not_even_request_predecessor_retirement() {
+    let f = Fixture::new();
+    f.engine().open_display(OpenMode::Explicit).unwrap();
+    remove_card(&mut f.runner.world.lock().unwrap());
+    f.runner.world.lock().unwrap().observation.card = card("next-native", None);
+    let effects = f.effects();
+    assert!(f.engine().focus_display().is_err());
+    assert!(f.engine().close_display().is_err());
+    assert_eq!(f.runner.world.lock().unwrap().inventory_reads, 0);
+    assert_eq!(f.effects(), effects);
+}
+#[test]
+fn status_and_caption_fail_closed_when_workspace_binding_disappears() {
+    let f = Fixture::new();
+    let mut engine = f.engine();
+    engine.open_display(OpenMode::Explicit).unwrap();
+    f.runner
+        .world
+        .lock()
+        .unwrap()
+        .clear_binding_after_caption_rename = true;
+    assert!(engine.project_caption().is_err());
+    assert!(engine.status().is_err());
+    let w = f.runner.world.lock().unwrap();
+    assert_eq!(w.snapshot["panes"][1]["label"], "Effort");
+    assert!(
+        w.snapshot["panes"][1]["tokens"]
+            .get("strm_caption")
+            .is_none()
+    );
+}
+#[test]
+fn caption_publication_is_idempotent() {
+    let f = Fixture::new();
+    let mut engine = f.engine();
+    engine.open_display(OpenMode::Explicit).unwrap();
+    engine.project_caption().unwrap();
+    let effects = f.effects();
+    engine.project_caption().unwrap();
+    assert_eq!(f.effects(), effects);
+}
+#[test]
+fn document_engine_rechecks_symlinks_and_nonregular_files_without_launch() {
+    use std::os::unix::fs::symlink;
+    for kind in ["symlink", "directory", "fifo"] {
+        let f = Fixture::new();
+        let target = f.document();
+        let file = target.editor_identity().unwrap().file;
+        f.engine().open_display(OpenMode::Explicit).unwrap();
+        std::fs::remove_file(&file).unwrap();
+        match kind {
+            "symlink" => {
+                let outside = f._temp.path().join("outside.md");
+                std::fs::write(&outside, "outside").unwrap();
+                symlink(outside, &file).unwrap();
+            }
+            "directory" => std::fs::create_dir(&file).unwrap(),
+            _ => {
+                let path = std::ffi::CString::new(file.to_str().unwrap()).unwrap();
+                assert_eq!(unsafe { libc::mkfifo(path.as_ptr(), 0o600) }, 0);
+            }
+        }
+        let effects = f.effects();
+        assert!(f.engine().open_document(&target).is_err(), "{kind}");
+        assert_eq!(f.effects(), effects);
+    }
+}
+#[test]
+fn document_acknowledgement_survives_authority_loss() {
+    let f = Fixture::new();
+    let target = f.document();
+    let (_, key) = document_keys(&f.runner.socket, &target);
+    f.engine().open_display(OpenMode::Explicit).unwrap();
+    f.runner.world.lock().unwrap().fail_after_open = true;
+    assert!(f.engine().open_document(&target).is_err());
+    let reserved = f.runner.state.read(&key).unwrap().unwrap();
+    assert!(matches!(reserved.phase(), NativePhase::Reserved(_)));
+    assert_eq!(reserved.resources().unwrap().pane_id(), "editor-1");
+    f.runner.world.lock().unwrap().deny_read = false;
+    assert!(f.engine().open_document(&target).is_err());
+    assert_eq!(f.launches(), 2);
+}
 #[test]
 fn predecessor_without_fresh_creation_context_has_no_native_effects() {
     let f = Fixture::new();

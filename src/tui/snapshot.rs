@@ -224,6 +224,14 @@ impl CardSnapshot {
     pub fn session(&self) -> &Session {
         &self.session
     }
+    /// Reuse the painter's URL policy when validating an external action.
+    pub fn contains_link(&self, url: &url::Url) -> bool {
+        self.stream
+            .issues
+            .iter()
+            .chain(&self.stream.prs)
+            .any(|link| super::render::web_url(&link.url).as_ref() == Some(url))
+    }
     pub fn owner(&self) -> &NativeOwnerObservation {
         &self.context.owner
     }

@@ -27,6 +27,13 @@ impl NativeCardEngine {
     pub fn status(&mut self) -> Result<NativeCardStatus> {
         let v = self.guard()?;
         let evidence = self.state.read(&v.key)?;
+        if !matches!(v.pair()?, PairState::Empty)
+            || evidence
+                .as_ref()
+                .is_some_and(|record| matches!(record.phase(), NativePhase::Closed(_)))
+        {
+            v.bound()?;
+        }
         let pending = evidence.as_ref().is_some_and(|record| {
             matches!(
                 record.phase(),

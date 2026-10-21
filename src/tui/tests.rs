@@ -175,6 +175,20 @@ struct WidthDifference {
 }
 
 #[test]
+fn link_actions_require_fresh_membership_under_the_painters_url_policy() {
+    let mut original = snapshot();
+    original.stream.issues = vec![Link::new("https://example.com", "Issue").unwrap()];
+    original.stream.prs.clear();
+    let url = url::Url::parse("https://example.com/").unwrap();
+    assert!(original.contains_link(&url));
+    assert!(!original.contains_link(&url::Url::parse("https://forged.example/").unwrap()));
+    let mut refreshed = original.clone();
+    refreshed.stream.issues.clear();
+    assert!(!refreshed.contains_link(&url));
+    refreshed.stream.prs = vec![Link::new("file:///tmp/private", "").unwrap()];
+    assert!(!refreshed.contains_link(&url::Url::parse("file:///tmp/private").unwrap()));
+}
+#[test]
 fn active_renderer_goldens_and_approved_rust_unicode_layout() {
     // The migration explicitly accepts standard Rust layout for these five cases;
     // retain the original JS goldens and assert the exact approved line edits.

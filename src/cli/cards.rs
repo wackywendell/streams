@@ -1,18 +1,15 @@
 //! Explicit Rust native trial. This module never installs or selects a default CLI.
 mod source;
 
-use serde::Deserialize;
 use std::sync::{Arc, atomic::AtomicBool};
 use streams_temper::frontend::herdr::HerdrClient;
 use streams_temper::process::{NativeProcessRunner, ProcessRequest, ProcessRunner};
 use streams_temper::runtime::native_cards::{
-    DisplayCondition, DisplayOutcome, NameProjectionIntent, NativeCardEngine, NativeCardsConfig,
-    SOURCE_ENV_KEYS,
+    DisplayCondition, DisplayOutcome, LaunchedCardContext, NameProjectionIntent, NativeCardEngine,
+    NativeCardsConfig, SOURCE_ENV_KEYS,
 };
 use streams_temper::runtime::native_state::NativeState;
-use streams_temper::tui::{
-    CardSnapshot, NativeOwnerObservation, Scope, Target as ViewTarget, application::PaneHost,
-};
+use streams_temper::tui::{CardSnapshot, Target as ViewTarget, application::PaneHost};
 
 use super::{
     App, BTreeMap, CliError, Config, Output, PathBuf, Result,
@@ -28,9 +25,29 @@ pub(super) struct Options {
 }
 impl App {
     pub(super) fn native_cards(&self, options: Options, command: NativeCommand) -> Result<Output> {
-        let plugin_root = options.plugin_root.clone().unwrap_or_else(|| {
-            PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("integrations/herdr-work-cards")
-        });
+        let launched = LaunchedCardContext::from_environment(&self.environment)?;
+        if let (Some(path), Some(context)) = (&options.plugin_root, &launched)
+            && std::fs::canonicalize(if path.is_absolute() {
+                path.clone()
+            } else {
+                self.cwd.join(path)
+            })? != std::fs::canonicalize(context.plugin_root())?
+        {
+            return Err(CliError::message(
+                "explicit plugin root differs from protected card context",
+            ));
+        }
+        let plugin_root = options
+            .plugin_root
+            .clone()
+            .or_else(|| {
+                launched
+                    .as_ref()
+                    .map(|context| context.plugin_root().to_owned())
+            })
+            .unwrap_or_else(|| {
+                PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("integrations/herdr-work-cards")
+            });
         let config = NativeCardsConfig::load(&self.environment, &self.cwd, &plugin_root)?;
         if matches!(command, NativeCommand::Pane) {
             if !self.environment.contains_key("STREAMS_CARDS_SCOPE") {
@@ -120,49 +137,23 @@ fn build(
 ) -> Result<NativeCardEngine> {
     let mut read_environment = app.environment.clone();
     let mut read_cwd = app.cwd.clone();
-    let (scope, owner) = if app.environment.contains_key("STREAMS_CARDS_SCOPE") {
-        let wire: ScopeInput = decode_env(&app.environment, "STREAMS_CARDS_SCOPE")?;
-        let scope = Scope {
-            catalog_source: wire.catalog_source,
-            host_id: wire.host_id,
-            stream_id: wire.stream_id,
-            session_id: wire.session_id,
-            harness: "pi".into(),
-            native_session_id: wire.native_session_id,
-        };
-        let owner: OwnerInput = decode_env(&app.environment, "STREAMS_CARDS_OWNER")?;
-        let captured: BTreeMap<String, String> =
-            decode_env(&app.environment, "STREAMS_CARDS_READ_ENV")?;
-        if captured
-            .keys()
-            .any(|key| !SOURCE_ENV_KEYS.contains(&key.as_str()))
-        {
-            return Err(CliError::message(
-                "captured reader environment contains an unsupported key",
-            ));
-        }
+    let launched = LaunchedCardContext::from_environment(&app.environment)?;
+    let (scope, owner) = if let Some(context) = &launched {
         for key in SOURCE_ENV_KEYS {
             read_environment.remove(key);
         }
-        read_environment.extend(captured);
+        read_environment.extend(context.reader().environment.clone());
+        let owner = context.owner();
         read_environment.insert("HERDR_ENV".into(), "1".into());
         read_environment.insert("HERDR_PANE_ID".into(), owner.pane_id.clone());
         read_environment.insert("HERDR_TAB_ID".into(), owner.tab_id.clone());
         read_environment.insert("HERDR_WORKSPACE_ID".into(), owner.workspace_id.clone());
-        read_environment.insert("STREAMS_STREAM_ID".into(), scope.stream_id.clone());
-        read_cwd = PathBuf::from(
-            app.environment
-                .get("STREAMS_CARDS_READ_CWD")
-                .ok_or_else(|| CliError::message("captured reader cwd missing"))?,
+        read_environment.insert(
+            "STREAMS_STREAM_ID".into(),
+            context.scope().stream_id.clone(),
         );
-        (
-            Some(scope),
-            Some(NativeOwnerObservation {
-                pane_id: owner.pane_id,
-                tab_id: owner.tab_id,
-                workspace_id: owner.workspace_id,
-            }),
-        )
+        read_cwd = context.reader().cwd.clone();
+        (Some(context.scope().clone()), Some(owner.clone()))
     } else {
         (None, None)
     };
@@ -238,37 +229,6 @@ fn build(
     )
     .map_err(Into::into)
 }
-fn decode_env<T: serde::de::DeserializeOwned>(
-    env: &BTreeMap<String, String>,
-    key: &str,
-) -> Result<T> {
-    let value: serde_json::Value = streams_temper::codec::load_json(
-        env.get(key)
-            .ok_or_else(|| CliError::message(format!("missing {key}")))?,
-    )
-    .map_err(|e| CliError::message(e.to_string()))?;
-    if !value.is_object() {
-        return Err(CliError::message(format!("{key} must be an object")));
-    }
-    serde_json::from_value(value).map_err(Into::into)
-}
-#[derive(Deserialize)]
-#[serde(deny_unknown_fields, rename_all = "camelCase")]
-struct ScopeInput {
-    catalog_source: String,
-    host_id: String,
-    stream_id: String,
-    session_id: String,
-    native_session_id: String,
-}
-#[derive(Deserialize)]
-#[serde(deny_unknown_fields)]
-struct OwnerInput {
-    pane_id: String,
-    tab_id: String,
-    workspace_id: String,
-}
-
 struct Host {
     engine: NativeCardEngine,
     environment: BTreeMap<String, String>,
@@ -292,7 +252,9 @@ impl PaneHost for Host {
                 .open_document(document)
                 .map_err(|e| e.to_string()),
             ViewTarget::Link(url) => {
-                if !matches!(url.scheme(), "https" | "http")
+                if !snapshot.contains_link(url)
+                    || !fresh.contains_link(url)
+                    || !matches!(url.scheme(), "https" | "http")
                     || !url.username().is_empty()
                     || url.password().is_some()
                 {

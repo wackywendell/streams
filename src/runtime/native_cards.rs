@@ -8,12 +8,14 @@ mod config;
 mod documents;
 mod handover;
 mod inspection;
+mod launch_context;
 mod projection;
 #[cfg(test)]
 mod tests;
 
 pub use config::NativeCardsConfig;
 pub use inspection::{DisplayCondition, NativeCardStatus};
+pub use launch_context::LaunchedCardContext;
 pub use projection::{NameOutcome, NameProjectionIntent, NameReport};
 
 use std::collections::BTreeMap;
@@ -40,7 +42,8 @@ const PAIR_KEYS: [&str; 6] = [
     "strm_role",
     "strm_native",
 ];
-pub const SOURCE_ENV_KEYS: [&str; 12] = [
+pub const SOURCE_ENV_KEYS: [&str; 13] = [
+    "EDITOR",
     "HOME",
     "XDG_CONFIG_HOME",
     "XDG_DATA_HOME",
@@ -225,6 +228,7 @@ pub struct NativeCardEngine {
     state: Arc<NativeState>,
     config: NativeCardsConfig,
     environment: BTreeMap<String, String>,
+    launched: Option<LaunchedCardContext>,
     cancelled: Arc<AtomicBool>,
     caller: NativeTuple,
     captured: Option<CapturedOwner>,
@@ -239,7 +243,23 @@ impl NativeCardEngine {
         environment: BTreeMap<String, String>,
         cancelled: Arc<AtomicBool>,
     ) -> Result<Self> {
+        let launched = LaunchedCardContext::from_environment(&environment)?;
+        if let Some(context) = &launched
+            && (context.state_directory() != state.directory()
+                || std::fs::canonicalize(context.plugin_root())?
+                    != std::fs::canonicalize(&config.plugin_root)?)
+        {
+            return Err(invalid(
+                "launched-card state or plugin root differs from its protected context",
+            ));
+        }
         let current = client.current_pane()?;
+        if launched
+            .as_ref()
+            .is_some_and(|context| context.owner().pane_id == current.id)
+        {
+            return Err(invalid("a launched card cannot run as the Pi owner pane"));
+        }
         let snapshot = HerdrNativeSnapshot::parse(&client.session_snapshot()?)?;
         let pane = snapshot
             .topology()
@@ -266,6 +286,7 @@ impl NativeCardEngine {
             state,
             config,
             environment,
+            launched,
             cancelled,
             caller,
             captured: None,
@@ -361,7 +382,10 @@ impl NativeCardEngine {
             binding: tokens.get("strm_binding").cloned(),
         });
         let latest = self.source.read(inventory)?;
-        if latest.card.scope() != scope || latest.card.owner() != claimed {
+        if latest.card.scope() != scope
+            || latest.card.owner() != claimed
+            || latest.handover != before.handover
+        {
             return Err(self.refuse("Streams context changed during native verification"));
         }
         self.check_cancelled()?;
@@ -382,6 +406,16 @@ impl NativeCardEngine {
     fn validate_pair(&self, proof: Verified) -> Result<Verified> {
         let pair = proof.pair()?;
         let native = &proof.saved.card.scope().native_session_id;
+        if let Some(context) = &self.launched
+            && (proof.caller == proof.owner
+                || context.scope() != proof.saved.card.scope()
+                || context.owner() != proof.saved.card.owner()
+                || context.owner_terminal() != proof.owner.terminal_id)
+        {
+            return Err(
+                self.refuse("launched card scope or caller is not its protected native lifetime")
+            );
+        }
         match pair {
             PairState::Empty => {}
             PairState::CardOnly { card, .. } => {
@@ -409,13 +443,9 @@ impl NativeCardEngine {
                 return Err(self.refuse("caller is not the exact owned card"));
             };
             if card.terminal_id != proof.caller.terminal_id
-                || self
-                    .environment
-                    .get("STREAMS_CARDS_NONCE")
-                    .map(String::as_str)
-                    != Some(nonce)
-                || self.environment.get("STREAMS_CARDS_OWNER_TERMINAL")
-                    != Some(&proof.owner.terminal_id)
+                || self.launched.as_ref().is_none_or(|context| {
+                    context.nonce() != nonce || context.owner_terminal() != proof.owner.terminal_id
+                })
             {
                 return Err(self.refuse("caller card launch nonce or owner changed"));
             }

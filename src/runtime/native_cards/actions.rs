@@ -468,10 +468,7 @@ impl NativeCardEngine {
         if let Some(attempt) = raw
             .as_ref()
             .filter(|a| matches!(a.phase(), NativePhase::Reserved(_)))
-            && matches!(
-                v.pair()?,
-                PairState::Empty | PairState::CardOnly { .. } | PairState::Paired { .. }
-            )
+            && matches!(v.pair()?, PairState::Empty | PairState::CardOnly { .. })
         {
             let resources = self.complete_reservation(&lock, v, attempt, None)?;
             return Ok(DisplayOutcome::Existing(resources));
@@ -526,9 +523,12 @@ impl NativeCardEngine {
             ("STREAMS_RUST_BIN".into(), path_text(&binary)?),
             ("HERDR_SOCKET_PATH".into(), path_text(&self.client.endpoint().socket)?),
             ("STREAMS_CARDS_STATE_DIR".into(), path_text(state.directory())?),
+            ("STREAMS_CARDS_PLUGIN_ROOT".into(), path_text(&root)?),
         ]));
         let pending = NativeAttempt::new(&v.key, nonce)?;
         lock.write(attempt.as_ref(), &pending)?;
+        // Pending is deliberately retained on every later error, including a
+        // cancellation before dispatch. Conservative fencing beats an inferred retry.
         let protocol = Protocol::new()?;
         // Even a partially acknowledged marker clear retains the new pending gate.
         if matches!(v.pair()?, PairState::Absent { .. }) {
@@ -582,8 +582,12 @@ impl NativeCardEngine {
             return Err(self
                 .refuse("unexpected or replayed native card response; pending evidence retained"));
         }
+        let protocol = protocol.next(Action::Acknowledge)?;
+        let mut reserved = pending.clone();
+        reserved.reserve(returned.resources()?)?;
+        lock.write(Some(&pending), &reserved)?;
         let after = self.guard()?;
-        Self::pending_launch(&state, &after, &pending, attempt.as_ref())?;
+        Self::reservation(&state, &after, &reserved)?;
         let live = after.snapshot.locate_terminal(&returned.terminal_id)?;
         if NativeTuple::from_pane(live) != returned
             || PAIR_KEYS.iter().any(|k| {
@@ -595,10 +599,6 @@ impl NativeCardEngine {
         {
             return Err(self.refuse("new card tuple or markers changed; pending evidence retained"));
         }
-        let protocol = protocol.next(Action::Acknowledge)?;
-        let mut reserved = pending.clone();
-        reserved.reserve(returned.resources()?)?;
-        lock.write(Some(&pending), &reserved)?;
         let resources = self.complete_reservation(&lock, after, &reserved, Some(protocol))?;
         self.resize_ready(&returned)?;
         Ok(DisplayOutcome::Opened(resources))
@@ -651,7 +651,7 @@ impl NativeCardEngine {
     }
 
     pub fn focus_display(&mut self) -> Result<()> {
-        self.guard_recovering()?;
+        self.guard()?;
         let state = Arc::clone(&self.state);
         let _lock = state.lock(
             &self.client.endpoint().socket,
@@ -682,7 +682,7 @@ impl NativeCardEngine {
     }
 
     pub fn close_display(&mut self) -> Result<()> {
-        self.guard_recovering()?;
+        self.guard()?;
         let state = Arc::clone(&self.state);
         let lock = state.lock(
             &self.client.endpoint().socket,

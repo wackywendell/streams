@@ -153,6 +153,28 @@ impl NativeCardEngine {
             return Ok(());
         };
         let tuple = NativeTuple::from_pane(card);
+        let desired = before.saved.card.stream().title.clone();
+        validate_title(&desired)?;
+        let verify = |fresh: &Verified| -> Result<()> {
+            fresh.bound()?;
+            let PairState::Paired { card, nonce, .. } = fresh.pair()? else {
+                return Err(invalid("caption display is no longer paired"));
+            };
+            let record = state
+                .read(&fresh.key)?
+                .ok_or_else(|| invalid("caption lacks ready evidence"))?;
+            if fresh.saved.card.stream().title != desired
+                || NativeTuple::from_pane(card) != tuple
+                || record.nonce() != nonce
+                || !matches!(record.phase(), NativePhase::Ready(_))
+                || record
+                    .resources()
+                    .is_none_or(|resources| !tuple.matches_resources(resources))
+            {
+                return Err(invalid("caption ready lifetime changed"));
+            }
+            Ok(())
+        };
         let tokens = before
             .snapshot
             .pane_tokens(&tuple.pane_id)
@@ -160,8 +182,6 @@ impl NativeCardEngine {
         if tokens.get("strm_caption_manual").map(String::as_str) == Some("1") {
             return Ok(());
         }
-        let desired = before.saved.card.stream().title.clone();
-        validate_title(&desired)?;
         let expected = tokens
             .get("strm_caption")
             .map(String::as_str)
@@ -171,11 +191,20 @@ impl NativeCardEngine {
             self.stamp(
                 target,
                 BTreeMap::from([("strm_caption_manual".into(), Some("1".into()))]),
-                |_| Ok(()),
+                &verify,
             )?;
             return Ok(());
         }
+        if tokens.get("strm_caption").map(String::as_str) == Some(desired.as_str()) {
+            return Ok(());
+        }
         if expected == desired {
+            let target = MetadataTarget::pane(&before, &tuple.pane_id)?;
+            self.stamp(
+                target,
+                BTreeMap::from([("strm_caption".into(), Some(desired.clone()))]),
+                &verify,
+            )?;
             return Ok(());
         }
         let renamed = self.call(
@@ -196,8 +225,8 @@ impl NativeCardEngine {
         let target = MetadataTarget::pane(&after, &tuple.pane_id)?;
         self.stamp(
             target,
-            BTreeMap::from([("strm_caption".into(), Some(desired))]),
-            |_| Ok(()),
+            BTreeMap::from([("strm_caption".into(), Some(desired.clone()))]),
+            &verify,
         )?;
         Ok(())
     }

@@ -95,7 +95,7 @@ pub(super) fn buffer_line(buffer: &Buffer, y: u16) -> String {
     line.trim_end().to_owned()
 }
 
-fn web_url(value: &str) -> Option<Url> {
+pub(super) fn web_url(value: &str) -> Option<Url> {
     if value.chars().any(|c| {
         c.is_whitespace()
             || c == '\\'

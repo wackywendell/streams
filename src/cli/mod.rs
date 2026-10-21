@@ -269,6 +269,7 @@ impl App {
             "STREAMS_CARDS_READ_ENV",
             "STREAMS_CARDS_READ_CWD",
             "STREAMS_CARDS_STATE_DIR",
+            "STREAMS_CARDS_PLUGIN_ROOT",
             "STREAMS_RUST_BIN",
             "DISPLAY",
             "WAYLAND_DISPLAY",
