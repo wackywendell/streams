@@ -1922,6 +1922,7 @@ dependencies = [
  "serde_json",
  "sha2",
  "signal-hook",
+ "stateright",
  "strum 0.28.0",
  "temper-jit",
  "temper-runtime",

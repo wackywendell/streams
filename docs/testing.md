@@ -178,16 +178,21 @@ repeated through CLI updates and readbacks.
 
 ## Check model mutations at the asserted boundary
 
-Positive specifications still run all 4 Temper levels. Negative mutations call
-Temper's public model builder and checker directly, with the cascade's unchanged
-counter bound of 2. Each mutation must parse and produce an actual counterexample;
-a dead transition or parse failure does not satisfy the test.
+Positive specifications still run all 4 Temper levels, including exhaustive L1
+checking and dead-transition analysis. Negative mutations build the same Temper
+model with the unchanged counter bound of 2, then use Stateright's BFS checker to
+stop on a reachable `Invariants` counterexample. They do not need the remainder of
+the graph or a second traversal for dead transitions. No timeout, depth or state
+limit substitutes for a witness. Parse failures still fail the test, and an
+unmodified protocol is a negative control that must produce no counterexample.
+Stateright 0.31 is an explicit test dependency using the version already in the
+lockfile through Temper; no dependency versions changed.
 
-The resource-effect model's 4 mutations are separate, named tests rather than a
-serial loop. Each can run and fail independently. The focused group took 17.77
-seconds with the serial direct-checker loop and 7.36 seconds after splitting it.
-The full state exploration still runs; these samples do not establish a fixed
-speedup. The model remains limited to the proposal described in its source.
+The resource-effect model's 4 mutations remain separate, named tests. They once
+ran full L1 checks in a serial loop (17.77 seconds in one sample), then as separate
+tests (7.36 seconds for the group in another). They now search only for the claimed
+invariant witness. Positive full-cascade verification remains unchanged, and the
+model is still limited to the proposal described in its source.
 
 ## Rust-only follow-up execution sample
 

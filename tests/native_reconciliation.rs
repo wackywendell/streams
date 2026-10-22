@@ -1,4 +1,5 @@
 //! Proposed native lifecycle contract only. No Herdr/Pi service is contacted.
+use crate::support::model::invariant_counterexample;
 use streams_temper::sync::protocol::verify_total_context;
 use temper_jit::table::{Effect, EvalContext, TransitionTable, effect_args};
 use temper_verify::cascade::VerificationCascade;
@@ -292,13 +293,9 @@ fn committed_fork_retires_the_lane_without_erasing_either_pending_attempt() {
 fn assert_counterexample(old: &str, new: &str) {
     let broken = IOA.replacen(old, new, 1);
     assert_ne!(broken, IOA);
-    // The positive test owns L0–L3; mutations require the same bounded L1 counterexample.
-    let model = temper_verify::build_model_from_ioa(&broken, 2).unwrap();
-    let report = temper_verify::check_model(&model);
-    assert!(!report.all_properties_hold, "mutation survived: {old}");
     assert!(
-        !report.counterexamples.is_empty(),
-        "mutation must yield a model counterexample, not just a parse failure: {report:#?}"
+        invariant_counterexample(&broken).is_some(),
+        "mutation must yield a reachable invariant counterexample: {old}"
     );
 }
 

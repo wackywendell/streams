@@ -1,4 +1,5 @@
 //! Native-open model and pre-effect durability; no native service is contacted.
+use crate::support::model::invariant_counterexample;
 use serde_json::json;
 use streams_temper::runtime::{
     RuntimeError,
@@ -33,10 +34,7 @@ fn missing_pending_effect_has_temper_counterexample() {
         1,
     );
     assert_ne!(broken, NATIVE_OPEN_IOA);
-    let model = temper_verify::build_model_from_ioa(&broken, 2).unwrap();
-    let report = temper_verify::check_model(&model);
-    assert!(!report.all_properties_hold);
-    assert!(!report.counterexamples.is_empty(), "{report:#?}");
+    assert!(invariant_counterexample(&broken).is_some());
 }
 #[test]
 fn marker_precedes_effect_and_checked_result_precedes_ready_binding() {

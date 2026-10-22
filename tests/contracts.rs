@@ -4,6 +4,7 @@
 mod support {
     pub mod git;
     pub mod memory;
+    pub mod model;
 }
 
 mod agent_capture;

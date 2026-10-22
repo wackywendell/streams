@@ -47,5 +47,6 @@ strum = { version = "0.28.0", features = ["derive"] }
 
 [dev-dependencies]
 proptest = "1"
+stateright = "0.31"
 temper-runtime = { git = "https://github.com/nerdsane/temper.git", rev = "6255ac3b43028105b8c0a2cee773f01aed2480a2" }
 temper-verify = { git = "https://github.com/nerdsane/temper.git", rev = "6255ac3b43028105b8c0a2cee773f01aed2480a2" }

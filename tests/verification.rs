@@ -1,3 +1,7 @@
+#[path = "support/model.rs"]
+mod model;
+
+use model::invariant_counterexample;
 use streams_temper::sync::protocol::{CATALOG_PROTOCOL_IOA, protocol_table, verify_total_context};
 use temper_jit::table::EvalContext;
 use temper_verify::cascade::VerificationCascade;
@@ -22,13 +26,15 @@ fn catalog_protocol_passes_temper_cascade() {
 }
 
 #[test]
+fn invariant_search_does_not_accept_an_unmodified_protocol() {
+    assert!(invariant_counterexample(CATALOG_PROTOCOL_IOA).is_none());
+}
+
+#[test]
 fn missing_save_marker_effect_has_counterexample() {
     let broken = CATALOG_PROTOCOL_IOA.replacen(
         r#"effect = ["save_marker = true", "adopting_marker = false", "candidate_reusable = false"]"#,
         r#"effect = ["save_marker = false", "adopting_marker = false", "candidate_reusable = false"]"#, 1);
     assert_ne!(broken, CATALOG_PROTOCOL_IOA);
-    let model = temper_verify::build_model_from_ioa(&broken, 2).unwrap();
-    let report = temper_verify::check_model(&model);
-    assert!(!report.all_properties_hold);
-    assert!(!report.counterexamples.is_empty(), "{report:#?}");
+    assert!(invariant_counterexample(&broken).is_some());
 }
