@@ -113,6 +113,12 @@ environment, input and dispatcher checks, including archive/restore wiring.
 An offline-create CLI smoke test retains the real configuration, accepted save,
 publication-warning, subsequent read and explicit-sync boundary.
 
+Captured updates also use the backend-facing command handler. Memory tests check
+original operation identity, unchanged retry receipts, source rejection and stale
+bases against both the catalog snapshot and complete journal contents. The CLI
+smoke retains unenrolled context, stdin, wrong-source record-byte preservation and
+persisted read-back checks. It no longer repeats retry and stale-base policy.
+
 Conversation discovery separates counting and identity policy from traversal.
 The 10,000-entry limit is tested with synthetic observations, not 10,001 files.
 An exact-locator filesystem test still checks the discovery bypass.
@@ -147,6 +153,30 @@ serial loop. Each can run and fail independently. The focused group took 17.77
 seconds with the serial direct-checker loop and 7.36 seconds after splitting it.
 The full state exploration still runs; these samples do not establish a fixed
 speedup. The model remains limited to the proposal described in its source.
+
+## Rust-only follow-up execution sample
+
+The follow-up branches from the accepted Rust migration bookmark. A warm default
+`cargo test --locked` passed 531 tests after a separate no-run build:
+
+| Target | Tests | Harness time |
+| --- | --- | --- |
+| Library and binary | 183 | 2.26 seconds |
+| Contracts | 336 | 18.36 seconds |
+| Dedicated Git boundaries | 6 | 13.34 seconds |
+| Protocol verification | 3 | 0.05 seconds |
+| Documentation | 3 | 0.17 seconds |
+
+Command wall time was 40.84 seconds, including Cargo and Rustdoc startup and
+snippet compilation. The 333-contract baseline took 27.53 seconds before the
+counterexample split. Both samples used default test concurrency, but host load
+was not controlled. No test was ignored or moved out of the default gate.
+
+With `PATH` pointing to a nonexistent directory, all 4 catalog-command unit tests
+passed in 0.01 seconds and all 43 coordinator tests passed in 0.83 seconds. These
+checks need no external programs on `PATH`. They do not prove disk crash
+durability. The physical Git, import and storage tests remain unchanged,
+apart from narrowing the CLI smoke described above.
 
 ## Pre-integration warm execution samples
 

@@ -953,14 +953,7 @@ impl App {
             AgentCommand::Apply => {
                 let opened = application::open(&self.config)?;
                 let source = io::read_to_string(io::stdin())?;
-                let operation = agent::parse_update(&source, &opened.source_id()?)?;
-                let saved = save(opened.backend(), &operation)?;
-                let event = if matches!(operation.after(), Record::Session(_)) {
-                    SyncEvent::Session
-                } else {
-                    SyncEvent::Stream
-                };
-                finish(opened.backend(), &operation, saved, event, None)
+                catalog::apply(opened.backend(), &source, &opened.source_id()?)
             }
             AgentCommand::Context {
                 harness,

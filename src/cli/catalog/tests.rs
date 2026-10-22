@@ -8,17 +8,21 @@ use super::*;
 #[path = "../../../tests/support/memory.rs"]
 mod memory;
 
+mod apply;
 mod publication;
 
 struct Fixture {
     backend: LocalCatalog<memory::MemoryStore>,
+    store: memory::MemoryStore,
     sequence: Cell<usize>,
 }
 
 impl Fixture {
     fn new() -> Self {
+        let store = memory::MemoryStore::default();
         Self {
-            backend: LocalCatalog::new(memory::MemoryStore::default(), "test-host").unwrap(),
+            backend: LocalCatalog::new(store.clone(), "test-host").unwrap(),
+            store,
             sequence: Cell::new(0),
         }
     }

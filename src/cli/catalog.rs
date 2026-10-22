@@ -7,6 +7,7 @@ use std::path::Path;
 
 use serde_json::json;
 use streams_temper::{
+    agent,
     codec::record_to_data,
     model::{Catalog, Record, Status, Stream},
     operations::{self, Actor},
@@ -140,6 +141,21 @@ pub(super) fn archive(
     )?;
     let saved = save(backend, &operation)?;
     finish(backend, &operation, saved, SyncEvent::Stream, None)
+}
+
+pub(super) fn apply(
+    backend: &dyn CatalogBackend,
+    captured: &str,
+    source_id: &str,
+) -> Result<Output> {
+    let operation = agent::parse_update(captured, source_id)?;
+    let saved = save(backend, &operation)?;
+    let event = if matches!(operation.after(), Record::Session(_)) {
+        SyncEvent::Session
+    } else {
+        SyncEvent::Stream
+    };
+    finish(backend, &operation, saved, event, None)
 }
 
 pub(super) fn sync(backend: &dyn CatalogBackend, event: SyncEvent) -> Result<Output> {

@@ -237,7 +237,7 @@ fn session_attach_captures_explicit_native_id_and_keeps_local_directory_state_pr
 }
 
 #[test]
-fn captured_apply_preserves_source_base_and_stable_receipts_without_enrollment() {
+fn captured_apply_persists_stdin_and_rejects_wrong_source_without_enrollment() {
     let f = Fixture::new();
     f.init();
     let stream = f.create("Work");
@@ -258,9 +258,7 @@ fn captured_apply_preserves_source_base_and_stable_receipts_without_enrollment()
     let (code, first) = f.run(&["agent", "apply"], Some(&request.to_string()));
     assert_eq!(code, 0, "{first}");
     assert_eq!(first["operation_id"], "captured-update");
-    let (code, retry) = f.run(&["agent", "apply"], Some(&request.to_string()));
-    assert_eq!(code, 0, "{retry}");
-    assert_eq!(retry["save"]["domain"]["outcome"], "no-change");
+    assert_eq!(first["save"]["domain"]["outcome"], "changes");
     let before = catalog_files(&f.root());
     let mut bad = request.clone();
     bad["catalog_source"] = json!("wrong");
@@ -268,12 +266,6 @@ fn captured_apply_preserves_source_base_and_stable_receipts_without_enrollment()
     assert_eq!(code, 2);
     assert!(error.get("error").is_some());
     assert_eq!(catalog_files(&f.root()), before);
-    let mut stale = request;
-    stale["operation_id"] = json!("new-stale-intent");
-    stale["changes"] = json!({"goal":"Different"});
-    let (code, rejected) = f.run(&["agent", "apply"], Some(&stale.to_string()));
-    assert_eq!(code, 2, "{rejected}");
-    assert_eq!(rejected["save"]["domain"]["outcome"], "conflict");
     assert_eq!(f.ok(&["show", id])["stream"]["goal"], "Captured");
 }
 
