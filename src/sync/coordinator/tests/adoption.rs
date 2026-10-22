@@ -24,7 +24,7 @@ fn imported_baseline_keeps_creation_authority_and_retired_retries_without_writes
     .unwrap();
     accepted(local.save(&creation, None).unwrap());
     accepted(local.save(&retired, None).unwrap());
-    let (snapshot, baseline, objects) = store
+    let (catalog, baseline, objects) = store
         .with_transaction(|tx| -> Result<_, StorageError> {
             let state = State::from_journal(tx.journal());
             let creations = serde_json::from_value(
@@ -36,7 +36,7 @@ fn imported_baseline_keeps_creation_authority_and_retired_retries_without_writes
             for name in tx.journal().names()? {
                 objects.insert(name.clone(), tx.journal().read(&name)?.unwrap());
             }
-            Ok((Transaction::read(tx)?, baseline, objects))
+            Ok((Transaction::read(tx)?.catalog, baseline, objects))
         })
         .unwrap();
     let histories = Rc::<RefCell<Histories>>::default();
@@ -51,8 +51,9 @@ fn imported_baseline_keeps_creation_authority_and_retired_retries_without_writes
         "host",
         false,
     );
-    // This adapter owns the source's opaque revision tokens after the import.
-    *repo.records.borrow_mut() = snapshot.clone();
+    // Import domain data, not another store's opaque revision tokens.
+    assert_eq!(repo.snapshot().catalog, catalog);
+    let snapshot = repo.snapshot();
     for (name, value) in objects {
         repo.journal.write(&name, value).unwrap();
     }
