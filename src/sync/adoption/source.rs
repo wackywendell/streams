@@ -91,25 +91,36 @@ fn bookkeeping(root: &Path, state: &State<'_>) -> Result<Bookkeeping, RepairRequ
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::codec::record_to_data;
     use crate::model::{Record, Stream};
     use crate::yaml_store::YamlStore;
     use serde_json::json;
 
-    fn seed(tx: &impl Transaction) {
+    fn seed(root: &Path) {
         let record = Record::Stream(Stream::new("work", "Original", None, "host").unwrap());
-        tx.save(&record, &tx.read().unwrap()).unwrap();
+        let data = json!({"version": 1, "revision": "fixture", "kind": record.key().kind(), "record": record_to_data(&record)});
+        fs::create_dir_all(root.join("streams")).unwrap();
+        fs::create_dir_all(root.join(".catalog-sync")).unwrap();
+        // These tests observe existing files; durable save behavior has its own suite.
+        fs::write(
+            root.join(relative_record_path(&record)),
+            serde_json::to_vec(&data).unwrap(),
+        )
+        .unwrap();
     }
 
-    fn write_bookkeeping(tx: &impl Transaction, name: &str) {
+    fn write_bookkeeping(root: &Path, name: &str) {
         let data = match name {
-            "local.json" => json!({"creations": {}}),
-            "receipts.json" => json!({"operations": {}}),
-            "cli.json" => json!({"host": "host", "strategy": "none"}),
+            "local.json" => json!({"version": 1, "creations": {}}),
+            "receipts.json" => json!({"version": 1, "operations": {}}),
+            "cli.json" => json!({"version": 1, "host": "host", "strategy": "none"}),
             _ => unreachable!(),
         };
-        State::from_journal(tx.journal())
-            .write(name, data.as_object().unwrap().clone())
-            .unwrap();
+        fs::write(
+            root.join(".catalog-sync").join(name),
+            serde_json::to_vec(&data).unwrap(),
+        )
+        .unwrap();
     }
 
     #[test]
@@ -117,9 +128,9 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         YamlStore::new(dir.path())
             .with_transaction::<_, RepairRequired>(|tx| {
-                seed(tx);
+                seed(dir.path());
                 for name in ["local.json", "cli.json", "receipts.json"] {
-                    write_bookkeeping(tx, name);
+                    write_bookkeeping(dir.path(), name);
                 }
                 let source = Source::capture(dir.path(), tx)?;
                 assert_eq!(source.snapshot, tx.read()?);
@@ -143,7 +154,7 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         YamlStore::new(dir.path())
             .with_transaction::<_, RepairRequired>(|tx| {
-                seed(tx);
+                seed(dir.path());
                 let source = Source::capture(dir.path(), tx)?;
                 let path = dir.path().join("streams/work.yaml");
                 let mut bytes = fs::read(&path).unwrap();
@@ -169,9 +180,9 @@ mod tests {
                 let dir = tempfile::tempdir().unwrap();
                 YamlStore::new(dir.path())
                     .with_transaction::<_, RepairRequired>(|tx| {
-                        seed(tx);
+                        seed(dir.path());
                         if change != "appeared" {
-                            write_bookkeeping(tx, name);
+                            write_bookkeeping(dir.path(), name);
                         }
                         let source = Source::capture(dir.path(), tx)?;
                         source.check_unchanged(dir.path(), tx)?;
@@ -184,7 +195,7 @@ mod tests {
                                 fs::write(path, bytes).unwrap();
                                 assert_eq!(tx.journal().read(name)?, before);
                             }
-                            "appeared" => write_bookkeeping(tx, name),
+                            "appeared" => write_bookkeeping(dir.path(), name),
                             "disappeared" => fs::remove_file(path).unwrap(),
                             _ => unreachable!(),
                         }
@@ -215,7 +226,7 @@ mod tests {
                 let dir = tempfile::tempdir().unwrap();
                 YamlStore::new(dir.path())
                     .with_transaction::<_, RepairRequired>(|tx| {
-                        seed(tx);
+                        seed(dir.path());
                         let source = Source::capture(dir.path(), tx)?;
                         fs::write(dir.path().join(name), corrupt).unwrap();
                         assert!(
