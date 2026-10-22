@@ -4,12 +4,23 @@ use streams_temper::sync::{
     state::{GitConfig, PublicationAttempt, PublicationMarker, State, SyncMetadata},
 };
 
-fn with_state(root: &std::path::Path, f: impl FnOnce(&State<'_>)) {
+fn with_disk_state(root: &std::path::Path, f: impl FnOnce(&State<'_>)) {
     use streams_temper::{
         storage::{StorageError, Transaction},
         yaml_store::YamlStore,
     };
     YamlStore::new(root)
+        .with_transaction::<_, StorageError>(|tx| {
+            f(&State::from_journal(tx.journal()));
+            Ok(())
+        })
+        .unwrap();
+}
+
+fn with_state(f: impl FnOnce(&State<'_>)) {
+    use crate::support::memory::MemoryStore;
+    use streams_temper::storage::{StorageError, Store, Transaction};
+    MemoryStore::default()
         .with_transaction::<_, StorageError>(|tx| {
             f(&State::from_journal(tx.journal()));
             Ok(())
@@ -27,7 +38,7 @@ fn write(state: &State<'_>, name: &str, value: Value) {
 fn journal_rejects_nonregular_objects_without_blocking() {
     use std::{ffi::CString, fs, os::unix::ffi::OsStrExt};
     let dir = tempfile::tempdir().unwrap();
-    with_state(dir.path(), |state| {
+    with_disk_state(dir.path(), |state| {
         state.write_metadata(&SyncMetadata::default()).unwrap();
         let path = dir.path().join(".catalog-sync/publication.json");
         fs::create_dir(&path).unwrap();
@@ -41,8 +52,7 @@ fn journal_rejects_nonregular_objects_without_blocking() {
 
 #[test]
 fn metadata_requires_nullable_fields_and_rejects_unknown_or_nonfinite_state() {
-    let dir = tempfile::tempdir().unwrap();
-    with_state(dir.path(), |state| {
+    with_state(|state| {
         assert_eq!(state.metadata().unwrap(), SyncMetadata::default());
         state.write_metadata(&SyncMetadata::default()).unwrap();
         assert_eq!(state.metadata().unwrap(), SyncMetadata::default());
@@ -103,6 +113,40 @@ fn metadata_requires_nullable_fields_and_rejects_unknown_or_nonfinite_state() {
 }
 
 #[test]
+fn typed_state_roundtrips_through_a_fresh_disk_store() {
+    let dir = tempfile::tempdir().unwrap();
+    let config = GitConfig::new(Some("remote".into()), "main", "host").unwrap();
+    let metadata = SyncMetadata {
+        confirmed: Some("a".repeat(40).parse().unwrap()),
+        last_push: Some(Seconds::try_from(123.0).unwrap()),
+        last_confirmed_attempt: Some("b".repeat(40).parse().unwrap()),
+        ..SyncMetadata::default()
+    };
+    let marker = PublicationMarker::Attempting(
+        PublicationAttempt::new(
+            None,
+            "a".repeat(40).parse().unwrap(),
+            "b".repeat(40).parse().unwrap(),
+            "main",
+            "remote",
+            vec!["create".into()],
+            metadata.last_push,
+        )
+        .unwrap(),
+    );
+    with_disk_state(dir.path(), |state| {
+        state.write_config(&config).unwrap();
+        state.write_metadata(&metadata).unwrap();
+        state.write_publication(&marker).unwrap();
+    });
+    with_disk_state(dir.path(), |state| {
+        assert_eq!(state.config().unwrap(), Some(config));
+        assert_eq!(state.metadata().unwrap(), metadata);
+        assert_eq!(state.publication().unwrap(), Some(marker));
+    });
+}
+
+#[test]
 fn git_config_deserialization_validates_constructor_invariants() {
     let valid = json!({"remote": null, "branch": "main", "host": "host"});
     let config: GitConfig = serde_json::from_value(valid.clone()).unwrap();
@@ -145,8 +189,7 @@ fn publication_confirmation_updates_preserve_validated_timestamps() {
     let confirmed = attempt.clone().with_confirmed_at(Some(timestamp));
     assert_eq!(confirmed.confirmed_at(), Some(timestamp));
     assert_eq!(confirmed.clone().with_confirmed_at(None), attempt);
-    let dir = tempfile::tempdir().unwrap();
-    with_state(dir.path(), |state| {
+    with_state(|state| {
         let marker = PublicationMarker::Attempting(confirmed);
         state.write_publication(&marker).unwrap();
         assert_eq!(state.publication().unwrap(), Some(marker));
@@ -155,8 +198,7 @@ fn publication_confirmation_updates_preserve_validated_timestamps() {
 
 #[test]
 fn config_and_publication_preserve_flat_wire_schema_and_phase_rules() {
-    let dir = tempfile::tempdir().unwrap();
-    with_state(dir.path(), |state| {
+    with_state(|state| {
         let config = GitConfig::new(Some("remote".into()), "main", "host").unwrap();
         state.write_config(&config).unwrap();
         assert_eq!(state.config().unwrap(), Some(config));
