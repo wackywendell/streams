@@ -316,42 +316,34 @@ fn accepted_save_keeps_receipt_when_directory_completion_fails() {
 }
 
 #[test]
-fn explicit_git_import_preserves_authority_and_completed_retry_returns_baseline_root() {
+fn git_import_requires_explicit_adoption_and_returns_baseline_receipt() {
     let f = Fixture::new();
     f.init();
-    let stream = f.create("Imported");
-    let id = stream["id"].as_str().unwrap();
-    let context = f.ok(&[
-        "agent",
-        "context",
-        "--harness",
-        "pi",
-        "--session-id",
-        "not-enrolled",
-        "--stream-id",
-        id,
-    ]);
+    let marker_path = f.root().join(".catalog-sync/cli.json");
+    let before = fs::read(&marker_path).unwrap();
+    let (code, rejected) = f.run(&["init", "--sync", "git"], None);
+    assert_eq!(code, 2, "{rejected}");
+    assert!(
+        rejected["error"]["message"]
+            .as_str()
+            .unwrap()
+            .contains("explicit adoption")
+    );
+    assert_eq!(fs::read(&marker_path).unwrap(), before);
+    assert!(!f.root().join(".git").exists());
+    assert!(!f.root().join(".catalog-sync/save.json").exists());
+
     let imported = f.ok(&["init", "--sync", "git", "--adopt"]);
-    assert!(imported["baseline_revision"].is_string());
-    assert_eq!(f.ok(&["show", id])["stream"], stream);
-    f.ok(&["update", id, "--goal", "After import"]);
-    assert_eq!(
-        f.ok(&["init", "--sync", "git", "--adopt"])["baseline_revision"],
-        imported["baseline_revision"]
-    );
-    assert_eq!(
-        f.ok(&[
-            "agent",
-            "context",
-            "--harness",
-            "pi",
-            "--session-id",
-            "not-enrolled",
-            "--stream-id",
-            id
-        ])["authority"],
-        context["authority"]
-    );
+    imported["baseline_revision"]
+        .as_str()
+        .unwrap()
+        .parse::<streams_temper::sync::Oid>()
+        .unwrap();
+    assert!(f.root().join(".git").is_dir());
+    let marker: Value = serde_json::from_slice(&fs::read(&marker_path).unwrap()).unwrap();
+    let original: Value = serde_json::from_slice(&before).unwrap();
+    assert_eq!(marker["strategy"], "git");
+    assert_eq!(marker["host"], original["host"]);
 }
 
 #[test]

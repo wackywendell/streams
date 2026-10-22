@@ -157,6 +157,22 @@ current configuration after writing it. Physical tests retain candidate ownershi
 rename failure, final-path signing, byte preservation and fence reassertion after
 an actual unlink. A memory journal cannot establish those filesystem facts.
 
+Import preparation now captures a private `Source`: decoded snapshot, exact record
+bytes and bookkeeping presence/contents. It depends on the root and locked storage
+transaction, not a Git-bearing catalog. The prepared import carries that coherent
+value through installation. Direct YAML-backed tests check raw-byte drift with an
+unchanged decoded catalog; content, addition and removal of each bookkeeping file;
+and corrupt evidence. Only one preparation interleaving needs a Git runner: mutate
+a record during `commit-tree`, require the precise drift error, then check that no
+candidate, Git installation or save fence remains.
+
+The CLI import smoke now uses 3 commands: initialize, reject a strategy change
+without `--adopt`, then accept explicit adoption and return a valid baseline ID.
+It checks that rejection preserves the local marker and that adoption installs the
+Git marker without changing the configured host. Authority, retired retries and
+completed-import identity remain in the direct adoption tests rather than being
+repeated through CLI updates and readbacks.
+
 ## Check model mutations at the asserted boundary
 
 Positive specifications still run all 4 Temper levels. Negative mutations call

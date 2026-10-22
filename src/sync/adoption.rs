@@ -1,6 +1,9 @@
 //! Explicit snapshot import; preparation is disposable, installation is durably fenced.
 
 mod completion;
+mod source;
+
+use source::Source;
 
 use std::collections::BTreeMap;
 use std::fs::{self, File};
@@ -14,22 +17,18 @@ use tempfile::TempDir;
 use crate::config::{Marker, Strategy};
 use crate::file_io::{ensure_directory, sync_directory};
 use crate::model::check_text;
-use crate::storage::{Snapshot, Transaction};
+use crate::storage::Transaction;
 
 use super::baseline::{Baseline, decode_baseline, encode_baseline};
 use super::git::{GitCatalog, LockedCatalog};
 use super::git_io::Git;
 use super::history::read_history;
-use super::local;
 use super::protocol::ProtocolMachine;
 use super::state::{GitConfig, RepairRequired};
 
 fn repair(error: impl std::fmt::Display) -> RepairRequired {
     RepairRequired::new(error.to_string())
 }
-
-type Files = BTreeMap<String, Vec<u8>>;
-type Bookkeeping = BTreeMap<String, Option<String>>;
 
 #[derive(Debug, PartialEq, Eq, Serialize)]
 struct SigningProfile {
@@ -92,50 +91,14 @@ fn sync_tree(root: &Path) -> Result<(), RepairRequired> {
     }
 }
 
-fn bookkeeping(catalog: &LockedCatalog<'_>) -> Result<Bookkeeping, RepairRequired> {
-    let mut before = BTreeMap::new();
-    for name in ["cli.json", "local.json", "receipts.json"] {
-        // Validate the journal object before retaining its exact original text.
-        let present = catalog.state.read(name)?.is_some();
-        before.insert(
-            name.into(),
-            if present {
-                Some(
-                    fs::read_to_string(catalog.root.join(".catalog-sync").join(name))
-                        .map_err(repair)?,
-                )
-            } else {
-                None
-            },
-        );
-    }
-    Ok(before)
-}
-
-fn local_files(catalog: &LockedCatalog<'_>, snapshot: &Snapshot) -> Result<Files, RepairRequired> {
-    let mut files = BTreeMap::new();
-    for record in snapshot.catalog.records() {
-        let path = catalog.store.record_path(&record);
-        files.insert(
-            path.to_str()
-                .ok_or_else(|| repair("record path must be UTF-8"))?
-                .into(),
-            fs::read(catalog.root.join(path)).map_err(repair)?,
-        );
-    }
-    Ok(files)
-}
-
 /// Constructed only after preparation and the locked recheck. The permit consumes
 /// this evidence, so installation cannot substitute a catalog, snapshot or policy.
 pub(crate) struct PreparedImport<'a> {
     catalog: &'a LockedCatalog<'a>,
     candidate: TempDir,
     branch: String,
-    snapshot: Snapshot,
-    files: Files,
+    source: Source,
     baseline: Baseline,
-    before: Bookkeeping,
     profile: SigningProfile,
     tip: String,
 }
@@ -144,10 +107,7 @@ fn prepare<'a>(
     catalog: &'a LockedCatalog<'a>,
     branch: &str,
 ) -> Result<PreparedImport<'a>, RepairRequired> {
-    local::ready(catalog.transaction(), &catalog.state)?;
-    let snapshot = catalog.transaction().read().map_err(repair)?;
-    let files = local_files(catalog, &snapshot)?;
-    let before = bookkeeping(catalog)?;
+    let source = Source::capture(catalog.root, catalog.transaction())?;
     let creations = catalog
         .state
         .read("local.json")?
@@ -158,7 +118,7 @@ fn prepare<'a>(
     let baseline =
         Baseline::new(catalog.host_id, creations, catalog.state.fingerprints()?).map_err(repair)?;
     let message = encode_baseline(&baseline).map_err(repair)?;
-    decode_baseline(&message, &files).map_err(repair)?;
+    decode_baseline(&message, &source.files).map_err(repair)?;
     let staging = catalog.root.join(".catalog-staging");
     ensure_directory(&staging, true).map_err(repair)?;
     let candidate = tempfile::Builder::new()
@@ -190,7 +150,7 @@ fn prepare<'a>(
     git.run(&["read-tree", "--empty"], None, None, &[0])
         .map_err(repair)?;
     let mut entries = Vec::new();
-    for (path, bytes) in &files {
+    for (path, bytes) in &source.files {
         let blob = git
             .text(&["hash-object", "-w", "--stdin"], Some(bytes), None, &[0])
             .map_err(repair)?;
@@ -216,7 +176,7 @@ fn prepare<'a>(
     )
     .map_err(repair)?;
     let history = read_history(&git, Some(&tip))?;
-    if history.files() != &files
+    if history.files() != &source.files
         || history.baseline() != Some(&baseline)
         || signing_profile(&git)? != profile
     {
@@ -226,27 +186,13 @@ fn prepare<'a>(
     sync_directory(candidate.path()).map_err(repair)?;
     sync_directory(&staging).map_err(repair)?;
     sync_directory(catalog.root).map_err(repair)?;
-    local::ready(catalog.transaction(), &catalog.state)?;
-    if catalog.transaction().read().map_err(repair)? != snapshot
-        || local_files(catalog, &snapshot)? != files
-    {
-        return Err(repair(
-            "catalog records changed during adoption preparation",
-        ));
-    }
-    if bookkeeping(catalog)? != before {
-        return Err(repair(
-            "catalog bookkeeping changed during adoption preparation",
-        ));
-    }
+    source.check_unchanged(catalog.root, catalog.transaction())?;
     Ok(PreparedImport {
         catalog,
         candidate,
         branch: branch.into(),
-        snapshot,
-        files,
+        source,
         baseline,
-        before,
         profile,
         tip,
     })
@@ -258,20 +204,19 @@ impl PreparedImport<'_> {
             catalog,
             candidate,
             branch,
-            snapshot,
-            files,
+            source,
             baseline,
-            before,
             profile,
             tip,
         } = self;
-        let digests: BTreeMap<_, _> = files
+        let digests: BTreeMap<_, _> = source
+            .files
             .iter()
             .map(|(path, bytes)| (path, format!("{:x}", Sha256::digest(bytes))))
             .collect();
         let evidence: Map<String, Value> = json!({"adoption": {
             "baseline":tip,"branch":branch,"host":catalog.host_id,
-            "before":before,"profile":profile,"files":digests,
+            "before":source.bookkeeping,"profile":profile,"files":digests,
         }})
         .as_object()
         .expect("object")
@@ -291,9 +236,9 @@ impl PreparedImport<'_> {
         catalog.clean().map_err(repair)?;
         let installed = read_history(catalog.git, Some(&catalog.git.head().map_err(repair)?))?;
         if installed.tip() != Some(tip.as_str())
-            || installed.files() != &files
+            || installed.files() != &source.files
             || installed.baseline() != Some(&baseline)
-            || installed.catalog() != &snapshot.catalog
+            || installed.catalog() != &source.snapshot.catalog
         {
             return Err(repair(
                 "installed Git baseline differs from the prepared catalog",

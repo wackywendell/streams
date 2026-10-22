@@ -1,0 +1,235 @@
+//! Locked local-source evidence, independent of Git candidate construction.
+
+use std::collections::BTreeMap;
+use std::fs;
+use std::path::Path;
+
+use crate::storage::{Snapshot, Transaction};
+use crate::sync::local;
+use crate::sync::state::{RepairRequired, State};
+use crate::yaml_store::relative_record_path;
+
+use super::repair;
+
+type Files = BTreeMap<String, Vec<u8>>;
+type Bookkeeping = BTreeMap<String, Option<String>>;
+
+pub(super) struct Source {
+    pub(super) snapshot: Snapshot,
+    pub(super) files: Files,
+    pub(super) bookkeeping: Bookkeeping,
+}
+
+impl Source {
+    pub(super) fn capture(root: &Path, tx: &impl Transaction) -> Result<Self, RepairRequired> {
+        let state = State::from_journal(tx.journal());
+        local::ready(tx, &state)?;
+        let snapshot = tx.read().map_err(repair)?;
+        let files = record_files(root, &snapshot)?;
+        let bookkeeping = bookkeeping(root, &state)?;
+        Ok(Self {
+            snapshot,
+            files,
+            bookkeeping,
+        })
+    }
+
+    pub(super) fn check_unchanged(
+        &self,
+        root: &Path,
+        tx: &impl Transaction,
+    ) -> Result<(), RepairRequired> {
+        let state = State::from_journal(tx.journal());
+        local::ready(tx, &state)?;
+        if tx.read().map_err(repair)? != self.snapshot
+            || record_files(root, &self.snapshot)? != self.files
+        {
+            return Err(repair(
+                "catalog records changed during adoption preparation",
+            ));
+        }
+        if bookkeeping(root, &state)? != self.bookkeeping {
+            return Err(repair(
+                "catalog bookkeeping changed during adoption preparation",
+            ));
+        }
+        Ok(())
+    }
+}
+
+fn record_files(root: &Path, snapshot: &Snapshot) -> Result<Files, RepairRequired> {
+    let mut files = BTreeMap::new();
+    for record in snapshot.catalog.records() {
+        let path = relative_record_path(&record);
+        files.insert(
+            path.to_str()
+                .ok_or_else(|| repair("record path must be UTF-8"))?
+                .into(),
+            fs::read(root.join(path)).map_err(repair)?,
+        );
+    }
+    Ok(files)
+}
+
+fn bookkeeping(root: &Path, state: &State<'_>) -> Result<Bookkeeping, RepairRequired> {
+    let mut before = BTreeMap::new();
+    for name in ["cli.json", "local.json", "receipts.json"] {
+        // Validate the journal object before retaining its exact original text.
+        let present = state.read(name)?.is_some();
+        before.insert(
+            name.into(),
+            if present {
+                Some(fs::read_to_string(root.join(".catalog-sync").join(name)).map_err(repair)?)
+            } else {
+                None
+            },
+        );
+    }
+    Ok(before)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::model::{Record, Stream};
+    use crate::yaml_store::YamlStore;
+    use serde_json::json;
+
+    fn seed(tx: &impl Transaction) {
+        let record = Record::Stream(Stream::new("work", "Original", None, "host").unwrap());
+        tx.save(&record, &tx.read().unwrap()).unwrap();
+    }
+
+    fn write_bookkeeping(tx: &impl Transaction, name: &str) {
+        let data = match name {
+            "local.json" => json!({"creations": {}}),
+            "receipts.json" => json!({"operations": {}}),
+            "cli.json" => json!({"host": "host", "strategy": "none"}),
+            _ => unreachable!(),
+        };
+        State::from_journal(tx.journal())
+            .write(name, data.as_object().unwrap().clone())
+            .unwrap();
+    }
+
+    #[test]
+    fn unchanged_observation_preserves_exact_source() {
+        let dir = tempfile::tempdir().unwrap();
+        YamlStore::new(dir.path())
+            .with_transaction::<_, RepairRequired>(|tx| {
+                seed(tx);
+                for name in ["local.json", "cli.json", "receipts.json"] {
+                    write_bookkeeping(tx, name);
+                }
+                let source = Source::capture(dir.path(), tx)?;
+                assert_eq!(source.snapshot, tx.read()?);
+                assert_eq!(
+                    source.files["streams/work.yaml"],
+                    fs::read(dir.path().join("streams/work.yaml")).unwrap()
+                );
+                for (name, contents) in &source.bookkeeping {
+                    assert_eq!(
+                        contents.as_ref().unwrap(),
+                        &fs::read_to_string(dir.path().join(".catalog-sync").join(name)).unwrap()
+                    );
+                }
+                source.check_unchanged(dir.path(), tx)
+            })
+            .unwrap();
+    }
+
+    #[test]
+    fn raw_record_byte_drift_rejects_unchanged_decoded_catalog() {
+        let dir = tempfile::tempdir().unwrap();
+        YamlStore::new(dir.path())
+            .with_transaction::<_, RepairRequired>(|tx| {
+                seed(tx);
+                let source = Source::capture(dir.path(), tx)?;
+                let path = dir.path().join("streams/work.yaml");
+                let mut bytes = fs::read(&path).unwrap();
+                bytes.extend_from_slice(b"\n# changed formatting\n");
+                fs::write(path, bytes).unwrap();
+                assert_eq!(tx.read()?.catalog, source.snapshot.catalog);
+                assert_eq!(
+                    source
+                        .check_unchanged(dir.path(), tx)
+                        .unwrap_err()
+                        .to_string(),
+                    "catalog records changed during adoption preparation"
+                );
+                Ok(())
+            })
+            .unwrap();
+    }
+
+    #[test]
+    fn bookkeeping_exact_contents_and_presence_drift() {
+        for name in ["local.json", "cli.json", "receipts.json"] {
+            for change in ["contents", "appeared", "disappeared"] {
+                let dir = tempfile::tempdir().unwrap();
+                YamlStore::new(dir.path())
+                    .with_transaction::<_, RepairRequired>(|tx| {
+                        seed(tx);
+                        if change != "appeared" {
+                            write_bookkeeping(tx, name);
+                        }
+                        let source = Source::capture(dir.path(), tx)?;
+                        source.check_unchanged(dir.path(), tx)?;
+                        let path = dir.path().join(".catalog-sync").join(name);
+                        match change {
+                            "contents" => {
+                                let before = tx.journal().read(name)?;
+                                let mut bytes = fs::read(&path).unwrap();
+                                bytes.push(b'\n');
+                                fs::write(path, bytes).unwrap();
+                                assert_eq!(tx.journal().read(name)?, before);
+                            }
+                            "appeared" => write_bookkeeping(tx, name),
+                            "disappeared" => fs::remove_file(path).unwrap(),
+                            _ => unreachable!(),
+                        }
+                        assert_eq!(
+                            source
+                                .check_unchanged(dir.path(), tx)
+                                .unwrap_err()
+                                .to_string(),
+                            "catalog bookkeeping changed during adoption preparation",
+                            "{name}: {change}"
+                        );
+                        Ok(())
+                    })
+                    .unwrap();
+            }
+        }
+    }
+
+    #[test]
+    fn corruption_fails_closed_at_capture_and_recheck() {
+        for name in [
+            "streams/work.yaml",
+            ".catalog-sync/local.json",
+            ".catalog-sync/cli.json",
+            ".catalog-sync/receipts.json",
+        ] {
+            for corrupt in ["not valid data", "{\"version\":999}"] {
+                let dir = tempfile::tempdir().unwrap();
+                YamlStore::new(dir.path())
+                    .with_transaction::<_, RepairRequired>(|tx| {
+                        seed(tx);
+                        let source = Source::capture(dir.path(), tx)?;
+                        fs::write(dir.path().join(name), corrupt).unwrap();
+                        assert!(
+                            Source::capture(dir.path(), tx).is_err(),
+                            "{name}: {corrupt}"
+                        );
+                        assert!(
+                            source.check_unchanged(dir.path(), tx).is_err(),
+                            "{name}: {corrupt}"
+                        );
+                        Ok(())
+                    })
+                    .unwrap();
+            }
+        }
+    }
+}

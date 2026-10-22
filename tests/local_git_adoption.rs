@@ -212,29 +212,25 @@ fn preparation_failure_cleans_only_its_owned_candidate_and_is_retryable() {
 }
 
 #[test]
-fn changed_records_or_bookkeeping_reject_preparation_before_fence() {
-    for name in [
-        "streams/work.yaml",
-        ".catalog-sync/local.json",
-        ".catalog-sync/cli.json",
-        ".catalog-sync/receipts.json",
-    ] {
-        let mut f = Fixture::new();
-        let path = f.root.join(name);
-        install_hook(&mut f.git, move |_, args, _, _| {
-            if args[0] == "commit-tree" {
-                let mut bytes = fs::read(&path).unwrap();
-                bytes.push(b'\n');
-                fs::write(&path, bytes).unwrap();
-            }
-            None
-        });
-        assert!(f.adopt().is_err(), "{name}");
-        assert!(f.candidates().is_empty());
-        assert!(!f.root.join(".catalog-sync/save.json").exists());
-        assert!(!f.root.join(".git").exists());
-        assert!(application::open(&f.config).is_ok());
-    }
+fn changed_record_bytes_abort_preparation_before_fencing() {
+    let mut f = Fixture::new();
+    let path = f.root.join("streams/work.yaml");
+    install_hook(&mut f.git, move |_, args, _, _| {
+        if args[0] == "commit-tree" {
+            let mut bytes = fs::read(&path).unwrap();
+            bytes.push(b'\n');
+            fs::write(&path, bytes).unwrap();
+        }
+        None
+    });
+    assert_eq!(
+        f.adopt().unwrap_err().to_string(),
+        "catalog records changed during adoption preparation"
+    );
+    assert!(f.candidates().is_empty());
+    assert!(!f.root.join(".catalog-sync/save.json").exists());
+    assert!(!f.root.join(".git").exists());
+    assert!(application::open(&f.config).is_ok());
 }
 
 #[test]
