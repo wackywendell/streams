@@ -4,6 +4,7 @@ use crate::codec::record_to_data;
 use crate::model::{Record, Stream};
 use crate::operations::Actor;
 use crate::storage::StorageError;
+use crate::sync::replay::{Replay, replay};
 use crate::yaml_store::relative_record_path;
 
 #[path = "../../../tests/support/git.rs"]
@@ -106,8 +107,20 @@ fn partial_checkout_changes_files_and_index_without_moving_branch() {
 }
 
 #[test]
-fn pushed_history_is_observable_with_original_intent_and_without_changing_index() {
-    let (dir, catalog, _, new, operation, origin) = revisions();
+fn candidate_publication_preserves_original_intent_and_live_checkout() {
+    let (dir, catalog, old, new, operation, origin) = revisions();
+    let head = catalog.git().head().unwrap();
+    let index = fs::read(catalog.root().join(".git/index")).unwrap();
+    let local = read_history(catalog.git(), Some(new.as_str())).unwrap();
+    let remote_history = read_history(catalog.git(), Some(old.as_str())).unwrap();
+    let Replay::Ready { changes, .. } = replay(&local, &remote_history).unwrap() else {
+        panic!("fixture has no conflicting operations")
+    };
+    let candidate: Oid = catalog
+        .with_lock(|locked| locked.candidate(&local, &remote_history, changes))
+        .unwrap()
+        .parse()
+        .unwrap();
     let remote = dir.path().join("remote.git");
     fs::create_dir(&remote).unwrap();
     fixture_git::test_command(
@@ -126,14 +139,12 @@ fn pushed_history_is_observable_with_original_intent_and_without_changing_index(
             &[0],
         )
         .unwrap();
-    let head = catalog.git().head().unwrap();
-    let index = fs::read(catalog.root().join(".git/index")).unwrap();
-    catalog.git().push_candidate(&new, "main").unwrap();
+    catalog.git().push_candidate(&candidate, "main").unwrap();
     assert_eq!(
         catalog.git().fetch_tip("main").unwrap().as_deref(),
-        Some(new.as_str())
+        Some(candidate.as_str())
     );
-    let history = read_history(catalog.git(), Some(new.as_str())).unwrap();
+    let history = read_history(catalog.git(), Some(candidate.as_str())).unwrap();
     let entry = history.operation("create").unwrap();
     assert_eq!(entry.operation, operation);
     assert_eq!(entry.origin, origin);

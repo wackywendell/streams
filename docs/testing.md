@@ -96,8 +96,8 @@ push, original provenance, retained histories and fencing after partial checkout
 The fixture can now fail after materializing files but before moving the tip.
 Two direct Git-adapter tests in `src/sync/git/tests.rs` seed just two revisions with
 `fast-import`: one uses a real ref lock to cause the partial checkout; the other
-checks push/fetch observation, original intent/provenance and unchanged index,
-worktree and local tip. Neither runs catalog initialization/save/sync for setup.
+runs the production isolated-index candidate builder, then checks push/fetch
+observation, original intent/provenance and unchanged index, worktree and local tip. Neither runs catalog initialization/save/sync for setup.
 These replace the earlier 382-subprocess application trace, not real Git itself.
 
 Real Git also remains in storage, import, inspection, revision and CLI contracts.
@@ -228,16 +228,17 @@ Remaining slow tests must justify their cost with physical boundary evidence:
 - process tests wait beyond descendant sentinel delays to detect surviving children
 
 One instrumented two-clone recovery trace recorded 382 Git adapter subprocess
-calls. Those calls took 8.41 of the trace's 9.77 seconds. That supports keeping a physical
-trace; it does not prove 382 commands or that duration is a lower bound. Further
-speedups can target repeated Git observations or a compatible read adapter without
-weakening the tests. Re-running policy matrices through Git is not justified.
+calls. Those calls took 8.41 of the trace's 9.77 seconds. This identified adapter
+work to test directly, not a reason to retain the compound application trace.
+Neither 382 commands nor that duration was a lower bound. The focused replacements
+exercise real Git construction, transport and partial checkout; the surrounding
+recovery policy belongs in coordinator tests.
 
 ## Spend time on independent failure evidence
 
 Keep tests for different boundaries even when their inputs look similar:
 
-- real Git crash/recovery traces exercise durable receipts, histories and interrupted adoption that an in-memory fake cannot establish
+- real Git adapter tests establish object, ref, index and checkout behavior; physical journal/storage tests establish byte preservation and fresh-store reopening
 - real CLI and Pi boundary tests check shared files and exact wire bytes; independent expected receipts prevent agreement on the same mistake
 - native fakes verify that durable pending evidence precedes launch, closed evidence precedes close, and uncertainty never authorizes another effect
 - exact ownership and unrelated-pane checks prevent destructive actions against foreign resources
@@ -256,9 +257,10 @@ fenced while the other producer sees every accepted save.
 
 The coordinator also runs 32 generated retry sequences with shrinking. Filesystem
 failure persistence is disabled so these tests do not read or write regression
-files. The separate local retry property still generates up to 24 saves. Real-Git
-traces retain lost replies, intervening saves and interrupted checkout. These checks
-complement the matrix; they do not claim exhaustive Git history coverage.
+files. The separate local retry property still generates up to 24 saves. Lost
+replies and intervening saves run through production coordination in memory;
+physical tests check Git and journal effects separately. These checks do not
+establish hardware-crash durability or exhaustive Git history coverage.
 
 Do not remove cheap constructor or codec examples merely to reduce test count.
 Replace selected examples with a stronger matrix when it checks accepted results
