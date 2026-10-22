@@ -14,7 +14,12 @@ use crate::process;
 
 use crate::storage::StorageError;
 
+use super::Oid;
 use super::history::History;
+use super::state::{GitConfig, RepairRequired};
+
+#[cfg(test)]
+mod tests;
 
 /// A Git failure with an exit code when one was observed.
 ///
@@ -37,6 +42,10 @@ impl GitError {
             uncertain: code.is_none(),
         }
     }
+}
+
+fn repair(error: impl std::fmt::Display) -> RepairRequired {
+    RepairRequired::new(error.to_string())
 }
 
 /// Intercepts [`Git::run`]; `None` falls through to the real subprocess.
@@ -196,6 +205,84 @@ impl Git {
     ) -> Result<String, GitError> {
         let out = self.run(args, input, index, allowed)?;
         Ok(String::from_utf8_lossy(&out).trim().to_string())
+    }
+
+    pub(super) fn check_target(&self, config: &GitConfig) -> Result<(), RepairRequired> {
+        let head = self
+            .text(&["symbolic-ref", "--quiet", "HEAD"], None, None, &[0])
+            .map_err(repair)?;
+        if head != format!("refs/heads/{}", config.branch()) {
+            return Err(repair("managed catalog branch was changed"));
+        }
+        match config.remote() {
+            None => {
+                if !self
+                    .text(&["remote"], None, None, &[0])
+                    .map_err(repair)?
+                    .is_empty()
+                {
+                    return Err(repair(
+                        "local Git catalog has an unexpected remote; inspect before continuing",
+                    ));
+                }
+            }
+            Some(remote) => {
+                let fetch = self
+                    .text(&["remote", "get-url", "--all", "origin"], None, None, &[0])
+                    .map_err(repair)?;
+                let push = self
+                    .text(
+                        &["remote", "get-url", "--push", "--all", "origin"],
+                        None,
+                        None,
+                        &[0],
+                    )
+                    .map_err(repair)?;
+                let mirror = self
+                    .text(
+                        &["config", "--get", "remote.origin.mirror"],
+                        None,
+                        None,
+                        &[0, 1],
+                    )
+                    .map_err(repair)?;
+                if fetch != remote || push != remote || (!mirror.is_empty() && mirror != "false") {
+                    return Err(repair("managed catalog remote was changed"));
+                }
+            }
+        }
+        Ok(())
+    }
+
+    pub(super) fn fetch_tip(&self, branch: &str) -> Result<Option<String>, GitError> {
+        let branch = format!("refs/heads/{branch}");
+        let found = self.text(
+            &["ls-remote", "--heads", "origin", &branch],
+            None,
+            None,
+            &[0],
+        )?;
+        let tip = if found.is_empty() {
+            None
+        } else {
+            self.run(&["fetch", "--no-tags", "origin", &branch], None, None, &[0])?;
+            Some(self.text(&["rev-parse", "--verify", "FETCH_HEAD"], None, None, &[0])?)
+        };
+        Ok(tip)
+    }
+
+    pub(super) fn push_candidate(&self, candidate: &Oid, branch: &str) -> Result<(), GitError> {
+        self.run(
+            &[
+                "push",
+                "origin",
+                &format!("{}:refs/heads/{branch}", candidate.as_str()),
+            ],
+            None,
+            None,
+            &[0],
+        )?;
+        Ok(())
     }
 
     /// Resolves `HEAD`; an unborn branch is an error.

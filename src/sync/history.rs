@@ -98,6 +98,109 @@ impl History {
         Ok(self)
     }
 
+    /// Apply our catalog validation to already-observed commit facts; no Git or filesystem I/O.
+    pub(super) fn append(
+        mut self,
+        revision: &str,
+        parents: &[&str],
+        message: &str,
+        files: BTreeMap<String, Vec<u8>>,
+    ) -> Result<Self, String> {
+        if self.tip.is_none() {
+            if !parents.is_empty() {
+                return Err("catalog history root must have no parents".to_string());
+            }
+            if message.starts_with(BASELINE) {
+                let (baseline, catalog, authorities) =
+                    decode_baseline(message, &files).map_err(|e| e.to_string())?;
+                self = History {
+                    tip: Some(revision.to_owned()),
+                    root: Some(revision.to_owned()),
+                    catalog,
+                    files,
+                    authorities,
+                    operations: Vec::new(),
+                    baseline: Some(baseline),
+                    fingerprints: BTreeMap::new(),
+                }
+                .validated()?;
+            } else if message == BOOTSTRAP && files.is_empty() {
+                self = History {
+                    tip: Some(revision.to_owned()),
+                    root: Some(revision.to_owned()),
+                    files,
+                    ..History::default()
+                }
+                .validated()?;
+            } else {
+                return Err(
+                    "catalog history must start with an empty bootstrap or validated baseline"
+                        .to_string(),
+                );
+            }
+        } else {
+            if parents != [self.tip.as_deref().unwrap()] {
+                return Err("catalog history must be linear and non-merged".to_string());
+            }
+            let (operation, origin) = decode_operation(message).map_err(|e| e.to_string())?;
+            if self.fingerprints.contains_key(operation.id()) {
+                return Err(format!(
+                    "duplicate operation ID in history: {}",
+                    operation.id()
+                ));
+            }
+            let auth = operation.authority_for(&self.authorities);
+            let result = reconcile(&self.catalog, &operation, auth);
+            let Reconciliation::Changes { record, .. } = result else {
+                return Err(format!(
+                    "operation {} does not explain its commit: {}",
+                    operation.id(),
+                    result.outcome()
+                ));
+            };
+            let all_keys: BTreeSet<&String> = files.keys().chain(self.files.keys()).collect();
+            let changed_paths: BTreeSet<String> = all_keys
+                .into_iter()
+                .filter(|k| files.get(*k) != self.files.get(*k))
+                .cloned()
+                .collect();
+            let expected_path = relative_record_path(operation.after())
+                .to_string_lossy()
+                .replace('\\', "/");
+            let mut expected_set = BTreeSet::new();
+            expected_set.insert(expected_path.clone());
+            if changed_paths != expected_set || !files.contains_key(&expected_path) {
+                return Err(format!(
+                    "commit changes do not match operation {}",
+                    operation.id()
+                ));
+            }
+            let decoded_record = YamlStore::decode_record(&expected_path, &files[&expected_path])
+                .map_err(|e| e.to_string())?;
+            if decoded_record != *record {
+                return Err(format!(
+                    "commit changes do not match operation {}",
+                    operation.id()
+                ));
+            }
+            let actual = self
+                .catalog
+                .replacing(decoded_record)
+                .map_err(|e| e.to_string())?;
+            let digest = operation_digest(&operation);
+            if let Some((id, authority)) = operation.created_authority() {
+                self.authorities.insert(id, authority);
+            }
+            self.fingerprints.insert(operation.id().to_owned(), digest);
+            self.operations
+                .push(CommittedOperation { operation, origin });
+            self.tip = Some(revision.to_owned());
+            self.catalog = actual;
+            self.files = files;
+        }
+        Ok(self)
+    }
+
     /// Returns a replayable operation, which need not exist for baseline-only fingerprints.
     pub fn operation(&self, id: &str) -> Option<&CommittedOperation> {
         self.operations
@@ -159,7 +262,6 @@ fn read_history_inner(git: &Git, tip: Option<&str>) -> Result<History, String> {
 
     let mut history = History::default().validated()?;
     let mut start = 0usize;
-    let mut previous: Option<String> = None;
     {
         let cache = git.histories.lock().unwrap();
         for (index, (revision, _, _)) in commits.iter().enumerate() {
@@ -167,7 +269,6 @@ fn read_history_inner(git: &Git, tip: Option<&str>) -> Result<History, String> {
             if let Some((_, cached)) = cache.iter().find(|(k, _)| k == &rev_key) {
                 history = cached.clone();
                 start = index + 1;
-                previous = Some((*revision).to_string());
             }
         }
     }
@@ -176,102 +277,7 @@ fn read_history_inner(git: &Git, tip: Option<&str>) -> Result<History, String> {
         let parents: Vec<&str> = parent_text.split_whitespace().collect();
         let files = git.files(revision).map_err(|e| e.to_string())?;
         let message = format!("{}\n", raw_message.trim_end());
-        if previous.is_none() {
-            if !parents.is_empty() {
-                return Err("catalog history root must have no parents".to_string());
-            }
-            if message.starts_with(BASELINE) {
-                let (baseline, catalog, authorities) =
-                    decode_baseline(&message, &files).map_err(|e| e.to_string())?;
-                history = History {
-                    tip: Some((*revision).to_string()),
-                    root: Some((*revision).to_string()),
-                    catalog,
-                    files,
-                    authorities,
-                    operations: Vec::new(),
-                    baseline: Some(baseline),
-                    fingerprints: BTreeMap::new(),
-                }
-                .validated()?;
-            } else if message == BOOTSTRAP && files.is_empty() {
-                history = History {
-                    tip: Some((*revision).to_string()),
-                    root: Some((*revision).to_string()),
-                    files,
-                    ..History::default()
-                }
-                .validated()?;
-            } else {
-                return Err(
-                    "catalog history must start with an empty bootstrap or validated baseline"
-                        .to_string(),
-                );
-            }
-        } else {
-            if parents.as_slice() != [previous.as_deref().unwrap()] {
-                return Err("catalog history must be linear and non-merged".to_string());
-            }
-            let (operation, origin) = decode_operation(&message).map_err(|e| e.to_string())?;
-            if history.fingerprints.contains_key(operation.id()) {
-                return Err(format!(
-                    "duplicate operation ID in history: {}",
-                    operation.id()
-                ));
-            }
-            let auth = operation.authority_for(&history.authorities);
-            let result = reconcile(&history.catalog, &operation, auth);
-            let Reconciliation::Changes { record, .. } = result else {
-                return Err(format!(
-                    "operation {} does not explain its commit: {}",
-                    operation.id(),
-                    result.outcome()
-                ));
-            };
-            let all_keys: BTreeSet<&String> = files.keys().chain(history.files.keys()).collect();
-            let changed_paths: BTreeSet<String> = all_keys
-                .into_iter()
-                .filter(|k| files.get(*k) != history.files.get(*k))
-                .cloned()
-                .collect();
-            let expected_path = relative_record_path(operation.after())
-                .to_string_lossy()
-                .replace('\\', "/");
-            let mut expected_set = BTreeSet::new();
-            expected_set.insert(expected_path.clone());
-            if changed_paths != expected_set || !files.contains_key(&expected_path) {
-                return Err(format!(
-                    "commit changes do not match operation {}",
-                    operation.id()
-                ));
-            }
-            let decoded_record = YamlStore::decode_record(&expected_path, &files[&expected_path])
-                .map_err(|e| e.to_string())?;
-            if decoded_record != *record {
-                return Err(format!(
-                    "commit changes do not match operation {}",
-                    operation.id()
-                ));
-            }
-            let actual = history
-                .catalog
-                .replacing(decoded_record)
-                .map_err(|e| e.to_string())?;
-            let digest = operation_digest(&operation);
-            if let Some((id, authority)) = operation.created_authority() {
-                history.authorities.insert(id, authority);
-            }
-            history
-                .fingerprints
-                .insert(operation.id().to_owned(), digest);
-            history
-                .operations
-                .push(CommittedOperation { operation, origin });
-            history.tip = Some((*revision).to_string());
-            history.catalog = actual;
-            history.files = files;
-        }
-        previous = Some((*revision).to_string());
+        history = history.append(revision, &parents, &message, files)?;
     }
 
     let mut cache = git.histories.lock().unwrap();

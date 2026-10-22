@@ -554,18 +554,64 @@ mod tests {
                 value
             );
         }
-        assert!(value.mark_ready().is_err());
-        assert!(value.reserve(resources()).is_err());
-        assert!(value.mark_closed().is_err());
-        let mut unlaunched = attempt("n");
-        assert!(unlaunched.mark_ready().is_err());
-        assert!(unlaunched.mark_closed().is_err());
-        unlaunched.reserve(resources()).unwrap();
-        unlaunched.mark_closed().unwrap();
         assert!(NativeAttempt::new("A".repeat(64), "n").is_err());
         assert!(NativeAttempt::new(key(), "bad nonce").is_err());
         assert!(Resources::new("", "t", "b").is_err());
         assert!(Resources::new("p", "t\u{85}", "b").is_err());
+    }
+
+    #[test]
+    fn every_phase_checks_every_transition_without_losing_identity_or_resources() {
+        use NativePhase::{Closed, Ready, Reserved, Unlaunched};
+        let original = resources();
+        let replacement = Resources::new("other-pane", "other-terminal", "other-tab").unwrap();
+        let cases = [
+            (
+                Unlaunched,
+                [Some(Reserved(replacement.clone())), None, None],
+            ),
+            (
+                Reserved(original.clone()),
+                [
+                    None,
+                    Some(Ready(original.clone())),
+                    Some(Closed(original.clone())),
+                ],
+            ),
+            (
+                Ready(original.clone()),
+                [None, None, Some(Closed(original.clone()))],
+            ),
+            (Closed(original), [None, None, None]),
+        ];
+        for (phase, outcomes) in cases {
+            for (operation, expected) in outcomes.into_iter().enumerate() {
+                let before = NativeAttempt {
+                    phase: phase.clone(),
+                    ..attempt("original-nonce")
+                };
+                let mut after = before.clone();
+                let result = match operation {
+                    0 => after.reserve(replacement.clone()),
+                    1 => after.mark_ready(),
+                    2 => after.mark_closed(),
+                    _ => unreachable!(),
+                };
+                assert_eq!(
+                    result.is_ok(),
+                    expected.is_some(),
+                    "{phase:?}, operation {operation}"
+                );
+                assert_eq!(
+                    after,
+                    NativeAttempt {
+                        phase: expected.unwrap_or(phase.clone()),
+                        ..before
+                    },
+                    "{phase:?}, operation {operation}",
+                );
+            }
+        }
     }
 
     #[test]

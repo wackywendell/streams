@@ -1,3 +1,4 @@
+use crate::support::memory::MemoryStore;
 use std::sync::{Arc, Mutex};
 use streams_temper::operations::Actor;
 
@@ -5,8 +6,8 @@ use proptest::prelude::*;
 use streams_temper::{
     model::{Record, Stream},
     operations::Operation,
+    storage::{Store, Transaction},
     sync::{local::LocalCatalog, outcomes::LocalStatus, state::RepairRequired},
-    yaml_store::YamlStore,
 };
 
 fn operation(id: &str) -> Operation {
@@ -30,8 +31,8 @@ fn every_bookkeeping_failure_preserves_a_safe_restart() {
         ("write", "receipts.json"),
         ("clear", "save.json"),
     ] {
-        let dir = tempfile::tempdir().unwrap();
-        let mut local = LocalCatalog::new(YamlStore::new(dir.path()), "host").unwrap();
+        let store = MemoryStore::default();
+        let mut local = LocalCatalog::new(store.clone(), "host").unwrap();
         local.set_state_hook(Arc::new(Mutex::new(
             move |actual_op: &str, actual_name: &str| {
                 if actual_op == op && actual_name == name {
@@ -44,8 +45,12 @@ fn every_bookkeeping_failure_preserves_a_safe_restart() {
         let create = operation("create");
         let outcome = local.save(&create, None).unwrap();
         assert!(outcome.requires_repair(), "{op}/{name}: {outcome:?}");
-        let restarted = LocalCatalog::new(YamlStore::new(dir.path()), "host").unwrap();
-        if dir.path().join(".catalog-sync/save.json").exists() {
+        let restarted = LocalCatalog::new(store.clone(), "host").unwrap();
+        if store
+            .with_transaction(|tx| tx.journal().read("save.json"))
+            .unwrap()
+            .is_some()
+        {
             assert!(restarted.snapshot().is_err(), "{op}/{name}");
             assert!(restarted.save(&create, None).unwrap().requires_repair());
         } else {
@@ -83,14 +88,14 @@ fn operations_cannot_be_forged_through_the_wire_boundary() {
 }
 
 proptest! {
-    #![proptest_config(ProptestConfig::with_cases(32))]
+    #![proptest_config(ProptestConfig { cases: 32, failure_persistence: None, ..Default::default() })]
     #[test]
     fn receipts_survive_reopened_retry_sequences(ids in prop::collection::vec(0u8..8, 1..25)) {
-        let dir = tempfile::tempdir().unwrap();
+        let store = MemoryStore::default();
         let mut seen = std::collections::BTreeSet::new();
         for id in ids {
             let id = format!("stream-{id}");
-            let backend = LocalCatalog::new(YamlStore::new(dir.path()), "host").unwrap();
+            let backend = LocalCatalog::new(store.clone(), "host").unwrap();
             let result = backend.save(&operation(&id), None).unwrap();
             prop_assert!(result.accepted());
             prop_assert_eq!(result.local, if seen.insert(id) { LocalStatus::Persisted } else { LocalStatus::Unchanged });

@@ -15,6 +15,9 @@ use super::{Result, RuntimeError, decode, invalid, text};
 const LIMIT: usize = 65536;
 const DISCOVERY_LIMIT: usize = 10000;
 
+#[cfg(test)]
+mod tests;
+
 /// Native transcript formats supported by saved identity verification.
 #[derive(
     Debug,
@@ -226,6 +229,71 @@ pub fn native_identity(
     }
 }
 
+struct Discovery<'a> {
+    identity: &'a str,
+    count: usize,
+    matches: BTreeSet<PathBuf>,
+}
+
+impl<'a> Discovery<'a> {
+    fn new(identity: &'a str) -> Self {
+        Self {
+            identity,
+            count: 0,
+            matches: BTreeSet::new(),
+        }
+    }
+
+    fn candidate(&mut self, path: &Path) -> Result<bool> {
+        if path
+            .extension()
+            .is_none_or(|extension| extension != "jsonl")
+        {
+            return Ok(false);
+        }
+        self.count += 1;
+        if self.count > DISCOVERY_LIMIT {
+            return Err(invalid(
+                "conversation discovery limit exceeded; capture an exact saved locator",
+            ));
+        }
+        Ok(path
+            .file_name()
+            .expect("JSONL filename")
+            .to_string_lossy()
+            .contains(self.identity))
+    }
+
+    fn record(&mut self, found: &str, canonical: PathBuf) {
+        if found == self.identity {
+            self.matches.insert(canonical);
+        }
+    }
+
+    fn finish(self) -> Result<PathBuf> {
+        if self.matches.len() != 1 {
+            let message = format!(
+                "saved conversation {:?} unavailable or ambiguous ({} verified files)",
+                self.identity,
+                self.matches.len()
+            );
+            return if self.matches.is_empty() {
+                Err(RuntimeError::NotFound(message))
+            } else {
+                Err(RuntimeError::Ambiguous {
+                    message,
+                    candidates: self
+                        .matches
+                        .into_iter()
+                        .map(|path| path.to_string_lossy().into_owned())
+                        .collect(),
+                })
+            };
+        }
+        Ok(self.matches.into_iter().next().expect("one verified file"))
+    }
+}
+
 /// Find exactly one verified saved conversation, or check the exact supplied locator.
 /// Discovery is bounded to 10,000 JSONL files; malformed matching hints are errors.
 pub fn conversation_file(
@@ -242,8 +310,7 @@ pub fn conversation_file(
         }
         return Ok(canonical);
     }
-    let mut matches = BTreeSet::new();
-    let mut count = 0;
+    let mut discovery = Discovery::new(identity);
     for root in roots.for_harness(harness) {
         let mut pending = vec![root.clone()];
         while let Some(directory) = pending.pop() {
@@ -265,44 +332,12 @@ pub fn conversation_file(
                     pending.push(path);
                     continue;
                 }
-                if path
-                    .extension()
-                    .is_none_or(|extension| extension != "jsonl")
-                {
-                    continue;
-                }
-                count += 1;
-                if count > DISCOVERY_LIMIT {
-                    return Err(invalid(
-                        "conversation discovery limit exceeded; capture an exact saved locator",
-                    ));
-                }
-                if !entry.file_name().to_string_lossy().contains(identity) {
-                    continue;
-                }
-                let (found, canonical) = verified_file(harness, &path)?;
-                if found == identity {
-                    matches.insert(canonical);
+                if discovery.candidate(&path)? {
+                    let (found, canonical) = verified_file(harness, &path)?;
+                    discovery.record(&found, canonical);
                 }
             }
         }
     }
-    if matches.len() != 1 {
-        let message = format!(
-            "saved conversation {identity:?} unavailable or ambiguous ({} verified files)",
-            matches.len()
-        );
-        return if matches.is_empty() {
-            Err(RuntimeError::NotFound(message))
-        } else {
-            Err(RuntimeError::Ambiguous {
-                message,
-                candidates: matches
-                    .into_iter()
-                    .map(|path| path.to_string_lossy().into_owned())
-                    .collect(),
-            })
-        };
-    }
-    Ok(matches.into_iter().next().expect("one verified file"))
+    discovery.finish()
 }

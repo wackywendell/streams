@@ -351,17 +351,20 @@ fn missing_roots_are_absence_but_malformed_roots_are_errors() {
 }
 
 #[test]
-fn discovery_bound_requires_an_exact_locator_after_ten_thousand_jsonl_files() {
+fn exact_saved_locator_bypasses_discovery() {
     let (_temp, root) = root();
-    for index in 0..10001 {
-        fs::write(root.join(format!("unrelated-{index}.jsonl")), "").unwrap();
-    }
-    let error = conversation_file(Harness::Pi, "target", None, &roots(&root)).unwrap_err();
-    assert!(error.to_string().contains("discovery limit"), "{error}");
+    let unreadable_root = root.join("not-a-directory");
+    fs::write(&unreadable_root, "").unwrap();
     let exact = root.join("exact.jsonl");
     fs::write(&exact, fixture(Harness::Pi).1).unwrap();
     assert_eq!(
-        conversation_file(Harness::Pi, "native-pi", Some(&exact), &roots(&root)).unwrap(),
+        conversation_file(
+            Harness::Pi,
+            "native-pi",
+            Some(&exact),
+            &roots(&unreadable_root)
+        )
+        .unwrap(),
         exact
     );
 }

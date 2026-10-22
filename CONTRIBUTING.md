@@ -28,11 +28,16 @@ mise run test:fast         # Rust contracts and Pi boundary
 mise run test              # full acceptance, including real Git and Temper
 mise run test:rust         # all Rust targets, recovery, Temper L0–L3 and doctests
 mise run test:rust:fast    # Rust library, binary and consolidated contracts
+mise run test:rust:unit    # focused library/binary loop; not full acceptance
 mise run test:pi           # Pi reporting, capture and helper-request tests
 mise run test:herdr        # configuration, naming and subprocess boundaries
 mise run test:replay       # production helper replay with real Rust preview
 mise run test:native:rust  # Pi-to-Rust lifecycle with fake Herdr endpoints
 ```
+
+Use `test:rust:unit` for focused library/binary iterations, then run the relevant
+contracts before review. The [testing policy](docs/testing.md) records gate choices,
+physical boundary coverage and measured costs.
 
 Target one Rust area with:
 

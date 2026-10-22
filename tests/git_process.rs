@@ -82,6 +82,11 @@ fn preserves_exit_code_and_stderr() {
     assert_eq!(error.code, Some(7));
     assert!(!error.uncertain);
     assert!(error.message.contains("specific-failure"));
+    assert!(
+        git.run_raw(&["config", "--get", "streams.missing"], None, None, &[0, 1])
+            .unwrap()
+            .is_empty()
+    );
     assert_eq!(
         git.run_raw(&["rev-parse", "--verify", "HEAD"], None, None, &[128])
             .unwrap(),

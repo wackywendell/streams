@@ -1,5 +1,9 @@
 //! Durable catalog, pure reconciliation, and Temper-backed persistence protocols.
 
+// Share independent fixture adapters with the integration-test harness.
+#[cfg(test)]
+extern crate self as streams_temper;
+
 pub mod agent;
 pub mod application;
 pub mod codec;

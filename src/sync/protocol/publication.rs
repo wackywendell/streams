@@ -3,8 +3,8 @@
 use super::{Action, Phase, ProtocolMachine};
 use crate::sync::{
     Oid,
-    git::{CatalogError, LockedCatalog},
-    history::{History, read_history},
+    coordinator::{CatalogError, Coordinator},
+    history::History,
     replay::{Replay, replay},
     state::{GitConfig, PublicationAttempt, PublicationMarker, RepairRequired},
 };
@@ -13,21 +13,21 @@ fn invalid(message: &str) -> RepairRequired {
     RepairRequired::new(message)
 }
 
-fn inspect(catalog: &LockedCatalog<'_>, tip: Option<&str>) -> Result<GitConfig, CatalogError> {
+fn inspect(catalog: &Coordinator<'_>, tip: Option<&str>) -> Result<GitConfig, CatalogError> {
     let config = catalog.ready()?;
-    if Some(catalog.git.head()?).as_deref() != tip {
+    if Some(catalog.io.head()?).as_deref() != tip {
         return Err(invalid("local tip changed since publication inspection").into());
     }
     Ok(config)
 }
 
 fn validate_candidate(
-    catalog: &LockedCatalog<'_>,
+    catalog: &Coordinator<'_>,
     candidate: &str,
     local: &History,
     remote: &History,
 ) -> Result<History, CatalogError> {
-    let history = read_history(catalog.git, Some(candidate))?;
+    let history = catalog.io.history(Some(candidate))?;
     let Replay::Ready {
         catalog: projected,
         changes,
@@ -49,7 +49,7 @@ fn validate_candidate(
         .map(|change| (&change.operation, &change.origin));
     if !actual.eq(expected)
         || history.catalog() != &projected
-        || !catalog.git.ancestor(base, candidate)?
+        || !catalog.io.ancestor(base, candidate)?
     {
         return Err(invalid("candidate does not match the inspected publication batch").into());
     }
@@ -59,7 +59,7 @@ fn validate_candidate(
 // Validate a retained attempt against its original base and local tip, not the
 // newer fetched history: additional local saves must not invalidate confirmation.
 fn validate_attempt(
-    catalog: &LockedCatalog<'_>,
+    catalog: &Coordinator<'_>,
     attempt: &PublicationAttempt,
     local_tip: Option<&str>,
 ) -> Result<History, CatalogError> {
@@ -67,14 +67,14 @@ fn validate_attempt(
     if config.branch() != attempt.branch() || config.remote() != Some(attempt.remote()) {
         return Err(invalid("publication target changed since inspection").into());
     }
-    let original = read_history(catalog.git, Some(attempt.local_tip().as_str()))?;
+    let original = catalog.io.history(Some(attempt.local_tip().as_str()))?;
     if !catalog
-        .git
+        .io
         .ancestor(attempt.local_tip().as_str(), local_tip.unwrap())?
     {
         return Err(invalid("retained publication has unrelated local history").into());
     }
-    let base = read_history(catalog.git, attempt.base().map(Oid::as_str))?;
+    let base = catalog.io.history(attempt.base().map(Oid::as_str))?;
     let candidate = validate_candidate(catalog, attempt.candidate().as_str(), &original, &base)?;
     let operations: Vec<_> = candidate
         .operations()
@@ -89,13 +89,13 @@ fn validate_attempt(
 }
 
 fn is_confirmed(
-    catalog: &LockedCatalog<'_>,
+    catalog: &Coordinator<'_>,
     attempt: &PublicationAttempt,
     candidate: &History,
     remote: &History,
 ) -> Result<bool, CatalogError> {
     if let Some(tip) = remote.tip()
-        && catalog.git.ancestor(attempt.candidate().as_str(), tip)?
+        && catalog.io.ancestor(attempt.candidate().as_str(), tip)?
     {
         return Ok(true);
     }
@@ -109,7 +109,7 @@ fn is_confirmed(
 }
 
 pub(crate) struct InspectedAttempt<'catalog> {
-    catalog: &'catalog LockedCatalog<'catalog>,
+    catalog: &'catalog Coordinator<'catalog>,
     attempt: PublicationAttempt,
     candidate: History,
     remote_tip: Option<String>,
@@ -206,7 +206,7 @@ pub(crate) enum Recovery<'machine, 'catalog> {
 
 pub(crate) struct AdoptionPermit<'machine, 'catalog> {
     machine: &'machine mut ProtocolMachine,
-    catalog: &'catalog LockedCatalog<'catalog>,
+    catalog: &'catalog Coordinator<'catalog>,
     old: Oid,
     new: Oid,
     attempt: PublicationAttempt,
@@ -215,7 +215,7 @@ pub(crate) struct AdoptionPermit<'machine, 'catalog> {
 impl ProtocolMachine {
     pub(in crate::sync) fn inspect_retained<'catalog>(
         &mut self,
-        catalog: &'catalog LockedCatalog<'catalog>,
+        catalog: &'catalog Coordinator<'catalog>,
         local_tip: Option<&str>,
         remote: &History,
     ) -> Result<Option<RetainedAttempt<'catalog>>, CatalogError> {
@@ -243,7 +243,7 @@ impl ProtocolMachine {
 
     pub(in crate::sync) fn prepare_push<'machine, 'catalog>(
         &'machine mut self,
-        catalog: &'catalog LockedCatalog<'catalog>,
+        catalog: &'catalog Coordinator<'catalog>,
         local: &History,
         remote: &History,
         candidate: &str,
@@ -333,7 +333,7 @@ impl ProtocolMachine {
 
     pub(in crate::sync) fn begin_remote_adoption<'machine, 'catalog>(
         &'machine mut self,
-        catalog: &'catalog LockedCatalog<'catalog>,
+        catalog: &'catalog Coordinator<'catalog>,
         local: &History,
         remote: &History,
         confirmed: Option<RecordedConfirmation<'catalog>>,
@@ -409,26 +409,13 @@ impl<'machine, 'catalog> PushPermit<'machine, 'catalog> {
     pub(crate) fn push(&mut self) -> Result<(), CatalogError> {
         let catalog = self.inspected.catalog;
         let attempt = &self.inspected.attempt;
-        catalog.retain(attempt.candidate().as_str())?;
+        catalog.io.retain(attempt.candidate().as_str())?;
         self.inspected.check_live(self.stored.as_ref())?;
         catalog
             .state
             .write_publication(&PublicationMarker::Attempting(attempt.clone()))?;
         self.stored = Some(attempt.clone());
-        catalog.git.run(
-            &[
-                "push",
-                "origin",
-                &format!(
-                    "{}:refs/heads/{}",
-                    attempt.candidate().as_str(),
-                    attempt.branch()
-                ),
-            ],
-            None,
-            None,
-            &[0],
-        )?;
+        catalog.io.push(attempt.candidate(), attempt.branch())?;
         self.acknowledged = true;
         Ok(())
     }
@@ -523,8 +510,8 @@ impl AdoptionPermit<'_, '_> {
     pub(crate) fn apply(self) -> Result<String, CatalogError> {
         let result = (|| {
             // Retain once, before any adoption mutation, including preflight failure.
-            self.catalog.retain(self.old.as_str())?;
-            self.catalog.retain(self.new.as_str())?;
+            self.catalog.io.retain(self.old.as_str())?;
+            self.catalog.io.retain(self.new.as_str())?;
             inspect(self.catalog, Some(self.old.as_str()))?;
             self.catalog.adopt(&self.old, &self.new, &self.attempt)
         })();

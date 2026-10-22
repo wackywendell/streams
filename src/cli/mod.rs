@@ -3,6 +3,7 @@
 
 mod args;
 mod cards;
+mod catalog;
 mod checkouts;
 mod debug;
 mod documents;
@@ -467,62 +468,20 @@ impl App {
                 refresh,
             } => {
                 let opened = application::open(&self.config)?;
-                let (catalog, sharing) = read_catalog(opened.backend(), refresh)?;
-                let query = query.as_deref().map(fold);
-                let mut streams: Vec<_> = catalog
-                    .streams()
-                    .iter()
-                    .filter(|stream| {
-                        (all || stream.archived == archived)
-                            && (status.is_empty() || status.contains(&stream.status))
-                            && query.as_ref().is_none_or(|q| {
-                                fold(&stream.title).contains(q)
-                                    || fold(stream.goal.as_deref().unwrap_or("")).contains(q)
-                            })
-                    })
-                    .collect();
-                streams.sort_by_cached_key(|s| (fold(&s.title), s.id.clone()));
-                let mut plain = String::from("ID  STATUS  TITLE");
-                for stream in &streams {
-                    plain.push_str(&format!(
-                        "\n{}  {}  {}",
-                        stream.id,
-                        stream.status,
-                        printable(&stream.title)
-                    ));
-                }
-                let data: Vec<_> = streams
-                    .iter()
-                    .map(|s| record_to_data(&Record::Stream((*s).clone())))
-                    .collect();
-                let mut output = Output::plain(json!({"streams":data,"sharing":sharing}), plain);
-                let sharing = &output.value["sharing"];
-                if let Some(detail) = sharing["detail"]
-                    .as_str()
-                    .filter(|detail| !detail.is_empty())
-                {
-                    output.notices.push(detail.to_owned());
-                }
-                if sharing["conflicts"]
-                    .as_array()
-                    .is_some_and(|conflicts| !conflicts.is_empty())
-                {
-                    output.notices.push("catalog conflicts: showing local records; use list --json or show for confirmed alternatives".into());
-                }
-                Ok(output)
+                catalog::list(
+                    opened.backend(),
+                    query.as_deref(),
+                    &status,
+                    archived,
+                    all,
+                    refresh,
+                )
             }
             Command::Show { target, refresh } => {
                 let opened = application::open(&self.config)?;
-                let (catalog, sharing) = read_catalog(opened.backend(), refresh)?;
-                let stream = self.target(&opened, &catalog, &target)?;
-                let sessions: Vec<_> = catalog
-                    .sessions()
-                    .iter()
-                    .filter(|s| s.stream_id == stream.id)
-                    .collect();
-                Ok(Output::value(
-                    json!({"stream":stream,"sessions":sessions,"sharing":sharing}),
-                ))
+                catalog::show(opened.backend(), refresh, |catalog| {
+                    self.target(&opened, catalog, &target)
+                })
             }
             Command::Create { title, fields, cwd } => {
                 self.create_stream(title, fields, cwd, workspaces::Creation::Record)
@@ -557,49 +516,24 @@ impl App {
                 fields,
             } => {
                 let opened = application::open(&self.config)?;
-                let snapshot = opened.backend().snapshot()?;
-                let stream = self.target(&opened, &snapshot.catalog, &target)?;
-                let mut changes =
-                    fields::stream(stream, &fields, &mut |path| self.read_text(path))?;
-                if let Some(title) = title {
-                    changes.insert("title".into(), json!(title));
-                }
-                if changes.is_empty() {
-                    return Err(CliError::message(
-                        "update requires at least one field change",
-                    ));
-                }
-                let operation = operations::update(
-                    Uuid::new_v4().to_string(),
-                    &Record::Stream(stream.clone()),
-                    &changes,
-                    Actor::User,
-                    None,
-                    vec![],
-                )?;
-                let saved = save(opened.backend(), &operation)?;
-                finish(opened.backend(), &operation, saved, SyncEvent::Stream, None)
+                catalog::update(
+                    opened.backend(),
+                    |catalog| self.target(&opened, catalog, &target),
+                    title,
+                    &fields,
+                    |path| self.read_text(path),
+                    || Uuid::new_v4().to_string(),
+                )
             }
             Command::Archive { target } => self.archive(&target, true),
             Command::Restore { target } => self.archive(&target, false),
             Command::Check { reference } => {
                 let opened = application::open(&self.config)?;
-                let catalog = opened.backend().snapshot()?.catalog;
-                let stream = reference
-                    .as_deref()
-                    .map(|reference| {
-                        resolve(catalog.streams(), reference, |s| (&s.id, &s.title, None))
-                    })
-                    .transpose()?;
-                Ok(Output::value(
-                    json!({"valid":true,"streams":if stream.is_some(){1}else{catalog.streams().len()},"sessions":catalog.sessions().iter().filter(|session|stream.is_none_or(|stream|session.stream_id==stream.id)).count()}),
-                ))
+                catalog::check(opened.backend(), reference.as_deref())
             }
             Command::Sync { event } => {
                 let opened = application::open(&self.config)?;
-                let result = opened.backend().sync(event);
-                let ok = !result.needs_attention();
-                Ok(Output::receipt(result_data(&result)?, ok))
+                catalog::sync(opened.backend(), event)
             }
             Command::Session { command } => self.session(command),
             Command::Checkout { command } => self.checkout(command),
@@ -608,20 +542,12 @@ impl App {
     }
     fn archive(&self, target: &Target, archived: bool) -> Result<Output> {
         let opened = application::open(&self.config)?;
-        let catalog = opened.backend().snapshot()?.catalog;
-        let stream = self.target(&opened, &catalog, target)?;
-        let operation = operations::update(
-            Uuid::new_v4().to_string(),
-            &Record::Stream(stream.clone()),
-            json!({"archived":archived})
-                .as_object()
-                .expect("archive fields"),
-            Actor::User,
-            None,
-            vec![],
-        )?;
-        let saved = save(opened.backend(), &operation)?;
-        finish(opened.backend(), &operation, saved, SyncEvent::Stream, None)
+        catalog::archive(
+            opened.backend(),
+            |catalog| self.target(&opened, catalog, target),
+            archived,
+            || Uuid::new_v4().to_string(),
+        )
     }
     fn configure(&self, action: Option<ConfigCommand>) -> Result<Output> {
         if let Some(action) = action {

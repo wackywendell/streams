@@ -1,5 +1,7 @@
 //! Explicit snapshot import; preparation is disposable, installation is durably fenced.
 
+mod completion;
+
 use std::collections::BTreeMap;
 use std::fs::{self, File};
 use std::path::Path;
@@ -9,7 +11,7 @@ use serde_json::{Map, Value, json};
 use sha2::{Digest, Sha256};
 use tempfile::TempDir;
 
-use crate::config::{HostIdentity, Marker, Strategy};
+use crate::config::{Marker, Strategy};
 use crate::file_io::{ensure_directory, sync_directory};
 use crate::model::check_text;
 use crate::storage::{Snapshot, Transaction};
@@ -299,26 +301,13 @@ impl PreparedImport<'_> {
         }
         sync_tree(&catalog.root.join(".git"))?;
         let config = GitConfig::new(None, branch, catalog.host_id).map_err(repair)?;
-        catalog.state.write_config(&config)?;
-        if catalog.config()? != config {
-            return Err(repair("installed Git configuration changed"));
-        }
-        Marker {
-            strategy: Strategy::Git,
-            host: HostIdentity::parse(catalog.host_id).map_err(repair)?,
-        }
-        .write(&catalog.state)?;
-        if let Err(error) = catalog.state.clear("save.json") {
-            // Unlink may have happened before fsync failed. Reassert the ORIGINAL
-            // evidence; neither this fence nor the retained candidate is a rollback.
-            if let Err(reassert) = catalog.state.write("save.json", evidence) {
-                return Err(repair(format!(
-                    "{error}; cannot reassert import fence: {reassert}; inspect retained staging at {}",
-                    retained.display()
-                )));
-            }
-            return Err(error);
-        }
+        completion::finish(
+            &catalog.state,
+            &config,
+            evidence,
+            retained.display(),
+            || catalog.config(),
+        )?;
         // Only our now-empty directory is eligible for cleanup after completion.
         let _ = fs::remove_dir(&retained);
         Ok(tip)

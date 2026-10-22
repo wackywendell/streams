@@ -296,32 +296,6 @@ fn final_path_signing_profile_must_match_prepared_identity_and_policy() {
 }
 
 #[test]
-fn config_marker_and_clear_failures_never_erase_repair_fence() {
-    for (op, name) in [
-        ("write", "config.json"),
-        ("write", "cli.json"),
-        ("clear", "save.json"),
-    ] {
-        let mut f = Fixture::new();
-        f.git
-            .set_state_hook(Arc::new(Mutex::new(move |actual: &str, key: &str| {
-                if actual == op && key == name {
-                    Err(RepairRequired::new("finalization failure"))
-                } else {
-                    Ok(())
-                }
-            })));
-        assert!(f.adopt().is_err(), "{op}/{name}");
-        f.fenced();
-        assert!(f.root.join(".git").is_dir());
-        assert_eq!(
-            f.root.join(".catalog-sync/config.json").exists(),
-            name != "config.json"
-        );
-    }
-}
-
-#[test]
 fn failed_clear_after_unlink_reasserts_original_evidence() {
     let mut f = Fixture::new();
     let path = f.root.join(".catalog-sync/save.json");

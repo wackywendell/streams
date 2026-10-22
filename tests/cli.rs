@@ -87,6 +87,43 @@ impl Fixture {
 }
 
 #[test]
+fn accepted_offline_create_retains_publication_warning_and_durable_record() {
+    let f = Fixture::new();
+    let remote = f.home.join("remote.git");
+    assert!(
+        Command::new("git")
+            .args(["-c", "init.templateDir=", "init", "--bare", "--quiet"])
+            .arg(&remote)
+            .current_dir(&f.cwd)
+            .env("GIT_CONFIG_NOSYSTEM", "1")
+            .env("GIT_CONFIG_GLOBAL", f.home.join("gitconfig"))
+            .status()
+            .unwrap()
+            .success()
+    );
+    f.ok(&[
+        "init",
+        "--sync",
+        "git",
+        "--remote",
+        remote.to_str().unwrap(),
+    ]);
+    fs::rename(&remote, f.home.join("offline.git")).unwrap();
+    let result = f.ok(&["create", "Saved offline"]);
+    assert_eq!(result["save"]["local"], "committed");
+    assert_eq!(result["save"]["domain"]["outcome"], "changes");
+    assert_eq!(result["publication"]["sharing"], "failed");
+    assert_eq!(result["publication"]["local"], "unchanged");
+    assert_eq!(
+        f.ok(&["show", result["stream"]["id"].as_str().unwrap()])["stream"],
+        result["stream"]
+    );
+    let (code, sync) = f.run(&["sync"], None);
+    assert_eq!(code, 2, "{sync}");
+    assert_eq!(sync["sharing"], "failed");
+}
+
+#[test]
 fn rejected_reads_adoption_and_missing_sync_leave_uninitialized_catalog_untouched() {
     let f = Fixture::new();
     for args in [
@@ -140,114 +177,6 @@ fn current_target_requires_supported_policy_even_with_an_explicit_environment_id
             );
         }
     }
-}
-
-#[test]
-fn local_catalog_manages_fields_visibility_and_full_unicode_literal_selection() {
-    let f = Fixture::new();
-    f.init();
-    let stream = f.ok(&[
-        "create",
-        "Straße",
-        "--goal",
-        "Literal [plan]",
-        "--status",
-        "waiting",
-    ])["stream"]
-        .clone();
-    let id = stream["id"].as_str().unwrap();
-    assert_eq!(f.ok(&["show", "STRASSE"])["stream"], stream);
-    f.create("STRASSE continuation");
-    assert_eq!(f.ok(&["show", "STRASSE"])["stream"]["id"], id);
-    assert_eq!(
-        f.ok(&["list", "literal ["])["streams"]
-            .as_array()
-            .unwrap()
-            .len(),
-        1
-    );
-    let (code, value) = f.run(
-        &["update", id, "--goal-file", "-"],
-        Some("line one\nline two\n"),
-    );
-    assert_eq!(code, 0, "{value}");
-    assert_eq!(value["stream"]["goal"], "line one\nline two\n");
-    let archived = f.ok(&["archive", id]);
-    assert_eq!(archived["stream"]["archived"], true);
-    assert_eq!(archived["stream"]["status"], "waiting");
-    assert_eq!(f.ok(&["list"])["streams"].as_array().unwrap().len(), 1);
-    assert_eq!(f.ok(&["list", "--archived"])["streams"][0]["id"], id);
-    assert_eq!(
-        f.ok(&["list", "--all"])["streams"]
-            .as_array()
-            .unwrap()
-            .len(),
-        2
-    );
-    assert_eq!(f.ok(&["restore", id])["stream"]["status"], "waiting");
-    assert_eq!(
-        f.ok(&["check", id]),
-        json!({"valid":true,"streams":1,"sessions":0})
-    );
-    let (code, error) = f.run(&["show", "continu"], None);
-    assert_eq!(code, 0, "{error}");
-    let (code, error) = f.run(&["show", "STRAS"], None);
-    assert_eq!(code, 2);
-    assert_eq!(error["error"]["kind"], "ambiguous");
-    assert_eq!(error["error"]["candidates"].as_array().unwrap().len(), 2);
-}
-
-#[test]
-fn collections_keep_identity_and_reject_invalid_intent_before_save() {
-    let f = Fixture::new();
-    f.init();
-    let stream = f.create("Work");
-    let id = stream["id"].as_str().unwrap();
-    let changed = f.ok(&[
-        "update",
-        id,
-        "--add-repository",
-        "repo",
-        "https://example.test/repo",
-        "--add-document",
-        "repo",
-        "main",
-        "docs/design.md",
-        "Design",
-        "--document-commit",
-        "repo",
-        "docs/design.md",
-        "abc123",
-        "--add-issue",
-        "https://example.test/issue",
-        "Issue",
-    ]);
-    assert_eq!(changed["stream"]["documents"][0]["commit"], "abc123");
-    let (code, error) = f.run(
-        &[
-            "update",
-            id,
-            "--document-commit",
-            "repo",
-            "missing.md",
-            "abc",
-        ],
-        None,
-    );
-    assert_eq!(code, 2);
-    assert!(error.get("error").is_some());
-    assert_eq!(f.ok(&["show", id])["stream"], changed["stream"]);
-    let removed = f.ok(&[
-        "update",
-        id,
-        "--remove-document",
-        "repo",
-        "docs/design.md",
-        "--remove-repository",
-        "repo",
-    ]);
-    assert_eq!(removed["stream"]["documents"], json!([]));
-    assert_eq!(removed["stream"]["repositories"], json!({}));
 }
 
 #[test]
@@ -473,6 +402,8 @@ fn local_catalog_does_not_require_git_in_plain_directories() {
         vec!["init", "--sync", "none"],
         vec!["create", "No subprocess"],
         vec!["list"],
+        vec!["archive", "No subprocess"],
+        vec!["restore", "No subprocess"],
         vec!["check"],
         vec!["sync"],
     ] {
@@ -491,6 +422,9 @@ fn local_catalog_does_not_require_git_in_plain_directories() {
         );
         let data: Value = serde_json::from_slice(&output.stdout).unwrap();
         assert!(data.get("runtime").is_none(), "{data}");
+        if matches!(args[0], "archive" | "restore") {
+            assert_eq!(data["stream"]["archived"], args[0] == "archive");
+        }
         assert!(!probe.exists());
     }
 }
@@ -560,43 +494,6 @@ fn session_references_and_candidates_keep_the_host_qualified_identity() {
         f.ok(&["session", "directory", &qualified])["directory"]["cwd"],
         f.cwd.to_str().unwrap()
     );
-}
-
-#[test]
-fn accepted_local_write_retains_publication_warning_without_requiring_repair() {
-    let f = Fixture::new();
-    let remote = f.home.join("remote.git");
-    assert!(
-        Command::new("git")
-            .args(["-c", "init.templateDir=", "init", "--bare", "--quiet"])
-            .arg(&remote)
-            .current_dir(&f.cwd)
-            .env("GIT_CONFIG_NOSYSTEM", "1")
-            .env("GIT_CONFIG_GLOBAL", f.home.join("gitconfig"))
-            .status()
-            .unwrap()
-            .success()
-    );
-    f.ok(&[
-        "init",
-        "--sync",
-        "git",
-        "--remote",
-        remote.to_str().unwrap(),
-    ]);
-    fs::rename(&remote, f.home.join("offline.git")).unwrap();
-    let result = f.ok(&["create", "Saved offline"]);
-    assert_eq!(result["save"]["local"], "committed");
-    assert_eq!(result["save"]["domain"]["outcome"], "changes");
-    assert_eq!(result["publication"]["sharing"], "failed");
-    assert_eq!(result["publication"]["local"], "unchanged");
-    assert_eq!(
-        f.ok(&["show", result["stream"]["id"].as_str().unwrap()])["stream"],
-        result["stream"]
-    );
-    let (code, sync) = f.run(&["sync"], None);
-    assert_eq!(code, 2, "{sync}");
-    assert_eq!(sync["sharing"], "failed");
 }
 
 #[test]

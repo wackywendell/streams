@@ -2,6 +2,7 @@
 
 pub mod adoption;
 pub mod baseline;
+mod coordinator;
 pub mod envelope;
 pub mod git;
 pub mod git_io;

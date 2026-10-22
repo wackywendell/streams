@@ -14,6 +14,11 @@ run = 'RUSTC=$(rustup which rustc) RUSTDOC=$(rustup which rustdoc) cargo build -
 description = "Development gate: Rust contracts and Pi tests, no Git recovery or Temper verification"
 depends = ["test:rust:fast", "test:pi"]
 
+[tasks."test:rust:unit"]
+env = { GIT_CONFIG_GLOBAL = "/dev/null", GIT_CONFIG_SYSTEM = "/dev/null", GIT_CONFIG_NOSYSTEM = "1" }
+description = "Focused lib/bin loop; does not replace contracts or acceptance"
+run = 'RUSTC=$(rustup which rustc) RUSTDOC=$(rustup which rustdoc) cargo test --locked --lib --bins -- --test-threads=4'
+
 [tasks."test:rust:fast"]
 # Fixture repositories must not inherit personal hooks, fsmonitor or signing policy.
 env = { GIT_CONFIG_GLOBAL = "/dev/null", GIT_CONFIG_SYSTEM = "/dev/null", GIT_CONFIG_NOSYSTEM = "1" }

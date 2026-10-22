@@ -144,6 +144,40 @@ fn aliases_reuse_uuid_and_urls_remain_exact_explicit_bindings() {
 }
 
 #[test]
+fn canonical_directory_preserves_nested_spelling_and_symlink_identity() {
+    let f = Fixture::new();
+    let outer = f.root.join("MiXeD-É");
+    let inner = outer.join("Inner");
+    fs::create_dir_all(&inner).unwrap();
+    let alias = f.root.join("alias");
+    symlink(&outer, &alias).unwrap();
+    let identity = fs::metadata(&outer).unwrap();
+    let stored_outer = fs::read_dir(&f.root)
+        .unwrap()
+        .map(|entry| entry.unwrap())
+        .find(|entry| {
+            let metadata = entry.metadata().unwrap();
+            (metadata.dev(), metadata.ino()) == (identity.dev(), identity.ino())
+        })
+        .unwrap()
+        .path();
+    assert_eq!(
+        canonical_directory(&alias.join("Inner")).unwrap(),
+        stored_outer.join("Inner")
+    );
+    let long = inner.join("x".repeat(255));
+    fs::create_dir(&long).unwrap();
+    assert_eq!(
+        canonical_directory(&long).unwrap(),
+        stored_outer.join("Inner").join("x".repeat(255))
+    );
+    assert!(canonical_directory(&inner.join("missing")).is_err());
+    fs::write(inner.join("file"), "").unwrap();
+    assert!(canonical_directory(&inner.join("file")).is_err());
+    assert_eq!(canonical_directory(Path::new("/")).unwrap(), Path::new("/"));
+}
+
+#[test]
 fn case_aliases_use_actual_directory_entry_spelling_when_supported() {
     let f = Fixture::new();
     let root = f.repo("mixedcase");
@@ -156,57 +190,6 @@ fn case_aliases_use_actual_directory_entry_spelling_when_supported() {
     symlink(&root, f.root.join("resolving-sibling")).unwrap();
     assert_eq!(f.registry.register(&alias, None).unwrap(), first);
     assert_eq!(canonical_directory(&alias).unwrap(), root);
-}
-
-#[test]
-fn selected_precedence_explicit_defaults_and_ambiguity() {
-    let f = Fixture::new();
-    let selected = f
-        .registry
-        .register(&f.repo("selected"), Some("repo"))
-        .unwrap();
-    let fallback = f
-        .registry
-        .register(&f.repo("fallback"), Some("repo"))
-        .unwrap();
-    let external = f
-        .registry
-        .register(&f.repo("external"), Some("external"))
-        .unwrap();
-    match f.registry.resolve("repo", None, None).unwrap_err() {
-        RuntimeError::Ambiguous { candidates, .. } => {
-            assert_eq!(candidates, [selected.id.clone(), fallback.id.clone()])
-        }
-        error => panic!("unexpected {error}"),
-    }
-    f.registry.set_default("repo", &fallback.id).unwrap();
-    f.registry.set_default("external", &external.id).unwrap();
-    assert_eq!(
-        f.registry
-            .resolve("repo", Some(&selected.id), Some("repo"))
-            .unwrap(),
-        selected
-    );
-    assert_eq!(
-        f.registry
-            .resolve("repo", Some(&selected.id), None)
-            .unwrap(),
-        selected
-    );
-    assert_eq!(
-        f.registry
-            .resolve("external", Some(&selected.id), Some("repo"))
-            .unwrap(),
-        external
-    );
-    assert!(
-        f.registry
-            .resolve("external", Some(&selected.id), Some("external"))
-            .is_err()
-    );
-    assert!(f.registry.resolve("repo", None, Some("repo")).is_err());
-    let unbound = f.registry.register(&f.repo("unbound"), None).unwrap();
-    assert!(f.registry.resolve("repo", Some(&unbound.id), None).is_err());
 }
 
 #[test]
@@ -410,92 +393,14 @@ fn malformed_registry_is_never_absence_or_overwritten() {
     let f = Fixture::new();
     let root = f.repo("checkout");
     f.registry.register(&root, Some("repo")).unwrap();
-    let good = f.state();
-    let mut cases: Vec<Vec<u8>> = [
-        "not JSON",
-        "[]",
-        "null",
-        "{\"version\":1,\"version\":1}",
-        "{\"bad\":NaN}",
-    ]
-    .iter()
-    .map(|value| value.as_bytes().to_vec())
-    .collect();
-    for (key, value) in [
-        ("version", json!(2)),
-        ("version", json!(true)),
-        ("version", json!(1.0)),
-        ("host_id", json!("other-host")),
-        ("checkouts", json!({})),
-        ("defaults", json!([])),
-        ("extra", json!(1)),
+    let mut invalid_host = f.state();
+    invalid_host["host_id"] = json!("other-host");
+    for bytes in [
+        b"not JSON".to_vec(),
+        serde_json::to_vec(&invalid_host).unwrap(),
     ] {
-        let mut state = good.clone();
-        state[key] = value;
-        cases.push(serde_json::to_vec(&state).unwrap());
-    }
-    for (key, value) in [
-        ("id", json!("")),
-        ("id", json!("bad\x7f")),
-        ("id", json!(null)),
-        ("directory", json!("relative")),
-        ("directory", json!("//x/y")),
-        ("directory", json!("/x/../y")),
-        ("directory", json!("/x/./y")),
-        ("directory", json!("/x//y")),
-        ("directory", json!("/x/y/")),
-        ("device", json!(true)),
-        ("inode", json!(-1)),
-        ("repository_urls", json!(["repo", "repo"])),
-        ("repository_urls", json!([""])),
-        ("repository_urls", json!("repo")),
-        ("extra", json!(1)),
-    ] {
-        let mut state = good.clone();
-        state["checkouts"][0][key] = value;
-        cases.push(serde_json::to_vec(&state).unwrap());
-    }
-    let mut state = good.clone();
-    state["checkouts"]
-        .as_array_mut()
-        .unwrap()
-        .push(good["checkouts"][0].clone());
-    cases.push(serde_json::to_vec(&state).unwrap());
-    let mut state = good.clone();
-    state["defaults"] = json!({"repo": "not-registered"});
-    cases.push(serde_json::to_vec(&state).unwrap());
-    let mut state = good.clone();
-    state["checkouts"][0] = json!(["id", "path", [], 1, 2]);
-    cases.push(serde_json::to_vec(&state).unwrap());
-    let encoded = serde_json::to_string(&good).unwrap();
-    cases.push(
-        encoded
-            .replace(
-                "\"defaults\":{}",
-                "\"defaults\":{\"repo\":\"x\",\"repo\":\"y\"}",
-            )
-            .into_bytes(),
-    );
-    cases.push(
-        encoded
-            .replace("\"version\":1", "\"version\":1,\"version\":1")
-            .into_bytes(),
-    );
-    cases.push(
-        encoded
-            .replace(
-                "\"repository_urls\":[\"repo\"]",
-                "\"repository_urls\":[\"repo\"],\"repository_urls\":[\"repo\"]",
-            )
-            .into_bytes(),
-    );
-    for bytes in cases {
         fs::write(f.registry.path(), &bytes).unwrap();
-        assert!(
-            f.registry.list().is_err(),
-            "accepted {}",
-            String::from_utf8_lossy(&bytes)
-        );
+        assert!(f.registry.list().is_err());
         assert!(f.registry.register(&root, None).is_err());
         assert_eq!(fs::read(f.registry.path()).unwrap(), bytes);
     }

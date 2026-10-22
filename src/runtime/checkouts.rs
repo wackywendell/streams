@@ -1,6 +1,6 @@
 //! Stable host-local checkout IDs and exact, explicit repository URL bindings.
 
-use std::collections::{BTreeMap, BTreeSet};
+use std::collections::BTreeSet;
 use std::fs;
 use std::os::unix::fs::MetadataExt;
 use std::path::{Path, PathBuf};
@@ -8,7 +8,9 @@ use std::path::{Path, PathBuf};
 use serde::{Deserialize, Serialize};
 use uuid::Uuid;
 
-use crate::codec::objects;
+mod canonical;
+mod state;
+use state::State;
 
 use super::{Result, RuntimeError, digest, invalid, lock, read_json, text, write_json};
 
@@ -22,16 +24,6 @@ pub struct CheckoutLocation {
     pub repository_urls: Vec<String>,
     pub device: u64,
     pub inode: u64,
-}
-
-#[derive(Serialize, Deserialize)]
-#[serde(deny_unknown_fields)]
-struct State {
-    version: u64,
-    host_id: String,
-    #[serde(deserialize_with = "objects")]
-    checkouts: Vec<CheckoutLocation>,
-    defaults: BTreeMap<String, String>,
 }
 
 /// A discovered checkout root and the inspected directory's portable path within it.
@@ -58,24 +50,7 @@ pub fn canonical_directory(path: &Path) -> Result<PathBuf> {
     if !root.is_dir() {
         return Err(invalid("expected an existing directory"));
     }
-    let mut canonical = PathBuf::from("/");
-    for component in root.components().skip(1) {
-        let name = component.as_os_str();
-        let entries = fs::read_dir(&canonical)?.collect::<std::io::Result<Vec<_>>>()?;
-        if let Some(entry) = entries.iter().find(|entry| entry.file_name() == name) {
-            canonical = entry.path();
-            continue;
-        }
-        let target = fs::metadata(canonical.join(name))?;
-        let entry = entries
-            .into_iter()
-            .find(|entry| {
-                fs::symlink_metadata(entry.path())
-                    .is_ok_and(|metadata| physical(&metadata) == physical(&target))
-            })
-            .ok_or_else(|| invalid("canonical directory entry not found"))?;
-        canonical = entry.path();
-    }
+    let canonical = canonical::spelling(&root)?;
     text(
         canonical
             .to_str()
@@ -154,39 +129,10 @@ impl CheckoutRegistry {
     }
 
     fn read(&self) -> Result<State> {
-        let state: State = read_json(&self.path)?.unwrap_or_else(|| State {
-            version: 1,
-            host_id: self.host_id.clone(),
-            checkouts: Vec::new(),
-            defaults: BTreeMap::new(),
-        });
-        if state.version != 1 || state.host_id != self.host_id {
-            return Err(invalid("unsupported registry schema or host"));
-        }
-        let (mut ids, mut roots, mut identities, mut live) = (
-            BTreeSet::new(),
-            BTreeSet::new(),
-            BTreeSet::new(),
-            BTreeSet::new(),
-        );
+        let state: State = read_json(&self.path)?.unwrap_or_else(|| State::new(&self.host_id));
+        state.check(&self.host_id)?;
+        let mut live = BTreeSet::new();
         for checkout in &state.checkouts {
-            text(&checkout.id)?;
-            canonical_saved_path(&checkout.directory)?;
-            let mut urls = BTreeSet::new();
-            for url in &checkout.repository_urls {
-                text(url)?;
-                if !urls.insert(url) {
-                    return Err(invalid("duplicate repository binding"));
-                }
-            }
-            if !ids.insert(&checkout.id)
-                || !roots.insert(&checkout.directory)
-                || !identities.insert((checkout.device, checkout.inode))
-            {
-                return Err(invalid(
-                    "duplicate checkout ID, root, or filesystem identity",
-                ));
-            }
             match fs::metadata(&checkout.directory) {
                 Ok(metadata) => {
                     if !live.insert(physical(&metadata)) {
@@ -195,16 +141,6 @@ impl CheckoutRegistry {
                 }
                 Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
                 Err(error) => return Err(error.into()),
-            }
-        }
-        for (url, id) in &state.defaults {
-            text(url)?;
-            if !state
-                .checkouts
-                .iter()
-                .any(|item| &item.id == id && item.repository_urls.contains(url))
-            {
-                return Err(invalid("default must name an explicitly bound checkout"));
             }
         }
         Ok(state)
@@ -216,15 +152,6 @@ impl CheckoutRegistry {
         let result = f(&mut state)?;
         write_json(&self.path, &state)?;
         Ok(result)
-    }
-
-    fn lookup<'a>(state: &'a State, id: &str) -> Result<&'a CheckoutLocation> {
-        text(id)?;
-        state
-            .checkouts
-            .iter()
-            .find(|item| item.id == id)
-            .ok_or_else(|| RuntimeError::NotFound(format!("checkout is not registered: {id}")))
     }
 
     fn exact_root(&self, directory: &Path) -> Result<PathBuf> {
@@ -264,7 +191,7 @@ impl CheckoutRegistry {
 
     /// Revalidate the exact canonical root and its recorded device/inode.
     pub fn get(&self, id: &str) -> Result<CheckoutLocation> {
-        self.validate(Self::lookup(&self.read()?, id)?)
+        self.validate(self.read()?.lookup(id)?)
     }
 
     /// Find an already registered exact root; aliases never create a second identity.
@@ -393,7 +320,7 @@ impl CheckoutRegistry {
     /// Reassociate an ID with an exact root without moving any files or changing defaults.
     pub fn move_checkout(&self, id: &str, directory: &Path) -> Result<CheckoutLocation> {
         self.update(|state| {
-            let mut checkout = Self::lookup(state, id)?.clone();
+            let mut checkout = state.lookup(id)?.clone();
             let root = self.exact_root(directory)?;
             let metadata = fs::metadata(&root)?;
             for other in state.checkouts.iter().filter(|other| other.id != id) {
@@ -426,18 +353,8 @@ impl CheckoutRegistry {
     pub fn set_default(&self, repository_url: &str, id: &str) -> Result<()> {
         text(repository_url)?;
         self.update(|state| {
-            let checkout = self.validate(Self::lookup(state, id)?)?;
-            if !checkout
-                .repository_urls
-                .iter()
-                .any(|url| url == repository_url)
-            {
-                return Err(invalid(
-                    "default requires an explicit repository URL binding",
-                ));
-            }
-            state.defaults.insert(repository_url.into(), checkout.id);
-            Ok(())
+            self.validate(state.lookup(id)?)?;
+            state.set_default(repository_url, id)
         })
     }
 
@@ -454,48 +371,7 @@ impl CheckoutRegistry {
             text(url)?;
         }
         let state = self.read()?;
-        if let Some(id) = selected_id {
-            let selected = Self::lookup(&state, id)?;
-            if selected_repository_url.is_none() && selected.repository_urls.is_empty() {
-                return Err(invalid(
-                    "selected checkout lacks an explicit repository URL binding",
-                ));
-            }
-            let bound = selected
-                .repository_urls
-                .iter()
-                .any(|url| url == repository_url);
-            if selected_repository_url == Some(repository_url) || bound {
-                if !bound {
-                    return Err(invalid(
-                        "selected checkout lacks an explicit repository URL binding",
-                    ));
-                }
-                return self.validate(selected);
-            }
-        } else if selected_repository_url == Some(repository_url) {
-            return Err(invalid(
-                "selected repository requires a selected checkout ID",
-            ));
-        }
-        if let Some(id) = state.defaults.get(repository_url) {
-            return self.validate(Self::lookup(&state, id)?);
-        }
-        let candidates: Vec<_> = state
-            .checkouts
-            .iter()
-            .filter(|item| item.repository_urls.iter().any(|url| url == repository_url))
-            .map(|item| item.id.clone())
-            .collect();
-        let message = format!("no explicit checkout default for repository: {repository_url}");
-        if candidates.len() > 1 {
-            Err(RuntimeError::Ambiguous {
-                message,
-                candidates,
-            })
-        } else {
-            Err(RuntimeError::NotFound(message))
-        }
+        self.validate(state.resolve(repository_url, selected_id, selected_repository_url)?)
     }
 
     /// Extract a historical document hint; this grants no native-effect authority.
