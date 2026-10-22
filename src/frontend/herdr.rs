@@ -3,8 +3,10 @@
 //! Topology and pane observations are structural native evidence only, not
 //! catalog/session attestation. Runtime ownership proofs must remain separate.
 
+pub mod events;
 mod launch;
 mod ownership;
+pub mod socket;
 mod topology;
 pub use launch::HerdrStartedAgent;
 pub use ownership::{HerdrNativeSnapshot, PairState};
