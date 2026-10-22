@@ -1061,9 +1061,10 @@ fn malformed_document_ack_retains_pending_and_fences_duplicate_creation() {
 }
 
 #[test]
-fn launch_carries_custom_plugin_root_and_original_editor_configuration() {
+fn launch_carries_custom_plugin_root_editor_and_named_namespace() {
     let mut f = Fixture::new();
     f.environment.insert("EDITOR".into(), "nano -w".into());
+    f.environment.insert("HERDR_SESSION".into(), "fake".into());
     f.engine().open_display(OpenMode::Explicit).unwrap();
     let effects = f.effects();
     let launch = effects
@@ -1079,10 +1080,21 @@ fn launch_carries_custom_plugin_root_and_original_editor_configuration() {
         .iter()
         .find_map(|arg| arg.strip_prefix("STREAMS_CARDS_READ_ENV="))
         .unwrap();
-    assert_eq!(
-        serde_json::from_str::<Value>(reader).unwrap()["EDITOR"],
-        "nano -w"
-    );
+    let captured: Value = serde_json::from_str(reader).unwrap();
+    assert_eq!(captured["EDITOR"], "nano -w");
+    assert_eq!(captured["HERDR_SESSION"], "fake");
+    let environment = launch
+        .windows(2)
+        .filter(|pair| pair[0] == "--env")
+        .map(|pair| {
+            let (key, value) = pair[1].split_once('=').unwrap();
+            (key.to_owned(), value.to_owned())
+        })
+        .collect();
+    let context = LaunchedCardContext::from_environment(&environment)
+        .unwrap()
+        .unwrap();
+    assert_eq!(context.reader().environment["HERDR_SESSION"], "fake");
 }
 #[test]
 fn fully_paired_reserved_card_completes_without_restamping() {

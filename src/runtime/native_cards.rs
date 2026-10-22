@@ -42,7 +42,7 @@ const PAIR_KEYS: [&str; 6] = [
     "strm_role",
     "strm_native",
 ];
-pub const SOURCE_ENV_KEYS: [&str; 13] = [
+pub const SOURCE_ENV_KEYS: [&str; 14] = [
     "EDITOR",
     "HOME",
     "XDG_CONFIG_HOME",
@@ -55,6 +55,7 @@ pub const SOURCE_ENV_KEYS: [&str; 13] = [
     "PATH",
     "HERDR_BIN_PATH",
     "HERDR_SOCKET_PATH",
+    "HERDR_SESSION",
     "PI_OFFLINE",
 ];
 type Tokens = BTreeMap<String, String>;
