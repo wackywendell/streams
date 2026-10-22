@@ -2,15 +2,13 @@
 use super::*;
 
 #[test]
-fn partial_checkout_retains_both_histories_and_fences_fresh_coordinators() {
+fn checkout_failure_retains_both_histories_and_fences_fresh_coordinators() {
     let (a, b) = pair();
     accepted(a.save(&create("local", "local", "a")));
     accepted(b.save(&create("remote", "remote", "b")));
     confirmed(b.sync());
     let old = a.head().unwrap();
-    let before = a.snapshot();
-    let retained = a.retained.borrow().len();
-    a.checkout_failure.set(Some(CheckoutFailure::AfterFiles));
+    a.checkout_failure.set(true);
     a.now.set(2000.0);
     let result = a.sync();
     assert_eq!(
@@ -19,28 +17,19 @@ fn partial_checkout_retains_both_histories_and_fences_fresh_coordinators() {
     );
     let marker = a.marker().unwrap();
     let PublicationMarker::Adopting(adoption) = &marker else {
-        panic!("must fence partial adoption")
+        panic!("must fence adoption failure")
     };
     let candidate = adoption.adoption_to().as_str();
     assert_eq!(adoption.adoption_from().as_str(), old);
     assert_eq!(a.head().unwrap(), old);
-    assert_ne!(*a.records.borrow(), before);
-    assert_eq!(
-        a.records.borrow().catalog,
-        *a.history(Some(candidate)).unwrap().catalog()
-    );
     assert_eq!(
         marker.attempt().confirmed_at(),
         Some(Seconds::try_from(2000.0).unwrap())
     );
     assert_eq!(a.metadata().last_push, marker.attempt().confirmed_at());
     let refs = a.retained.borrow();
-    assert_eq!(refs.len(), retained + 3);
-    assert_eq!(refs.iter().filter(|tip| *tip == &old).count(), 1);
-    assert_eq!(
-        refs.iter().filter(|tip| tip.as_str() == candidate).count(),
-        2
-    );
+    assert!(refs.iter().any(|tip| tip == &old));
+    assert!(refs.iter().any(|tip| tip.as_str() == candidate));
     for tip in refs.iter() {
         a.history(Some(tip)).unwrap();
     }

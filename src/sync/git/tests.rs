@@ -6,13 +6,16 @@ use crate::operations::Actor;
 use crate::storage::StorageError;
 use crate::sync::replay::{Replay, replay};
 use crate::yaml_store::relative_record_path;
+use std::collections::BTreeSet;
 
 #[path = "../../../tests/support/git.rs"]
 mod fixture_git;
 
 fn revisions() -> (tempfile::TempDir, GitCatalog, Oid, Oid, Operation, Origin) {
     let dir = tempfile::tempdir().unwrap();
-    let mut catalog = GitCatalog::new(dir.path(), "host", Policy::default()).unwrap();
+    let root = dir.path().join("publisher");
+    fs::create_dir(&root).unwrap();
+    let mut catalog = GitCatalog::new(&root, "host", Policy::default()).unwrap();
     fixture_git::install_hook(&mut catalog, |_, _, _, _| None);
     let git = catalog.git();
     git.run(&["init", "--initial-branch=main"], None, None, &[0])
@@ -107,6 +110,44 @@ fn partial_checkout_changes_files_and_index_without_moving_branch() {
 }
 
 #[test]
+fn retained_histories_survive_successful_checkout() {
+    let (_dir, catalog, old, new, operation, _) = revisions();
+    catalog
+        .with_lock(|locked| {
+            locked.retain(old.as_str())?;
+            locked.retain(new.as_str())?;
+            locked.checkout(&old, &new)
+        })
+        .unwrap();
+    let refs = catalog
+        .git()
+        .text(
+            &[
+                "for-each-ref",
+                "--format=%(objectname)",
+                "refs/catalog/retained/",
+            ],
+            None,
+            None,
+            &[0],
+        )
+        .unwrap();
+    assert_eq!(
+        refs.lines().collect::<BTreeSet<_>>(),
+        BTreeSet::from([old.as_str(), new.as_str()])
+    );
+    assert_eq!(catalog.git().head().unwrap(), new.as_str());
+    let records = catalog
+        .store()
+        .with_inspection::<_, StorageError>(|tx| tx.read())
+        .unwrap();
+    assert_eq!(
+        records.catalog.get(&operation.after().key()).as_ref(),
+        Some(operation.after())
+    );
+}
+
+#[test]
 fn candidate_publication_preserves_original_intent_and_live_checkout() {
     let (dir, catalog, old, new, operation, origin) = revisions();
     let head = catalog.git().head().unwrap();
@@ -140,11 +181,15 @@ fn candidate_publication_preserves_original_intent_and_live_checkout() {
         )
         .unwrap();
     catalog.git().push_candidate(&candidate, "main").unwrap();
-    assert_eq!(
-        catalog.git().fetch_tip("main").unwrap().as_deref(),
-        Some(candidate.as_str())
-    );
-    let history = read_history(catalog.git(), Some(candidate.as_str())).unwrap();
+    // A fresh catalog must fetch the actual pushed objects, not read publisher caches.
+    let mut follower =
+        GitCatalog::new(dir.path().join("follower"), "follower", Policy::default()).unwrap();
+    fixture_git::install_hook(&mut follower, |_, _, _, _| None);
+    let follower = follower
+        .initialize(Some(remote.to_str().unwrap().into()), "main")
+        .unwrap();
+    assert_eq!(follower.git().head().unwrap(), candidate.as_str());
+    let history = read_history(follower.git(), Some(candidate.as_str())).unwrap();
     let entry = history.operation("create").unwrap();
     assert_eq!(entry.operation, operation);
     assert_eq!(entry.origin, origin);

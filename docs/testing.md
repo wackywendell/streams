@@ -92,12 +92,15 @@ profile. These are not controlled benchmarks or evidence of hardware-crash survi
 
 The former two-catalog lost-reply and partial-adoption traces are split by claim.
 Coordinator tests cover projection without adoption, later saves after an uncertain
-push, original provenance, retained histories and fencing after partial checkout.
-The fixture can now fail after materializing files but before moving the tip.
-Two direct Git-adapter tests in `src/sync/git/tests.rs` seed just two revisions with
-`fast-import`: one uses a real ref lock to cause the partial checkout; the other
-runs the production isolated-index candidate builder, then checks push/fetch
-observation, original intent/provenance and unchanged index, worktree and local tip. Neither runs catalog initialization/save/sync for setup.
+push, original provenance, retained histories and fencing after checkout errors.
+The coordinator treats checkout as an opaque effect; its fake need not simulate
+partial filesystem changes. Three direct Git-adapter tests in `src/sync/git/tests.rs` seed just two revisions with
+`fast-import`: one uses a real ref lock to cause the partial checkout; another
+checks retained tips and successful checkout. The third runs the production
+isolated-index candidate builder, pushes its output and initializes a fresh
+catalog from that remote. It checks original intent/provenance and the publisher's
+unchanged index, worktree and tip. The receiver must fetch the pushed objects
+rather than observe objects already present in the publisher. Neither runs catalog initialization/save/sync for setup.
 These replace the earlier 382-subprocess application trace, not real Git itself.
 
 Real Git also remains in storage, import, inspection, revision and CLI contracts.
