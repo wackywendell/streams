@@ -114,13 +114,28 @@ fn accepted_offline_create_retains_publication_warning_and_durable_record() {
     assert_eq!(result["save"]["domain"]["outcome"], "changes");
     assert_eq!(result["publication"]["sharing"], "failed");
     assert_eq!(result["publication"]["local"], "unchanged");
-    assert_eq!(
-        f.ok(&["show", result["stream"]["id"].as_str().unwrap()])["stream"],
-        result["stream"]
-    );
-    let (code, sync) = f.run(&["sync"], None);
-    assert_eq!(code, 2, "{sync}");
-    assert_eq!(sync["sharing"], "failed");
+    // Read persisted state directly: show/sync behavior has backend-level tests.
+    use streams_temper::{
+        model::Record,
+        storage::StorageError,
+        sync::git_io::Git,
+        yaml_store::{YamlStore, relative_record_path},
+    };
+    let snapshot = YamlStore::new(f.root())
+        .with_inspection::<_, StorageError>(|tx| tx.read())
+        .unwrap();
+    assert_eq!(snapshot.catalog.streams().len(), 1);
+    let stream = &snapshot.catalog.streams()[0];
+    assert_eq!(serde_json::to_value(stream).unwrap(), result["stream"]);
+    let path = relative_record_path(&Record::Stream(stream.clone()));
+    let committed = crate::support::git::test_command(
+        &Git::new(f.root(), 10.0),
+        &["show", &format!("HEAD:{}", path.display())],
+        None,
+        None,
+    )
+    .unwrap();
+    assert_eq!(committed, fs::read(f.root().join(path)).unwrap());
 }
 
 #[test]
