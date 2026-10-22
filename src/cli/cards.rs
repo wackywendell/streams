@@ -300,13 +300,7 @@ fn build(
         environment: read_environment,
         cwd: read_cwd,
     };
-    let source = source::ApplicationSource::new(
-        source_app,
-        session_id,
-        scope,
-        owner,
-        config.timeout_seconds(),
-    );
+    let source = source::ApplicationSource::new(source_app, session_id, scope, owner);
     let mut engine = NativeCardEngine::new(
         client,
         Box::new(source),

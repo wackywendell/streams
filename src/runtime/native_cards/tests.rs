@@ -54,7 +54,12 @@ struct Source {
     launch: SourceLaunch,
 }
 impl NativeCardSource for Source {
-    fn read(&mut self, inventory: bool) -> Result<CardObservation> {
+    fn read(
+        &mut self,
+        _client: &HerdrClient,
+        _snapshot: &HerdrNativeSnapshot,
+        inventory: bool,
+    ) -> Result<CardObservation> {
         let mut world = self.world.lock().unwrap();
         if inventory {
             world.inventory_reads += 1;
@@ -66,7 +71,12 @@ impl NativeCardSource for Source {
         }
         Ok(world.observation.clone())
     }
-    fn resolve_document(&mut self, target: &DocumentTarget) -> Result<ResolvedEditor> {
+    fn resolve_document(
+        &mut self,
+        _client: &HerdrClient,
+        _snapshot: &HerdrNativeSnapshot,
+        target: &DocumentTarget,
+    ) -> Result<ResolvedEditor> {
         let world = self.world.lock().unwrap();
         if world.deny_read
             || world
@@ -691,12 +701,13 @@ fn card_pane_cannot_use_the_owner_bridge() {
 fn operation_request_budgets() {
     for operation in ["observe", "check", "open", "close", "project"] {
         let f = Fixture::new();
+        f.runner.world.lock().unwrap().calls.clear();
         let mut engine = f.engine();
         // Close exercises an owned, ready card, not the no-op absence path.
         if operation == "close" {
             engine.open_display(OpenMode::Explicit).unwrap();
+            f.runner.world.lock().unwrap().calls.clear();
         }
-        f.runner.world.lock().unwrap().calls.clear();
         match operation {
             "observe" => {
                 engine.observe_owner().unwrap();
@@ -724,12 +735,14 @@ fn operation_request_budgets() {
         for call in &world.calls {
             *counts.entry(call[..2].join(" ")).or_insert(0_usize) += 1;
         }
-        // Baseline first; tightened when the observation transport is replaced.
+        // Includes bootstrap except close, which starts with a ready engine.
+        // Every effect invalidates the observation for its confirmation; taking
+        // the workspace lock also invalidates the pre-lock display snapshot.
         let (snapshots, starts) = match operation {
-            "observe" | "check" => (1, 2),
-            "open" => (16, 44),
-            "close" => (4, 10),
-            "project" => (15, 36),
+            "observe" | "check" => (1, 3),
+            "open" => (7, 27),
+            "close" => (3, 8),
+            "project" => (8, 23),
             _ => unreachable!(),
         };
         assert_eq!(counts["api snapshot"], snapshots, "{operation}: {counts:?}");

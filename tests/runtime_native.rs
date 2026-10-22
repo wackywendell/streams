@@ -30,7 +30,7 @@ impl Fixture {
             agent: Mutex::new(
                 json!({"pane_id":"w:p1","workspace_id":"w","agent":"pi", "agent_session":{"agent":"pi","kind":"id","value":"native"}}),
             ),
-            snapshot: Mutex::new(json!({"panes":[]})),
+            snapshot: Mutex::new(Value::Null),
             commands: Mutex::new(vec![]),
         })
     }
@@ -68,7 +68,22 @@ impl ProcessRunner for Fixture {
                 json!({"result":{"type":"workspace_info","workspace":{"workspace_id":"w","label":"Working"}}})
             }
             ("api", "snapshot") => {
-                json!({"result":{"type":"session_snapshot","snapshot":*self.snapshot.lock().unwrap()}})
+                let mut snapshot = self.snapshot.lock().unwrap().clone();
+                if snapshot.is_null() {
+                    let mut pane = self.pane.clone();
+                    let mut agent = pane.clone();
+                    agent
+                        .as_object_mut()
+                        .unwrap()
+                        .extend(self.agent.lock().unwrap().as_object().unwrap().clone());
+                    pane["agent"] = agent["agent"].clone();
+                    pane["agent_session"] = agent["agent_session"].clone();
+                    snapshot = json!({"workspaces":[{"workspace_id":"w","label":"Working"}],
+                        "tabs":[{"workspace_id":"w","tab_id":"w:t1","label":"Working"}],
+                        "panes":[pane], "agents":[agent],
+                        "layouts":[{"workspace_id":"w","tab_id":"w:t1","panes":[{"pane_id":"w:p1"}]}]});
+                }
+                json!({"result":{"type":"session_snapshot","snapshot":snapshot}})
             }
             _ => panic!("unexpected or mutating native command: {args:?}"),
         };

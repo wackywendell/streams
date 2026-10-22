@@ -19,7 +19,6 @@ pub(super) struct ApplicationSource {
     native_session_id: String,
     expected_scope: Option<Scope>,
     expected_owner: Option<NativeOwnerObservation>,
-    timeout: f64,
 }
 impl ApplicationSource {
     pub(super) fn new(
@@ -27,18 +26,24 @@ impl ApplicationSource {
         native_session_id: String,
         scope: Option<Scope>,
         owner: Option<NativeOwnerObservation>,
-        timeout: f64,
     ) -> Self {
         Self {
             app,
             native_session_id,
             expected_scope: scope,
             expected_owner: owner,
-            timeout,
         }
     }
-    fn observe(&self, inventory: bool) -> Result<CardObservation> {
-        let observed = self.app.agent_observation(
+    fn observe(
+        &self,
+        client: &streams_temper::frontend::herdr::HerdrClient,
+        snapshot: &streams_temper::frontend::herdr::HerdrNativeSnapshot,
+        inventory: bool,
+    ) -> Result<CardObservation> {
+        let connection = streams_temper::runtime::native::BuiltinFrontend::Herdr(
+            client.with_context(self.app.environment.clone()),
+        );
+        let observed = self.app.agent_observation_from_native(
             Harness::Pi,
             &self.native_session_id,
             self.expected_scope
@@ -46,7 +51,7 @@ impl ApplicationSource {
                 .map(|scope| scope.stream_id.as_str()),
             true,
             inventory,
-            self.timeout,
+            Some((&connection, Some(snapshot.raw()))),
         )?;
         let context = observed.context;
         let (stream, session) = context.stream.zip(context.session).ok_or_else(|| {
@@ -168,8 +173,13 @@ impl ApplicationSource {
             handover,
         })
     }
-    fn resolve(&self, target: &DocumentTarget) -> Result<ResolvedEditor> {
-        let current = self.observe(false)?;
+    fn resolve(
+        &self,
+        client: &streams_temper::frontend::herdr::HerdrClient,
+        snapshot: &streams_temper::frontend::herdr::HerdrNativeSnapshot,
+        target: &DocumentTarget,
+    ) -> Result<ResolvedEditor> {
+        let current = self.observe(client, snapshot, false)?;
         if current
             .card
             .document_target(&target.document.repository, &target.document.path)
@@ -226,15 +236,22 @@ impl ApplicationSource {
     }
 }
 impl NativeCardSource for ApplicationSource {
-    fn read(&mut self, inventory: bool) -> std::result::Result<CardObservation, RuntimeError> {
-        self.observe(inventory)
+    fn read(
+        &mut self,
+        client: &streams_temper::frontend::herdr::HerdrClient,
+        snapshot: &streams_temper::frontend::herdr::HerdrNativeSnapshot,
+        inventory: bool,
+    ) -> std::result::Result<CardObservation, RuntimeError> {
+        self.observe(client, snapshot, inventory)
             .map_err(|e| RuntimeError::Invalid(e.to_string()))
     }
     fn resolve_document(
         &mut self,
+        client: &streams_temper::frontend::herdr::HerdrClient,
+        snapshot: &streams_temper::frontend::herdr::HerdrNativeSnapshot,
         target: &DocumentTarget,
     ) -> std::result::Result<ResolvedEditor, RuntimeError> {
-        self.resolve(target)
+        self.resolve(client, snapshot, target)
             .map_err(|e| RuntimeError::Invalid(e.to_string()))
     }
     fn launch_context(&self) -> SourceLaunch {

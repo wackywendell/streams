@@ -63,8 +63,18 @@ type Tokens = BTreeMap<String, String>;
 /// A trusted application adapter must obtain fresh effective authority and exact
 /// native Pi attestation on EVERY read. Implementations must not enroll or save.
 pub trait NativeCardSource {
-    fn read(&mut self, inventory: bool) -> Result<CardObservation>;
-    fn resolve_document(&mut self, target: &DocumentTarget) -> Result<ResolvedEditor>;
+    fn read(
+        &mut self,
+        client: &HerdrClient,
+        snapshot: &HerdrNativeSnapshot,
+        inventory: bool,
+    ) -> Result<CardObservation>;
+    fn resolve_document(
+        &mut self,
+        client: &HerdrClient,
+        snapshot: &HerdrNativeSnapshot,
+        target: &DocumentTarget,
+    ) -> Result<ResolvedEditor>;
     fn launch_context(&self) -> SourceLaunch;
 }
 
@@ -234,6 +244,8 @@ pub struct NativeCardEngine {
     caller: NativeTuple,
     captured: Option<CapturedOwner>,
     commands: Vec<CommandEvidence>,
+    observation: Option<HerdrNativeSnapshot>,
+    bootstrap: bool,
 }
 impl NativeCardEngine {
     pub fn new(
@@ -254,14 +266,14 @@ impl NativeCardEngine {
                 "launched-card state or plugin root differs from its protected context",
             ));
         }
-        let current = client.current_pane()?;
+        let snapshot = HerdrNativeSnapshot::parse(&client.session_snapshot()?)?;
+        let current = client.current_pane_from(snapshot.raw())?;
         if launched
             .as_ref()
             .is_some_and(|context| context.owner().pane_id == current.id)
         {
             return Err(invalid("a launched card cannot run as the Pi owner pane"));
         }
-        let snapshot = HerdrNativeSnapshot::parse(&client.session_snapshot()?)?;
         let pane = snapshot
             .topology()
             .panes
@@ -292,7 +304,30 @@ impl NativeCardEngine {
             caller,
             captured: None,
             commands: Vec::new(),
+            observation: Some(snapshot),
+            bootstrap: true,
         })
+    }
+    fn begin_observation(&mut self) {
+        if !std::mem::take(&mut self.bootstrap) {
+            self.observation = None;
+        }
+    }
+    fn fresh_under_lock(&mut self) {
+        self.bootstrap = false;
+        self.observation = None;
+    }
+    fn snapshot(&mut self) -> Result<HerdrNativeSnapshot> {
+        if self.observation.is_none() {
+            self.observation = Some(HerdrNativeSnapshot::parse(
+                &self.client.session_snapshot()?,
+            )?);
+        }
+        Ok(self
+            .observation
+            .as_ref()
+            .expect("observed snapshot")
+            .clone())
     }
     fn check_cancelled(&self) -> Result<()> {
         if self.cancelled.load(Ordering::Acquire) {
@@ -310,6 +345,9 @@ impl NativeCardEngine {
     }
     fn call(&mut self, args: &[String], expected: Option<&str>, effect: bool) -> Result<Value> {
         self.check_cancelled()?;
+        if effect {
+            self.observation = None;
+        }
         let (value, commands) =
             self.client
                 .card_request(args, expected, effect)
@@ -324,8 +362,8 @@ impl NativeCardEngine {
     }
     fn inspect(&mut self, inventory: bool) -> Result<Verified> {
         self.check_cancelled()?;
-        let before = self.source.read(inventory)?;
-        let snapshot = HerdrNativeSnapshot::parse(&self.client.session_snapshot()?)?;
+        let snapshot = self.snapshot()?;
+        let before = self.source.read(&self.client, &snapshot, inventory)?;
         let caller = snapshot.locate_terminal(&self.caller.terminal_id)?;
         if NativeTuple::from_pane(caller) != self.caller {
             return Err(self.refuse("caller native tuple moved or changed"));
@@ -384,7 +422,7 @@ impl NativeCardEngine {
             tuple: tuple.clone(),
             binding: tokens.get("strm_binding").cloned(),
         });
-        let latest = self.source.read(inventory)?;
+        let latest = self.source.read(&self.client, &snapshot, inventory)?;
         if latest.card.scope() != scope
             || latest.card.owner() != claimed
             || latest.handover != before.handover

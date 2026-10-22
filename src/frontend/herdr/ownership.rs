@@ -18,6 +18,7 @@ type Tokens = BTreeMap<String, String>;
 /// Validated topology and its tokens cannot be changed independently.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct HerdrNativeSnapshot {
+    raw: Value,
     topology: HerdrTopology,
     pane_tokens: BTreeMap<String, Tokens>,
     workspace_tokens: BTreeMap<String, Tokens>,
@@ -90,6 +91,7 @@ impl HerdrNativeSnapshot {
             }
         }
         Ok(Self {
+            raw: value.clone(),
             topology,
             pane_tokens,
             workspace_tokens,
@@ -108,6 +110,10 @@ impl HerdrNativeSnapshot {
             .iter()
             .find(|tab| tab.id == id)
             .and_then(|tab| tab.number)
+    }
+
+    pub fn raw(&self) -> &Value {
+        &self.raw
     }
 
     pub fn topology(&self) -> &HerdrTopology {

@@ -81,6 +81,16 @@ impl BuiltinFrontend {
     }
 
     /// Resolve only the exact inherited caller, never GUI focus or a display label.
+    pub fn caller_from_snapshot(&self, snapshot: &Value) -> Result<CallingWorkspace> {
+        let client = self
+            .herdr()
+            .ok_or_else(|| invalid("Herdr snapshot requires Herdr"))?;
+        Ok(CallingWorkspace {
+            scope: self.scope(),
+            workspace_id: client.current_pane_from(snapshot)?.workspace_id,
+        })
+    }
+
     pub fn caller(&self) -> Result<CallingWorkspace> {
         let scope = self.scope();
         let workspace = self.adapter().resolve(WorkspaceSelector::Caller)?;
@@ -206,12 +216,36 @@ fn pi_identity(metadata: &Value) -> Result<String> {
 /// Verify the conversation registered in this exact caller pane. No state is written.
 pub fn verify_pi_caller(client: &HerdrClient, native_session_id: &str) -> Result<NativeCaller> {
     text(native_session_id)?;
-    let pane = client.current_pane()?;
-    let agent = client.agent_info(&pane.id)?;
-    if agent.pane_id != pane.id || agent.workspace_id != pane.workspace_id || agent.agent != "pi" {
+    verify_pi_caller_from_snapshot(client, &client.session_snapshot()?, native_session_id)
+}
+
+pub fn verify_pi_caller_from_snapshot(
+    client: &HerdrClient,
+    snapshot: &Value,
+    native_session_id: &str,
+) -> Result<NativeCaller> {
+    text(native_session_id)?;
+    let topology = crate::frontend::herdr::HerdrTopology::parse(snapshot)?;
+    let pane = client.current_pane_from(snapshot)?;
+    let agents: Vec<_> = topology
+        .agents
+        .iter()
+        .filter(|agent| agent.pane_id == pane.id)
+        .collect();
+    if agents.len() != 1 {
+        return Err(invalid("native caller requires exactly one agent record"));
+    }
+    let row = snapshot["panes"]
+        .as_array()
+        .and_then(|panes| panes.iter().find(|row| row["pane_id"] == pane.id))
+        .ok_or_else(|| invalid("native caller missing from snapshot"))?;
+    if row["agent"] != "pi"
+        || agents[0].native["agent"] != "pi"
+        || row["agent_session"] != agents[0].native["agent_session"]
+    {
         return Err(invalid("native agent pane, workspace or harness mismatch"));
     }
-    let actual = pi_identity(&agent.metadata)?;
+    let actual = pi_identity(&row["agent_session"])?;
     if actual != native_session_id {
         return Err(invalid(
             "requested Pi session differs from the native pane session; a background helper cannot automatically enroll its parent's workspace",
@@ -233,6 +267,24 @@ pub fn attest_context(
     session: &Session,
     authority: Option<&Authority>,
 ) -> Result<NativeCaller> {
+    attest_context_from_snapshot(
+        client,
+        &client.session_snapshot()?,
+        state,
+        stream,
+        session,
+        authority,
+    )
+}
+
+pub fn attest_context_from_snapshot(
+    client: &HerdrClient,
+    snapshot: &Value,
+    state: &RuntimeState,
+    stream: &Stream,
+    session: &Session,
+    authority: Option<&Authority>,
+) -> Result<NativeCaller> {
     if authority.is_none_or(|authority| {
         authority.host_id != state.host_id()
             || crate::model::check_text(&authority.token, "authority token", false).is_err()
@@ -249,8 +301,15 @@ pub fn attest_context(
             "native projection requires the exact local Pi Session",
         ));
     }
-    let caller = verify_pi_caller(client, &session.harness_session_id)?;
-    client.resolve(WorkspaceSelector::Explicit(caller.workspace_id()))?;
+    let caller = verify_pi_caller_from_snapshot(client, snapshot, &session.harness_session_id)?;
+    if snapshot["workspaces"].as_array().is_none_or(|rows| {
+        rows.iter()
+            .filter(|row| row["workspace_id"].as_str() == Some(caller.workspace_id()))
+            .count()
+            != 1
+    }) {
+        return Err(invalid("native caller workspace missing or ambiguous"));
+    }
     let endpoint = client.endpoint();
     let scope = herdr_scope(&endpoint.socket, endpoint.session.as_deref());
     if !state
@@ -325,7 +384,13 @@ impl NativeInventory {
 
 /// Never infer that a conversation died from a missing saved transcript.
 pub fn native_inventory(client: &HerdrClient) -> Result<NativeInventory> {
-    let snapshot = client.session_snapshot()?;
+    native_inventory_from_snapshot(client, &client.session_snapshot()?)
+}
+
+pub fn native_inventory_from_snapshot(
+    client: &HerdrClient,
+    snapshot: &Value,
+) -> Result<NativeInventory> {
     let rows = snapshot
         .get("panes")
         .and_then(Value::as_array)

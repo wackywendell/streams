@@ -849,13 +849,45 @@ impl App {
         include_inventory: bool,
         native_timeout: f64,
     ) -> Result<AgentObservation> {
+        let connection = self.native_frontend(&self.selection(None)?, native_timeout)?;
+        let snapshot = connection
+            .as_ref()
+            .and_then(BuiltinFrontend::herdr)
+            .map(|client| client.session_snapshot())
+            .transpose()
+            .map_err(|e| CliError::message(e.to_string()))?;
+        self.agent_observation_from_native(
+            harness,
+            session_id,
+            stream_id,
+            attest,
+            include_inventory,
+            connection
+                .as_ref()
+                .map(|connection| (connection, snapshot.as_ref())),
+        )
+    }
+
+    fn agent_observation_from_native(
+        &self,
+        harness: streams_temper::runtime::conversations::Harness,
+        session_id: &str,
+        stream_id: Option<&str>,
+        attest: bool,
+        include_inventory: bool,
+        observed: Option<(&BuiltinFrontend, Option<&Value>)>,
+    ) -> Result<AgentObservation> {
         let opened = application::open(&self.config)?;
         let state = self.state(&opened)?;
-        let connection = self.native_frontend(&self.selection(None)?, native_timeout)?;
+        let connection = observed.map(|(connection, _)| connection);
         let workspace_stream = connection
             .as_ref()
             .map(|frontend| {
-                frontend.caller()?.context_stream_id(
+                match observed.and_then(|(_, snapshot)| snapshot) {
+                    Some(snapshot) => frontend.caller_from_snapshot(snapshot)?,
+                    None => frontend.caller()?,
+                }
+                .context_stream_id(
                     &state,
                     self.environment
                         .get("STREAMS_STREAM_ID")
@@ -899,16 +931,14 @@ impl App {
                 .ok_or_else(|| {
                     CliError::message("native projection requires an enrolled Stream and Session")
                 })?;
-            let client = connection
-                .as_ref()
-                .and_then(BuiltinFrontend::herdr)
-                .ok_or_else(|| {
-                    CliError::message(
-                        "native projection attestation requires an exact Herdr caller",
-                    )
-                })?;
-            Some(native::attest_context(
+            let client = connection.and_then(BuiltinFrontend::herdr).ok_or_else(|| {
+                CliError::message("native projection attestation requires an exact Herdr caller")
+            })?;
+            Some(native::attest_context_from_snapshot(
                 client,
+                observed
+                    .and_then(|(_, snapshot)| snapshot)
+                    .expect("attested snapshot"),
                 &state,
                 stream,
                 session,
@@ -921,11 +951,13 @@ impl App {
             if !attest {
                 return Err(CliError::message("native inventory requires --attest"));
             }
-            Some(native::native_inventory(
+            Some(native::native_inventory_from_snapshot(
                 connection
-                    .as_ref()
                     .and_then(BuiltinFrontend::herdr)
                     .expect("attestation requires Herdr"),
+                observed
+                    .and_then(|(_, snapshot)| snapshot)
+                    .expect("attested snapshot"),
             )?)
         } else {
             None

@@ -25,7 +25,9 @@ impl NativeCardEngine {
                 self.refuse("document viewing scope/reference changed; redraw before opening")
             );
         }
-        let resolved = self.source.resolve_document(target)?;
+        let resolved = self
+            .source
+            .resolve_document(&self.client, &v.snapshot, target)?;
         let expected = target
             .editor_identity()
             .map_err(|e| invalid(e.to_string()))?;
@@ -52,6 +54,7 @@ impl NativeCardEngine {
         Ok((v, resolved, key))
     }
     pub fn open_document(&mut self, target: &DocumentTarget) -> Result<()> {
+        self.begin_observation();
         let state = self.state.clone();
         let _lock = state.lock(
             &self.client.endpoint().socket,
@@ -59,6 +62,7 @@ impl NativeCardEngine {
             self.config.timeout_seconds,
             &self.cancelled,
         )?;
+        self.fresh_under_lock();
         let (mut v, resolved, key) = self.document_proof(target)?;
         let evidence_key = json_digest(&(
             &self.client.endpoint().socket,

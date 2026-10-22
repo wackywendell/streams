@@ -138,6 +138,7 @@ impl NativeCardEngine {
             self.config.timeout_seconds,
             &self.cancelled,
         )?;
+        self.fresh_under_lock();
         let (_, before) = self.retirement_proof()?;
         let (_, fresh) = self.retirement_proof()?;
         if fresh != before {

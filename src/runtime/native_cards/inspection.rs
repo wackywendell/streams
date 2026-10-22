@@ -46,6 +46,10 @@ pub struct NativeOwnerView {
 impl NativeCardEngine {
     /// Observe the attested Pi owner without retiring markers or preparing state.
     pub fn observe_owner(&mut self) -> Result<NativeOwnerView> {
+        self.begin_observation();
+        self.observe_owner_current()
+    }
+    fn observe_owner_current(&mut self) -> Result<NativeOwnerView> {
         let v = self.inspect(false)?;
         if v.caller != v.owner || self.launched.is_some() {
             return Err(self.refuse("only the attested Pi owner may drive lifecycle effects"));
@@ -68,7 +72,12 @@ impl NativeCardEngine {
     }
     /// Re-attest the caller and pin the CLI process before any lifecycle mutation.
     pub fn pin_owner(&mut self, scope: &Scope, expected: &NativeOwnerContext) -> Result<()> {
-        let observed = self.observe_owner()?;
+        // Pin construction against its bootstrap snapshot without spending the
+        // first command's observation. Later pinning must still refresh.
+        if !self.bootstrap {
+            self.observation = None;
+        }
+        let observed = self.observe_owner_current()?;
         let mut context = observed.context;
         if expected.binding.is_none() {
             context.binding = None;
@@ -83,6 +92,7 @@ impl NativeCardEngine {
     /// Read-only: does not acquire/create the workspace lock, repair evidence,
     /// retire predecessors, register plugins or initialize a native binding.
     pub fn status(&mut self) -> Result<NativeCardStatus> {
+        self.begin_observation();
         let v = self.guard()?;
         let evidence = self.state.read(&v.key)?;
         if !matches!(v.pair()?, PairState::Empty)

@@ -90,15 +90,6 @@ impl HerdrPane {
     }
 }
 
-/// The native agent record is an observation, not catalog or saved-file authority.
-#[derive(Debug, Clone)]
-pub(crate) struct HerdrAgentInfo {
-    pub pane_id: String,
-    pub workspace_id: String,
-    pub agent: String,
-    pub metadata: Value,
-}
-
 /// Herdr's richer creation result is deliberately not imposed on CMUX.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct HerdrCreatedWorkspace {
@@ -178,6 +169,60 @@ impl HerdrClient {
 
     pub fn endpoint(&self) -> &HerdrEndpoint {
         &self.endpoint
+    }
+
+    /// Share the pinned endpoint while selecting a protected card's owner.
+    pub fn with_context(&self, context: BTreeMap<String, String>) -> Self {
+        Self {
+            context,
+            ..self.clone()
+        }
+    }
+
+    pub fn current_pane_from(&self, snapshot: &Value) -> Result<HerdrPane, FrontendError> {
+        if self.context.get("HERDR_ENV").map(String::as_str) != Some("1") {
+            return Err(FrontendError::invalid(
+                "current Herdr targeting requires HERDR_ENV=1 and HERDR_PANE_ID",
+            ));
+        }
+        let id = self
+            .context
+            .get("HERDR_PANE_ID")
+            .filter(|id| !id.is_empty())
+            .ok_or_else(|| {
+                FrontendError::invalid(
+                    "current Herdr targeting requires HERDR_ENV=1 and HERDR_PANE_ID",
+                )
+            })?;
+        let panes = snapshot["panes"]
+            .as_array()
+            .ok_or_else(|| FrontendError::invalid("missing Herdr pane inventory"))?;
+        let mut matches = panes
+            .iter()
+            .filter(|pane| pane["pane_id"].as_str() == Some(id));
+        let pane = HerdrPane::parse(
+            matches
+                .next()
+                .ok_or_else(|| FrontendError::invalid("Herdr caller missing from snapshot"))?,
+        )?;
+        if matches.next().is_some() {
+            return Err(FrontendError::invalid("ambiguous Herdr caller"));
+        }
+        let workspaces = snapshot["workspaces"]
+            .as_array()
+            .ok_or_else(|| FrontendError::invalid("missing Herdr workspace inventory"))?;
+        let mut matches = workspaces
+            .iter()
+            .filter(|workspace| workspace["workspace_id"].as_str() == Some(&pane.workspace_id));
+        HerdrWorkspace::parse(
+            matches
+                .next()
+                .ok_or_else(|| FrontendError::invalid("Herdr caller workspace missing"))?,
+        )?;
+        if matches.next().is_some() {
+            return Err(FrontendError::invalid("ambiguous Herdr caller workspace"));
+        }
+        Ok(pane)
     }
 
     fn reference(&self, id: String) -> WorkspaceRef {
@@ -292,29 +337,7 @@ impl HerdrClient {
         self.pane(&mut op)
     }
 
-    pub(crate) fn agent_info(&self, pane_id: &str) -> Result<HerdrAgentInfo, FrontendError> {
-        nonempty(pane_id, "Herdr pane ID")?;
-        let mut op = Operation::default();
-        self.verify_endpoint(&mut op)?;
-        let result = self.result(
-            &mut op,
-            &args(&["agent", "get", pane_id]),
-            "agent_info",
-            false,
-        )?;
-        let agent = &result["agent"];
-        Ok(HerdrAgentInfo {
-            pane_id: op.capture(string(agent, "pane_id"))?,
-            workspace_id: op.capture(string(agent, "workspace_id"))?,
-            agent: op.capture(string(agent, "agent"))?,
-            metadata: agent
-                .get("agent_session")
-                .cloned()
-                .ok_or_else(|| op.error("missing native agent_session"))?,
-        })
-    }
-
-    pub(crate) fn session_snapshot(&self) -> Result<Value, FrontendError> {
+    pub fn session_snapshot(&self) -> Result<Value, FrontendError> {
         self.read_snapshot(&mut Operation::default())
     }
 

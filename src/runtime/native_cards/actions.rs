@@ -452,6 +452,7 @@ impl NativeCardEngine {
     }
 
     pub fn open_display(&mut self, mode: OpenMode) -> Result<DisplayOutcome> {
+        self.begin_observation();
         let observed = self.guard_recovering()?;
         if observed.caller != observed.owner {
             return Err(self.refuse("only the attested Pi owner may open a display"));
@@ -463,6 +464,7 @@ impl NativeCardEngine {
             self.config.timeout_seconds,
             &self.cancelled,
         )?;
+        self.fresh_under_lock();
         let mut v = self.guard()?;
         let raw = lock.read(&v.key)?;
         if let Some(attempt) = raw
@@ -645,12 +647,14 @@ impl NativeCardEngine {
     }
 
     pub fn verify_display(&mut self) -> Result<CardSnapshot> {
+        self.begin_observation();
         let v = self.marked()?;
         paired_tuple(&v)?;
         Ok(v.saved.card)
     }
 
     pub fn focus_display(&mut self) -> Result<()> {
+        self.begin_observation();
         self.guard()?;
         let state = Arc::clone(&self.state);
         let _lock = state.lock(
@@ -659,6 +663,7 @@ impl NativeCardEngine {
             self.config.timeout_seconds,
             &self.cancelled,
         )?;
+        self.fresh_under_lock();
         let v = self.marked()?;
         let card = paired_tuple(&v)?;
         let focused = self.call(
@@ -682,6 +687,7 @@ impl NativeCardEngine {
     }
 
     pub fn close_display(&mut self) -> Result<()> {
+        self.begin_observation();
         self.guard()?;
         let state = Arc::clone(&self.state);
         let lock = state.lock(
@@ -690,6 +696,7 @@ impl NativeCardEngine {
             self.config.timeout_seconds,
             &self.cancelled,
         )?;
+        self.fresh_under_lock();
         let v = self.marked()?;
         if matches!(v.pair()?, PairState::Absent { .. }) {
             return Ok(());
@@ -719,9 +726,9 @@ impl NativeCardEngine {
             true,
         )?;
         // A card caller has just disappeared: guard would reject it, so bracket the snapshot directly.
-        let saved = self.source.read(false)?;
-        let snapshot = HerdrNativeSnapshot::parse(&self.client.session_snapshot()?)?;
-        let latest = self.source.read(false)?;
+        let snapshot = self.snapshot()?;
+        let saved = self.source.read(&self.client, &snapshot, false)?;
+        let latest = self.source.read(&self.client, &snapshot, false)?;
         let owner = snapshot.locate_terminal(&v.owner.terminal_id)?;
         self.check_cancelled()?;
         if reply["pane_id"] != card.pane_id

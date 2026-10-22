@@ -193,9 +193,11 @@ test('native operation Herdr request budgets',t=>{
   f.cli('native','--session-id',f.id,operation);
   const calls=f.commands().slice(start),counts={};
   for(const call of calls) {const key=call.slice(0,2).join(' ');counts[key]=(counts[key]??0)+1;}
-  // Baseline process starts, tightened after the socket/observation change.
-  const budget={observe:27,check:27,project:251,capture:74}[operation];
+  // Fixed command budgets through the injected Herdr boundary.
+  const budget={observe:3,check:3,project:19,capture:10}[operation];
+  const snapshots={observe:1,check:1,project:7,capture:4}[operation];
   assert.equal(calls.length,budget,`${operation}: ${JSON.stringify(counts)}`);
+  assert.equal(counts['api snapshot'],snapshots,`${operation}: ${JSON.stringify(counts)}`);
  }
 });
 test('real Rust owner observation is read-only and rejects stale context before metadata effects',t=>{
