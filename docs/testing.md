@@ -75,10 +75,8 @@ Real-Git tests retain that separate evidence.
 The `git_io` tests intercept every command without starting Git. They check push
 arguments, unknown outcomes, branch-specific fetches, target validation, signing
 failure without unsigned fallback, ancestry and batched blob observations.
-The dedicated `git_catalog` target retains 5 physical boundary tests:
+The dedicated `git_catalog` target retains 3 physical boundary tests:
 
-- two-clone history roundtrips and lost-ack recovery across disk-backed reopen
-- partial checkout adoption that retains both histories and fences restart
 - rejection of actual dirty, ignored and unsupported Git histories
 - initialization identity, branch selection and no-clobber checks
 - partial local saves at add, commit creation and branch update, with durable YAML/index evidence and restart fencing
@@ -91,6 +89,16 @@ memory tests separately establish that adoption/clear failures invoke this recov
 and block later operations. One warm file-boundary sample took 0.040 seconds,
 replacing a two-catalog publication trace that took 13.9 seconds in a concurrent
 profile. These are not controlled benchmarks or evidence of hardware-crash survival.
+
+The former two-catalog lost-reply and partial-adoption traces are split by claim.
+Coordinator tests cover projection without adoption, later saves after an uncertain
+push, original provenance, retained histories and fencing after partial checkout.
+The fixture can now fail after materializing files but before moving the tip.
+Two direct Git-adapter tests in `src/sync/git/tests.rs` seed just two revisions with
+`fast-import`: one uses a real ref lock to cause the partial checkout; the other
+checks push/fetch observation, original intent/provenance and unchanged index,
+worktree and local tip. Neither runs catalog initialization/save/sync for setup.
+These replace the earlier 382-subprocess application trace, not real Git itself.
 
 Real Git also remains in storage, import, inspection, revision and CLI contracts.
 The dedicated target's test count is not the total number of tests that start Git.

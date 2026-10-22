@@ -105,6 +105,26 @@ fn local_creation_authority_is_immediate_but_other_producers_are_rejected() {
 }
 
 #[test]
+fn refreshed_projection_does_not_adopt_or_change_saved_records() {
+    let (a, b) = pair();
+    accepted(a.save(&create("remote", "remote", "a")));
+    accepted(b.save(&create("local", "local", "b")));
+    confirmed(a.sync());
+    let head = b.head().unwrap();
+    let saved = b.snapshot();
+    let retained = b.retained.borrow().clone();
+    let pushes = b.push_count.get();
+    let read = b.run(|core| core.read(true)).unwrap();
+    assert_eq!(read.freshness, Freshness::Refreshed);
+    assert_eq!(read.catalog.streams().len(), 2);
+    assert_eq!(b.head().unwrap(), head);
+    assert_eq!(b.snapshot(), saved);
+    assert_eq!(*b.retained.borrow(), retained);
+    assert_eq!(b.push_count.get(), pushes);
+    assert!(b.marker().is_none());
+}
+
+#[test]
 fn no_push_sync_and_read_do_not_advance_last_push_or_publication_clock() {
     let (a, _) = pair();
     let baseline = a.metadata().last_push;

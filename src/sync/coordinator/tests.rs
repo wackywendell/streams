@@ -2,6 +2,7 @@
 //! an observed remote tip, and scripted effect outcomes. No filesystem or subprocess I/O.
 //! Fresh coordinators retain journal contents; this does not model disk crash durability.
 
+mod adoption;
 mod conformance;
 mod policy;
 mod recovery;
@@ -67,6 +68,12 @@ impl Journal for MemoryJournal {
     }
 }
 
+#[derive(Clone, Copy, PartialEq)]
+enum CheckoutFailure {
+    BeforeEffect,
+    AfterFiles,
+}
+
 #[derive(Default)]
 struct Histories {
     values: BTreeMap<String, History>,
@@ -130,7 +137,7 @@ struct MemoryRepository {
     fetch_count: Cell<usize>,
     fetch_errors: Cell<usize>,
     candidate_failure: Cell<bool>,
-    checkout_failure: Cell<bool>,
+    checkout_failure: Cell<Option<CheckoutFailure>>,
     commit_failure: Cell<bool>,
     state_hook: RefCell<Option<crate::sync::state::StateHook>>,
     after_push: RefCell<Option<AfterPush>>,
@@ -171,7 +178,7 @@ impl MemoryRepository {
             fetch_count: Cell::new(0),
             fetch_errors: Cell::new(0),
             candidate_failure: Cell::new(false),
-            checkout_failure: Cell::new(false),
+            checkout_failure: Cell::new(None),
             commit_failure: Cell::new(false),
             state_hook: RefCell::new(None),
             after_push: RefCell::new(None),
@@ -352,13 +359,16 @@ impl Repository for MemoryRepository {
         assert_eq!(marker.adoption_to(), new);
         assert!(self.retained.borrow().iter().any(|tip| tip == old.as_str()));
         assert!(self.retained.borrow().iter().any(|tip| tip == new.as_str()));
-        if self.checkout_failure.get() {
+        if self.checkout_failure.get() == Some(CheckoutFailure::BeforeEffect) {
             return Err(GitError::new("checkout failed", Some(1)).into());
         }
         assert_eq!(self.head.borrow().as_str(), old.as_str());
-        *self.head.borrow_mut() = new.to_string();
         *self.records.borrow_mut() =
             YamlStore::decode_snapshot(self.history(Some(new.as_str()))?.files())?;
+        if self.checkout_failure.get() == Some(CheckoutFailure::AfterFiles) {
+            return Err(GitError::new("ref update failed after checkout", Some(1)).into());
+        }
+        *self.head.borrow_mut() = new.to_string();
         Ok(())
     }
     fn commit_record(
@@ -474,7 +484,8 @@ fn assert_lost_ack_recovery(
         accepted(b.save(&create("competing", "competing", "b")));
         confirmed(b.sync());
     }
-    a.checkout_failure.set(interrupted_adoption);
+    a.checkout_failure
+        .set(interrupted_adoption.then_some(CheckoutFailure::BeforeEffect));
     let result = a.sync();
     if interrupted_adoption {
         assert_eq!(result.sharing, SharingStatus::Confirmed);

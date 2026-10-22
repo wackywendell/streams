@@ -1,5 +1,8 @@
 //! Managed Git records: locked local saves and isolated replay candidates.
 
+#[cfg(test)]
+mod tests;
+
 use std::fs;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;

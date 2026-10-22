@@ -108,7 +108,7 @@ fn recovered_confirmation_survives_adoption_failure_and_newer_remote_history() {
             let old = a.head().unwrap();
             match stage {
                 "before-adoption" => a.journal.failure.set(Some(JournalFailure::BeforeAdoption)),
-                "checkout" => a.checkout_failure.set(true),
+                "checkout" => a.checkout_failure.set(Some(CheckoutFailure::BeforeEffect)),
                 "before-clear" => a.journal.failure.set(Some(JournalFailure::BeforeClear)),
                 "after-clear" => a.journal.failure.set(Some(JournalFailure::AfterClear)),
                 _ => unreachable!(),
@@ -164,7 +164,7 @@ fn pure_remote_adoption_failure_does_not_claim_an_outgoing_confirmation() {
     let (a, b) = pair();
     accepted(a.save(&create("remote", "remote", "a")));
     confirmed(a.sync());
-    b.checkout_failure.set(true);
+    b.checkout_failure.set(Some(CheckoutFailure::BeforeEffect));
     let result = b.sync();
     assert_eq!(
         (result.sharing, result.local),
