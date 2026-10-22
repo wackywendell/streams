@@ -194,6 +194,42 @@ tests (7.36 seconds for the group in another). They now search only for the clai
 invariant witness. Positive full-cascade verification remains unchanged, and the
 model is still limited to the proposal described in its source.
 
+## Focused boundary follow-up sample
+
+At `f5ca168f`, a separate no-run build took 20.36 seconds. The subsequent warm
+default `cargo test --locked` passed all 542 tests:
+
+| Target | Tests | Harness time |
+| --- | --- | --- |
+| Library | 165 | 3.92 seconds |
+| Binary | 31 | 0.15 seconds |
+| Contracts | 336 | 13.75 seconds |
+| Dedicated Git boundaries | 3 | 1.71 seconds |
+| Protocol verification | 4 | 0.06 seconds |
+| Documentation | 3 | 0.03 + 0.22 seconds |
+
+Command wall time was 28.19 seconds. Cargo startup, harness startup and Rustdoc
+snippet compilation are outside the individual harness figures. Host load was not
+controlled; these figures do not establish a fixed percentage improvement.
+
+In focused samples, all 4 source-observer tests took 0.05 seconds after removing
+durable writes from their setup. The 4 resource-effect mutant checks took about
+0.62–0.71 seconds each, while their unchanged positive full cascade took 3.16
+seconds. The earlier concurrent profile put those mutants at 6–10 seconds each.
+They still use real generated models, not canned witness traces.
+
+Argon reviews covered the fence, source, native adapter and witness boundaries.
+The adapter review exposed missing production candidate/retention/checkout and
+fresh-receiver coverage; focused native tests now cover those paths. The final
+review found no material issues. Strict Clippy, warning-denied docs and formatting
+passed. Pi (279), Herdr boundaries (43), replay (3) and Rust native routing (18)
+also passed, with no skips.
+
+The default Rust gate still exceeds the few-seconds goal. Contracts remain the
+largest group; passing this sample is not evidence that every remaining test has
+the right boundary or justified cost. No tests were ignored or moved out of the
+default gate.
+
 ## Rust-only follow-up execution sample
 
 The follow-up branches from the accepted Rust migration bookmark. A warm default
