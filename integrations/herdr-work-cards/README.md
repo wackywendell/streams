@@ -1,6 +1,6 @@
 # Streams work cards
 
-This package projects saved Streams records into Herdr. The root Pi extension owns reporting and enrollment; this package does not run model inference or write a separate work catalog. See the [Streams README](../../README.md) for installation, commands and reporting settings.
+Rust projects saved Streams records into Herdr. This package supplies its manifest, launch helpers and the TypeScript Pi boundary utilities. The root Pi extension owns reporting and enrollment; this package does not run model inference or write a separate work catalog. See the [Streams README](../../README.md) for installation, commands and reporting settings.
 
 The source was imported with its original history through `e7d74ce22f95893fa8eed570ef2e6a14d61f74bd`. The [native projection decision](../../docs/native-herdr-work-cards.md) explains the adaptation. The former standalone runtime and its `/work-card` commands are not supported.
 
@@ -57,6 +57,18 @@ Timer settings must be integers from 1 to 2,147,483,647. Pane height must be str
 
 Inference settings belong to the root extension's `stream-reporting.json`. Removed fields such as `model`, `thinking_level`, `show_refresh_spinner`, `check_every_n_responses`, `max_output_tokens` and `request_timeout_ms` are rejected in `work-cards.json`.
 
+## Rust lifecycle routing
+
+Rust is the only native implementation on this branch. The Pi extension defaults to this checkout's `target/debug/streams`, respecting `CARGO_TARGET_DIR`. Build it with `mise run build`. Set `STREAMS_BIN_PATH` to an absolute matching executable when using a packaged extension or a different build. Missing or invalid executables fail; there is no Python, TypeScript-coordinator or `PATH` fallback. This source cutover does not activate or replace installed tools.
+
+The Pi extension keeps commands, tools, event serialization and Pi session-name provenance. Rust handles native card open/close, metadata, Herdr names and arrangement capture. Every effect re-attests the captured catalog, host, conversation, endpoint, terminal and workspace binding. A changed scope permanently suspends the old adapter until reload. Cancellation drains the child process group; it does not clear uncertain launch evidence or close displays.
+
+Reporting and native effects share one executable selector. `STREAMS_RUST_BIN` remains a compatibility alias; when both variables are set, their canonical paths must match. Load only one checkout's Streams extension.
+
+The Rust card uses `streams-rust-herdr-plugin.toml` and `bin/open-rust-streams-pane.sh`. The launcher requires the protected launch envelope and executes that explicit Rust binary, not a CLI found on `PATH`.
+
+Run `mise run test:native:rust` for isolated Pi/Rust CLI acceptance with fake Herdr endpoints. PTY and live-platform acceptance remain required before a trial.
+
 ## Development
 
 Use Node.js 22 or later. From the repository root:
@@ -67,11 +79,11 @@ npm --prefix integrations/herdr-work-cards run check
 npm --prefix integrations/herdr-work-cards test
 ```
 
-`npm test` builds TypeScript and runs `tests/*.test.mjs`. `npm run build` refreshes compiled native code. Restart participating Pi sessions and reopen native pane processes after changing loaded code. Do not mix old and new launch-record protocols during an update. Use the root Streams extension, not a standalone Pi entrypoint from this package.
+`npm test` builds the surviving TypeScript support code and runs `tests/*.test.mjs`. `mise run build` builds the Rust native runtime. Restart participating Pi sessions and reopen native pane processes after changing loaded code. Do not mix old and new launch-record protocols during an update. Use the root Streams extension, not a standalone Pi entrypoint from this package.
 
-The `streams-herdr-plugin.toml` manifest requires compatible Herdr 0.9.3 or newer. Explicit pane opening can register the exact missing plugin; it refuses conflicting or disabled registrations. It does not update or restart Herdr.
+The `streams-rust-herdr-plugin.toml` manifest requires a compatible Herdr native plugin API. Explicit pane opening can register the exact missing plugin; it refuses conflicting or disabled registrations. It does not update or restart Herdr.
 
-Tests cover configuration, rendering, naming, exact Streams context, ownership, native lifecycle and guarded document opening. Native effects use mocked protocols. Run isolated native acceptance before activating changed launch code; automated tests do not establish live platform support.
+This package tests configuration, executable selection, Pi naming, subprocesses and the document launcher. Rust tests cover rendering, exact context, ownership, native lifecycle and guarded documents, retaining frozen renderer fixtures. Native effects use fake protocols. Run isolated native acceptance before activating changed launch code; automated tests do not establish live platform support.
 
 ## Historical design documents
 

@@ -1,5 +1,7 @@
 # Catalog sync implementation contract
 
+Historical Python implementation plan. The sync policy remains in the [sync ADR](../docs/catalog-git-sync.md); current Rust-only commands and verification are in [Contributing](../CONTRIBUTING.md). Python paths and test commands below are historical.
+
 The [sync ADR](../docs/catalog-git-sync.md) owns the decisions and rationale; the [protocol-boundary ADR](../docs/catalog-protocol-boundaries.md) explains their structural enforcement. The [catalog ADR](../docs/durable-work-catalog.md) owns record meaning and lifecycle. This document records backend and integration contracts, not authority to change an installed catalog or create a hosted repository. The library, CLI coordinator and Pi lifecycle hooks are implemented. The [local Git adoption contract](../docs/catalog-local-git-adoption.md) adds explicit snapshot import and no-remote Git backing. Handover and credentialed multi-host acceptance remain follow-on work.
 
 ## Scope and existing contracts

@@ -14,15 +14,15 @@ import { receiptCanContinue, receiptText, type LocalContext, type Receipt } from
 export type Preview = (input: {catalog: LocalContext; action: "apply" | "enroll"; request: unknown}, signal: AbortSignal) => Promise<{catalog: LocalContext; receipt: Receipt}>;
 type ReplayTask = {task: Inference["type"]; input_file: string; request_id?: string; status: "running" | "parsed" | "failed"; model?: ModelSelection; prompt_hash?: string; helper_file?: string; raw_response?: AssistantMessage; result?: Inferred; error?: string};
 type ReplaySample = {native_session_id: string; host_id: string; open: boolean | null; status: "not-run" | "completed" | "skipped" | "failed" | "unavailable" | "cancelled"; before: LocalContext; after: LocalContext; tasks: ReplayTask[]; receipts: Receipt[]; notices: string[]; error?: string};
-export type ReplayRun = {version: 1; id: string; capture_id: string; started_at: string; completed_at?: string; model: ModelSelection; action: ReportAction; source_files: Record<string, string>; samples: ReplaySample[]};
+export type ReplayRun = {version: 1; id: string; capture_id: string; started_at: string; completed_at?: string; model: ModelSelection; action: ReportAction; source_files: Record<string, string>; capture_source_files: Record<string, string>; samples: ReplaySample[]};
 /** Each conversation starts at its frozen base; later tasks see its own simulated saves. */
 export async function replayCapture(capture: Capture, root: string, runtime: InferenceRuntime, model: ModelSelection, action: ReportAction, preview: Preview, signal: AbortSignal, options: {trim?: boolean; prompt?: string} = {}): Promise<{run: ReplayRun; directory: string}> {
  if (!runtime.modelRegistry.find(model.provider, model.id)) throw Error("Replay model is unavailable; no fallback was used");
  signal.throwIfAborted();
  if (options.trim === false && capture.context_mode !== "full") throw Error("This older capture contains trimmed evidence. Capture it again before replaying full context.");
  const id = randomUUID(), directory = join(root, "runs", id), helpers = join(directory, "helpers");
- privateDirectory(root);privateDirectory(join(root, "runs"));privateDirectory(directory);privateDirectory(helpers);
- const run: ReplayRun = {version: 1, id, capture_id: capture.id, started_at: new Date().toISOString(), model, action, source_files: sourceFiles(), samples: capture.samples.map(sample => ({native_session_id: sample.native_session_id, host_id: sample.host_id, open: sample.open, status: "not-run", before: structuredClone(sample.catalog), after: structuredClone(sample.catalog), tasks: [], receipts: [], notices: []}))};
+ privateDirectory(helpers, root);
+ const run: ReplayRun = {version: 1, id, capture_id: capture.id, started_at: new Date().toISOString(), model, action, source_files: sourceFiles(), capture_source_files: structuredClone(capture.source_files), samples: capture.samples.map(sample => ({native_session_id: sample.native_session_id, host_id: sample.host_id, open: sample.open, status: "not-run", before: structuredClone(sample.catalog), after: structuredClone(sample.catalog), tasks: [], receipts: [], notices: []}))};
  try {
   for (const [index, sample] of capture.samples.entries()) {
    const result = run.samples[index];
@@ -36,7 +36,7 @@ export async function replayCapture(capture: Capture, root: string, runtime: Inf
      const prepared = prepareInput(request, {capture_id: capture.id, sample: index, host_id: sample.host_id, native_session_id: sample.native_session_id, cwd: sample.cwd!, leafId: sample.evidence!.leafId}, options.prompt, options.trim ?? true);
      task.request_id = savePrepared(root, prepared).id;
      // These inputs are reconstructed, never claimed to be historically sent requests.
-     privateWrite(join(directory, task.input_file), JSON.stringify({origin: "reconstructed-from-frozen-sample", request: prepared.input, request_id: task.request_id}, null, 2) + "\n");
+     privateWrite(join(directory, task.input_file), JSON.stringify({origin: "reconstructed-from-frozen-sample", request: prepared.input, request_id: task.request_id}, null, 2) + "\n", root);
      const logger = helperSessionLogger({cwd: sample.cwd!, sessionId: sample.native_session_id, leafId: sample.evidence!.leafId, sessionFile: sample.snapshot_file ? join(root, "captures", capture.id, sample.snapshot_file) : undefined}, {directory: helpers, onCreate: value => {task.helper_file = `helpers/${value.session_file.split(/[\\/]/).at(-1)}`;}});
      const outcome = await runPrepared(prepared, runtime, model, signal, event => {
       if (event.type === "request") {task.model = event.model;task.prompt_hash = digest(JSON.stringify({systemPrompt: event.payload.systemPrompt, tools: event.payload.tools}));}
@@ -71,8 +71,8 @@ export async function replayCapture(capture: Capture, root: string, runtime: Inf
   }
  } finally {
   run.completed_at = new Date().toISOString();
-  privateWrite(join(directory, "run.json"), JSON.stringify(run, null, 2) + "\n");
-  privateWrite(join(directory, "comparison.md"), comparison(run));
+  privateWrite(join(directory, "run.json"), JSON.stringify(run, null, 2) + "\n", root);
+  privateWrite(join(directory, "comparison.md"), comparison(run), root);
  }
  return {run, directory};
 }

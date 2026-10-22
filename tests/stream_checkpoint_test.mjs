@@ -10,7 +10,6 @@ import { createJiti } from 'jiti';
 const jiti = createJiti(import.meta.url);
 const load = (name) => jiti.import(new URL(`../extensions/stream-checkpoint/${name}.ts`, import.meta.url).pathname);
 const { StreamCli, StreamsCliError, receiptText } = await load('streams');
-const { parseStreamsCardContext } = await jiti.import(new URL('../integrations/herdr-work-cards/src/herdr/streams-source.ts', import.meta.url).pathname);
 const { automaticFields, editRequest, FieldEdit } = await load('core');
 const { checkpointContext, infer, changesSchema } = await load('agent');
 const { chooseInitial } = await load('chooser');
@@ -51,7 +50,7 @@ test('CLI rejects invalid payload and nonreceipt failures',async()=>{
   await assert.rejects(cli.apply({}),StreamsCliError);
  }
 });
-test('extension and native consumers share strict catalog fields and nullable document provenance',async()=>{
+test('StreamCli validates strict catalog fields and nullable document provenance',async()=>{
  const initial=context(), id=randomUUID();
  initial.session.harness_session_id=id;
  initial.stream.documents=[{repository:'repo',ref:'main',path:'design.md',description:'Design'}];
@@ -61,11 +60,25 @@ test('extension and native consumers share strict catalog fields and nullable do
  const read=value=>new StreamCli('/tmp',async()=>({code:0,stdout:JSON.stringify(value),stderr:''})).context(id);
  for(const provenance of [{},{commit:'abc',source_session_id:'origin'},{commit:null,source_session_id:null}]) {
   const value=structuredClone(initial);Object.assign(value.stream.documents[0],provenance);
-  const app=await read(value), native=parseStreamsCardContext(value,id);
-  assert.deepEqual(app.stream,native.stream);assert.deepEqual(app.session,native.session);
+  const app=await read(value);
+  assert.deepEqual(app.stream,value.stream);assert.deepEqual(app.session,value.session);
+ }
+ for(const repository_url of [undefined,null,'https://example.test/original.git']) {
+  const value=structuredClone(initial);
+  value.session.checkout={repository:'old-app',ref:'topic',directory_within_checkout:'services/api'};
+  if(repository_url!==undefined)value.session.checkout.repository_url=repository_url;
+  const app=await read(value);assert.deepEqual(app.session,value.session);
+ }
+ for(const previous_stream_ids of [[],['earlier'],['a','b','a']]) {
+  const value=structuredClone(initial);value.session.previous_stream_ids=previous_stream_ids;
+  const app=await read(value);assert.deepEqual(app.session,value.session);
  }
  for(const change of [
   value=>{value.session.title_mode='other';},
+  ...[null,'earlier',[42],[''],[' '],['a','a']].map(history=>value=>{value.session.previous_stream_ids=history;}),
+  value=>{value.session.previous_stream_ids=['earlier',value.session.stream_id];},
+  value=>{value.session.checkout={repository:'app',repository_url:42,ref:'topic',directory_within_checkout:'.'};},
+  value=>{value.session.checkout={repository:'app',repository_url:'',ref:'topic',directory_within_checkout:'.'};},
   value=>{value.stream.goal_mode='other';},
   value=>{value.stream.status=['active'];},
   value=>{value.host_id='';},
@@ -78,7 +91,6 @@ test('extension and native consumers share strict catalog fields and nullable do
  ]) {
   const value=structuredClone(initial);change(value);
   await assert.rejects(read(value),StreamsCliError);
-  assert.throws(()=>parseStreamsCardContext(value,id));
  }
 });
 test('catalog list accepts only the current object contract',async()=>{
@@ -330,29 +342,22 @@ test('helper logging captures raw tool arguments before normalization and fails 
   await assert.rejects(infer(ctx,{type:'session',catalog:context(),messages:[]},new AbortController().signal,undefined,{directory:blocked}));assert.equal(calls,1);
  } finally {rmSync(root,{recursive:true,force:true});}
 });
-test('helper response persistence errors never retry a successful model call',async t=>{
+test('helper response persistence errors never retry a successful model call',async()=>{
  const root=mkdtempSync(join(tmpdir(),'card-helper-write-failure-'));let calls=0;
- const append=SessionManager.prototype.appendMessage;
- t.mock.method(SessionManager.prototype,'appendMessage',function(message){if(message.role==='assistant')throw Error('503 simulated log write failure');return append.call(this,message);});
  try {
-  const ctx={cwd:root,sessionManager:SessionManager.inMemory(root),model:{provider:'mock',id:'helper'},modelRegistry:{complete:async()=>{calls++;return {role:'assistant',stopReason:'toolUse',content:[{type:'toolCall',name:'record_card',arguments:{changes:{}}}],timestamp:1};}}};
-  await assert.rejects(infer(ctx,{type:'session',catalog:context(),messages:[]},new AbortController().signal,undefined,{directory:root}),/503 simulated log write failure/);
+  let file;
+  const ctx={cwd:root,sessionManager:SessionManager.inMemory(root),model:{provider:'mock',id:'helper'},modelRegistry:{complete:async()=>{calls++;chmodSync(file,0o644);return {role:'assistant',stopReason:'toolUse',content:[{type:'toolCall',name:'record_card',arguments:{changes:{}}}],timestamp:1};}}};
+  await assert.rejects(infer(ctx,{type:'session',catalog:context(),messages:[]},new AbortController().signal,undefined,{directory:root,onCreate:link=>{file=link.session_file;}}),/identity or permissions changed/);
   assert.equal(calls,1);
  } finally {rmSync(root,{recursive:true,force:true});}
 });
-test('helper inputs stay private in an existing permissive directory even when initial persistence fails',async t=>{
+test('helper logging refuses an existing permissive directory before exposing inputs',async()=>{
  const root=mkdtempSync(join(tmpdir(),'card-helper-private-'));let calls=0;
  chmodSync(root,0o755);
- const append=SessionManager.prototype.appendMessage;
- t.mock.method(SessionManager.prototype,'appendMessage',function(message){
-  assert.equal(statSync(root).mode&0o777,0o700);assert.equal(statSync(this.getSessionFile()).mode&0o777,0o600);
-  if(message.role==='user')throw Error('Initial persistence failed');
-  return append.call(this,message);
- });
  try {
   const ctx={cwd:root,sessionManager:SessionManager.inMemory(root),model:{provider:'mock',id:'helper'},modelRegistry:{complete:async()=>{calls++;assert.fail('must not infer without a logged input');}}};
-  await assert.rejects(infer(ctx,{type:'session',catalog:context(),messages:[]},new AbortController().signal,undefined,{directory:root}),/Initial persistence failed/);
-  assert.equal(calls,0);assert.equal(readdirSync(root).length,1);assert.equal(statSync(join(root,readdirSync(root)[0])).mode&0o777,0o600);
+  await assert.rejects(infer(ctx,{type:'session',catalog:context(),messages:[]},new AbortController().signal,undefined,{directory:root}),/0700/);
+  assert.equal(calls,0);assert.equal(readdirSync(root).length,0);assert.equal(statSync(root).mode&0o777,0o755);
  } finally {rmSync(root,{recursive:true,force:true});}
 });
 test('model inference uses actual supported registry API, typed calls, no tools beyond record_card',async()=>{
@@ -796,8 +801,7 @@ test('unattached card directs users to streams attach',async()=>{
 for(const inside of [true,false])test(`real checkout CLI enroll/context/guarded apply ${inside?'inside':'outside'} repository`,async()=>{
  const root=mkdtempSync(join(tmpdir(),'streams-pi-catalog-'));const checkout=fileURLToPath(new URL('..',import.meta.url));
  const cwd=inside?checkout:join(root,'outside');mkdirSync(cwd,{recursive:true});
- const bin=join(root,'bin');mkdirSync(bin);const shim=join(bin,'streams');
- writeFileSync(shim,`#!/bin/sh\nexec uv run --project '${checkout.replaceAll("'", "'\\''")}' streams "$@"\n`);chmodSync(shim,0o755);
+ const shim=join(process.env.CARGO_TARGET_DIR ?? join(checkout,'target'),'debug','streams');
  const env={...process.env,HOME:root,XDG_CONFIG_HOME:join(root,'config'),XDG_DATA_HOME:join(root,'data'),XDG_STATE_HOME:join(root,'state')};
  for(const key of Object.keys(env))if(key.startsWith('STREAMS_'))delete env[key];
  const run=(args,input)=>new Promise((resolve,reject)=>{const child=spawn(shim,args,{cwd,env,stdio:['pipe','pipe','pipe']});let stdout='',stderr='';child.stdout.on('data',chunk=>stdout+=chunk);child.stderr.on('data',chunk=>stderr+=chunk);child.on('error',reject);child.on('close',code=>resolve({code,stdout,stderr}));child.stdin.on('error',error=>{if(error.code!=='EPIPE')reject(error);});child.stdin.end(input);});

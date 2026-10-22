@@ -1,0 +1,194 @@
+# Streams Catalog Save, Publication, and Recovery Protocol — I/O Automaton Specification
+#
+# Models the unified persistence and synchronization protocol across local saves,
+# remote Git publication, lost-response confirmation recovery, candidate adoption,
+# and fail-closed repair fencing.
+#
+# Compiled at runtime into `temper_jit::TransitionTable` and verified in tests by
+# `temper_verify::VerificationCascade` (L0 Z3 SMT, L1 Stateright BFS, L2 DST, L3 proptest).
+
+[automaton]
+name = "CatalogProtocol"
+states = ["Ready", "Saving", "AttemptingPush", "Adopting", "RepairRequired"]
+initial = "Ready"
+terminal = ["RepairRequired"]
+
+# --- State Variables ---
+
+[[state]]
+name = "save_marker"
+type = "bool"
+initial = false
+
+[[state]]
+name = "publication_marker"
+type = "bool"
+initial = false
+
+[[state]]
+name = "adopting_marker"
+type = "bool"
+initial = false
+
+[[state]]
+name = "confirmed_evidence"
+type = "bool"
+initial = false
+
+[[state]]
+name = "candidate_reusable"
+type = "bool"
+initial = false
+
+[[state]]
+name = "attempt_budget"
+type = "counter"
+initial = 2
+
+# --- Actions: Save Lifecycle ---
+
+[[action]]
+name = "BeginSave"
+kind = "input"
+from = ["Ready"]
+to = "Saving"
+guard = "!save_marker && !adopting_marker"
+effect = ["save_marker = true", "adopting_marker = false", "candidate_reusable = false"]
+hint = "Persist save.json before mutating any record file or Git ref."
+
+[[action]]
+name = "CompleteSave"
+kind = "internal"
+from = ["Saving"]
+to = "Ready"
+guard = "save_marker && !adopting_marker"
+effect = ["save_marker = false", "adopting_marker = false", "candidate_reusable = false"]
+hint = "Record committed/persisted, receipt stored, and save.json cleared."
+
+[[action]]
+name = "FailSaveNeedsRepair"
+kind = "internal"
+from = ["Saving"]
+to = "RepairRequired"
+guard = "save_marker"
+effect = ["save_marker = true"]
+hint = "Write, commit, or marker cleanup failed after save.json was written; preserve evidence and block further writes."
+
+# --- Actions: Publication & Recovery Lifecycle ---
+
+[[action]]
+name = "PrepareFreshCandidate"
+kind = "input"
+from = ["Ready"]
+to = "AttemptingPush"
+guard = "!save_marker && !adopting_marker && attempt_budget > 0"
+effect = ["attempt_budget -= 1", "publication_marker = true", "save_marker = false", "adopting_marker = false", "confirmed_evidence = false", "candidate_reusable = true"]
+hint = "Reconcile pending operations against fetched remote, retain candidate commit, and persist publication.json (attempting)."
+
+[[action]]
+name = "ReuseExistingCandidate"
+kind = "input"
+from = ["Ready"]
+to = "AttemptingPush"
+guard = "!save_marker && !adopting_marker && publication_marker && candidate_reusable && attempt_budget > 0"
+effect = ["attempt_budget -= 1", "publication_marker = true", "save_marker = false", "adopting_marker = false", "confirmed_evidence = false"]
+hint = "Reuse prior publication.json candidate when remote base and local tip both still match."
+
+[[action]]
+name = "RecoverConfirmedBeforePush"
+kind = "internal"
+from = ["Ready"]
+to = "Ready"
+guard = "!save_marker && !adopting_marker && publication_marker"
+effect = ["publication_marker = true", "adopting_marker = false", "confirmed_evidence = true", "save_marker = false", "candidate_reusable = false"]
+hint = "Prior uncertain push was confirmed by remote ancestry or matching operation digests; either push remaining ops or proceed to adoption."
+
+[[action]]
+name = "NoPushNeededBeginAdopt"
+kind = "internal"
+from = ["Ready"]
+to = "Adopting"
+guard = "!save_marker && !adopting_marker"
+effect = ["publication_marker = true", "adopting_marker = true", "confirmed_evidence = true", "save_marker = false", "candidate_reusable = false"]
+hint = "All pending operations were already satisfied or superseded on the remote; adopt confirmed history without pushing."
+
+[[action]]
+name = "ConfirmPushSuccess"
+kind = "internal"
+from = ["AttemptingPush"]
+to = "Adopting"
+guard = "publication_marker && !save_marker && !adopting_marker"
+effect = ["publication_marker = true", "adopting_marker = true", "confirmed_evidence = true", "save_marker = false", "candidate_reusable = false"]
+hint = "Push succeeded; record confirmation baseline and transition publication.json to adopting."
+
+[[action]]
+name = "ConfirmLostPushAfterFetch"
+kind = "internal"
+from = ["AttemptingPush"]
+to = "Ready"
+guard = "publication_marker && !save_marker && !adopting_marker"
+effect = ["publication_marker = true", "adopting_marker = false", "confirmed_evidence = true", "save_marker = false", "candidate_reusable = false"]
+hint = "Re-fetch confirmed this candidate; replay remaining local intent before pushing again or adopting."
+
+[[action]]
+name = "RetryPushOnRemoteRace"
+kind = "internal"
+from = ["AttemptingPush"]
+to = "Ready"
+guard = "publication_marker && !save_marker && !adopting_marker"
+effect = ["save_marker = false", "adopting_marker = false", "candidate_reusable = false", "confirmed_evidence = false"]
+hint = "Remote branch tip advanced during push; rebuild against the new tip if dispatch capacity remains."
+
+[[action]]
+name = "LeavePushFailedOrUncertain"
+kind = "internal"
+from = ["AttemptingPush"]
+to = "Ready"
+guard = "publication_marker && !save_marker && !adopting_marker"
+effect = ["publication_marker = true", "save_marker = false", "adopting_marker = false", "confirmed_evidence = false"]
+hint = "Push failed or could not be confirmed; retain publication.json for next sync pass while allowing local saves."
+
+[[action]]
+name = "CompleteAdoption"
+kind = "internal"
+from = ["Adopting"]
+to = "Ready"
+guard = "adopting_marker && publication_marker && confirmed_evidence && !save_marker"
+effect = ["adopting_marker = false", "publication_marker = false", "confirmed_evidence = false", "save_marker = false", "candidate_reusable = false"]
+hint = "Retained old local history, updated working tree and branch ref, verified clean history, and cleared publication.json."
+
+[[action]]
+name = "FailAdoptionNeedsRepair"
+kind = "internal"
+from = ["Adopting"]
+to = "RepairRequired"
+guard = "adopting_marker && publication_marker && confirmed_evidence"
+effect = ["adopting_marker = true", "publication_marker = true", "confirmed_evidence = true"]
+hint = "Remote publication is confirmed, but local adoption failed; preserve both histories and report confirmed + repair-required."
+
+[[action]]
+name = "FenceCorruptState"
+kind = "input"
+from = ["Ready"]
+to = "RepairRequired"
+guard = "!save_marker && !adopting_marker"
+effect = ["save_marker = true"]
+hint = "Fence catalog when preflight detects leftover markers, dirty worktree, digest mismatch, or replaced remote history."
+
+# --- Safety Invariants ---
+
+[[invariant]]
+name = "ReadyHasNoActiveSaveOrAdoptingMarker"
+assert = "status in ['Ready'] => !save_marker && !adopting_marker"
+
+[[invariant]]
+name = "SavingRequiresSaveMarker"
+assert = "status in ['Saving'] => save_marker && !adopting_marker"
+
+[[invariant]]
+name = "AttemptingRequiresPublicationMarkerAndNoSaveMarker"
+assert = "status in ['AttemptingPush'] => publication_marker && !save_marker && !adopting_marker"
+
+[[invariant]]
+name = "AdoptingRequiresConfirmedEvidenceAndMarker"
+assert = "status in ['Adopting'] => adopting_marker && publication_marker && confirmed_evidence && !save_marker"

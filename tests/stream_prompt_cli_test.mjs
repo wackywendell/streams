@@ -152,7 +152,7 @@ test("cancellation awaits final artifact save and restores signal handlers", asy
  assert.equal(JSON.parse(output).status, "cancelled"); assert.equal(process.listenerCount("SIGINT"), before);
 });
 
-test("foreground-group cancellation followed by Python forwarding cannot interrupt saved artifacts", {timeout: 10000}, async t => {
+test("repeated foreground-group cancellation cannot interrupt saved artifacts", {timeout: 10000}, async t => {
  const {root, sdk} = fixture(t), entry = join(root, "cancel.mjs"), artifact = join(root, "run.json");
  writeFileSync(entry, `import {main} from ${JSON.stringify(new URL('../extensions/stream-checkpoint/lab-cli.mjs', import.meta.url).href)};
 import {writeFileSync} from 'node:fs';

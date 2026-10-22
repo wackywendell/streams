@@ -5,7 +5,7 @@ export type NativeSnapshot = {
  native: {pane_id: string; tab_id: string; workspace_id: string};
  session: {title: string; title_mode: "automatic" | "manual"};
 };
-type NativeContext = {socket: string; paneId: string; terminalId: string; workspaceId: string; tabId: string};
+export type NativeContext = {socket: string; paneId: string; terminalId: string; workspaceId: string; tabId: string};
 export type NativeAdapter = {
  automatic: boolean;
  sessionNaming: boolean;
@@ -13,36 +13,18 @@ export type NativeAdapter = {
  bootstrap(signal?: AbortSignal): Promise<NativeContext>;
  open(context: NativeContext, signal: AbortSignal, mode: "automatic" | "explicit"): Promise<unknown>;
  close(context: NativeContext, signal: AbortSignal): Promise<unknown>;
- summaries(context: NativeContext, signal: AbortSignal): Promise<unknown>;
- names(context: NativeContext, signal: AbortSignal, intent?: 'automatic' | 'explicit' | 'explicit-tab' | 'explicit-workspace'): Promise<unknown>;
+ capture?(snapshot: NativeSnapshot, signal: AbortSignal): Promise<unknown>;
+ project(context: NativeContext, signal: AbortSignal, intent: 'automatic' | 'explicit' | 'explicit-tab' | 'explicit-workspace' | undefined): Promise<unknown>;
  sessionName(snapshot: NativeSnapshot, assertCurrent: () => void, intent?: 'automatic' | 'explicit'): void;
 };
 export type NativeFactory = (input: {pi: ExtensionAPI; ctx: ExtensionContext; sessionId: string; cwd: string; env: NodeJS.ProcessEnv}) => Promise<NativeAdapter>;
 
-// Compiled dependencies are deliberately resolved only inside a gated session lifetime.
-export const loadNative: NativeFactory = async ({pi, ctx, sessionId, cwd, env}) => {
- const [{loadConfig, configPath}, {StreamsCardSource, createStreamsSnapshotReader}, {StreamsWorkspaceClient}, naming] = await Promise.all([
-  import(new URL("../../integrations/herdr-work-cards/dist/config.js", import.meta.url).href),
-  import(new URL("../../integrations/herdr-work-cards/dist/herdr/streams-source.js", import.meta.url).href),
-  import(new URL("../../integrations/herdr-work-cards/dist/herdr/streams-workspace-client.js", import.meta.url).href),
-  import(new URL("../../integrations/herdr-work-cards/dist/pi/session-naming.js", import.meta.url).href),
- ]);
- let config = await loadConfig(configPath(env));
- const source = new StreamsCardSource({nativeSessionId: sessionId, readSnapshot: createStreamsSnapshotReader({cwd, env})});
- const client = new StreamsWorkspaceClient({env});
- return {
-  get automatic() {return config.workspace_startup === "automatic";}, get sessionNaming() {return config.session_naming;},
-  read: async (signal) => {config = await loadConfig(configPath(env));return source.read(signal);}, bootstrap: (signal) => client.bootstrap(config, signal),
-  open: (context, signal, mode) => client.openDisplay(source, context, config, signal, mode),
-  close: (context, signal, ) => client.closeDisplay(source, context, config, signal),
-  summaries: (context, signal) => client.projectSummaries(source, context, config, signal),
-  names: (context, signal, intent) => client.projectNames(source, context, config, signal, intent),
-  sessionName: (snapshot, assertCurrent, intent) => {
-   naming.projectSessionName(pi, ctx.sessionManager, sessionId, snapshot.session.title, assertCurrent, intent);
-  },
- };
+// Native dependencies are deliberately resolved only inside a gated session lifetime.
+export const loadNative: NativeFactory = async input => {
+ const {loadRustNative} = await import("./native-rust.ts");
+ return loadRustNative(input);
 };
-const environmentKeys = ["HERDR_ENV", "HERDR_PANE_ID", "HERDR_TAB_ID", "HERDR_WORKSPACE_ID", "HERDR_SOCKET_PATH", "HERDR_BIN_PATH", "STREAMS_STREAM_ID", "XDG_CONFIG_HOME", "XDG_DATA_HOME", "XDG_STATE_HOME", "PI_CODING_AGENT_DIR", "HOME"];
+const environmentKeys = ["HERDR_ENV", "HERDR_PANE_ID", "HERDR_TAB_ID", "HERDR_WORKSPACE_ID", "HERDR_SOCKET_PATH", "HERDR_BIN_PATH", "STREAMS_STREAM_ID", "XDG_CONFIG_HOME", "XDG_DATA_HOME", "XDG_STATE_HOME", "PI_CODING_AGENT_DIR", "HOME", "STREAMS_RUST_BIN", "STREAMS_BIN_PATH", "CARGO_TARGET_DIR", "WORK_CARDS_CONFIG_PATH", "PATH", "EDITOR", "HERDR_SESSION", "CODEX_HOME", "CLAUDE_CONFIG_DIR", "PI_OFFLINE"];
 type Action = {kind: "open" | "close" | "reclaim"; target?: "all" | "session" | "stream"; resolve: () => void; reject: (error: unknown) => void};
 
 /** One pinned source and one serial effect lane per native Pi lifetime. */
@@ -127,7 +109,9 @@ export class NativeController {
  private async capture(snapshot: NativeSnapshot, signal: AbortSignal): Promise<void> {
   this.assertCurrent(signal);
   try {
-   await this.options.capture?.(snapshot.scope.streamId, signal);
+   const adapter = await this.adapter!;
+   if (adapter.capture) await adapter.capture(snapshot, signal);
+   else await this.options.capture?.(snapshot.scope.streamId, signal);
   } catch (error) {
    this.assertCurrent(signal);
    const message = `Arrangement capture deferred; last saved layout retained: ${String(error)}`;
@@ -157,9 +141,8 @@ export class NativeController {
   }
   if (kind === "close") {await adapter.close(this.context, signal);check();return;}
   if (kind === "open" || !kind && adapter.automatic) {await adapter.open(this.context, signal, kind ? "explicit" : "automatic");check();}
-  await adapter.summaries(this.context, signal);check();
   const nameIntent = kind === "reclaim" ? (action?.target === "session" ? "explicit-tab" : action?.target === "stream" ? "explicit-workspace" : "explicit") : "automatic";
-  await adapter.names(this.context, signal, nameIntent);check();
+  await adapter.project(this.context, signal, nameIntent);check();
   const snapshot = await read();
   const sessionIntent = kind === "reclaim" && action?.target !== "stream" ? "explicit" : "automatic";
   if (adapter.sessionNaming || sessionIntent === "explicit") adapter.sessionName(snapshot, check, sessionIntent);

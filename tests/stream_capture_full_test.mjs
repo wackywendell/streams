@@ -6,7 +6,7 @@ import { join } from 'node:path';
 import { createJiti } from 'jiti';
 import { SessionManager } from '@earendil-works/pi-coding-agent';
 const jiti = createJiti(import.meta.url);
-const { captureSessions, loadCapture } = await jiti.import(new URL('../extensions/stream-checkpoint/capture.ts',import.meta.url).pathname);
+const { captureSessions, loadCapture, parseCaptureInventory } = await jiti.import(new URL('../extensions/stream-checkpoint/capture.ts',import.meta.url).pathname);
 const assistant = content => ({role:'assistant',api:'openai-responses',provider:'test',model:'model',timestamp:1,stopReason:'toolUse',usage:{input:0,output:0,cacheRead:0,cacheWrite:0,totalTokens:0,cost:{input:0,output:0,cacheRead:0,cacheWrite:0,total:0}},content});
 const call = id => ({type:'toolCall',id,name:'read',arguments:{path:`${id}.txt`}});
 const result = (id,text) => ({role:'toolResult',toolCallId:id,toolName:'read',isError:false,timestamp:2,content:[{type:'text',text}]});
@@ -18,6 +18,18 @@ function fixture() {
  const inventory={version:1,host_id:'host',streams:[],workspaces:[],topology_error:null,target:{kind:'workspace',id:'workspace',title:'Work'},samples:[{host_id:'host',harness:'pi',native_session_id:'native',open:false,locations:[],catalog:{catalog_source:'source',host_id:'host',stream:null,session:null,sessions:[],authority:null},transcript_file:source,unavailable:null}]};
  return {dir,root,source,manager,inventory,dispose:()=>rmSync(dir,{recursive:true,force:true})};
 }
+test('unresolved native observations preserve every supported harness without hiding healthy samples',()=>{
+ const f=fixture();try {
+  f.inventory.unresolved=['pi','codex','claude'].map((harness,index)=>({workspace_id:'workspace',tab_id:'tab',pane_id:`pane-${index}`,terminal_id:`terminal-${index}`,harness,error:'Native identity is unavailable'}));
+  assert.deepEqual(parseCaptureInventory(structuredClone(f.inventory)).unresolved,f.inventory.unresolved);
+  writeFileSync(f.source,snapshot(f.manager));
+  const {capture}=captureSessions(f.inventory,f.root);
+  assert.deepEqual(loadCapture(f.root,capture.id).unresolved,f.inventory.unresolved);
+  assert.equal(capture.samples[0].unavailable,null);
+  f.inventory.unresolved[0].harness='unknown';
+  assert.throws(()=>parseCaptureInventory(f.inventory),/Invalid unresolved/);
+ }finally{f.dispose();}
+});
 test('capture freezes unfiltered wide content, images, complete and incomplete tool batches',()=>{
  const f=fixture();try {
   const wide='Wide evidence '.repeat(4000),image={type:'image',data:'aW1hZ2U=',mimeType:'image/png'};

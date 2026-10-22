@@ -1,19 +1,57 @@
 [tools]
 node = "26"
-uv = "latest"
+rust = "1.95.0"
 
-[tasks."test:python"]
-description = "Run streams CLI unit tests"
-run = "uv run python -m unittest discover tests/python"
+[env]
+# Temper has its own toolchain file; use one compiler for the entire Cargo graph.
+RUSTUP_TOOLCHAIN = "1.95.0"
+
+[tasks.build]
+description = "Build this checkout's Rust CLI"
+run = 'RUSTC=$(rustup which rustc) RUSTDOC=$(rustup which rustdoc) cargo build --locked --bin streams'
+
+[tasks."test:fast"]
+description = "Development gate: Rust contracts and Pi tests, no Git recovery or Temper verification"
+depends = ["test:rust:fast", "test:pi"]
+
+[tasks."test:rust:unit"]
+env = { GIT_CONFIG_GLOBAL = "/dev/null", GIT_CONFIG_SYSTEM = "/dev/null", GIT_CONFIG_NOSYSTEM = "1" }
+description = "Focused lib/bin loop; does not replace contracts or acceptance"
+run = 'RUSTC=$(rustup which rustc) RUSTDOC=$(rustup which rustdoc) cargo test --locked --lib --bins -- --test-threads=4'
+
+[tasks."test:rust:fast"]
+# Fixture repositories must not inherit personal hooks, fsmonitor or signing policy.
+env = { GIT_CONFIG_GLOBAL = "/dev/null", GIT_CONFIG_SYSTEM = "/dev/null", GIT_CONFIG_NOSYSTEM = "1" }
+description = "Run Rust contracts in one harness; filter with cargo test --test contracts <module>"
+run = 'RUSTC=$(rustup which rustc) RUSTDOC=$(rustup which rustdoc) cargo test --locked --lib --bins --test contracts -- --test-threads=4'
+
+[tasks."test:rust"]
+env = { GIT_CONFIG_GLOBAL = "/dev/null", GIT_CONFIG_SYSTEM = "/dev/null", GIT_CONFIG_NOSYSTEM = "1" }
+description = "Run Rust catalog, Git recovery, documentation and Temper verification (requires Z3 and libclang)"
+run = [
+  'RUSTC=$(rustup which rustc) RUSTDOC=$(rustup which rustdoc) cargo test --locked --all-targets -- --test-threads=4',
+  'RUSTC=$(rustup which rustc) RUSTDOC=$(rustup which rustdoc) cargo test --locked --doc',
+]
 
 [tasks."test:pi"]
-description = "Run Pi checkpoint extension tests"
-run = "node --test tests/stream_*_test.mjs"
+description = "Run Pi checkpoint and frozen helper-request tests against this Rust build"
+depends = ["build"]
+run = "node --test tests/stream_checkpoint_test.mjs tests/stream_sync_test.mjs tests/stream_outcomes_test.mjs tests/stream_native_test.mjs tests/stream_prompt_*_test.mjs tests/stream_debug_settings_test.mjs tests/stream_capture_*_test.mjs tests/stream_lab_tools_test.mjs"
+
+[tasks."test:replay"]
+description = "Replay production Pi helpers through the Rust CLI in isolated homes"
+depends = ["build"]
+run = "node --test tests/stream_rust_replay_test.mjs"
+
+[tasks."test:native:rust"]
+description = "Exercise Rust-only Pi native routing and launch assets through an isolated CLI"
+depends = ["build"]
+run = "node --test tests/stream_rust_native_test.mjs"
 
 [tasks."test:herdr"]
-description = "Run native Herdr work-card regression tests"
+description = "Run surviving Herdr configuration, process and Pi-name boundary tests"
 run = "npm --prefix integrations/herdr-work-cards test"
 
 [tasks.test]
-description = "Run all tests"
-depends = ["test:python", "test:pi", "test:herdr"]
+description = "Full Rust-only acceptance: contracts, Git recovery, Temper, Pi, Herdr boundaries and replay"
+depends = ["test:rust", "test:pi", "test:herdr", "test:replay", "test:native:rust"]

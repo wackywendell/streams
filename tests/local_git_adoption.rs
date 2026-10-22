@@ -1,0 +1,287 @@
+use crate::support;
+
+use std::collections::BTreeMap;
+use std::fs;
+use std::io::Write;
+use std::path::{Path, PathBuf};
+use streams_temper::storage::{StorageError, Transaction};
+
+use serde_json::json;
+use streams_temper::{
+    application,
+    config::{Config, Strategy},
+    model::{Record, Stream},
+    operations::{Actor, Operation, update},
+    sync::{
+        adoption::adopt_local,
+        git::GitCatalog,
+        git_io::{Git, GitError},
+        history::read_history,
+        local::LocalCatalog,
+        policy::Policy,
+        state::RepairRequired,
+    },
+    yaml_store::YamlStore,
+};
+use support::git::test_command;
+
+// Ignore workstation init templates in these fixtures; production deliberately
+// rejects template-created symlinks instead of weakening its graph validation.
+fn install_hook(
+    catalog: &mut GitCatalog,
+    mut hook: impl FnMut(
+        &Git,
+        &[&str],
+        Option<&[u8]>,
+        Option<&Path>,
+    ) -> Option<Result<Vec<u8>, GitError>>
+    + Send
+    + 'static,
+) {
+    support::git::install_hook(catalog, move |git, args, input, index| {
+        hook(git, args, input, index).or_else(|| {
+            if args[0] == "init" {
+                let mut isolated = args.to_vec();
+                isolated.push("--template=");
+                Some(test_command(git, &isolated, input, index))
+            } else {
+                None
+            }
+        })
+    });
+}
+
+struct Fixture {
+    _temp: tempfile::TempDir,
+    config: Config,
+    root: PathBuf,
+    git: GitCatalog,
+}
+impl Fixture {
+    fn new() -> Self {
+        let temp = tempfile::tempdir().unwrap();
+        let environment = BTreeMap::from([
+            ("HOME".into(), temp.path().to_str().unwrap().into()),
+            (
+                "XDG_CONFIG_HOME".into(),
+                temp.path().join("config").to_str().unwrap().into(),
+            ),
+            (
+                "XDG_DATA_HOME".into(),
+                temp.path().join("data").to_str().unwrap().into(),
+            ),
+        ]);
+        let config = Config::new(&environment, temp.path()).unwrap();
+        let opened = application::initialize(&config, Strategy::None, None, "main", false).unwrap();
+        let root = opened.root().to_path_buf();
+        let host = opened.host().as_str();
+        let mut git = GitCatalog::new(&root, host, Policy::default()).unwrap();
+        install_hook(&mut git, |_, _, _, _| None);
+        Self {
+            _temp: temp,
+            config,
+            root,
+            git,
+        }
+    }
+    fn original_history(&self) -> (Operation, Operation) {
+        let local = LocalCatalog::new(YamlStore::new(&self.root), self.git.host_id()).unwrap();
+        let create = Operation::new(
+            "original-create",
+            None,
+            Record::Stream(Stream::new("work", "Original", None, self.git.host_id()).unwrap()),
+            Actor::User,
+            None,
+            vec![],
+        )
+        .unwrap();
+        assert!(local.save(&create, None).unwrap().accepted());
+        let edit = update(
+            "retired-edit",
+            create.after(),
+            json!({"title":"Edited"}).as_object().unwrap(),
+            Actor::User,
+            None,
+            vec![],
+        )
+        .unwrap();
+        assert!(local.save(&edit, None).unwrap().accepted());
+        // Noncanonical formatting is a physical revision and must survive import.
+        let path = self.root.join("streams/work.yaml");
+        let mut bytes = fs::read(&path).unwrap();
+        bytes.extend_from_slice(b"\n# exact local formatting\n");
+        fs::write(path, bytes).unwrap();
+        (create, edit)
+    }
+    fn adopt(&self) -> Result<String, RepairRequired> {
+        let _lock = self.config.lock().unwrap();
+        adopt_local(&self.git, "main")
+    }
+    fn candidates(&self) -> Vec<PathBuf> {
+        fs::read_dir(self.root.join(".catalog-staging"))
+            .unwrap()
+            .map(|entry| entry.unwrap().path())
+            .filter(|path| {
+                path.file_name()
+                    .unwrap()
+                    .to_string_lossy()
+                    .starts_with("adoption-")
+            })
+            .collect()
+    }
+    fn fenced(&self) {
+        assert!(self.root.join(".catalog-sync/save.json").is_file());
+        assert!(self.git.snapshot().is_err());
+        assert!(application::open(&self.config).is_err());
+        assert!(self.adopt().is_err());
+        assert_eq!(self.candidates().len(), 1);
+    }
+}
+
+#[test]
+fn baseline_preserves_exact_bytes_history_and_local_bookkeeping() {
+    let f = Fixture::new();
+    let (create, edit) = f.original_history();
+    let before = application::open(&f.config)
+        .unwrap()
+        .backend()
+        .snapshot()
+        .unwrap();
+    let raw = fs::read(f.root.join("streams/work.yaml")).unwrap();
+    let receipts = fs::read(f.root.join(".catalog-sync/receipts.json")).unwrap();
+    let local = fs::read(f.root.join(".catalog-sync/local.json")).unwrap();
+    let tip = f.adopt().unwrap();
+    assert_eq!(f.git.snapshot().unwrap(), before);
+    let history = read_history(f.git.git(), Some(&tip)).unwrap();
+    assert_eq!(history.files()["streams/work.yaml"], raw);
+    assert_eq!(history.operations().len(), 0);
+    assert!(history.has_operation(create.id()));
+    assert!(history.has_operation(edit.id()));
+    assert_eq!(history.baseline().unwrap().host, f.git.host_id());
+    assert_eq!(
+        fs::read(f.root.join(".catalog-sync/receipts.json")).unwrap(),
+        receipts
+    );
+    assert_eq!(
+        fs::read(f.root.join(".catalog-sync/local.json")).unwrap(),
+        local
+    );
+    assert_eq!(f.adopt().unwrap(), tip);
+    assert!(f.candidates().is_empty());
+}
+
+#[test]
+fn preparation_failure_cleans_only_its_owned_candidate_and_is_retryable() {
+    let mut f = Fixture::new();
+    let orphan = f.root.join(".catalog-staging/foreign-evidence");
+    fs::create_dir_all(&orphan).unwrap();
+    fs::write(orphan.join("retain"), "retain").unwrap();
+    install_hook(&mut f.git, |_, args, _, _| {
+        (args[0] == "commit-tree").then(|| Err(GitError::new("preparation failed", Some(1))))
+    });
+    assert!(f.adopt().is_err());
+    assert!(f.candidates().is_empty());
+    assert_eq!(fs::read_to_string(orphan.join("retain")).unwrap(), "retain");
+    assert!(!f.root.join(".git").exists());
+    assert!(!f.root.join(".catalog-sync/save.json").exists());
+    assert!(application::open(&f.config).is_ok());
+    install_hook(&mut f.git, |_, _, _, _| None);
+    f.adopt().unwrap();
+}
+
+#[test]
+fn changed_record_bytes_abort_preparation_before_fencing() {
+    let mut f = Fixture::new();
+    f.original_history();
+    let path = f.root.join("streams/work.yaml");
+    install_hook(&mut f.git, move |_, args, _, _| {
+        if args[0] == "commit-tree" {
+            let mut bytes = fs::read(&path).unwrap();
+            bytes.push(b'\n');
+            fs::write(&path, bytes).unwrap();
+        }
+        None
+    });
+    assert_eq!(
+        f.adopt().unwrap_err().to_string(),
+        "catalog records changed during adoption preparation"
+    );
+    assert!(f.candidates().is_empty());
+    assert!(!f.root.join(".catalog-sync/save.json").exists());
+    assert!(!f.root.join(".git").exists());
+    assert!(application::open(&f.config).is_ok());
+}
+
+#[test]
+fn final_path_conditional_signing_change_keeps_the_installed_graph_fenced() {
+    let mut f = Fixture::new();
+    let final_git = f.root.canonicalize().unwrap().join(".git");
+    let include = f._temp.path().join("final-signing");
+    fs::write(&include, "[gpg]\nprogram = different-program\n").unwrap();
+    install_hook(&mut f.git, move |git, args, input, index| {
+        if args.first() != Some(&"init") {
+            return None;
+        }
+        let mut args = args.to_vec();
+        args.push("--template=");
+        let result = test_command(git, &args, input, index);
+        if result.is_ok() {
+            let mut config = fs::OpenOptions::new()
+                .append(true)
+                .open(git.root().join(".git/config"))
+                .unwrap();
+            // Local defaults override ambient gpg.program at staging; the real
+            // gitdir include overrides them only after installation.
+            writeln!(
+                config,
+                "\n[gpg]\nprogram = staging-program\n[includeIf \"gitdir:{}\"]\npath = {}",
+                final_git.display(),
+                include.display()
+            )
+            .unwrap();
+        }
+        Some(result)
+    });
+    assert_eq!(
+        f.adopt().unwrap_err().to_string(),
+        "Git identity or signing policy differs at the final catalog path; inspect save.json"
+    );
+    f.fenced();
+    assert!(f.root.join(".git").is_dir());
+    assert!(!f.candidates()[0].join(".git").exists());
+    assert!(!f.root.join(".catalog-sync/config.json").exists());
+    assert_eq!(
+        test_command(f.git.git(), &["config", "--get", "gpg.program"], None, None).unwrap(),
+        b"different-program\n"
+    );
+    let evidence: serde_json::Value =
+        serde_json::from_slice(&fs::read(f.root.join(".catalog-sync/save.json")).unwrap()).unwrap();
+    assert_eq!(
+        evidence["adoption"]["profile"]["policy"]["gpg.program"],
+        "staging-program"
+    );
+}
+
+#[test]
+fn opaque_import_fence_is_not_blindly_completed_by_reopen() {
+    let f = Fixture::new();
+    let store = YamlStore::new(&f.root);
+    store
+        .with_transaction::<_, StorageError>(|tx| {
+            tx.journal().write(
+                "save.json",
+                json!({"version":1,"adoption":{"baseline":"opaque"}})
+                    .as_object()
+                    .unwrap()
+                    .clone(),
+            )?;
+            Ok(())
+        })
+        .unwrap();
+    let local = LocalCatalog::new(store, f.git.host_id()).unwrap();
+    assert!(local.snapshot().is_err());
+    assert!(f.git.snapshot().is_err());
+    assert!(application::open(&f.config).is_err());
+    assert!(f.adopt().is_err());
+    assert!(!f.root.join(".git").exists());
+}

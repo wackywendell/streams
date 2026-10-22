@@ -64,6 +64,4 @@ Keep record saves separate rather than promising a multi-record rollback transac
 
 Automatic reporting removes the routine approval step, but makes captured inputs, manual protection and visible failures essential. A report is a last-known account, not independent verification of every statement. Keeping the card available for guided edits and discussion preserves user control without reinstating a second draft document.
 
-The [frozen prompt replay ADR](pi-prompt-replay.md) defines opt-in debug capture and simulation through this same reporting workflow. It does not change live reporting semantics or authorise production prompt edits.
-
 This decision covers the Pi integration and bundled skill. Cross-host handover, contribution moves, arrangement restoration and native pane ownership have separate application contracts; a Pi conversation change must not silently invent those operations. The [README](../README.md) owns usage and configuration, while tests and the temporary cutover plan track implementation and acceptance evidence.

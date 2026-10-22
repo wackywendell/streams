@@ -49,10 +49,10 @@ export async function debugCommand(input: string, ctx: ExtensionContext, client:
   const inventory = parseCaptureInventory(await client.captureInputs(target, signal));current();
   const proceed = await confirmCapture(ctx, inventory, root, signal);current();
   if (!proceed) return;
-  const {capture, directory} = captureSessions(inventory, root, ctx.sessionManager, signal);
+  const {capture, directory} = captureSessions(inventory, root, ctx.sessionManager, signal, join(agentDir, "stream-reporting-sessions"));
   const captured = capture.samples.filter(sample => sample.evidence).length;
   const partial = !!capture.topology_error || !!capture.unresolved?.length;
-  ctx.ui.notify(`${partial ? "Partial capture" : "Captured"}: ${captured}/${capture.samples.length} identified conversations; ${capture.unresolved?.length ?? 0} unresolved Pi panes: ${directory}/capture.json`, !partial && captured === capture.samples.length ? "info" : "warning");
+  ctx.ui.notify(`${partial ? "Partial capture" : "Captured"}: ${captured}/${capture.samples.length} identified conversations; ${capture.unresolved?.length ?? 0} unresolved panes: ${directory}/capture.json`, !partial && captured === capture.samples.length ? "info" : "warning");
   return;
  }
  let id = command.id;
@@ -83,5 +83,5 @@ export async function debugCommand(input: string, ctx: ExtensionContext, client:
  try {
   const {run, directory} = await replayCapture(capture, root, ctx, model, command.action, (input, signal) => client.preview(input, signal), signal);
   if (!signal.aborted) ctx.ui.notify(`Replay ${run.id}: ${run.samples.filter(sample => sample.status === "completed").length} completed, ${run.samples.filter(sample => sample.status === "failed").length} failed, ${run.samples.filter(sample => sample.status === "skipped").length} skipped, ${run.samples.filter(sample => sample.status === "unavailable").length} unavailable, ${run.samples.filter(sample => sample.status === "not-run" || sample.status === "cancelled").length} unrun/cancelled. Comparison: ${directory}/comparison.md`, run.samples.some(sample => sample.status !== "completed") ? "warning" : "info");
- } finally {if (!signal.aborted) ctx.ui.setStatus("stream-debug", undefined);}
+ } finally {ctx.ui.setStatus("stream-debug", undefined);}
 }

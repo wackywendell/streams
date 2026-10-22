@@ -185,9 +185,9 @@ test('raw linked helper logs are copied privately after identity and parent veri
   const ctx={cwd:f.dir,sessionManager:f.manager,...runtime(async()=>response({changes:{}}))};
   await infer(ctx,{type:'session',catalog:context(),messages:[]},new AbortController().signal,undefined,{directory:join(f.dir,'original-helpers'),onCreate:link=>f.manager.appendCustomEntry('stream-helper-session',link)});
   f.manager.appendCustomEntry('stream-helper-session',{session_id:'missing',session_file:join(f.dir,'missing.jsonl')});
-  const {capture,directory}=captureSessions(f.inventory,f.root,f.manager),logs=capture.samples[0].helper_logs;
+  const {capture,directory}=captureSessions(f.inventory,f.root,f.manager,undefined,join(f.dir,'original-helpers')),logs=capture.samples[0].helper_logs;
   assert.equal(logs.length,2);assert.match(readFileSync(join(directory,logs[0].file),'utf8'),/stream-helper-request/);
-  assert.equal(statSync(join(directory,logs[0].file)).mode&0o777,0o600);assert.match(logs[1].error,/ENOENT/);
+  assert.equal(statSync(join(directory,logs[0].file)).mode&0o777,0o600);assert.match(logs[1].error,/reporting sessions root/);
  }finally{f.dispose();}
 });
 test('debug storage refuses version-controlled agent directories before copying any content',async()=>{
@@ -206,19 +206,19 @@ test('storage rejects dangling links and symlinks into VCS before copying any co
   const alias=join(f.dir,'alias'),dangling=join(f.dir,'dangling');
   symlinkSync(repo,alias);symlinkSync(join(repo,'future'),dangling);
   assert.throws(()=>captureSessions(f.inventory,join(alias,'debug')),/outside version control/);
-  assert.throws(()=>captureSessions(f.inventory,join(dangling,'debug')),/dangling symbolic link/);
+  assert.throws(()=>captureSessions(f.inventory,join(dangling,'debug')),/ENOENT/);
   assert.equal(existsSync(join(repo,'debug')),false);assert.equal(existsSync(join(repo,'future')),false);
  }finally{f.dispose();}
 });
 test('capture reads reject linked storage and manifests without modifying snapshots',()=>{
  const f=fixture();try {
   const {capture,directory}=captureSessions(f.inventory,f.root);
-  const alias=join(f.dir,'alias');mkdirSync(alias);symlinkSync(join(f.root,'captures'),join(alias,'captures'));
-  assert.throws(()=>loadCapture(alias,capture.id),/symbolic link/);assert.throws(()=>captureIds(alias),/symbolic link/);
+  const alias=join(f.dir,'alias');mkdirSync(alias,{mode:0o700});symlinkSync(join(f.root,'captures'),join(alias,'captures'));
+  assert.throws(()=>loadCapture(alias,capture.id),/symlinks/);assert.throws(()=>captureIds(alias),/symlinks/);
   const manifest=join(directory,'capture.json'),saved=join(directory,'original.json');renameSync(manifest,saved);symlinkSync(saved,manifest);
-  assert.throws(()=>loadCapture(f.root,capture.id),/regular file/);assert.deepEqual(JSON.parse(readFileSync(saved,'utf8')),capture);
+  assert.throws(()=>loadCapture(f.root,capture.id),/ELOOP/);assert.deepEqual(JSON.parse(readFileSync(saved,'utf8')),capture);
   const moved=join(f.dir,'original-capture');renameSync(directory,moved);symlinkSync(moved,directory);
-  assert.throws(()=>loadCapture(f.root,capture.id),/symbolic link/);
+  assert.throws(()=>loadCapture(f.root,capture.id),/symlinks/);
  }finally{f.dispose();}
 });
 test('loading a capture is read-only and enforces the VCS boundary as well as writing',()=>{

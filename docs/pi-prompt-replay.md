@@ -43,7 +43,7 @@ The shared reporting workflow owns the ordering of enrollment, session reporting
 
 The live adapter supplies current attachment checks, cancellation, guarded catalog writes, receipt handling and native updates. The replay adapter supplies frozen evidence and a private working copy. A later helper in the same conversation sees earlier simulated card changes, just as the effort helper normally sees an accepted session report.
 
-Simulated card operations use the real Python enrollment constructors, normalization and reconciliation over supplied snapshots. They do not open a backend, acquire live ownership, infer checkout bindings or publish. Simulated receipts are labelled as such. Replay tests card proposals and their ordering, not the live guarantees around concurrent edits, workspace claims, publication or native effects.
+Simulated card operations use Rust's pure preview boundary, sharing enrollment construction, normalization and reconciliation over supplied snapshots. They do not open a backend, acquire live ownership, infer checkout bindings or publish. Simulated receipts are labelled as such. Replay tests card proposals and their ordering, not the live guarantees around concurrent edits, workspace claims, publication or native effects.
 
 Capture also requires an explicitly read-only catalog inspection boundary. An ordinary catalog read may establish missing retry evidence, and a Git status check may refresh the index. Neither is acceptable during debug capture. Inspection must validate the catalog and effective authority without repairing bookkeeping, creating missing state or refreshing the index. Captured authority records preserve permission presence but redact live tokens.
 
@@ -59,7 +59,7 @@ Replay uses the same preparation and execution operations. Save each helper's pr
 
 ## Make debug activity explicit and private
 
-Expose shared operations through a non-interactive CLI and agent tools, retaining interactive capture and replay dialogs as wrappers. The CLI initialises Pi's model services and provider registrations without creating an agent session or dispatching session-start events. It uses normal credentials and provider code rather than a second model client.
+Expose shared operations through a non-interactive CLI and agent tools, retaining interactive capture and replay dialogs as wrappers. Rust routes `streams debug` into the Node runner before opening configuration or catalog state. Run and replay initialise Pi's model services and provider registrations without creating an agent session or dispatching session-start events. They use normal credentials and provider code rather than a second model client; capture, prepare and inspect do not start model services.
 
 Expose debug operations only when the default-disabled “Debug commands” setting is enabled. Group that setting and the separately opt-in “Helper session logging” setting under Debug in `/streams settings`. The wording is deliberately “Debug commands”, not “Debug features”: the gate controls these commands, not every possible future diagnostic feature. Enabling the gate does not start recording or enable live helper logging.
 

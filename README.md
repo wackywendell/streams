@@ -6,14 +6,16 @@ This checkout includes the catalog CLI, Pi work-card extension and bundled agent
 
 ## Run from this checkout
 
-Use [uv](https://docs.astral.sh/uv/) to run the CLI without replacing your installed version:
+This branch uses Rust for the CLI, catalog, native lifecycle and terminal card. Build it without replacing your installed CLI:
 
 ```sh
-uv sync
-uv run streams --help
+mise run build
+./target/debug/streams --help
 ```
 
-The examples below use `streams`. During development, run them as `uv run streams ...` from this checkout. Use isolated XDG directories when testing; commands otherwise use your normal configuration and catalog.
+The examples below use `streams`; from this checkout, substitute `./target/debug/streams`. If `CARGO_TARGET_DIR` is set, use its `debug/streams` instead. Use isolated XDG directories when testing; commands otherwise use your normal configuration and catalog.
+
+The Pi extension selects this checkout's debug Rust build by default. `STREAMS_BIN_PATH` can select another absolute Rust executable. `STREAMS_RUST_BIN` remains an alias; if both are set, they must identify the same executable. There is no Python or `PATH` fallback. Loading this checkout does not update installed tools; native PTY and live-platform acceptance are still required before a trial.
 
 ## Initialise a catalog
 
@@ -42,7 +44,20 @@ The supported settings are `catalog.root`, `frontend.mode`, `sync.stream_seconds
 
 Configuration is host-local at `$XDG_CONFIG_HOME/streams/config.json`; each CLI process reads it anew. Unset XDG variables use `~/.local/share` and `~/.config`. Sync strategy, remote and branch belong to catalog setup, not these settings. Changing `catalog.root` selects another catalog; initialise it before use.
 
-There is no legacy-format compatibility or automatic migration. Start new streams or migrate old scratch material manually. An existing `none` catalog can explicitly adopt local Git backing in place:
+Pre-catalog scratch formats require manual migration. Sessions now use stable
+`conversations/<host>/<id>.yaml` files and Session-keyed directory selections.
+Earlier Stream-partitioned records remain readable without rewriting them;
+membership moves relocate them without keeping duplicate copies. Repository URLs
+and local directory intent remain attached to the conversation across Stream
+moves. Ordinary reads do not perform migrations. These are library primitives;
+automatic native adoption and captured-context result admission remain inactive.
+
+This checkout remains Rust-only. Other clients must support the new paths before
+sharing newly written state. Ambiguous legacy YAML scalars such as `title: 1e3`
+require manual quoting. The temporary format bridges live in
+[`yaml_store.rs`](src/yaml_store.rs) and [`locations.rs`](src/runtime/locations.rs).
+
+An existing `none` catalog can explicitly adopt local Git backing in place:
 
 ```sh
 streams init --sync git --adopt --json
@@ -120,21 +135,17 @@ The checkout's Pi extension maintains catalog records instead of generating scra
 - Card discussion can answer without edits, refresh descriptions, or carry out an explicitly requested edit. User direction is approval; uncertain intent produces a question rather than a management action.
 - `/streams report` requests a report now, not a draft awaiting Apply. Use `/streams report [instructions]` to give reporting direction. Explicit reporting can enroll an unbound conversation. `/streams reset [--auto]` regenerates automatic fields (and with `--auto`, restores automatic title/goal modes and reclaims Pi/Herdr names). The model-callable `checkpoint` tool remains unchanged.
 - `/streams attach` offers initial selection or creation; attached conversations cannot switch efforts.
-- `/streams settings` controls automatic/manual reporting, initial enrollment, completed responses between reports, context, model and Herdr startup/naming. Its Debug section contains independent “Debug commands” and “Helper session logging” switches. Manual reporting disables background requests, not explicit commands.
+- `/streams settings` controls automatic/manual reporting, initial enrollment, completed responses between reports, context, model and Herdr startup/naming. Manual reporting disables background requests, not explicit commands.
 - `/streams pane` opens the native Herdr card; `/streams pane close` closes only its display. Neither requests a report or changes membership.
 - Tab completes `card`, `report`, `reset`, `settings`, `attach` and `pane`. Unknown subcommands or invalid management arguments show usage without reporting or saving. Free-text instructions must follow `report`.
 
 Settings live in `$PI_CODING_AGENT_DIR/stream-reporting.json`, defaulting to `~/.pi/agent/stream-reporting.json`. The defaults are:
 
 ```json
-{"reporting": "automatic", "enrollment": "automatic", "frequency": 1, "context": "trimmed", "session_logging": false, "debug_commands": false}
+{"reporting": "automatic", "enrollment": "automatic", "frequency": 1, "context": "trimmed"}
 ```
 
 Add `"model": {"provider": "PROVIDER", "id": "MODEL_ID"}` to select a helper model; omit it to use the current Pi model. Unavailable models fail visibly without fallback. Trimmed context excludes tool calls/results and thinking; full context preserves the active projected conversation, excluding incomplete tool batches. Oversized input fails rather than silently dropping history.
-
-Enable “Helper session logging” in `/streams settings` → Debug, or set `"session_logging": true`, to record each helper inference as a Pi JSONL session. Logs live in `$PI_CODING_AGENT_DIR/stream-reporting-sessions/`, defaulting to `~/.pi/agent/stream-reporting-sessions/`. Each log captures the exact prompt, tool schema and supplied context before inference, raw model responses before normalization, retries, errors and the parsed result. Reports, resets, enrollment and card discussion all use this setting. The originating Pi session records a `stream-helper-session` entry linking to the log; catalog-save receipts remain in that originating session.
-
-Logging is disabled by default. Logs copy potentially sensitive conversation content and can be large; they have private file permissions and no automatic pruning. Disabling logging stops new captures without deleting existing logs. A logging failure stops that helper update and appears as a work-card error. Logging uses Pi's session storage only: it does not launch another agent or run capture extensions such as Trajectory.
 
 Session progress and effort metadata use separate inferences, so updating both takes two helper requests. Reports preserve captured records, ownership and conversation-lineage guards. They may update session status, but cannot park, finish or archive the whole effort. Historical conversation is evidence, not fresh verification of files or remote services.
 
@@ -142,67 +153,24 @@ The menu refreshes on action or reopen, not while waiting for a selection. Discu
 
 When testing, keep the CLI and extension from the same checkout, use isolated XDG/agent directories and do not also load the published scratch-based extension. Restart running Pi sessions after updating the extension; existing processes retain their previously loaded code. The [bundled skill](skills/streams/SKILL.md) covers record semantics and guarded reporting from other harnesses.
 
-### Debug prompt capture and replay
+### Frozen report experiments
 
-Enable “Debug commands” under `/streams settings` → Debug. This does not enable live helper logging or begin recording. Run `/reload` after enabling it to expose the agent tools.
-
-```text
-/streams debug capture
-/streams debug capture stream STREAM_ID
-/streams debug capture workspace HERDR_WORKSPACE_ID
-/streams debug replay
-/streams debug replay CAPTURE_ID --model PROVIDER/MODEL_ID
-/streams debug replay CAPTURE_ID --reset session
-/streams debug replay CAPTURE_ID --reset stream --auto
-/streams debug replay CAPTURE_ID --reset --auto
-```
-
-Capture includes associated stream history and open Pi conversations in the selected workspace or the stream's bound workspaces, including conversations without cards. The snapshot always contains available cards, full conversation evidence and raw transcripts. Trimming happens during preparation, not capture. It records open state and observed locations separately from card status. Missing or foreign-host transcripts and unsupported harnesses remain listed. The current session uses its in-memory leaf; other sessions use their persisted leaf, which cannot reveal another process's unsaved branch selection.
-
-An unidentified Pi pane does not hide other verified conversations. Capture lists unresolved panes with their locations and errors, and leaves uncertain historical open states unknown. Incomplete topology or identity verification produces a `partial` capture summary, CLI exit status 2 and an agent-tool error result; the saved capture remains available for inspection and replay. Live attachment and restoration retain their strict identity checks.
-
-Replay uses current shared prompts and strict production validation with the chosen Pi-registry model. Incremental updates include captured cards by default. `--reset` regenerates the selected automatic text; `--auto` also restores its automatic naming modes in the working copy. Neither option changes the capture. Each conversation starts independently from its frozen cards, while later helpers for that conversation see its earlier simulated updates. Replay never saves real cards, attaches conversations, changes names or alters layout.
-
-#### Compare prompts without changing production
-
-The non-interactive CLI separates capture, preparation and inference. Capture once, prepare different prompts, then run the saved requests:
+Enable “Debug commands” in `/streams settings` to capture full conversation samples, prepare a helper request and rerun its saved input without changing live cards:
 
 ```sh
+streams debug --help
 streams debug capture stream STREAM_ID --json
 streams debug prepare CAPTURE_ID --sample 0 --task session --json
-streams debug prepare --request REQUEST_ID --prompt ./candidate.txt --json
-streams debug inspect request CANDIDATE_REQUEST_ID --section input --json
-streams debug run CANDIDATE_REQUEST_ID --model PROVIDER/MODEL_ID --json
-streams debug inspect run RUN_ID --section output --json
+streams debug run REQUEST_ID --model PROVIDER/MODEL --json
 ```
 
-Each command returns artifact IDs and paths. `list capture`, `list request` and `list run` discover saved artifacts. Sample indexes start at 0; capture summaries list them. `--task` selects `enroll`, `session` or `stream`. Enrollment requires an unbound conversation. A prompt file contains plain text that replaces the whole system prompt for that request. The production tool schema and strict response validation remain unchanged.
-
-Preparation defaults to `trim=true`, using production trimming. Add `--full` to prepare full context from the same capture. Both modes remove incomplete tool-call batches and perform normal model-input cleanup. Preparation reads only frozen evidence, never the original transcript. Older trimmed captures need recapturing before full-context preparation. To change trimming on a saved request, prepare from its capture again.
-
-`prepare` saves the actual model messages, prompt and schema without calling a model. `run` submits that saved input without rerendering it and records the raw response plus the validated value or error. It does not apply the value to cards. A rerun creates another result; changing a prompt creates another request. Inspection defaults to summaries; explicit input, output and error views support `--offset` and `--limit` character paging.
-
-Full-workflow replay uses the same preparation and inference:
-
-```sh
-streams debug replay CAPTURE_ID --model PROVIDER/MODEL_ID --json
-streams debug replay CAPTURE_ID --model PROVIDER/MODEL_ID --prompt ./candidate.txt --full --json
-streams debug replay CAPTURE_ID --model PROVIDER/MODEL_ID --reset stream --auto --json
-```
-
-Replay's `--prompt` replaces the system prompt for every helper in that workflow. Use a single prepared task when testing a task-specific prompt. Omitting an override uses the shared production prompts. Interactive replay asks for confirmation; explicit CLI and tool calls authorise provider use and normal inference costs. Failed or cancelled runs and partial replay failures return a nonzero CLI status while retaining their artifacts.
-
-The agent tools are `stream_debug_capture`, `stream_debug_prepare`, `stream_debug_run`, `stream_debug_replay`, `stream_debug_inspect` and `stream_debug_list`. They use the same operations and require Debug commands to remain enabled. Tools take prompt text directly; CLI `--prompt` reads a file. Disabling the setting blocks registered tools immediately; enabling it requires `/reload` to discover them.
-
-The CLI requires Node and an installed Pi SDK with `createAgentSessionServices` (Pi 1.3 or later). It uses that installation's providers and authentication, not the repository's test SDK. It loads configured extension factories to register providers, but creates no Pi session and dispatches no session-start events. Source checkouts find the paired runner automatically. For a Python wheel install, set `STREAMS_PROMPT_LAB_RUNNER` to `extensions/stream-checkpoint/lab-cli.mjs` in the matching installed Pi Streams package.
-
-Captures live under `$PI_CODING_AGENT_DIR/stream-debug/captures/`; requests under `stream-debug/requests/`; runs under `stream-debug/runs/`. Storage has private permissions and is rejected inside version control, even in ignored directories. Each replay writes `comparison.md`, `run.json`, prepared-request IDs, reconstructed inputs and private helper JSONL containing rendered prompts, schemas, raw responses and per-task failures. A successful session task does not hide a failed effort task. Skipped actions and refused simulated saves are distinct from successful empty model deltas. Saved files have no automatic pruning; disabling debug retains them. See the [capture and replay ADR](docs/pi-prompt-replay.md) for boundaries and rationale.
+Capture, preparation and inspection stay local. Run and replay send evidence to the selected provider using normal credentials and request costs. They require Pi 1.3 or newer; `STREAMS_PI_SDK_ENTRY` can select an absolute matching SDK entry. Prepared requests preserve the rendered input rather than rebuilding it at execution. Private files live under `$PI_CODING_AGENT_DIR/stream-debug`; the [frozen-request ADR](docs/pi-prompt-replay.md) defines the boundaries.
 
 ## Native Herdr work cards
 
-The original Work Cards source, tests and design documents are imported under [`integrations/herdr-work-cards`](integrations/herdr-work-cards), with its original commit history intact through `e7d74ce22f95893fa8eed570ef2e6a14d61f74bd`. The [native projection decision](docs/native-herdr-work-cards.md) identifies which behavior carries forward and which legacy authority is superseded.
+Work Cards history is retained through `e7d74ce22f95893fa8eed570ef2e6a14d61f74bd`. Its surviving support code and design documents live under [`integrations/herdr-work-cards`](integrations/herdr-work-cards); the duplicate native implementation is retired. The [native projection decision](docs/native-herdr-work-cards.md) identifies which behavior carries forward and which legacy authority is superseded.
 
-The read-only Streams adapter and Pi lifecycle wiring passed isolated native acceptance and are active in the local runtime. The [cutover plan](plans/catalog-cutover.md) distinguishes that activated base from follow-up changes awaiting their own verification and activation. The standalone Work Cards runtime is retired. The root Streams extension loads the projection and naming modules after exact Herdr/Pi attestation; they do not run a separate summarizer or write another catalog.
+The root Pi extension delegates native effects and the terminal card to Rust after exact Herdr/Pi attestation. TypeScript retains Pi events, inline UI and session-name provenance. Neither boundary runs a separate summarizer or writes another catalog. The earlier [cutover plan](plans/catalog-cutover.md) describes the Python installation, not activation of this Rust branch.
 
 Native presentation settings remain in `$PI_CODING_AGENT_DIR/work-cards.json`, separate from reporting settings. `workspace_startup` selects automatic or manual pane startup. `workspace_naming`, `tab_naming` and `session_naming` are independent booleans, each defaulting to `true` regardless of startup; `null` is invalid. Manual native names remain protected. `document_command` selects a trusted editor command, otherwise `$EDITOR` or `less` is used. Removed inference settings are rejected; see the [presentation configuration](integrations/herdr-work-cards/README.md#presentation-configuration).
 
@@ -276,17 +244,15 @@ If reconciliation finds a conflict, reads retain the complete local view and exp
 ## Develop
 
 ```sh
-uv sync
 npm ci
 npm --prefix integrations/herdr-work-cards ci --ignore-scripts
+mise run test:fast
 mise run test
 ```
 
-Python tests cover the catalog, CLI, sync library, guarded agent API and runtime adapters. Node tests cover reporting, the card editor, discussion, settings and real checkout-CLI integration inside and outside a repository. An isolated two-host Git test covers Pi lifecycle hooks, guarded reports, second-host refresh, offline saves and fresh-process retry. The native deadline test checks that the CLI and a child process stop. Tests use no live credentials or model inference. Native workspace effects remain mocked.
+Rust tests cover the catalog, CLI, persistence, Git recovery, native effects, terminal card and embedded Temper specifications. Frozen wire and renderer fixtures remain after retiring the Python and duplicate TypeScript implementations. Node tests cover the Pi boundary, frozen helper requests, session names, configuration and subprocess shutdown. Real Rust CLI acceptance exercises checkout integration, two-host Git publication, offline saves and fresh-process recovery.
 
-`mise run test:herdr` builds and runs the native work-card regression suite; it also runs as part of `mise run test`. It covers the Streams adapter, renderer, naming and document opening. Native effects use mocked protocols; run isolated native acceptance before activating changed launch code.
-
-The Python package requires Python 3.11 or newer. See the [durable catalog decision](docs/durable-work-catalog.md), [sync decision](docs/catalog-git-sync.md) and temporary [cutover plan](plans/catalog-cutover.md) for scope and remaining integration work.
+`test:fast` omits Git recovery and the full Temper cascade; run `test` before a trial or release. Tests use isolated homes, fake native endpoints and deterministic model responses, not live credentials or inference. See [Contributing](CONTRIBUTING.md) for requirements and focused commands, and the [Rust runtime decision](docs/rust-temper-architecture.md) for the cutover boundary.
 
 ## License
 

@@ -259,7 +259,7 @@ export default function registerWorkCard(pi: ExtensionAPI, options: Options = {}
  });
  registerLabTools(pi, {enabled: () => settings().debug_commands, execute: (operation, signal, ctx) => {
   scope.use(ctx);
-  return reporter.exclusive(lifecycle => executeLab(operation, {root: join(agentDir, "stream-debug"), client: cli(ctx), runtime: ctx, current: ctx.sessionManager}, AbortSignal.any([signal, lifecycle])));
+  return reporter.exclusive(lifecycle => executeLab(operation, {root: join(agentDir, "stream-debug"), client: cli(ctx), runtime: ctx, current: ctx.sessionManager, helperRoot: join(agentDir, "stream-reporting-sessions")}, AbortSignal.any([signal, lifecycle])));
  }});
  pi.registerTool({name: "stream_read", label: "Read work card", description: "Read typed durable catalog state and recorded contributions from persisted local records. No fetch, scratch notes or pending drafts.", parameters: Type.Object({}), async execute(_id, _args, _signal, _update, ctx) {scope.use(ctx);const {authority, ...catalog} = await cli(ctx).context(ctx.sessionManager.getSessionId(), process.env.STREAMS_STREAM_ID);return result({...catalog, reporting_authority: !!authority});}});
  pi.registerTool({name: "checkpoint", label: "Report work card", description: "Request an immediate durable progress report. Local saves and publication are separate; this is not an approval draft.", parameters: Type.Object({instructions: Type.Optional(Type.String())}), async execute(_id, args, _signal, _update, ctx) {scope.use(ctx);settings();reporter.request(ctx, true, args.instructions);return result({status: "report-requested"});}});

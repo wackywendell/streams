@@ -1,28 +1,17 @@
-# Using the catalog sync library
+# Catalog saving and sync
 
-The sync library composes the catalog foundation. It provides application-level sync and read orchestration without starting a background service or configuring a hosted repository. The [CLI](../README.md) uses these coordinators, including for Pi's catalog reports; Work Cards integration remains separate. The [sync ADR](catalog-git-sync.md) explains the policy; the [implementation plan](../plans/catalog-sync.md) defines its scope.
+The Rust sync library coordinates catalog saves and reads without requiring a background service. The [CLI](../README.md) uses it for Pi reports too. Its [backend interface](../src/sync/mod.rs) separates local-only and Git policy; the [sync ADR](catalog-git-sync.md) explains the contracts. Examples below use the Rust CLI, not the retired Python package.
 
 ## Local-only storage
 
 `LocalCatalog` validates operations and serializes saves through the YAML adapter. It does not invoke Git or use the network.
 
-```python
-from pathlib import Path
-from uuid import uuid4
-
-from _streams.catalog.model import Stream
-from _streams.catalog.operations import Operation
-from _streams.catalog.sync import LocalCatalog
-from _streams.catalog.yaml_store import YamlStore
-
-catalog = LocalCatalog(YamlStore(Path("/path/to/new/local-catalog")), host_id="laptop")
-stream = Stream(id=str(uuid4()), title="Investigate indexing", goal="Find the source of slow indexing",
-                owner_host_id="laptop")
-creation = Operation(id=str(uuid4()), before=None, after=stream, actor="user")
-result = catalog.save(creation)
-assert result.local == "persisted"
-assert result.sharing == "local-only"
+```sh
+streams init --sync none
+streams create "Indexing" --goal "Find the source of slow indexing" --json
 ```
+
+The creation receipt reports local persistence separately from local-only sharing.
 
 Retain operation IDs and original inputs when retrying. Generate IDs for new intents, not for each attempt. Local receipt fingerprints prevent an accepted operation from being applied again after later edits, including after Git replay retires it as satisfied or superseded. Reusing an accepted ID with different inputs requires repair rather than changing that ID's meaning.
 
@@ -36,7 +25,7 @@ Git backing does not require a remote. For a fresh local Git catalog:
 streams init --sync git
 ```
 
-Direct library callers omit `remote` from `GitCatalog.initialize(path, host_id="laptop")`. Saves commit locally and report `sharing="local-only"`, including refused and repair-required outcomes. Reads return the saved snapshot with freshness `local-only`. Explicit refresh, sync, startup and shutdown do not fetch, push or write publication clocks. Remote inspection is unavailable. Adding a remote outside Streams is unsupported and fails closed.
+Direct Rust callers construct `GitCatalog` and initialize it with no remote. Saves commit locally and report `sharing="local-only"`, including refused and repair-required outcomes. Reads return the saved snapshot with freshness `local-only`. Explicit refresh, sync, startup and shutdown do not fetch, push or write publication clocks. Remote inspection is unavailable. Adding a remote outside Streams is unsupported and fails closed.
 
 For an existing initialized `none` catalog, conversion must be explicit:
 
@@ -52,35 +41,22 @@ Create a dedicated private remote separately, with no pre-existing files or comm
 
 Initialize a new managed directory explicitly:
 
-```python
-from _streams.catalog.sync import GitCatalog, Policy
-
-catalog = GitCatalog.initialize(
-    Path("/path/to/new/shared-catalog"),
-    remote="git@example.org:me/catalog.git",
-    host_id="laptop",
-    branch="main",
-    policy=Policy(stream_seconds=300, session_seconds=3600),
-)
+```sh
+streams init --sync git --remote git@example.org:me/catalog.git --branch main
+streams config set sync.stream_seconds 300
+streams config set sync.session_seconds 3600
 ```
 
-Initialization creates an empty bootstrap locally if the remote branch does not exist. If another host already published a supported catalog, it fetches and validates that history. It will not adopt arbitrary existing Git contents. Reopen an initialized directory with `GitCatalog(path, host_id="laptop")`; pass the same policy in every process if overriding defaults.
+Initialization creates an empty bootstrap locally if the remote branch does not exist. If another host already published a supported catalog, it fetches and validates that history. It will not adopt arbitrary existing Git contents. Ordinary commands reopen the existing configured catalog; they do not initialize or replace it. Direct Rust callers supply the same `Policy` in every process if overriding defaults.
 
-`save(operation)` commits a validated change locally. It does not push automatically. Command handlers call `catalog.sync(event=...)` to request publication after related saves. They must check even after a no-change save: older pending changes may now be eligible. A running integration normally creates a stream, then its session record, then checks publication once:
+`save(operation)` commits a validated change locally. It does not push automatically. Command handlers call `catalog.sync(event)` to request publication after related saves. They must check even after a no-change save: older pending changes may now be eligible. A running integration normally creates a stream, then its session record, then checks publication once:
 
-```python
-from _streams.catalog.model import Session
-
-created = catalog.save(creation, origin={"session": "native-session-id"})
-if created.accepted:
-    authority = catalog.authority(stream.id)
-    session = Session(id=str(uuid4()), host_id="laptop", stream_id=stream.id,
-                      harness="pi", harness_session_id="native-session-id", title="Investigate indexing")
-    joined = catalog.save(Operation(id=str(uuid4()), before=None, after=session,
-                                    actor="automatic", ownership_token=authority.token))
-    if joined.accepted:
-        publication = catalog.sync(event="session")
+```sh
+streams create "Indexing" --json
+streams session attach STREAM_ID --harness pi --session-id NATIVE_SESSION_ID --title "Investigation" --json
 ```
+
+The CLI obtains effective creation authority and constructs guarded operations. Pi's automatic enrollment uses `streams agent enroll`; it does not manufacture ownership from catalog owner fields.
 
 The initial creation operation establishes local ownership without a push. Generic operations cannot transfer ownership or reattach a session. Ownership handover is not implemented.
 
@@ -88,7 +64,7 @@ Each record save is separate. If session creation fails after stream creation, r
 
 ## Publication events and results
 
-Call `catalog.sync(event=event)` after an event's related saves. With a configured remote, the backend checks timing and pending state under its shared store lock; callers do not implement their own timers. Without a remote, it validates local history and returns local-only state without publication scheduling.
+Call `catalog.sync(event)` after an event's related saves. With a configured remote, the backend checks timing and pending state under its shared store lock; callers do not implement their own timers. Without a remote, it validates local history and returns local-only state without publication scheduling.
 
 | Event | Eligibility |
 | --- | --- |
@@ -117,7 +93,7 @@ Failed results, transport errors and timeouts produce a warning and a durable `s
 
 ### Scheduled and explicit read refresh
 
-List/show command handlers call `catalog.read(refresh=False)`. A Git read fetches when N has elapsed since the last successful refresh; `refresh=True` requests an explicit blocking fetch. A successful fetch in any write sync counts toward this read clock, even if its later push fails. There is no daemon and no asynchronous refresh to wait for later.
+List/show command handlers call `catalog.read(false)`. A Git read fetches when N has elapsed since the last successful refresh; `read(true)` requests an explicit blocking fetch. A successful fetch in any write sync counts toward this read clock, even if its later push fails. There is no daemon and no asynchronous refresh to wait for later.
 
 Reads never push or reset the M/N publication clocks. They share a separate 60-second failed-read cooldown; explicit refresh bypasses it. Fetch success clears the prior read error. A failure returns the cached view with `freshness='failed'` and diagnostic detail. During the cooldown, cached reads retain that detail rather than hiding the failure. Local-only reads make no network calls, including explicit refresh requests.
 
@@ -187,7 +163,7 @@ Operation messages use the `Streams operation v1` header and can be decoded with
 
 If the original operation was fully committed, verify its envelope, parent and materialized record before clearing the leftover save marker. The next coordinated history read establishes missing retry receipts before any local operation can retire. Fetched operations are checked against those receipts before becoming the confirmed snapshot.
 
-Local-only mode has no commit history to rebuild receipts from. Before clearing its verified completed save marker, decode the marker's original operation and retain its accepted-intent receipt with `catalog.state.remember(operation)`. Receipt completion is bookkeeping for that verified save, not permission to apply the operation again. Preserve the receipts along with other local state.
+Local-only mode has no commit history to rebuild receipts from. Before clearing its verified completed save marker, decode the marker's original operation and retain its accepted-intent receipt through the typed recovery state under the catalog lock. Receipt completion is bookkeeping for that verified save, not permission to apply the operation again. Preserve the receipts along with other local state.
 
 If the save was not complete, either finish that exact operation or restore the recorded starting state only under explicit user direction, preserving evidence first. Do not invent a different operation under the old ID. A publication-adoption repair similarly needs to establish the accepted remote tip and preserve later local operations before changing the checkout. Local Git bootstrap has no remote tip: verify its snapshot baseline, original private setup and intended final-path identity/signing policy instead. Do not clear its marker merely because the YAML records remain valid.
 

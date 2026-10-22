@@ -32,7 +32,7 @@ export type LabOperation =
  | {operation: "replay"; capture_id: string; model: ModelSelection; reset?: "session" | "stream" | "all"; auto?: boolean; trim?: boolean; prompt?: string}
  | {operation: "inspect"; kind: ArtifactKind; id: string; section?: "summary" | "input" | "output" | "errors"; offset?: number; limit?: number}
  | {operation: "list"; kind: ArtifactKind};
-export type LabEnvironment = {root: string; client: Pick<StreamCli, "captureInputs" | "preview">; runtime?: InferenceRuntime; current?: ExtensionContext["sessionManager"]};
+export type LabEnvironment = {root: string; client: Pick<StreamCli, "captureInputs" | "preview">; runtime?: InferenceRuntime; current?: ExtensionContext["sessionManager"]; helperRoot?: string};
 function totalUsage(responses: AssistantMessage[]): Usage | undefined {
  if (!responses.length) return undefined;
  const total: Usage = {input: 0, output: 0, cacheRead: 0, cacheWrite: 0, totalTokens: 0, cost: {input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0}};
@@ -59,7 +59,7 @@ export async function executeLab(command: LabOperation, environment: LabEnvironm
  if (command.operation === "capture") {
   const inventory = parseCaptureInventory(await client.captureInputs(command.target, signal));signal.throwIfAborted();
   if (inventory.target?.kind !== command.target.kind || inventory.target?.id !== command.target.id) throw Error("Capture inventory does not match the requested target");
-  const {capture} = captureSessions(inventory, root, environment.current, signal);
+  const {capture} = captureSessions(inventory, root, environment.current, signal, environment.helperRoot);
   return summary(root, "capture", capture);
  }
  if (command.operation === "prepare") {
@@ -82,13 +82,13 @@ export async function executeLab(command: LabOperation, environment: LabEnvironm
    return summary(root, "run", replay);
   }
   const request = loadPrepared(root, command.request_id), artifact = createArtifact(root, "run");
-  const helpers = join(artifact.directory, "helpers");privateDirectory(helpers);
+  const helpers = join(artifact.directory, "helpers");privateDirectory(helpers, root);
   let helper_file: string | undefined;
   const logger = helperSessionLogger({cwd: request.source.cwd, sessionId: request.source.native_session_id, leafId: request.source.leafId}, {directory: helpers, onCreate: value => {helper_file = value.session_file;}});
   const started_at = new Date().toISOString();
   const outcome = await run(request, runtime, command.model, signal, logger);
   const value = {version: 1, id: artifact.id, request_id: command.request_id, model: command.model, started_at, completed_at: new Date().toISOString(), helper_file, ...outcome};
-  privateWrite(join(artifact.directory, "run.json"), JSON.stringify(value, null, 2) + "\n");
+  privateWrite(join(artifact.directory, "run.json"), JSON.stringify(value, null, 2) + "\n", root);
   return summary(root, "run", value);
  }
  if (command.operation === "list") return {kind: command.kind, artifacts: listArtifacts(root, command.kind).map(id => ({id, directory: artifactPath(root, command.kind, id)}))};

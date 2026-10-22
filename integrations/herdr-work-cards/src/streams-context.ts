@@ -12,8 +12,9 @@ export type StreamWire = {
 };
 export type SessionWire = {
   id: string; host_id: string; stream_id: string; harness: string; harness_session_id: string;
+  previous_stream_ids?: string[];
   title: string; title_mode: Mode; status: Status; state: string; state_short: string | null; remaining: string;
-  checkout: { repository: string; ref: string; directory_within_checkout: string } | null;
+  checkout: { repository: string; repository_url?: string | null; ref: string; directory_within_checkout: string } | null;
 };
 export type LocalContext = {
   catalog_source: string; host_id: string; stream: StreamWire | null; session: SessionWire | null;
@@ -45,8 +46,13 @@ export function isStream(value: unknown): value is StreamWire {
 export function isSession(value: unknown): value is SessionWire {
   return object(value) && [value.id, value.host_id, value.stream_id, value.harness, value.harness_session_id].every(identity)
     && [value.title, value.state, value.remaining].every(text) && mode(value.title_mode) && status(value.status)
-    && nullableText(value.state_short) && (value.checkout === null || object(value.checkout)
-      && identity(value.checkout.repository) && identity(value.checkout.ref) && text(value.checkout.directory_within_checkout));
+    && nullableText(value.state_short)
+    && (value.previous_stream_ids === undefined || Array.isArray(value.previous_stream_ids)
+      && value.previous_stream_ids.every(identity)
+      && value.previous_stream_ids.every((id, i, ids) => id !== (i + 1 < ids.length ? ids[i + 1] : value.stream_id)))
+    && (value.checkout === null || object(value.checkout)
+      && identity(value.checkout.repository) && identity(value.checkout.ref) && text(value.checkout.directory_within_checkout)
+      && provenance(value.checkout.repository_url));
 }
 
 export function parseLocalContext(value: unknown): LocalContext & Record<string, unknown> {

@@ -61,7 +61,7 @@ export async function confirmCapture(ctx: ExtensionContext, inventory: CaptureIn
    `Storage: ${root}`,
    "Copies transcripts, cards and available helper logs; no model calls or live card changes.",
    ...(inventory.topology_error ? [`Capture warning: ${inventory.topology_error}`] : []),
-   ...(inventory.unresolved ?? []).map(observation => `Unresolved Pi · ${observation.workspace_id}/${observation.pane_id} · ${observation.error}`),
+   ...(inventory.unresolved ?? []).map(observation => `Unresolved ${observation.harness === "pi" ? "Pi" : observation.harness} · ${observation.workspace_id}/${observation.pane_id} · ${observation.error}`),
    ...samples.map(sample => `${sample.open === null ? "open unknown" : sample.open ? "open" : "closed"} · ${locallyAvailable(sample) ? "available" : "unavailable"} · ${sample.catalog.session?.title ?? "no card"} · ${sample.native_session_id}${sample.unavailable ? locallyAvailable(sample) ? " · using current Pi session" : ` · ${sample.unavailable}` : ""}`),
   ];
   await choose("Capture inventory — Enter/Esc returns", [], rows.map((label, index) => ({value: String(index), label})));

@@ -1,5 +1,6 @@
-import { convertToLlm, estimateTokens, SessionManager } from "@earendil-works/pi-coding-agent";
-import { chmodSync, mkdirSync, writeFileSync } from "node:fs";
+import { convertToLlm, estimateTokens } from "@earendil-works/pi-coding-agent";
+import { helperSessionLogger } from "./helper-log.ts";
+export { helperSessionLogger } from "./helper-log.ts";
 import { setTimeout } from "node:timers/promises";
 import { Type } from "typebox";
 import { Check, Errors } from "typebox/value";
@@ -202,29 +203,6 @@ export function runInference<T extends Inference>(runtime: InferenceRuntime, req
 }
 export type InferenceLogOptions = {directory: string; onCreate?(value: {session_id: string; session_file: string}): void};
 export type InferenceSource = {cwd: string; sessionId: string; leafId: string | null; sessionFile?: string};
-export function helperSessionLogger(source: InferenceSource, options: InferenceLogOptions): InferenceObserver {
- let log: SessionManager | undefined;
- return (event) => {
-  if (event.type === "request") {
-   mkdirSync(options.directory, {recursive: true, mode: 0o700});chmodSync(options.directory, 0o700);
-   log = SessionManager.create(source.cwd, options.directory, {parentSession: source.sessionFile});
-   const file = log.getSessionFile()!;
-   writeFileSync(file, JSON.stringify(log.getHeader()) + "\n", {flag: "wx", mode: 0o600});
-   log = SessionManager.open(file);
-   const reset = "reset" in event.request && Boolean(event.request.reset);
-   log.appendSessionInfo(`Streams helper · ${event.request.type}${reset ? " reset" : ""}`);
-   log.appendModelChange(event.model.provider, event.model.id);
-   log.appendCustomEntry("stream-helper-request", {parent_session_id: source.sessionId, parent_leaf_id: source.leafId, task: event.request.type, reset});
-   log.appendMessage({role: "system", content: event.payload.systemPrompt, toolsAdded: event.payload.tools, timestamp: Date.now()});
-   for (const message of event.payload.messages) log.appendMessage(message);
-   options.onCreate?.({session_id: log.getSessionId(), session_file: file});
-  } else if (event.type === "response") log!.appendMessage(event.response);
-  else if (event.type === "attempt") log!.appendCustomEntry("stream-helper-attempt", {attempt: event.attempt});
-  else if (event.type === "attempt-error") log!.appendCustomEntry("stream-helper-attempt-error", {attempt: event.attempt, error: event.error});
-  else if (event.type === "result") log!.appendCustomEntry("stream-helper-result", event.result);
-  else log!.appendCustomEntry("stream-helper-error", {error: event.error, cancelled: event.cancelled});
- };
-}
 type InferenceContext = InferenceRuntime & Pick<ExtensionContext, "cwd" | "sessionManager">;
 export function infer<T extends Inference>(ctx: InferenceContext, request: T, signal: AbortSignal, configured?: ModelSelection, logging?: InferenceLogOptions): Promise<InferenceResult<T>> {
  const source = logging ? {cwd: ctx.cwd, sessionId: ctx.sessionManager.getSessionId(), leafId: ctx.sessionManager.getLeafId(), sessionFile: ctx.sessionManager.getSessionFile()} : undefined;

@@ -1,8 +1,9 @@
 import { randomUUID } from "node:crypto";
-import { constants, closeSync, lstatSync, openSync, readFileSync, readdirSync } from "node:fs";
+import { lstatSync, readdirSync } from "node:fs";
 import { isAbsolute, join } from "node:path";
 import { buildInferencePayload } from "./agent.ts";
-import { checkStoragePath, digest, privateDirectory, privateWrite } from "./capture.ts";
+import { digest } from "./capture.ts";
+import { privateDirectory, privateRead, privateWrite } from "./private-storage.ts";
 import { parseLocalContext } from "../../integrations/herdr-work-cards/src/streams-context.ts";
 import type { PreparedRequest } from "./prompt-lab.ts";
 
@@ -15,31 +16,26 @@ const identity = (value: any): value is string => typeof value === "string" && !
 export function artifactPath(root: string, kind: ArtifactKind, id: string): string {
  if (!Object.hasOwn(folders, kind) || !uuid.test(id)) throw Error("Choose an exact artifact kind and ID");
  const directory = join(root, folders[kind], id);
- for (const path of [root, join(root, folders[kind]), directory]) checkStoragePath(path);
  return directory;
 }
 export function createArtifact(root: string, kind: ArtifactKind): {id: string; directory: string} {
  const id = randomUUID(), directory = artifactPath(root, kind, id);
- for (const path of [root, join(root, folders[kind]), directory]) privateDirectory(path);
+ privateDirectory(directory, root);
  return {id, directory};
 }
 export function readArtifact(root: string, kind: ArtifactKind, id: string): any {
- const path = join(artifactPath(root, kind, id), files[kind]);
- if (!lstatSync(path).isFile()) throw Error("Artifact manifest must be a regular file, not a symbolic link");
- const fd = openSync(path, constants.O_RDONLY | constants.O_NOFOLLOW);
- let value: any;
- try {value = JSON.parse(readFileSync(fd, "utf8"));} finally {closeSync(fd);}
+ const value = JSON.parse(privateRead(artifactPath(root, kind, id), files[kind], root));
  if (!object(value) || value.version !== 1 || value.id !== id) throw Error("Invalid artifact manifest");
  return value;
 }
 export function listArtifacts(root: string, kind: ArtifactKind): string[] {
  if (!Object.hasOwn(folders, kind)) throw Error("Choose capture, request or run");
- const parent = join(root, folders[kind]);checkStoragePath(root);checkStoragePath(parent);
+ const parent = join(root, folders[kind]);
  let entries: string[];
- try {entries = readdirSync(parent);} catch (error) {if ((error as NodeJS.ErrnoException).code === "ENOENT") return [];throw error;}
+ try {entries = readdirSync(privateDirectory(parent, root, false));} catch (error) {if ((error as NodeJS.ErrnoException).code === "ENOENT") return [];throw error;}
  return entries.filter(id => {
   if (!uuid.test(id)) return false;
-  const directory = artifactPath(root, kind, id), file = lstatSync(join(directory, files[kind]), {throwIfNoEntry: false});
+  const directory = privateDirectory(artifactPath(root, kind, id), root, false), file = lstatSync(join(directory, files[kind]), {throwIfNoEntry: false});
   if (file?.isSymbolicLink()) throw Error("Artifact manifest must not be a symbolic link");
   return !!file?.isFile();
  }).sort();
@@ -47,7 +43,7 @@ export function listArtifacts(root: string, kind: ArtifactKind): string[] {
 export function savePrepared(root: string, request: PreparedRequest): {id: string; directory: string} {
  validatePrepared(request);
  const artifact = createArtifact(root, "request");
- privateWrite(join(artifact.directory, "request.json"), JSON.stringify({...request, id: artifact.id}, null, 2) + "\n");
+ privateWrite(join(artifact.directory, "request.json"), JSON.stringify({...request, id: artifact.id}, null, 2) + "\n", root);
  return artifact;
 }
 export function loadPrepared(root: string, id: string): PreparedRequest {
