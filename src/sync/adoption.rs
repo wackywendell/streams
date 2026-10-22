@@ -1,6 +1,7 @@
 //! Explicit snapshot import; preparation is disposable, installation is durably fenced.
 
 mod completion;
+mod installation;
 mod source;
 
 use source::Source;
@@ -221,13 +222,12 @@ impl PreparedImport<'_> {
         .as_object()
         .expect("object")
         .clone();
-        // A failed write can already have replaced save.json. Disable Drop cleanup
-        // BEFORE that first possible marker effect, not after write returns success.
-        let retained = candidate.keep();
-        catalog.state.write("save.json", evidence.clone())?;
-        fs::rename(retained.join(".git"), catalog.root.join(".git")).map_err(repair)?;
-        sync_directory(catalog.root).map_err(repair)?;
-        sync_directory(&retained).map_err(repair)?;
+        let retained = installation::fence_and_move(
+            &catalog.state,
+            catalog.root,
+            candidate,
+            evidence.clone(),
+        )?;
         if signing_profile(catalog.git)? != profile {
             return Err(repair(
                 "Git identity or signing policy differs at the final catalog path; inspect save.json",

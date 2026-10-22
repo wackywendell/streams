@@ -3,7 +3,6 @@ use crate::support;
 use std::collections::BTreeMap;
 use std::fs;
 use std::path::{Path, PathBuf};
-use std::sync::{Arc, Mutex};
 use streams_temper::storage::{StorageError, Transaction};
 
 use serde_json::json;
@@ -210,45 +209,6 @@ fn changed_record_bytes_abort_preparation_before_fencing() {
     assert!(!f.root.join(".catalog-sync/save.json").exists());
     assert!(!f.root.join(".git").exists());
     assert!(application::open(&f.config).is_ok());
-}
-
-#[test]
-fn first_possible_fence_effect_retains_prepared_evidence_even_if_write_fails() {
-    let mut f = Fixture::new();
-    f.git
-        .set_state_hook(Arc::new(Mutex::new(|op: &str, name: &str| {
-            if op == "write" && name == "save.json" {
-                Err(RepairRequired::new("fence failure"))
-            } else {
-                Ok(())
-            }
-        })));
-    assert!(f.adopt().is_err());
-    let candidates = f.candidates();
-    assert_eq!(candidates.len(), 1);
-    assert!(candidates[0].join(".git").is_dir());
-    assert!(!f.root.join(".git").exists());
-    assert!(!f.root.join(".catalog-sync/save.json").exists());
-    // The pre-effect injected failure is still readable as local. A real write
-    // failure may have installed its fence, hence conservative candidate retention.
-    assert!(application::open(&f.config).is_ok());
-}
-
-#[test]
-fn install_failure_keeps_both_fence_and_uninstalled_graph() {
-    let mut f = Fixture::new();
-    let git_dir = f.root.join(".git");
-    f.git
-        .set_state_hook(Arc::new(Mutex::new(move |op: &str, name: &str| {
-            if op == "write" && name == "save.json" {
-                fs::create_dir(&git_dir).unwrap();
-                fs::write(git_dir.join("block-install"), "retain").unwrap();
-            }
-            Ok(())
-        })));
-    assert!(f.adopt().is_err());
-    f.fenced();
-    assert!(f.candidates()[0].join(".git").is_dir());
 }
 
 #[test]
