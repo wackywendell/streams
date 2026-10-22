@@ -19,7 +19,7 @@ use streams_temper::{
         history::read_history,
         local::LocalCatalog,
         policy::Policy,
-        state::{GitConfig, RepairRequired, State},
+        state::RepairRequired,
     },
     yaml_store::YamlStore,
 };
@@ -167,21 +167,7 @@ fn baseline_preserves_exact_bytes_history_and_local_bookkeeping() {
         local
     );
     assert_eq!(f.adopt().unwrap(), tip);
-    let later = update(
-        "post-baseline-edit",
-        edit.after(),
-        json!({"goal":"After the baseline"}).as_object().unwrap(),
-        Actor::User,
-        None,
-        vec![],
-    )
-    .unwrap();
-    assert!(f.git.save(&later, None).unwrap().accepted());
-    assert_ne!(f.git.git().head().unwrap(), tip);
-    assert_eq!(f.adopt().unwrap(), tip);
     assert!(f.candidates().is_empty());
-    let _lock = f.config.lock().unwrap();
-    assert!(adopt_local(&f.git, "different").is_err());
 }
 
 #[test]
@@ -282,44 +268,6 @@ fn final_path_signing_profile_must_match_prepared_identity_and_policy() {
     f.fenced();
     assert!(f.root.join(".git").is_dir());
     assert!(!f.root.join(".catalog-sync/config.json").exists());
-}
-
-#[test]
-fn completed_retry_rejects_nonadoption_history_and_remote_configuration() {
-    let f = Fixture::new();
-    f.adopt().unwrap();
-    let store = YamlStore::new(&f.root);
-    store
-        .with_transaction::<_, StorageError>(|tx| {
-            State::from_journal(tx.journal())
-                .write_config(
-                    &GitConfig::new(Some("remote".into()), "main", f.git.host_id()).unwrap(),
-                )
-                .unwrap();
-            Ok(())
-        })
-        .unwrap();
-    assert!(f.adopt().is_err());
-    let dir = tempfile::tempdir().unwrap();
-    let mut git = GitCatalog::new(dir.path(), f.git.host_id(), Policy::default()).unwrap();
-    install_hook(&mut git, |_, _, _, _| None);
-    let git = git.initialize(None, "main").unwrap();
-    let store = YamlStore::new(dir.path());
-    store
-        .with_transaction::<_, StorageError>(|tx| {
-            State::from_journal(tx.journal())
-                .write(
-                    "cli.json",
-                    json!({"host":git.host_id(),"strategy":"git"})
-                        .as_object()
-                        .unwrap()
-                        .clone(),
-                )
-                .unwrap();
-            Ok(())
-        })
-        .unwrap();
-    assert!(adopt_local(&git, "main").is_err());
 }
 
 #[test]

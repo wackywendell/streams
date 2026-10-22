@@ -5,6 +5,105 @@ use std::cell::Cell;
 use std::sync::{Arc, Mutex};
 
 const HOST: &str = "00000000-0000-4000-8000-000000000001";
+const OTHER: &str = "00000000-0000-4000-8000-000000000002";
+
+fn baseline_history(host: &str) -> History {
+    use crate::sync::baseline::{Baseline, encode_baseline};
+    let baseline = Baseline::new(host, Default::default(), Default::default()).unwrap();
+    History::default()
+        .append(
+            &"a".repeat(40),
+            &[],
+            &encode_baseline(&baseline).unwrap(),
+            Default::default(),
+        )
+        .unwrap()
+}
+
+#[test]
+fn completed_retry_checks_config_before_reading_history() {
+    let expected = GitConfig::new(None, "main", HOST).unwrap();
+    for actual in [
+        GitConfig::new(Some("remote".into()), "main", HOST).unwrap(),
+        GitConfig::new(None, "different", HOST).unwrap(),
+        GitConfig::new(None, "main", OTHER).unwrap(),
+    ] {
+        assert_eq!(
+            retry(&actual, &expected, || panic!(
+                "mismatched config must not read history"
+            ))
+            .unwrap_err()
+            .to_string(),
+            "completed adoption does not match this host, branch or local-only mode"
+        );
+    }
+}
+
+#[test]
+fn completed_retry_requires_an_adoption_baseline_from_this_host() {
+    let config = GitConfig::new(None, "main", HOST).unwrap();
+    let bootstrap = History::default()
+        .append(
+            &"b".repeat(40),
+            &[],
+            crate::sync::envelope::BOOTSTRAP,
+            Default::default(),
+        )
+        .unwrap();
+    for history in [History::default(), bootstrap, baseline_history(OTHER)] {
+        assert_eq!(
+            retry(&config, &config, || Ok(history))
+                .unwrap_err()
+                .to_string(),
+            "existing Git catalog is not a completed snapshot adoption"
+        );
+    }
+}
+
+#[test]
+fn completed_retry_returns_baseline_root_after_later_operations() {
+    use crate::sync::envelope::encode_operation;
+    use crate::yaml_store::relative_record_path;
+    use crate::{
+        codec::record_to_data,
+        model::{Record, Stream},
+        operations::{Actor, Operation},
+    };
+
+    let operation = Operation::new(
+        "later",
+        None,
+        Record::Stream(Stream::new("work", "Work", None, HOST).unwrap()),
+        Actor::User,
+        None,
+        vec![],
+    )
+    .unwrap();
+    let bytes = serde_json::to_vec(&json!({
+        "version":1, "revision":"fixture", "kind":"stream", "record":record_to_data(operation.after())
+    })).unwrap();
+    let history = baseline_history(HOST)
+        .append(
+            &"b".repeat(40),
+            &[&"a".repeat(40)],
+            &encode_operation(&operation, None).unwrap(),
+            [(
+                relative_record_path(operation.after())
+                    .to_str()
+                    .unwrap()
+                    .into(),
+                bytes,
+            )]
+            .into(),
+        )
+        .unwrap();
+    assert_ne!(history.tip(), history.root());
+    let config = GitConfig::new(None, "main", HOST).unwrap();
+    assert_eq!(
+        retry(&config, &config, || Ok(history)).unwrap(),
+        "a".repeat(40)
+    );
+}
 
 use crate::memory;
 

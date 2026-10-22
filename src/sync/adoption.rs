@@ -263,40 +263,28 @@ impl PreparedImport<'_> {
 /// A post-fence error leaves opaque save evidence and requires explicit repair.
 pub fn adopt_local(catalog: &GitCatalog, branch: &str) -> Result<String, RepairRequired> {
     check_text(branch, "branch", false).map_err(repair)?;
-    catalog.with_lock(|catalog| {
-        let result = (|| -> Result<_, RepairRequired> {
-        catalog.state.check_save()?;
-        let marker = Marker::read(catalog.transaction().journal())
-            .map_err(repair)?
-            .ok_or_else(|| repair("adoption requires an initialized local-only catalog"))?;
-        if marker.host.as_str() != catalog.host_id {
-            return Err(repair("adoption requires this host's initialized catalog"));
-        }
-        if marker.strategy == Strategy::Git {
-            let expected = GitConfig::new(None, branch, catalog.host_id).map_err(repair)?;
-            if catalog.ready().map_err(repair)? != expected {
-                return Err(repair(
-                    "completed adoption does not match this host, branch or local-only mode",
-                ));
-            }
-            let (history, _) = catalog.saved().map_err(repair)?;
-            if history
-                .baseline()
-                .is_none_or(|baseline| baseline.host != catalog.host_id)
-            {
-                return Err(repair(
-                    "existing Git catalog is not a completed snapshot adoption",
-                ));
-            }
-            return history
-                .root()
-                .map(str::to_owned)
-                .ok_or_else(|| repair("adopted history has no baseline root"));
-        }
-        let prepared = prepare(catalog, branch)?;
-        let mut machine = ProtocolMachine::observe(&catalog.state, catalog.policy.attempts())?;
-        machine.begin_import(prepared)?.run()
-        })();
-        result.map_err(Into::into)
-    }).map_err(repair)
+    catalog
+        .with_lock(|catalog| {
+            let result = (|| -> Result<_, RepairRequired> {
+                catalog.state.check_save()?;
+                let marker = Marker::read(catalog.transaction().journal())
+                    .map_err(repair)?
+                    .ok_or_else(|| repair("adoption requires an initialized local-only catalog"))?;
+                if marker.host.as_str() != catalog.host_id {
+                    return Err(repair("adoption requires this host's initialized catalog"));
+                }
+                if marker.strategy == Strategy::Git {
+                    let expected = GitConfig::new(None, branch, catalog.host_id).map_err(repair)?;
+                    return completion::retry(&catalog.ready().map_err(repair)?, &expected, || {
+                        catalog.saved().map(|(history, _)| history).map_err(repair)
+                    });
+                }
+                let prepared = prepare(catalog, branch)?;
+                let mut machine =
+                    ProtocolMachine::observe(&catalog.state, catalog.policy.attempts())?;
+                machine.begin_import(prepared)?.run()
+            })();
+            result.map_err(Into::into)
+        })
+        .map_err(repair)
 }
