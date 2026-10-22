@@ -54,17 +54,12 @@ fn deadline_includes_blocked_stdin() {
 
 #[test]
 fn kills_descendants_even_when_they_ignore_sigterm() {
-    let (root, git) = repository(0.15);
+    let (root, git) = repository(1.0);
+    let probe = crate::support::process::DescendantProbe::new(root.path());
     let start = Instant::now();
-    let error = shell(
-        &git,
-        "trap '' TERM; (sleep 0.5; printf survived > descendant-survived) & wait",
-        None,
-    )
-    .unwrap_err();
+    let error = shell(&git, probe.script(), None).unwrap_err();
     assert_timeout(start, error);
-    std::thread::sleep(Duration::from_millis(650));
-    assert!(!root.path().join("descendant-survived").exists());
+    probe.assert_killed();
 }
 
 #[test]
