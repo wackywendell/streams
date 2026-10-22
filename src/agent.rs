@@ -56,6 +56,11 @@ pub fn parse_update(source: &str, catalog_source: &str) -> Result<Operation, Val
             "catalog source changed since capture; inspect the current catalog before making a new request",
         ));
     }
+    if request.actor == Actor::Native {
+        return Err(ValidationError::new(
+            "agent updates cannot use native actor",
+        ));
+    }
     if request.kind == RecordKind::Host {
         return Err(ValidationError::new(
             "agent updates require stream or session kind",

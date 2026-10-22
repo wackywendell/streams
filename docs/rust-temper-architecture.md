@@ -128,9 +128,11 @@ The Rust `streams` binary is this branch's sole catalog and runtime implementati
 
 An accepted save remains usable when ordinary publication fails. The receipt retains that warning; explicit `sync` returns exit 2 for sharing failures. Repair conditions and incomplete command effects also return exit 2 without discarding earlier save receipts.
 
-The Rust stack is rebased onto Python `main` at `a6f11e5c`. Documents retain commit and source-session provenance, session files use stream/host partitions without changing logical identity, and attached sessions use the same host/harness/native UUIDv5 identity as Python. Generated Stream text can merge unrelated concurrent changes; Session inference still guards the whole captured target and explicit supporting inputs.
+Documents retain commit and source-session provenance. Attached Sessions retain the host/harness/native UUIDv5 identity shared with earlier clients. The library preserves Session identity, work and ordered participation history across Stream reassociation. Checkout URLs and Session-keyed directory intent remain independent of destination repository aliases. Generated Stream text can merge unrelated concurrent changes; Session inference still guards the captured membership, target and explicit supporting inputs.
 
-Only the current partitioned session layout is accepted. All 48 session files on this machine already use it, and the live catalog is local-only, so Rust does not carry the obsolete two-level reader or Git-history migration paths. Agent context retains a full local snapshot behind `CatalogBackend`, rather than copying Python's storage-specific lookup and cache fallbacks.
+Session files now use `conversations/<host>/<id>.yaml`. Reads also accept the earlier Stream/host partitions without rewriting them. A membership move relocates the existing file before replacing its bytes; Git history requires canonical forward relocation with the predecessor deleted. Same-membership updates preserve an existing legacy location. These format bridges do not restore a Python implementation or fallback. Agent context retains a full local snapshot behind `CatalogBackend`.
+
+Only library-owned native operations can reassociate membership; agent requests cannot select that actor or edit membership fields. Automatic context adoption and captured-context per-card result admission remain inactive. The existing fixed-membership model does not verify those proposed transitions.
 
 Native start, open, resume, arrangement capture and the Ratatui card use Rust. Launched cards require protected context and cannot act as their Pi owner. Acknowledged resource tuples remain journalled if later authority checks fail. Every effect re-attests its captured owner; arrangement capture pins the endpoint and checks owner/workspace identity under the Stream lock before persistence.
 
@@ -138,7 +140,7 @@ Pi retains its event lane, commands/tools, inline UI and session-name provenance
 
 Saved helper requests use TypeScript preparation and execution with Rust's pure preview boundary. `streams debug` replaces its process with the Node runner before opening configuration or catalog state, retaining signal delivery and exit status. Capture keeps verified conversations when neighboring panes are unresolved, while unmatched historical conversations remain unknown rather than falsely closed.
 
-Fake-service tests cover launch uncertainty, identity checks and authority loss. They do not establish deployment readiness. Isolated PTY and live-platform acceptance remain required before trial; this cutover neither activates native effects nor changes installed tools.
+Fake-service tests cover launch uncertainty, identity checks and authority loss. Isolated PTY acceptance exercises the real terminal loop with a deterministic host. Neither establishes live-platform behavior. Live-platform acceptance remains required before trial; this cutover neither activates native effects nor changes installed tools.
 
 ### TUI Unicode compatibility
 

@@ -25,6 +25,139 @@ fn creation(id: &str) -> History {
 }
 
 #[test]
+fn append_accepts_legacy_updates_and_requires_exact_relocation_changes() {
+    use crate::codec::record_to_data;
+    use crate::sync::envelope::{BOOTSTRAP, encode_operation};
+    use crate::yaml_store::relative_record_path;
+    use std::collections::BTreeMap;
+
+    let bytes = |record: &Record| {
+        serde_json::to_vec(&json!({"version": 1, "revision": "fixture",
+            "kind": record.kind(), "record": record_to_data(record)}))
+        .unwrap()
+    };
+    let mut history = History::default()
+        .append("root", &[], BOOTSTRAP, BTreeMap::new())
+        .unwrap();
+    for id in ["source", "destination"] {
+        let record = Record::Stream(Stream::new(id, id, None, "host").unwrap());
+        let operation =
+            Operation::new(id, None, record.clone(), Actor::User, None, vec![]).unwrap();
+        let mut files = history.files().clone();
+        files.insert(
+            relative_record_path(&record).to_str().unwrap().into(),
+            bytes(&record),
+        );
+        let parent = history.tip().unwrap().to_owned();
+        history = history
+            .append(
+                id,
+                &[&parent],
+                &encode_operation(&operation, None).unwrap(),
+                files,
+            )
+            .unwrap();
+    }
+    let session = Session::new("conversation", "host", "source", "pi", "native", "Work").unwrap();
+    let record = Record::Session(session.clone());
+    let operation = Operation::new(
+        "session",
+        None,
+        record.clone(),
+        Actor::User,
+        Some("source".into()),
+        vec![],
+    )
+    .unwrap();
+    let legacy = "sessions/source/host/conversation.yaml";
+    let canonical = "conversations/host/conversation.yaml";
+    let mut files = history.files().clone();
+    files.insert(legacy.into(), bytes(&record));
+    history = history
+        .append(
+            "session",
+            &["destination"],
+            &encode_operation(&operation, None).unwrap(),
+            files,
+        )
+        .unwrap();
+
+    let mut edited = session.clone();
+    edited.title = "Edited".into();
+    let edit = Operation::new(
+        "edit",
+        Some(record),
+        Record::Session(edited.clone()),
+        Actor::User,
+        Some("source".into()),
+        vec![],
+    )
+    .unwrap();
+    let mut files = history.files().clone();
+    files.insert(legacy.into(), bytes(edit.after()));
+    history = history
+        .append(
+            "edit",
+            &["session"],
+            &encode_operation(&edit, None).unwrap(),
+            files,
+        )
+        .unwrap();
+    assert!(!history.files().contains_key(canonical));
+
+    let movement = Operation::reassociate(
+        "move",
+        &edited,
+        history.catalog().stream("source").unwrap(),
+        "destination",
+        "source".into(),
+    )
+    .unwrap();
+    let message = encode_operation(&movement, None).unwrap();
+    let mut files = history.files().clone();
+    files.remove(legacy);
+    files.insert(canonical.into(), bytes(movement.after()));
+    let valid = history
+        .clone()
+        .append("move", &["edit"], &message, files.clone())
+        .unwrap();
+    assert_eq!(valid.catalog().sessions().len(), 1);
+    assert_eq!(
+        valid
+            .catalog()
+            .session("host", "conversation")
+            .unwrap()
+            .stream_id,
+        "destination"
+    );
+    assert_eq!(valid.operation("move").unwrap().operation, movement);
+
+    let mut unrelated = files.clone();
+    unrelated
+        .get_mut("streams/source.yaml")
+        .unwrap()
+        .push(b'\n');
+    assert!(
+        history
+            .clone()
+            .append("bad", &["edit"], &message, unrelated)
+            .is_err()
+    );
+    let mut retained = files.clone();
+    retained.insert(legacy.into(), history.files()[legacy].clone());
+    assert!(
+        history
+            .clone()
+            .append("bad", &["edit"], &message, retained)
+            .is_err()
+    );
+    let mut lateral = files;
+    let target = lateral.remove(canonical).unwrap();
+    lateral.insert("sessions/destination/host/conversation.yaml".into(), target);
+    assert!(history.append("bad", &["edit"], &message, lateral).is_err());
+}
+
+#[test]
 fn named_changes_keep_original_intent_and_provenance() {
     let local = creation("create");
     let Replay::Ready { catalog, changes } = replay(&local, &History::default()).unwrap() else {

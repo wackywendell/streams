@@ -225,6 +225,40 @@ fn catalog_canonicalization_preserves_semantic_reference_order() {
 }
 
 #[test]
+fn session_membership_history_preserves_legacy_wire_and_allows_revisits() {
+    let mut session = Session::new("session", "host", "a", "pi", "native", "Session").unwrap();
+    let legacy = record_to_data(&Record::Session(session.clone()));
+    assert!(legacy.get("previous_stream_ids").is_none());
+    assert_eq!(
+        record_from_data(RecordKind::Session, &legacy).unwrap(),
+        Record::Session(session.clone())
+    );
+    session.previous_stream_ids = vec!["a".into(), "b".into()];
+    let streams = ["a", "b"].map(|id| Stream::new(id, id, None, "host").unwrap());
+    let catalog = Catalog::new(streams.to_vec(), vec![session.clone()], vec![]).unwrap();
+    assert_eq!(catalog.sessions(), &[session.clone()]);
+    let wire = record_to_data(&Record::Session(session.clone()));
+    assert_eq!(wire["previous_stream_ids"], json!(["a", "b"]));
+    assert_eq!(
+        record_from_data(RecordKind::Session, &wire).unwrap(),
+        Record::Session(session.clone())
+    );
+    for history in [
+        vec![""],
+        vec![" "],
+        vec!["bad\0id"],
+        vec!["b", "b"],
+        vec!["a"],
+    ] {
+        session.previous_stream_ids = history.into_iter().map(String::from).collect();
+        assert!(session.validate().is_err());
+    }
+    // A current-Stream projection need not load all historical Stream records.
+    session.previous_stream_ids = vec!["earlier".into()];
+    assert!(Catalog::new(vec![streams[0].clone()], vec![session], vec![]).is_ok());
+}
+
+#[test]
 fn snapshot_compare_and_swap_and_path_encoding() {
     let dir = tempfile::tempdir().unwrap();
     let store = YamlStore::new(dir.path());

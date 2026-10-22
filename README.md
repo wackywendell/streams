@@ -44,7 +44,20 @@ The supported settings are `catalog.root`, `frontend.mode`, `sync.stream_seconds
 
 Configuration is host-local at `$XDG_CONFIG_HOME/streams/config.json`; each CLI process reads it anew. Unset XDG variables use `~/.local/share` and `~/.config`. Sync strategy, remote and branch belong to catalog setup, not these settings. Changing `catalog.root` selects another catalog; initialise it before use.
 
-There is no legacy-format compatibility or automatic migration. Start new streams or migrate old scratch material manually. An existing `none` catalog can explicitly adopt local Git backing in place:
+Pre-catalog scratch formats require manual migration. Sessions now use stable
+`conversations/<host>/<id>.yaml` files and Session-keyed directory selections.
+Earlier Stream-partitioned records remain readable without rewriting them;
+membership moves relocate them without keeping duplicate copies. Repository URLs
+and local directory intent remain attached to the conversation across Stream
+moves. Ordinary reads do not perform migrations. These are library primitives;
+automatic native adoption and captured-context result admission remain inactive.
+
+This checkout remains Rust-only. Other clients must support the new paths before
+sharing newly written state. Ambiguous legacy YAML scalars such as `title: 1e3`
+require manual quoting. The temporary format bridges live in
+[`yaml_store.rs`](src/yaml_store.rs) and [`locations.rs`](src/runtime/locations.rs).
+
+An existing `none` catalog can explicitly adopt local Git backing in place:
 
 ```sh
 streams init --sync git --adopt --json

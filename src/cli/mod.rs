@@ -742,29 +742,25 @@ impl App {
                     let stream = catalog
                         .stream(&session.stream_id)
                         .ok_or_else(|| CliError::message("Session stream is missing"))?;
-                    let alias = repository.as_deref().or_else(|| {
-                        session
-                            .checkout
-                            .as_ref()
-                            .map(|checkout| checkout.repository.as_str())
-                    });
-                    let url = alias
-                        .map(|alias| {
+                    let portable_url = session
+                        .checkout
+                        .as_ref()
+                        .and_then(|checkout| checkout.repository_url(stream));
+                    let url = match repository.as_deref() {
+                        Some(alias) => Some(
                             stream
                                 .repositories
                                 .get(alias)
-                                .map(|r| r.url.as_str())
+                                .map(|repo| repo.url.as_str())
                                 .ok_or_else(|| {
                                     CliError::message(format!(
                                         "unknown repository alias: {alias:?}"
                                     ))
-                                })
-                        })
-                        .transpose()?;
-                    if let (Some(selected), Some(portable)) =
-                        (repository.as_deref(), session.checkout.as_ref())
-                        && selected != portable.repository
-                    {
+                                })?,
+                        ),
+                        None => portable_url,
+                    };
+                    if repository.is_some() && portable_url.is_some() && url != portable_url {
                         return Err(CliError::message(
                             "selected repository differs from the Session's portable checkout",
                         ));

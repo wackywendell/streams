@@ -8,7 +8,8 @@ use strum::{AsRefStr, Display, EnumString, VariantNames};
 
 use crate::codec::{record_from_data, record_to_data};
 use crate::model::{
-    Catalog, NamingMode, Record, RecordKey, RecordKind, Status, ValidationError, check_text,
+    Catalog, NamingMode, Record, RecordKey, RecordKind, Session, Status, Stream, ValidationError,
+    check_text,
 };
 
 /// Who supplied the intent. Automatic writes cannot change lifecycle or manual naming modes.
@@ -20,6 +21,8 @@ use crate::model::{
 pub enum Actor {
     User,
     Automatic,
+    /// Library-only verified native membership transitions, never model-generated intent.
+    Native,
 }
 
 /// Domain acceptance only; it says nothing about persistence or publication.
@@ -158,6 +161,33 @@ pub struct Operation {
     inputs: Vec<Record>,
 }
 
+fn reassociated_session(
+    before: &Session,
+    source: &Stream,
+    destination: &str,
+) -> Result<Session, ValidationError> {
+    source.validate()?;
+    if source.id != before.stream_id {
+        return Err(ValidationError::new(
+            "reassociation source does not match captured membership",
+        ));
+    }
+    let mut after = before.clone();
+    if let Some(checkout) = &mut after.checkout {
+        let url = checkout
+            .repository_url(source)
+            .ok_or_else(|| ValidationError::new("unknown source checkout repository"))?;
+        if destination != before.stream_id && checkout.repository_url.is_none() {
+            checkout.repository_url = Some(url.into());
+        }
+    }
+    if destination != before.stream_id {
+        after.previous_stream_ids.push(before.stream_id.clone());
+        after.stream_id = destination.into();
+    }
+    Ok(after)
+}
+
 impl Operation {
     pub fn id(&self) -> &str {
         &self.id
@@ -214,7 +244,13 @@ impl Operation {
         authorities: &'a BTreeMap<String, Authority>,
     ) -> Option<&'a Authority> {
         match &self.after {
-            Record::Session(s) => authorities.get(&s.stream_id),
+            Record::Session(s) => {
+                let source = match (&self.before, self.actor) {
+                    (Some(Record::Session(before)), Actor::Native) => &before.stream_id,
+                    _ => &s.stream_id,
+                };
+                authorities.get(source)
+            }
             Record::Stream(s) => authorities.get(&s.id),
             Record::Host(_) => None,
         }
@@ -231,6 +267,25 @@ impl Operation {
             )),
             _ => None,
         }
+    }
+
+    /// Capture a verified membership transition without changing conversation work or identity.
+    pub fn reassociate(
+        id: impl Into<String>,
+        before: &Session,
+        source: &Stream,
+        destination: &str,
+        ownership_token: String,
+    ) -> Result<Self, ValidationError> {
+        let after = reassociated_session(before, source, destination)?;
+        Self::new(
+            id,
+            Some(Record::Session(before.clone())),
+            Record::Session(after),
+            Actor::Native,
+            Some(ownership_token),
+            vec![Record::Stream(source.clone())],
+        )
     }
 
     /// Reject identity/ownership moves and edits the actor is not allowed to make.
@@ -279,10 +334,17 @@ impl Operation {
                 ));
             }
             if let (Record::Session(bs), Record::Session(as_)) = (b, &after) {
-                if bs.stream_id != as_.stream_id {
-                    return Err(ValidationError::new(
-                        "generic edits cannot change session.stream_id",
-                    ));
+                if actor != Actor::Native {
+                    if bs.stream_id != as_.stream_id {
+                        return Err(ValidationError::new(
+                            "generic edits cannot change session.stream_id",
+                        ));
+                    }
+                    if bs.previous_stream_ids != as_.previous_stream_ids {
+                        return Err(ValidationError::new(
+                            "generic edits cannot change session.previous_stream_ids",
+                        ));
+                    }
                 }
                 if bs.harness != as_.harness {
                     return Err(ValidationError::new(
@@ -320,6 +382,24 @@ impl Operation {
             ownership_token,
             inputs,
         };
+        if op.actor == Actor::Native {
+            let (Some(Record::Session(before)), Record::Session(after)) = (&op.before, &op.after)
+            else {
+                return Err(ValidationError::new(
+                    "native operations require an existing session",
+                ));
+            };
+            let [Record::Stream(source)] = op.inputs.as_slice() else {
+                return Err(ValidationError::new(
+                    "native reassociation requires its captured source Stream",
+                ));
+            };
+            if *after != reassociated_session(before, source, &after.stream_id)? {
+                return Err(ValidationError::new(
+                    "native operations may only reassociate session membership",
+                ));
+            }
+        }
         if op.actor == Actor::Automatic {
             if op.before.is_none() {
                 if let Record::Stream(ref s) = op.after {
@@ -515,6 +595,9 @@ struct FieldPolicy {
 }
 
 pub(crate) fn agent_field_allowed(kind: RecordKind, actor: Actor, name: &str) -> bool {
+    if actor == Actor::Native {
+        return false;
+    }
     field_policy(kind, name).is_some_and(|policy| match policy.agent {
         AgentAccess::None => false,
         AgentAccess::User => actor == Actor::User,
@@ -592,8 +675,10 @@ record_fields! {
         ]
     },
     Session {
-        immutable: [id, host_id, stream_id, harness, harness_session_id],
+        immutable: [id, host_id, harness, harness_session_id],
         editable: [
+            stream_id: (false, None),
+            previous_stream_ids: (false, None),
             title: (true, Automatic),
             title_mode: (false, User),
             status: (true, Automatic),
@@ -625,6 +710,18 @@ fn guard_fields(operation: &Operation) -> BTreeSet<&'static str> {
             }
         }
         Record::Session(_) => {
+            // Generic edits must not carry a former Stream's authority across a move.
+            fields.extend(["stream_id", "previous_stream_ids"]);
+            if operation.actor == Actor::Native {
+                fields.extend([
+                    "stream_id",
+                    "previous_stream_ids",
+                    "host_id",
+                    "harness",
+                    "harness_session_id",
+                    "checkout",
+                ]);
+            }
             let state_group = ["state", "state_short", "remaining", "status"];
             if fields.iter().any(|f| state_group.contains(f)) {
                 fields.extend(state_group);
@@ -697,6 +794,18 @@ pub fn reconcile(
     {
         return refuse("session stream does not exist", &["stream_id"], false);
     }
+    if let Record::Session(s) = after
+        && operation.actor == Actor::Native
+        && catalog
+            .stream(&s.stream_id)
+            .is_some_and(|stream| stream.owner_host_id != s.host_id)
+    {
+        return refuse(
+            "destination Stream ownership is unavailable on the conversation's host",
+            &["ownership"],
+            false,
+        );
+    }
     if let Some(ref required_token) = operation.ownership_token {
         let host_id = match after {
             Record::Session(s) => &s.host_id,
@@ -727,6 +836,22 @@ pub fn reconcile(
         }
         (Some(before), Some(cur)) => {
             let changed = operation.changed_fields();
+            if operation.actor == Actor::Native {
+                let guards = guard_fields(operation);
+                if guards
+                    .iter()
+                    .all(|field| field_eq(cur, after, field) == Some(true))
+                {
+                    return Reconciliation::no_change(&operation.id, "");
+                }
+                let conflicts: Vec<_> = guards
+                    .into_iter()
+                    .filter(|field| field_eq(cur, before, field) != Some(true))
+                    .collect();
+                if !conflicts.is_empty() {
+                    return refuse("native membership changed since capture", &conflicts, false);
+                }
+            }
             if operation.actor == Actor::Automatic {
                 match cur {
                     Record::Stream(cs) => {
@@ -912,10 +1037,18 @@ mod field_policy_tests {
             ),
             (RecordKind::Session, "title_mode", false, true, false),
             (RecordKind::Session, "checkout", true, false, false),
+            (
+                RecordKind::Session,
+                "stream_id previous_stream_ids",
+                false,
+                false,
+                false,
+            ),
             (RecordKind::Host, "label checked_at", true, false, false),
         ] {
             for name in names.split_whitespace() {
                 assert_eq!(field_policy(kind, name).unwrap().automatic, automatic);
+                assert!(!agent_field_allowed(kind, Actor::Native, name));
                 assert_eq!(agent_field_allowed(kind, Actor::User, name), user_agent);
                 assert_eq!(
                     agent_field_allowed(kind, Actor::Automatic, name),
@@ -927,7 +1060,7 @@ mod field_policy_tests {
             (RecordKind::Stream, "id unknown owner"),
             (
                 RecordKind::Session,
-                "id host_id stream_id harness harness_session_id unknown",
+                "id host_id harness harness_session_id unknown",
             ),
             (RecordKind::Host, "id unknown"),
         ] {

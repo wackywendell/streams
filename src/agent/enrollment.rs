@@ -75,6 +75,11 @@ impl EnrollmentRequest {
         require_object(&value, "agent enrollment")?;
         let wire: EnrollmentWire = serde_json::from_value(value)
             .map_err(|e| ValidationError::new(format!("invalid agent enrollment: {e}")))?;
+        if wire.actor == Actor::Native {
+            return Err(ValidationError::new(
+                "native operations are library-owned, not enrollment requests",
+            ));
+        }
         check_text(&wire.catalog_source, "catalog_source", false)?;
         if wire.catalog_source != catalog_source {
             return Err(ValidationError::new(

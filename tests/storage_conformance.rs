@@ -12,6 +12,194 @@ fn stream(id: &str, title: &str) -> Record {
     Record::Stream(Stream::new(id, title, None, "host").unwrap())
 }
 
+fn legacy_session(store: &YamlStore) -> (Record, std::path::PathBuf) {
+    let session = Record::Session(
+        Session::new("conversation", "host", "source", "pi", "native", "Work").unwrap(),
+    );
+    let legacy = store.root.join("sessions/source/host/conversation.yaml");
+    store
+        .with_transaction::<_, StorageError>(|tx| {
+            for record in [
+                stream("source", "Source"),
+                stream("destination", "Destination"),
+                session.clone(),
+            ] {
+                tx.save(&record, &tx.read()?)?;
+            }
+            std::fs::create_dir_all(legacy.parent().unwrap()).unwrap();
+            let canonical = store.root.join(store.record_path(&session));
+            std::fs::rename(&canonical, &legacy).unwrap();
+            std::fs::remove_dir(canonical.parent().unwrap()).unwrap();
+            std::fs::remove_dir(canonical.parent().unwrap().parent().unwrap()).unwrap();
+            Ok(())
+        })
+        .unwrap();
+    (session, legacy)
+}
+
+#[test]
+fn legacy_membership_move_relocates_one_session_and_preserves_stale_save_checks() {
+    let dir = tempfile::tempdir().unwrap();
+    let store = YamlStore::new(dir.path());
+    let (original, legacy) = legacy_session(&store);
+    let canonical = store
+        .root
+        .join(streams_temper::yaml_store::relative_record_path(&original));
+    assert!(legacy.is_file());
+    assert!(!canonical.exists());
+    store
+        .with_transaction::<_, StorageError>(|tx| {
+            let before = tx.read()?;
+            assert_eq!(before.catalog.get(&original.key()), Some(original.clone()));
+            let Record::Session(mut moved) = original.clone() else {
+                unreachable!()
+            };
+            moved.stream_id = "destination".into();
+            let moved = Record::Session(moved);
+            let after = tx.save(&moved, &before)?;
+            assert_eq!(after.catalog.sessions().len(), 1);
+            assert_eq!(after.catalog.get(&original.key()), Some(moved.clone()));
+            assert!(canonical.is_file());
+            assert!(!legacy.exists());
+            assert_ne!(
+                after.revisions[&original.key()],
+                before.revisions[&original.key()]
+            );
+            assert!(
+                tx.save(&original, &before)
+                    .unwrap_err()
+                    .is_revision_conflict()
+            );
+            assert_eq!(tx.read()?, after);
+            assert!(!legacy.exists());
+            Ok(())
+        })
+        .unwrap();
+}
+
+#[test]
+fn legacy_reads_and_same_membership_updates_do_not_promote_records() {
+    let dir = tempfile::tempdir().unwrap();
+    let store = YamlStore::new(dir.path());
+    let (original, legacy) = legacy_session(&store);
+    let canonical = store
+        .root
+        .join(streams_temper::yaml_store::relative_record_path(&original));
+    let bytes = std::fs::read(&legacy).unwrap();
+    let before = store.with_inspection(|tx| tx.read()).unwrap();
+    assert_eq!(std::fs::read(&legacy).unwrap(), bytes);
+    assert!(!canonical.exists());
+    assert_eq!(store.root.join(store.record_path(&original)), legacy);
+    let Record::Session(mut edited) = original else {
+        unreachable!()
+    };
+    edited.title = "Updated title".into();
+    let edited = Record::Session(edited);
+    let after = store
+        .with_transaction(|tx| tx.save(&edited, &before))
+        .unwrap();
+    assert_eq!(after.catalog.get(&edited.key()), Some(edited));
+    assert_eq!(after.catalog.sessions().len(), 1);
+    assert!(legacy.is_file());
+    assert!(!canonical.exists());
+}
+
+#[test]
+fn failed_replacement_after_relocation_is_uncertain_and_keeps_original_bytes() {
+    let dir = tempfile::tempdir().unwrap();
+    let store = YamlStore::new(dir.path());
+    let (original, legacy) = legacy_session(&store);
+    let canonical = store
+        .root
+        .join(streams_temper::yaml_store::relative_record_path(&original));
+    store
+        .with_transaction::<_, StorageError>(|tx| {
+            let before = tx.read()?;
+            let bytes = std::fs::read(&legacy).unwrap();
+            // The rename succeeds, but atomic replacement cannot create a staging file.
+            std::fs::remove_dir(store.root.join(".catalog-staging")).unwrap();
+            std::fs::write(store.root.join(".catalog-staging"), "blocked").unwrap();
+            let Record::Session(mut moved) = original.clone() else {
+                unreachable!()
+            };
+            moved.stream_id = "destination".into();
+            let error = tx.save(&Record::Session(moved), &before).unwrap_err();
+            assert!(error.is_uncertain());
+            assert!(!error.is_revision_conflict());
+            assert!(!legacy.exists());
+            assert_eq!(std::fs::read(&canonical).unwrap(), bytes);
+            assert_eq!(tx.read()?, before);
+            Ok(())
+        })
+        .unwrap();
+}
+
+#[test]
+fn session_paths_validate_host_identity_and_legacy_membership() {
+    let record = Record::Session(
+        Session::new("conversation", "host", "source", "pi", "native", "Work").unwrap(),
+    );
+    let bytes = serde_json::to_vec(&json!({
+        "version": 1, "revision": "fixture", "kind": "session",
+        "record": streams_temper::codec::record_to_data(&record)
+    }))
+    .unwrap();
+    for path in [
+        "conversations/host/conversation.yaml",
+        "sessions/source/host/conversation.yaml",
+    ] {
+        assert_eq!(YamlStore::decode_record(path, &bytes).unwrap(), record);
+    }
+    for path in [
+        "conversations/other/conversation.yaml",
+        "conversations/host/other.yaml",
+        "sessions/destination/host/conversation.yaml",
+        "sessions/source/other/conversation.yaml",
+    ] {
+        assert!(YamlStore::decode_record(path, &bytes).is_err(), "{path}");
+    }
+}
+
+#[test]
+fn relocation_boundary_retains_original_record_and_revision_after_interruption() {
+    let dir = tempfile::tempdir().unwrap();
+    let store = YamlStore::new(dir.path());
+    let (original, legacy) = legacy_session(&store);
+    let canonical = store
+        .root
+        .join(streams_temper::yaml_store::relative_record_path(&original));
+    store
+        .with_transaction::<_, StorageError>(|tx| {
+            let before = tx.read()?;
+            // Simulate termination after the atomic rename, before record replacement.
+            std::fs::create_dir_all(canonical.parent().unwrap()).unwrap();
+            std::fs::rename(&legacy, &canonical).unwrap();
+            assert_eq!(tx.read()?, before);
+            let Record::Session(mut changed) = original.clone() else {
+                unreachable!()
+            };
+            changed.title = "Continued work".into();
+            let after = tx.save(&Record::Session(changed), &before)?;
+            assert_eq!(after.catalog.sessions().len(), 1);
+            assert!(!legacy.exists());
+            Ok(())
+        })
+        .unwrap();
+}
+
+#[test]
+fn duplicate_session_copies_across_storage_layouts_are_rejected() {
+    let dir = tempfile::tempdir().unwrap();
+    let store = YamlStore::new(dir.path());
+    let (original, legacy) = legacy_session(&store);
+    let canonical = store
+        .root
+        .join(streams_temper::yaml_store::relative_record_path(&original));
+    std::fs::create_dir_all(canonical.parent().unwrap()).unwrap();
+    std::fs::copy(&legacy, canonical).unwrap();
+    assert!(store.with_transaction(|tx| tx.read()).is_err());
+}
+
 fn storage_laws(store: &impl Store) {
     let empty = store.with_transaction(|tx| tx.read()).unwrap();
     assert!(empty.catalog.records().is_empty());

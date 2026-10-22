@@ -176,6 +176,32 @@ fn host_updates_reject_even_empty_changes_after_the_source_fence() {
 }
 
 #[test]
+fn agents_cannot_select_native_actor_or_edit_membership() {
+    let session = Record::Session(
+        streams_temper::model::Session::new("session", "host", "work", "pi", "native", "Session")
+            .unwrap(),
+    );
+    for before in [&session, &stream()] {
+        let wire = request(before, json!({}), Actor::Native);
+        assert_eq!(
+            parse_update(&wire.to_string(), "physical-source")
+                .unwrap_err()
+                .to_string(),
+            "agent updates cannot use native actor",
+        );
+    }
+    for actor in [Actor::User, Actor::Automatic] {
+        for changes in [
+            json!({"stream_id": "elsewhere"}),
+            json!({"previous_stream_ids": ["old"]}),
+        ] {
+            let wire = request(&session, changes, actor);
+            assert!(parse_update(&wire.to_string(), "physical-source").is_err());
+        }
+    }
+}
+
+#[test]
 fn duplicate_json_keys_and_malformed_captures_are_not_silently_accepted() {
     let wire = request(&stream(), json!({}), Actor::User).to_string();
     let duplicate = wire.replace(

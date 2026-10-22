@@ -116,6 +116,17 @@ fn enrollment_parser_and_constructors_share_typed_identity_and_naming_rules() {
 }
 
 #[test]
+fn enrollment_rejects_native_actor_even_when_no_records_would_be_created() {
+    let mut request = enrollment();
+    request["actor"] = json!("native");
+    request["stream_id"] = json!("effort");
+    assert!(EnrollmentRequest::parse(&request.to_string(), "physical-source").is_err());
+    reject(&context(), "enroll", &request);
+    request["stream"] = json!({"title": "New"});
+    reject(&empty(), "enroll", &request);
+}
+
+#[test]
 fn effort_and_preview_ids_use_python_ascii_json_and_separate_namespaces() {
     let host = "høst";
     let native = "nâtive/😀\u{7f}";
@@ -205,6 +216,36 @@ fn apply_preserves_supplied_order_and_does_not_modify_its_source() {
     );
     assert_eq!(result["catalog"]["checkouts"], capture["checkouts"]);
     assert_eq!(result["catalog"]["native"], capture["native"]);
+}
+
+#[test]
+fn moved_primary_and_sibling_sessions_preview_without_loading_past_streams() {
+    let mut capture = context();
+    capture["session"]["previous_stream_ids"] = json!(["old-primary"]);
+    capture["sessions"][1] = capture["session"].clone();
+    capture["sessions"][0]["previous_stream_ids"] = json!(["old-sibling"]);
+    let request = update(
+        &capture,
+        "session",
+        json!({"remaining": "Next"}),
+        Actor::Automatic,
+    );
+    let projected = project(&capture, "apply", &request);
+    assert_eq!(projected["catalog"]["session"]["remaining"], "Next");
+    assert_eq!(
+        projected["catalog"]["session"]["previous_stream_ids"],
+        json!(["old-primary"])
+    );
+    assert_eq!(projected["catalog"]["sessions"][0], capture["sessions"][0]);
+    let request = update(
+        &projected["catalog"],
+        "stream",
+        json!({"goal": "Refined"}),
+        Actor::Automatic,
+    );
+    let projected = project(&projected["catalog"], "apply", &request);
+    assert_eq!(projected["catalog"]["stream"]["goal"], "Refined");
+    assert_eq!(projected["catalog"]["sessions"][0], capture["sessions"][0]);
 }
 
 #[test]

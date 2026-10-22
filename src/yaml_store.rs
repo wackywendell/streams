@@ -37,13 +37,27 @@ pub fn encode_component(id: &str) -> String {
 pub fn relative_record_path(record: &Record) -> PathBuf {
     let name = format!("{}.yaml", encode_component(record.key().id()));
     match record {
-        Record::Session(session) => PathBuf::from("sessions")
-            .join(encode_component(&session.stream_id))
+        Record::Session(session) => PathBuf::from("conversations")
             .join(encode_component(&session.host_id))
             .join(name),
         Record::Stream(_) => PathBuf::from("streams").join(name),
         Record::Host(_) => PathBuf::from("hosts").join(name),
     }
+}
+
+/// Canonical identity-based path followed by the legacy Stream-partitioned path.
+/// Legacy files remain readable and are relocated atomically on a membership move.
+pub(crate) fn record_paths(record: &Record) -> Vec<PathBuf> {
+    let mut paths = vec![relative_record_path(record)];
+    if let Record::Session(session) = record {
+        paths.push(
+            PathBuf::from("sessions")
+                .join(encode_component(&session.stream_id))
+                .join(encode_component(&session.host_id))
+                .join(format!("{}.yaml", encode_component(&session.id))),
+        );
+    }
+    paths
 }
 
 #[derive(Serialize, Deserialize)]
@@ -139,9 +153,13 @@ impl YamlStore {
         Self { root: abs }
     }
 
-    /// Returns a path relative to this store, not an absolute filesystem path.
+    /// Returns the existing physical location, or the canonical path for a new record.
+    /// The caller's snapshot validates files before any storage effects.
     pub fn record_path(&self, record: &Record) -> PathBuf {
-        relative_record_path(record)
+        record_paths(record)
+            .into_iter()
+            .find(|path| self.root.join(path).exists())
+            .unwrap_or_else(|| relative_record_path(record))
     }
 
     /// Check schema, identity and canonical relative location before accepting file bytes.
@@ -173,10 +191,10 @@ impl YamlStore {
             )));
         }
         let record = record_from_data(envelope.kind, &envelope.record).map_err(map_err)?;
-        let expected_path = relative_record_path(&record)
-            .to_string_lossy()
-            .replace('\\', "/");
-        if path != expected_path {
+        if !record_paths(&record)
+            .iter()
+            .any(|candidate| path == candidate.to_string_lossy().replace('\\', "/"))
+        {
             return Err(map_err(ValidationError::new(format!(
                 "record identity does not match its physical location: {path}"
             ))));
@@ -308,6 +326,7 @@ impl Transaction for YamlTransaction {
             ".catalog-staging",
             "streams",
             "sessions",
+            "conversations",
             "hosts",
         ]
         .into();
@@ -443,7 +462,12 @@ impl YamlTransaction {
             Ok(())
         }
         let mut out = Vec::new();
-        for (name, depth) in [("streams", 0), ("sessions", 2), ("hosts", 0)] {
+        for (name, depth) in [
+            ("streams", 0),
+            ("sessions", 2),
+            ("conversations", 1),
+            ("hosts", 0),
+        ] {
             collect(&self.root.join(name), depth, &mut out)?;
         }
         Ok(out)
@@ -494,12 +518,38 @@ impl YamlTransaction {
         let envelope = serde_json::to_value(envelope).expect("record envelope is JSON-compatible");
         let yaml_text = serde_json::to_string_pretty(&envelope)
             .map_err(|e| StorageError::new(format!("cannot save catalog record: {e}")))?;
-        let path = self.root.join(relative_record_path(record));
+        let store = YamlStore::new(&self.root);
+        let path = self.root.join(store.record_path(record));
+        let mut relocated = false;
+        if let Some(before) = expected.catalog.get(&key) {
+            let previous = self.root.join(store.record_path(&before));
+            if previous != path {
+                // Move the original bytes before replacement so a crash never leaves
+                // competing copies of the same stable Session identity.
+                ensure_directory(path.parent().expect("record parent"), true)?;
+                fs::rename(&previous, &path).map_err(|e| {
+                    StorageError::new(format!("cannot relocate session record: {e}"))
+                })?;
+                relocated = true;
+                crate::file_io::sync_directory(path.parent().expect("record parent"))
+                    .and_then(|()| {
+                        crate::file_io::sync_directory(previous.parent().expect("record parent"))
+                    })
+                    .map_err(StorageError::after_write)?;
+            }
+        }
         atomic_write(
             &path,
             yaml_text.as_bytes(),
             &self.root.join(".catalog-staging"),
-        )?;
+        )
+        .map_err(|error| {
+            if relocated {
+                error.after_write()
+            } else {
+                error
+            }
+        })?;
         // A failed read after replacement cannot establish that the save failed.
         self.read().map_err(StorageError::after_write)
     }

@@ -269,7 +269,10 @@ impl Document {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct Checkout {
+    /// Legacy Stream-local label; an explicit URL takes precedence after reassociation.
     pub repository: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub repository_url: Option<String>,
     pub r#ref: String,
     #[serde(default = "checkout_directory")]
     pub directory_within_checkout: String,
@@ -284,6 +287,7 @@ impl Checkout {
     ) -> Result<Self, ValidationError> {
         let checkout = Self {
             repository: repository.into(),
+            repository_url: None,
             r#ref: r#ref.into(),
             directory_within_checkout: directory_within_checkout.into(),
         };
@@ -291,9 +295,22 @@ impl Checkout {
         Ok(checkout)
     }
 
-    /// Checks local fields; the catalog checks membership in the attached stream.
+    /// Resolve old aliases only while no independent repository URL has been recorded.
+    pub fn repository_url<'a>(&'a self, stream: &'a Stream) -> Option<&'a str> {
+        self.repository_url.as_deref().or_else(|| {
+            stream
+                .repositories
+                .get(&self.repository)
+                .map(|repo| repo.url.as_str())
+        })
+    }
+
+    /// Check portable checkout fields; the catalog resolves legacy repository aliases.
     pub fn validate(&self) -> Result<(), ValidationError> {
         check_text(&self.repository, "checkout.repository", false)?;
+        if let Some(url) = &self.repository_url {
+            check_text(url, "checkout.repository_url", false)?;
+        }
         check_text(&self.r#ref, "checkout.ref", false)?;
         check_relative_path(
             &self.directory_within_checkout,
@@ -424,13 +441,16 @@ impl Stream {
     }
 }
 
-/// A harness contribution attached to one stream; its ID is scoped to its host.
+/// A logical harness conversation across stream memberships; its ID is scoped to its host.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct Session {
     pub id: String,
     pub host_id: String,
     pub stream_id: String,
+    /// Ended memberships in transition order; revisiting a stream is allowed.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub previous_stream_ids: Vec<String>,
     pub harness: String,
     pub harness_session_id: String,
     pub title: String,
@@ -449,7 +469,7 @@ pub struct Session {
 }
 
 impl Session {
-    /// Creates an active contribution; stream and checkout relationships are catalog checks.
+    /// Creates an active conversation; stream and checkout relationships are catalog checks.
     pub fn new(
         id: impl Into<String>,
         host_id: impl Into<String>,
@@ -462,6 +482,7 @@ impl Session {
             id: id.into(),
             host_id: host_id.into(),
             stream_id: stream_id.into(),
+            previous_stream_ids: Vec::new(),
             harness: harness.into(),
             harness_session_id: harness_session_id.into(),
             title: title.into(),
@@ -475,7 +496,7 @@ impl Session {
         .validated()
     }
 
-    /// Returns this contribution unchanged after checking its local invariants.
+    /// Returns this conversation unchanged after checking its local invariants.
     pub fn validated(self) -> Result<Self, ValidationError> {
         self.validate()?;
         Ok(self)
@@ -486,6 +507,19 @@ impl Session {
         check_text(&self.id, "session.id", false)?;
         check_text(&self.host_id, "session.host_id", false)?;
         check_text(&self.stream_id, "session.stream_id", false)?;
+        for id in &self.previous_stream_ids {
+            check_text(id, "session.previous_stream_ids entry", false)?;
+        }
+        if self
+            .previous_stream_ids
+            .windows(2)
+            .any(|pair| pair[0] == pair[1])
+            || self.previous_stream_ids.last() == Some(&self.stream_id)
+        {
+            return Err(ValidationError::new(
+                "session membership transitions must change streams",
+            ));
+        }
         check_text(&self.harness, "session.harness", false)?;
         check_text(
             &self.harness_session_id,
@@ -504,7 +538,7 @@ impl Session {
         Ok(())
     }
 
-    /// Returns the host-scoped owned identity without copying contribution contents.
+    /// Returns the host-scoped owned identity without copying conversation contents.
     pub fn key(&self) -> RecordKey {
         RecordKey::Session {
             id: self.id.clone(),
@@ -696,6 +730,7 @@ impl Catalog {
         let stream_map: BTreeMap<&str, &Stream> =
             streams.iter().map(|s| (s.id.as_str(), s)).collect();
         for s in &sessions {
+            // Ended memberships are historical identities, not live foreign keys.
             let Some(stream) = stream_map.get(s.stream_id.as_str()) else {
                 return Err(ValidationError::new(format!(
                     "unknown session stream: {}",
@@ -703,7 +738,7 @@ impl Catalog {
                 )));
             };
             if let Some(ref co) = s.checkout
-                && !stream.repositories.contains_key(&co.repository)
+                && co.repository_url(stream).is_none()
             {
                 return Err(ValidationError::new(format!(
                     "unknown checkout repository: {}",

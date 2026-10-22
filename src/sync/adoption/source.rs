@@ -7,7 +7,7 @@ use std::path::Path;
 use crate::storage::{Snapshot, Transaction};
 use crate::sync::local;
 use crate::sync::state::{RepairRequired, State};
-use crate::yaml_store::relative_record_path;
+use crate::yaml_store::YamlStore;
 
 use super::repair;
 
@@ -60,7 +60,7 @@ impl Source {
 fn record_files(root: &Path, snapshot: &Snapshot) -> Result<Files, RepairRequired> {
     let mut files = BTreeMap::new();
     for record in snapshot.catalog.records() {
-        let path = relative_record_path(&record);
+        let path = YamlStore::new(root).record_path(&record);
         files.insert(
             path.to_str()
                 .ok_or_else(|| repair("record path must be UTF-8"))?
@@ -92,8 +92,8 @@ fn bookkeeping(root: &Path, state: &State<'_>) -> Result<Bookkeeping, RepairRequ
 mod tests {
     use super::*;
     use crate::codec::record_to_data;
-    use crate::model::{Record, Stream};
-    use crate::yaml_store::YamlStore;
+    use crate::model::{Record, Session, Stream};
+    use crate::yaml_store::relative_record_path;
     use serde_json::json;
 
     fn seed(root: &Path) {
@@ -145,6 +145,34 @@ mod tests {
                     );
                 }
                 source.check_unchanged(dir.path(), tx)
+            })
+            .unwrap();
+    }
+
+    #[test]
+    fn legacy_session_capture_preserves_existing_path_and_exact_bytes() {
+        let dir = tempfile::tempdir().unwrap();
+        YamlStore::new(dir.path())
+            .with_transaction::<_, RepairRequired>(|tx| {
+                seed(dir.path());
+                let record = Record::Session(
+                    Session::new("session", "host", "work", "pi", "native", "Session").unwrap(),
+                );
+                let path = "sessions/work/host/session.yaml";
+                fs::create_dir_all(dir.path().join("sessions/work/host")).unwrap();
+                let mut bytes = serde_json::to_vec_pretty(&json!({
+                    "version": 1, "revision": "legacy", "kind": "session",
+                    "record": record_to_data(&record)
+                }))
+                .unwrap();
+                bytes.extend_from_slice(b"\n# preserve this legacy formatting\n");
+                fs::write(dir.path().join(path), &bytes).unwrap();
+                let source = Source::capture(dir.path(), tx)?;
+                assert_eq!(source.files[path], bytes);
+                assert!(!source.files.contains_key("conversations/host/session.yaml"));
+                source.check_unchanged(dir.path(), tx)?;
+                assert_eq!(fs::read(dir.path().join(path)).unwrap(), bytes);
+                Ok(())
             })
             .unwrap();
     }

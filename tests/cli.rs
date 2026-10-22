@@ -237,6 +237,100 @@ fn session_attach_captures_explicit_native_id_and_keeps_local_directory_state_pr
 }
 
 #[test]
+fn membership_move_keeps_checkout_selection_and_never_uses_destination_alias_url() {
+    use streams_temper::{operations::Operation, sync::local::LocalCatalog, yaml_store::YamlStore};
+    let f = Fixture::new();
+    f.init();
+    let initialized = Command::new("git")
+        .args(["init", "--initial-branch=main"])
+        .arg(&f.cwd)
+        .env("GIT_CONFIG_GLOBAL", f.home.join("gitconfig"))
+        .env("GIT_CONFIG_NOSYSTEM", "1")
+        .output()
+        .unwrap();
+    assert!(initialized.status.success());
+    let source = f.create("Source");
+    let destination = f.create("Destination");
+    let source_id = source["id"].as_str().unwrap();
+    let destination_id = destination["id"].as_str().unwrap();
+    let source_url = "https://example.test/original.git";
+    f.ok(&["update", source_id, "--add-repository", "app", source_url]);
+    let destination = f.ok(&[
+        "update",
+        destination_id,
+        "--add-repository",
+        "app",
+        "https://example.test/different.git",
+    ])["stream"]
+        .clone();
+    let attached = f.ok(&[
+        "session",
+        "attach",
+        source_id,
+        "--harness",
+        "pi",
+        "--session-id",
+        "native",
+        "--title",
+        "Work",
+        "--repository",
+        "app",
+        "--ref",
+        "main",
+    ]);
+    let session = &attached["session"];
+    let session_id = session["id"].as_str().unwrap();
+    let selected = f.ok(&["session", "directory", session_id])["directory"].clone();
+    let checkout_id = selected["checkout_id"].as_str().unwrap();
+    let backend = LocalCatalog::new(
+        YamlStore::new(f.root()),
+        session["host_id"].as_str().unwrap(),
+    )
+    .unwrap();
+    let snapshot = backend.snapshot().unwrap();
+    let before = snapshot
+        .catalog
+        .session(session["host_id"].as_str().unwrap(), session_id)
+        .unwrap();
+    let source = snapshot.catalog.stream(source_id).unwrap();
+    let token = backend.authority(source_id).unwrap().unwrap().token;
+    let operation = Operation::reassociate("move", before, source, destination_id, token).unwrap();
+    assert!(backend.save(&operation, None).unwrap().accepted());
+    assert_eq!(
+        f.ok(&["session", "directory", session_id])["directory"],
+        selected
+    );
+    let selected_again = f.ok(&[
+        "session",
+        "directory",
+        session_id,
+        "--checkout",
+        checkout_id,
+    ]);
+    assert_eq!(selected_again["directory"], selected);
+    let (code, _) = f.run(
+        &[
+            "session",
+            "directory",
+            session_id,
+            "--checkout",
+            checkout_id,
+            "--repository",
+            "app",
+        ],
+        None,
+    );
+    assert_eq!(code, 2);
+    assert_eq!(
+        f.ok(&["session", "directory", session_id])["directory"],
+        selected
+    );
+    let moved = f.ok(&["session", "show", session_id]);
+    assert_eq!(moved["session"]["checkout"]["repository_url"], source_url);
+    assert_eq!(f.ok(&["show", destination_id])["stream"], destination);
+}
+
+#[test]
 fn captured_apply_persists_stdin_and_rejects_wrong_source_without_enrollment() {
     let f = Fixture::new();
     f.init();
@@ -516,7 +610,7 @@ fn catalog_files(root: &Path) -> Vec<(PathBuf, Vec<u8>)> {
         }
     }
     let mut files = Vec::new();
-    for directory in ["streams", "sessions", "hosts"] {
+    for directory in ["streams", "sessions", "conversations", "hosts"] {
         let path = root.join(directory);
         if path.exists() {
             visit(root, &path, &mut files);

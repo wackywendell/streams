@@ -129,10 +129,10 @@ impl CardSnapshot {
             ));
         }
         if let Some(checkout) = &session.checkout
-            && !stream.repositories.contains_key(&checkout.repository)
+            && checkout.repository_url(&stream).is_none()
         {
             return Err(ValidationError::new(
-                "Viewing session checkout is not in its stream",
+                "Viewing session checkout has no repository URL or known alias",
             ));
         }
         for value in [

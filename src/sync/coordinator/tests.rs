@@ -17,7 +17,7 @@ use crate::model::Stream;
 use crate::operations::Actor;
 use crate::storage::Journal;
 use crate::sync::envelope::BOOTSTRAP;
-use crate::yaml_store::{YamlStore, relative_record_path};
+use crate::yaml_store::{YamlStore, record_paths, relative_record_path};
 use serde_json::{Map, Value, json};
 
 #[derive(Clone, Copy, PartialEq)]
@@ -90,7 +90,19 @@ impl Histories {
             let bytes = serde_json::to_vec(&json!({"version": 1, "revision": "fixture",
                 "kind": record.kind(), "record": record_to_data(record)}))
             .unwrap();
-            files.insert(relative_record_path(record).to_str().unwrap().into(), bytes);
+            let previous = history.catalog().get(&record.key()).and_then(|prior| {
+                record_paths(&prior)
+                    .into_iter()
+                    .find(|path| files.contains_key(path.to_str().unwrap()))
+            });
+            let path = record_paths(record)
+                .into_iter()
+                .find(|path| files.contains_key(path.to_str().unwrap()))
+                .unwrap_or_else(|| relative_record_path(record));
+            if let Some(previous) = previous.filter(|previous| previous != &path) {
+                files.remove(previous.to_str().unwrap());
+            }
+            files.insert(path.to_str().unwrap().into(), bytes);
         }
         let tip = format!("{:040x}", self.values.len() + 1);
         let parents: Vec<_> = base.into_iter().collect();

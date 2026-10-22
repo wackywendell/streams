@@ -63,8 +63,22 @@ test('StreamCli validates strict catalog fields and nullable document provenance
   const app=await read(value);
   assert.deepEqual(app.stream,value.stream);assert.deepEqual(app.session,value.session);
  }
+ for(const repository_url of [undefined,null,'https://example.test/original.git']) {
+  const value=structuredClone(initial);
+  value.session.checkout={repository:'old-app',ref:'topic',directory_within_checkout:'services/api'};
+  if(repository_url!==undefined)value.session.checkout.repository_url=repository_url;
+  const app=await read(value);assert.deepEqual(app.session,value.session);
+ }
+ for(const previous_stream_ids of [[],['earlier'],['a','b','a']]) {
+  const value=structuredClone(initial);value.session.previous_stream_ids=previous_stream_ids;
+  const app=await read(value);assert.deepEqual(app.session,value.session);
+ }
  for(const change of [
   value=>{value.session.title_mode='other';},
+  ...[null,'earlier',[42],[''],[' '],['a','a']].map(history=>value=>{value.session.previous_stream_ids=history;}),
+  value=>{value.session.previous_stream_ids=['earlier',value.session.stream_id];},
+  value=>{value.session.checkout={repository:'app',repository_url:42,ref:'topic',directory_within_checkout:'.'};},
+  value=>{value.session.checkout={repository:'app',repository_url:'',ref:'topic',directory_within_checkout:'.'};},
   value=>{value.stream.goal_mode='other';},
   value=>{value.stream.status=['active'];},
   value=>{value.host_id='';},

@@ -57,7 +57,11 @@ fn domain_enums_have_one_strict_wire_spelling() {
         (RecordKind::Session, "session"),
         (RecordKind::Stream, "stream"),
     ]);
-    roundtrip(&[(Actor::User, "user"), (Actor::Automatic, "automatic")]);
+    roundtrip(&[
+        (Actor::User, "user"),
+        (Actor::Automatic, "automatic"),
+        (Actor::Native, "native"),
+    ]);
     roundtrip(&[
         (DomainOutcome::Changes, "changes"),
         (DomainOutcome::NoChange, "no-change"),

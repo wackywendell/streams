@@ -7,7 +7,7 @@ use std::collections::{BTreeMap, BTreeSet};
 
 use crate::model::Catalog;
 use crate::operations::{Authority, Operation, Reconciliation, reconcile};
-use crate::yaml_store::{YamlStore, relative_record_path};
+use crate::yaml_store::{YamlStore, record_paths, relative_record_path};
 
 use super::baseline::{BASELINE, Baseline, decode_baseline};
 use super::envelope::{BOOTSTRAP, Origin, check_fingerprints, decode_operation, operation_digest};
@@ -164,12 +164,40 @@ impl History {
                 .filter(|k| files.get(*k) != self.files.get(*k))
                 .cloned()
                 .collect();
-            let expected_path = relative_record_path(operation.after())
-                .to_string_lossy()
-                .replace('\\', "/");
-            let mut expected_set = BTreeSet::new();
-            expected_set.insert(expected_path.clone());
-            if changed_paths != expected_set || !files.contains_key(&expected_path) {
+            let stored_path = |record: &crate::model::Record, tree: &BTreeMap<String, Vec<u8>>| {
+                let paths: Vec<_> = record_paths(record)
+                    .into_iter()
+                    .map(|path| path.to_string_lossy().replace('\\', "/"))
+                    .filter(|path| tree.contains_key(path))
+                    .collect();
+                (paths.len() == 1).then(|| paths[0].clone())
+            };
+            let expected_path = stored_path(&record, &files).ok_or_else(|| {
+                format!("operation {} has no unique stored target", operation.id())
+            })?;
+            let mut expected_set = BTreeSet::from([expected_path.clone()]);
+            if let Some(prior) = self.catalog.get(&record.key()) {
+                let previous_path = stored_path(&prior, &self.files).ok_or_else(|| {
+                    format!(
+                        "operation {} has no unique stored predecessor",
+                        operation.id()
+                    )
+                })?;
+                if previous_path != expected_path
+                    && (expected_path
+                        != relative_record_path(&record)
+                            .to_string_lossy()
+                            .replace('\\', "/")
+                        || files.contains_key(&previous_path))
+                {
+                    return Err(format!(
+                        "commit relocation does not match operation {}",
+                        operation.id()
+                    ));
+                }
+                expected_set.insert(previous_path);
+            }
+            if changed_paths != expected_set {
                 return Err(format!(
                     "commit changes do not match operation {}",
                     operation.id()

@@ -103,7 +103,7 @@ fn session_ids_use_the_exact_python_unicode_identity_preimage() {
 }
 
 #[test]
-fn sessions_are_physically_stream_partitioned_without_changing_logical_identity() {
+fn session_storage_identity_does_not_change_with_membership() {
     let temporary = tempfile::tempdir().unwrap();
     let store = YamlStore::new(temporary.path());
     let stream = Record::Stream(Stream::new("work/Ω", "Work", None, "host/A").unwrap());
@@ -124,7 +124,7 @@ fn sessions_are_physically_stream_partitioned_without_changing_logical_identity(
     let path = relative_record_path(&session);
     assert_eq!(
         path.to_str().unwrap(),
-        "sessions/work%2F%CE%A9/host%2F%41/native%2F%F0%9F%98%80.yaml"
+        "conversations/host%2F%41/native%2F%F0%9F%98%80.yaml"
     );
     assert!(temporary.path().join(&path).is_file());
     let bytes = std::fs::read(temporary.path().join(&path)).unwrap();
@@ -133,7 +133,11 @@ fn sessions_are_physically_stream_partitioned_without_changing_logical_identity(
         session
     );
     assert!(
-        YamlStore::decode_record("sessions/host%2F%41/native%2F%F0%9F%98%80.yaml", &bytes).is_err()
+        YamlStore::decode_record(
+            "conversations/another-host/native%2F%F0%9F%98%80.yaml",
+            &bytes
+        )
+        .is_err()
     );
     let Record::Session(mut moved) = session.clone() else {
         unreachable!()
@@ -141,11 +145,11 @@ fn sessions_are_physically_stream_partitioned_without_changing_logical_identity(
     moved.stream_id = "another-stream".into();
     let moved = Record::Session(moved);
     assert_eq!(session.key(), moved.key());
-    assert_ne!(relative_record_path(&session), relative_record_path(&moved));
+    assert_eq!(relative_record_path(&session), relative_record_path(&moved));
 }
 
 #[test]
-fn partitioned_session_scans_reject_symlinked_stream_directories() {
+fn session_scans_reject_symlinked_directories() {
     let temporary = tempfile::tempdir().unwrap();
     let outside = tempfile::tempdir().unwrap();
     std::fs::create_dir(temporary.path().join("sessions")).unwrap();

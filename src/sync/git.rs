@@ -226,8 +226,26 @@ impl Repository for LockedCatalog<'_> {
         store.with_transaction(|tx| -> Result<(), CatalogError> {
             for change in changes {
                 let (operation, origin, record) = (change.operation, change.origin, change.record);
-                tx.save(&record, &tx.read()?)?;
+                let before = tx.read()?;
+                let previous_path = before
+                    .catalog
+                    .get(&record.key())
+                    .map(|prior| store.record_path(&prior));
+                tx.save(&record, &before)?;
                 let path = store.record_path(&record);
+                if let Some(previous) = previous_path.filter(|previous| previous != &path) {
+                    self.git.run(
+                        &[
+                            "update-index",
+                            "--force-remove",
+                            "--",
+                            &previous.to_string_lossy(),
+                        ],
+                        None,
+                        Some(&index),
+                        &[0],
+                    )?;
+                }
                 let bytes = fs::read(root.join(&path))?;
                 let blob =
                     self.git
@@ -292,10 +310,19 @@ impl Repository for LockedCatalog<'_> {
         start: Option<&str>,
         message: &str,
     ) -> Result<String, CatalogError> {
+        let previous_path = expected
+            .catalog
+            .get(&record.key())
+            .map(|before| self.store.record_path(&before));
         self.tx.save(record, expected)?;
         let path = self.store.record_path(record);
-        let path = path.to_string_lossy();
-        self.git.run(&["add", "--", &path], None, None, &[0])?;
+        let mut paths = vec![path.to_string_lossy().into_owned()];
+        if let Some(previous) = previous_path.filter(|previous| previous != &path) {
+            paths.push(previous.to_string_lossy().into_owned());
+        }
+        let mut args = vec!["add", "--all", "--"];
+        args.extend(paths.iter().map(String::as_str));
+        self.git.run(&args, None, None, &[0])?;
         let tree = self.git.text(&["write-tree"], None, None, &[0])?;
         let commit = self.git.commit(&tree, message, start)?;
         let branch = format!("refs/heads/{}", self.config()?.branch());
