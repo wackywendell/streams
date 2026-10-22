@@ -73,6 +73,63 @@ fn config_marker_and_clear_failures_never_erase_repair_fence() {
 }
 
 #[test]
+fn physical_unlink_failure_reasserts_original_evidence_for_a_fresh_store() {
+    use crate::yaml_store::YamlStore;
+    use std::fs;
+
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join(".catalog-sync/save.json");
+    let config = GitConfig::new(None, "main", HOST).unwrap();
+    let original = YamlStore::new(dir.path())
+        .with_transaction(|tx| -> Result<_, StorageError> {
+            let state = State::from_journal(tx.journal());
+            let evidence =
+                json!({"adoption":{"baseline":"prepared-tip","files":{"work.yaml":"digest"}}})
+                    .as_object()
+                    .unwrap()
+                    .clone();
+            state.write("save.json", evidence.clone()).unwrap();
+            Marker {
+                strategy: Strategy::None,
+                host: HostIdentity::parse(HOST).unwrap(),
+            }
+            .write(&state)
+            .unwrap();
+            let original = fs::read(&path).unwrap();
+            let clear_path = path.clone();
+            let state = state.with_hook(Arc::new(Mutex::new(move |op: &str, name: &str| {
+                if op == "clear" && name == "save.json" {
+                    fs::remove_file(&clear_path).unwrap();
+                    assert!(!clear_path.exists());
+                    return Err(repair("directory fsync failed after unlink"));
+                }
+                Ok(())
+            })));
+            let error = finish(&state, &config, evidence, "retained-import", || {
+                Ok(state.config()?.unwrap())
+            })
+            .unwrap_err();
+            assert_eq!(error.to_string(), "directory fsync failed after unlink");
+            assert_eq!(fs::read(&path).unwrap(), original);
+            Ok(original)
+        })
+        .unwrap();
+    YamlStore::new(dir.path())
+        .with_transaction(|tx| -> Result<(), StorageError> {
+            let state = State::from_journal(tx.journal());
+            assert_eq!(fs::read(&path).unwrap(), original);
+            assert!(state.check_save().is_err());
+            assert_eq!(state.config().unwrap(), Some(config));
+            assert_eq!(
+                Marker::read(tx.journal()).unwrap().unwrap().strategy,
+                Strategy::Git
+            );
+            Ok(())
+        })
+        .unwrap();
+}
+
+#[test]
 fn changed_configuration_keeps_import_fenced_and_local_strategy() {
     with_pending_import(|journal, evidence| {
         let state = State::from_journal(journal);

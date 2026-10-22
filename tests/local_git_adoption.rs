@@ -294,29 +294,6 @@ fn final_path_signing_profile_must_match_prepared_identity_and_policy() {
 }
 
 #[test]
-fn failed_clear_after_unlink_reasserts_original_evidence() {
-    let mut f = Fixture::new();
-    let path = f.root.join(".catalog-sync/save.json");
-    let original = Arc::new(Mutex::new(None));
-    let captured = original.clone();
-    f.git
-        .set_state_hook(Arc::new(Mutex::new(move |op: &str, name: &str| {
-            if op == "clear" && name == "save.json" {
-                *captured.lock().unwrap() = Some(fs::read(&path).unwrap());
-                fs::remove_file(&path).unwrap();
-                return Err(RepairRequired::new("directory fsync failed after unlink"));
-            }
-            Ok(())
-        })));
-    assert!(f.adopt().is_err());
-    f.fenced();
-    assert_eq!(
-        fs::read(f.root.join(".catalog-sync/save.json")).unwrap(),
-        original.lock().unwrap().as_ref().unwrap().as_slice()
-    );
-}
-
-#[test]
 fn completed_retry_rejects_nonadoption_history_and_remote_configuration() {
     let f = Fixture::new();
     f.adopt().unwrap();
