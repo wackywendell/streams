@@ -526,12 +526,9 @@ impl AdoptionPermit<'_, '_> {
                 // failed. Reassert the fence even after checkout/ref updates: absence
                 // does not prove adoption completed durably. Do not duplicate retained
                 // refs, or overwrite an already durable identical fence.
-                let marker = PublicationMarker::Adopting(
-                    self.attempt.adopting(self.old.clone(), self.new.clone()),
-                );
-                if self.catalog.state.publication()?.as_ref() != Some(&marker) {
-                    self.catalog.state.write_publication(&marker)?;
-                }
+                self.catalog
+                    .state
+                    .fence_adoption(&self.attempt.adopting(self.old, self.new))?;
                 Err(error)
             }
         }

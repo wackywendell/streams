@@ -75,14 +75,22 @@ Real-Git tests retain that separate evidence.
 The `git_io` tests intercept every command without starting Git. They check push
 arguments, unknown outcomes, branch-specific fetches, target validation, signing
 failure without unsigned fallback, ancestry and batched blob observations.
-The dedicated `git_catalog` target retains 6 physical boundary tests:
+The dedicated `git_catalog` target retains 5 physical boundary tests:
 
 - two-clone history roundtrips and lost-ack recovery across disk-backed reopen
 - partial checkout adoption that retains both histories and fences restart
 - rejection of actual dirty, ignored and unsupported Git histories
 - initialization identity, branch selection and no-clobber checks
 - partial local saves at add, commit creation and branch update, with durable YAML/index evidence and restart fencing
-- publication-marker unlink failure after adoption, with a physically reasserted fence and preserved confirmation
+
+Publication-fence persistence is tested directly through `State::fence_adoption`
+and the real YAML journal, without Git. The test physically unlinks the marker,
+restores it byte-for-byte, checks that identical fences are not rewritten, and
+reopens a fresh store to verify tips, operations and confirmation time. Coordinator
+memory tests separately establish that adoption/clear failures invoke this recovery
+and block later operations. One warm file-boundary sample took 0.040 seconds,
+replacing a two-catalog publication trace that took 13.9 seconds in a concurrent
+profile. These are not controlled benchmarks or evidence of hardware-crash survival.
 
 Real Git also remains in storage, import, inspection, revision and CLI contracts.
 The dedicated target's test count is not the total number of tests that start Git.

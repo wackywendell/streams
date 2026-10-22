@@ -195,9 +195,8 @@ impl Coordinator<'_> {
         new: &Oid,
         marker: &PublicationAttempt,
     ) -> Result<(), CatalogError> {
-        self.state.write_publication(&PublicationMarker::Adopting(
-            marker.adopting(old.clone(), new.clone()),
-        ))?;
+        self.state
+            .fence_adoption(&marker.adopting(old.clone(), new.clone()))?;
         self.io.checkout(old, new)?;
         self.state.clear("publication.json")?;
         Ok(())

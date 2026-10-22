@@ -1,6 +1,6 @@
 use std::path::Path;
 use std::sync::{
-    Arc, Mutex,
+    Arc,
     atomic::{AtomicBool, AtomicUsize, Ordering},
 };
 
@@ -19,7 +19,6 @@ use streams_temper::{
         history::read_history,
         outcomes::{LocalStatus, SharingStatus},
         policy::{Policy, SyncEvent},
-        state::{PublicationMarker, RepairRequired},
     },
 };
 use support::git::{install_hook, test_command};
@@ -332,67 +331,6 @@ fn physical_save_faults_keep_partial_writes_fenced_after_reopen() {
             marker
         );
     }
-}
-
-#[test]
-fn physical_publication_unlink_failure_reasserts_fence_after_adoption() {
-    let mut p = pair();
-    accepted(&p.a, &create("remote", "remote", "a"));
-    sync(&p.a);
-    accepted(&p.b, &create("local", "local", "b"));
-    p.b.set_clock(Arc::new(|| 2000.0));
-    let old = p.b.git().head().unwrap();
-    let marker_path = p.b.root().join(".catalog-sync/publication.json");
-    let unlinked = Arc::new(AtomicBool::new(false));
-    let seen = unlinked.clone();
-    p.b.set_state_hook(Arc::new(Mutex::new(move |op: &str, name: &str| {
-        if op == "clear" && name == "publication.json" {
-            // The hook precedes I/O: perform the actual unlink before failing
-            // as a directory-fsync failure would after removal.
-            std::fs::remove_file(&marker_path).unwrap();
-            assert!(!marker_path.exists());
-            seen.store(true, Ordering::SeqCst);
-            Err(RepairRequired::new(
-                "failure after physical publication unlink",
-            ))
-        } else {
-            Ok(())
-        }
-    })));
-    let result = p.b.sync(SyncEvent::Explicit);
-    assert_eq!(result.sharing, SharingStatus::Confirmed, "{result:?}");
-    assert_eq!(result.local, LocalStatus::RepairRequired);
-    assert!(unlinked.load(Ordering::SeqCst));
-    let marker = state(&p.b, |state| state.publication()).unwrap().unwrap();
-    assert!(matches!(marker, PublicationMarker::Adopting(_)));
-    let candidate = marker.attempt().candidate().as_str();
-    assert_ne!(candidate, old);
-    assert_eq!(p.b.git().head().unwrap(), candidate);
-    assert_eq!(
-        marker.attempt().confirmed_at(),
-        Some(Seconds::try_from(2000.0).unwrap())
-    );
-    let files =
-        p.b.store()
-            .with_inspection::<_, streams_temper::storage::StorageError>(|tx| tx.read())
-            .unwrap();
-    assert_eq!(
-        files.catalog,
-        *read_history(p.b.git(), Some(candidate)).unwrap().catalog()
-    );
-    let restarted = catalog(p.b.root(), "b");
-    assert!(restarted.snapshot().is_err());
-    assert!(restarted.sync(SyncEvent::Force).requires_repair());
-    assert_eq!(
-        state(&restarted, |state| state.publication()).unwrap(),
-        Some(marker)
-    );
-    assert_eq!(
-        state(&restarted, |state| state.metadata())
-            .unwrap()
-            .last_push,
-        Some(Seconds::try_from(2000.0).unwrap())
-    );
 }
 
 #[test]

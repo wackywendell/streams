@@ -8,6 +8,10 @@
 //! sequences and stop effects when state needs repair. A failed write or clear may
 //! already have changed disk state; do not assume rollback or retry blindly.
 
+#[cfg(test)]
+#[path = "state_tests.rs"]
+mod tests;
+
 use std::collections::{BTreeMap, BTreeSet};
 use std::sync::{Arc, Mutex};
 
@@ -494,6 +498,15 @@ impl<'tx> State<'tx> {
     /// Persists the validated recovery phase.
     pub fn write_publication(&self, marker: &PublicationMarker) -> Result<(), RepairRequired> {
         self.write_record("publication.json", marker)
+    }
+
+    /// Establishes the exact adoption fence without rewriting an identical marker.
+    pub(crate) fn fence_adoption(&self, adoption: &AdoptingAttempt) -> Result<(), RepairRequired> {
+        let marker = PublicationMarker::Adopting(adoption.clone());
+        if self.publication()?.as_ref() != Some(&marker) {
+            self.write_publication(&marker)?;
+        }
+        Ok(())
     }
 
     /// Writes a version-1 object; failure does not imply the old object remains.
