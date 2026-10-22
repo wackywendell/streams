@@ -102,7 +102,7 @@ impl Host {
 impl PaneHost for Host {
     fn read(&mut self) -> Result<CardSnapshot, String> {
         self.event("read");
-        if matches!(self.mode, Scenario::BlockedRead) {
+        if matches!(self.mode, Scenario::BlockedRead) || self.root.join("block-read").exists() {
             self.wait("release-read")?;
         }
         if matches!(self.mode, Scenario::ReadError) {
@@ -176,10 +176,11 @@ fn child_fixture() -> bool {
         Duration::from_secs(3600),
     );
     fs::write(
-        result_root.join("result"),
+        result_root.join("result.tmp"),
         serde_json::to_vec(&result).unwrap(),
     )
     .unwrap();
+    fs::rename(result_root.join("result.tmp"), result_root.join("result")).unwrap();
     // Darwin revokes the slave when its controlling session exits. Keep the child
     // alive until the parent has checked restored termios on the live terminal.
     let deadline = Instant::now() + Duration::from_secs(8);
@@ -221,7 +222,12 @@ fn result(root: &Path) -> Result<(), String> {
     serde_json::from_slice(&fs::read(root.join("result")).unwrap()).unwrap()
 }
 fn ready(pty: &mut Pty) {
-    pty.until(|p| p.screen().contains("[a] docs/design.md") && p.screen().contains("[q] close"));
+    pty.until(|p| {
+        let screen = p.screen();
+        screen.contains("[a] docs/design.md")
+            && screen.contains("[q] close")
+            && !screen.contains("Refreshing")
+    });
 }
 fn release(root: &Path, file: &str) {
     fs::write(root.join(file), "release").unwrap();
@@ -277,8 +283,13 @@ fn ctrl_c_restores_before_waiting_for_the_close_acknowledgement() {
     let mut pty = start(root.path(), "blocked-close", false);
     ready(&mut pty);
     pty.send(b"\x03");
-    pty.until(|_| events(root.path()).contains("close\n"));
-    pty.assert_cleanup(); // The child is still waiting inside close().
+    // Deliberately leave cleanup bytes unread: the acknowledgement is not stdout.
+    let deadline = Instant::now() + Duration::from_secs(10);
+    while !events(root.path()).contains("close\n") {
+        assert!(Instant::now() < deadline, "close was not dispatched");
+        thread::sleep(Duration::from_millis(5));
+    }
+    pty.assert_cleanup(); // Must drain stdout while the child still waits in close().
     release(root.path(), "release-close");
     finish(&mut pty, root.path());
     assert_eq!(result(root.path()), Ok(()));
@@ -372,10 +383,17 @@ fn refresh_clears_failure_notice_and_clipped_documents_cannot_activate() {
             .contains("Activation failed: injected activation failure")
     });
     fs::remove_file(root.path().join("activation-error")).unwrap();
+    release(root.path(), "block-read");
     pty.send(b"\x12");
+    pty.until(|p| {
+        events(root.path()).matches("read\n").count() == 3 && p.screen().contains("Refreshing")
+    });
+    pty.send(b"a"); // This visible-but-stale shortcut must be discarded while refreshing.
+    release(root.path(), "release-read");
     pty.until(|p| {
         events(root.path()).matches("read\n").count() == 3
             && !p.screen().contains("Activation failed")
+            && !p.screen().contains("Refreshing")
     });
     pty.resize(2, 40);
     pty.until(|p| {

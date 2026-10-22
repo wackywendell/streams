@@ -183,10 +183,13 @@ impl Pty {
                     && libc::cfgetospeed(&after) == libc::cfgetospeed(&self.before)
             }
     }
-    pub fn assert_cleanup(&self) {
+    pub fn assert_cleanup(&mut self) {
+        // A file/termios acknowledgement can arrive after until() last drained stdout.
+        self.pump(false);
         assert!(self.restored(), "slave termios was not restored");
         for sequence in [
-            b"\x1b[?1049h".as_slice(),
+            b"\x1b[?7;25;1000;1002;1003;1006;1015;1049;2004s".as_slice(),
+            b"\x1b[?1049h",
             b"\x1b[?1049l",
             b"\x1b[?25h",
             b"\x1b[?7h",
