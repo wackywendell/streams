@@ -143,6 +143,16 @@ fn append_accepts_legacy_updates_and_requires_exact_relocation_changes() {
             .append("bad", &["edit"], &message, unrelated)
             .is_err()
     );
+    let mut modified = files.clone();
+    let mut predecessor = history.files()[legacy].clone();
+    predecessor.extend_from_slice(b"\n# predecessor changed instead of being deleted\n");
+    modified.insert(legacy.into(), predecessor);
+    let error = history
+        .clone()
+        .append("bad", &["edit"], &message, modified)
+        .unwrap_err();
+    assert!(error.to_string().contains("commit relocation"), "{error}");
+
     let mut retained = files.clone();
     retained.insert(legacy.into(), history.files()[legacy].clone());
     assert!(
@@ -155,6 +165,28 @@ fn append_accepts_legacy_updates_and_requires_exact_relocation_changes() {
     let target = lateral.remove(canonical).unwrap();
     lateral.insert("sessions/destination/host/conversation.yaml".into(), target);
     assert!(history.append("bad", &["edit"], &message, lateral).is_err());
+
+    let moved = valid.catalog().session("host", "conversation").unwrap();
+    let reverse = Operation::reassociate(
+        "back",
+        moved,
+        valid.catalog().stream("destination").unwrap(),
+        "source",
+        "destination".into(),
+    )
+    .unwrap();
+    let mut files = valid.files().clone();
+    files.remove(canonical);
+    files.insert(legacy.into(), bytes(reverse.after()));
+    let error = valid
+        .append(
+            "bad",
+            &["move"],
+            &encode_operation(&reverse, None).unwrap(),
+            files,
+        )
+        .unwrap_err();
+    assert!(error.to_string().contains("commit relocation"), "{error}");
 }
 
 #[test]

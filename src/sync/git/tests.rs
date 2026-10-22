@@ -1,17 +1,18 @@
-//! Adapter facts use two directly seeded Git revisions, not catalog workflows.
+//! Seeded Git histories keep adapter facts separate from catalog policy workflows.
 use super::*;
 use crate::codec::record_to_data;
 use crate::model::{Record, Stream};
 use crate::operations::Actor;
 use crate::storage::StorageError;
-use crate::sync::replay::{Replay, replay};
 use crate::yaml_store::relative_record_path;
 use std::collections::BTreeSet;
 
 #[path = "../../../tests/support/git.rs"]
 mod fixture_git;
 
-fn revisions() -> (tempfile::TempDir, GitCatalog, Oid, Oid, Operation, Origin) {
+mod membership;
+
+fn revisions() -> (tempfile::TempDir, GitCatalog, Oid, Oid, Operation) {
     let dir = tempfile::tempdir().unwrap();
     let root = dir.path().join("publisher");
     fs::create_dir(&root).unwrap();
@@ -22,11 +23,10 @@ fn revisions() -> (tempfile::TempDir, GitCatalog, Oid, Oid, Operation, Origin) {
         .unwrap();
     let record = Record::Stream(Stream::new("work", "Work", None, "host").unwrap());
     let operation = Operation::new("create", None, record, Actor::User, None, vec![]).unwrap();
-    let origin = Origin::from([("session".into(), "original-session".into())]);
     let bytes = serde_json::to_string(&serde_json::json!({
         "version": 1, "revision": "fixture", "kind": "stream", "record": record_to_data(operation.after())
     })).unwrap();
-    let message = encode_operation(&operation, Some(&origin)).unwrap();
+    let message = encode_operation(&operation, None).unwrap();
     let path = relative_record_path(operation.after());
     let input = format!(
         "commit refs/heads/main\nmark :1\ncommitter Streams <streams@example.invalid> 1700000000 +0000\ndata {}\n{}\nblob\nmark :2\ndata {}\n{}\ncommit refs/heads/main\ncommitter Streams <streams@example.invalid> 1700000001 +0000\ndata {}\n{}\nfrom :1\nM 100644 :2 {}\n\ndone\n",
@@ -73,12 +73,12 @@ fn revisions() -> (tempfile::TempDir, GitCatalog, Oid, Oid, Operation, Origin) {
             Ok(())
         })
         .unwrap();
-    (dir, catalog, old, new, operation, origin)
+    (dir, catalog, old, new, operation)
 }
 
 #[test]
 fn partial_checkout_changes_files_and_index_without_moving_branch() {
-    let (_dir, catalog, old, new, _, _) = revisions();
+    let (_dir, catalog, old, new, _) = revisions();
     let index = fs::read(catalog.root().join(".git/index")).unwrap();
     // A real ref lock makes Git's update-ref fail after read-tree succeeds.
     fs::write(catalog.root().join(".git/refs/heads/main.lock"), "locked").unwrap();
@@ -111,7 +111,7 @@ fn partial_checkout_changes_files_and_index_without_moving_branch() {
 
 #[test]
 fn retained_histories_survive_successful_checkout() {
-    let (_dir, catalog, old, new, operation, _) = revisions();
+    let (_dir, catalog, old, new, operation) = revisions();
     catalog
         .with_lock(|locked| {
             locked.retain(old.as_str())?;
@@ -144,61 +144,5 @@ fn retained_histories_survive_successful_checkout() {
     assert_eq!(
         records.catalog.get(&operation.after().key()).as_ref(),
         Some(operation.after())
-    );
-}
-
-#[test]
-fn candidate_publication_preserves_original_intent_and_live_checkout() {
-    let (dir, catalog, old, new, operation, origin) = revisions();
-    let head = catalog.git().head().unwrap();
-    let index = fs::read(catalog.root().join(".git/index")).unwrap();
-    let local = read_history(catalog.git(), Some(new.as_str())).unwrap();
-    let remote_history = read_history(catalog.git(), Some(old.as_str())).unwrap();
-    let Replay::Ready { changes, .. } = replay(&local, &remote_history).unwrap() else {
-        panic!("fixture has no conflicting operations")
-    };
-    let candidate: Oid = catalog
-        .with_lock(|locked| locked.candidate(&local, &remote_history, changes))
-        .unwrap()
-        .parse()
-        .unwrap();
-    let remote = dir.path().join("remote.git");
-    fs::create_dir(&remote).unwrap();
-    fixture_git::test_command(
-        &Git::new(&remote, 10.0),
-        &["init", "--bare", "--initial-branch=main"],
-        None,
-        None,
-    )
-    .unwrap();
-    catalog
-        .git()
-        .run(
-            &["remote", "add", "origin", remote.to_str().unwrap()],
-            None,
-            None,
-            &[0],
-        )
-        .unwrap();
-    catalog.git().push_candidate(&candidate, "main").unwrap();
-    // A fresh catalog must fetch the actual pushed objects, not read publisher caches.
-    let mut follower =
-        GitCatalog::new(dir.path().join("follower"), "follower", Policy::default()).unwrap();
-    fixture_git::install_hook(&mut follower, |_, _, _, _| None);
-    let follower = follower
-        .initialize(Some(remote.to_str().unwrap().into()), "main")
-        .unwrap();
-    assert_eq!(follower.git().head().unwrap(), candidate.as_str());
-    let history = read_history(follower.git(), Some(candidate.as_str())).unwrap();
-    let entry = history.operation("create").unwrap();
-    assert_eq!(entry.operation, operation);
-    assert_eq!(entry.origin, origin);
-    assert_eq!(catalog.git().head().unwrap(), head);
-    assert_eq!(fs::read(catalog.root().join(".git/index")).unwrap(), index);
-    assert!(
-        !catalog
-            .root()
-            .join(catalog.store().record_path(operation.after()))
-            .exists()
     );
 }
