@@ -160,6 +160,30 @@ fn recovered_confirmation_survives_adoption_failure_and_newer_remote_history() {
 }
 
 #[test]
+fn failed_fence_reassertion_preserves_both_failure_diagnostics() {
+    let (a, _) = pair();
+    accepted(a.save(&create("create", "work", "a")));
+    a.journal
+        .failure
+        .set(Some(JournalFailure::AfterClearThenWrite));
+    let result = a.sync();
+    assert_eq!(
+        (result.sharing, result.local),
+        (SharingStatus::Confirmed, LocalStatus::RepairRequired)
+    );
+    assert!(
+        result.detail.contains("clear took effect but failed"),
+        "{result:?}"
+    );
+    assert!(
+        result
+            .detail
+            .contains("cannot reassert publication fence: adoption marker write failed"),
+        "{result:?}"
+    );
+}
+
+#[test]
 fn pure_remote_adoption_failure_does_not_claim_an_outgoing_confirmation() {
     let (a, b) = pair();
     accepted(a.save(&create("remote", "remote", "a")));

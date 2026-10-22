@@ -526,9 +526,16 @@ impl AdoptionPermit<'_, '_> {
                 // failed. Reassert the fence even after checkout/ref updates: absence
                 // does not prove adoption completed durably. Do not duplicate retained
                 // refs, or overwrite an already durable identical fence.
-                self.catalog
+                if let Err(reassert) = self
+                    .catalog
                     .state
-                    .fence_adoption(&self.attempt.adopting(self.old, self.new))?;
+                    .fence_adoption(&self.attempt.adopting(self.old, self.new))
+                {
+                    return Err(invalid(&format!(
+                        "{error}; cannot reassert publication fence: {reassert}"
+                    ))
+                    .into());
+                }
                 Err(error)
             }
         }

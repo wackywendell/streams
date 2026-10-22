@@ -4,10 +4,7 @@ use crate::storage::Transaction;
 use crate::yaml_store::YamlStore;
 use std::sync::atomic::{AtomicUsize, Ordering};
 
-#[test]
-fn adoption_fence_restores_unlinked_marker_and_preserves_identical_bytes() {
-    let dir = tempfile::tempdir().unwrap();
-    let store = YamlStore::new(dir.path());
+fn adoption() -> AdoptingAttempt {
     let old = "a".repeat(40).parse().unwrap();
     let new = "b".repeat(40).parse().unwrap();
     let adoption = PublicationAttempt::new(
@@ -20,7 +17,36 @@ fn adoption_fence_restores_unlinked_marker_and_preserves_identical_bytes() {
         Some(Seconds::try_from(2000.0).unwrap()),
     )
     .unwrap();
-    let adoption = adoption.adopting(adoption.local_tip().clone(), adoption.candidate().clone());
+    adoption.adopting(adoption.local_tip().clone(), adoption.candidate().clone())
+}
+
+#[test]
+fn corrupt_adoption_marker_is_rejected_without_overwriting_evidence() {
+    let dir = tempfile::tempdir().unwrap();
+    YamlStore::new(dir.path())
+        .with_transaction::<_, StorageError>(|tx| {
+            let path = dir.path().join(".catalog-sync/publication.json");
+            let bytes = b"{not valid JSON";
+            State::from_journal(tx.journal())
+                .fence_adoption(&adoption())
+                .unwrap();
+            std::fs::write(&path, bytes).unwrap();
+            assert!(
+                State::from_journal(tx.journal())
+                    .fence_adoption(&adoption())
+                    .is_err()
+            );
+            assert_eq!(std::fs::read(&path).unwrap(), bytes);
+            Ok(())
+        })
+        .unwrap();
+}
+
+#[test]
+fn adoption_fence_restores_unlinked_marker_and_preserves_identical_bytes() {
+    let dir = tempfile::tempdir().unwrap();
+    let store = YamlStore::new(dir.path());
+    let adoption = adoption();
     let path = dir.path().join(".catalog-sync/publication.json");
     store
         .with_transaction::<_, StorageError>(|tx| {

@@ -25,6 +25,7 @@ enum JournalFailure {
     BeforeAdoption,
     BeforeClear,
     AfterClear,
+    AfterClearThenWrite,
 }
 
 #[derive(Default)]
@@ -58,7 +59,13 @@ impl Journal for MemoryJournal {
             return Err(StorageError::new("clear failed"));
         }
         self.objects.borrow_mut().remove(name);
-        if failure == Some(JournalFailure::AfterClear) {
+        if failure == Some(JournalFailure::AfterClearThenWrite) {
+            self.failure.set(Some(JournalFailure::BeforeAdoption));
+        }
+        if matches!(
+            failure,
+            Some(JournalFailure::AfterClear | JournalFailure::AfterClearThenWrite)
+        ) {
             return Err(StorageError::uncertain("clear took effect but failed"));
         }
         Ok(())
