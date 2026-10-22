@@ -12,12 +12,18 @@ import { Worker } from 'node:worker_threads';
 import { createJiti } from 'jiti';
 const jiti=createJiti(import.meta.url);
 const {loadNative, NativeController}=await jiti.import('../extensions/stream-checkpoint/native.ts');
+const {StreamsChild}=await jiti.import('../extensions/stream-checkpoint/child.ts');
 const root=fileURLToPath(new URL('../',import.meta.url));
 const binary=join(resolve(root,process.env.CARGO_TARGET_DIR ?? 'target'),'debug','streams');
 const plugin=join(root,'integrations/herdr-work-cards');
-function temporary(t, base=realpathSync(tmpdir())) {
+function temporary(t, dispose=async()=>{}, base=realpathSync(tmpdir())) {
  const directory=mkdtempSync(join(base,'streams-rust-native-'));
- t.after(()=>rmSync(directory,{recursive:true,force:true}));return directory;
+ t.after(async()=>{await dispose();rmSync(directory,{recursive:true,force:true});});return directory;
+}
+function standin(directory, underlying) {
+ const executable=join(directory,'streams child');
+ writeFileSync(executable,`#!${process.execPath}\nimport(${JSON.stringify(new URL('./helpers/streams-child-standin.mjs',import.meta.url).href)});\n`,{mode:0o700});
+ return {STREAMS_BIN_PATH:executable,STREAMS_STANDIN_BIN:underlying};
 }
 function lifetime(t, directory, extra={}) {
  const saved={...process.env};
@@ -32,24 +38,39 @@ function piContext(directory,id) {
  return {pi,ctx,entries,name:()=>name};
 }
 function fake(t) {
- const directory=temporary(t),id=randomUUID(),f=piContext(directory,id);
- const file=join(directory,'observation.json'),log=join(directory,'commands.jsonl'),executable=join(directory,'rust cli');
+ const adapters=[],children=[];
+ const directory=temporary(t,async()=>{await Promise.all(adapters.map(adapter=>adapter.dispose()));await Promise.all(children.map(child=>child.stop()));}),id=randomUUID(),f=piContext(directory,id);
+ const file=join(directory,'observation.json'),log=join(directory,'commands.jsonl'),underlying=join(directory,'rust cli');
+ const selection=standin(directory,underlying),executable=selection.STREAMS_BIN_PATH;
  const observation={version:1,scope:{catalogSource:'catalog',hostId:'host',streamId:'stream',sessionId:'session',nativeSessionId:id},native:{pane_id:'pane',tab_id:'tab',workspace_id:'workspace'},context:{socket:join(directory,'not-live.sock'),paneId:'pane',terminalId:'terminal',tabId:'tab',workspaceId:'workspace',binding:null},session:{title:'Saved title',title_mode:'automatic'},config:{automatic:false,sessionNaming:true}};
  const put=value=>writeFileSync(file,JSON.stringify(value));put(observation);
- writeFileSync(executable,`#!${process.execPath}\nconst fs=require('node:fs');if(process.env.STREAMS_RUST_BIN!==fs.realpathSync(${JSON.stringify(executable)}))throw Error('native launch binary was not canonicalized');const args=process.argv.slice(2);fs.appendFileSync(${JSON.stringify(log)},JSON.stringify(args)+'\\n');const value=JSON.parse(fs.readFileSync(${JSON.stringify(file)},'utf8'));const command=args.find(arg=>['observe','open','close','project','capture'].includes(arg));if(value.fail===command){console.log(JSON.stringify({error:{kind:value.failureKind??'error',message:value.failMessage??'uncertain native effect; pending retained'}}));process.exit(1);}if(value.wait===command){setInterval(()=>{},1000);}else{const native={workspace_id:value.context.workspaceId,owner_pane_id:value.context.paneId,owner_terminal_id:value.context.terminalId,session_id:value.scope.sessionId,native_session_id:value.scope.nativeSessionId,binding:value.ackBinding??value.context.binding};console.log(JSON.stringify(value.invalid===command?{}:command==='observe'?value:command==='open'?{display:'opened',native}:command==='close'?{closed:true}:command==='project'?{names:{workspace:'disabled',tab:'disabled'},native}:{captured:true}));}\n`,{mode:0o700});
- lifetime(t,directory,{STREAMS_BIN_PATH:executable});
+ writeFileSync(underlying,`#!${process.execPath}\nconst fs=require('node:fs');if(process.env.STREAMS_RUST_BIN!==fs.realpathSync(${JSON.stringify(executable)}))throw Error('native launch binary was not canonicalized');const args=process.argv.slice(2);fs.appendFileSync(${JSON.stringify(log)},JSON.stringify(args)+'\\n');const value=JSON.parse(fs.readFileSync(${JSON.stringify(file)},'utf8'));const command=args.find(arg=>['observe','open','close','project','capture'].includes(arg));if(value.fail===command){console.log(JSON.stringify({error:{kind:value.failureKind??'error',message:value.failMessage??'uncertain native effect; pending retained'}}));process.exit(1);}if(value.wait===command){setInterval(()=>{},1000);}else{const native={workspace_id:value.context.workspaceId,owner_pane_id:value.context.paneId,owner_terminal_id:value.context.terminalId,session_id:value.scope.sessionId,native_session_id:value.scope.nativeSessionId,binding:value.ackBinding??value.context.binding};console.log(JSON.stringify(value.invalid===command?{}:command==='observe'?value:command==='open'?{display:'opened',native}:command==='close'?{closed:true}:command==='project'?{names:{workspace:'disabled',tab:'disabled'},native}:{captured:true}));}\n`,{mode:0o700});
+ lifetime(t,directory,selection);
  const commands=()=>existsSync(log)?readFileSync(log,'utf8').trim().split('\n').filter(Boolean).map(JSON.parse):[];
- return {...f,directory,id,executable,observation,put,commands,load:()=>loadNative({pi:f.pi,ctx:f.ctx,sessionId:id,cwd:directory,env:{...process.env}})};
+ const load=async(options={})=>{const adapter=await loadNative({pi:f.pi,ctx:f.ctx,sessionId:id,cwd:directory,env:{...process.env},...options});adapters.push(adapter);return adapter;};
+ const child=()=>{const value=new StreamsChild({sessionId:id,cwd:directory,env:{...process.env},warning:assert.fail});children.push(value);return value;};
+ return {...f,directory,id,executable,observation,put,commands,load,child};
 }
 function command(args) {return args.find(arg=>['observe','open','close','project','capture'].includes(arg));}
+async function observe(child, id) {
+ const revision=child.revision;
+ let unsubscribe;
+ const changed=new Promise((resolve,reject)=>{
+  const timer=setTimeout(()=>{unsubscribe();reject(Error('child did not emit a new scope'));},5000);
+  unsubscribe=child.subscribe(()=>{if(child.revision>revision){clearTimeout(timer);unsubscribe();resolve();}});
+ });
+ const result=await child.run(['native','observe','--session-id',id,'--json']);
+ assert.equal(result.code,0,result.stdout);await changed;
+}
 async function until(check) {const deadline=Date.now()+5000;while(!check()&&Date.now()<deadline) await new Promise(resolve=>setTimeout(resolve,5));assert.ok(check(),'child did not reach requested command');}
 
 test('Rust routing stays lazy and routes the Pi lane without TypeScript native effects or Python capture',async t=>{
  const f=fake(t),notices=[];
  const adapter=await f.load();assert.deepEqual(f.commands(),[]);
  const controller=new NativeController({pi:f.pi,ctx:f.ctx,factory:async()=>adapter,capture:assert.fail,warning:text=>notices.push(text)});
- t.after(()=>controller.stop());controller.start();await controller.idle();
- assert.deepEqual(f.commands().map(command),['observe','observe','project','observe','capture']);
+ t.after(async()=>{controller.stop();await controller.idle();});controller.start();await controller.idle();
+ assert.deepEqual(f.commands().map(command).filter(value=>value!=='observe'),['project','capture']);
+ assert.equal(command(f.commands()[0]),'observe');
  assert.equal(f.name(),'Saved title');assert.deepEqual(notices,[]);
  assert.equal(adapter.automatic,false);assert.equal(adapter.sessionNaming,true);
  for(const args of f.commands().filter(args=>command(args)!=='observe')) {
@@ -58,23 +79,29 @@ test('Rust routing stays lazy and routes the Pi lane without TypeScript native e
  }
  await controller.open();await controller.close();
  assert.equal(f.commands().filter(args=>command(args)==='open').length,1);
- assert.equal(command(f.commands().at(-1)),'close');
+ assert.equal(f.commands().map(command).filter(value=>value!=='observe').at(-1),'close');
  for(const [target,reclaim] of [['all','all'],['session','tab'],['stream','workspace']]) {
   await controller.reclaimNames(target);
   const args=f.commands().findLast(args=>command(args)==='project');assert.equal(args[args.indexOf('--reclaim')+1],reclaim);
  }
  assert.equal(f.commands().filter(args=>command(args)==='open').length,1);
 });
-test('Rust adapter pins scope, endpoint, terminal and binding for the whole Pi lifetime',async t=>{
- const f=fake(t),adapter=await f.load();await adapter.read();
- f.observation.context.binding='first-binding';f.put(f.observation);await adapter.read();
- const context=await adapter.bootstrap();
+test('Rust adapter caches scope and adopts moved endpoint, terminal and binding on child events',async t=>{
+ const f=fake(t),child=f.child(),adapter=await f.load({child});await adapter.read();
+ const context=await adapter.bootstrap(),before=f.commands().length;
+ await adapter.read();assert.equal(f.commands().length,before);
  await assert.rejects(adapter.open({...context,terminalId:'reused'},new AbortController().signal,'explicit'),/context changed/);
- f.observation.context.binding='replacement';f.put(f.observation);
- await assert.rejects(adapter.read(),/scope changed/);
- f.observation.context.binding='first-binding';f.put(f.observation);
- const before=f.commands().length;await assert.rejects(adapter.read(),/scope changed/);
- assert.equal(f.commands().length,before);assert.ok(f.commands().every(args=>command(args)==='observe'));
+ f.observation.context={...f.observation.context,socket:join(f.directory,'moved.sock'),terminalId:'replacement',binding:'replacement',tabId:'moved-tab',workspaceId:'moved-workspace'};
+ f.observation.native={pane_id:'pane',tab_id:'moved-tab',workspace_id:'moved-workspace'};
+ f.observation.scope={...f.observation.scope,streamId:'moved-stream',sessionId:'moved-session'};f.put(f.observation);
+ assert.equal((await adapter.read()).scope.streamId,'stream');
+ await observe(child,f.id);
+ assert.deepEqual((await adapter.read()).scope,f.observation.scope);
+ await assert.rejects(adapter.open(context,new AbortController().signal,'explicit'),/context changed/);
+ const moved=await adapter.bootstrap();assert.deepEqual(moved,f.observation.context);
+ await adapter.project(moved,new AbortController().signal);
+ const args=f.commands().findLast(args=>command(args)==='project');
+ assert.deepEqual(JSON.parse(args[args.indexOf('--expect')+1]),{version:1,scope:f.observation.scope,context:f.observation.context});
 });
 for(const operation of ['open','project','close']) test(`Rust ${operation} rejects malformed acknowledgements and preserves actionable failure`,async t=>{
  const f=fake(t),adapter=await f.load();await adapter.read();const context=await adapter.bootstrap(),signal=new AbortController().signal;
@@ -84,12 +111,19 @@ for(const operation of ['open','project','close']) test(`Rust ${operation} rejec
  await assert.rejects(invoke(),/uncertain native effect; pending retained/);
  assert.equal(f.commands().filter(args=>command(args)===operation).length,2);
 });
-test('an effect scope mismatch permanently fences the Rust adapter even after restoration',async t=>{
- const f=fake(t),adapter=await f.load();await adapter.read();const context=await adapter.bootstrap();
+test('an effect scope mismatch waits for a new child scope and then recovers',async t=>{
+ const f=fake(t),child=f.child(),adapter=await f.load({child});await adapter.read();const context=await adapter.bootstrap();
  f.observation.fail='project';f.observation.failureKind='native-context-changed';f.put(f.observation);
- await assert.rejects(adapter.project(context,new AbortController().signal),/scope changed/);
- delete f.observation.fail;f.put(f.observation);
- const before=f.commands().length;await assert.rejects(adapter.read(),/scope changed/);assert.equal(f.commands().length,before);
+ await assert.rejects(adapter.project(context,new AbortController().signal),error=>error.kind==='native-context-changed');
+ const before=f.commands().filter(args=>command(args)!=='observe').length;
+ await assert.rejects(adapter.read(),/scope changed/);
+ await assert.rejects(adapter.project(context,new AbortController().signal),/context changed/);
+ assert.equal(f.commands().filter(args=>command(args)!=='observe').length,before);
+ delete f.observation.fail;f.observation.context.binding='recovered-binding';f.put(f.observation);
+ await observe(child,f.id);
+ assert.deepEqual((await adapter.read()).scope,f.observation.scope);
+ await adapter.project(await adapter.bootstrap(),new AbortController().signal);
+ assert.equal(f.commands().filter(args=>command(args)==='project').length,2);
 });
 test('an acknowledged first binding is required by the very next effect subprocess',async t=>{
  const f=fake(t),adapter=await f.load();await adapter.read();const context=await adapter.bootstrap();
@@ -97,17 +131,17 @@ test('an acknowledged first binding is required by the very next effect subproce
  await adapter.open(context,new AbortController().signal,'explicit');
  f.observation.context.binding='created-binding';f.put(f.observation);
  await adapter.project(context,new AbortController().signal);
- const args=f.commands().at(-1);assert.equal(JSON.parse(args[args.indexOf('--expect')+1]).context.binding,'created-binding');
+ const args=f.commands().findLast(args=>command(args)==='project');assert.equal(JSON.parse(args[args.indexOf('--expect')+1]).context.binding,'created-binding');
 });
 for(const message of ['native projection requires an enrolled Stream and Session','requested Pi session differs from the native pane session','native projection requires a ready workspace association for this Stream']) test(`unready Rust startup remains quiet: ${message}`,async t=>{
  const f=fake(t);f.observation.fail='observe';f.observation.failMessage=message;f.put(f.observation);
- const notices=[],controller=new NativeController({pi:f.pi,ctx:f.ctx,warning:text=>notices.push(text)});t.after(()=>controller.stop());
+ const notices=[],controller=new NativeController({pi:f.pi,ctx:f.ctx,factory:()=>f.load(),warning:text=>notices.push(text)});t.after(async()=>{controller.stop();await controller.idle();});
  controller.start();await controller.idle();assert.deepEqual(notices,[]);await assert.rejects(controller.open(),error=>error.message.includes(message));
  assert.ok(f.commands().every(args=>command(args)==='observe'));
 });
 test('Rust native cancellation drains the subprocess before shutdown and never invokes close',async t=>{
  const f=fake(t);f.observation.config.automatic=true;f.observation.wait='open';f.put(f.observation);
- const notices=[],controller=new NativeController({pi:f.pi,ctx:f.ctx,warning:text=>notices.push(text)});t.after(()=>controller.stop());
+ const notices=[],controller=new NativeController({pi:f.pi,ctx:f.ctx,factory:()=>f.load(),warning:text=>notices.push(text)});t.after(async()=>{controller.stop();await controller.idle();});
  controller.start();await until(()=>f.commands().some(args=>command(args)==='open'));
  controller.stop();await controller.idle();assert.deepEqual(notices,[]);
  assert.equal(f.commands().some(args=>command(args)==='close'||command(args)==='capture'),false);
@@ -124,7 +158,7 @@ test('an explicit invalid binary never falls back to the Cargo binary or legacy 
  for(const selector of ['STREAMS_BIN_PATH','STREAMS_RUST_BIN']) {
   for(const value of ['', 'relative',join(f.directory,'absent'),f.directory]) {
    const env={...process.env};delete env.STREAMS_BIN_PATH;delete env.STREAMS_RUST_BIN;env[selector]=value;
-   await assert.rejects(loadNative({pi:f.pi,ctx:f.ctx,sessionId:f.id,cwd:f.directory,env}),new RegExp(selector));
+   const adapter=await f.load({env});await assert.rejects(adapter.read(),new RegExp(selector));
   }
  }
  assert.deepEqual(f.commands(),[]);
@@ -132,7 +166,7 @@ test('an explicit invalid binary never falls back to the Cargo binary or legacy 
 test('native rejects conflicting reporting and compatibility selectors before any subprocess',async t=>{
  const f=fake(t),other=join(f.directory,'other-cli');symlinkSync(process.execPath,other);
  process.env.STREAMS_RUST_BIN=other;
- await assert.rejects(f.load(),/STREAMS_BIN_PATH and STREAMS_RUST_BIN select different/);
+ const adapter=await f.load();await assert.rejects(adapter.read(),/STREAMS_BIN_PATH and STREAMS_RUST_BIN select different/);
  assert.deepEqual(f.commands(),[]);
 });
 test('native accepts the compatibility alias and canonically matching selectors',async t=>{
@@ -196,10 +230,12 @@ function herdrServer(t,data) {
 }
 function real(t,{enrolled=true}={}) {
  assert.ok(existsSync(binary),`Build the requested Rust CLI first: ${binary}`);
+ const adapters=[];
  // Keep the named-session socket below the Unix socket path-length limit.
- const directory=temporary(t,'/tmp'),id=randomUUID(),socket=join(directory,'config/herdr/sessions/fixture/herdr.sock'),fixture=join(directory,'native.json'),log=join(directory,'native-commands.jsonl'),executable=join(directory,'herdr'),spawned=join(directory,'herdr-spawned.jsonl'),f=piContext(directory,id);
+ const directory=temporary(t,()=>Promise.all(adapters.map(adapter=>adapter.dispose())),'/tmp'),id=randomUUID(),socket=join(directory,'config/herdr/sessions/fixture/herdr.sock'),fixture=join(directory,'native.json'),log=join(directory,'native-commands.jsonl'),executable=join(directory,'herdr'),spawned=join(directory,'herdr-spawned.jsonl'),f=piContext(directory,id);
  mkdirSync(dirname(socket),{recursive:true});
- lifetime(t,directory,{HERDR_BIN_PATH:executable,HERDR_SESSION:'fixture',HERDR_SOCKET_PATH:socket});
+ lifetime(t,directory,{HERDR_BIN_PATH:executable,HERDR_SESSION:'fixture',HERDR_SOCKET_PATH:socket,...standin(directory,binary)});
+ const load=async input=>{const adapter=await loadNative(input);adapters.push(adapter);return adapter;};
  const pane={pane_id:'pane',terminal_id:'terminal',workspace_id:'workspace',tab_id:'tab',cwd:directory,agent:'pi',agent_session:{agent:'pi',kind:'id',value:id},tokens:{}};
  const native={pane,socket,snapshot:{workspaces:[{workspace_id:'workspace',label:'Fixture',number:1,tokens:{}}],tabs:[{workspace_id:'workspace',tab_id:'tab',label:'1',number:1}],panes:[pane],layouts:[{workspace_id:'workspace',tab_id:'tab',panes:[{pane_id:'pane'}]}],agents:[pane]}};
  const put=()=>writeFileSync(fixture,JSON.stringify(native));put();
@@ -224,7 +260,7 @@ function real(t,{enrolled=true}={}) {
  const transcript=join(directory,'pi/sessions',id+'.jsonl');mkdirSync(dirname(transcript),{recursive:true});
  writeFileSync(transcript,JSON.stringify({type:'session',version:3,id,cwd:directory,timestamp:new Date(0).toISOString()})+'\n');
  const commands=()=>{assert.equal(existsSync(spawned),false,'the Rust CLI started a Herdr process');return existsSync(log)?readFileSync(log,'utf8').trim().split('\n').filter(Boolean).map(JSON.parse):[];};
- return {...f,directory,id,stream,state,native,put,invoke,cli,commands};
+ return {...f,directory,id,stream,state,native,put,invoke,cli,load,commands};
 }
 for(const pinned of [false,true]) test(`native operation Herdr request budgets${pinned?' with --expect':''}`,t=>{
  const f=real(t);writeFileSync(join(f.directory,'native-commands.jsonl'),'');
@@ -331,7 +367,7 @@ test('launched-card readers reject a socket or namespace that contradicts the pi
 test('Pi lifecycle preserves the named Herdr namespace through Rust source rereads, projection and capture',async t=>{
  const f=real(t);
  assert.equal(process.env.HERDR_SESSION,'fixture');
- const notices=[],controller=new NativeController({pi:f.pi,ctx:f.ctx,capture:assert.fail,warning:text=>notices.push(text)});t.after(()=>controller.stop());
+ const notices=[],controller=new NativeController({pi:f.pi,ctx:f.ctx,factory:f.load,capture:assert.fail,warning:text=>notices.push(text)});t.after(async()=>{controller.stop();await controller.idle();});
  controller.start();await controller.idle();assert.deepEqual(notices,[]);
  assert.equal(f.name(),'Real Rust lane');assert.ok(f.commands().some(([method])=>method.endsWith('report_metadata')));
  const allowed=['ping','pane.current','workspace.get','session.snapshot','workspace.report_metadata','pane.report_metadata'];
@@ -340,7 +376,7 @@ test('Pi lifecycle preserves the named Herdr namespace through Rust source rerea
  assert.ok(snapshot.workspaces[0].tokens.strm_binding);
  const arrangements=readdirSync(join(f.state,'arrangements'),{recursive:true}).filter(path=>path.endsWith('.json'));
  assert.equal(arrangements.length,1);assert.ok(JSON.parse(readFileSync(join(f.state,'arrangements',arrangements[0]),'utf8')).tabs.length);
- controller.stop();delete process.env.HERDR_SOCKET_PATH;
+ controller.stop();await controller.idle();delete process.env.HERDR_SOCKET_PATH;
  const observed=f.cli('native','--session-id',f.id,'observe'),expected={version:1,scope:observed.scope,context:observed.context};
  // Without an explicit socket, the named session resolves to the same endpoint.
  assert.equal(observed.context.socket,f.native.socket);

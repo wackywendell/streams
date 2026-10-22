@@ -42,6 +42,15 @@ run = "node --test tests/stream_child_test.mjs tests/stream_child_standin_test.m
 description = "Exercise the Pi child protocol without starting Rust or Herdr"
 run = "node --test tests/stream_child_test.mjs tests/stream_child_standin_test.mjs"
 
+[tasks."test:pi:native"]
+description = "Run Pi native lifecycle and child counting tests without Rust"
+run = "node --test tests/stream_native_test.mjs tests/stream_child_test.mjs"
+
+[tasks."test:pi:sync"]
+description = "Run isolated Pi catalog sync acceptance"
+depends = ["build"]
+run = "node --test tests/stream_sync_test.mjs"
+
 [tasks."test:replay"]
 description = "Replay production Pi helpers through the Rust CLI in isolated homes"
 depends = ["build"]

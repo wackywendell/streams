@@ -19,9 +19,10 @@ import type { CardState } from "./panel.ts";
 import { chooseInitial } from "./chooser.ts";
 
 import { NativeController } from "./native.ts";
+import { StreamsChild } from "./child.ts";
 import type { NativeFactory } from "./native.ts";
 
-type Options = {agentDir?: string; cli?: StreamCli; infer?: typeof infer; settings?: ReportingSettings; native?: NativeFactory};
+type Options = {agentDir?: string; cli?: StreamCli; infer?: typeof infer; settings?: ReportingSettings; native?: NativeFactory; child?: (ctx: ExtensionContext) => StreamsChild};
 const result = (details: unknown) => ({content: [{type: "text" as const, text: JSON.stringify(details)}], details});
 function parseResetArgs(instructions: string): {auto: boolean; target: "all" | "session" | "stream"} | null {
  if (!instructions) return {auto: false, target: "all"};
@@ -42,6 +43,7 @@ export default function registerWorkCard(pi: ExtensionAPI, options: Options = {}
  let panelOpen = false;
  let shutdown: Promise<void> | undefined;
  let native: NativeController | undefined;
+ let child: StreamsChild | undefined;
  let nativeRetirement: Promise<void> | undefined;
  let statusTimer: ReturnType<typeof setTimeout> | undefined;
  const clearStatusTimer = () => {if (statusTimer) {clearTimeout(statusTimer);statusTimer = undefined;}};
@@ -54,8 +56,9 @@ export default function registerWorkCard(pi: ExtensionAPI, options: Options = {}
   return nativeRetirement;
  }
  const states = new Map<string, CardState>();
- const cli = (ctx: ExtensionContext) => options.cli ?? new StreamCli(ctx.cwd);
  const warning = (error: unknown) => {scope.context?.ui.notify(`Streams — ${error instanceof Error ? error.message : String(error)}`, "warning");};
+ const sessionChild = (ctx: ExtensionContext) => child ??= options.child?.(ctx) ?? new StreamsChild({sessionId:ctx.sessionManager.getSessionId(), cwd:ctx.cwd, env:{...process.env}, warning});
+ const cli = (ctx: ExtensionContext) => options.cli ?? new StreamCli(ctx.cwd, sessionChild(ctx).run);
  const receipt = (value: Receipt, deferNative = false, quiet = false) => {
   const text = receiptText(value), hasWarning = receiptHasWarning(value);
   // Receipts do not enter model context or count as fresh user work.
@@ -267,12 +270,14 @@ export default function registerWorkCard(pi: ExtensionAPI, options: Options = {}
  pi.registerTool({name: "create_stream", label: "Create initial effort", description: "Ask the user to create an initial durable effort and enroll this conversation. Never switches existing membership or launches workspaces.", parameters: Type.Object({title: Type.String(), reason: Type.String()}), async execute(_id, args, _signal, _update, ctx) {return result(await attach(ctx, args));}});
  pi.on("session_start", async (_event, ctx) => {
   clearStatusTimer();ctx.ui.setStatus?.("stream-debug", undefined);
-  const retired = retireNative();shutdown = undefined;scope.reset(ctx);
+  const retired = retireNative(), previousChild = child;child = undefined;shutdown = undefined;scope.reset(ctx);
   const fence = scope.fence();
   if (retired) await retired;
+  if (previousChild) await previousChild.stop();
   if (!fence.current()) return;
   const client = cli(ctx) as StreamCli & {captureArrangement?: (streamId: string, signal?: AbortSignal) => Promise<unknown>};
   native = new NativeController({pi, ctx, current: () => scope.context, factory: options.native, warning,
+   child:options.cli ? undefined : sessionChild(ctx),
    capture: client.captureArrangement ? (streamId, signal) => client.captureArrangement!(streamId, signal) : undefined});
   native.start();
   await sync(ctx, "start");
@@ -290,7 +295,9 @@ export default function registerWorkCard(pi: ExtensionAPI, options: Options = {}
   scope.reset(ctx, true);
   const fence = scope.fence();
   // Flush already-saved catalog changes only, never infer a final summary.
-  await Promise.all([sync(ctx, "shutdown"), retired]);
-  if (fence.live()) scope.context = undefined;
+  const synchronization = sync(ctx, "shutdown"), retiringChild = child;
+  await Promise.all([synchronization, retired]);
+  await retiringChild?.stop();
+  if (fence.live()) {child = undefined;scope.context = undefined;}
  })());
 }

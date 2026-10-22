@@ -165,7 +165,8 @@ test('native capture abort settles only after CLI and descendants stop', {timeou
  }
 });
 
-test('Pi/CLI reports publish across two isolated Git catalogs, remain saved offline and retry after restart', {timeout:120000}, async t=>{
+// This acceptance fixture starts many Git/CLI processes; per-event spawn budgets are counted separately.
+test('Pi/CLI reports publish across two isolated Git catalogs, remain saved offline and retry after restart', {timeout:600000}, async t=>{
  const root=mkdtempSync(join(tmpdir(),'streams-sync-acceptance-'));t.after(()=>rmSync(root,{recursive:true,force:true}));
  const checkout=fileURLToPath(new URL('..',import.meta.url)), remote=join(root,'remote.git'), unavailable=join(root,'offline.git');
  const binary=resolve(checkout,process.env.CARGO_TARGET_DIR??'target','debug','streams');

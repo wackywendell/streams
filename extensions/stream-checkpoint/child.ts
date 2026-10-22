@@ -2,8 +2,9 @@ import { spawn } from "node:child_process";
 import { fileURLToPath } from "node:url";
 import { resolveStreamsBin } from "../../integrations/herdr-work-cards/src/streams-bin.ts";
 import type { Runner } from "./streams.ts";
+import { observation, type Observation } from "./native-observation.ts";
 
-export type ChildScope = {value: Record<string, any> | null; reason?: string};
+export type ChildScope = {value: Observation | null; reason?: string};
 type Pending = {resolve: (value: {code: number; stdout: string; stderr: string}) => void; reject: (error: Error) => void};
 const object = (value: unknown): value is Record<string, any> => !!value && typeof value === "object" && !Array.isArray(value);
 const pluginRoot = fileURLToPath(new URL("../../integrations/herdr-work-cards", import.meta.url));
@@ -25,6 +26,16 @@ export class StreamsChild {
  get scope(): ChildScope | undefined {return this.current;}
  get didRestart(): boolean {return this.restarted;}
  subscribe(listener: () => void): () => void {this.listeners.add(listener);return () => {this.listeners.delete(listener);};}
+ private restart(error: Error): void {
+  this.process = undefined;this.ready = undefined;
+  if (this.stopped) return;
+  if (!this.restarted) {
+   this.restarted = true;this.options.warning(`Streams child failed: ${error.message}. Restarting once.`);
+   void this.start().catch(() => {});
+  } else {
+   this.stopped = true;this.options.warning(`Streams child failed again: ${error.message}. Streams stopped for this Pi session; reload required.`);
+  }
+ }
  start(): Promise<void> {
   if (this.stopped) return Promise.reject(Error("Streams stopped for this Pi session; reload required"));
   if (this.ready) return this.ready;
@@ -39,7 +50,7 @@ export class StreamsChild {
    child = (this.options.spawn ?? spawn)(binary, ["serve", "--session-id", this.options.sessionId, "--plugin-root", pluginRoot],
     {cwd:this.options.cwd, env:{...env, STREAMS_RUST_BIN:binary}, stdio:["pipe", "pipe", "pipe"]});
   } catch (error) {
-   this.stopped = true;reject(error as Error);return result;
+   reject(error as Error);this.restart(error as Error);return result;
   }
   this.process = child;
   let first = true, buffer = "", failed = false;
@@ -51,15 +62,9 @@ export class StreamsChild {
    this.pending.clear();
    for (const listener of this.failures) listener(error);
    // Protocol errors must not leave a child accepting further requests.
-   child.kill();
-   this.process = undefined;this.ready = undefined;
-   if (this.stopped) return;
-   if (!this.restarted) {
-    this.restarted = true;this.options.warning(`Streams child failed: ${error.message}. Restarting once.`);
-    void this.start().catch(() => {});
-   } else {
-    this.stopped = true;this.options.warning(`Streams child failed again: ${error.message}. Streams stopped for this Pi session; reload required.`);
-   }
+   child.kill("SIGKILL");this.restart(error);
+   // Invalidate cached native work too, including user actions waiting for a scope.
+   for (const listener of this.listeners) listener();
   };
   const timer = setTimeout(() => fail(Error("Streams child ready handshake timed out")), 10_000);
   const message = (line: string) => {
@@ -78,7 +83,7 @@ export class StreamsChild {
    }
    if (value.type === "event" && value.event === "scope") {
     if (!(object(value.value) || value.value === null && typeof value.reason === "string")) throw Error("Invalid Streams child scope");
-    this.current = {value:value.value, reason:value.reason};this.revision++;
+    this.current = {value:value.value === null ? null : observation(value.value, this.options.sessionId), reason:value.reason};this.revision++;
     for (const listener of this.listeners) listener();return;
    }
    if (value.type === "event" && value.event === "warning" && typeof value.message === "string") {this.options.warning(value.message);return;}
@@ -105,7 +110,10 @@ export class StreamsChild {
   });
   return result;
  }
- private send(value: unknown): void {this.process?.stdin?.write(JSON.stringify(value) + "\n");}
+ private send(value: unknown): void {
+  const input = this.process?.stdin;
+  if (input && !input.writableEnded) input.write(JSON.stringify(value) + "\n");
+ }
  readonly run: Runner = async (argv, input, options) => {
   const signal = options?.signal;
   signal?.throwIfAborted();
@@ -126,7 +134,9 @@ export class StreamsChild {
    }, options?.timeout ?? 120_000);
   });
   try {
-   await Promise.race([this.start(), cancellation]);signal?.throwIfAborted();
+   const ready = this.start(), child = this.process;
+   await Promise.race([ready, cancellation]);signal?.throwIfAborted();
+   if (this.stopped || child !== this.process || ready !== this.ready) throw Error("Streams child lifetime ended before request dispatch");
    const request = new Promise<{code: number; stdout: string; stderr: string}>((resolve, reject) => {
     id = ++this.nextId;this.pending.set(id, {resolve, reject});
     this.send({type:"request", id, argv, ...(input === undefined ? {} : {input:JSON.parse(input)})});

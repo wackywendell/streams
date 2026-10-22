@@ -108,7 +108,7 @@ test('missed native reference refresh never authorizes effects even when the rea
  const f = fixture(t, {read:async () => {throw Error('Streams context read failed: requested Pi session differs from the native pane session');}});
  f.controller.start();await f.controller.idle();
  for (let i = 0; i < 6; i++) {t.mock.timers.tick(15000);await f.controller.idle();}
- assert.equal(f.events.filter(e => e === 'read').length, 5);assert.equal(f.loads(), 1);
+ assert.equal(f.events.filter(e => e === 'read').length, 1);assert.equal(f.loads(), 1);
  assert.equal(f.ctx.sessionManager.getSessionId(), f.id);assert.ok(f.events.every(e => e === 'read'));
  await assert.rejects(f.controller.open(), /native pane session/);
  assert.ok(f.events.every(e => e === 'read'));assert.deepEqual(f.notices, []);
@@ -125,7 +125,7 @@ test('refreshes coalesce and explicit open/close share one serial lane', async t
  f.controller.start();await until(() => entered);for (let i = 0; i < 10; i++) f.controller.update();
  const close = f.controller.close(), open = f.controller.open();assert.equal(f.events.includes('close'), false);
  release();await Promise.all([close, open]);await f.controller.idle();
- assert.deepEqual(f.events.filter(event => event.startsWith('open:') || event === 'close'), ['open:automatic', 'close', 'open:explicit', 'open:automatic']);
+ assert.deepEqual(f.events.filter(event => event.startsWith('open:') || event === 'close'), ['open:automatic', 'close', 'open:explicit']);
 });
 test('tree invalidation aborts stale work without recreating the adapter or reopening suppressed cards', async t => {
  environment(t);let release, signal;
@@ -140,14 +140,13 @@ test('shutdown aborts stale responses, never closes surfaces or captures final p
  f.controller.start();await until(() => !!release);f.controller.stop();f.controller.stop();assert.equal(signal.aborted, true);release();await f.controller.idle();
  assert.equal(f.events.includes('close'), false);assert.equal(f.events.includes('summaries'), false);assert.equal(f.events.some(event => event.startsWith('capture:')), false);
 });
-for (const change of ['pane', 'endpoint', 'cwd', 'session', 'attested-tab', 'cargo-target']) test(`changed ${change} fences pending native effects`, async t => {
+for (const change of ['pane', 'endpoint', 'cwd', 'session', 'cargo-target']) test(`changed ${change} fences pending native effects`, async t => {
  environment(t);let release;const f = fixture(t, {read:async () => {if (!release) await new Promise(resolve => {release = resolve;});}});
  f.controller.start();await until(() => !!release);
  if (change === 'pane') process.env.HERDR_PANE_ID = 'other';
  if (change === 'endpoint') process.env.HERDR_SOCKET_PATH = '/other';
  if (change === 'cwd') f.ctx.cwd = '/other';
  if (change === 'session') f.ctx.sessionManager.getSessionId = () => randomUUID();
- if (change === 'attested-tab') f.saved.native.tab_id = 'other';
  if (change === 'cargo-target') {environment(t, {CARGO_TARGET_DIR:'/other-target'});}
  release();await f.controller.idle();assert.equal(f.events.includes('bootstrap'), false);assert.equal(f.events.includes('sessionName'), false);assert.equal(f.events.some(event => event.startsWith('capture:')), false);
 });
@@ -245,21 +244,23 @@ test('capture failure defers recovery to a real update without retrying native p
  assert.equal(f.notices.length, 1);
  fail = false;f.controller.update();await f.controller.idle();
  assert.equal(f.events.filter(event => event === 'capture:stream').length, 3);
- assert.equal(f.events.filter(event => event === 'open:automatic').length, 2);
- assert.equal(f.loads(), 1);assert.equal(f.events.filter(event => event === 'bootstrap').length, 1);
+ assert.equal(f.events.filter(event => event === 'open:automatic').length, 1);
+ assert.equal(f.loads(), 1);
  const recovered = [...f.events];t.mock.timers.tick(90000);await f.controller.idle();assert.deepEqual(f.events, recovered);
 });
-test('successful projection resets the bounded native retry budget even when capture fails', async t => {
+test('failed automatic opens are dropped without timers or a later automatic reopen', async t => {
  environment(t);t.mock.timers.enable({apis:['setTimeout']});let fail = true;
  const f = fixture(t, {open:async () => {if (fail) throw Error('workspace lock timed out');}, capture:async () => {throw Error('capture unavailable');}});
  f.controller.start();await f.controller.idle();
  for (let i = 0; i < 4; i++) {t.mock.timers.tick(15000);await f.controller.idle();}
- assert.equal(f.events.filter(event => event === 'open:automatic').length, 5);
- t.mock.timers.tick(15000);await f.controller.idle();assert.equal(f.events.filter(event => event === 'open:automatic').length, 5);
+ assert.equal(f.events.filter(event => event === 'open:automatic').length, 1);
+ t.mock.timers.tick(15000);await f.controller.idle();assert.equal(f.events.filter(event => event === 'open:automatic').length, 1);
  fail = false;f.controller.update();await f.controller.idle();
  fail = true;f.controller.update();await f.controller.idle();
  for (let i = 0; i < 4; i++) {t.mock.timers.tick(15000);await f.controller.idle();}
- assert.equal(f.events.filter(event => event === 'open:automatic').length, 11);
+ assert.equal(f.events.filter(event => event === 'open:automatic').length, 1);
+ await assert.rejects(f.controller.open(), /workspace lock timed out/);
+ assert.equal(f.events.filter(event => event === 'open:explicit').length, 1);
 });
 for (const stage of ['read', 'bootstrap', 'capture']) test(`shutdown awaits retired ${stage} while sync runs independently`, async t => {
  environment(t);let release, signal, syncFinished = false;t.after(() => release?.());

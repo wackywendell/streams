@@ -1,4 +1,6 @@
 import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent";
+import type { StreamsChild } from "./child.ts";
+import { StreamsCliError } from "./streams.ts";
 
 export type NativeSnapshot = {
  scope: {catalogSource: string; hostId: string; streamId: string; sessionId: string; nativeSessionId: string};
@@ -9,6 +11,8 @@ export type NativeContext = {socket: string; paneId: string; terminalId: string;
 export type NativeAdapter = {
  automatic: boolean;
  sessionNaming: boolean;
+ subscribe?(listener: () => void): () => void;
+ dispose?(): Promise<void>;
  read(signal?: AbortSignal): Promise<NativeSnapshot>;
  bootstrap(signal?: AbortSignal): Promise<NativeContext>;
  open(context: NativeContext, signal: AbortSignal, mode: "automatic" | "explicit"): Promise<unknown>;
@@ -17,7 +21,7 @@ export type NativeAdapter = {
  project(context: NativeContext, signal: AbortSignal, intent: 'automatic' | 'explicit' | 'explicit-tab' | 'explicit-workspace' | undefined): Promise<unknown>;
  sessionName(snapshot: NativeSnapshot, assertCurrent: () => void, intent?: 'automatic' | 'explicit'): void;
 };
-export type NativeFactory = (input: {pi: ExtensionAPI; ctx: ExtensionContext; sessionId: string; cwd: string; env: NodeJS.ProcessEnv}) => Promise<NativeAdapter>;
+export type NativeFactory = (input: {pi: ExtensionAPI; ctx: ExtensionContext; sessionId: string; cwd: string; env: NodeJS.ProcessEnv; child?: StreamsChild; warning?: (text: string) => void}) => Promise<NativeAdapter>;
 
 // Native dependencies are deliberately resolved only inside a gated session lifetime.
 export const loadNative: NativeFactory = async input => {
@@ -39,10 +43,13 @@ export class NativeController {
  private pending = false;
  private running?: Promise<void>;
  private actions: Action[] = [];
- private timer?: ReturnType<typeof setTimeout>;
- private retries = 0;
+ private unsubscribe?: () => void;
+ private retirement?: Promise<void>;
+ private deferred: Action[] = [];
+ private scopeRevision = 0;
+ private automaticOpen = true;
  private readonly warnings = new Set<string>();
- constructor(private readonly options: {pi: ExtensionAPI; ctx: ExtensionContext; current?: () => ExtensionContext | undefined; factory?: NativeFactory; capture?: (streamId: string, signal?: AbortSignal) => Promise<unknown>; warning: (text: string) => void}) {
+ constructor(private readonly options: {pi: ExtensionAPI; ctx: ExtensionContext; current?: () => ExtensionContext | undefined; factory?: NativeFactory; child?: StreamsChild; capture?: (streamId: string, signal?: AbortSignal) => Promise<unknown>; warning: (text: string) => void}) {
   this.sessionId = options.ctx.sessionManager.getSessionId();this.cwd = options.ctx.cwd;
  }
  private eligible(): boolean {
@@ -59,18 +66,20 @@ export class NativeController {
  reclaimNames(target: "all" | "session" | "stream" = "all"): Promise<void> {return this.eligible() ? this.action("reclaim", target) : Promise.resolve();}
  private action(kind: Action["kind"], target?: Action["target"]): Promise<void> {
   if (this.stopped || !this.eligible()) return Promise.reject(Error("Native work cards require an interactive Pi session in its exact Herdr pane."));
+  if (kind === "close") this.automaticOpen = false;
   return new Promise((resolve, reject) => {this.actions.push({kind, target, resolve, reject});this.drain();});
  }
  invalidate(): void {
   this.controller.abort();this.controller = new AbortController();
-  for (const action of this.actions.splice(0)) action.reject(Error("Native work-card tree changed; retry the pane command"));
+  for (const action of [...this.actions.splice(0), ...this.deferred.splice(0)]) action.reject(Error("Native work-card tree changed; retry the pane command"));
   this.update();
  }
  stop(): void {
-  this.stopped = true;this.pending = false;clearTimeout(this.timer);this.controller.abort();
-  for (const action of this.actions.splice(0)) action.reject(Error("Native work-card lifetime ended"));
+  this.stopped = true;this.pending = false;this.controller.abort();this.unsubscribe?.();
+  for (const action of [...this.actions.splice(0), ...this.deferred.splice(0)]) action.reject(Error("Native work-card lifetime ended"));
+  this.retirement ??= this.adapter?.then(adapter => adapter.dispose?.()).catch(() => {});
  }
- async idle(): Promise<void> {while (this.running) await this.running;}
+ async idle(): Promise<void> {while (this.running) await this.running;await this.retirement;}
  private assertCurrent(signal: AbortSignal): void {
   signal.throwIfAborted();
   const current = this.options.current ? this.options.current() : this.options.ctx;
@@ -78,19 +87,24 @@ export class NativeController {
    || environmentKeys.some(key => process.env[key] !== this.env[key])) throw Error("Native work-card session or environment changed; reload required");
  }
  private drain(): void {
-  if (this.running) return;
-  this.running = this.run().finally(() => {this.running = undefined;if (!this.stopped && (this.pending || this.actions.length)) this.drain();});
+  if (this.running || this.deferred.length) return;
+  this.running = this.run().finally(() => {this.running = undefined;if (!this.stopped && !this.deferred.length && (this.pending || this.actions.length)) this.drain();});
  }
  private async run(): Promise<void> {
-  while (!this.stopped && (this.pending || this.actions.length)) {
-   const action = this.actions.shift(), signal = this.controller.signal;
+  while (!this.stopped && !this.deferred.length && (this.pending || this.actions.length)) {
+   const action = this.actions.shift(), signal = this.controller.signal, revision = this.scopeRevision;
    if (!action) this.pending = false;
    try {
     const snapshot = await this.refresh(action, signal);
-    this.retries = 0;clearTimeout(this.timer);this.timer = undefined;
     if (snapshot) await this.capture(snapshot, signal);
     action?.resolve();
    } catch (error) {
+    if (error instanceof StreamsCliError && error.kind === "native-context-changed" && !signal.aborted && !this.stopped) {
+     if (action) {
+      if (revision === this.scopeRevision) this.deferred.push(action);else this.actions.unshift(action);
+     }
+     continue;
+    }
     action?.reject(error);
     if (signal.aborted || this.stopped) continue;
     // Missing/unready enrollment and inherited helper environments are normal at startup.
@@ -98,9 +112,6 @@ export class NativeController {
     const message = String(error);
     if ((!action || action.kind === "reclaim") && !/unbound|context read failed|attestation|exact host\/pi\/native|exact Stream and Session/i.test(message) && !this.warnings.has(message)) {
      this.warnings.add(message);this.options.warning(`Native pane: ${message}`);
-    }
-    if (!action && this.retries++ < 4 && !this.timer) {
-     this.timer = setTimeout(() => {this.timer = undefined;this.update();}, 15000);this.timer.unref();
     }
    }
   }
@@ -122,25 +133,25 @@ export class NativeController {
  private async refresh(action: Action | undefined, signal: AbortSignal): Promise<NativeSnapshot | undefined> {
   const kind = action?.kind;
   const check = () => this.assertCurrent(signal);check();
-  this.adapter ??= (this.options.factory ?? loadNative)({pi: this.options.pi, ctx: this.options.ctx, sessionId: this.sessionId, cwd: this.cwd, env: {...this.env}});
+  this.adapter ??= (this.options.factory ?? loadNative)({pi: this.options.pi, ctx: this.options.ctx, sessionId: this.sessionId, cwd: this.cwd, env: {...this.env}, child:this.options.child, warning:this.options.warning}).then(adapter => {
+   if (!this.stopped) this.unsubscribe = adapter.subscribe?.(() => {
+    this.scopeRevision++;this.actions.unshift(...this.deferred.splice(0));this.update();
+   });
+   return adapter;
+  });
   const adapter = await this.adapter;check();
   const read = async () => {
    const snapshot = await adapter.read(signal);check();
-   if (snapshot.scope.nativeSessionId !== this.sessionId || snapshot.native.pane_id !== this.env.HERDR_PANE_ID
-    || this.env.HERDR_TAB_ID && snapshot.native.tab_id !== this.env.HERDR_TAB_ID
-    || this.env.HERDR_WORKSPACE_ID && snapshot.native.workspace_id !== this.env.HERDR_WORKSPACE_ID) throw Error("Native attestation does not match captured Pi pane tuple");
-   if (this.context && (snapshot.native.pane_id !== this.context.paneId || snapshot.native.tab_id !== this.context.tabId || snapshot.native.workspace_id !== this.context.workspaceId)) throw Error("Native attestation tuple changed; reload required");
+   if (snapshot.scope.nativeSessionId !== this.sessionId) throw Error("Native attestation does not match the Pi session");
    return snapshot;
   };
   await read();
-  if (!this.context) {
-   const context = await adapter.bootstrap(signal);check();
-   if (context.paneId !== this.env.HERDR_PANE_ID || this.env.HERDR_SOCKET_PATH && context.socket !== this.env.HERDR_SOCKET_PATH) throw Error("Native frontend endpoint changed");
-   this.context = context;
-   await read();check();
-  }
+  const context = await adapter.bootstrap(signal);check();
+  this.context = context;
   if (kind === "close") {await adapter.close(this.context, signal);check();return;}
-  if (kind === "open" || !kind && adapter.automatic) {await adapter.open(this.context, signal, kind ? "explicit" : "automatic");check();}
+  const automatic = !kind && this.automaticOpen && adapter.automatic;
+  if (!kind || kind === "open") this.automaticOpen = false;
+  if (kind === "open" || automatic) {await adapter.open(this.context, signal, kind ? "explicit" : "automatic");check();}
   const nameIntent = kind === "reclaim" ? (action?.target === "session" ? "explicit-tab" : action?.target === "stream" ? "explicit-workspace" : "explicit") : "automatic";
   await adapter.project(this.context, signal, nameIntent);check();
   const snapshot = await read();
