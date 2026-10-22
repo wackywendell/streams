@@ -56,8 +56,6 @@ struct Fixture {
     config: Config,
     root: PathBuf,
     git: GitCatalog,
-    create: Operation,
-    edit: Operation,
 }
 impl Fixture {
     fn new() -> Self {
@@ -77,16 +75,27 @@ impl Fixture {
         let opened = application::initialize(&config, Strategy::None, None, "main", false).unwrap();
         let root = opened.root().to_path_buf();
         let host = opened.host().as_str();
+        let mut git = GitCatalog::new(&root, host, Policy::default()).unwrap();
+        install_hook(&mut git, |_, _, _, _| None);
+        Self {
+            _temp: temp,
+            config,
+            root,
+            git,
+        }
+    }
+    fn original_history(&self) -> (Operation, Operation) {
+        let local = LocalCatalog::new(YamlStore::new(&self.root), self.git.host_id()).unwrap();
         let create = Operation::new(
             "original-create",
             None,
-            Record::Stream(Stream::new("work", "Original", None, host).unwrap()),
+            Record::Stream(Stream::new("work", "Original", None, self.git.host_id()).unwrap()),
             Actor::User,
             None,
             vec![],
         )
         .unwrap();
-        assert!(opened.backend().save(&create, None).unwrap().accepted());
+        assert!(local.save(&create, None).unwrap().accepted());
         let edit = update(
             "retired-edit",
             create.after(),
@@ -96,22 +105,13 @@ impl Fixture {
             vec![],
         )
         .unwrap();
-        assert!(opened.backend().save(&edit, None).unwrap().accepted());
+        assert!(local.save(&edit, None).unwrap().accepted());
         // Noncanonical formatting is a physical revision and must survive import.
-        let path = root.join("streams/work.yaml");
+        let path = self.root.join("streams/work.yaml");
         let mut bytes = fs::read(&path).unwrap();
         bytes.extend_from_slice(b"\n# exact local formatting\n");
         fs::write(path, bytes).unwrap();
-        let mut git = GitCatalog::new(&root, host, Policy::default()).unwrap();
-        install_hook(&mut git, |_, _, _, _| None);
-        Self {
-            _temp: temp,
-            config,
-            root,
-            git,
-            create,
-            edit,
-        }
+        (create, edit)
     }
     fn adopt(&self) -> Result<String, RepairRequired> {
         let _lock = self.config.lock().unwrap();
@@ -141,6 +141,7 @@ impl Fixture {
 #[test]
 fn baseline_preserves_exact_bytes_authority_and_retired_retry_fingerprints() {
     let f = Fixture::new();
+    let (create, edit) = f.original_history();
     let before = application::open(&f.config)
         .unwrap()
         .backend()
@@ -154,13 +155,13 @@ fn baseline_preserves_exact_bytes_authority_and_retired_retry_fingerprints() {
     let history = read_history(f.git.git(), Some(&tip)).unwrap();
     assert_eq!(history.files()["streams/work.yaml"], raw);
     assert_eq!(history.operations().len(), 0);
-    assert!(history.has_operation(f.create.id()));
-    assert!(history.has_operation(f.edit.id()));
+    assert!(history.has_operation(create.id()));
+    assert!(history.has_operation(edit.id()));
     assert_eq!(history.baseline().unwrap().host, f.git.host_id());
     let authority = f.git.authority("work").unwrap().unwrap();
     assert_eq!(authority.host_id, f.git.host_id());
-    assert_eq!(authority.token, f.create.id());
-    for operation in [&f.create, &f.edit] {
+    assert_eq!(authority.token, create.id());
+    for operation in [&create, &edit] {
         let retry = f.git.save(operation, None).unwrap();
         assert!(retry.accepted());
         assert_eq!(retry.domain.unwrap().outcome(), DomainOutcome::NoChange);
@@ -177,7 +178,7 @@ fn baseline_preserves_exact_bytes_authority_and_retired_retry_fingerprints() {
     assert_eq!(f.adopt().unwrap(), tip);
     let later = update(
         "post-baseline-edit",
-        f.edit.after(),
+        edit.after(),
         json!({"goal":"After the baseline"}).as_object().unwrap(),
         Actor::User,
         None,
@@ -196,7 +197,7 @@ fn baseline_preserves_exact_bytes_authority_and_retired_retry_fingerprints() {
 fn preparation_failure_cleans_only_its_owned_candidate_and_is_retryable() {
     let mut f = Fixture::new();
     let orphan = f.root.join(".catalog-staging/foreign-evidence");
-    fs::create_dir(&orphan).unwrap();
+    fs::create_dir_all(&orphan).unwrap();
     fs::write(orphan.join("retain"), "retain").unwrap();
     install_hook(&mut f.git, |_, args, _, _| {
         (args[0] == "commit-tree").then(|| Err(GitError::new("preparation failed", Some(1))))
@@ -214,6 +215,7 @@ fn preparation_failure_cleans_only_its_owned_candidate_and_is_retryable() {
 #[test]
 fn changed_record_bytes_abort_preparation_before_fencing() {
     let mut f = Fixture::new();
+    f.original_history();
     let path = f.root.join("streams/work.yaml");
     install_hook(&mut f.git, move |_, args, _, _| {
         if args[0] == "commit-tree" {
