@@ -33,19 +33,10 @@ fn missing_pending_effect_has_temper_counterexample() {
         1,
     );
     assert_ne!(broken, NATIVE_OPEN_IOA);
-    let report = VerificationCascade::from_ioa(&broken)
-        .with_sim_seeds(2)
-        .with_prop_test_cases(20)
-        .run();
-    assert!(!report.all_passed);
-    assert!(
-        report
-            .levels
-            .iter()
-            .filter_map(|l| l.verification.as_ref())
-            .any(|v| !v.counterexamples.is_empty()),
-        "{report:#?}"
-    );
+    let model = temper_verify::build_model_from_ioa(&broken, 2).unwrap();
+    let report = temper_verify::check_model(&model);
+    assert!(!report.all_properties_hold);
+    assert!(!report.counterexamples.is_empty(), "{report:#?}");
 }
 #[test]
 fn marker_precedes_effect_and_checked_result_precedes_ready_binding() {

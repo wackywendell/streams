@@ -27,15 +27,8 @@ fn missing_save_marker_effect_has_counterexample() {
         r#"effect = ["save_marker = true", "adopting_marker = false", "candidate_reusable = false"]"#,
         r#"effect = ["save_marker = false", "adopting_marker = false", "candidate_reusable = false"]"#, 1);
     assert_ne!(broken, CATALOG_PROTOCOL_IOA);
-    let report = VerificationCascade::from_ioa(&broken)
-        .with_sim_seeds(2)
-        .with_prop_test_cases(20)
-        .run();
-    assert!(!report.all_passed);
-    let model = report
-        .levels
-        .iter()
-        .find_map(|l| l.verification.as_ref())
-        .unwrap();
-    assert!(!model.counterexamples.is_empty(), "{report:#?}");
+    let model = temper_verify::build_model_from_ioa(&broken, 2).unwrap();
+    let report = temper_verify::check_model(&model);
+    assert!(!report.all_properties_hold);
+    assert!(!report.counterexamples.is_empty(), "{report:#?}");
 }

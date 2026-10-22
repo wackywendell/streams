@@ -135,7 +135,20 @@ current configuration after writing it. Physical tests retain candidate ownershi
 rename failure, final-path signing, byte preservation and fence reassertion after
 an actual unlink. A memory journal cannot establish those filesystem facts.
 
-## Latest warm execution sample
+## Check model mutations at the asserted boundary
+
+Positive specifications still run all 4 Temper levels. Negative mutations call
+Temper's public model builder and checker directly, with the cascade's unchanged
+counter bound of 2. Each mutation must parse and produce an actual counterexample;
+a dead transition or parse failure does not satisfy the test.
+
+The resource-effect model's 4 mutations are separate, named tests rather than a
+serial loop. Each can run and fail independently. The focused group took 17.77
+seconds with the serial direct-checker loop and 7.36 seconds after splitting it.
+The full state exploration still runs; these samples do not establish a fixed
+speedup. The model remains limited to the proposal described in its source.
+
+## Pre-integration warm execution samples
 
 These samples come from the separate test-value workspace before integration,
 not this branch's combined native-reconciliation and Pi acceptance gates.

@@ -289,37 +289,44 @@ fn committed_fork_retires_the_lane_without_erasing_either_pending_attempt() {
     }
 }
 
+fn assert_counterexample(old: &str, new: &str) {
+    let broken = IOA.replacen(old, new, 1);
+    assert_ne!(broken, IOA);
+    // The positive test owns L0–L3; mutations require the same bounded L1 counterexample.
+    let model = temper_verify::build_model_from_ioa(&broken, 2).unwrap();
+    let report = temper_verify::check_model(&model);
+    assert!(!report.all_properties_hold, "mutation survived: {old}");
+    assert!(
+        !report.counterexamples.is_empty(),
+        "mutation must yield a model counterexample, not just a parse failure: {report:#?}"
+    );
+}
+
 #[test]
-fn weakening_the_contract_produces_temper_counterexamples() {
-    for (old, new) in [
-        ("guard = \"!manual_name\"", "guard = \"true\""),
-        (
-            "effect = [\"fresh = false\", \"destination_clear = false\", \"card_uncertain = card_pending\", \"editor_uncertain = editor_pending\"]",
-            "effect = [\"fresh = false\", \"destination_clear = false\", \"card_pending = false\"]",
-        ),
-        (
-            "to = \"Observing\"\nguard = \"true\"\neffect = [\"fresh = false\", \"card_uncertain = card_pending\", \"editor_uncertain = editor_pending\"]",
-            "to = \"Active\"\nguard = \"true\"\neffect = [\"fresh = false\", \"card_uncertain = card_pending\", \"editor_uncertain = editor_pending\"]",
-        ),
-        (
-            "guard = \"card_pending && !card_uncertain && !card_present && same_terminal && same_conversation && endpoint_verified && destination_clear && relocation_safe\"",
-            "guard = \"card_pending && !card_present && same_terminal && same_conversation && endpoint_verified && destination_clear && relocation_safe\"",
-        ),
-    ] {
-        let broken = IOA.replacen(old, new, 1);
-        assert_ne!(broken, IOA);
-        let report = VerificationCascade::from_ioa(&broken)
-            .with_sim_seeds(2)
-            .with_prop_test_cases(20)
-            .run();
-        assert!(!report.all_passed, "mutation survived: {old}");
-        assert!(
-            report
-                .levels
-                .iter()
-                .filter_map(|level| level.verification.as_ref())
-                .any(|result| !result.counterexamples.is_empty()),
-            "mutation must yield a model counterexample, not just a parse failure: {report:#?}"
-        );
-    }
+fn unguarded_manual_name_projection_has_counterexample() {
+    assert_counterexample("guard = \"!manual_name\"", "guard = \"true\"");
+}
+
+#[test]
+fn owner_move_clearing_pending_attempt_has_counterexample() {
+    assert_counterexample(
+        "effect = [\"fresh = false\", \"destination_clear = false\", \"card_uncertain = card_pending\", \"editor_uncertain = editor_pending\"]",
+        "effect = [\"fresh = false\", \"destination_clear = false\", \"card_pending = false\"]",
+    );
+}
+
+#[test]
+fn external_change_keeping_active_projection_has_counterexample() {
+    assert_counterexample(
+        "to = \"Observing\"\nguard = \"true\"\neffect = [\"fresh = false\", \"card_uncertain = card_pending\", \"editor_uncertain = editor_pending\"]",
+        "to = \"Active\"\nguard = \"true\"\neffect = [\"fresh = false\", \"card_uncertain = card_pending\", \"editor_uncertain = editor_pending\"]",
+    );
+}
+
+#[test]
+fn acknowledging_uncertain_reopen_has_counterexample() {
+    assert_counterexample(
+        "guard = \"card_pending && !card_uncertain && !card_present && same_terminal && same_conversation && endpoint_verified && destination_clear && relocation_safe\"",
+        "guard = \"card_pending && !card_present && same_terminal && same_conversation && endpoint_verified && destination_clear && relocation_safe\"",
+    );
 }
