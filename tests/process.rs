@@ -59,17 +59,11 @@ fn runner_drains_both_pipes_while_feeding_stdin() {
 }
 
 #[test]
-fn timeout_preserves_partial_output_and_kills_descendants() {
-    let root = tempfile::tempdir().unwrap();
-    let probe = crate::support::process::DescendantProbe::new(root.path());
-    let mut request = fixture(
-        &format!(
-            "printf created-workspace; printf native-diagnostic >&2; {}",
-            probe.script()
-        ),
+fn timeout_preserves_partial_output() {
+    let request = fixture(
+        "printf created-workspace; printf native-diagnostic >&2; sleep 30",
         1.0,
     );
-    request.cwd = Some(root.path().to_path_buf());
     let start = Instant::now();
     let error = NativeProcessRunner.run(&request).unwrap_err();
     assert!(start.elapsed() < Duration::from_secs(3));
@@ -77,7 +71,6 @@ fn timeout_preserves_partial_output_and_kills_descendants() {
     assert_eq!(error.code, None);
     assert_eq!(error.stdout, b"created-workspace");
     assert_eq!(error.stderr, b"native-diagnostic");
-    probe.assert_killed();
 }
 
 #[test]

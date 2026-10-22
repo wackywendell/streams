@@ -13,6 +13,9 @@ use std::path::PathBuf;
 use std::process::{Child, Command, ExitStatus, Stdio};
 use std::time::{Duration, Instant};
 
+#[cfg(test)]
+mod tests;
+
 /// Captured command output, including nonzero or signal exits.
 #[derive(Debug, Clone)]
 pub struct ProcessOutput {

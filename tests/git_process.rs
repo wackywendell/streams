@@ -7,11 +7,10 @@ use std::time::{Duration, Instant};
 use streams_temper::sync::git_io::{Git, GitError};
 use tempfile::TempDir;
 
-fn repository(timeout: f64) -> (TempDir, Git) {
+fn fixture(timeout: f64) -> (TempDir, Git) {
     let root = tempfile::tempdir().unwrap();
-    let git = Git::new(root.path(), 5.0);
-    git.run_raw(&["init", "--quiet"], None, None, &[0]).unwrap();
-    (root, Git::new(git.root(), timeout))
+    let git = Git::new(root.path(), timeout);
+    (root, git)
 }
 
 fn shell(git: &Git, script: &str, input: Option<&[u8]>) -> Result<Vec<u8>, GitError> {
@@ -31,7 +30,7 @@ fn assert_timeout(start: Instant, error: GitError) {
 
 #[test]
 fn drains_both_outputs_while_feeding_large_input() {
-    let (_root, git) = repository(5.0);
+    let (_root, git) = fixture(5.0);
     let input = vec![b'x'; 1024 * 1024];
     // Fill both output pipes before reading stdin, which is itself larger than a pipe.
     let output = shell(
@@ -46,25 +45,15 @@ fn drains_both_outputs_while_feeding_large_input() {
 
 #[test]
 fn deadline_includes_blocked_stdin() {
-    let (_root, git) = repository(0.15);
+    let (_root, git) = fixture(0.15);
     let input = vec![b'x'; 4 * 1024 * 1024];
     let start = Instant::now();
     assert_timeout(start, shell(&git, "sleep 30", Some(&input)).unwrap_err());
 }
 
 #[test]
-fn kills_descendants_even_when_they_ignore_sigterm() {
-    let (root, git) = repository(1.0);
-    let probe = crate::support::process::DescendantProbe::new(root.path());
-    let start = Instant::now();
-    let error = shell(&git, probe.script(), None).unwrap_err();
-    assert_timeout(start, error);
-    probe.assert_killed();
-}
-
-#[test]
 fn deadline_includes_pipes_inherited_after_git_exits() {
-    let (_root, git) = repository(0.15);
+    let (_root, git) = fixture(0.15);
     let start = Instant::now();
     // The alias and Git can exit successfully while the background process owns the pipes.
     assert_timeout(start, shell(&git, "sleep 30 & exit 0", None).unwrap_err());
@@ -72,7 +61,7 @@ fn deadline_includes_pipes_inherited_after_git_exits() {
 
 #[test]
 fn preserves_exit_code_and_stderr() {
-    let (_root, git) = repository(5.0);
+    let (_root, git) = fixture(5.0);
     let error = shell(&git, "printf specific-failure >&2; exit 7", None).unwrap_err();
     assert_eq!(error.code, Some(7));
     assert!(!error.uncertain);
@@ -91,7 +80,7 @@ fn preserves_exit_code_and_stderr() {
 
 #[test]
 fn reports_signal_without_inventing_exit_code() {
-    let (_root, git) = repository(5.0);
+    let (_root, git) = fixture(5.0);
     // Signal Git itself, rather than the alias shell (whose status Git would translate).
     let error = shell(&git, "kill -KILL \"$PPID\"", None).unwrap_err();
     assert_eq!(error.code, None);
@@ -130,7 +119,7 @@ fn rejects_empty_arguments_and_invalid_timeouts() {
 
 #[test]
 fn hook_can_call_raw_execution_without_recursion() {
-    let (_root, git) = repository(5.0);
+    let (_root, git) = fixture(5.0);
     let git = git.with_hook(Arc::new(Mutex::new(
         |git: &Git, args: &[&str], input: Option<&[u8]>, index: Option<&Path>| {
             Some(git.run_raw(args, input, index, &[0]))

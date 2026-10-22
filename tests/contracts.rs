@@ -6,7 +6,6 @@ mod support {
     pub mod herdr;
     pub mod memory;
     pub mod model;
-    pub mod process;
     pub mod pty;
 }
 
