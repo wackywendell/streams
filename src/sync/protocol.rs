@@ -271,16 +271,15 @@ impl ProtocolMachine {
 mod tests {
     use super::*;
     use crate::{
+        memory::MemoryStore,
         model::Stream,
         operations::Actor,
-        storage::{StorageError, Transaction},
-        yaml_store::YamlStore,
+        storage::{StorageError, Store, Transaction},
     };
 
     #[test]
     fn push_budget_counts_dispatches_not_recovery_or_adoption() {
-        let dir = tempfile::tempdir().unwrap();
-        YamlStore::new(dir.path())
+        MemoryStore::default()
             .with_transaction::<_, StorageError>(|tx| {
                 let state = State::from_journal(tx.journal());
                 let mut machine = ProtocolMachine::observe(&state, 2).unwrap();
@@ -307,8 +306,7 @@ mod tests {
 
     #[test]
     fn remote_races_and_failed_pushes_do_not_spend_a_second_attempt() {
-        let dir = tempfile::tempdir().unwrap();
-        YamlStore::new(dir.path())
+        MemoryStore::default()
             .with_transaction::<_, StorageError>(|tx| {
                 let state = State::from_journal(tx.journal());
                 let mut machine = ProtocolMachine::observe(&state, 2).unwrap();
@@ -326,8 +324,7 @@ mod tests {
 
     #[test]
     fn failed_save_effects_preserve_the_error_and_fence_the_machine() {
-        let dir = tempfile::tempdir().unwrap();
-        YamlStore::new(dir.path())
+        MemoryStore::default()
             .with_transaction::<_, StorageError>(|tx| {
                 let state = State::from_journal(tx.journal());
                 let record = Record::Stream(Stream::new("work", "Work", None, "host").unwrap());
@@ -358,8 +355,7 @@ mod tests {
 
     #[test]
     fn save_permit_controls_completion_and_dropped_permit_stays_fenced() {
-        let dir = tempfile::tempdir().unwrap();
-        YamlStore::new(dir.path())
+        MemoryStore::default()
             .with_transaction::<_, StorageError>(|tx| {
                 let state = State::from_journal(tx.journal());
                 let record = Record::Stream(Stream::new("work", "Work", None, "host").unwrap());
