@@ -2,6 +2,7 @@ use crate::support;
 
 use std::collections::BTreeMap;
 use std::fs;
+use std::io::Write;
 use std::path::{Path, PathBuf};
 use streams_temper::storage::{StorageError, Transaction};
 
@@ -212,22 +213,53 @@ fn changed_record_bytes_abort_preparation_before_fencing() {
 }
 
 #[test]
-fn final_path_signing_profile_must_match_prepared_identity_and_policy() {
+fn final_path_conditional_signing_change_keeps_the_installed_graph_fenced() {
     let mut f = Fixture::new();
-    let root = f.root.clone();
+    let final_git = f.root.canonicalize().unwrap().join(".git");
+    let include = f._temp.path().join("final-signing");
+    fs::write(&include, "[gpg]\nprogram = different-program\n").unwrap();
     install_hook(&mut f.git, move |git, args, input, index| {
-        if git.root() == root && args == ["var", "GIT_AUTHOR_IDENT"] {
-            let mut value = test_command(git, args, input, index).unwrap();
-            value.splice(0..0, b"Changed ".iter().copied());
-            Some(Ok(value))
-        } else {
-            None
+        if args.first() != Some(&"init") {
+            return None;
         }
+        let mut args = args.to_vec();
+        args.push("--template=");
+        let result = test_command(git, &args, input, index);
+        if result.is_ok() {
+            let mut config = fs::OpenOptions::new()
+                .append(true)
+                .open(git.root().join(".git/config"))
+                .unwrap();
+            // Local defaults override ambient gpg.program at staging; the real
+            // gitdir include overrides them only after installation.
+            writeln!(
+                config,
+                "\n[gpg]\nprogram = staging-program\n[includeIf \"gitdir:{}\"]\npath = {}",
+                final_git.display(),
+                include.display()
+            )
+            .unwrap();
+        }
+        Some(result)
     });
-    assert!(f.adopt().is_err());
+    assert_eq!(
+        f.adopt().unwrap_err().to_string(),
+        "Git identity or signing policy differs at the final catalog path; inspect save.json"
+    );
     f.fenced();
     assert!(f.root.join(".git").is_dir());
+    assert!(!f.candidates()[0].join(".git").exists());
     assert!(!f.root.join(".catalog-sync/config.json").exists());
+    assert_eq!(
+        test_command(f.git.git(), &["config", "--get", "gpg.program"], None, None).unwrap(),
+        b"different-program\n"
+    );
+    let evidence: serde_json::Value =
+        serde_json::from_slice(&fs::read(f.root.join(".catalog-sync/save.json")).unwrap()).unwrap();
+    assert_eq!(
+        evidence["adoption"]["profile"]["policy"]["gpg.program"],
+        "staging-program"
+    );
 }
 
 #[test]
@@ -248,6 +280,8 @@ fn opaque_import_fence_is_not_blindly_completed_by_reopen() {
         .unwrap();
     let local = LocalCatalog::new(store, f.git.host_id()).unwrap();
     assert!(local.snapshot().is_err());
+    assert!(f.git.snapshot().is_err());
+    assert!(application::open(&f.config).is_err());
     assert!(f.adopt().is_err());
     assert!(!f.root.join(".git").exists());
 }
