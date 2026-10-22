@@ -13,7 +13,6 @@ use streams_temper::config::{
 use streams_temper::frontend::{FrontendId, FrontendMode};
 use streams_temper::storage::Transaction;
 use streams_temper::yaml_store::YamlStore;
-use strum::IntoEnumIterator;
 
 const HOST: &str = "01234567-89ab-4def-8123-456789abcdef";
 
@@ -59,61 +58,24 @@ impl Fixture {
 }
 
 #[test]
-fn config_keys_roundtrip_exact_wire_names() {
-    let keys = [
-        (ConfigKey::CatalogRoot, "catalog.root"),
-        (ConfigKey::FrontendMode, "frontend.mode"),
-        (ConfigKey::StreamSeconds, "sync.stream_seconds"),
-        (ConfigKey::SessionSeconds, "sync.session_seconds"),
-    ];
-    assert_eq!(
-        ConfigKey::iter().collect::<Vec<_>>(),
-        keys.map(|(key, _)| key)
-    );
-    for (key, wire) in keys {
-        assert_eq!(wire.parse::<ConfigKey>().unwrap(), key);
-        assert_eq!(key.to_string(), wire);
-        assert_eq!(key.as_ref(), wire);
-        assert_eq!(key.to_string().parse::<ConfigKey>().unwrap(), key);
-    }
-    for wire in [
-        "unknown",
-        "notes.root",
-        "CatalogRoot",
-        "catalog.Root",
-        "catalog.root ",
-        "",
-    ] {
-        assert!(wire.parse::<ConfigKey>().is_err(), "{wire:?}");
-    }
-}
-
-#[test]
-fn unknown_json_keys_preserve_diagnostics_and_contents() {
+fn invalid_settings_preserve_reader_writer_diagnostics_and_contents() {
     let f = Fixture::new();
-    for (document, message) in [
-        (
-            r#"{"catalog":{"unknown":"x"}}"#,
-            "unknown streams config key: catalog.unknown",
-        ),
-        (
-            r#"{"sync":{"attempts":1}}"#,
-            "unknown streams config key: sync.attempts",
-        ),
-        (
-            r#"{"frontend":{"Mode":"none"}}"#,
-            "unknown streams config key: frontend.Mode",
-        ),
-        (r#"{"notes":{}}"#, "invalid config section: notes"),
+    for document in [
+        "{",
+        r#"{"frontend":{"mode":"none","mode":"auto"}}"#,
+        r#"{"catalog":{"unknown":"x"}}"#,
+        r#"{"sync":{"stream_seconds":"12"}}"#,
     ] {
         f.write(document);
-        assert_eq!(f.config.read_overrides().unwrap_err().to_string(), message);
+        let error = f.config.read_overrides().unwrap_err().to_string();
+        assert!(!error.is_empty());
+        assert!(f.config.load().is_err());
         assert_eq!(
             f.config
                 .set(ConfigKey::FrontendMode, "herdr")
                 .unwrap_err()
                 .to_string(),
-            message
+            error
         );
         assert_eq!(
             fs::read_to_string(f.config.config_path()).unwrap(),
@@ -285,86 +247,22 @@ fn overrides_get_set_and_extensible_frontends() {
 }
 
 #[test]
-fn malformed_or_unknown_settings_fail_without_overwrite() {
+fn invalid_setting_text_is_rejected_before_locking_or_writing() {
     let f = Fixture::new();
-    for text in [
-        "{",
-        "[]",
-        "null",
-        r#"{"catalog":null}"#,
-        r#"{"catalog":[]}"#,
-        r#"{"catalog":{"root":1}}"#,
-        r#"{"catalog":{"root":"relative"}}"#,
-        r#"{"catalog":{"root":"/bad\u0000path"}}"#,
-        r#"{"catalog":{"unknown":"x"}}"#,
-        r#"{"notes":{}}"#,
-        r#"{"sync":{"attempts":1}}"#,
-        r#"{"frontend":{"mode":true}}"#,
-        r#"{"frontend":{"mode":" "}}"#,
-        r#"{"catalog":{},"catalog":{}}"#,
-        r#"{"frontend":{"mode":"none","mode":"auto"}}"#,
-    ] {
-        f.write(text);
-        assert!(f.config.load().is_err(), "{text}");
-        assert!(
-            f.config.set(ConfigKey::FrontendMode, "herdr").is_err(),
-            "{text}"
-        );
-        assert_eq!(fs::read_to_string(f.config.config_path()).unwrap(), text);
-    }
-    f.write("{}");
-    for (key, value) in [
-        (ConfigKey::CatalogRoot, "relative"),
-        (ConfigKey::CatalogRoot, ""),
-        (ConfigKey::CatalogRoot, "/bad\0path"),
-        (ConfigKey::FrontendMode, ""),
-    ] {
-        assert!(f.config.set(key, value).is_err());
-        assert_eq!(fs::read_to_string(f.config.config_path()).unwrap(), "{}");
-    }
-}
-
-#[test]
-fn durations_are_strict_nonnegative_finite_json_numbers() {
-    let f = Fixture::new();
-    for key in [ConfigKey::StreamSeconds, ConfigKey::SessionSeconds] {
-        for text in ["0", "-0.0", "0.25", "12", "1e100"] {
-            f.config.set(key, text).unwrap();
-            assert_eq!(
-                f.config.get(key).unwrap().as_f64().unwrap(),
-                text.parse::<f64>().unwrap()
-            );
-            let name = key.as_ref().split_once('.').unwrap().1;
-            f.write(&format!("{{\"sync\":{{\"{name}\":{text}}}}}"));
-            assert_eq!(
-                f.config.get(key).unwrap().as_f64().unwrap(),
-                text.parse::<f64>().unwrap()
-            );
-        }
-        for text in [
-            "-1",
-            "true",
-            "false",
-            "null",
-            "\"12\"",
-            "{}",
-            "[]",
-            "NaN",
-            "Infinity",
-            "-Infinity",
-            "1e999",
-            "",
-        ] {
-            let before = fs::read(f.config.config_path()).unwrap();
-            assert!(f.config.set(key, text).is_err(), "{key} {text}");
-            assert_eq!(fs::read(f.config.config_path()).unwrap(), before);
-            let name = key.as_ref().split_once('.').unwrap().1;
-            let document = format!("{{\"sync\":{{\"{name}\":{text}}}}}");
-            f.write(&document);
-            assert!(f.config.load().is_err(), "{document}");
-            f.write(std::str::from_utf8(&before).unwrap());
-        }
-    }
+    assert!(f.config.set(ConfigKey::StreamSeconds, "NaN").is_err());
+    assert_eq!(fs::read_dir(&f.home).unwrap().count(), 0);
+    let document = r#"{"sync":{"session_seconds":12}}"#;
+    f.write(document);
+    assert!(f.config.set(ConfigKey::CatalogRoot, "relative").is_err());
+    assert!(
+        f.config
+            .with_lock(|lock| lock.set(ConfigKey::StreamSeconds, "false"))
+            .is_err()
+    );
+    assert_eq!(
+        fs::read_to_string(f.config.config_path()).unwrap(),
+        document
+    );
 }
 
 #[test]

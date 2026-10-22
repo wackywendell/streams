@@ -23,6 +23,9 @@ use crate::storage::{Journal, StorageError};
 use crate::sync::policy::Policy;
 use crate::sync::state::{RepairRequired, State};
 
+#[cfg(test)]
+mod tests;
+
 /// The supported persistent keys; backend selection lives in the catalog marker.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, EnumString, Display, AsRefStr, EnumIter)]
 pub enum ConfigKey {
@@ -147,7 +150,10 @@ impl Config {
         if data.is_none() && self.config_path.is_symlink() {
             return Err(invalid("broken config symlink"));
         }
-        let mut data = data.unwrap_or_else(|| json!({}));
+        self.validate_overrides(data.unwrap_or_else(|| json!({})))
+    }
+
+    fn validate_overrides(&self, mut data: Value) -> Result<Value> {
         let object = data
             .as_object_mut()
             .ok_or_else(|| invalid("config must contain a JSON object"))?;
