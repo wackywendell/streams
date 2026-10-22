@@ -43,6 +43,7 @@ mod runtime_native;
 mod runtime_registry;
 mod runtime_revisions;
 mod runtime_state;
+mod serve;
 mod state;
 mod storage_conformance;
 mod transaction;

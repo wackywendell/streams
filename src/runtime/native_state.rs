@@ -790,6 +790,35 @@ mod tests {
     }
 
     #[test]
+    fn native_lock_excludes_other_threads_until_its_descriptor_closes() {
+        let (_temp, state, socket) = setup();
+        let held = guard(&state, &socket);
+        std::thread::scope(|scope| {
+            scope
+                .spawn(|| {
+                    assert!(
+                        state
+                            .lock(&socket, "workspace", 0.0, &AtomicBool::new(false))
+                            .is_err()
+                    );
+                })
+                .join()
+                .unwrap();
+            drop(held);
+            scope
+                .spawn(|| {
+                    drop(
+                        state
+                            .lock(&socket, "workspace", 0.0, &AtomicBool::new(false))
+                            .unwrap(),
+                    );
+                })
+                .join()
+                .unwrap();
+        });
+    }
+
+    #[test]
     fn lock_retries_after_the_final_wait() {
         let (_temp, state, socket) = setup();
         let mut held = Some(guard(&state, &socket));

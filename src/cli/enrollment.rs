@@ -68,7 +68,7 @@ impl Receipt {
 
 impl App {
     pub(super) fn enroll(&self) -> Result<Output> {
-        let source = io::read_to_string(io::stdin())?;
+        let source = self.input.read()?;
         let opened = application::open(&self.config)?;
         let catalog_source = opened.source_id()?;
         let request = EnrollmentRequest::parse(&source, &catalog_source)?;

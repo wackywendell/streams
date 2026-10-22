@@ -1,6 +1,8 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
-import { spawnSync } from 'node:child_process';
+import { spawn, spawnSync } from 'node:child_process';
+import { once } from 'node:events';
+import { createInterface } from 'node:readline';
 import { createHash, randomUUID } from 'node:crypto';
 import { existsSync, mkdtempSync, mkdirSync, readFileSync, readdirSync, realpathSync, rmSync, symlinkSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
@@ -192,7 +194,7 @@ function herdrServer(t,data) {
  t.after(()=>worker.terminate());
  assert.equal(Atomics.wait(new Int32Array(ready),0,0,5000),'ok','fake Herdr did not listen');
 }
-function real(t) {
+function real(t,{enrolled=true}={}) {
  assert.ok(existsSync(binary),`Build the requested Rust CLI first: ${binary}`);
  // Keep the named-session socket below the Unix socket path-length limit.
  const directory=temporary(t,'/tmp'),id=randomUUID(),socket=join(directory,'config/herdr/sessions/fixture/herdr.sock'),fixture=join(directory,'native.json'),log=join(directory,'native-commands.jsonl'),executable=join(directory,'herdr'),spawned=join(directory,'herdr-spawned.jsonl'),f=piContext(directory,id);
@@ -211,17 +213,18 @@ function real(t) {
  const cli=(...args)=>{const result=invoke(...args);assert.equal(result.code,0,JSON.stringify(result.data));return result.data;};
  cli('init','--sync','none');cli('config','set','frontend.mode','none');
  const stream=cli('create','Effort').stream;
- const session=cli('session','attach',stream.id,'--harness','pi','--session-id',id,'--title','Real Rust lane').session;
+ const session=enrolled?cli('session','attach',stream.id,'--harness','pi','--session-id',id,'--title','Real Rust lane').session:null;
  cli('config','set','frontend.mode','herdr');
  const config=join(directory,'cards.json');writeFileSync(config,JSON.stringify({workspace_startup:'manual',session_naming:true,workspace_naming:false,tab_naming:false}));process.env.WORK_CARDS_CONFIG_PATH=config;
  const catalog=cli('config','get','catalog.root'),hash=value=>createHash('sha256').update(value).digest('hex'),key=(...parts)=>hash('['+parts.map(JSON.stringify).join(', ')+']');
- const state=join(directory,'state/streams/catalogs',hash(realpathSync(catalog)),key(session.host_id));
+ const host=session?.host_id??JSON.parse(readFileSync(join(directory,'config/streams/host.json'),'utf8')).id;
+ const state=join(directory,'state/streams/catalogs',hash(realpathSync(catalog)),key(host));
  const association=join(state,'associations',key('herdr',socket,'fixture'),key('workspace')+'.json');
  mkdirSync(dirname(association),{recursive:true,mode:0o700});writeFileSync(association,JSON.stringify({version:1,workspace_id:'workspace',stream_id:stream.id,session_id:null,command:null,ready:true}),{mode:0o600});
  const transcript=join(directory,'pi/sessions',id+'.jsonl');mkdirSync(dirname(transcript),{recursive:true});
  writeFileSync(transcript,JSON.stringify({type:'session',version:3,id,cwd:directory,timestamp:new Date(0).toISOString()})+'\n');
  const commands=()=>{assert.equal(existsSync(spawned),false,'the Rust CLI started a Herdr process');return existsSync(log)?readFileSync(log,'utf8').trim().split('\n').filter(Boolean).map(JSON.parse):[];};
- return {...f,directory,id,state,native,put,invoke,cli,commands};
+ return {...f,directory,id,stream,state,native,put,invoke,cli,commands};
 }
 for(const pinned of [false,true]) test(`native operation Herdr request budgets${pinned?' with --expect':''}`,t=>{
  const f=real(t);writeFileSync(join(f.directory,'native-commands.jsonl'),'');
@@ -239,6 +242,62 @@ for(const pinned of [false,true]) test(`native operation Herdr request budgets${
    capture:{ping:1,'session.snapshot':4}}[operation];
   assert.deepEqual(counts,expected,operation);
  }
+});
+test('real protocol-1 child emits native scope changes, deduplicates observations and preserves stale native fences', {timeout:300000}, async t=>{
+ const f=real(t,{enrolled:false}),beforeStart=f.commands().length;
+ const child=spawn(binary,['serve','--session-id',f.id,'--plugin-root',plugin],{env:{...process.env},cwd:f.directory,stdio:['pipe','pipe','pipe']});
+ const closed=once(child,'close'),frames=[],waiting=[];let stderr='';
+ child.stderr.setEncoding('utf8').on('data',chunk=>{stderr+=chunk;});
+ createInterface({input:child.stdout}).on('line',line=>{
+  const value=JSON.parse(line),resolve=waiting.shift();if(resolve)resolve(value);else frames.push(value);
+ });
+ const next=()=>frames.length?Promise.resolve(frames.shift()):new Promise(resolve=>waiting.push(resolve));
+ const request=(id,argv,input)=>child.stdin.write(JSON.stringify({type:'request',id,argv,...(input===undefined?{}:{input})})+'\n');
+ t.after(async()=>{child.kill('SIGKILL');await closed;});
+ assert.deepEqual(await next(),{type:'ready',protocol:1});
+ const unready=await next();assert.equal(unready.event,'scope');assert.equal(unready.value,null);assert.equal(typeof unready.reason,'string');
+ const unreadyCost=f.commands().length-beforeStart,beforeUnready=f.commands().length;
+ request(12,['native','observe']);const unavailable=await next();assert.equal(unavailable.id,12);assert.equal(unavailable.code,1);
+ assert.equal(unavailable.value.error.message,unready.reason);assert.equal(f.commands().length-beforeUnready,unreadyCost);
+ const unenrolled=f.cli('agent','context','--harness','pi','--session-id',f.id,'--stream-id',f.stream.id);
+ request(10,['agent','enroll'],{operation_id:'child-enroll',catalog_source:unenrolled.catalog_source,harness:'pi',harness_session_id:f.id,
+  actor:'user',cwd:f.directory,stream_id:f.stream.id,session:{title:'Real Rust lane'}});
+ const enrolled=await next();assert.equal(enrolled.id,10);assert.equal(enrolled.code,0,JSON.stringify(enrolled));
+ const readyScope=await next();assert.equal(readyScope.event,'scope');assert.equal(readyScope.value.scope.nativeSessionId,f.id);
+ const beforeCli=f.commands().length;
+ assert.deepEqual(readyScope.value,f.cli('native','--session-id',f.id,'observe'));
+ const observeCost=f.commands().length-beforeCli;
+ const context=f.cli('agent','context','--harness','pi','--session-id',f.id);
+ const input={operation_id:'child-title',catalog_source:context.catalog_source,actor:'user',kind:'session',before:context.session,
+  changes:{title:'Child title'},ownership_token:context.authority.token,inputs:[{kind:'stream',record:context.stream}]};
+ request(1,['agent','apply','--json'],input);
+ let reply=await next();assert.equal(reply.type,'response');assert.equal(reply.id,1);assert.equal(reply.code,0,JSON.stringify(reply));assert.deepEqual(reply.notices,[]);
+ const renamed=await next();assert.equal(renamed.event,'scope');assert.equal(renamed.value.session.title,'Child title');
+ // Count work, not time: one child observe costs exactly one CLI observation.
+ const beforeObserve=f.commands().length;
+ request(2,['native','--session-id',f.id,'observe','--json']);
+ reply=await next();assert.equal(reply.id,2);assert.equal(reply.code,0);assert.deepEqual(reply.value,renamed.value);
+ assert.equal(f.commands().length-beforeObserve,observeCost);
+ // Neither rejected saves nor unchanged observations should emit scope events.
+ request(3,['agent','apply'],null);reply=await next();assert.equal(reply.id,3);assert.equal(reply.code,1);
+ request(11,['agent','enroll'],null);reply=await next();assert.equal(reply.id,11);assert.equal(reply.code,1);
+ f.native.pane.tab_id='moved-tab';f.native.snapshot.tabs[0].tab_id='moved-tab';f.native.snapshot.layouts[0].tab_id='moved-tab';f.put();
+ request(4,['native','project','--session-id',f.id,'--expect',JSON.stringify({version:1,scope:renamed.value.scope,context:renamed.value.context})]);
+ const movedFrames=[await next(),await next()],failed=movedFrames.find(frame=>frame.type==='response'),moved=movedFrames.find(frame=>frame.event==='scope');
+ assert.equal(failed.id,4);assert.equal(failed.code,1);assert.equal(failed.value.error.kind,'native-context-changed',JSON.stringify(failed));
+ assert.ok(moved.value,JSON.stringify(moved));assert.equal(moved.value.context.tabId,'moved-tab');assert.equal(moved.value.scope.sessionId,renamed.value.scope.sessionId);
+ // Adopting the new expectation must permit effects despite inherited tab env.
+ request(5,['native','project','--expect',JSON.stringify({version:1,scope:moved.value.scope,context:moved.value.context})]);
+ reply=await next();assert.equal(reply.id,5);assert.equal(reply.code,0,JSON.stringify(reply));
+ const bound=await next();assert.equal(bound.event,'scope');assert.equal(typeof bound.value.context.binding,'string');
+ request(6,['workspace','capture',f.stream.id]);reply=await next();assert.equal(reply.id,6);assert.equal(reply.code,0,JSON.stringify(reply));
+ assert.equal(reply.value.stream_id,f.stream.id);assert.ok(reply.value.arrangement.tabs.length);
+ request(7,['sync','--json']);reply=await next();assert.equal(reply.id,7);assert.equal(reply.code,0,JSON.stringify(reply));
+ const beforeFailures=f.commands().length;
+ request(8,['agent','apply'],null);reply=await next();assert.equal(reply.id,8);assert.equal(reply.code,1);
+ request(9,['agent','enroll'],null);reply=await next();assert.equal(reply.id,9);assert.equal(reply.code,1);
+ child.stdin.end();assert.equal((await closed)[0],0,stderr);assert.deepEqual(frames,[]);assert.equal(stderr,'');
+ assert.equal(f.commands().length,beforeFailures);
 });
 test('real Rust owner observation is read-only and rejects stale context before metadata effects',t=>{
  const f=real(t),before=readFileSync(join(f.directory,'native.json'),'utf8');

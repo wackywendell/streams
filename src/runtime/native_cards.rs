@@ -288,14 +288,17 @@ impl NativeCardEngine {
         if caller.workspace_id != current.workspace_id
             || caller.tab_id != current.tab_id
             || environment.get("HERDR_PANE_ID") != Some(&caller.pane_id)
-            || environment
-                .get("HERDR_TAB_ID")
-                .is_some_and(|v| v != &caller.tab_id)
-            || environment
-                .get("HERDR_WORKSPACE_ID")
-                .is_some_and(|v| v != &caller.workspace_id)
+            || (launched.is_some()
+                && (environment
+                    .get("HERDR_TAB_ID")
+                    .is_some_and(|v| v != &caller.tab_id)
+                    || environment
+                        .get("HERDR_WORKSPACE_ID")
+                        .is_some_and(|v| v != &caller.workspace_id)))
         {
-            return Err(invalid("caller native tuple changed during bootstrap"));
+            return Err(super::RuntimeError::NativeContextChanged(
+                "caller native tuple changed during bootstrap".into(),
+            ));
         }
         Ok(Self {
             client,

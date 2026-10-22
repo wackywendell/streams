@@ -48,6 +48,13 @@ pub(super) enum NativeReclaim {
 
 #[derive(Debug, Subcommand)]
 pub(super) enum Command {
+    /// Serve protocol-1 requests for one Pi session over stdio.
+    Serve {
+        #[arg(long)]
+        session_id: String,
+        #[arg(long)]
+        plugin_root: PathBuf,
+    },
     /// Inspect and replay private, frozen helper requests without live catalog writes.
     #[command(disable_help_flag = true)]
     Debug {

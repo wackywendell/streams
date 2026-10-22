@@ -207,3 +207,39 @@ pub(crate) fn check_empty_catalog_root(root: &Path) -> Result<(), StorageError> 
     }
     Ok(())
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn catalog_lock_excludes_independent_opens_in_other_threads() {
+        let directory = tempfile::tempdir().unwrap();
+        let path = directory.path().join("catalog.lock");
+        let held = lock(&path).unwrap();
+        std::thread::scope(|scope| {
+            scope
+                .spawn(|| {
+                    let contender = OpenOptions::new()
+                        .read(true)
+                        .write(true)
+                        .open(&path)
+                        .unwrap();
+                    assert_ne!(
+                        unsafe {
+                            libc::flock(contender.as_raw_fd(), libc::LOCK_EX | libc::LOCK_NB)
+                        },
+                        0
+                    );
+                    assert_eq!(
+                        std::io::Error::last_os_error().kind(),
+                        std::io::ErrorKind::WouldBlock
+                    );
+                })
+                .join()
+                .unwrap();
+            drop(held);
+            scope.spawn(|| drop(lock(&path).unwrap())).join().unwrap();
+        });
+    }
+}

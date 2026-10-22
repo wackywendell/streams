@@ -11,6 +11,7 @@ mod enrollment;
 mod fields;
 #[cfg(test)]
 mod native_tests;
+mod serve;
 mod workspaces;
 
 use args::{
@@ -26,6 +27,7 @@ use std::{
     io::{self, Write},
     path::{Path, PathBuf},
     process::ExitCode,
+    sync::{Arc, Mutex},
 };
 use streams_temper::{
     agent::{self, ContextRequest},
@@ -56,6 +58,10 @@ pub(super) enum CliError {
     NativeContextChanged(String),
     #[error("{0}")]
     NotFound(String),
+    #[error("{0}")]
+    UnsupportedCommand(String),
+    #[error("Native session differs from the child session")]
+    SessionMismatch,
     #[error("{message}")]
     Ambiguous {
         message: String,
@@ -73,6 +79,8 @@ impl CliError {
             Self::InvalidRef(_) => "invalid-ref",
             Self::NativeContextChanged(_) => "native-context-changed",
             Self::NotFound(_) => "not-found",
+            Self::UnsupportedCommand(_) => "unsupported-command",
+            Self::SessionMismatch => "session-mismatch",
             Self::Ambiguous { .. } => "ambiguous",
         };
         let mut error = json!({"kind":kind,"message":self.to_string()});
@@ -162,9 +170,51 @@ impl Output {
     }
 }
 
-fn preview() -> Result<Output> {
-    let source = io::read_to_string(io::stdin())?;
-    Ok(Output::value(agent::preview(&source)?))
+#[derive(Clone, Default)]
+enum Input {
+    #[default]
+    Stdin,
+    Request(Arc<Mutex<String>>),
+}
+impl Input {
+    fn request(value: Option<Value>) -> Self {
+        let text = value.map(|value| value.to_string()).unwrap_or_default();
+        Self::Request(Arc::new(Mutex::new(text)))
+    }
+    fn read(&self) -> Result<String> {
+        match self {
+            Self::Stdin => Ok(io::read_to_string(io::stdin())?),
+            Self::Request(input) => Ok(std::mem::take(
+                &mut *input
+                    .lock()
+                    .map_err(|error| CliError::message(error.to_string()))?,
+            )),
+        }
+    }
+}
+
+fn preview(input: &Input) -> Result<Output> {
+    Ok(Output::value(agent::preview(&input.read()?)?))
+}
+
+fn execute(command: Command, input: Input, json: bool) -> Result<Output> {
+    match command {
+        Command::Debug { arguments } => debug::forward(arguments, json),
+        Command::Native {
+            command: NativeCommand::Pane,
+            ..
+        } if json => Err(CliError::message(
+            "native pane is interactive and does not support --json",
+        )),
+        Command::Agent {
+            command: AgentCommand::Preview,
+        } => preview(&input),
+        command => {
+            let mut app = App::new()?;
+            app.input = input;
+            app.execute(command)
+        }
+    }
 }
 
 pub(super) fn run() -> ExitCode {
@@ -189,19 +239,20 @@ pub(super) fn run() -> ExitCode {
             return ExitCode::from(code);
         }
     };
-    let outcome = match parsed.command {
-        Command::Debug { arguments } => debug::forward(arguments, parsed.json),
-        Command::Native {
-            command: NativeCommand::Pane,
-            ..
-        } if parsed.json => Err(CliError::message(
-            "native pane is interactive and does not support --json",
-        )),
-        Command::Agent {
-            command: AgentCommand::Preview,
-        } => preview(),
-        command => App::new().and_then(|app| app.execute(command)),
-    };
+    if let Command::Serve {
+        session_id,
+        plugin_root,
+    } = parsed.command
+    {
+        return match serve::run(session_id, plugin_root) {
+            Ok(()) => ExitCode::SUCCESS,
+            Err(error) => {
+                eprintln!("streams serve: {error}");
+                ExitCode::from(2)
+            }
+        };
+    }
+    let outcome = execute(parsed.command, Input::Stdin, parsed.json);
     let (text, code) = match outcome {
         Ok(output) => {
             if !parsed.json {
@@ -244,6 +295,7 @@ struct App {
     config: Config,
     environment: BTreeMap<String, String>,
     cwd: PathBuf,
+    input: Input,
 }
 impl App {
     fn new() -> Result<Self> {
@@ -299,6 +351,7 @@ impl App {
             config: Config::new(&environment, &cwd)?,
             environment,
             cwd,
+            input: Input::Stdin,
         })
     }
     fn selection(&self, requested: Option<FrontendRequest>) -> Result<FrontendSelection> {
@@ -383,7 +436,7 @@ impl App {
     }
     fn read_text(&self, path: &Path) -> Result<String> {
         if path == Path::new("-") {
-            Ok(io::read_to_string(io::stdin())?)
+            self.input.read()
         } else {
             Ok(fs::read_to_string(self.path(path)?)?)
         }
@@ -413,6 +466,9 @@ impl App {
     }
     fn execute(&self, command: Command) -> Result<Output> {
         match command {
+            Command::Serve { .. } => Err(CliError::UnsupportedCommand(
+                "nested serve is not supported".into(),
+            )),
             Command::Debug { arguments } => debug::forward(arguments, false),
             Command::Init {
                 sync,
@@ -973,14 +1029,14 @@ impl App {
     fn agent(&self, command: AgentCommand) -> Result<Output> {
         match command {
             AgentCommand::Enroll => self.enroll(),
-            AgentCommand::Preview => preview(),
+            AgentCommand::Preview => preview(&self.input),
             AgentCommand::CaptureInputs {
                 stream_id,
                 workspace_id,
             } => self.capture_inputs(stream_id.as_deref(), workspace_id.as_deref()),
             AgentCommand::Apply => {
                 let opened = application::open(&self.config)?;
-                let source = io::read_to_string(io::stdin())?;
+                let source = self.input.read()?;
                 catalog::apply(opened.backend(), &source, &opened.source_id()?)
             }
             AgentCommand::Context {

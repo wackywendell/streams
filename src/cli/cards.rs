@@ -283,6 +283,7 @@ fn build(
         config: Config::new(&read_environment, &read_cwd)?,
         environment: read_environment,
         cwd: read_cwd,
+        input: app.input.clone(),
     };
     let source = source::ApplicationSource::new(source_app, session_id, scope, owner);
     let mut engine = NativeCardEngine::new(
