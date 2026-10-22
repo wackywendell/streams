@@ -186,6 +186,18 @@ function real(t) {
  writeFileSync(transcript,JSON.stringify({type:'session',version:3,id,cwd:directory,timestamp:new Date(0).toISOString()})+'\n');
  return {...f,directory,id,state,native,put,invoke,cli,commands:()=>readFileSync(log,'utf8').trim().split('\n').filter(Boolean).map(JSON.parse)};
 }
+test('native operation Herdr request budgets',t=>{
+ const f=real(t);writeFileSync(join(f.directory,'native-commands.jsonl'),'');
+ for(const operation of ['observe','check','project','capture']) {
+  const start=f.commands().length;
+  f.cli('native','--session-id',f.id,operation);
+  const calls=f.commands().slice(start),counts={};
+  for(const call of calls) {const key=call.slice(0,2).join(' ');counts[key]=(counts[key]??0)+1;}
+  // Baseline process starts, tightened after the socket/observation change.
+  const budget={observe:27,check:27,project:251,capture:74}[operation];
+  assert.equal(calls.length,budget,`${operation}: ${JSON.stringify(counts)}`);
+ }
+});
 test('real Rust owner observation is read-only and rejects stale context before metadata effects',t=>{
  const f=real(t),before=readFileSync(join(f.directory,'native.json'),'utf8');
  const observed=f.cli('native','--session-id',f.id,'observe');

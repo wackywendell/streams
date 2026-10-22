@@ -41,6 +41,7 @@ struct World {
     current: String,
     observation: CardObservation,
     effects: Vec<Vec<String>>,
+    calls: Vec<Vec<String>>,
     malformed_open: bool,
     ambiguous_close: bool,
     fail_after_open: bool,
@@ -145,6 +146,7 @@ impl ProcessRunner for FakeHerdr {
             .collect();
         let a: Vec<&str> = args.iter().map(String::as_str).collect();
         let mut w = self.world.lock().unwrap();
+        w.calls.push(args.clone());
         let result = match a.as_slice() {
             ["status", "--json"] => json!({"server":{"running":true,"compatible":true,
                 "endpoint_compatible":true,"version":"0.9.5","socket":self.socket,"session":"fake"}}),
@@ -421,6 +423,7 @@ impl Fixture {
             current: "owner".into(),
             observation,
             effects: vec![],
+            calls: vec![],
             malformed_open: false,
             ambiguous_close: false,
             fail_after_open: false,
@@ -684,6 +687,56 @@ fn card_pane_cannot_use_the_owner_bridge() {
     assert!(engine.observe_owner().is_err());
     assert_eq!(before, f.effects().len());
 }
+#[test]
+fn operation_request_budgets() {
+    for operation in ["observe", "check", "open", "close", "project"] {
+        let f = Fixture::new();
+        let mut engine = f.engine();
+        // Close exercises an owned, ready card, not the no-op absence path.
+        if operation == "close" {
+            engine.open_display(OpenMode::Explicit).unwrap();
+        }
+        f.runner.world.lock().unwrap().calls.clear();
+        match operation {
+            "observe" => {
+                engine.observe_owner().unwrap();
+            }
+            "check" => {
+                engine.status().unwrap();
+            }
+            "open" => {
+                engine.open_display(OpenMode::Explicit).unwrap();
+            }
+            "close" => {
+                engine.close_display().unwrap();
+            }
+            "project" => {
+                engine.project_summaries().unwrap();
+                engine
+                    .project_names(NameProjectionIntent::Automatic)
+                    .unwrap();
+                engine.project_caption().unwrap();
+            }
+            _ => unreachable!(),
+        }
+        let world = f.runner.world.lock().unwrap();
+        let mut counts = BTreeMap::new();
+        for call in &world.calls {
+            *counts.entry(call[..2].join(" ")).or_insert(0_usize) += 1;
+        }
+        // Baseline first; tightened when the observation transport is replaced.
+        let (snapshots, starts) = match operation {
+            "observe" | "check" => (1, 2),
+            "open" => (16, 44),
+            "close" => (4, 10),
+            "project" => (15, 36),
+            _ => unreachable!(),
+        };
+        assert_eq!(counts["api snapshot"], snapshots, "{operation}: {counts:?}");
+        assert_eq!(world.calls.len(), starts, "{operation}: {counts:?}");
+    }
+}
+
 #[test]
 fn bootstrap_and_verify_are_read_only_and_require_pair_and_durable_evidence() {
     let f = Fixture::new();
