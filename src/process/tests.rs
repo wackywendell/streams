@@ -45,7 +45,12 @@ impl DescendantProbe {
             fs::read(self.root.join("descendant-ready")).unwrap(),
             b"ready"
         );
-        // SIGKILL delivery/descriptor teardown can trail the leader's waitpid.
+        self.assert_reader_closed();
+        assert!(!self.root.join("descendant-survived").exists());
+    }
+
+    fn assert_reader_closed(&self) {
+        // SIGKILL delivery and inherited descriptor teardown can trail the leader's waitpid.
         let deadline = Instant::now() + Duration::from_secs(1);
         while self.reader_exists() {
             if Instant::now() >= deadline {
@@ -61,7 +66,6 @@ impl DescendantProbe {
             }
             std::thread::sleep(Duration::from_millis(1));
         }
-        assert!(!self.root.join("descendant-survived").exists());
     }
 }
 
@@ -78,7 +82,8 @@ fn probe_detects_a_live_reader_and_its_closure() {
         .unwrap();
     assert!(probe.reader_exists());
     drop(reader);
-    assert!(!probe.reader_exists());
+    // A concurrent fork can retain the descriptor until its close-on-exec takes effect.
+    probe.assert_reader_closed();
 }
 
 #[test]
