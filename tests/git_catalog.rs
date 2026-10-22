@@ -65,9 +65,8 @@ fn accepted(catalog: &GitCatalog, operation: &Operation) {
 fn physical_save_faults_keep_partial_writes_fenced_after_reopen() {
     for command in ["add", "commit-tree", "update-ref"] {
         let dir = tempfile::tempdir().unwrap();
-        let mut local = catalog(&dir.path().join("catalog"), "host")
-            .initialize(None, "main")
-            .unwrap();
+        let mut local = catalog(&dir.path().join("catalog"), "host");
+        support::git::seed_bootstrap(&local);
         let head = local.git().head().unwrap();
         let index = std::fs::read(local.root().join(".git/index")).unwrap();
         let failed = Arc::new(AtomicBool::new(false));
@@ -121,9 +120,8 @@ fn physical_save_faults_keep_partial_writes_fenced_after_reopen() {
 #[test]
 fn dirty_ignored_and_unsupported_history_fail_closed() {
     let dir = tempfile::tempdir().unwrap();
-    let local = catalog(&dir.path().join("catalog"), "host")
-        .initialize(None, "main")
-        .unwrap();
+    let local = catalog(&dir.path().join("catalog"), "host");
+    support::git::seed_bootstrap(&local);
     std::fs::write(local.root().join("unexpected"), "do not publish").unwrap();
     assert!(local.snapshot().is_err());
     assert!(local.sync(SyncEvent::Explicit).requires_repair());

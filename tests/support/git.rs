@@ -6,6 +6,50 @@ use streams_temper::sync::{
     git_io::{Git, GitError, GitHook},
 };
 
+// Seed an existing repository; tests of initialization itself use production initialize.
+#[allow(dead_code)] // The library Git harness imports only the process hooks.
+pub fn seed_bootstrap(catalog: &GitCatalog) {
+    use streams_temper::{
+        storage::{StorageError, Transaction},
+        sync::{
+            envelope::BOOTSTRAP,
+            state::{GitConfig, State},
+        },
+    };
+    std::fs::create_dir_all(catalog.root()).unwrap();
+    let git = catalog.git();
+    git.run(
+        &["init", "--initial-branch=main", "--template="],
+        None,
+        None,
+        &[0],
+    )
+    .unwrap();
+    let input = format!(
+        "commit refs/heads/main\ncommitter Streams test <streams@example.invalid> 1 +0000\ndata {}\n{}\ndeleteall\ndone\n",
+        BOOTSTRAP.len(),
+        BOOTSTRAP,
+    );
+    git.run(
+        &["fast-import", "--quiet"],
+        Some(input.as_bytes()),
+        None,
+        &[0],
+    )
+    .unwrap();
+    git.run(&["read-tree", "--reset", "-u", "HEAD"], None, None, &[0])
+        .unwrap();
+    catalog
+        .store()
+        .with_transaction::<_, StorageError>(|tx| {
+            State::from_journal(tx.journal())
+                .write_config(&GitConfig::new(None, "main", catalog.host_id()).unwrap())
+                .unwrap();
+            Ok(())
+        })
+        .unwrap();
+}
+
 // Isolate author/signing and index caches per subprocess, never user config.
 pub fn install_hook(
     catalog: &mut GitCatalog,
