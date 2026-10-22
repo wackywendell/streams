@@ -1,15 +1,17 @@
 //! Explicit snapshot import; preparation is disposable, installation is durably fenced.
 
 mod completion;
+mod installation;
+mod signing;
 mod source;
 
+use signing::SigningProfile;
 use source::Source;
 
 use std::collections::BTreeMap;
 use std::fs::{self, File};
 use std::path::Path;
 
-use serde::Serialize;
 use serde_json::{Map, Value, json};
 use sha2::{Digest, Sha256};
 use tempfile::TempDir;
@@ -21,55 +23,12 @@ use crate::storage::Transaction;
 
 use super::baseline::{Baseline, decode_baseline, encode_baseline};
 use super::git::{GitCatalog, LockedCatalog};
-use super::git_io::Git;
 use super::history::read_history;
 use super::protocol::ProtocolMachine;
 use super::state::{GitConfig, RepairRequired};
 
 fn repair(error: impl std::fmt::Display) -> RepairRequired {
     RepairRequired::new(error.to_string())
-}
-
-#[derive(Debug, PartialEq, Eq, Serialize)]
-struct SigningProfile {
-    author: String,
-    committer: String,
-    policy: BTreeMap<String, String>,
-}
-
-fn signing_profile(git: &Git) -> Result<SigningProfile, RepairRequired> {
-    let raw = git
-        .run(
-            &[
-                "config",
-                "--null",
-                "--get-regexp",
-                r"^(user\.|author\.|committer\.|commit\.gpgsign$|gpg\.)",
-            ],
-            None,
-            None,
-            &[0, 1],
-        )
-        .map_err(repair)?;
-    let raw = std::str::from_utf8(&raw).map_err(repair)?;
-    let mut policy = BTreeMap::new();
-    for entry in raw.split('\0').filter(|s| !s.is_empty()) {
-        let (key, value) = entry.split_once('\n').unwrap_or((entry, ""));
-        policy.insert(key.into(), value.into());
-    }
-    let identity = |name: &str| -> Result<String, RepairRequired> {
-        let value = git.text(&["var", name], None, None, &[0]).map_err(repair)?;
-        value
-            .rsplitn(3, ' ')
-            .nth(2)
-            .map(str::to_owned)
-            .ok_or_else(|| repair("invalid Git identity"))
-    };
-    Ok(SigningProfile {
-        author: identity("GIT_AUTHOR_IDENT")?,
-        committer: identity("GIT_COMMITTER_IDENT")?,
-        policy,
-    })
 }
 
 fn sync_tree(root: &Path) -> Result<(), RepairRequired> {
@@ -163,7 +122,7 @@ fn prepare<'a>(
         &[0],
     )
     .map_err(repair)?;
-    let profile = signing_profile(&git)?;
+    let profile = SigningProfile::observe(&git)?;
     let tree = git
         .text(&["write-tree"], None, None, &[0])
         .map_err(repair)?;
@@ -178,7 +137,7 @@ fn prepare<'a>(
     let history = read_history(&git, Some(&tip))?;
     if history.files() != &source.files
         || history.baseline() != Some(&baseline)
-        || signing_profile(&git)? != profile
+        || SigningProfile::observe(&git)? != profile
     {
         return Err(repair("prepared Git history or signing policy changed"));
     }
@@ -221,18 +180,13 @@ impl PreparedImport<'_> {
         .as_object()
         .expect("object")
         .clone();
-        // A failed write can already have replaced save.json. Disable Drop cleanup
-        // BEFORE that first possible marker effect, not after write returns success.
-        let retained = candidate.keep();
-        catalog.state.write("save.json", evidence.clone())?;
-        fs::rename(retained.join(".git"), catalog.root.join(".git")).map_err(repair)?;
-        sync_directory(catalog.root).map_err(repair)?;
-        sync_directory(&retained).map_err(repair)?;
-        if signing_profile(catalog.git)? != profile {
-            return Err(repair(
-                "Git identity or signing policy differs at the final catalog path; inspect save.json",
-            ));
-        }
+        let retained = installation::fence_and_move(
+            &catalog.state,
+            catalog.root,
+            candidate,
+            evidence.clone(),
+        )?;
+        profile.verify(catalog.git)?;
         catalog.clean().map_err(repair)?;
         let installed = read_history(catalog.git, Some(&catalog.git.head().map_err(repair)?))?;
         if installed.tip() != Some(tip.as_str())
@@ -263,40 +217,28 @@ impl PreparedImport<'_> {
 /// A post-fence error leaves opaque save evidence and requires explicit repair.
 pub fn adopt_local(catalog: &GitCatalog, branch: &str) -> Result<String, RepairRequired> {
     check_text(branch, "branch", false).map_err(repair)?;
-    catalog.with_lock(|catalog| {
-        let result = (|| -> Result<_, RepairRequired> {
-        catalog.state.check_save()?;
-        let marker = Marker::read(catalog.transaction().journal())
-            .map_err(repair)?
-            .ok_or_else(|| repair("adoption requires an initialized local-only catalog"))?;
-        if marker.host.as_str() != catalog.host_id {
-            return Err(repair("adoption requires this host's initialized catalog"));
-        }
-        if marker.strategy == Strategy::Git {
-            let expected = GitConfig::new(None, branch, catalog.host_id).map_err(repair)?;
-            if catalog.ready().map_err(repair)? != expected {
-                return Err(repair(
-                    "completed adoption does not match this host, branch or local-only mode",
-                ));
-            }
-            let (history, _) = catalog.saved().map_err(repair)?;
-            if history
-                .baseline()
-                .is_none_or(|baseline| baseline.host != catalog.host_id)
-            {
-                return Err(repair(
-                    "existing Git catalog is not a completed snapshot adoption",
-                ));
-            }
-            return history
-                .root()
-                .map(str::to_owned)
-                .ok_or_else(|| repair("adopted history has no baseline root"));
-        }
-        let prepared = prepare(catalog, branch)?;
-        let mut machine = ProtocolMachine::observe(&catalog.state, catalog.policy.attempts())?;
-        machine.begin_import(prepared)?.run()
-        })();
-        result.map_err(Into::into)
-    }).map_err(repair)
+    catalog
+        .with_lock(|catalog| {
+            let result = (|| -> Result<_, RepairRequired> {
+                catalog.state.check_save()?;
+                let marker = Marker::read(catalog.transaction().journal())
+                    .map_err(repair)?
+                    .ok_or_else(|| repair("adoption requires an initialized local-only catalog"))?;
+                if marker.host.as_str() != catalog.host_id {
+                    return Err(repair("adoption requires this host's initialized catalog"));
+                }
+                if marker.strategy == Strategy::Git {
+                    let expected = GitConfig::new(None, branch, catalog.host_id).map_err(repair)?;
+                    return completion::retry(&catalog.ready().map_err(repair)?, &expected, || {
+                        catalog.saved().map(|(history, _)| history).map_err(repair)
+                    });
+                }
+                let prepared = prepare(catalog, branch)?;
+                let mut machine =
+                    ProtocolMachine::observe(&catalog.state, catalog.policy.attempts())?;
+                machine.begin_import(prepared)?.run()
+            })();
+            result.map_err(Into::into)
+        })
+        .map_err(repair)
 }

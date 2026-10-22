@@ -162,7 +162,7 @@ fn git_inspection_neither_remembers_history_nor_refreshes_index() {
     let temp = tempfile::tempdir().unwrap();
     let mut backend = GitCatalog::new(temp.path(), "host", Policy::default()).unwrap();
     support::git::install_hook(&mut backend, |_, _, _, _| None);
-    let backend = backend.initialize(None, "main").unwrap();
+    support::git::seed_bootstrap(&backend);
     let operation = create();
     assert!(backend.save(&operation, None).unwrap().accepted());
     fs::remove_file(temp.path().join(".catalog-sync/receipts.json")).unwrap();

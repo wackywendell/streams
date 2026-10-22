@@ -4,6 +4,10 @@
 #[cfg(test)]
 extern crate self as streams_temper;
 
+#[cfg(test)]
+#[path = "../tests/support/memory.rs"]
+mod memory;
+
 pub mod agent;
 pub mod application;
 pub mod codec;

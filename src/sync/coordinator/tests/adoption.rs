@@ -1,5 +1,78 @@
 //! Adoption recovery is independent of how a repository materializes revisions.
 use super::*;
+use crate::storage::{Store, Transaction};
+use crate::sync::{
+    baseline::{Baseline, encode_baseline},
+    local::LocalCatalog,
+};
+
+use crate::memory;
+
+#[test]
+fn imported_baseline_keeps_creation_authority_and_retired_retries_without_writes() {
+    let store = memory::MemoryStore::default();
+    let local = LocalCatalog::new(store.clone(), "host").unwrap();
+    let creation = create("original-create", "work", "host");
+    let retired = crate::operations::update(
+        "retired-edit",
+        creation.after(),
+        json!({"title":"Edited"}).as_object().unwrap(),
+        Actor::User,
+        None,
+        vec![],
+    )
+    .unwrap();
+    accepted(local.save(&creation, None).unwrap());
+    accepted(local.save(&retired, None).unwrap());
+    let (catalog, baseline, objects) = store
+        .with_transaction(|tx| -> Result<_, StorageError> {
+            let state = State::from_journal(tx.journal());
+            let creations = serde_json::from_value(
+                state.read("local.json").unwrap().unwrap()["creations"].clone(),
+            )
+            .unwrap();
+            let baseline = Baseline::new("host", creations, state.fingerprints().unwrap()).unwrap();
+            let mut objects = BTreeMap::new();
+            for name in tx.journal().names()? {
+                objects.insert(name.clone(), tx.journal().read(&name)?.unwrap());
+            }
+            Ok((Transaction::read(tx)?.catalog, baseline, objects))
+        })
+        .unwrap();
+    let histories = Rc::<RefCell<Histories>>::default();
+    let root = histories.borrow_mut().append(
+        None,
+        Some(retired.after()),
+        &encode_baseline(&baseline).unwrap(),
+    );
+    let repo = MemoryRepository::new(
+        histories,
+        Rc::new(RefCell::new(Some(root.clone()))),
+        "host",
+        false,
+    );
+    // Import domain data, not another store's opaque revision tokens.
+    assert_eq!(repo.snapshot().catalog, catalog);
+    let snapshot = repo.snapshot();
+    for (name, value) in objects {
+        repo.journal.write(&name, value).unwrap();
+    }
+    let original = repo.journal.objects.borrow().clone();
+    let authority = repo.run(|core| core.authority("work")).unwrap().unwrap();
+    assert_eq!(authority.host_id, "host");
+    assert_eq!(authority.token, creation.id());
+    let history = repo.history(Some(&root)).unwrap();
+    assert!(history.operations().is_empty());
+    for operation in [&creation, &retired] {
+        assert!(history.has_operation(operation.id()));
+        let retry = repo.save(operation);
+        assert!(retry.accepted());
+        assert_eq!(retry.domain.unwrap().outcome(), DomainOutcome::NoChange);
+    }
+    assert_eq!(repo.snapshot(), snapshot);
+    assert_eq!(repo.head().unwrap(), root);
+    assert_eq!(*repo.journal.objects.borrow(), original);
+}
 
 #[test]
 fn checkout_failure_retains_both_histories_and_fences_fresh_coordinators() {

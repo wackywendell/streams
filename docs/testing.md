@@ -52,6 +52,44 @@ host boundary rather than repeat catalog/enrollment setup. `vt100` 0.15 stays a
 test-only dependency because newer releases conflict with Ratatui 0.29's pinned
 Unicode-width version.
 
+## Latest Rust follow-up
+
+The post-`7a0eda62` follow-up separates more production decisions and effects:
+
+- journal schema and completed-import retry decisions run in memory; typed disk-state reopening remains covered
+- imported-baseline authority and retired retries use the production coordinator, without moving opaque revision tokens between stores
+- existing Git fixtures seed real bootstrap objects and an index instead of repeating unrelated initialization workflows
+- offline-create still crosses real CLI init/create dispatch, an unavailable Git remote, fresh YAML readback and committed-file byte comparison
+- fenced directory installation has real YAML/directory tests for pre-write failure, a persisted write with a lost acknowledgement, blocked rename and successful movement; none needs Git objects
+- signing-profile checks vary raw Git replies and identity timestamps; one real import proves that a `gitdir`-conditional policy change leaves the installed graph fenced
+- the three formal engines compile at test-only `opt-level = 1`, preserving assertions, overflow checks and verification bounds
+- the positive borrowing doctest is compile-only; both storage implementations run its runtime assertions, and both lifetime-escape compile-fail examples remain
+
+The following sample is from the test-value branch before integration with the
+PTY and membership work. It is not a measurement of the combined migration gate.
+A warm default `cargo test --locked` passed all 551 tests:
+
+| Target | Tests | Harness time |
+| --- | --- | --- |
+| Library | 176 | 2.95 seconds |
+| Binary | 31 | 0.13 seconds |
+| Contracts | 334 | 8.99 seconds |
+| Dedicated Git boundaries | 3 | 1.82 seconds |
+| Protocol verification | 4 | 0.05 seconds |
+| Compile-checked documentation | 3 | 0.45 seconds |
+
+Command wall time was 21.20 seconds after a separate 10.06-second no-run build.
+Wall time includes Cargo, executable and Rustdoc startup; Rustdoc also spent
+1.05 seconds compiling snippets. The one-minute load average was 15.56. This is
+a single sample, not a controlled percentage improvement or a lower bound.
+The full default gate still misses the few-seconds target. No test was ignored
+or moved behind a feature or a smaller default gate.
+
+The positive four-level reconciliation cascade still explores 7,248 states,
+with 5 simulation seeds, 233 transitions and 100 property cases. Optimizing the
+formal engines reduced one warm cascade sample from 4.28 to 1.52 seconds without
+reducing that coverage. Memory tests do not establish disk-crash durability.
+
 ## Measure compilation separately
 
 Targeted measurements on macOS at `0dbcae45`, using this effort's own target
@@ -99,11 +137,13 @@ Real-Git tests retain that separate evidence.
 The `git_io` tests intercept every command without starting Git. They check push
 arguments, unknown outcomes, branch-specific fetches, target validation, signing
 failure without unsigned fallback, ancestry and batched blob observations.
-The dedicated `git_catalog` target retains 3 physical boundary tests:
+The dedicated `git_catalog` target retains 5 physical boundary tests:
 
 - rejection of actual dirty, ignored and unsupported Git histories
 - initialization identity, branch selection and no-clobber checks
 - partial local saves at add, commit creation and branch update, with durable YAML/index evidence and restart fencing
+- legacy Session relocation through local save and candidate replay into a fresh receiving catalog
+- rejection of retained or modified predecessors and reverse or lateral Session relocations in committed Git objects
 
 Publication-fence persistence is tested directly through `State::fence_adoption`
 and the real YAML journal, without Git. The test physically unlinks the marker,
@@ -309,7 +349,7 @@ Remaining slow tests must justify their cost with physical boundary evidence:
 - Git histories and transport require real Git objects, refs, fetches and pushes
 - import installation requires actual directory movement, file bytes and recovery fences
 - storage and runtime contracts exercise locks, symlinks, special files and durable replacement
-- process tests wait beyond descendant sentinel delays to detect surviving children
+- process tests observe FIFO descriptor teardown after a real timeout to detect surviving descendants
 
 One instrumented two-clone recovery trace recorded 382 Git adapter subprocess
 calls. Those calls took 8.41 of the trace's 9.77 seconds. This identified adapter
@@ -357,7 +397,11 @@ Existing wire, schema, native ownership, uncertainty and replay tests stay intac
 Add independent expectations to fakes instead of treating call-count assertions
 as end-to-end evidence.
 
-Keep OS-level timeout and descendant-termination tests real. Their delayed
-sentinels and bounded waits test behavior that a mocked clock cannot prove.
-For new concurrency tests, prefer explicit barriers and observable lock/process
-state over sleeps used only to guess that another worker has started.
+Keep OS-level timeout and descendant-termination tests real. A TERM-ignoring
+descendant acknowledges that its FIFO is open, then blocks while holding it.
+After timeout cleanup, a nonblocking writer open returning ENXIO observes that
+the reader is gone. This replaces future-sentinel sleeps, not the physical
+teardown claim. The one-second execution budget allows readiness under load;
+a bounded probe checks descriptor release. A mocked clock alone cannot prove
+a descendant is gone. For new concurrency tests, prefer explicit barriers and
+observable lock/process state over sleeps that guess another worker has started.

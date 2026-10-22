@@ -35,7 +35,7 @@ fn each_memory_backend(law: impl Fn(&dyn Fn() -> Box<dyn CatalogBackend>)) {
 fn each_backend(law: impl Fn(&dyn Fn() -> Box<dyn CatalogBackend>)) {
     each_local_backend(&law);
     let dir = tempfile::tempdir().unwrap();
-    local_git(dir.path()).initialize(None, "main").unwrap();
+    support::git::seed_bootstrap(&local_git(dir.path()));
     law(&|| Box::new(local_git(dir.path())));
 }
 

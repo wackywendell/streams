@@ -2,8 +2,8 @@ use crate::support;
 
 use std::collections::BTreeMap;
 use std::fs;
+use std::io::Write;
 use std::path::{Path, PathBuf};
-use std::sync::{Arc, Mutex};
 use streams_temper::storage::{StorageError, Transaction};
 
 use serde_json::json;
@@ -11,7 +11,7 @@ use streams_temper::{
     application,
     config::{Config, Strategy},
     model::{Record, Stream},
-    operations::{Actor, DomainOutcome, Operation, update},
+    operations::{Actor, Operation, update},
     sync::{
         adoption::adopt_local,
         git::GitCatalog,
@@ -19,7 +19,7 @@ use streams_temper::{
         history::read_history,
         local::LocalCatalog,
         policy::Policy,
-        state::{GitConfig, RepairRequired, State},
+        state::RepairRequired,
     },
     yaml_store::YamlStore,
 };
@@ -56,8 +56,6 @@ struct Fixture {
     config: Config,
     root: PathBuf,
     git: GitCatalog,
-    create: Operation,
-    edit: Operation,
 }
 impl Fixture {
     fn new() -> Self {
@@ -77,16 +75,27 @@ impl Fixture {
         let opened = application::initialize(&config, Strategy::None, None, "main", false).unwrap();
         let root = opened.root().to_path_buf();
         let host = opened.host().as_str();
+        let mut git = GitCatalog::new(&root, host, Policy::default()).unwrap();
+        install_hook(&mut git, |_, _, _, _| None);
+        Self {
+            _temp: temp,
+            config,
+            root,
+            git,
+        }
+    }
+    fn original_history(&self) -> (Operation, Operation) {
+        let local = LocalCatalog::new(YamlStore::new(&self.root), self.git.host_id()).unwrap();
         let create = Operation::new(
             "original-create",
             None,
-            Record::Stream(Stream::new("work", "Original", None, host).unwrap()),
+            Record::Stream(Stream::new("work", "Original", None, self.git.host_id()).unwrap()),
             Actor::User,
             None,
             vec![],
         )
         .unwrap();
-        assert!(opened.backend().save(&create, None).unwrap().accepted());
+        assert!(local.save(&create, None).unwrap().accepted());
         let edit = update(
             "retired-edit",
             create.after(),
@@ -96,22 +105,13 @@ impl Fixture {
             vec![],
         )
         .unwrap();
-        assert!(opened.backend().save(&edit, None).unwrap().accepted());
+        assert!(local.save(&edit, None).unwrap().accepted());
         // Noncanonical formatting is a physical revision and must survive import.
-        let path = root.join("streams/work.yaml");
+        let path = self.root.join("streams/work.yaml");
         let mut bytes = fs::read(&path).unwrap();
         bytes.extend_from_slice(b"\n# exact local formatting\n");
         fs::write(path, bytes).unwrap();
-        let mut git = GitCatalog::new(&root, host, Policy::default()).unwrap();
-        install_hook(&mut git, |_, _, _, _| None);
-        Self {
-            _temp: temp,
-            config,
-            root,
-            git,
-            create,
-            edit,
-        }
+        (create, edit)
     }
     fn adopt(&self) -> Result<String, RepairRequired> {
         let _lock = self.config.lock().unwrap();
@@ -139,8 +139,9 @@ impl Fixture {
 }
 
 #[test]
-fn baseline_preserves_exact_bytes_authority_and_retired_retry_fingerprints() {
+fn baseline_preserves_exact_bytes_history_and_local_bookkeeping() {
     let f = Fixture::new();
+    let (create, edit) = f.original_history();
     let before = application::open(&f.config)
         .unwrap()
         .backend()
@@ -154,18 +155,9 @@ fn baseline_preserves_exact_bytes_authority_and_retired_retry_fingerprints() {
     let history = read_history(f.git.git(), Some(&tip)).unwrap();
     assert_eq!(history.files()["streams/work.yaml"], raw);
     assert_eq!(history.operations().len(), 0);
-    assert!(history.has_operation(f.create.id()));
-    assert!(history.has_operation(f.edit.id()));
+    assert!(history.has_operation(create.id()));
+    assert!(history.has_operation(edit.id()));
     assert_eq!(history.baseline().unwrap().host, f.git.host_id());
-    let authority = f.git.authority("work").unwrap().unwrap();
-    assert_eq!(authority.host_id, f.git.host_id());
-    assert_eq!(authority.token, f.create.id());
-    for operation in [&f.create, &f.edit] {
-        let retry = f.git.save(operation, None).unwrap();
-        assert!(retry.accepted());
-        assert_eq!(retry.domain.unwrap().outcome(), DomainOutcome::NoChange);
-    }
-    assert_eq!(f.git.snapshot().unwrap(), before);
     assert_eq!(
         fs::read(f.root.join(".catalog-sync/receipts.json")).unwrap(),
         receipts
@@ -175,28 +167,14 @@ fn baseline_preserves_exact_bytes_authority_and_retired_retry_fingerprints() {
         local
     );
     assert_eq!(f.adopt().unwrap(), tip);
-    let later = update(
-        "post-baseline-edit",
-        f.edit.after(),
-        json!({"goal":"After the baseline"}).as_object().unwrap(),
-        Actor::User,
-        None,
-        vec![],
-    )
-    .unwrap();
-    assert!(f.git.save(&later, None).unwrap().accepted());
-    assert_ne!(f.git.git().head().unwrap(), tip);
-    assert_eq!(f.adopt().unwrap(), tip);
     assert!(f.candidates().is_empty());
-    let _lock = f.config.lock().unwrap();
-    assert!(adopt_local(&f.git, "different").is_err());
 }
 
 #[test]
 fn preparation_failure_cleans_only_its_owned_candidate_and_is_retryable() {
     let mut f = Fixture::new();
     let orphan = f.root.join(".catalog-staging/foreign-evidence");
-    fs::create_dir(&orphan).unwrap();
+    fs::create_dir_all(&orphan).unwrap();
     fs::write(orphan.join("retain"), "retain").unwrap();
     install_hook(&mut f.git, |_, args, _, _| {
         (args[0] == "commit-tree").then(|| Err(GitError::new("preparation failed", Some(1))))
@@ -214,6 +192,7 @@ fn preparation_failure_cleans_only_its_owned_candidate_and_is_retryable() {
 #[test]
 fn changed_record_bytes_abort_preparation_before_fencing() {
     let mut f = Fixture::new();
+    f.original_history();
     let path = f.root.join("streams/work.yaml");
     install_hook(&mut f.git, move |_, args, _, _| {
         if args[0] == "commit-tree" {
@@ -234,122 +213,53 @@ fn changed_record_bytes_abort_preparation_before_fencing() {
 }
 
 #[test]
-fn first_possible_fence_effect_retains_prepared_evidence_even_if_write_fails() {
+fn final_path_conditional_signing_change_keeps_the_installed_graph_fenced() {
     let mut f = Fixture::new();
-    f.git
-        .set_state_hook(Arc::new(Mutex::new(|op: &str, name: &str| {
-            if op == "write" && name == "save.json" {
-                Err(RepairRequired::new("fence failure"))
-            } else {
-                Ok(())
-            }
-        })));
-    assert!(f.adopt().is_err());
-    let candidates = f.candidates();
-    assert_eq!(candidates.len(), 1);
-    assert!(candidates[0].join(".git").is_dir());
-    assert!(!f.root.join(".git").exists());
-    assert!(!f.root.join(".catalog-sync/save.json").exists());
-    // The pre-effect injected failure is still readable as local. A real write
-    // failure may have installed its fence, hence conservative candidate retention.
-    assert!(application::open(&f.config).is_ok());
-}
-
-#[test]
-fn install_failure_keeps_both_fence_and_uninstalled_graph() {
-    let mut f = Fixture::new();
-    let git_dir = f.root.join(".git");
-    f.git
-        .set_state_hook(Arc::new(Mutex::new(move |op: &str, name: &str| {
-            if op == "write" && name == "save.json" {
-                fs::create_dir(&git_dir).unwrap();
-                fs::write(git_dir.join("block-install"), "retain").unwrap();
-            }
-            Ok(())
-        })));
-    assert!(f.adopt().is_err());
-    f.fenced();
-    assert!(f.candidates()[0].join(".git").is_dir());
-}
-
-#[test]
-fn final_path_signing_profile_must_match_prepared_identity_and_policy() {
-    let mut f = Fixture::new();
-    let root = f.root.clone();
+    let final_git = f.root.canonicalize().unwrap().join(".git");
+    let include = f._temp.path().join("final-signing");
+    fs::write(&include, "[gpg]\nprogram = different-program\n").unwrap();
     install_hook(&mut f.git, move |git, args, input, index| {
-        if git.root() == root && args == ["var", "GIT_AUTHOR_IDENT"] {
-            let mut value = test_command(git, args, input, index).unwrap();
-            value.splice(0..0, b"Changed ".iter().copied());
-            Some(Ok(value))
-        } else {
-            None
+        if args.first() != Some(&"init") {
+            return None;
         }
+        let mut args = args.to_vec();
+        args.push("--template=");
+        let result = test_command(git, &args, input, index);
+        if result.is_ok() {
+            let mut config = fs::OpenOptions::new()
+                .append(true)
+                .open(git.root().join(".git/config"))
+                .unwrap();
+            // Local defaults override ambient gpg.program at staging; the real
+            // gitdir include overrides them only after installation.
+            writeln!(
+                config,
+                "\n[gpg]\nprogram = staging-program\n[includeIf \"gitdir:{}\"]\npath = {}",
+                final_git.display(),
+                include.display()
+            )
+            .unwrap();
+        }
+        Some(result)
     });
-    assert!(f.adopt().is_err());
+    assert_eq!(
+        f.adopt().unwrap_err().to_string(),
+        "Git identity or signing policy differs at the final catalog path; inspect save.json"
+    );
     f.fenced();
     assert!(f.root.join(".git").is_dir());
+    assert!(!f.candidates()[0].join(".git").exists());
     assert!(!f.root.join(".catalog-sync/config.json").exists());
-}
-
-#[test]
-fn failed_clear_after_unlink_reasserts_original_evidence() {
-    let mut f = Fixture::new();
-    let path = f.root.join(".catalog-sync/save.json");
-    let original = Arc::new(Mutex::new(None));
-    let captured = original.clone();
-    f.git
-        .set_state_hook(Arc::new(Mutex::new(move |op: &str, name: &str| {
-            if op == "clear" && name == "save.json" {
-                *captured.lock().unwrap() = Some(fs::read(&path).unwrap());
-                fs::remove_file(&path).unwrap();
-                return Err(RepairRequired::new("directory fsync failed after unlink"));
-            }
-            Ok(())
-        })));
-    assert!(f.adopt().is_err());
-    f.fenced();
     assert_eq!(
-        fs::read(f.root.join(".catalog-sync/save.json")).unwrap(),
-        original.lock().unwrap().as_ref().unwrap().as_slice()
+        test_command(f.git.git(), &["config", "--get", "gpg.program"], None, None).unwrap(),
+        b"different-program\n"
     );
-}
-
-#[test]
-fn completed_retry_rejects_nonadoption_history_and_remote_configuration() {
-    let f = Fixture::new();
-    f.adopt().unwrap();
-    let store = YamlStore::new(&f.root);
-    store
-        .with_transaction::<_, StorageError>(|tx| {
-            State::from_journal(tx.journal())
-                .write_config(
-                    &GitConfig::new(Some("remote".into()), "main", f.git.host_id()).unwrap(),
-                )
-                .unwrap();
-            Ok(())
-        })
-        .unwrap();
-    assert!(f.adopt().is_err());
-    let dir = tempfile::tempdir().unwrap();
-    let mut git = GitCatalog::new(dir.path(), f.git.host_id(), Policy::default()).unwrap();
-    install_hook(&mut git, |_, _, _, _| None);
-    let git = git.initialize(None, "main").unwrap();
-    let store = YamlStore::new(dir.path());
-    store
-        .with_transaction::<_, StorageError>(|tx| {
-            State::from_journal(tx.journal())
-                .write(
-                    "cli.json",
-                    json!({"host":git.host_id(),"strategy":"git"})
-                        .as_object()
-                        .unwrap()
-                        .clone(),
-                )
-                .unwrap();
-            Ok(())
-        })
-        .unwrap();
-    assert!(adopt_local(&git, "main").is_err());
+    let evidence: serde_json::Value =
+        serde_json::from_slice(&fs::read(f.root.join(".catalog-sync/save.json")).unwrap()).unwrap();
+    assert_eq!(
+        evidence["adoption"]["profile"]["policy"]["gpg.program"],
+        "staging-program"
+    );
 }
 
 #[test]
@@ -370,6 +280,8 @@ fn opaque_import_fence_is_not_blindly_completed_by_reopen() {
         .unwrap();
     let local = LocalCatalog::new(store, f.git.host_id()).unwrap();
     assert!(local.snapshot().is_err());
+    assert!(f.git.snapshot().is_err());
+    assert!(application::open(&f.config).is_err());
     assert!(f.adopt().is_err());
     assert!(!f.root.join(".git").exists());
 }

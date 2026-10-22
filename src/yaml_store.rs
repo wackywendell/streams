@@ -241,8 +241,9 @@ impl YamlStore {
     /// let escaped = store.with_transaction::<_, StorageError>(|tx| Ok(tx.journal()));
     /// ```
     ///
-    /// Journal operations and catalog operations share the held lock:
-    /// ```
+    /// Journal operations and catalog operations share the held lock. This example
+    /// checks the accepted borrowing scope; storage conformance tests run its assertions.
+    /// ```no_run
     /// use streams_temper::{storage::{StorageError, Transaction}, yaml_store::YamlStore};
     /// # fn main() -> Result<(), StorageError> {
     /// let directory = tempfile::tempdir().unwrap();

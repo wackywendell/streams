@@ -201,7 +201,14 @@ fn duplicate_session_copies_across_storage_layouts_are_rejected() {
 }
 
 fn storage_laws(store: &impl Store) {
-    let empty = store.with_transaction(|tx| tx.read()).unwrap();
+    let empty = store
+        .with_transaction::<_, StorageError>(|tx| {
+            let journal = tx.journal();
+            let snapshot = tx.read()?;
+            assert!(journal.names()?.is_empty());
+            Ok(snapshot)
+        })
+        .unwrap();
     assert!(empty.catalog.records().is_empty());
     assert!(empty.revisions.is_empty());
     let original = stream("work", "Original");

@@ -51,3 +51,13 @@ stateright = "0.31"
 vt100 = "0.15"
 temper-runtime = { git = "https://github.com/nerdsane/temper.git", rev = "6255ac3b43028105b8c0a2cee773f01aed2480a2" }
 temper-verify = { git = "https://github.com/nerdsane/temper.git", rev = "6255ac3b43028105b8c0a2cee773f01aed2480a2" }
+
+# Keep the same formal exploration; optimize its CPU-heavy test engines only.
+[profile.test.package.temper-jit]
+opt-level = 1
+
+[profile.test.package.temper-verify]
+opt-level = 1
+
+[profile.test.package.stateright]
+opt-level = 1

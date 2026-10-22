@@ -89,18 +89,59 @@ impl Fixture {
 #[test]
 fn accepted_offline_create_retains_publication_warning_and_durable_record() {
     let f = Fixture::new();
-    let remote = f.home.join("remote.git");
-    assert!(
-        Command::new("git")
-            .args(["-c", "init.templateDir=", "init", "--bare", "--quiet"])
-            .arg(&remote)
-            .current_dir(&f.cwd)
-            .env("GIT_CONFIG_NOSYSTEM", "1")
-            .env("GIT_CONFIG_GLOBAL", f.home.join("gitconfig"))
-            .status()
-            .unwrap()
-            .success()
-    );
+    use streams_temper::{
+        config::{Marker, Strategy},
+        model::Record,
+        storage::{StorageError, Transaction},
+        sync::{
+            git::GitCatalog,
+            policy::Policy,
+            state::{GitConfig, State},
+        },
+        yaml_store::{YamlStore, relative_record_path},
+    };
+    // Seed an existing managed catalog; this test needs an offline save, not a fresh clone.
+    f.init();
+    let store = YamlStore::new(f.root());
+    let marker = store
+        .with_inspection::<_, StorageError>(|tx| Ok(Marker::read(tx.journal()).unwrap().unwrap()))
+        .unwrap();
+    let mut backend = GitCatalog::new(f.root(), marker.host.as_str(), Policy::default()).unwrap();
+    crate::support::git::install_hook(&mut backend, |_, _, _, _| None);
+    crate::support::git::seed_bootstrap(&backend);
+    let remote = f.home.join("offline.git");
+    backend
+        .git()
+        .run(
+            &["remote", "add", "origin", remote.to_str().unwrap()],
+            None,
+            None,
+            &[0],
+        )
+        .unwrap();
+    store
+        .with_transaction::<_, StorageError>(|tx| {
+            let state = State::from_journal(tx.journal());
+            state
+                .write_config(
+                    &GitConfig::new(
+                        Some(remote.to_str().unwrap().into()),
+                        "main",
+                        marker.host.as_str(),
+                    )
+                    .unwrap(),
+                )
+                .unwrap();
+            Marker {
+                strategy: Strategy::Git,
+                ..marker
+            }
+            .write(&state)
+            .unwrap();
+            Ok(())
+        })
+        .unwrap();
+    // Still cross the real CLI's Git/remote dispatch; the configured remote is already offline.
     f.ok(&[
         "init",
         "--sync",
@@ -108,19 +149,29 @@ fn accepted_offline_create_retains_publication_warning_and_durable_record() {
         "--remote",
         remote.to_str().unwrap(),
     ]);
-    fs::rename(&remote, f.home.join("offline.git")).unwrap();
     let result = f.ok(&["create", "Saved offline"]);
     assert_eq!(result["save"]["local"], "committed");
     assert_eq!(result["save"]["domain"]["outcome"], "changes");
     assert_eq!(result["publication"]["sharing"], "failed");
     assert_eq!(result["publication"]["local"], "unchanged");
-    assert_eq!(
-        f.ok(&["show", result["stream"]["id"].as_str().unwrap()])["stream"],
-        result["stream"]
-    );
-    let (code, sync) = f.run(&["sync"], None);
-    assert_eq!(code, 2, "{sync}");
-    assert_eq!(sync["sharing"], "failed");
+    // Read persisted state directly: show/sync behavior has backend-level tests.
+    let snapshot = YamlStore::new(f.root())
+        .with_inspection::<_, StorageError>(|tx| tx.read())
+        .unwrap();
+    assert_eq!(snapshot.catalog.streams().len(), 1);
+    let stream = &snapshot.catalog.streams()[0];
+    assert_eq!(serde_json::to_value(stream).unwrap(), result["stream"]);
+    let path = relative_record_path(&Record::Stream(stream.clone()));
+    let committed = backend
+        .git()
+        .run(
+            &["show", &format!("HEAD:{}", path.display())],
+            None,
+            None,
+            &[0],
+        )
+        .unwrap();
+    assert_eq!(committed, fs::read(f.root().join(path)).unwrap());
 }
 
 #[test]
