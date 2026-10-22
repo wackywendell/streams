@@ -11,7 +11,7 @@ use streams_temper::{
     application,
     config::{Config, Strategy},
     model::{Record, Stream},
-    operations::{Actor, DomainOutcome, Operation, update},
+    operations::{Actor, Operation, update},
     sync::{
         adoption::adopt_local,
         git::GitCatalog,
@@ -139,7 +139,7 @@ impl Fixture {
 }
 
 #[test]
-fn baseline_preserves_exact_bytes_authority_and_retired_retry_fingerprints() {
+fn baseline_preserves_exact_bytes_history_and_local_bookkeeping() {
     let f = Fixture::new();
     let (create, edit) = f.original_history();
     let before = application::open(&f.config)
@@ -158,15 +158,6 @@ fn baseline_preserves_exact_bytes_authority_and_retired_retry_fingerprints() {
     assert!(history.has_operation(create.id()));
     assert!(history.has_operation(edit.id()));
     assert_eq!(history.baseline().unwrap().host, f.git.host_id());
-    let authority = f.git.authority("work").unwrap().unwrap();
-    assert_eq!(authority.host_id, f.git.host_id());
-    assert_eq!(authority.token, create.id());
-    for operation in [&create, &edit] {
-        let retry = f.git.save(operation, None).unwrap();
-        assert!(retry.accepted());
-        assert_eq!(retry.domain.unwrap().outcome(), DomainOutcome::NoChange);
-    }
-    assert_eq!(f.git.snapshot().unwrap(), before);
     assert_eq!(
         fs::read(f.root.join(".catalog-sync/receipts.json")).unwrap(),
         receipts

@@ -6,8 +6,7 @@ use std::sync::{Arc, Mutex};
 
 const HOST: &str = "00000000-0000-4000-8000-000000000001";
 
-#[path = "../../../../tests/support/memory.rs"]
-mod memory;
+use crate::memory;
 
 fn with_pending_import(test: impl FnOnce(&dyn Journal, Map<String, Value>)) {
     memory::MemoryStore::default()
