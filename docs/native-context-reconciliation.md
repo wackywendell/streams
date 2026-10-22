@@ -1,45 +1,46 @@
-# ADR: Reconcile native changes without changing conversation membership
+# ADR: Reconcile conversation context in the CLI
 
 Status: proposed. This is a design decision, not an implemented relaxation of the current runtime guards. It extends the [native Herdr ADR](native-herdr-work-cards.md).
 
 ## Context
 
-Herdr and Pi can change independently of Streams. Users can rename or move panes, switch conversations, close displays and restore workspaces. These are valid inputs, not violations of a Streams protocol.
-
-Streams should keep working when it can prove that the same conversation continues in a new location. It must not mistake a different conversation, conflicting workspace ownership or a recycled handle for continuity.
+Herdr and Pi change independently of Streams. Moves, renames, conversation switches and display closures are valid inputs. Streams should reconcile them when identity is provable, rather than permanently disable the integration after a topology change.
 
 ## Decision
 
-Separate conversation identity from native location. The enrolled Session and native conversation ID, scoped to a catalog and host, identify the conversation. Workspace, tab and pane addresses describe where it is currently displayed. Names describe neither identity nor membership.
+Separate the conversation, its current Stream membership and its native location. A work card describes the conversation's own work across Stream moves. A stream card describes the shared effort. Names and pane addresses identify neither.
 
-Adopt location changes automatically when fresh observations prove the same conversation and terminal, and ownership remains unambiguous. Otherwise pause the affected native effects. A temporary loss of evidence must not permanently disable the integration: fresh proof can restore operation without a reload.
+The conversation follows the workspace. When it moves into a workspace associated with Stream B, the CLI changes its membership to B. Other conversations remain where they are; the Streams are not merged or relocated. If the destination has no associated Stream, create one. The conversation need not wait for the rest of its old working arrangement to move.
 
-Herdr may give a moved pane a new ID while its inherited caller context still resolves the old handle. Streams must use the actual live terminal and conversation evidence, not unconditional equality with launch-time addresses. After restart or restore, matching saved handles alone cannot establish continuity.
+Retain previous membership relationships as participation history, with one current membership. This records that a conversation participated in a Stream, not what its work card said then. Do not duplicate or freeze work cards. A historical relationship grants no authority to update that Stream.
 
-## Intended responses
+## CLI and Pi boundary
 
-| Change | Streams response |
+The CLI owns reconciliation and result admission. Pi supplies its session identity and observed Herdr state when requesting cards. The CLI verifies the live context, reconciles membership and returns the cards with a context reference. Ordinary catalog reads remain read-only; requesting reconciled context deliberately permits membership changes.
+
+Pi runs the model and returns its proposed updates with that original context reference and its latest observed Herdr state. The CLI reconciles again and assesses conversation-local and Stream-shared updates separately. A workspace move need not invalidate useful work-card updates, but results computed for the previous Stream must not be retargeted to the destination.
+
+Pi carries request context without interpreting membership or orchestrating record changes. The CLI owns the checks and returns which updates were accepted. This keeps movement policy and stale-result handling consistent across callers.
+
+## Other native changes
+
+| Change | Intended response |
 | --- | --- |
-| Rename a workspace, tab, pane or Pi session | Keep user-chosen names, including after moves. Resume automatic naming only when the user explicitly reclaims that surface. |
-| Move or reorder the owning conversation within its associated workspace | Adopt its proven live location without changing membership. |
-| Move across workspaces | Adopt only when the complete bound arrangement has relocated, the source can be retired and destination ownership is compatible. A split arrangement or conflicting destination pauses adoption; it never authorizes taking another Stream's workspace. |
-| Lose observations, disconnect, restart or restore | Pause affected effects and seek fresh evidence. Missing information is not proof of closure; saved names, handles and metadata are not proof of live identity. |
-| Fork or create a Pi conversation | Treat it as a new identity requiring its own enrollment choice. Do not inherit membership or effect authority from the parent. |
-| Move a card or editor independently | Retain its association with the original conversation. Do not automatically move it back, close it or launch a replacement. Unrelated eligible operations may continue; actions requiring the original pairing wait for reunion and verification. |
-| Close or reopen a display | Keep membership and reporting independent of display state. Do not respawn closed resources in the background. Explicit reopen requires positive absence and duplicate checks, with no unresolved launch attempt. Reappearance must be verified before reuse. |
+| Rename a native surface | Preserve user-chosen names. Resume automatic naming only after explicit reclaim of that surface. |
+| Reorder panes or change pane IDs | Follow verified live conversation and terminal identity, not inherited addresses. Membership changes only if the workspace changes. |
+| Move a card or editor independently | Retain its conversation association. Do not automatically move it back, close it or launch a replacement. |
+| Close a display | Reporting continues. No background respawn; explicit reopen requires positive absence and duplicate checks. |
+| Lose observations or restore a workspace | Pause affected effects until fresh proof is available. Missing observations do not prove closure; recycled handles do not prove continuity. |
+| Fork or create a conversation | Treat it as a new identity requiring its own enrollment choice, not inherited membership or authority. |
 
-Pi tree navigation stays within the same conversation, but invalidates work captured against the old branch. Switching to another enrolled conversation may use that conversation's existing membership. On a completed switch or fork, stop and drain the old runtime's work before the replacement gains authority. A cancelled switch must leave the old conversation usable.
+Tree navigation preserves conversation identity but invalidates work captured against the old branch. A completed conversation replacement retires the old runtime's work; cancellation leaves it usable.
 
-## Safety boundaries
+Every transition preserves pending native-effect evidence. Changing membership or finding a resource later must not erase launch uncertainty or authorize duplicate effects.
 
-Reconciliation changes location, not authority. Adopt a move only while current identity and both workspaces' ownership still match the evidence used to approve it. User confirmation cannot substitute for those proofs.
+## Scope and open questions
 
-Preserve pending launch and ownership evidence across every change. A new address, a closed display or a fresh owner observation must not erase uncertainty or authorize a duplicate launch. An interrupted reopen needs its original recovery proof, not merely a later resource that looks right.
+This changes the earlier fixed-membership proposal: verified workspace moves intentionally change membership, but cannot change which conversation a result belongs to. Reconciliation still requires current identity and ownership proof; user confirmation cannot substitute for it.
 
-Pause only the operations whose safety is unresolved. A native-workspace conflict need not stop catalog reporting when the exact conversation's membership and reporting authority remain independently provable.
+Physical-pairing requirements for separated resource navigation and explicit recovery from uncertain native launches remain open. They must not silently become blanket restrictions on conversation reporting.
 
-## Consequences
-
-This rejects both permanent failure on every topology change and automatic attachment to whichever conversation occupies a pane. It accepts temporary pauses and explicit recovery where identity or ownership cannot be proved, while allowing ordinary moves to remain ordinary.
-
-The [executable reconciliation model](../specs/native_reconciliation.ioa.toml) and its [tests](../tests/native_reconciliation.rs) explore this safety policy. They do not implement reconciliation or establish concrete identity, crash durability or native API safety. Those remain implementation and isolated acceptance requirements before activation.
+The existing [native reconciliation model](../specs/native_reconciliation.ioa.toml) and [tests](../tests/native_reconciliation.rs) cover resource-effect safety under the earlier fixed-membership assumptions. They do not yet establish the membership history and per-card result admission described here. Concrete identity, crash durability and native API safety also require separate verification before activation.

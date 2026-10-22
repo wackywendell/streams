@@ -1,4 +1,6 @@
-# Proposed reconciliation contract, NOT wired into the production effect engine.
+# Resource-effect model under the superseded fixed-membership proposal.
+# Does NOT establish the current ADR's membership history or per-card result admission.
+# NOT wired into the production effect engine.
 # One enrolled logical conversation/lifetime; addresses are abstract equality
 # classes, not literal pane IDs. Every External* action is an admissible input
 # in every non-retired phase, including while an adoption is being prepared.
