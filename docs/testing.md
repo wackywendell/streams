@@ -28,6 +28,30 @@ Python/reference measurements below are historical. This Rust-only branch has no
 Python implementation or differential gate. Pi, Herdr and replay acceptance remain
 separate from the Rust-only measurements.
 
+## Isolated terminal acceptance
+
+`cargo test --locked --test contracts tui_pty` runs the production
+Ratatui/Crossterm application loop in child processes with fresh controlling
+PTYs. It is included in the normal Rust gates, not ignored or opt-in. Each child
+uses an empty environment and disposable home; no real Herdr, editor, browser or
+user catalog is contacted. The native `PaneHost` is deterministic. CLI/native
+ownership, launch and document-file proofs remain separate boundary tests.
+
+The tests send real keystrokes and resize signals, interpret painted cells with
+`vt100`, verify exact document dispatch and clipped/busy-input rejection, and
+exercise refresh, explicit close, external signal cancellation, startup errors
+and worker panic. They compare kernel termios before and after the application,
+including an initially raw terminal, and check cleanup escapes. A blocked close
+checks restoration before its acknowledgement. Child exit is acknowledged only
+after inspection because Darwin revokes a terminal on controlling-session exit.
+The harness kills its private child process group on assertion failure.
+
+These checks do not prove live-Herdr integration, browser/editor navigation or
+restoration after SIGKILL or process abort. They verify the terminal loop and its
+host boundary rather than repeat catalog/enrollment setup. `vt100` 0.15 stays a
+test-only dependency because newer releases conflict with Ratatui 0.29's pinned
+Unicode-width version.
+
 ## Measure compilation separately
 
 Targeted measurements on macOS at `0dbcae45`, using this effort's own target

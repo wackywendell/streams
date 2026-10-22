@@ -5,6 +5,7 @@ mod support {
     pub mod git;
     pub mod memory;
     pub mod model;
+    pub mod pty;
 }
 
 mod agent_capture;
@@ -43,6 +44,7 @@ mod runtime_state;
 mod state;
 mod storage_conformance;
 mod transaction;
+mod tui_pty;
 
 #[test]
 fn every_root_test_file_is_registered() {
