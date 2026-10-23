@@ -10,6 +10,14 @@ RUSTUP_TOOLCHAIN = "1.95.0"
 description = "Build this checkout's Rust CLI"
 run = 'RUSTC=$(rustup which rustc) RUSTDOC=$(rustup which rustdoc) cargo build --locked --bin streams'
 
+[tasks."check:clippy"]
+description = "Check every Rust target with warnings denied"
+run = 'RUSTC=$(rustup which rustc) RUSTDOC=$(rustup which rustdoc) cargo clippy --locked --all-targets -- -D warnings'
+
+[tasks."check:fmt"]
+description = "Check Rust formatting without rewriting files"
+run = "cargo fmt --all -- --check"
+
 [tasks."test:fast"]
 description = "Development gate: Rust contracts and Pi tests, no Git recovery or Temper verification"
 depends = ["test:rust:fast", "test:pi"]
@@ -36,11 +44,11 @@ run = [
 [tasks."test:pi"]
 description = "Run Pi checkpoint and frozen helper-request tests against this Rust build"
 depends = ["build"]
-run = "node --test tests/stream_child_test.mjs tests/stream_child_standin_test.mjs tests/stream_checkpoint_test.mjs tests/stream_sync_test.mjs tests/stream_outcomes_test.mjs tests/stream_native_test.mjs tests/stream_prompt_*_test.mjs tests/stream_debug_settings_test.mjs tests/stream_capture_*_test.mjs tests/stream_lab_tools_test.mjs"
+run = "node --test tests/stream_child_test.mjs tests/stream_checkpoint_test.mjs tests/stream_sync_test.mjs tests/stream_outcomes_test.mjs tests/stream_native_test.mjs tests/stream_prompt_*_test.mjs tests/stream_debug_settings_test.mjs tests/stream_capture_*_test.mjs tests/stream_lab_tools_test.mjs"
 
 [tasks."test:pi:child"]
 description = "Exercise the Pi child protocol without starting Rust or Herdr"
-run = "node --test tests/stream_child_test.mjs tests/stream_child_standin_test.mjs"
+run = "node --test tests/stream_child_test.mjs"
 
 [tasks."test:pi:native"]
 description = "Run Pi native lifecycle and child counting tests without Rust"

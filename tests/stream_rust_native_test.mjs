@@ -20,11 +20,6 @@ function temporary(t, dispose=async()=>{}, base=realpathSync(tmpdir())) {
  const directory=mkdtempSync(join(base,'streams-rust-native-'));
  t.after(async()=>{await dispose();rmSync(directory,{recursive:true,force:true});});return directory;
 }
-function standin(directory, underlying) {
- const executable=join(directory,'streams child');
- writeFileSync(executable,`#!${process.execPath}\nimport(${JSON.stringify(new URL('./helpers/streams-child-standin.mjs',import.meta.url).href)});\n`,{mode:0o700});
- return {STREAMS_BIN_PATH:executable,STREAMS_STANDIN_BIN:underlying};
-}
 function lifetime(t, directory, extra={}) {
  const saved={...process.env};
  for (const key of Object.keys(process.env)) if (/^(HERDR_|CMUX_|STREAMS_|PI_CODING_AGENT_|WORK_CARDS_)/.test(key)) delete process.env[key];
@@ -40,12 +35,11 @@ function piContext(directory,id) {
 function fake(t) {
  const adapters=[],children=[];
  const directory=temporary(t,async()=>{await Promise.all(adapters.map(adapter=>adapter.dispose()));await Promise.all(children.map(child=>child.stop()));}),id=randomUUID(),f=piContext(directory,id);
- const file=join(directory,'observation.json'),log=join(directory,'commands.jsonl'),underlying=join(directory,'rust cli');
- const selection=standin(directory,underlying),executable=selection.STREAMS_BIN_PATH;
+ const file=join(directory,'observation.json'),log=join(directory,'commands.jsonl'),executable=join(directory,'rust child');
  const observation={version:1,scope:{catalogSource:'catalog',hostId:'host',streamId:'stream',sessionId:'session',nativeSessionId:id},native:{pane_id:'pane',tab_id:'tab',workspace_id:'workspace'},context:{socket:join(directory,'not-live.sock'),paneId:'pane',terminalId:'terminal',tabId:'tab',workspaceId:'workspace',binding:null},session:{title:'Saved title',title_mode:'automatic'},config:{automatic:false,sessionNaming:true}};
  const put=value=>writeFileSync(file,JSON.stringify(value));put(observation);
- writeFileSync(underlying,`#!${process.execPath}\nconst fs=require('node:fs');if(process.env.STREAMS_RUST_BIN!==fs.realpathSync(${JSON.stringify(executable)}))throw Error('native launch binary was not canonicalized');const args=process.argv.slice(2);fs.appendFileSync(${JSON.stringify(log)},JSON.stringify(args)+'\\n');const value=JSON.parse(fs.readFileSync(${JSON.stringify(file)},'utf8'));const command=args.find(arg=>['observe','open','close','project','capture'].includes(arg));if(value.fail===command){console.log(JSON.stringify({error:{kind:value.failureKind??'error',message:value.failMessage??'uncertain native effect; pending retained'}}));process.exit(1);}if(value.wait===command){setInterval(()=>{},1000);}else{const native={workspace_id:value.context.workspaceId,owner_pane_id:value.context.paneId,owner_terminal_id:value.context.terminalId,session_id:value.scope.sessionId,native_session_id:value.scope.nativeSessionId,binding:value.ackBinding??value.context.binding};console.log(JSON.stringify(value.invalid===command?{}:command==='observe'?value:command==='open'?{display:'opened',native}:command==='close'?{closed:true}:command==='project'?{names:{workspace:'disabled',tab:'disabled'},native}:{captured:true}));}\n`,{mode:0o700});
- lifetime(t,directory,selection);
+ writeFileSync(executable,`#!${process.execPath}\nimport(${JSON.stringify(new URL('./helpers/native-child.mjs',import.meta.url).href)});\n`,{mode:0o700});
+ lifetime(t,directory,{STREAMS_BIN_PATH:executable,STREAMS_NATIVE_FIXTURE:file,STREAMS_NATIVE_LOG:log});
  const commands=()=>existsSync(log)?readFileSync(log,'utf8').trim().split('\n').filter(Boolean).map(JSON.parse):[];
  const load=async(options={})=>{const adapter=await loadNative({pi:f.pi,ctx:f.ctx,sessionId:id,cwd:directory,env:{...process.env},...options});adapters.push(adapter);return adapter;};
  const child=()=>{const value=new StreamsChild({sessionId:id,cwd:directory,env:{...process.env},warning:assert.fail});children.push(value);return value;};
@@ -234,7 +228,7 @@ function real(t,{enrolled=true}={}) {
  // Keep the named-session socket below the Unix socket path-length limit.
  const directory=temporary(t,()=>Promise.all(adapters.map(adapter=>adapter.dispose())),'/tmp'),id=randomUUID(),socket=join(directory,'config/herdr/sessions/fixture/herdr.sock'),fixture=join(directory,'native.json'),log=join(directory,'native-commands.jsonl'),executable=join(directory,'herdr'),spawned=join(directory,'herdr-spawned.jsonl'),f=piContext(directory,id);
  mkdirSync(dirname(socket),{recursive:true});
- lifetime(t,directory,{HERDR_BIN_PATH:executable,HERDR_SESSION:'fixture',HERDR_SOCKET_PATH:socket,...standin(directory,binary)});
+ lifetime(t,directory,{HERDR_BIN_PATH:executable,HERDR_SESSION:'fixture',HERDR_SOCKET_PATH:socket,STREAMS_BIN_PATH:binary});
  const load=async input=>{const adapter=await loadNative(input);adapters.push(adapter);return adapter;};
  const pane={pane_id:'pane',terminal_id:'terminal',workspace_id:'workspace',tab_id:'tab',cwd:directory,agent:'pi',agent_session:{agent:'pi',kind:'id',value:id},tokens:{}};
  const native={pane,socket,snapshot:{workspaces:[{workspace_id:'workspace',label:'Fixture',number:1,tokens:{}}],tabs:[{workspace_id:'workspace',tab_id:'tab',label:'1',number:1}],panes:[pane],layouts:[{workspace_id:'workspace',tab_id:'tab',panes:[{pane_id:'pane'}]}],agents:[pane]}};
@@ -334,6 +328,24 @@ test('real protocol-1 child emits native scope changes, deduplicates observation
  request(9,['agent','enroll'],null);reply=await next();assert.equal(reply.id,9);assert.equal(reply.code,1);
  child.stdin.end();assert.equal((await closed)[0],0,stderr);assert.deepEqual(frames,[]);assert.equal(stderr,'');
  assert.equal(f.commands().length,beforeFailures);
+});
+test('Pi native updates reuse one real child with bounded socket work and no Herdr CLI spawns',async t=>{
+ const f=real(t),notices=[],requests=[];let spawns=0;
+ const child=new StreamsChild({sessionId:f.id,cwd:f.directory,env:{...process.env},warning:text=>notices.push(text),
+  spawn:(...args)=>{spawns++;return spawn(...args);}});
+ const run=child.run;child.run=(argv,...rest)=>{requests.push(argv);return run(argv,...rest);};
+ const controller=new NativeController({pi:f.pi,ctx:f.ctx,factory:input=>f.load({...input,child}),capture:assert.fail,warning:text=>notices.push(text)});
+ t.after(async()=>{controller.stop();await controller.idle();await child.stop();});
+ controller.start();await controller.idle();
+ for(let i=0;i<4;i++) {
+  const before=f.commands().length,requestCount=requests.length;
+  controller.update();await controller.idle();
+  assert.deepEqual(requests.slice(requestCount).map(command),['project','capture']);
+  // CLI budgets: project 10, capture 5; serve may recompute scope (2) after each.
+  assert.ok(f.commands().length-before<=19,'Pi update exceeded the declared socket request budget');
+  assert.equal(spawns,1,'a Pi update started another Streams process');
+ }
+ assert.deepEqual(notices,[]);
 });
 test('real Rust owner observation is read-only and rejects stale context before metadata effects',t=>{
  const f=real(t),before=readFileSync(join(f.directory,'native.json'),'utf8');
