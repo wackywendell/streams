@@ -11,7 +11,7 @@ mod transport;
 use std::collections::BTreeMap;
 use std::path::PathBuf;
 
-pub use transport::{CommandEvidence, CommandOutcome, FrontendError};
+pub use transport::{CommandEvidence, CommandOutcome, FrontendError, NativeRequest};
 
 /// Extensible frontend identity. Third-party adapters may use their own IDs.
 #[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash, serde::Serialize)]

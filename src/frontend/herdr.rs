@@ -12,10 +12,10 @@ pub use launch::HerdrStartedAgent;
 pub use ownership::{HerdrNativeSnapshot, PairState};
 pub use topology::{HerdrAgent, HerdrInventoryPane, HerdrLayout, HerdrTab, HerdrTopology};
 
-use super::transport::{Operation, Transport, args, launch_args, string};
+use super::transport::{NativeRequest, Operation, launch_args, string};
 use super::*;
-use crate::process::ProcessRunner;
-use serde_json::Value;
+use serde_json::{Value, json};
+use socket::SocketClient;
 use std::collections::BTreeMap;
 use std::path::PathBuf;
 use std::sync::Arc;
@@ -28,6 +28,42 @@ pub struct HerdrEndpoint {
 }
 
 impl HerdrEndpoint {
+    /// Herdr's own resolution order: `HERDR_SOCKET_PATH`, then the
+    /// `HERDR_SESSION` namespace, then the default session socket.
+    pub fn resolve(context: &BTreeMap<String, String>) -> Result<Self, FrontendError> {
+        let value = |key: &str| context.get(key).filter(|v| !v.is_empty());
+        let session = value("HERDR_SESSION").cloned();
+        if let Some(name) = &session
+            && (matches!(name.as_str(), "." | "..")
+                || !name
+                    .chars()
+                    .all(|c| c.is_ascii_alphanumeric() || matches!(c, '.' | '_' | '-')))
+        {
+            return Err(FrontendError::invalid("invalid HERDR_SESSION"));
+        }
+        let socket = match value("HERDR_SOCKET_PATH") {
+            Some(path) => PathBuf::from(path),
+            None => {
+                let config = match value("XDG_CONFIG_HOME") {
+                    Some(path) => PathBuf::from(path),
+                    None => PathBuf::from(
+                        value("HOME").ok_or_else(|| FrontendError::invalid("HOME is required"))?,
+                    )
+                    .join(".config"),
+                }
+                .join("herdr");
+                match &session {
+                    Some(name) => config.join("sessions").join(name).join("herdr.sock"),
+                    None => config.join("herdr.sock"),
+                }
+            }
+        };
+        if !socket.is_absolute() {
+            return Err(FrontendError::invalid("invalid Herdr server socket path"));
+        }
+        Ok(Self { socket, session })
+    }
+
     pub fn identity(&self) -> EndpointId {
         EndpointId(format!(
             "herdr:{}",
@@ -103,62 +139,50 @@ pub struct HerdrCreatedWorkspace {
 #[derive(Debug, Clone)]
 pub struct HerdrPresentation {
     pub title: String,
-    pub tokens: Vec<String>,
+    pub tokens: BTreeMap<String, String>,
 }
 
+/// One pinned protocol-22 endpoint per process. Herdr closes ordinary request
+/// sockets after each reply, so each request connects; only subscriptions persist.
 #[derive(Clone)]
 pub struct HerdrClient {
-    transport: Transport,
+    socket: Arc<SocketClient>,
     endpoint: HerdrEndpoint,
     context: BTreeMap<String, String>,
 }
 
 impl HerdrClient {
-    /// Read-only discovery rejects incompatible servers without updating/restarting.
-    pub fn connect(
-        runner: Arc<dyn ProcessRunner>,
-        context: BTreeMap<String, String>,
-        timeout: f64,
-    ) -> Result<Self, FrontendError> {
-        crate::process::deadline(timeout, "Herdr")
-            .map_err(|e| FrontendError::invalid(e.message))?;
-        let mut transport = Transport {
-            program: context
-                .get("HERDR_BIN_PATH")
-                .filter(|v| !v.is_empty())
-                .map(PathBuf::from)
-                .unwrap_or_else(|| "herdr".into()),
-            environment: context.iter().map(|(k, v)| (k.into(), v.into())).collect(),
-            timeout,
-            runner,
-        };
-        let endpoint = Self::read_endpoint(&transport, &mut Operation::default())?;
-        // Pin subsequent commands to the discovered transport, not later ambient state.
-        transport.environment.insert(
-            "HERDR_SOCKET_PATH".into(),
-            endpoint.socket.as_os_str().to_owned(),
-        );
+    /// The single protocol check rejects incompatible servers without
+    /// updating or restarting them, and pins the endpoint for this process.
+    pub fn connect(context: BTreeMap<String, String>, timeout: f64) -> Result<Self, FrontendError> {
+        let endpoint = HerdrEndpoint::resolve(&context)?;
+        let socket = Arc::new(SocketClient::connect(endpoint.socket.clone(), timeout)?);
         Ok(Self {
-            transport,
+            socket,
             endpoint,
             context,
         })
+    }
+
+    /// Persistent event subscriptions share the pinned endpoint.
+    pub fn socket(&self) -> &Arc<SocketClient> {
+        &self.socket
     }
 
     /// Bounded coordinator transport. Effect authority and round-trip validation
     /// stay in the native-card engine; this adapter never retries an operation.
     pub(crate) fn card_request(
         &self,
-        command: &[String],
+        method: &str,
+        params: Value,
         expected: Option<&str>,
         effect: bool,
     ) -> Result<(Value, Vec<super::CommandEvidence>), FrontendError> {
         let mut op = Operation::default();
-        self.verify_endpoint(&mut op)?;
         let value = if let Some(expected) = expected {
-            self.result(&mut op, command, expected, effect)?
+            self.result(&mut op, method, params, expected, effect)?
         } else {
-            op.run(&self.transport, command, effect)?;
+            self.call(&mut op, method, params, effect)?;
             Value::Null
         };
         if effect {
@@ -171,12 +195,15 @@ impl HerdrClient {
         &self.endpoint
     }
 
-    /// Share the pinned endpoint while selecting a protected card's owner.
-    pub fn with_context(&self, context: BTreeMap<String, String>) -> Self {
-        Self {
+    /// Select a protected card's owner without changing its pinned endpoint.
+    pub fn with_context(&self, context: BTreeMap<String, String>) -> Result<Self, FrontendError> {
+        if HerdrEndpoint::resolve(&context)? != self.endpoint {
+            return Err(FrontendError::invalid("Herdr reader endpoint changed"));
+        }
+        Ok(Self {
             context,
             ..self.clone()
-        }
+        })
     }
 
     pub fn current_pane_from(&self, snapshot: &Value) -> Result<HerdrPane, FrontendError> {
@@ -241,69 +268,43 @@ impl HerdrClient {
         }
     }
 
-    fn read_endpoint(
-        transport: &Transport,
+    /// One socket request, recorded with its raw reply before it is decoded.
+    fn call(
+        &self,
         op: &mut Operation,
-    ) -> Result<HerdrEndpoint, FrontendError> {
-        let response = op.json(transport, &args(&["status", "--json"]), false, false)?;
-        let server = response
-            .get("server")
-            .filter(|v| v.is_object())
-            .ok_or_else(|| op.error("invalid Herdr server status"))?;
-        if server.get("running") != Some(&Value::Bool(true)) {
-            return Err(op.error("Herdr server is not running"));
-        }
-        if server.get("compatible") != Some(&Value::Bool(true))
-            || server.get("endpoint_compatible") != Some(&Value::Bool(true))
-        {
-            return Err(op.error("Herdr server is not API-compatible; no automatic update or restart will be attempted"));
-        }
-        let version = server
-            .get("version")
-            .and_then(Value::as_str)
-            .and_then(parse_version)
-            .ok_or_else(|| op.error("invalid Herdr server version"))?;
-        if version < (0, 9, 3) {
-            return Err(op.error("Herdr requires server version 0.9.3 or newer"));
-        }
-        let socket = PathBuf::from(op.capture(string(server, "socket"))?);
-        if !socket.is_absolute() {
-            return Err(op.error("invalid Herdr server socket path"));
-        }
-        let session = match server.get("session") {
-            None | Some(Value::Null) => None,
-            Some(Value::String(v)) => Some(v.clone()),
-            _ => return Err(op.error("invalid Herdr server session")),
-        };
-        Ok(HerdrEndpoint { socket, session })
-    }
-
-    fn verify_endpoint(&self, op: &mut Operation) -> Result<(), FrontendError> {
-        if Self::read_endpoint(&self.transport, op)? != self.endpoint {
-            return Err(op.error("Herdr endpoint changed; refusing stale workspace reference"));
-        }
-        Ok(())
+        method: &str,
+        params: Value,
+        effect: bool,
+    ) -> Result<Value, FrontendError> {
+        let (response, result) = self.socket.exchange(method, params.clone());
+        op.commands.push(CommandEvidence {
+            request: NativeRequest::Socket {
+                method: method.into(),
+                params,
+                response,
+            },
+            outcome: if effect {
+                CommandOutcome::Uncertain
+            } else {
+                CommandOutcome::ReadOnly
+            },
+        });
+        op.capture(result)
     }
 
     fn result(
         &self,
         op: &mut Operation,
-        command: &[String],
+        method: &str,
+        params: Value,
         expected: &str,
         effect: bool,
     ) -> Result<Value, FrontendError> {
-        let value = op.json(&self.transport, command, effect, false)?;
-        if let Some(error) = value.get("error") {
-            return Err(op.error(format!("Herdr command failed: {error}")));
-        }
-        let result = value
-            .get("result")
-            .filter(|v| v.is_object())
-            .ok_or_else(|| op.error("invalid Herdr result shape"))?;
+        let result = self.call(op, method, params, effect)?;
         if result.get("type").and_then(Value::as_str) != Some(expected) {
             return Err(op.error(format!("unexpected Herdr result; expected {expected}")));
         }
-        Ok(result.clone())
+        Ok(result)
     }
 
     fn pane(&self, op: &mut Operation) -> Result<HerdrPane, FrontendError> {
@@ -319,7 +320,8 @@ impl HerdrClient {
         }
         let result = self.result(
             op,
-            &args(&["pane", "current", "--current"]),
+            "pane.current",
+            json!({"caller_pane_id":caller}),
             "pane_current",
             false,
         )?;
@@ -332,9 +334,7 @@ impl HerdrClient {
 
     /// Exact caller observation; it does not attest a saved conversation or owner.
     pub fn current_pane(&self) -> Result<HerdrPane, FrontendError> {
-        let mut op = Operation::default();
-        self.verify_endpoint(&mut op)?;
-        self.pane(&mut op)
+        self.pane(&mut Operation::default())
     }
 
     pub fn session_snapshot(&self) -> Result<Value, FrontendError> {
@@ -342,8 +342,7 @@ impl HerdrClient {
     }
 
     fn read_snapshot(&self, op: &mut Operation) -> Result<Value, FrontendError> {
-        self.verify_endpoint(op)?;
-        let result = self.result(op, &args(&["api", "snapshot"]), "session_snapshot", false)?;
+        let result = self.result(op, "session.snapshot", json!({}), "session_snapshot", false)?;
         result
             .get("snapshot")
             .filter(|v| v.is_object())
@@ -364,24 +363,21 @@ impl HerdrClient {
         &self,
         request: &CreateWorkspace,
     ) -> Result<HerdrCreatedWorkspace, FrontendError> {
-        let environment = launch_args(request)?;
+        launch_args(request)?;
         let cwd = request
             .cwd
             .to_str()
             .ok_or_else(|| FrontendError::invalid("Herdr cwd is not UTF-8"))?;
-        let mut command = args(&[
-            "workspace",
-            "create",
-            "--cwd",
-            cwd,
-            "--label",
-            &request.title,
-        ]);
-        command.extend(environment);
-        command.push("--focus".into());
+        let params =
+            json!({"cwd":cwd,"label":request.title,"env":request.environment,"focus":true});
         let mut op = Operation::default();
-        self.verify_endpoint(&mut op)?;
-        let result = self.result(&mut op, &command, "workspace_created", true)?;
+        let result = self.result(
+            &mut op,
+            "workspace.create",
+            params,
+            "workspace_created",
+            true,
+        )?;
         let workspace = op.capture(HerdrWorkspace::parse(&result["workspace"]))?;
         let tab = op.capture(HerdrTab::parse(&result["tab"]))?;
         let pane = op.capture(HerdrPane::parse(&result["root_pane"]))?;
@@ -407,7 +403,8 @@ impl HerdrClient {
     ) -> Result<(), FrontendError> {
         let result = self.result(
             op,
-            &args(&["workspace", "rename", &reference.native_id, title]),
+            "workspace.rename",
+            json!({"workspace_id":reference.native_id,"label":title}),
             "workspace_info",
             true,
         )?;
@@ -427,24 +424,15 @@ impl HerdrClient {
     ) -> Result<(), FrontendError> {
         check_ref(self, reference)?;
         nonempty(&presentation.title, "workspace title")?;
-        for token in &presentation.tokens {
-            nonempty(token, "metadata token")?;
+        for (key, value) in &presentation.tokens {
+            nonempty(key, "metadata token")?;
+            nonempty(value, "metadata token")?;
         }
         let mut op = Operation::default();
-        self.verify_endpoint(&mut op)?;
         self.rename_native(&mut op, reference, &presentation.title)?;
-        let mut command = args(&[
-            "workspace",
-            "report-metadata",
-            &reference.native_id,
-            "--source",
-            "streams",
-        ]);
-        for token in &presentation.tokens {
-            command.extend(["--token".into(), token.clone()]);
-        }
-        // report-metadata is intentionally silent on success.
-        op.run(&self.transport, &command, true)?;
+        let params = json!({"workspace_id":reference.native_id,"source":"streams",
+            "tokens":presentation.tokens});
+        self.call(&mut op, "workspace.report_metadata", params, true)?;
         op.acknowledge();
         Ok(())
     }
@@ -472,7 +460,6 @@ impl WorkspaceFrontend for HerdrClient {
             WorkspaceSelector::Caller => {}
         }
         let mut op = Operation::default();
-        self.verify_endpoint(&mut op)?;
         let (id, cwd) = match selector {
             WorkspaceSelector::Caller => {
                 let pane = self.pane(&mut op)?;
@@ -483,7 +470,8 @@ impl WorkspaceFrontend for HerdrClient {
         };
         let result = self.result(
             &mut op,
-            &args(&["workspace", "get", &id]),
+            "workspace.get",
+            json!({"workspace_id":id}),
             "workspace_info",
             false,
         )?;
@@ -500,10 +488,10 @@ impl WorkspaceFrontend for HerdrClient {
     fn focus(&self, reference: &WorkspaceRef) -> Result<(), FrontendError> {
         check_ref(self, reference)?;
         let mut op = Operation::default();
-        self.verify_endpoint(&mut op)?;
-        op.run(
-            &self.transport,
-            &args(&["workspace", "focus", &reference.native_id]),
+        self.call(
+            &mut op,
+            "workspace.focus",
+            json!({"workspace_id":reference.native_id}),
             true,
         )?;
         op.acknowledge();
@@ -512,36 +500,6 @@ impl WorkspaceFrontend for HerdrClient {
     fn rename(&self, reference: &WorkspaceRef, title: &str) -> Result<(), FrontendError> {
         check_ref(self, reference)?;
         nonempty(title, "workspace title")?;
-        let mut op = Operation::default();
-        self.verify_endpoint(&mut op)?;
-        self.rename_native(&mut op, reference, title)
+        self.rename_native(&mut Operation::default(), reference, title)
     }
-}
-
-fn parse_version(value: &str) -> Option<(u64, u64, u64)> {
-    let core = if let Some((core, suffix)) = value.split_once(['-', '+']) {
-        if suffix.is_empty()
-            || !suffix
-                .chars()
-                .all(|c| c.is_alphanumeric() || matches!(c, '_' | '.' | '-'))
-        {
-            return None;
-        }
-        core
-    } else {
-        value
-    };
-    let parts: Vec<_> = core.split('.').collect();
-    if parts.len() != 3
-        || parts
-            .iter()
-            .any(|s| s.is_empty() || !s.bytes().all(|b| b.is_ascii_digit()))
-    {
-        return None;
-    }
-    Some((
-        parts[0].parse().ok()?,
-        parts[1].parse().ok()?,
-        parts[2].parse().ok()?,
-    ))
 }

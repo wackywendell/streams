@@ -42,11 +42,7 @@ impl BuiltinFrontend {
         timeout: f64,
     ) -> Result<Self> {
         match id.0.as_str() {
-            "herdr" => Ok(Self::Herdr(HerdrClient::connect(
-                runner,
-                environment,
-                timeout,
-            )?)),
+            "herdr" => Ok(Self::Herdr(HerdrClient::connect(environment, timeout)?)),
             "cmux" => Ok(Self::Cmux(CmuxClient::connect(
                 runner,
                 environment,

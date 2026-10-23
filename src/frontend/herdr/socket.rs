@@ -46,8 +46,17 @@ impl SocketClient {
     }
 
     pub fn request(&self, method: &str, params: Value) -> Result<Value, FrontendError> {
-        let (_, result) = self.start(method, params)?;
-        Ok(result)
+        self.exchange(method, params).1
+    }
+
+    /// One ordinary request plus the raw reply bytes, retained as effect evidence
+    /// even when the reply is partial, malformed or reports an error.
+    pub fn exchange(&self, method: &str, params: Value) -> (Vec<u8>, Result<Value, FrontendError>) {
+        let mut frame = Vec::new();
+        let result = self
+            .send(method, params, &mut frame)
+            .and_then(|(_, id)| decode(&id, &frame));
+        (frame, result)
     }
 
     /// Return the reader too, retaining bytes received after the acknowledgement.
@@ -56,6 +65,17 @@ impl SocketClient {
         method: &str,
         params: Value,
     ) -> Result<(BufReader<UnixStream>, Value), FrontendError> {
+        let mut frame = Vec::new();
+        let (reader, id) = self.send(method, params, &mut frame)?;
+        Ok((reader, decode(&id, &frame)?))
+    }
+
+    fn send(
+        &self,
+        method: &str,
+        params: Value,
+        frame: &mut Vec<u8>,
+    ) -> Result<(BufReader<UnixStream>, String), FrontendError> {
         let deadline = Instant::now() + self.timeout;
         let mut stream = connect(&self.path, deadline).map_err(socket_error)?;
         let id = self.sequence.fetch_add(1, Ordering::Relaxed).to_string();
@@ -68,22 +88,28 @@ impl SocketClient {
             .map_err(socket_error)?;
         stream.write_all(&bytes).map_err(socket_error)?;
         let mut reader = BufReader::new(stream);
-        let bytes = read_frame(&mut reader, Some(deadline)).map_err(socket_error)?;
-        let response: Value = serde_json::from_slice(&bytes)
-            .map_err(|e| FrontendError::invalid(format!("invalid Herdr response: {e}")))?;
-        if response["id"].as_str() != Some(&id) {
-            return Err(FrontendError::invalid("Herdr response ID mismatch"));
-        }
-        if let Some(error) = response.get("error") {
-            return Err(FrontendError::invalid(format!(
-                "Herdr request failed: {error}"
-            )));
-        }
-        let result = response
-            .get("result")
-            .filter(|v| v.is_object())
-            .ok_or_else(|| FrontendError::invalid("invalid Herdr result shape"))?;
-        Ok((reader, result.clone()))
+        read_frame_into(&mut reader, Some(deadline), frame).map_err(socket_error)?;
+        Ok((reader, id))
+    }
+}
+
+fn decode(id: &str, frame: &[u8]) -> Result<Value, FrontendError> {
+    // Strict: a duplicated identity field must not silently pick a winner.
+    let mut response = std::str::from_utf8(frame)
+        .map_err(|e| e.to_string())
+        .and_then(|text| crate::codec::load_json(text).map_err(|e| e.to_string()))
+        .map_err(|e| FrontendError::invalid(format!("invalid Herdr response: {e}")))?;
+    if response["id"].as_str() != Some(id) {
+        return Err(FrontendError::invalid("Herdr response ID mismatch"));
+    }
+    if let Some(error) = response.get("error") {
+        return Err(FrontendError::invalid(format!(
+            "Herdr request failed: {error}"
+        )));
+    }
+    match response.get_mut("result") {
+        Some(result) if result.is_object() => Ok(result.take()),
+        _ => Err(FrontendError::invalid("invalid Herdr result shape")),
     }
 }
 
@@ -105,6 +131,16 @@ pub(super) fn read_frame(
     deadline: Option<Instant>,
 ) -> io::Result<Vec<u8>> {
     let mut frame = Vec::new();
+    read_frame_into(reader, deadline, &mut frame)?;
+    Ok(frame)
+}
+
+/// Appends to `frame`, so a caller keeps the partial bytes of a failed read.
+fn read_frame_into(
+    reader: &mut BufReader<UnixStream>,
+    deadline: Option<Instant>,
+    frame: &mut Vec<u8>,
+) -> io::Result<()> {
     loop {
         if let Some(deadline) = deadline
             && reader.buffer().is_empty()
@@ -160,7 +196,7 @@ pub(super) fn read_frame(
         frame.extend_from_slice(&buffer[..length]);
         reader.consume(length);
         if complete {
-            return Ok(frame);
+            return Ok(());
         }
     }
 }

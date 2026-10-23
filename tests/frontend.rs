@@ -1,11 +1,16 @@
-//! Native adapters are exercised only through injected runners, never live servers.
+//! Native adapters are exercised only through injected runners and scripted
+//! sockets, never live servers.
 
+use crate::support::herdr::{Reply, Scripted};
 use serde_json::{Value, json};
 use std::collections::{BTreeMap, VecDeque};
 use std::os::unix::process::ExitStatusExt;
+use std::path::Path;
 use std::sync::{Arc, Mutex};
 use streams_temper::frontend::cmux::{CmuxClient, CmuxPresentation};
-use streams_temper::frontend::herdr::{HerdrClient, HerdrPresentation, HerdrTopology};
+use streams_temper::frontend::herdr::{
+    HerdrClient, HerdrEndpoint, HerdrPresentation, HerdrTopology,
+};
 use streams_temper::frontend::*;
 use streams_temper::process::{ProcessError, ProcessOutput, ProcessRequest, ProcessRunner};
 
@@ -81,19 +86,28 @@ fn cmux(runner: &Arc<FakeRunner>, extra: &[(&str, &str)]) -> CmuxClient {
     env.extend(context(extra));
     CmuxClient::connect(runner.clone(), env, 0.5).unwrap()
 }
-fn server(session: &str) -> Value {
-    json!({"server":{"running":true,"compatible":true,"endpoint_compatible":true,"version":"0.9.5","socket":"/tmp/herdr.sock","session":session}})
-}
-fn herdr(runner: &Arc<FakeRunner>, extra: &[(&str, &str)]) -> HerdrClient {
-    runner.json(server("test"));
-    let mut env = context(&[("HERDR_BIN_PATH", "/fake/herdr"), ("PATH", "/bin")]);
+fn herdr(fake: &Scripted, extra: &[(&str, &str)]) -> HerdrClient {
+    let mut env = fake.environment();
     env.extend(context(extra));
-    HerdrClient::connect(runner.clone(), env, 0.5).unwrap()
+    HerdrClient::connect(env, 0.5).unwrap()
 }
 fn result(kind: &str, field: &str, value: Value) -> Value {
-    let mut response = json!({"result":{"type":kind}});
-    response["result"][field] = value;
-    response
+    let mut result = json!({"type":kind});
+    result[field] = value;
+    result
+}
+/// The raw reply frame retained as Herdr effect evidence.
+fn response(evidence: &CommandEvidence) -> &[u8] {
+    match &evidence.request {
+        NativeRequest::Socket { response, .. } => response,
+        NativeRequest::Process { .. } => panic!("Herdr started a process"),
+    }
+}
+fn stdout(evidence: &CommandEvidence) -> &[u8] {
+    match &evidence.request {
+        NativeRequest::Process { stdout, .. } => stdout,
+        NativeRequest::Socket { .. } => panic!("CMUX used a socket"),
+    }
 }
 fn native_workspace(id: &str, title: &str) -> Value {
     json!({"workspace_id":id,"label":title})
@@ -405,15 +419,22 @@ fn creation_errors_preserve_uncertainty_raw_resources_and_never_retry() {
         assert_eq!(error.commands.len(), 1);
         assert_eq!(error.commands[0].outcome, CommandOutcome::Uncertain);
         assert_eq!(
-            serde_json::from_slice::<Value>(&error.commands[0].stdout).unwrap(),
+            serde_json::from_slice::<Value>(stdout(&error.commands[0])).unwrap(),
             payload
         );
     }
     fake.uncertain();
     let error = client.create(&request()).unwrap_err();
     assert_eq!(error.commands.len(), 1);
-    assert_eq!(error.commands[0].stdout, b"partial-created-id");
-    assert_eq!(error.commands[0].stderr, b"partial-stderr");
+    assert_eq!(
+        error.commands[0].request,
+        NativeRequest::Process {
+            args: fake.commands()[2].clone(),
+            code: None,
+            stdout: b"partial-created-id".to_vec(),
+            stderr: b"partial-stderr".to_vec(),
+        }
+    );
     assert_eq!(error.commands[0].outcome, CommandOutcome::Uncertain);
     assert_eq!(fake.commands().len(), 3);
 }
@@ -453,10 +474,12 @@ fn presentation_failure_retains_acknowledged_and_uncertain_effects() {
 #[test]
 fn finite_timeout_and_launch_validation_precede_any_transport_call() {
     let fake = Arc::new(FakeRunner::default());
+    let herdr_fake = Scripted::new();
     for timeout in [0.0, -1.0, f64::NAN, f64::INFINITY, f64::MAX] {
         assert!(CmuxClient::connect(fake.clone(), BTreeMap::new(), timeout).is_err());
-        assert!(HerdrClient::connect(fake.clone(), BTreeMap::new(), timeout).is_err());
+        assert!(HerdrClient::connect(herdr_fake.environment(), timeout).is_err());
     }
+    assert!(herdr_fake.server.requests().is_empty());
     let client = cmux(&fake, &[]);
     let mut invalid = request();
     invalid.cwd = "relative".into();
@@ -477,22 +500,26 @@ fn duplicate_native_identity_fields_fail_closed_with_uncertain_effect_evidence()
     assert!(error.message.contains("duplicate JSON field"));
     assert_eq!(error.commands.len(), 1);
     assert_eq!(error.commands[0].outcome, CommandOutcome::Uncertain);
-    assert_eq!(error.commands[0].stdout, reply);
+    assert_eq!(stdout(&error.commands[0]), reply);
     assert_eq!(fake.commands().len(), 1);
     fake.exhausted();
 
-    let fake = Arc::new(FakeRunner::default());
+    let fake = Scripted::new();
     let client = herdr(&fake, &[]);
-    fake.json(server("test"));
-    let reply = br#"{"result":{"type":"workspace_created","workspace":{"workspace_id":"foreign","workspace_id":"w1","label":"Work"},"tab":{"tab_id":"w1:t1","workspace_id":"w1"},"root_pane":{"pane_id":"w1:p1","tab_id":"w1:t1","workspace_id":"w1"}}}"#;
-    fake.bytes(reply.to_vec());
+    // The ping used request ID 1.
+    let reply = concat!(
+        r#"{"id":"2","result":{"type":"workspace_created","workspace":{"workspace_id":"foreign","workspace_id":"w1","label":"Work"},"#,
+        r#""tab":{"tab_id":"w1:t1","workspace_id":"w1"},"root_pane":{"pane_id":"w1:p1","tab_id":"w1:t1","workspace_id":"w1"}}}"#,
+        "\n"
+    )
+    .as_bytes();
+    fake.reply(Reply::Raw(reply.to_vec()));
     let error = client.create_native(&request()).unwrap_err();
     assert!(error.message.contains("duplicate JSON field"));
-    assert_eq!(error.commands.len(), 2);
-    assert_eq!(error.commands[0].outcome, CommandOutcome::ReadOnly);
-    assert_eq!(error.commands[1].outcome, CommandOutcome::Uncertain);
-    assert_eq!(error.commands[1].stdout, reply);
-    assert_eq!(fake.commands().len(), 3);
+    assert_eq!(error.commands.len(), 1);
+    assert_eq!(error.commands[0].outcome, CommandOutcome::Uncertain);
+    assert_eq!(response(&error.commands[0]), reply);
+    assert_eq!(fake.server.methods(), ["ping", "workspace.create"]);
     fake.exhausted();
 }
 
@@ -514,20 +541,25 @@ fn invalid_presentation_is_rejected_before_any_native_command() {
     assert!(fake.commands().is_empty());
     fake.exhausted();
 
-    let fake = Arc::new(FakeRunner::default());
+    let fake = Scripted::new();
     let client = herdr(&fake, &[]);
-    for token in ["", " ", "state=bad\0value", "state=bad\nvalue"] {
+    for (key, value) in [
+        ("", "value"),
+        (" ", "value"),
+        ("state", ""),
+        ("state", "bad\0value"),
+        ("state", "bad\nvalue"),
+    ] {
         let error = client
             .update_presentation(
                 &reference(&client, "w1"),
                 &HerdrPresentation {
                     title: "Valid".into(),
-                    tokens: vec![token.into()],
+                    tokens: context(&[(key, value)]),
                 },
             )
             .unwrap_err();
         assert!(error.commands.is_empty());
-        assert_eq!(fake.commands().len(), 1);
     }
     assert!(
         client
@@ -536,63 +568,105 @@ fn invalid_presentation_is_rejected_before_any_native_command() {
             .commands
             .is_empty()
     );
-    assert_eq!(fake.commands().len(), 1);
+    assert_eq!(fake.server.methods(), ["ping"]);
     fake.exhausted();
 }
 
 #[test]
-fn herdr_endpoint_discovery_validates_compatibility_version_and_shape() {
-    let fake = Arc::new(FakeRunner::default());
-    for field in ["running", "compatible", "endpoint_compatible"] {
-        let mut payload = server("test");
-        payload["server"][field] = json!(false);
-        fake.json(payload);
-        assert!(HerdrClient::connect(fake.clone(), BTreeMap::new(), 1.0).is_err());
-    }
-    for version in [
-        "0.9.2",
-        "0.9",
-        "0.9.3 garbage",
-        "0.9.3-",
-        "0.9.3+bad!",
-        "x.9.3",
+fn herdr_endpoint_resolution_follows_herdr_and_fails_closed() {
+    let resolve = |values: &[(&str, &str)]| HerdrEndpoint::resolve(&context(values));
+    let endpoint = resolve(&[("HOME", "/home/test")]).unwrap();
+    assert_eq!(
+        endpoint.socket,
+        Path::new("/home/test/.config/herdr/herdr.sock")
+    );
+    assert_eq!(endpoint.session, None);
+    let endpoint = resolve(&[
+        ("HOME", "/home/test"),
+        ("XDG_CONFIG_HOME", "/xdg"),
+        ("HERDR_SESSION", "work.1"),
+    ])
+    .unwrap();
+    assert_eq!(
+        endpoint.socket,
+        Path::new("/xdg/herdr/sessions/work.1/herdr.sock")
+    );
+    assert_eq!(endpoint.session.as_deref(), Some("work.1"));
+    let endpoint =
+        resolve(&[("HERDR_SOCKET_PATH", "/run/h.sock"), ("HERDR_SESSION", "s")]).unwrap();
+    assert_eq!(endpoint.socket, Path::new("/run/h.sock"));
+    for values in [
+        vec![],
+        vec![("HERDR_SOCKET_PATH", "relative.sock")],
+        vec![("HOME", "relative")],
+        vec![("HOME", "/home/test"), ("HERDR_SESSION", "..")],
+        vec![("HOME", "/home/test"), ("HERDR_SESSION", "a/b")],
     ] {
-        let mut payload = server("test");
-        payload["server"]["version"] = json!(version);
-        fake.json(payload);
-        assert!(HerdrClient::connect(fake.clone(), BTreeMap::new(), 1.0).is_err());
+        assert!(resolve(&values).is_err(), "{values:?}");
     }
-    for (field, value) in [
-        ("session", json!(3)),
-        ("socket", json!("relative")),
-        ("socket", json!(null)),
+    // A missing server is a connection error, not a fallback.
+    assert!(
+        HerdrClient::connect(
+            context(&[("HERDR_SOCKET_PATH", "/nonexistent/h.sock")]),
+            0.5
+        )
+        .is_err()
+    );
+}
+
+#[test]
+fn herdr_reader_context_cannot_change_the_pinned_socket_or_namespace() {
+    let fake = Scripted::new();
+    let client = herdr(&fake, &[("HERDR_SESSION", "named")]);
+    let mut reader = fake.environment();
+    reader.insert("HERDR_SESSION".into(), "named".into());
+    reader.insert("HERDR_PANE_ID".into(), "owner".into());
+    assert!(client.with_context(reader.clone()).is_ok());
+    for (key, value) in [
+        ("HERDR_SOCKET_PATH", "/different.sock"),
+        ("HERDR_SESSION", "other"),
+        ("HERDR_SESSION", ""),
     ] {
-        let mut payload = server("test");
-        payload["server"][field] = value;
-        fake.json(payload);
-        assert!(HerdrClient::connect(fake.clone(), BTreeMap::new(), 1.0).is_err());
+        let mut changed = reader.clone();
+        changed.insert(key.into(), value.into());
+        assert!(client.with_context(changed).is_err(), "{key}={value}");
     }
-    for payload in [json!([]), json!({}), json!({"server":[]})] {
-        fake.json(payload);
-        assert!(HerdrClient::connect(fake.clone(), BTreeMap::new(), 1.0).is_err());
+    reader.remove("HERDR_SESSION");
+    assert!(client.with_context(reader).is_err());
+    assert_eq!(fake.server.methods(), ["ping"]);
+}
+
+#[test]
+fn herdr_snapshot_caller_requires_one_valid_matching_workspace() {
+    let fake = Scripted::new();
+    let client = herdr(&fake, &[("HERDR_ENV", "1"), ("HERDR_PANE_ID", "w1:p1")]);
+    let good = snapshot();
+    assert!(client.current_pane_from(&good).is_ok());
+    for workspaces in [
+        Value::Null,
+        json!({}),
+        json!([]),
+        json!([native_workspace("other", "Other")]),
+        json!([good["workspaces"][0], good["workspaces"][0]]),
+        json!([{"workspace_id":"w1","label":null}]),
+    ] {
+        let mut changed = good.clone();
+        changed["workspaces"] = workspaces;
+        assert!(client.current_pane_from(&changed).is_err(), "{changed}");
     }
-    let mut payload = server("test");
-    payload["server"]["version"] = json!("0.9.3-rc.1");
-    fake.json(payload);
-    assert!(HerdrClient::connect(fake.clone(), BTreeMap::new(), 1.0).is_ok());
+    assert_eq!(fake.server.methods(), ["ping"]);
 }
 
 #[test]
 fn herdr_caller_pane_and_workspace_are_exact_and_endpoint_scoped() {
-    let fake = Arc::new(FakeRunner::default());
+    let fake = Scripted::new();
     let client = herdr(&fake, &[("HERDR_ENV", "1"), ("HERDR_PANE_ID", "w1:p1")]);
-    fake.json(server("test"));
-    fake.json(result(
+    fake.result(result(
         "pane_current",
         "pane",
         snapshot()["panes"][0].clone(),
     ));
-    fake.json(result(
+    fake.result(result(
         "workspace_info",
         "workspace",
         native_workspace("w1", "One"),
@@ -600,30 +674,23 @@ fn herdr_caller_pane_and_workspace_are_exact_and_endpoint_scoped() {
     let workspace = client.resolve(WorkspaceSelector::Caller).unwrap();
     assert_eq!(workspace.reference, reference(&client, "w1"));
     assert_eq!(workspace.cwd, "/foreground");
-    let commands = fake.commands();
-    assert_eq!(commands[2], expected(&["pane", "current", "--current"]));
-    assert_eq!(commands[3], expected(&["workspace", "get", "w1"]));
-    let calls = fake.requests.lock().unwrap();
-    assert!(
-        calls
-            .iter()
-            .all(|r| r.program.to_str() == Some("/fake/herdr"))
-    );
     assert_eq!(
-        calls[1]
-            .env
-            .get(std::ffi::OsStr::new("HERDR_SOCKET_PATH"))
-            .unwrap(),
-        "/tmp/herdr.sock"
+        client.endpoint_id(),
+        HerdrEndpoint::resolve(&fake.environment())
+            .unwrap()
+            .identity()
     );
-    drop(calls);
-    fake.json(server("replacement"));
-    assert!(
-        client
-            .focus(&workspace.reference)
-            .unwrap_err()
-            .message
-            .contains("endpoint changed")
+    // The endpoint is pinned once; later effects do not re-check the version.
+    fake.result(json!({"type":"ok"}));
+    client.focus(&workspace.reference).unwrap();
+    assert_eq!(
+        fake.server.requests(),
+        vec![
+            ("ping".into(), json!({})),
+            ("pane.current".into(), json!({"caller_pane_id":"w1:p1"})),
+            ("workspace.get".into(), json!({"workspace_id":"w1"})),
+            ("workspace.focus".into(), json!({"workspace_id":"w1"})),
+        ]
     );
     fake.exhausted();
 }
@@ -635,23 +702,20 @@ fn herdr_missing_caller_mismatched_pane_and_workspace_fail_closed() {
         vec![("HERDR_ENV", "1")],
         vec![("HERDR_PANE_ID", "w1:p1")],
     ] {
-        let fake = Arc::new(FakeRunner::default());
+        let fake = Scripted::new();
         let client = herdr(&fake, &values);
-        fake.json(server("test"));
         assert!(client.current_pane().is_err());
-        assert_eq!(fake.commands().len(), 2);
+        assert_eq!(fake.server.methods(), ["ping"]);
     }
-    let fake = Arc::new(FakeRunner::default());
+    let fake = Scripted::new();
     let client = herdr(&fake, &[("HERDR_ENV", "1"), ("HERDR_PANE_ID", "different")]);
-    fake.json(server("test"));
-    fake.json(result(
+    fake.result(result(
         "pane_current",
         "pane",
         snapshot()["panes"][0].clone(),
     ));
     assert!(client.current_pane().is_err());
-    fake.json(server("test"));
-    fake.json(result(
+    fake.result(result(
         "workspace_info",
         "workspace",
         native_workspace("wrong", "One"),
@@ -670,151 +734,140 @@ fn herdr_missing_caller_mismatched_pane_and_workspace_fail_closed() {
         assert!(client.focus(&target).is_err());
         assert!(client.resolve(WorkspaceSelector::Exact(&target)).is_err());
     }
+    assert_eq!(
+        fake.server.methods(),
+        ["ping", "pane.current", "workspace.get"]
+    );
     fake.exhausted();
 }
 
 fn created() -> Value {
-    json!({"result":{"type":"workspace_created","workspace":{"workspace_id":"w1","label":"An effort"},"tab":{"tab_id":"w1:t1","workspace_id":"w1"},"root_pane":{"pane_id":"w1:p1","tab_id":"w1:t1","workspace_id":"w1","cwd":"/checkout"}}})
+    json!({"type":"workspace_created","workspace":{"workspace_id":"w1","label":"An effort"},"tab":{"tab_id":"w1:t1","workspace_id":"w1"},"root_pane":{"pane_id":"w1:p1","tab_id":"w1:t1","workspace_id":"w1","cwd":"/checkout"}})
 }
 
 #[test]
 fn herdr_creation_retains_native_root_tuple_without_installing_or_launching() {
-    let fake = Arc::new(FakeRunner::default());
+    let fake = Scripted::new();
     let client = herdr(&fake, &[]);
-    fake.json(server("test"));
-    fake.json(created());
+    fake.result(created());
     let receipt = client.create_native(&request()).unwrap();
     assert_eq!(receipt.root_pane.id, "w1:p1");
     assert_eq!(receipt.tab.id, "w1:t1");
     assert_eq!(receipt.workspace.reference.native_id, "w1");
     assert_eq!(
-        fake.commands()[2],
-        expected(&[
-            "workspace",
-            "create",
-            "--cwd",
-            "/checkout",
-            "--label",
-            "An effort",
-            "--env",
-            "STREAMS_CATALOG_DIR=/catalog",
-            "--focus"
-        ])
+        fake.server.requests()[1..],
+        [(
+            "workspace.create".into(),
+            json!({"cwd":"/checkout","label":"An effort",
+                "env":{"STREAMS_CATALOG_DIR":"/catalog"},"focus":true})
+        )]
     );
     fake.exhausted();
 }
 
 #[test]
 fn herdr_bad_creation_receipts_keep_uncertain_resource_evidence() {
-    let fake = Arc::new(FakeRunner::default());
+    let fake = Scripted::new();
     let client = herdr(&fake, &[]);
     let mut mismatch = created();
-    mismatch["result"]["root_pane"]["tab_id"] = json!("other");
+    mismatch["root_pane"]["tab_id"] = json!("other");
     let mut no_root = created();
-    no_root["result"]
-        .as_object_mut()
-        .unwrap()
-        .remove("root_pane");
-    for payload in [
-        mismatch,
-        no_root,
-        json!({"result":{"type":"wrong","workspace":{"workspace_id":"surviving"}}}),
-        json!({"error":{"message":"native error"}}),
+    no_root.as_object_mut().unwrap().remove("root_pane");
+    for (key, payload) in [
+        ("result", mismatch),
+        ("result", no_root),
+        (
+            "result",
+            json!({"type":"wrong","workspace":{"workspace_id":"surviving"}}),
+        ),
+        ("error", json!({"message":"native error"})),
     ] {
-        fake.json(server("test"));
-        fake.json(payload.clone());
+        fake.reply(if key == "error" {
+            Reply::Error(payload.clone())
+        } else {
+            Reply::Result(payload.clone())
+        });
         let error = client.create(&request()).unwrap_err();
+        let evidence = error.commands.last().unwrap();
+        assert_eq!(evidence.outcome, CommandOutcome::Uncertain);
         assert_eq!(
-            error.commands.last().unwrap().outcome,
-            CommandOutcome::Uncertain
-        );
-        assert_eq!(
-            serde_json::from_slice::<Value>(&error.commands.last().unwrap().stdout).unwrap(),
+            serde_json::from_slice::<Value>(response(evidence)).unwrap()[key],
             payload
         );
     }
-    fake.json(server("test"));
-    fake.bytes("banner {} ");
+    fake.reply(Reply::Raw(b"banner {}\n".to_vec()));
     assert!(client.create(&request()).is_err());
-    assert_eq!(
-        fake.commands()
-            .iter()
-            .filter(|c| c.get(1).map(String::as_str) == Some("create"))
-            .count(),
-        5
-    );
+    let creates = fake
+        .server
+        .methods()
+        .iter()
+        .filter(|m| *m == "workspace.create")
+        .count();
+    assert_eq!(creates, 5);
+    fake.exhausted();
 }
 
 #[test]
 fn herdr_focus_rename_and_silent_metadata_contracts_and_partial_effects() {
-    let fake = Arc::new(FakeRunner::default());
+    let fake = Scripted::new();
     let client = herdr(&fake, &[]);
     let target = reference(&client, "w1");
-    fake.json(server("test"));
-    fake.bytes("");
+    fake.result(json!({"type":"ok"}));
     client.focus(&target).unwrap();
-    fake.json(server("test"));
-    fake.json(result(
+    fake.result(result(
         "workspace_info",
         "workspace",
         native_workspace("w1", "Title"),
     ));
     client.rename(&target, "Title").unwrap();
-    fake.json(server("test"));
-    fake.json(result(
+    fake.result(result(
         "workspace_info",
         "workspace",
         native_workspace("w1", "Title"),
     ));
-    fake.bytes("");
+    fake.result(json!({"type":"ok"}));
     let presentation = HerdrPresentation {
         title: "Title".into(),
-        tokens: vec![
-            "stream_slug=an-effort".into(),
-            "stream_state=Doing it".into(),
-        ],
+        tokens: context(&[("stream_slug", "an-effort"), ("stream_state", "Doing it")]),
     };
     client.update_presentation(&target, &presentation).unwrap();
-    let commands = fake.commands();
-    assert_eq!(commands[2], expected(&["workspace", "focus", "w1"]));
-    assert_eq!(
-        commands[4],
-        expected(&["workspace", "rename", "w1", "Title"])
+    let rename = (
+        "workspace.rename".to_owned(),
+        json!({"workspace_id":"w1","label":"Title"}),
     );
     assert_eq!(
-        commands[7],
-        expected(&[
-            "workspace",
-            "report-metadata",
-            "w1",
-            "--source",
-            "streams",
-            "--token",
-            "stream_slug=an-effort",
-            "--token",
-            "stream_state=Doing it"
-        ])
+        fake.server.requests()[1..],
+        [
+            ("workspace.focus".into(), json!({"workspace_id":"w1"})),
+            rename.clone(),
+            rename,
+            (
+                "workspace.report_metadata".into(),
+                json!({"workspace_id":"w1","source":"streams",
+                    "tokens":{"stream_slug":"an-effort","stream_state":"Doing it"}})
+            ),
+        ]
     );
-    fake.json(server("test"));
-    fake.json(result(
+    fake.result(result(
         "workspace_info",
         "workspace",
         native_workspace("w1", "Title"),
     ));
-    fake.uncertain();
+    // The reply never arrives: the metadata effect may have happened.
+    fake.reply(Reply::Raw(Vec::new()));
     let error = client
         .update_presentation(&target, &presentation)
         .unwrap_err();
-    assert_eq!(error.commands[1].outcome, CommandOutcome::Acknowledged);
-    assert_eq!(error.commands[2].outcome, CommandOutcome::Uncertain);
+    assert_eq!(error.commands[0].outcome, CommandOutcome::Acknowledged);
+    assert_eq!(error.commands[1].outcome, CommandOutcome::Uncertain);
+    fake.exhausted();
 }
 
 #[test]
 fn herdr_complete_topology_preserves_exact_identities_and_native_agent_payload() {
-    let fake = Arc::new(FakeRunner::default());
+    let fake = Scripted::new();
     let client = herdr(&fake, &[]);
-    fake.json(server("test"));
-    fake.json(result("session_snapshot", "snapshot", snapshot()));
+    fake.result(result("session_snapshot", "snapshot", snapshot()));
     let topology = client.topology().unwrap();
     assert_eq!(topology.panes[0].terminal_id, "term-1");
     assert_eq!(topology.panes[0].pane.cwd, "/foreground");
@@ -822,10 +875,13 @@ fn herdr_complete_topology_preserves_exact_identities_and_native_agent_payload()
         topology.agents[0].native["agent_session"]["id"],
         "native-session"
     );
-    fake.json(server("test"));
-    fake.json(result("session_snapshot", "snapshot", snapshot()));
+    fake.result(result("session_snapshot", "snapshot", snapshot()));
     assert_eq!(client.workspaces().unwrap().len(), 1);
-    assert_eq!(fake.commands()[2], expected(&["api", "snapshot"]));
+    assert_eq!(
+        fake.server.methods(),
+        ["ping", "session.snapshot", "session.snapshot"]
+    );
+    fake.exhausted();
 }
 
 #[test]

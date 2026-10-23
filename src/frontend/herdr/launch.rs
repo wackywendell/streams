@@ -1,5 +1,6 @@
 use super::*;
 use crate::frontend::transport::launch_environment;
+use serde_json::json;
 use std::path::Path;
 
 /// A ready native launch receipt, not catalog ownership or session attestation.
@@ -26,22 +27,10 @@ impl HerdrClient {
         if let Some(label) = label {
             nonempty(label, "Herdr tab label")?;
         }
-        let mut command = args(&[
-            "tab",
-            "create",
-            "--workspace",
-            &workspace.native_id,
-            "--cwd",
-            cwd,
-        ]);
-        command.extend(environment);
-        command.push("--no-focus".into());
-        if let Some(label) = label {
-            command.extend(["--label".into(), label.into()]);
-        }
+        let params = json!({"workspace_id":workspace.native_id,"cwd":cwd,"env":environment,
+            "focus":false,"label":label});
         let mut op = Operation::default();
-        self.verify_endpoint(&mut op)?;
-        let result = self.result(&mut op, &command, "tab_created", true)?;
+        let result = self.result(&mut op, "tab.create", params, "tab_created", true)?;
         let tab = op.capture(HerdrTab::parse(&result["tab"]))?;
         let pane = op.capture(HerdrPane::parse(&result["root_pane"]))?;
         if tab.workspace_id != workspace.native_id
@@ -62,21 +51,10 @@ impl HerdrClient {
     ) -> Result<HerdrPane, FrontendError> {
         validate_pane(pane)?;
         let (cwd, environment) = launch_parameters(cwd, environment)?;
-        let mut command = args(&[
-            "pane",
-            "split",
-            "--pane",
-            &pane.id,
-            "--direction",
-            "right",
-            "--cwd",
-            cwd,
-        ]);
-        command.extend(environment);
-        command.push("--no-focus".into());
+        let params = json!({"target_pane_id":pane.id,"direction":"right","cwd":cwd,
+            "env":environment,"focus":false});
         let mut op = Operation::default();
-        self.verify_endpoint(&mut op)?;
-        let result = self.result(&mut op, &command, "pane_split", true)?;
+        let result = self.result(&mut op, "pane.split", params, "pane_split", true)?;
         let created = op.capture(HerdrPane::parse(&result["pane"]))?;
         if created.workspace_id != pane.workspace_id
             || created.tab_id != pane.tab_id
@@ -93,10 +71,10 @@ impl HerdrClient {
         nonempty(&tab.workspace_id, "Herdr workspace ID")?;
         nonempty(label, "Herdr tab label")?;
         let mut op = Operation::default();
-        self.verify_endpoint(&mut op)?;
         let result = self.result(
             &mut op,
-            &args(&["tab", "rename", &tab.id, label]),
+            "tab.rename",
+            json!({"tab_id":tab.id,"label":label}),
             "tab_info",
             true,
         )?;
@@ -133,22 +111,10 @@ impl HerdrClient {
         if arguments.iter().any(|v| v.chars().any(char::is_control)) {
             return Err(FrontendError::invalid("invalid Herdr agent argument"));
         }
-        let mut command = args(&[
-            "agent",
-            "start",
-            name,
-            "--kind",
-            agent,
-            "--pane",
-            &pane.id,
-            "--timeout",
-            "20000",
-            "--",
-        ]);
-        command.extend_from_slice(arguments);
+        let params = json!({"name":name,"kind":agent,"pane_id":pane.id,"timeout_ms":20000,
+            "args":arguments});
         let mut op = Operation::default();
-        self.verify_endpoint(&mut op)?;
-        let result = self.result(&mut op, &command, "agent_started", true)?;
+        let result = self.result(&mut op, "agent.start", params, "agent_started", true)?;
         let started = &result["agent"];
         for (key, expected) in [
             ("pane_id", pane.id.as_str()),
@@ -181,8 +147,7 @@ impl HerdrClient {
     pub fn focus_agent(&self, pane: &HerdrPane) -> Result<(), FrontendError> {
         validate_pane(pane)?;
         let mut op = Operation::default();
-        self.verify_endpoint(&mut op)?;
-        op.run(&self.transport, &args(&["agent", "focus", &pane.id]), true)?;
+        self.call(&mut op, "agent.focus", json!({"target":pane.id}), true)?;
         op.acknowledge();
         Ok(())
     }
@@ -194,16 +159,19 @@ fn validate_pane(pane: &HerdrPane) -> Result<(), FrontendError> {
     nonempty(&pane.workspace_id, "Herdr workspace ID")
 }
 
-fn launch_parameters<'a>(
+fn launch_parameters<'a, 'e>(
     cwd: &'a Path,
-    environment: &BTreeMap<String, String>,
-) -> Result<(&'a str, Vec<String>), FrontendError> {
-    let environment = launch_environment(cwd, environment)?;
+    environment: &'e BTreeMap<String, String>,
+) -> Result<(&'a str, &'e BTreeMap<String, String>), FrontendError> {
+    launch_environment(cwd, environment)?;
     let cwd = cwd
         .to_str()
         .ok_or_else(|| FrontendError::invalid("Herdr cwd is not UTF-8"))?;
     nonempty(cwd, "Herdr cwd")?;
-    if environment.iter().any(|v| v.chars().any(char::is_control)) {
+    if environment
+        .iter()
+        .any(|(k, v)| k.chars().chain(v.chars()).any(char::is_control))
+    {
         return Err(FrontendError::invalid("invalid Herdr launch environment"));
     }
     Ok((cwd, environment))

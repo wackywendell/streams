@@ -117,35 +117,21 @@ impl NativeCardEngine {
         let pending = NativeAttempt::new(&evidence_key, uuid::Uuid::new_v4().to_string())?;
         _lock.write(old.as_ref(), &pending)?;
         let protocol = Protocol::new()?.next(Action::Dispatch)?;
-        let mut args = argv(&[
-            "plugin",
-            "pane",
-            "open",
-            "--plugin",
-            PLUGIN_ID,
-            "--entrypoint",
-            "document",
-            "--placement",
-            "tab",
-            "--workspace",
-            &v.owner.workspace_id,
-            "--cwd",
-            path_text(&root)?,
-            "--no-focus",
-            "--env",
-            &format!("WORK_CARDS_DOCUMENT_COMMAND={command}"),
-            "--env",
-            &format!("WORK_CARDS_DOCUMENT_CWD={}", path_text(&resolved.root)?),
-            "--env",
-            &format!(
-                "WORK_CARDS_DOCUMENT_PATH={}",
-                path_text(&resolved.identity.file)?
+        let mut env = BTreeMap::from([
+            ("WORK_CARDS_DOCUMENT_COMMAND", command.to_string()),
+            ("WORK_CARDS_DOCUMENT_CWD", path_text(&resolved.root)?.into()),
+            (
+                "WORK_CARDS_DOCUMENT_PATH",
+                path_text(&resolved.identity.file)?.into(),
             ),
         ]);
         if let Some(path) = self.environment.get("PATH") {
-            args.extend(["--env".into(), format!("PATH={path}")]);
+            env.insert("PATH", path.clone());
         }
-        let opened = self.call(&args, Some("plugin_pane_opened"), true)?;
+        let params = serde_json::json!({"plugin_id":PLUGIN_ID,"entrypoint":"document",
+            "placement":"tab","workspace_id":v.owner.workspace_id,"cwd":path_text(&root)?,
+            "focus":false,"env":env});
+        let opened = self.call("plugin.pane.open", params, Some("plugin_pane_opened"), true)?;
         let info = &opened["plugin_pane"];
         let returned = tuple_from_reply(&info["pane"])?;
         if info["plugin_id"] != PLUGIN_ID
@@ -294,7 +280,8 @@ impl NativeCardEngine {
                 after_success,
             } => {
                 let result = self.call(
-                    &argv(&["tab", "rename", &expected.tab_id, &name]),
+                    "tab.rename",
+                    serde_json::json!({"tab_id":expected.tab_id,"label":name}),
                     Some("tab_info"),
                     true,
                 )?;
@@ -332,7 +319,12 @@ impl NativeCardEngine {
         if !matches!(record.phase(), NativePhase::Ready(_)) {
             return Err(self.refuse("editor has no exact ready native lifetime"));
         }
-        self.call(&argv(&["tab", "focus", &expected.tab_id]), None, true)?;
+        self.call(
+            "tab.focus",
+            serde_json::json!({"tab_id":expected.tab_id}),
+            None,
+            true,
+        )?;
         self.editor_proof(target, key, evidence_key, expected, &record)?;
         Ok(())
     }

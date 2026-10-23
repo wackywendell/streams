@@ -75,7 +75,6 @@ impl App {
         }
         let automatic = config.startup_automatic();
         let session_naming = config.session_naming();
-        let timeout = config.timeout_seconds();
         let mut engine = build(
             self.clone(),
             options,
@@ -94,7 +93,7 @@ impl App {
                     "session":{"title":observed.card.session().title,"title_mode":observed.card.session().title_mode},
                     "config":{"automatic":automatic,"sessionNaming":session_naming}})))
             }
-            NativeCommand::Capture => self.capture_native_owner(&mut engine, timeout),
+            NativeCommand::Capture => self.capture_native_owner(&mut engine),
             NativeCommand::Open { automatic } => {
                 let outcome = engine.open_display(if automatic {
                     streams_temper::runtime::native_cards::OpenMode::Automatic
@@ -146,7 +145,7 @@ impl App {
 }
 
 impl App {
-    fn capture_native_owner(&self, engine: &mut NativeCardEngine, timeout: f64) -> Result<Output> {
+    fn capture_native_owner(&self, engine: &mut NativeCardEngine) -> Result<Output> {
         use streams_temper::runtime::{
             conversations::ConversationRoots, workspace::WorkspaceRuntime,
         };
@@ -173,18 +172,16 @@ impl App {
             .filter(|session| session.stream_id == scope.stream_id)
             .cloned()
             .collect();
-        let selection =
-            app.selection(Some(streams_temper::frontend::FrontendRequest::Explicit(
-                streams_temper::frontend::FrontendId("herdr".into()),
-            )))?;
-        let frontend = app.native_frontend(&selection, timeout)?;
+        // Reuse the engine's pinned endpoint: one protocol check per process.
+        let frontend =
+            streams_temper::runtime::native::BuiltinFrontend::Herdr(engine.client().clone());
         let state = app.state(&opened)?;
         let locations = app.locations(&opened)?;
         let roots = ConversationRoots::from_environment()?;
         let arrangement = WorkspaceRuntime::new(
             &state,
             &locations,
-            frontend.as_ref(),
+            Some(&frontend),
             opened.backend(),
             &roots,
             &app.environment,
@@ -264,21 +261,8 @@ fn build(
     };
     uuid::Uuid::parse_str(&session_id)
         .map_err(|_| CliError::message("native Pi session ID must be a UUID"))?;
-    let client = HerdrClient::connect(
-        Arc::new(NativeProcessRunner),
-        app.environment.clone(),
-        config.timeout_seconds(),
-    )
-    .map_err(|e| CliError::message(e.to_string()))?;
-    read_environment.insert(
-        "HERDR_SOCKET_PATH".into(),
-        client
-            .endpoint()
-            .socket
-            .to_str()
-            .ok_or_else(|| CliError::message("native socket must be UTF-8"))?
-            .into(),
-    );
+    let client = HerdrClient::connect(app.environment.clone(), config.timeout_seconds())
+        .map_err(|e| CliError::message(e.to_string()))?;
     let directory = options
         .state_dir
         .or_else(|| {

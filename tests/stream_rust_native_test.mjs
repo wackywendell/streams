@@ -6,14 +6,15 @@ import { existsSync, mkdtempSync, mkdirSync, readFileSync, readdirSync, realpath
 import { tmpdir } from 'node:os';
 import { dirname, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
+import { Worker } from 'node:worker_threads';
 import { createJiti } from 'jiti';
 const jiti=createJiti(import.meta.url);
 const {loadNative, NativeController}=await jiti.import('../extensions/stream-checkpoint/native.ts');
 const root=fileURLToPath(new URL('../',import.meta.url));
 const binary=join(resolve(root,process.env.CARGO_TARGET_DIR ?? 'target'),'debug','streams');
 const plugin=join(root,'integrations/herdr-work-cards');
-function temporary(t) {
- const directory=mkdtempSync(join(realpathSync(tmpdir()),'streams-rust-native-'));
+function temporary(t, base=realpathSync(tmpdir())) {
+ const directory=mkdtempSync(join(base,'streams-rust-native-'));
  t.after(()=>rmSync(directory,{recursive:true,force:true}));return directory;
 }
 function lifetime(t, directory, extra={}) {
@@ -160,14 +161,49 @@ test('Rust launch manifest and packaged launcher match the coordinator and requi
  }
 });
 
+// Protocol 22: one JSON request line per connection, one reply, then close.
+// A worker keeps serving while the main thread blocks in spawnSync.
+const herdrServerSource=`const {workerData}=require('node:worker_threads'),fs=require('node:fs'),net=require('node:net');
+const {socket,file,log,ready}=workerData,flag=new Int32Array(ready);
+function handle(method,params){
+ const value=JSON.parse(fs.readFileSync(file,'utf8')),save=()=>fs.writeFileSync(file,JSON.stringify(value));
+ fs.appendFileSync(log,JSON.stringify([method,params])+'\\n');
+ if(method==='ping') return {type:'pong',version:'0.9.5',protocol:22};
+ if(method==='pane.current') return {type:'pane_current',pane:value.pane};
+ if(method==='workspace.get') return {type:'workspace_info',workspace:value.snapshot.workspaces[0]};
+ if(method==='session.snapshot') {
+  const result={type:'session_snapshot',snapshot:structuredClone(value.snapshot)};
+  if(value.replaceOwnerAfterSnapshot&&--value.replaceOwnerAfterSnapshot===0){for(const row of [value.pane,value.snapshot.panes[0],value.snapshot.agents[0]]) row.terminal_id='reused-terminal';}
+  if(value.replaceOwnerAfterSnapshot!==undefined) save();
+  return result;
+ }
+ if(method==='workspace.report_metadata'||method==='pane.report_metadata') {
+  const target=method==='workspace.report_metadata'?value.snapshot.workspaces.find(row=>row.workspace_id===params.workspace_id):value.snapshot.panes.find(row=>row.pane_id===params.pane_id);
+  for(const [key,token] of Object.entries(params.tokens)) {if(token===null) delete target.tokens[key]; else target.tokens[key]=token;}
+  save();return {type:'metadata_reported'};
+ }
+}
+net.createServer(connection=>{let buffer='';connection.on('data',chunk=>{buffer+=chunk;const end=buffer.indexOf('\\n');if(end<0)return;
+ const request=JSON.parse(buffer.slice(0,end)),result=handle(request.method,request.params);
+ connection.end(JSON.stringify(result?{id:request.id,result}:{id:request.id,error:{code:'forbidden',message:'FORBIDDEN '+request.method}})+'\\n');});})
+ .listen(socket,()=>{Atomics.store(flag,0,1);Atomics.notify(flag,0);});`;
+function herdrServer(t,data) {
+ const ready=new SharedArrayBuffer(4),worker=new Worker(herdrServerSource,{eval:true,workerData:{...data,ready}});
+ t.after(()=>worker.terminate());
+ assert.equal(Atomics.wait(new Int32Array(ready),0,0,5000),'ok','fake Herdr did not listen');
+}
 function real(t) {
  assert.ok(existsSync(binary),`Build the requested Rust CLI first: ${binary}`);
- const directory=temporary(t),id=randomUUID(),socket=join(directory,'not-live.sock'),fixture=join(directory,'native.json'),log=join(directory,'native-commands.jsonl'),executable=join(directory,'herdr'),f=piContext(directory,id);
- lifetime(t,directory,{HERDR_BIN_PATH:executable,HERDR_SESSION:'fixture'});
+ // Keep the named-session socket below the Unix socket path-length limit.
+ const directory=temporary(t,'/tmp'),id=randomUUID(),socket=join(directory,'config/herdr/sessions/fixture/herdr.sock'),fixture=join(directory,'native.json'),log=join(directory,'native-commands.jsonl'),executable=join(directory,'herdr'),spawned=join(directory,'herdr-spawned.jsonl'),f=piContext(directory,id);
+ mkdirSync(dirname(socket),{recursive:true});
+ lifetime(t,directory,{HERDR_BIN_PATH:executable,HERDR_SESSION:'fixture',HERDR_SOCKET_PATH:socket});
  const pane={pane_id:'pane',terminal_id:'terminal',workspace_id:'workspace',tab_id:'tab',cwd:directory,agent:'pi',agent_session:{agent:'pi',kind:'id',value:id},tokens:{}};
  const native={pane,socket,snapshot:{workspaces:[{workspace_id:'workspace',label:'Fixture',number:1,tokens:{}}],tabs:[{workspace_id:'workspace',tab_id:'tab',label:'1',number:1}],panes:[pane],layouts:[{workspace_id:'workspace',tab_id:'tab',panes:[{pane_id:'pane'}]}],agents:[pane]}};
  const put=()=>writeFileSync(fixture,JSON.stringify(native));put();
- writeFileSync(executable,`#!${process.execPath}\nconst fs=require('node:fs');const file=${JSON.stringify(fixture)},log=${JSON.stringify(log)};const value=JSON.parse(fs.readFileSync(file,'utf8')),a=process.argv.slice(2).filter(arg=>arg!=='--json');fs.appendFileSync(log,JSON.stringify(a)+'\\n');let result;if(a.join(' ')==='status'){result={server:{running:true,compatible:true,endpoint_compatible:true,version:'0.9.3',socket:process.env.HERDR_SOCKET_PATH??value.socket,session:process.env.HERDR_SESSION??null}};}else if(a.join(' ')==='pane current --current'){result={result:{type:'pane_current',pane:value.pane}};}else if(a[0]==='agent'&&a[1]==='get'){result={result:{type:'agent_info',agent:value.pane}};}else if(a[0]==='workspace'&&a[1]==='get'){result={result:{type:'workspace_info',workspace:value.snapshot.workspaces[0]}};}else if(a.join(' ')==='api snapshot'){result={result:{type:'session_snapshot',snapshot:value.snapshot}};if(value.switchDiscoveryAfterSnapshot&&--value.switchDiscoveryAfterSnapshot===0){value.socket=value.replacementSocket;fs.writeFileSync(file,JSON.stringify(value));}if(value.replaceOwnerAfterSnapshot&&--value.replaceOwnerAfterSnapshot===0){value.pane.terminal_id='reused-terminal';value.snapshot.panes[0].terminal_id='reused-terminal';value.snapshot.agents[0].terminal_id='reused-terminal';fs.writeFileSync(file,JSON.stringify(value));}if(value.switchDiscoveryAfterSnapshot||value.replaceOwnerAfterSnapshot){fs.writeFileSync(file,JSON.stringify(value));}}else if(['workspace','pane'].includes(a[0])&&a[1]==='report-metadata'){const target=(a[0]==='workspace'?value.snapshot.workspaces:value.snapshot.panes).find(row=>(row.workspace_id===a[2]&&a[0]==='workspace')||(row.pane_id===a[2]&&a[0]==='pane'));for(let i=3;i<a.length;i++){if(a[i]==='--token'){const [k,...v]=a[++i].split('=');target.tokens[k]=v.join('=');}else if(a[i]==='--clear-token'){delete target.tokens[a[++i]];}}fs.writeFileSync(file,JSON.stringify(value));result={result:{type:'metadata_reported'}};}else{console.error('FORBIDDEN native command',a);process.exit(91);}console.log(JSON.stringify(result));\n`,{mode:0o700});
+ // The CLI must never start Herdr; the tripwire records any attempt.
+ writeFileSync(executable,`#!${process.execPath}\nrequire('node:fs').appendFileSync(${JSON.stringify(spawned)},JSON.stringify(process.argv.slice(2))+'\\n');process.exit(91);\n`,{mode:0o700});
+ herdrServer(t,{socket,file:fixture,log});
  const invoke=(...args)=>{
   const result=spawnSync(binary,[...args,'--json'],{env:process.env,cwd:directory,encoding:'utf8',timeout:120000});assert.ifError(result.error);
   let data;try{data=JSON.parse(result.stdout);}catch{assert.fail(result.stdout+result.stderr);}return {code:result.status,data};
@@ -184,20 +220,24 @@ function real(t) {
  mkdirSync(dirname(association),{recursive:true,mode:0o700});writeFileSync(association,JSON.stringify({version:1,workspace_id:'workspace',stream_id:stream.id,session_id:null,command:null,ready:true}),{mode:0o600});
  const transcript=join(directory,'pi/sessions',id+'.jsonl');mkdirSync(dirname(transcript),{recursive:true});
  writeFileSync(transcript,JSON.stringify({type:'session',version:3,id,cwd:directory,timestamp:new Date(0).toISOString()})+'\n');
- return {...f,directory,id,state,native,put,invoke,cli,commands:()=>readFileSync(log,'utf8').trim().split('\n').filter(Boolean).map(JSON.parse)};
+ const commands=()=>{assert.equal(existsSync(spawned),false,'the Rust CLI started a Herdr process');return existsSync(log)?readFileSync(log,'utf8').trim().split('\n').filter(Boolean).map(JSON.parse):[];};
+ return {...f,directory,id,state,native,put,invoke,cli,commands};
 }
-test('native operation Herdr request budgets',t=>{
+for(const pinned of [false,true]) test(`native operation Herdr request budgets${pinned?' with --expect':''}`,t=>{
  const f=real(t);writeFileSync(join(f.directory,'native-commands.jsonl'),'');
  for(const operation of ['observe','check','project','capture']) {
+  const observed=pinned?f.cli('native','--session-id',f.id,'observe'):null;
+  const expect=observed?['--expect',JSON.stringify({version:1,scope:observed.scope,context:observed.context})]:[];
   const start=f.commands().length;
-  f.cli('native','--session-id',f.id,operation);
-  const calls=f.commands().slice(start),counts={};
-  for(const call of calls) {const key=call.slice(0,2).join(' ');counts[key]=(counts[key]??0)+1;}
-  // Fixed command budgets through the injected Herdr boundary.
-  const budget={observe:3,check:3,project:19,capture:10}[operation];
-  const snapshots={observe:1,check:1,project:7,capture:4}[operation];
-  assert.equal(calls.length,budget,`${operation}: ${JSON.stringify(counts)}`);
-  assert.equal(counts['api snapshot'],snapshots,`${operation}: ${JSON.stringify(counts)}`);
+  f.cli('native','--session-id',f.id,...expect,operation);
+  const counts={};
+  for(const [method] of f.commands().slice(start)) counts[method]=(counts[method]??0)+1;
+  // One protocol check per process, then one socket request per observation
+  // or effect; no Herdr CLI process (commands() trips on any spawn).
+  const expected={observe:{ping:1,'session.snapshot':1},check:{ping:1,'session.snapshot':1},
+   project:{ping:1,'session.snapshot':7,'workspace.report_metadata':1,'pane.report_metadata':1},
+   capture:{ping:1,'session.snapshot':4}}[operation];
+  assert.deepEqual(counts,expected,operation);
  }
 });
 test('real Rust owner observation is read-only and rejects stale context before metadata effects',t=>{
@@ -210,34 +250,50 @@ test('real Rust owner observation is read-only and rejects stale context before 
  f.native.pane.terminal_id='replacement';f.native.snapshot.panes[0].terminal_id='replacement';f.put();
  const result=f.invoke('native','--session-id',f.id,'--expect',JSON.stringify(expected),'project');
  assert.notEqual(result.code,0);assert.match(result.data.error.message,/changed/);assert.equal(result.data.error.kind,'native-context-changed');
- assert.ok(f.commands().every(args=>!args.includes('report-metadata')));
+ assert.ok(f.commands().every(([method])=>!method.endsWith('report_metadata')));
+});
+test('launched-card readers reject a socket or namespace that contradicts the pinned endpoint',t=>{
+ const f=real(t),observed=f.cli('native','--session-id',f.id,'observe');
+ const keys=['HOME','XDG_CONFIG_HOME','XDG_DATA_HOME','XDG_STATE_HOME','PI_CODING_AGENT_DIR','PATH','HERDR_SOCKET_PATH','HERDR_SESSION'];
+ const reader=Object.fromEntries(keys.filter(key=>process.env[key]!==undefined).map(key=>[key,process.env[key]]));
+ const card={...f.native.pane,pane_id:'card',terminal_id:'card-terminal',agent:null,agent_session:null};
+ f.native.snapshot.panes.push(card);f.native.snapshot.layouts[0].panes.push({pane_id:'card'});f.put();
+ Object.assign(process.env,{HERDR_PANE_ID:'card',STREAMS_CARDS_SCOPE:JSON.stringify(observed.scope),
+  STREAMS_CARDS_OWNER:JSON.stringify({pane_id:'pane',tab_id:'tab',workspace_id:'workspace'}),
+  STREAMS_CARDS_NONCE:'nonce',STREAMS_CARDS_OWNER_TERMINAL:'terminal',STREAMS_CARDS_READ_CWD:f.directory,
+  STREAMS_CARDS_STATE_DIR:join(f.directory,'native-state'),STREAMS_CARDS_PLUGIN_ROOT:plugin});
+ for(const change of [{HERDR_SOCKET_PATH:join(f.directory,'different.sock')},{HERDR_SESSION:'different'}]) {
+  process.env.STREAMS_CARDS_READ_ENV=JSON.stringify({...reader,...change});
+  const result=f.invoke('native','--session-id',f.id,'check');
+  assert.notEqual(result.code,0);assert.match(result.data.error.message,/reader endpoint changed/);
+ }
+ assert.ok(f.commands().every(([method])=>['ping','session.snapshot'].includes(method)));
 });
 test('Pi lifecycle preserves the named Herdr namespace through Rust source rereads, projection and capture',async t=>{
  const f=real(t);
  assert.equal(process.env.HERDR_SESSION,'fixture');
  const notices=[],controller=new NativeController({pi:f.pi,ctx:f.ctx,capture:assert.fail,warning:text=>notices.push(text)});t.after(()=>controller.stop());
  controller.start();await controller.idle();assert.deepEqual(notices,[]);
- assert.equal(f.name(),'Real Rust lane');assert.ok(f.commands().some(args=>args.includes('report-metadata')));
- assert.ok(f.commands().every(args=>['status','pane','api','agent','workspace'].includes(args[0])));
+ assert.equal(f.name(),'Real Rust lane');assert.ok(f.commands().some(([method])=>method.endsWith('report_metadata')));
+ const allowed=['ping','pane.current','workspace.get','session.snapshot','workspace.report_metadata','pane.report_metadata'];
+ assert.ok(f.commands().every(([method])=>allowed.includes(method)));
  const snapshot=JSON.parse(readFileSync(join(f.directory,'native.json'),'utf8')).snapshot;
  assert.ok(snapshot.workspaces[0].tokens.strm_binding);
  const arrangements=readdirSync(join(f.state,'arrangements'),{recursive:true}).filter(path=>path.endsWith('.json'));
  assert.equal(arrangements.length,1);assert.ok(JSON.parse(readFileSync(join(f.state,'arrangements',arrangements[0]),'utf8')).tabs.length);
  controller.stop();delete process.env.HERDR_SOCKET_PATH;
  const observed=f.cli('native','--session-id',f.id,'observe'),expected={version:1,scope:observed.scope,context:observed.context};
- const file=join(f.directory,'native.json');
- let live=JSON.parse(readFileSync(file,'utf8'));
- live.replacementSocket=join(f.directory,'different-not-live.sock');live.switchDiscoveryAfterSnapshot=3;
- writeFileSync(file,JSON.stringify(live));
- // Discovery changes after bootstrap; capture must keep the original resolved endpoint.
+ // Without an explicit socket, the named session resolves to the same endpoint.
+ assert.equal(observed.context.socket,f.native.socket);
  const captured=f.cli('native','--session-id',f.id,'--expect',JSON.stringify(expected),'capture');
  assert.equal(captured.stream_id,observed.scope.streamId);
- live=JSON.parse(readFileSync(file,'utf8'));assert.equal(live.socket,live.replacementSocket);
- live.socket=expected.context.socket;live.replaceOwnerAfterSnapshot=5;
+ const file=join(f.directory,'native.json'),live=JSON.parse(readFileSync(file,'utf8'));
+ live.replaceOwnerAfterSnapshot=2;
  writeFileSync(file,JSON.stringify(live));
  const arrangementFile=join(f.state,'arrangements',arrangements[0]),before=readFileSync(arrangementFile,'utf8');
  // The owner changes during topology capture; the second lock-held check must refuse persistence.
  const refused=f.invoke('native','--session-id',f.id,'--expect',JSON.stringify(expected),'capture');
  assert.notEqual(refused.code,0);assert.match(refused.data.error.message,/terminal|changed/i);
  assert.equal(readFileSync(arrangementFile,'utf8'),before);
+ f.commands(); // Assert zero Herdr CLI spawns throughout the lifecycle.
 });

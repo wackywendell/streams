@@ -3,6 +3,7 @@
 
 mod support {
     pub mod git;
+    pub mod herdr;
     pub mod memory;
     pub mod model;
     pub mod process;

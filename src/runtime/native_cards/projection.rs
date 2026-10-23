@@ -212,7 +212,8 @@ impl NativeCardEngine {
             return Ok(());
         }
         let renamed = self.call(
-            &argv(&["pane", "rename", &tuple.pane_id, &desired]),
+            "pane.rename",
+            serde_json::json!({"pane_id":tuple.pane_id,"label":desired}),
             Some("pane_info"),
             true,
         )?;
@@ -346,7 +347,8 @@ impl NativeCardEngine {
                         SurfaceKind::Tab => ("tab", "tab_id", "tab_info"),
                     };
                     let result = self.call(
-                        &argv(&[native_kind, "rename", &label.id, &name]),
+                        &format!("{native_kind}.rename"),
+                        serde_json::json!({id_field:label.id,"label":name}),
                         Some(result_kind),
                         true,
                     )?;

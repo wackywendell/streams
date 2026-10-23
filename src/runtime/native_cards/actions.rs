@@ -226,14 +226,9 @@ impl NativeCardEngine {
             return Err(self.refuse("native metadata target changed"));
         }
         let (kind, id) = target.kind_id();
-        let mut args = argv(&[kind, "report-metadata", id, "--source", PLUGIN_ID]);
-        for (key, value) in &values {
-            match value {
-                Some(value) => args.extend(["--token".into(), format!("{key}={value}")]),
-                None => args.extend(["--clear-token".into(), key.clone()]),
-            }
-        }
-        self.call(&args, None, true)?;
+        // A null token value clears that token.
+        let params = json!({format!("{kind}_id"):id,"source":PLUGIN_ID,"tokens":values});
+        self.call(&format!("{kind}.report_metadata"), params, None, true)?;
         let after = self.guard()?;
         verify(&after)?;
         let live = target.capture(&after)?;
@@ -279,7 +274,8 @@ impl NativeCardEngine {
             Ok(())
         };
         let listed = self.call(
-            &argv(&["plugin", "list", "--plugin", PLUGIN_ID, "--json"]),
+            "plugin.list",
+            json!({"plugin_id":PLUGIN_ID}),
             Some("plugin_list"),
             false,
         )?;
@@ -294,7 +290,8 @@ impl NativeCardEngine {
         self.guard()?;
         verify(self)?;
         let linked = self.call(
-            &argv(&["plugin", "link", &manifest]),
+            "plugin.link",
+            json!({"path":manifest}),
             Some("plugin_linked"),
             true,
         )?;
@@ -546,29 +543,11 @@ impl NativeCardEngine {
         if !matches!(v.pair()?, PairState::Empty) {
             return Err(self.refuse("owner markers remain before launch"));
         }
-        let mut args = argv(&[
-            "plugin",
-            "pane",
-            "open",
-            "--plugin",
-            PLUGIN_ID,
-            "--entrypoint",
-            "card",
-            "--placement",
-            "split",
-            "--target-pane",
-            &v.owner.pane_id,
-            "--direction",
-            "down",
-            "--cwd",
-            &path_text(&root)?,
-            "--no-focus",
-        ]);
-        for (key, value) in vars {
-            args.extend(["--env".into(), format!("{key}={value}")]);
-        }
+        let params = json!({"plugin_id":PLUGIN_ID,"entrypoint":"card","placement":"split",
+            "target_pane_id":v.owner.pane_id,"direction":"down","cwd":path_text(&root)?,
+            "focus":false,"env":vars});
         let protocol = protocol.next(Action::Dispatch)?;
-        let opened = self.call(&args, Some("plugin_pane_opened"), true)?;
+        let opened = self.call("plugin.pane.open", params, Some("plugin_pane_opened"), true)?;
         let info = &opened["plugin_pane"];
         let returned = tuple_from_reply(&info["pane"])?;
         if info["plugin_id"] != PLUGIN_ID
@@ -620,16 +599,9 @@ impl NativeCardEngine {
         }
         let target = if fraction < 0.5 { &v.owner } else { card };
         let resized = self.call(
-            &argv(&[
-                "pane",
-                "resize",
-                "--pane",
-                &target.pane_id,
-                "--direction",
-                if fraction < 0.5 { "down" } else { "up" },
-                "--amount",
-                &(0.5 - fraction).abs().to_string(),
-            ]),
+            "pane.resize",
+            json!({"pane_id":target.pane_id,"direction":if fraction < 0.5 { "down" } else { "up" },
+                "amount":(0.5 - fraction).abs()}),
             Some("pane_resize"),
             true,
         )?;
@@ -667,7 +639,8 @@ impl NativeCardEngine {
         let v = self.marked()?;
         let card = paired_tuple(&v)?;
         let focused = self.call(
-            &argv(&["plugin", "pane", "focus", &card.pane_id]),
+            "plugin.pane.focus",
+            json!({"pane_id":card.pane_id}),
             Some("plugin_pane_focused"),
             true,
         )?;
@@ -721,7 +694,8 @@ impl NativeCardEngine {
             return Err(self.refuse("pair changed before close; nothing closed"));
         }
         let reply = self.call(
-            &argv(&["plugin", "pane", "close", &card.pane_id]),
+            "plugin.pane.close",
+            json!({"pane_id":card.pane_id}),
             Some("plugin_pane_closed"),
             true,
         )?;

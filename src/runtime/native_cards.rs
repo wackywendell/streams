@@ -248,6 +248,10 @@ pub struct NativeCardEngine {
     bootstrap: bool,
 }
 impl NativeCardEngine {
+    /// The pinned endpoint, shared by same-process native work.
+    pub fn client(&self) -> &HerdrClient {
+        &self.client
+    }
     pub fn new(
         client: HerdrClient,
         source: Box<dyn NativeCardSource>,
@@ -343,20 +347,26 @@ impl NativeCardEngine {
         }
         .into()
     }
-    fn call(&mut self, args: &[String], expected: Option<&str>, effect: bool) -> Result<Value> {
+    fn call(
+        &mut self,
+        method: &str,
+        params: Value,
+        expected: Option<&str>,
+        effect: bool,
+    ) -> Result<Value> {
         self.check_cancelled()?;
         if effect {
             self.observation = None;
         }
-        let (value, commands) =
-            self.client
-                .card_request(args, expected, effect)
-                .map_err(|mut e| {
-                    let mut prior = self.commands.clone();
-                    prior.append(&mut e.commands);
-                    e.commands = prior;
-                    e
-                })?;
+        let (value, commands) = self
+            .client
+            .card_request(method, params, expected, effect)
+            .map_err(|mut e| {
+                let mut prior = self.commands.clone();
+                prior.append(&mut e.commands);
+                e.commands = prior;
+                e
+            })?;
         self.commands.extend(commands);
         Ok(value)
     }
@@ -495,9 +505,6 @@ impl NativeCardEngine {
     }
 }
 
-fn argv(args: &[&str]) -> Vec<String> {
-    args.iter().map(|arg| (*arg).into()).collect()
-}
 fn tuple_from_reply(value: &Value) -> Result<NativeTuple> {
     let field = |key: &str| -> Result<String> {
         let value = value

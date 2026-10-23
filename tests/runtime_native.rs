@@ -1,16 +1,16 @@
 //! Read-only native attestation uses injected transport; no live native service is contacted.
 
+use crate::support::herdr::{FakeHerdr, Reply};
 use serde_json::{Value, json};
 use std::{
     collections::BTreeMap,
-    os::unix::process::ExitStatusExt,
+    path::Path,
     sync::{Arc, Mutex},
 };
 use streams_temper::{
     frontend::herdr::HerdrClient,
     model::{Session, Stream},
     operations::Authority,
-    process::{ProcessError, ProcessOutput, ProcessRequest, ProcessRunner},
     runtime::{
         native::{BuiltinFrontend, attest_context, native_inventory, verify_pi_caller},
         state::{Association, RuntimeState, herdr_scope},
@@ -18,80 +18,81 @@ use streams_temper::{
 };
 
 struct Fixture {
+    server: FakeHerdr,
+    _directory: tempfile::TempDir,
     pane: Value,
-    agent: Mutex<Value>,
-    snapshot: Mutex<Value>,
-    commands: Mutex<Vec<Vec<String>>>,
+    agent: Arc<Mutex<Value>>,
+    snapshot: Arc<Mutex<Value>>,
 }
 impl Fixture {
-    fn new() -> Arc<Self> {
-        Arc::new(Self {
-            pane: json!({"pane_id":"w:p1","tab_id":"w:t1","workspace_id":"w","terminal_id":"term1"}),
-            agent: Mutex::new(
-                json!({"pane_id":"w:p1","workspace_id":"w","agent":"pi", "agent_session":{"agent":"pi","kind":"id","value":"native"}}),
+    fn new() -> Self {
+        let directory = tempfile::Builder::new()
+            .prefix("herdr-native-")
+            .tempdir_in("/tmp")
+            .unwrap();
+        let pane =
+            json!({"pane_id":"w:p1","tab_id":"w:t1","workspace_id":"w","terminal_id":"term1"});
+        let agent = Arc::new(Mutex::new(
+            json!({"pane_id":"w:p1","workspace_id":"w","agent":"pi", "agent_session":{"agent":"pi","kind":"id","value":"native"}}),
+        ));
+        let snapshot = Arc::new(Mutex::new(Value::Null));
+        let server = FakeHerdr::start(&directory.path().join("herdr.sock"), {
+            let (pane, agent, snapshot) = (pane.clone(), agent.clone(), snapshot.clone());
+            move |method, params| {
+                Reply::Result(match method {
+                    "pane.current" => {
+                        assert_eq!(params["caller_pane_id"], pane["pane_id"]);
+                        json!({"type":"pane_current","pane":pane})
+                    }
+                    "workspace.get" => {
+                        json!({"type":"workspace_info","workspace":{"workspace_id":"w","label":"Working"}})
+                    }
+                    "session.snapshot" => {
+                        let mut snapshot = snapshot.lock().unwrap().clone();
+                        if snapshot.is_null() {
+                            let mut pane = pane.clone();
+                            let mut agent_row = pane.clone();
+                            agent_row
+                                .as_object_mut()
+                                .unwrap()
+                                .extend(agent.lock().unwrap().as_object().unwrap().clone());
+                            pane["agent"] = agent_row["agent"].clone();
+                            pane["agent_session"] = agent_row["agent_session"].clone();
+                            snapshot = json!({"workspaces":[{"workspace_id":"w","label":"Working"}],
+                                "tabs":[{"workspace_id":"w","tab_id":"w:t1","label":"Working"}],
+                                "panes":[pane], "agents":[agent_row],
+                                "layouts":[{"workspace_id":"w","tab_id":"w:t1","panes":[{"pane_id":"w:p1"}]}]});
+                        }
+                        json!({"type":"session_snapshot","snapshot":snapshot})
+                    }
+                    _ => panic!("unexpected or mutating native request: {method} {params}"),
+                })
+            }
+        });
+        Self {
+            server,
+            _directory: directory,
+            pane,
+            agent,
+            snapshot,
+        }
+    }
+    fn socket(&self) -> &Path {
+        &self.server.socket
+    }
+    fn environment(&self, pane: &str) -> BTreeMap<String, String> {
+        BTreeMap::from([
+            ("HERDR_ENV".into(), "1".into()),
+            ("HERDR_PANE_ID".into(), pane.into()),
+            ("HERDR_SESSION".into(), "test".into()),
+            (
+                "HERDR_SOCKET_PATH".into(),
+                self.socket().to_str().unwrap().into(),
             ),
-            snapshot: Mutex::new(Value::Null),
-            commands: Mutex::new(vec![]),
-        })
+        ])
     }
-    fn client(self: &Arc<Self>, pane: &str) -> HerdrClient {
-        HerdrClient::connect(
-            self.clone(),
-            BTreeMap::from([
-                ("HERDR_ENV".into(), "1".into()),
-                ("HERDR_PANE_ID".into(), pane.into()),
-                ("HERDR_BIN_PATH".into(), "/never/execute/herdr".into()),
-            ]),
-            1.0,
-        )
-        .unwrap()
-    }
-}
-impl ProcessRunner for Fixture {
-    fn run(&self, request: &ProcessRequest) -> Result<ProcessOutput, ProcessError> {
-        assert_eq!(request.program.to_str(), Some("/never/execute/herdr"));
-        let args: Vec<String> = request
-            .args
-            .iter()
-            .map(|arg| arg.to_str().unwrap().into())
-            .collect();
-        self.commands.lock().unwrap().push(args.clone());
-        let response = match (args[0].as_str(), args[1].as_str()) {
-            ("status", "--json") => {
-                json!({"server":{"running":true,"compatible":true,"endpoint_compatible":true,"version":"0.9.5","socket":"/tmp/herdr.sock","session":"test"}})
-            }
-            ("pane", "current") => json!({"result":{"type":"pane_current","pane":self.pane}}),
-            ("agent", "get") => {
-                json!({"result":{"type":"agent_info","agent":*self.agent.lock().unwrap()}})
-            }
-            ("workspace", "get") => {
-                json!({"result":{"type":"workspace_info","workspace":{"workspace_id":"w","label":"Working"}}})
-            }
-            ("api", "snapshot") => {
-                let mut snapshot = self.snapshot.lock().unwrap().clone();
-                if snapshot.is_null() {
-                    let mut pane = self.pane.clone();
-                    let mut agent = pane.clone();
-                    agent
-                        .as_object_mut()
-                        .unwrap()
-                        .extend(self.agent.lock().unwrap().as_object().unwrap().clone());
-                    pane["agent"] = agent["agent"].clone();
-                    pane["agent_session"] = agent["agent_session"].clone();
-                    snapshot = json!({"workspaces":[{"workspace_id":"w","label":"Working"}],
-                        "tabs":[{"workspace_id":"w","tab_id":"w:t1","label":"Working"}],
-                        "panes":[pane], "agents":[agent],
-                        "layouts":[{"workspace_id":"w","tab_id":"w:t1","panes":[{"pane_id":"w:p1"}]}]});
-                }
-                json!({"result":{"type":"session_snapshot","snapshot":snapshot}})
-            }
-            _ => panic!("unexpected or mutating native command: {args:?}"),
-        };
-        Ok(ProcessOutput {
-            status: std::process::ExitStatus::from_raw(0),
-            stdout: serde_json::to_vec(&response).unwrap(),
-            stderr: vec![],
-        })
+    fn client(&self, pane: &str) -> HerdrClient {
+        HerdrClient::connect(self.environment(pane), 1.0).unwrap()
     }
 }
 fn records() -> (Stream, Session, Authority) {
@@ -104,11 +105,11 @@ fn records() -> (Stream, Session, Authority) {
         },
     )
 }
-fn state() -> (tempfile::TempDir, RuntimeState, String) {
+fn state(socket: &Path) -> (tempfile::TempDir, RuntimeState, String) {
     let temp = tempfile::tempdir().unwrap();
     let state =
         RuntimeState::new(temp.path().canonicalize().unwrap().join("runtime"), "host").unwrap();
-    let scope = herdr_scope(std::path::Path::new("/tmp/herdr.sock"), Some("test"));
+    let scope = herdr_scope(socket, Some("test"));
     (temp, state, scope)
 }
 
@@ -117,7 +118,7 @@ fn reporting_and_current_inspection_have_distinct_read_only_identity_rules() {
     let fixture = Fixture::new();
     let frontend = BuiltinFrontend::Herdr(fixture.client("w:p1"));
     let caller = frontend.caller().unwrap();
-    let (_temp, state, scope) = state();
+    let (_temp, state, scope) = state(fixture.socket());
     assert_eq!(caller.scope(), scope);
     assert_eq!(caller.context_stream_id(&state, None).unwrap(), None);
     assert!(caller.current_stream_id(&state, None).is_err());
@@ -155,13 +156,13 @@ fn unknown_builtin_frontends_fail_before_transport() {
     assert!(
         BuiltinFrontend::connect(
             &streams_temper::frontend::FrontendId("other".into()),
-            fixture.clone(),
-            BTreeMap::new(),
+            Arc::new(streams_temper::process::NativeProcessRunner),
+            fixture.environment("w:p1"),
             1.0
         )
         .is_err()
     );
-    assert!(fixture.commands.lock().unwrap().is_empty());
+    assert!(fixture.server.requests().is_empty());
 }
 
 #[test]
@@ -199,7 +200,7 @@ fn inherited_and_contradictory_native_identities_fail_closed() {
 fn attestation_requires_effective_local_authority_and_ready_binding() {
     let fixture = Fixture::new();
     let client = fixture.client("w:p1");
-    let (_temp, state, scope) = state();
+    let (_temp, state, scope) = state(fixture.socket());
     let (stream, mut session, authority) = records();
     assert!(attest_context(&client, &state, &stream, &session, Some(&authority)).is_err());
     assert!(!state.root().exists());
@@ -236,7 +237,7 @@ fn attestation_requires_effective_local_authority_and_ready_binding() {
 fn attestation_rejects_other_effort_and_unready_binding() {
     for (bound_stream, ready) in [("other", true), ("effort", false)] {
         let fixture = Fixture::new();
-        let (_temp, state, scope) = state();
+        let (_temp, state, scope) = state(fixture.socket());
         state
             .stream_lock(Some(&scope), bound_stream)
             .unwrap()
@@ -280,7 +281,7 @@ fn inventory_preserves_pi_identity_without_transcripts_and_non_pi_panes() {
     assert_eq!(inventory.panes()[2].native_session_id(), None);
     assert_eq!(
         serde_json::to_value(inventory).unwrap()["socket"],
-        "/tmp/herdr.sock"
+        fixture.socket().to_str().unwrap()
     );
 }
 

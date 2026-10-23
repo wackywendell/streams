@@ -18,11 +18,27 @@ pub enum CommandOutcome {
 /// Recovery evidence includes malformed replies and partial output on timeout.
 #[derive(Debug, Clone, PartialEq, Eq, serde::Serialize)]
 pub struct CommandEvidence {
-    pub args: Vec<String>,
+    #[serde(flatten)]
+    pub request: NativeRequest,
     pub outcome: CommandOutcome,
-    pub code: Option<i32>,
-    pub stdout: Vec<u8>,
-    pub stderr: Vec<u8>,
+}
+
+/// CMUX runs its CLI; Herdr sends one socket request per exchange.
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize)]
+#[serde(untagged)]
+pub enum NativeRequest {
+    Process {
+        args: Vec<String>,
+        code: Option<i32>,
+        stdout: Vec<u8>,
+        stderr: Vec<u8>,
+    },
+    Socket {
+        method: String,
+        params: Value,
+        /// Raw reply frame; empty when none arrived.
+        response: Vec<u8>,
+    },
 }
 
 /// Errors preserve all commands from a multi-effect operation. Inspect uncertain
@@ -94,11 +110,13 @@ impl Operation {
                 let code = output.status.code();
                 let stdout = output.stdout.clone();
                 self.commands.push(CommandEvidence {
-                    args: args.to_vec(),
+                    request: NativeRequest::Process {
+                        args: args.to_vec(),
+                        code,
+                        stdout: output.stdout,
+                        stderr: output.stderr,
+                    },
                     outcome,
-                    code,
-                    stdout: output.stdout,
-                    stderr: output.stderr,
                 });
                 if code != Some(0) {
                     return Err(self.error("native command failed; inspect command evidence"));
@@ -107,11 +125,13 @@ impl Operation {
             }
             Err(error) => {
                 self.commands.push(CommandEvidence {
-                    args: args.to_vec(),
+                    request: NativeRequest::Process {
+                        args: args.to_vec(),
+                        code: error.code,
+                        stdout: error.stdout,
+                        stderr: error.stderr,
+                    },
                     outcome,
-                    code: error.code,
-                    stdout: error.stdout,
-                    stderr: error.stderr,
                 });
                 Err(self.error(error.message))
             }

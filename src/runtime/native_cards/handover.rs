@@ -144,17 +144,10 @@ impl NativeCardEngine {
         if fresh != before {
             return Err(self.refuse("predecessor proof changed before retirement"));
         }
-        let mut args = argv(&[
-            "pane",
-            "report-metadata",
-            &fresh.owner.pane_id,
-            "--source",
-            PLUGIN_ID,
-        ]);
-        for key in PAIR_KEYS {
-            args.extend(["--clear-token".into(), key.into()]);
-        }
-        self.call(&args, None, true)?;
+        let tokens: BTreeMap<_, _> = PAIR_KEYS.iter().map(|key| (*key, Value::Null)).collect();
+        let params = serde_json::json!({"pane_id":fresh.owner.pane_id,"source":PLUGIN_ID,
+            "tokens":tokens});
+        self.call("pane.report_metadata", params, None, true)?;
         let after = self.inspect(true)?;
         let inventory = after
             .saved

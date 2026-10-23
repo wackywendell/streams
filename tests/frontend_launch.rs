@@ -1,78 +1,27 @@
-//! Launch adapters use queued process replies; no live Herdr effects.
+//! Launch adapters use a scripted protocol-22 socket; no live Herdr effects.
+use crate::support::herdr::{Reply, Scripted};
 use serde_json::{Value, json};
-use std::collections::{BTreeMap, VecDeque};
-use std::os::unix::process::ExitStatusExt;
+use std::collections::BTreeMap;
 use std::path::Path;
-use std::sync::{Arc, Mutex};
 use streams_temper::frontend::herdr::{HerdrClient, HerdrPane, HerdrTab};
 use streams_temper::frontend::*;
-use streams_temper::process::{ProcessError, ProcessOutput, ProcessRequest, ProcessRunner};
 
-#[derive(Default)]
-struct QueueRunner {
-    replies: Mutex<VecDeque<Result<ProcessOutput, ProcessError>>>,
-    requests: Mutex<Vec<ProcessRequest>>,
-}
-
-impl QueueRunner {
-    fn reply(&self, value: Value) {
-        self.replies.lock().unwrap().push_back(Ok(ProcessOutput {
-            status: std::process::ExitStatus::from_raw(0),
-            stdout: serde_json::to_vec(&value).unwrap(),
-            stderr: Vec::new(),
-        }));
-    }
-
-    fn effect(&self, result: Value) {
-        self.reply(server("original"));
-        self.reply(json!({"result":result}));
-    }
-
-    fn commands(&self) -> Vec<Vec<String>> {
-        self.requests
-            .lock()
-            .unwrap()
-            .iter()
-            .map(|r| r.args.iter().map(|a| a.to_str().unwrap().into()).collect())
-            .collect()
-    }
-
-    fn exhausted(&self) {
-        assert!(self.replies.lock().unwrap().is_empty());
-    }
-}
-
-impl ProcessRunner for QueueRunner {
-    fn run(&self, request: &ProcessRequest) -> Result<ProcessOutput, ProcessError> {
-        self.requests.lock().unwrap().push(request.clone());
-        self.replies
-            .lock()
-            .unwrap()
-            .pop_front()
-            .expect("unexpected command")
-    }
-}
-
-fn server(session: &str) -> Value {
-    json!({"server":{"running":true,"compatible":true,"endpoint_compatible":true,
-        "version":"0.9.5","socket":"/tmp/herdr-test.sock","session":session}})
-}
-
-fn client() -> (Arc<QueueRunner>, HerdrClient, WorkspaceRef) {
-    let runner = Arc::new(QueueRunner::default());
-    runner.reply(server("original"));
-    let client = HerdrClient::connect(
-        runner.clone(),
-        BTreeMap::from([("HERDR_BIN_PATH".into(), "/fake/herdr".into())]),
-        0.5,
-    )
-    .unwrap();
+fn client() -> (Scripted, HerdrClient, WorkspaceRef) {
+    let fake = Scripted::new();
+    let client = HerdrClient::connect(fake.environment(), 0.5).unwrap();
     let workspace = WorkspaceRef {
         frontend: client.frontend_id(),
         endpoint: client.endpoint_id(),
         native_id: "w1".into(),
     };
-    (runner, client, workspace)
+    (fake, client, workspace)
+}
+
+fn response(evidence: &CommandEvidence) -> &[u8] {
+    match &evidence.request {
+        NativeRequest::Socket { response, .. } => response,
+        NativeRequest::Process { .. } => panic!("Herdr started a process"),
+    }
 }
 
 fn pane(id: &str) -> HerdrPane {
@@ -107,10 +56,9 @@ fn started() -> Value {
 }
 
 fn uncertain(error: FrontendError) {
-    assert_eq!(error.commands.len(), 2);
-    assert_eq!(error.commands[0].outcome, CommandOutcome::ReadOnly);
-    assert_eq!(error.commands[1].outcome, CommandOutcome::Uncertain);
-    assert!(!error.commands[1].stdout.is_empty());
+    assert_eq!(error.commands.len(), 1);
+    assert_eq!(error.commands[0].outcome, CommandOutcome::Uncertain);
+    assert!(!response(&error.commands[0]).is_empty());
 }
 
 fn strings(args: &[&str]) -> Vec<String> {
@@ -119,26 +67,26 @@ fn strings(args: &[&str]) -> Vec<String> {
 
 #[test]
 fn exact_commands_preserve_shell_metacharacters_as_arguments() {
-    let (runner, client, workspace) = client();
+    let (fake, client, workspace) = client();
     let environment = BTreeMap::from([
         ("Z".into(), "$(touch /never); quoted ' text".into()),
         ("A".into(), "a b".into()),
     ]);
     let cwd = Path::new("/checkout with spaces/$(no)");
-    runner.effect(created());
+    fake.result(created());
     let (created_tab, root) = client
         .create_tab(&workspace, cwd, &environment, Some("Plan; $(no)"))
         .unwrap();
     assert_eq!(created_tab.id, "w1:t1");
     assert_eq!(root, pane("w1:p1"));
-    runner.effect(json!({"type":"pane_split","pane":native_pane("w1:p2")}));
+    fake.result(json!({"type":"pane_split","pane":native_pane("w1:p2")}));
     assert_eq!(
         client.split_pane(&root, cwd, &environment).unwrap(),
         pane("w1:p2")
     );
-    runner.effect(json!({"type":"tab_info","tab":{"tab_id":"w1:t1","workspace_id":"w1","label":"Plan; $(no)"}}));
+    fake.result(json!({"type":"tab_info","tab":{"tab_id":"w1:t1","workspace_id":"w1","label":"Plan; $(no)"}}));
     client.rename_tab(&created_tab, "Plan; $(no)").unwrap();
-    runner.effect(started());
+    fake.result(started());
     let receipt = client
         .start_agent(
             &root,
@@ -152,78 +100,40 @@ fn exact_commands_preserve_shell_metacharacters_as_arguments() {
     assert_eq!(receipt.name, "streams-one");
     assert_eq!(receipt.agent, "future-kind");
     assert!(receipt.interactive_ready);
-    runner.effect(json!({"type":"ok"}));
+    fake.result(json!({"type":"ok"}));
     client.focus_agent(&root).unwrap();
-    let commands = runner.commands();
+    let cwd = cwd.to_str().unwrap();
+    let env = json!({"A":"a b","Z":"$(touch /never); quoted ' text"});
     assert_eq!(
-        commands[2],
-        strings(&[
-            "tab",
-            "create",
-            "--workspace",
-            "w1",
-            "--cwd",
-            cwd.to_str().unwrap(),
-            "--env",
-            "A=a b",
-            "--env",
-            "Z=$(touch /never); quoted ' text",
-            "--no-focus",
-            "--label",
-            "Plan; $(no)"
-        ])
+        fake.server.requests(),
+        vec![
+            ("ping".into(), json!({})),
+            (
+                "tab.create".into(),
+                json!({"workspace_id":"w1","cwd":cwd,"env":env,"focus":false,"label":"Plan; $(no)"})
+            ),
+            (
+                "pane.split".into(),
+                json!({"target_pane_id":"w1:p1","direction":"right","cwd":cwd,"env":env,"focus":false})
+            ),
+            (
+                "tab.rename".into(),
+                json!({"tab_id":"w1:t1","label":"Plan; $(no)"})
+            ),
+            (
+                "agent.start".into(),
+                json!({"name":"streams-one","kind":"future-kind","pane_id":"w1:p1",
+                    "timeout_ms":20000,"args":["", "--resume", "id ' ; $(no)"]})
+            ),
+            ("agent.focus".into(), json!({"target":"w1:p1"})),
+        ]
     );
-    assert_eq!(
-        commands[4],
-        strings(&[
-            "pane",
-            "split",
-            "--pane",
-            "w1:p1",
-            "--direction",
-            "right",
-            "--cwd",
-            cwd.to_str().unwrap(),
-            "--env",
-            "A=a b",
-            "--env",
-            "Z=$(touch /never); quoted ' text",
-            "--no-focus"
-        ])
-    );
-    assert_eq!(
-        commands[6],
-        strings(&["tab", "rename", "w1:t1", "Plan; $(no)"])
-    );
-    assert_eq!(
-        commands[8],
-        strings(&[
-            "agent",
-            "start",
-            "streams-one",
-            "--kind",
-            "future-kind",
-            "--pane",
-            "w1:p1",
-            "--timeout",
-            "20000",
-            "--",
-            "",
-            "--resume",
-            "id ' ; $(no)"
-        ])
-    );
-    assert_eq!(commands[10], strings(&["agent", "focus", "w1:p1"]));
-    for request in runner.requests.lock().unwrap().iter() {
-        assert_eq!(request.program, Path::new("/fake/herdr"));
-        assert!(request.input.is_none());
-    }
-    runner.exhausted();
+    fake.exhausted();
 }
 
 #[test]
 fn optional_terminal_id_accepts_absent_and_null() {
-    let (runner, client, _) = client();
+    let (fake, client, _) = client();
     for absent in [false, true] {
         let mut response = started();
         if absent {
@@ -234,19 +144,19 @@ fn optional_terminal_id_accepts_absent_and_null() {
         } else {
             response["agent"]["terminal_id"] = Value::Null;
         }
-        runner.effect(response);
+        fake.result(response);
         let receipt = client
             .start_agent(&pane("w1:p1"), "streams-one", "future-kind", &[])
             .unwrap();
         assert_eq!(receipt.terminal_id, None);
         assert_eq!(receipt.pane.cwd, "/observed");
     }
-    runner.exhausted();
+    fake.exhausted();
 }
 
 #[test]
 fn wrong_creation_linkages_remain_uncertain() {
-    let (runner, client, workspace) = client();
+    let (fake, client, workspace) = client();
     for (object, field) in [
         ("tab", "workspace_id"),
         ("root_pane", "workspace_id"),
@@ -254,7 +164,7 @@ fn wrong_creation_linkages_remain_uncertain() {
     ] {
         let mut response = created();
         response[object][field] = json!("wrong");
-        runner.effect(response);
+        fake.result(response);
         uncertain(
             client
                 .create_tab(&workspace, Path::new("/checkout"), &BTreeMap::new(), None)
@@ -268,19 +178,19 @@ fn wrong_creation_linkages_remain_uncertain() {
     ] {
         let mut returned = native_pane("w1:p2");
         returned[field] = json!(value);
-        runner.effect(json!({"type":"pane_split","pane":returned}));
+        fake.result(json!({"type":"pane_split","pane":returned}));
         uncertain(
             client
                 .split_pane(&pane("w1:p1"), Path::new("/checkout"), &BTreeMap::new())
                 .unwrap_err(),
         );
     }
-    runner.exhausted();
+    fake.exhausted();
 }
 
 #[test]
 fn wrong_start_identity_readiness_or_terminal_retains_raw_evidence() {
-    let (runner, client, _) = client();
+    let (fake, client, _) = client();
     for (key, value) in [
         ("pane_id", json!("wrong")),
         ("tab_id", json!("wrong")),
@@ -295,19 +205,19 @@ fn wrong_start_identity_readiness_or_terminal_retains_raw_evidence() {
     ] {
         let mut response = started();
         response["agent"][key] = value;
-        runner.effect(response);
+        fake.result(response);
         uncertain(
             client
                 .start_agent(&pane("w1:p1"), "streams-one", "future-kind", &[])
                 .unwrap_err(),
         );
     }
-    runner.exhausted();
+    fake.exhausted();
 }
 
 #[test]
 fn rename_requires_exact_tuple_and_label() {
-    let (runner, client, _) = client();
+    let (fake, client, _) = client();
     for (key, value) in [
         ("tab_id", "wrong"),
         ("workspace_id", "wrong"),
@@ -315,15 +225,15 @@ fn rename_requires_exact_tuple_and_label() {
     ] {
         let mut returned = json!({"tab_id":"w1:t1","workspace_id":"w1","label":"New"});
         returned[key] = json!(value);
-        runner.effect(json!({"type":"tab_info","tab":returned}));
+        fake.result(json!({"type":"tab_info","tab":returned}));
         uncertain(client.rename_tab(&tab(), "New").unwrap_err());
     }
-    runner.exhausted();
+    fake.exhausted();
 }
 
 #[test]
 fn invalid_arguments_never_dispatch_effects() {
-    let (runner, client, workspace) = client();
+    let (fake, client, workspace) = client();
     for cwd in ["relative", "/bad\npath", "/bad\0path"] {
         assert!(
             client
@@ -413,46 +323,15 @@ fn invalid_arguments_never_dispatch_effects() {
     );
     assert!(client.focus_agent(&invalid).is_err());
     assert!(client.start_agent(&invalid, "valid", "pi", &[]).is_err());
-    assert_eq!(runner.commands(), vec![strings(&["status", "--json"])]);
-    runner.exhausted();
+    assert_eq!(fake.server.methods(), ["ping"]);
+    fake.exhausted();
 }
 
 #[test]
-fn changed_endpoint_refuses_every_effect_and_focus_timeout_never_retries() {
-    let (runner, client, workspace) = client();
-    for action in 0..5 {
-        runner.reply(server("replacement"));
-        let error = match action {
-            0 => client
-                .create_tab(&workspace, Path::new("/checkout"), &BTreeMap::new(), None)
-                .map(|_| ()),
-            1 => client
-                .split_pane(&pane("w1:p1"), Path::new("/checkout"), &BTreeMap::new())
-                .map(|_| ()),
-            2 => client.rename_tab(&tab(), "New"),
-            3 => client
-                .start_agent(&pane("w1:p1"), "valid", "pi", &[])
-                .map(|_| ()),
-            _ => client.focus_agent(&pane("w1:p1")),
-        }
-        .unwrap_err();
-        assert_eq!(error.commands.len(), 1);
-        assert_eq!(error.commands[0].outcome, CommandOutcome::ReadOnly);
-    }
-    assert!(
-        runner
-            .commands()
-            .iter()
-            .all(|c| c == &strings(&["status", "--json"]))
-    );
-    runner.reply(server("original"));
-    runner.replies.lock().unwrap().push_back(Err(ProcessError {
-        message: "timeout".into(),
-        code: None,
-        stdout: b"partial".to_vec(),
-        stderr: Vec::new(),
-    }));
+fn focus_without_a_complete_reply_is_uncertain_and_never_retries() {
+    let (fake, client, _) = client();
+    fake.reply(Reply::Raw(b"partial".to_vec()));
     uncertain(client.focus_agent(&pane("w1:p1")).unwrap_err());
-    assert_eq!(runner.commands().len(), 8);
-    runner.exhausted();
+    assert_eq!(fake.server.methods(), ["ping", "agent.focus"]);
+    fake.exhausted();
 }

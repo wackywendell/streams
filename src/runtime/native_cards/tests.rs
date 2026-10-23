@@ -1,14 +1,14 @@
 #![cfg(test)]
 
 use super::*;
+#[path = "../../../tests/support/herdr.rs"]
+mod fake_herdr;
 use crate::model::{Document, Repository, Session, Stream};
-use crate::process::{ProcessError, ProcessOutput, ProcessRequest, ProcessRunner};
 use crate::tui::{
     CardView, CheckoutBinding, CheckoutSelection, DisplayContext, DocumentLocation,
     NativeOwnerObservation, Rect, ResolvedDocument,
 };
 use serde_json::json;
-use std::os::unix::process::ExitStatusExt;
 use std::sync::Mutex;
 
 fn card(native: &str, hints: Option<&str>) -> CardSnapshot {
@@ -40,8 +40,7 @@ struct World {
     snapshot: Value,
     current: String,
     observation: CardObservation,
-    effects: Vec<Vec<String>>,
-    calls: Vec<Vec<String>>,
+    effects: Vec<(String, Value)>,
     malformed_open: bool,
     ambiguous_close: bool,
     fail_after_open: bool,
@@ -145,39 +144,30 @@ fn remove_card(world: &mut World) {
         .unwrap()
         .retain(|p| p["pane_id"] != "display");
 }
-impl ProcessRunner for FakeHerdr {
-    fn run(&self, request: &ProcessRequest) -> std::result::Result<ProcessOutput, ProcessError> {
-        assert_eq!(request.program, Path::new("/never/execute/herdr"));
-        assert!(request.input.is_none());
-        let args: Vec<String> = request
-            .args
-            .iter()
-            .map(|a| a.to_str().unwrap().into())
-            .collect();
-        let a: Vec<&str> = args.iter().map(String::as_str).collect();
+impl FakeHerdr {
+    fn handle(&self, method: &str, p: &Value) -> Value {
         let mut w = self.world.lock().unwrap();
-        w.calls.push(args.clone());
-        let result = match a.as_slice() {
-            ["status", "--json"] => json!({"server":{"running":true,"compatible":true,
-                "endpoint_compatible":true,"version":"0.9.5","socket":self.socket,"session":"fake"}}),
-            ["pane", "current", "--current"] => {
+        let call = (method.to_owned(), p.clone());
+        match method {
+            "pane.current" => {
+                assert_eq!(p["caller_pane_id"], w.current);
                 let current = w.snapshot["panes"]
                     .as_array()
                     .unwrap()
                     .iter()
                     .find(|p| p["pane_id"] == w.current)
                     .unwrap();
-                json!({"result":{"type":"pane_current","pane":current}})
+                json!({"type":"pane_current","pane":current})
             }
-            ["api", "snapshot"] => {
-                json!({"result":{"type":"session_snapshot","snapshot":w.snapshot}})
+            "session.snapshot" => json!({"type":"session_snapshot","snapshot":w.snapshot}),
+            "plugin.list" => {
+                assert_eq!(p["plugin_id"], PLUGIN_ID);
+                json!({"type":"plugin_list","plugins":[self.plugin]})
             }
-            ["plugin", "list", "--plugin", PLUGIN_ID, "--json"] => {
-                json!({"result":{"type":"plugin_list","plugins":[self.plugin]}})
-            }
-            ["plugin", "pane", "open", ..] => {
-                let entrypoint = a.windows(2).find(|p| p[0] == "--entrypoint").unwrap()[1];
-                assert!(a.contains(&"--no-focus"));
+            "plugin.pane.open" => {
+                assert_eq!(p["plugin_id"], PLUGIN_ID);
+                let entrypoint = p["entrypoint"].as_str().unwrap();
+                assert_eq!(p["focus"], false);
                 let evidence_key = if entrypoint == "document" {
                     let target = w
                         .observation
@@ -187,20 +177,19 @@ impl ProcessRunner for FakeHerdr {
                     let ResolvedDocument::File { selection, file } = &target.location else {
                         panic!("not a file")
                     };
-                    assert!(a.windows(2).any(|p| p == ["--workspace", "w"]));
-                    assert!(a.windows(2).any(|p| p == ["--placement", "tab"]));
-                    assert!(!a.contains(&"--target-pane"));
-                    for value in [
-                        "WORK_CARDS_DOCUMENT_COMMAND=less".into(),
-                        format!("WORK_CARDS_DOCUMENT_CWD={}", selection.root.display()),
-                        format!("WORK_CARDS_DOCUMENT_PATH={}", file.display()),
-                    ] {
-                        assert!(a.windows(2).any(|p| p[0] == "--env" && p[1] == value));
-                    }
+                    assert_eq!(p["workspace_id"], "w");
+                    assert_eq!(p["placement"], "tab");
+                    assert!(p.get("target_pane_id").is_none());
+                    assert_eq!(p["env"]["WORK_CARDS_DOCUMENT_COMMAND"], "less");
+                    assert_eq!(
+                        p["env"]["WORK_CARDS_DOCUMENT_CWD"],
+                        selection.root.to_str().unwrap()
+                    );
+                    assert_eq!(p["env"]["WORK_CARDS_DOCUMENT_PATH"], file.to_str().unwrap());
                     document_keys(&self.socket, &target).1
                 } else {
                     assert_eq!(entrypoint, "card");
-                    assert!(a.windows(2).any(|p| p == ["--target-pane", "owner"]));
+                    assert_eq!(p["target_pane_id"], "owner");
                     self.key.clone()
                 };
                 // Resource creation must never precede durable pending evidence.
@@ -211,21 +200,15 @@ impl ProcessRunner for FakeHerdr {
                     .expect("pending before native launch");
                 assert!(matches!(pending.phase(), NativePhase::Unlaunched));
                 if entrypoint == "card" {
-                    assert!(
-                        a.contains(&format!("STREAMS_CARDS_NONCE={}", pending.nonce()).as_str())
-                    );
+                    assert_eq!(p["env"]["STREAMS_CARDS_NONCE"], pending.nonce());
                 }
                 let launch = w
                     .effects
                     .iter()
-                    .filter(|command| {
-                        command
-                            .windows(2)
-                            .any(|p| p[0] == "--entrypoint" && p[1] == entrypoint)
-                    })
+                    .filter(|(m, e)| m == "plugin.pane.open" && e["entrypoint"] == entrypoint)
                     .count()
                     + 1;
-                w.effects.push(args.clone());
+                w.effects.push(call);
                 let mut created = if entrypoint == "card" {
                     let suffix = if launch == 1 {
                         String::new()
@@ -261,30 +244,30 @@ impl ProcessRunner for FakeHerdr {
                 if w.malformed_open {
                     created = json!({"pane_id":created["pane_id"]});
                 }
-                json!({"result":{"type":"plugin_pane_opened","plugin_pane":{
-                    "plugin_id":PLUGIN_ID,"entrypoint":entrypoint,"pane":created}}})
+                json!({"type":"plugin_pane_opened","plugin_pane":{
+                    "plugin_id":PLUGIN_ID,"entrypoint":entrypoint,"pane":created}})
             }
-            [kind @ ("tab" | "pane"), "rename", id, label] => {
-                w.effects.push(args.clone());
-                let (collection, key, result) = if *kind == "tab" {
-                    ("tabs", "tab_id", "tab_info")
+            "tab.rename" | "pane.rename" => {
+                w.effects.push(call);
+                let (kind, collection, key, result) = if method == "tab.rename" {
+                    ("tab", "tabs", "tab_id", "tab_info")
                 } else {
-                    ("panes", "pane_id", "pane_info")
+                    ("pane", "panes", "pane_id", "pane_info")
                 };
                 let target = w.snapshot[collection]
                     .as_array_mut()
                     .unwrap()
                     .iter_mut()
-                    .find(|p| p[key] == *id)
+                    .find(|t| t[key] == p[key])
                     .unwrap();
-                target["label"] = json!(label);
+                target["label"] = p["label"].clone();
                 let target = target.clone();
-                if *kind == "pane" && w.clear_binding_after_caption_rename {
+                if kind == "pane" && w.clear_binding_after_caption_rename {
                     w.snapshot["workspaces"][0]["tokens"] = json!({});
                 }
-                json!({"result":{"type":result,*kind:target}})
+                json!({"type":result,kind:target})
             }
-            ["tab", "focus", id] => {
+            "tab.focus" => {
                 let target = w
                     .observation
                     .card
@@ -293,76 +276,57 @@ impl ProcessRunner for FakeHerdr {
                 let (key, evidence) = document_keys(&self.socket, &target);
                 let ready = self.state.read(&evidence).unwrap().unwrap();
                 assert!(matches!(ready.phase(), NativePhase::Ready(_)));
-                assert_eq!(ready.resources().unwrap().tab_id(), *id);
+                assert_eq!(ready.resources().unwrap().tab_id(), p["tab_id"]);
                 let editor = w.snapshot["panes"]
                     .as_array()
                     .unwrap()
                     .iter()
-                    .find(|p| p["tab_id"] == *id)
+                    .find(|e| e["tab_id"] == p["tab_id"])
                     .unwrap();
                 assert_eq!(editor["tokens"]["strm_doc"], key);
                 assert_eq!(editor["tokens"]["strm_editor"], ready.nonce());
-                w.effects.push(args.clone());
-                json!({"result":{"type":"ok"}})
+                w.effects.push(call);
+                json!({"type":"ok"})
             }
-            [
-                kind @ ("workspace" | "pane"),
-                "report-metadata",
-                id,
-                "--source",
-                PLUGIN_ID,
-                rest @ ..,
-            ] => {
-                w.effects.push(args.clone());
-                let collection = if *kind == "workspace" {
-                    "workspaces"
+            "workspace.report_metadata" | "pane.report_metadata" => {
+                assert_eq!(p["source"], PLUGIN_ID);
+                w.effects.push(call);
+                let (collection, id_key) = if method == "workspace.report_metadata" {
+                    ("workspaces", "workspace_id")
                 } else {
-                    "panes"
-                };
-                let id_key = if *kind == "workspace" {
-                    "workspace_id"
-                } else {
-                    "pane_id"
+                    ("panes", "pane_id")
                 };
                 let target = w.snapshot[collection]
                     .as_array_mut()
                     .unwrap()
                     .iter_mut()
-                    .find(|p| p[id_key] == *id)
+                    .find(|t| t[id_key] == p[id_key])
                     .expect("exact metadata target");
                 let tokens = target["tokens"].as_object_mut().unwrap();
-                for pair in rest.chunks_exact(2) {
-                    match pair[0] {
-                        "--token" => {
-                            let (key, value) = pair[1].split_once('=').unwrap();
-                            tokens.insert(key.into(), json!(value));
+                for (key, value) in p["tokens"].as_object().unwrap() {
+                    match value {
+                        Value::String(_) => {
+                            tokens.insert(key.clone(), value.clone());
                         }
-                        "--clear-token" => {
-                            tokens.remove(pair[1]);
+                        Value::Null => {
+                            tokens.remove(key);
                         }
-                        _ => panic!("unexpected metadata arguments: {args:?}"),
+                        _ => panic!("unexpected metadata token: {p}"),
                     }
                 }
-                json!({"result":{"type":"ok"}})
+                json!({"type":"ok"})
             }
-            [
-                "pane",
-                "resize",
-                "--pane",
-                id,
-                "--direction",
-                _,
-                "--amount",
-                _,
-            ] => {
+            "pane.resize" => {
                 assert!(matches!(
                     self.state.read(&self.key).unwrap().unwrap().phase(),
                     NativePhase::Ready(_)
                 ));
-                w.effects.push(args.clone());
-                json!({"result":{"type":"pane_resize","resize":{"pane_id":id}}})
+                assert!(p["amount"].is_f64());
+                w.effects.push(call);
+                json!({"type":"pane_resize","resize":{"pane_id":p["pane_id"]}})
             }
-            ["plugin", "pane", "close", "display"] => {
+            "plugin.pane.close" => {
+                assert_eq!(p["pane_id"], "display");
                 assert!(
                     matches!(
                         self.state.read(&self.key).unwrap().unwrap().phase(),
@@ -370,21 +334,18 @@ impl ProcessRunner for FakeHerdr {
                     ),
                     "closed intent must precede native close"
                 );
-                w.effects.push(args.clone());
+                w.effects.push(call);
                 remove_card(&mut w);
-                json!({"result":{"type":"plugin_pane_closed","pane_id":
-                    if w.ambiguous_close { "another-pane" } else { "display" }}})
+                json!({"type":"plugin_pane_closed","pane_id":
+                    if w.ambiguous_close { "another-pane" } else { "display" }})
             }
-            _ => panic!("unsupported fake command (never executed): {args:?}"),
-        };
-        Ok(ProcessOutput {
-            status: std::process::ExitStatus::from_raw(0),
-            stdout: serde_json::to_vec(&result).unwrap(),
-            stderr: vec![],
-        })
+            _ => panic!("unsupported fake Herdr request: {method} {p}"),
+        }
     }
 }
 struct Fixture {
+    // Declared before the directory holding its socket.
+    server: fake_herdr::FakeHerdr,
     _temp: tempfile::TempDir,
     runner: Arc<FakeHerdr>,
     config: NativeCardsConfig,
@@ -406,7 +367,10 @@ impl Fixture {
             ),
             ("HERDR_ENV".into(), "1".into()),
             ("HERDR_PANE_ID".into(), "owner".into()),
-            ("HERDR_BIN_PATH".into(), "/never/execute/herdr".into()),
+            (
+                "HERDR_SOCKET_PATH".into(),
+                root.join("herdr.sock").to_str().unwrap().into(),
+            ),
         ]);
         let config = NativeCardsConfig::load(&environment, &root, &plugin_root).unwrap();
         let state = Arc::new(NativeState::new(root.join("state")).unwrap());
@@ -433,7 +397,6 @@ impl Fixture {
             current: "owner".into(),
             observation,
             effects: vec![],
-            calls: vec![],
             malformed_open: false,
             ambiguous_close: false,
             fail_after_open: false,
@@ -448,15 +411,21 @@ impl Fixture {
             {"id":"card","title":"Streams work card","placement":"split","command":["/bin/sh","bin/open-rust-streams-pane.sh"]},
             {"id":"document","title":"Document","placement":"tab","command":["/bin/sh","bin/open-document.sh"]},
         ]});
+        let runner = Arc::new(FakeHerdr {
+            world,
+            state,
+            socket,
+            plugin,
+            key,
+        });
+        let server = fake_herdr::FakeHerdr::start(&runner.socket, {
+            let runner = runner.clone();
+            move |method, params| fake_herdr::Reply::Result(runner.handle(method, params))
+        });
         Self {
+            server,
             _temp: temp,
-            runner: Arc::new(FakeHerdr {
-                world,
-                state,
-                socket,
-                plugin,
-                key,
-            }),
+            runner,
             config,
             environment,
         }
@@ -470,7 +439,7 @@ impl Fixture {
     fn try_engine_with(&self, environment: BTreeMap<String, String>) -> Result<NativeCardEngine> {
         self.runner.world.lock().unwrap().current = environment["HERDR_PANE_ID"].clone();
         NativeCardEngine::new(
-            HerdrClient::connect(self.runner.clone(), environment.clone(), 1.0).unwrap(),
+            HerdrClient::connect(environment.clone(), 1.0).unwrap(),
             Box::new(Source {
                 world: self.runner.world.clone(),
                 launch: SourceLaunch {
@@ -592,13 +561,13 @@ impl Fixture {
             .write(old, next)
             .unwrap();
     }
-    fn effects(&self) -> Vec<Vec<String>> {
+    fn effects(&self) -> Vec<(String, Value)> {
         self.runner.world.lock().unwrap().effects.clone()
     }
     fn launches(&self) -> usize {
         self.effects()
             .iter()
-            .filter(|a| a.starts_with(&argv(&["plugin", "pane", "open"])))
+            .filter(|(method, _)| method == "plugin.pane.open")
             .count()
     }
     fn bind(&self) {
@@ -701,12 +670,12 @@ fn card_pane_cannot_use_the_owner_bridge() {
 fn operation_request_budgets() {
     for operation in ["observe", "check", "open", "close", "project"] {
         let f = Fixture::new();
-        f.runner.world.lock().unwrap().calls.clear();
+        f.server.clear();
         let mut engine = f.engine();
         // Close exercises an owned, ready card, not the no-op absence path.
         if operation == "close" {
             engine.open_display(OpenMode::Explicit).unwrap();
-            f.runner.world.lock().unwrap().calls.clear();
+            f.server.clear();
         }
         match operation {
             "observe" => {
@@ -730,23 +699,38 @@ fn operation_request_budgets() {
             }
             _ => unreachable!(),
         }
-        let world = f.runner.world.lock().unwrap();
         let mut counts = BTreeMap::new();
-        for call in &world.calls {
-            *counts.entry(call[..2].join(" ")).or_insert(0_usize) += 1;
+        for method in f.server.methods() {
+            *counts.entry(method).or_insert(0_usize) += 1;
         }
-        // Includes bootstrap except close, which starts with a ready engine.
-        // Every effect invalidates the observation for its confirmation; taking
-        // the workspace lock also invalidates the pre-lock display snapshot.
-        let (snapshots, starts) = match operation {
-            "observe" | "check" => (1, 3),
-            "open" => (7, 27),
-            "close" => (3, 8),
-            "project" => (8, 23),
+        // One ping per process (close reuses the ready engine), then one socket
+        // request per observation or effect. Every effect invalidates the
+        // observation for its confirmation; taking the workspace lock also
+        // invalidates the pre-lock display snapshot.
+        let expected: &[(&str, usize)] = match operation {
+            "observe" | "check" => &[("ping", 1), ("session.snapshot", 1)],
+            "open" => &[
+                ("pane.report_metadata", 2),
+                ("pane.resize", 1),
+                ("ping", 1),
+                ("plugin.list", 1),
+                ("plugin.pane.open", 1),
+                ("session.snapshot", 7),
+                ("workspace.report_metadata", 1),
+            ],
+            "close" => &[("plugin.pane.close", 1), ("session.snapshot", 3)],
+            "project" => &[
+                ("pane.report_metadata", 1),
+                ("ping", 1),
+                ("session.snapshot", 8),
+                ("tab.rename", 1),
+                ("workspace.report_metadata", 1),
+            ],
             _ => unreachable!(),
         };
-        assert_eq!(counts["api snapshot"], snapshots, "{operation}: {counts:?}");
-        assert_eq!(world.calls.len(), starts, "{operation}: {counts:?}");
+        let expected: BTreeMap<String, usize> =
+            expected.iter().map(|(m, n)| ((*m).into(), *n)).collect();
+        assert_eq!(counts, expected, "{operation}");
     }
 }
 
@@ -840,7 +824,7 @@ fn authority_loss_after_creation_stops_stamping_and_retains_pending() {
     assert!(matches!(f.record().phase(), NativePhase::Reserved(_)));
     assert_eq!(f.record().resources().unwrap().pane_id(), "display");
     let effects = f.effects();
-    assert_eq!(&effects.last().unwrap()[..3], &["plugin", "pane", "open"]);
+    assert_eq!(effects.last().unwrap().0, "plugin.pane.open");
     let w = f.runner.world.lock().unwrap();
     assert_eq!(w.snapshot["panes"][0]["tokens"], json!({}));
     assert_eq!(w.snapshot["panes"][1]["tokens"], json!({}));
@@ -1102,7 +1086,7 @@ fn document_launch_persists_pending_and_exact_editor_then_reuses_by_focus() {
     assert_eq!(&after[..effects.len()], effects.as_slice());
     assert_eq!(
         &after[effects.len()..],
-        &[argv(&["tab", "focus", "editor-tab-1"])]
+        &[("tab.focus".into(), json!({"tab_id":"editor-tab-1"}))]
     );
     assert_eq!(f.runner.state.read(&evidence).unwrap().unwrap(), ready);
 }
@@ -1133,30 +1117,21 @@ fn launch_carries_custom_plugin_root_editor_and_named_namespace() {
     f.environment.insert("HERDR_SESSION".into(), "fake".into());
     f.engine().open_display(OpenMode::Explicit).unwrap();
     let effects = f.effects();
-    let launch = effects
+    let (_, launch) = effects
         .iter()
-        .find(|args| args.starts_with(&argv(&["plugin", "pane", "open"])))
+        .find(|(method, _)| method == "plugin.pane.open")
         .unwrap();
-    assert!(launch.contains(&format!(
-        "STREAMS_CARDS_PLUGIN_ROOT={}",
-        f.config.plugin_root.display()
-    )));
-    assert!(launch.contains(&"EDITOR=nano -w".to_owned()));
-    let reader = launch
-        .iter()
-        .find_map(|arg| arg.strip_prefix("STREAMS_CARDS_READ_ENV="))
-        .unwrap();
-    let captured: Value = serde_json::from_str(reader).unwrap();
+    let env = &launch["env"];
+    assert_eq!(
+        env["STREAMS_CARDS_PLUGIN_ROOT"],
+        f.config.plugin_root.to_str().unwrap()
+    );
+    assert_eq!(env["EDITOR"], "nano -w");
+    let captured: Value =
+        serde_json::from_str(env["STREAMS_CARDS_READ_ENV"].as_str().unwrap()).unwrap();
     assert_eq!(captured["EDITOR"], "nano -w");
     assert_eq!(captured["HERDR_SESSION"], "fake");
-    let environment = launch
-        .windows(2)
-        .filter(|pair| pair[0] == "--env")
-        .map(|pair| {
-            let (key, value) = pair[1].split_once('=').unwrap();
-            (key.to_owned(), value.to_owned())
-        })
-        .collect();
+    let environment = serde_json::from_value(env.clone()).unwrap();
     let context = LaunchedCardContext::from_environment(&environment)
         .unwrap()
         .unwrap();
@@ -1207,7 +1182,7 @@ fn exact_reserved_editor_promotes_without_relaunch_or_renaming() {
     assert_eq!(f.launches(), 2);
     assert_eq!(
         &f.effects()[effects.len()..],
-        &[argv(&["tab", "focus", "editor-tab-1"])]
+        &[("tab.focus".into(), json!({"tab_id":"editor-tab-1"}))]
     );
     assert_eq!(
         f.runner.world.lock().unwrap().snapshot["tabs"][1]["label"],

@@ -41,7 +41,9 @@ impl ApplicationSource {
         inventory: bool,
     ) -> Result<CardObservation> {
         let connection = streams_temper::runtime::native::BuiltinFrontend::Herdr(
-            client.with_context(self.app.environment.clone()),
+            client
+                .with_context(self.app.environment.clone())
+                .map_err(RuntimeError::from)?,
         );
         let observed = self.app.agent_observation_from_native(
             Harness::Pi,
