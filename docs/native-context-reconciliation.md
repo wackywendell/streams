@@ -16,6 +16,14 @@ Retain previous membership relationships as participation history, with one curr
 
 Changing membership preserves the conversation's repository, checkout and working-directory knowledge. These belong to the conversation, not its current Stream's repository aliases. Do not reinterpret them through the destination or add repositories to that Stream as a side effect.
 
+## Cross-host participation
+
+A Stream should represent one effort across hosts, with an independent workspace association on each participating host. Herdr workspaces remain local to their servers; Streams need not share or move them between machines.
+
+Session identity is `(host, agent, native Session ID)`, where agent means the coding harness, such as Pi. Resuming a copied conversation on another host creates a separate Session and work card, even if its native ID is unchanged. Both Sessions may participate in the same Stream. Participation does not transfer Stream ownership or permission to write another host's Session.
+
+This is the intended model, not current cross-host native support. Current ownership checks block this participation. Until supported, cross-host enrollment or reassociation must fail explicitly before creating records, binding workspaces or dispatching native effects. Do not silently duplicate the Stream, change ownership or redirect participation. Reading synchronized records remains allowed.
+
 ## CLI and Pi boundary
 
 The library owns reconciliation and result admission, exposed through the CLI. Pi supplies its session identity and observed Herdr state when requesting cards. The library verifies the live context, reconciles membership and returns the cards with a context reference. Ordinary catalog reads remain read-only; requesting reconciled context deliberately permits membership changes.
@@ -37,7 +45,7 @@ Pi carries request context without interpreting membership or orchestrating reco
 
 Tree navigation preserves conversation identity but invalidates work captured against the old branch. A completed conversation replacement retires the old runtime's work; cancellation leaves it usable.
 
-Reconcile closures and other changes on the next Streams interaction; no continuing observer is required. Every transition preserves pending native-effect evidence. Membership changes or resource reappearance cannot erase launch uncertainty or authorize duplicate effects.
+Reconcile on relevant native events and Streams interactions, following the [event-driven process contract](bounded-work-and-card-events.md). Every transition preserves pending native-effect evidence. Membership changes or resource reappearance cannot erase launch uncertainty or authorize duplicate effects.
 
 ## Work status and native presence
 
