@@ -20,6 +20,15 @@ pub(crate) fn sync_directory(path: &Path) -> Result<(), StorageError> {
 }
 
 pub(crate) fn atomic_write(path: &Path, bytes: &[u8], staging: &Path) -> Result<(), StorageError> {
+    atomic_write_with_sync(path, bytes, staging, sync_directory)
+}
+
+fn atomic_write_with_sync(
+    path: &Path,
+    bytes: &[u8],
+    staging: &Path,
+    sync: impl Fn(&Path) -> Result<(), StorageError>,
+) -> Result<(), StorageError> {
     let parent = path.parent().expect("atomic destination has a parent");
     ensure_directory(parent, true)?;
     ensure_directory(staging, true)?;
@@ -28,9 +37,9 @@ pub(crate) fn atomic_write(path: &Path, bytes: &[u8], staging: &Path) -> Result<
     tmp.write_all(bytes).map_err(io_error)?;
     tmp.as_file().sync_all().map_err(io_error)?;
     tmp.persist(path).map_err(|e| io_error(e.error))?;
-    let result = sync_directory(parent).and_then(|()| {
+    let result = sync(parent).and_then(|()| {
         if staging != parent {
-            sync_directory(staging)
+            sync(staging)
         } else {
             Ok(())
         }
@@ -78,17 +87,21 @@ pub(crate) fn ensure_directory(path: &Path, create: bool) -> Result<(), StorageE
 
 /// Open without following symlinks or waiting on special files, then serialize writers.
 pub(crate) fn lock(path: &Path) -> Result<File, StorageError> {
-    open_lock(path, false)
+    open_lock(path, false, true)
 }
 
 pub(crate) fn inspection_lock(path: &Path) -> Result<File, StorageError> {
-    open_lock(path, true)
+    open_lock(path, true, false)
 }
 
-fn open_lock(path: &Path, read_only: bool) -> Result<File, StorageError> {
-    ensure_directory(path.parent().expect("lock parent"), !read_only)?;
+pub(crate) fn existing_write_lock(path: &Path) -> Result<File, StorageError> {
+    open_lock(path, false, false)
+}
+
+fn open_lock(path: &Path, read_only: bool, create: bool) -> Result<File, StorageError> {
+    ensure_directory(path.parent().expect("lock parent"), create)?;
     let file = OpenOptions::new()
-        .create(!read_only)
+        .create(create)
         .truncate(false)
         .read(true)
         .write(!read_only)
@@ -133,6 +146,12 @@ pub(crate) fn decode_json<T: DeserializeOwned>(bytes: &[u8]) -> Result<T, Storag
 
 /// Missing files stay missing; even the parent directory is checked without creation.
 pub(crate) fn read_json<T: DeserializeOwned>(path: &Path) -> Result<Option<T>, StorageError> {
+    read_bytes(path)?
+        .map(|bytes| decode_json(&bytes))
+        .transpose()
+}
+
+pub(crate) fn read_bytes(path: &Path) -> Result<Option<Vec<u8>>, StorageError> {
     ensure_directory(path.parent().expect("file parent"), false)?;
     let mut file = match OpenOptions::new()
         .read(true)
@@ -163,7 +182,7 @@ pub(crate) fn read_json<T: DeserializeOwned>(path: &Path) -> Result<Option<T>, S
     let mut bytes = Vec::new();
     file.read_to_end(&mut bytes)
         .map_err(|e| StorageError::new(format!("cannot read {}: {e}", path.display())))?;
-    decode_json(&bytes).map(Some)
+    Ok(Some(bytes))
 }
 
 pub(crate) fn write_json(path: &Path, value: &impl Serialize) -> Result<(), StorageError> {
@@ -211,6 +230,29 @@ pub(crate) fn check_empty_catalog_root(root: &Path) -> Result<(), StorageError> 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn post_replacement_flush_failures_are_uncertain_and_keep_complete_bytes() {
+        for fail_on in ["records", "staging"] {
+            let root = tempfile::tempdir().unwrap();
+            let parent = root.path().join("records");
+            let staging = root.path().join("staging");
+            let path = parent.join("target.yaml");
+            atomic_write(&path, b"old bytes", &staging).unwrap();
+            let bytes = br#"{"record":"new","receipts":{"accepted":true}}"#;
+            let error = atomic_write_with_sync(&path, bytes, &staging, |directory| {
+                if directory.file_name().unwrap() == fail_on {
+                    Err(StorageError::new("injected directory flush failure"))
+                } else {
+                    sync_directory(directory)
+                }
+            })
+            .unwrap_err();
+            assert!(error.is_uncertain());
+            assert_eq!(fs::read(path).unwrap(), bytes);
+            assert_eq!(fs::read_dir(staging).unwrap().count(), 0);
+        }
+    }
 
     #[test]
     fn catalog_lock_excludes_independent_opens_in_other_threads() {

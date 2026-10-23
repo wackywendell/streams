@@ -1,5 +1,7 @@
 //! Versioned YAML storage with process serialization and atomic single-record saves.
 
+pub mod records;
+
 use std::collections::{BTreeMap, BTreeSet};
 use std::fs;
 use std::path::{Path, PathBuf};

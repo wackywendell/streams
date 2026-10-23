@@ -1,5 +1,7 @@
 //! Storage contracts and snapshot types; no YAML, paths, or Git requirements.
 
+pub mod records;
+
 use std::collections::BTreeMap;
 
 use serde::Serialize;
