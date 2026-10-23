@@ -11,6 +11,65 @@ pub(crate) fn schema() -> Value {
 }
 
 #[test]
+fn cancellation_wakes_a_blocked_handshake_or_snapshot_without_releasing_the_server() {
+    for method in ["ping", "session.snapshot"] {
+        let (_directory, listener, path) = server();
+        let (entered, observed) = std::sync::mpsc::channel();
+        let (release, wait) = std::sync::mpsc::channel();
+        let server = thread::spawn(move || {
+            if method != "ping" {
+                ping(&listener);
+            }
+            let (stream, _) = listener.accept().unwrap();
+            let mut reader = BufReader::new(stream);
+            let frame =
+                read_frame(&mut reader, Some(Instant::now() + Duration::from_secs(2))).unwrap();
+            assert_eq!(
+                serde_json::from_slice::<Value>(&frame).unwrap()["method"],
+                method
+            );
+            entered.send(()).unwrap();
+            let _ = wait.recv();
+            listener.set_nonblocking(true).unwrap();
+            assert!(
+                listener.accept().is_err(),
+                "cancelled work must not reconnect"
+            );
+        });
+        let cancel = crate::cancellation::Cancellation::new().unwrap();
+        let flag = cancel.clone();
+        let (done, result) = std::sync::mpsc::channel();
+        let worker = thread::spawn(move || {
+            let result: Result<(), FrontendError> =
+                SocketClient::connect_cancellable(path, 30.0, flag).and_then(|client| {
+                    let error = client.request("session.snapshot", json!({})).unwrap_err();
+                    assert!(
+                        client
+                            .request("session.snapshot", json!({}))
+                            .unwrap_err()
+                            .message
+                            .contains("cancelled")
+                    );
+                    Err(error)
+                });
+            done.send(result.err().unwrap().message).unwrap();
+        });
+        observed.recv_timeout(Duration::from_secs(3)).unwrap();
+        cancel.cancel().unwrap();
+        assert!(
+            result
+                .recv_timeout(Duration::from_secs(3))
+                .unwrap()
+                .contains("cancelled")
+        );
+        // Completion precedes release: cancellation did not wait for the response deadline.
+        release.send(()).unwrap();
+        worker.join().unwrap();
+        server.join().unwrap();
+    }
+}
+
+#[test]
 fn pinned_protocol_matches_schema() {
     assert_eq!(schema()["protocol"], PROTOCOL);
 }

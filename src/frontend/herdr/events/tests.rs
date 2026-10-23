@@ -9,6 +9,7 @@ fn filter(kinds: &[EventKind]) -> EventFilter {
         pane_ids: BTreeSet::from(["owner".into(), "card".into()]),
         tab_ids: BTreeSet::from(["tab".into()]),
         workspace_ids: BTreeSet::from(["workspace".into()]),
+        ..EventFilter::default()
     }
 }
 

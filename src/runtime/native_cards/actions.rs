@@ -483,11 +483,7 @@ impl NativeCardEngine {
         if matches!(v.pair()?, PairState::Separated { .. }) {
             return Err(self.refuse("owned card moved; no resource closed or replaced"));
         }
-        if mode == OpenMode::Automatic
-            && (attempt.is_some()
-                || matches!(v.pair()?, PairState::Absent { .. })
-                || !self.config.startup_automatic())
-        {
+        if mode == OpenMode::Automatic && !self.config.startup_automatic() {
             return Ok(DisplayOutcome::Suppressed);
         }
         self.launch_proof(&attempt)?;

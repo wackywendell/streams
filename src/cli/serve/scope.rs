@@ -48,6 +48,7 @@ impl Owner {
             pane_ids: BTreeSet::from([self.pane.clone()]),
             tab_ids: BTreeSet::from([self.tab.clone()]),
             workspace_ids: BTreeSet::from([self.workspace.clone()]),
+            ..EventFilter::default()
         }
     }
 
@@ -146,6 +147,7 @@ mod tests {
                 pane_id: "new".into(),
                 tab_id: "next-tab".into(),
                 workspace_id: "next-work".into(),
+                terminal_id: None,
             },
         }
     }

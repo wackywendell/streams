@@ -293,7 +293,7 @@ impl NativeState {
     pub fn directory(&self) -> &Path {
         &self.directory
     }
-    fn path(&self, key: &str) -> Result<PathBuf> {
+    pub fn path(&self, key: &str) -> Result<PathBuf> {
         validate_key(key)?;
         Ok(self.directory.join(format!("{key}.json")))
     }

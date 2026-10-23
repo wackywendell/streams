@@ -60,7 +60,6 @@ enum Scenario {
     Normal,
     BlockedRead,
     BlockedActivation,
-    BlockedClose,
     ReadError,
     FactoryError,
     FactoryPanic,
@@ -100,7 +99,7 @@ impl Host {
     }
 }
 impl PaneHost for Host {
-    fn read(&mut self) -> Result<CardSnapshot, String> {
+    fn read(&mut self, _refresh: application::Refresh) -> Result<CardSnapshot, String> {
         self.event("read");
         if matches!(self.mode, Scenario::BlockedRead) || self.root.join("block-read").exists() {
             self.wait("release-read")?;
@@ -108,6 +107,11 @@ impl PaneHost for Host {
         if matches!(self.mode, Scenario::ReadError) {
             return Err("injected read failure".into());
         }
+        fs::write(
+            self.root.join("reads-completed"),
+            events(&self.root).matches("read\n").count().to_string(),
+        )
+        .unwrap();
         Ok(self.snapshot.clone())
     }
     fn activate(&mut self, observed: &CardSnapshot, target: &Target) -> Result<(), String> {
@@ -132,13 +136,6 @@ impl PaneHost for Host {
         }
         Ok(())
     }
-    fn close(&mut self) -> Result<(), String> {
-        self.event("close");
-        if matches!(self.mode, Scenario::BlockedClose) {
-            self.wait("release-close")?;
-        }
-        Ok(())
-    }
 }
 impl Drop for Host {
     fn drop(&mut self) {
@@ -158,23 +155,20 @@ fn child_fixture() -> bool {
         .parse()
         .unwrap();
     let result_root = root.clone();
-    let result = application::run(
-        move |cancel| -> Result<Host, String> {
-            if matches!(mode, Scenario::FactoryError) {
-                return Err("injected factory failure".into());
-            }
-            if matches!(mode, Scenario::FactoryPanic) {
-                panic!("injected worker panic");
-            }
-            Ok(Host {
-                root,
-                mode,
-                cancel,
-                snapshot: snapshot(),
-            })
-        },
-        Duration::from_secs(3600),
-    );
+    let result = application::run(move |cancel, _events| -> Result<Host, String> {
+        if matches!(mode, Scenario::FactoryError) {
+            return Err("injected factory failure".into());
+        }
+        if matches!(mode, Scenario::FactoryPanic) {
+            panic!("injected worker panic");
+        }
+        Ok(Host {
+            root,
+            mode,
+            cancel: cancel.flag(),
+            snapshot: snapshot(),
+        })
+    });
     fs::write(
         result_root.join("result.tmp"),
         serde_json::to_vec(&result).unwrap(),
@@ -270,34 +264,26 @@ fn paints_resizes_and_activates_the_painted_document() {
     assert_eq!(result(root.path()), Ok(()));
     assert_eq!(
         events(root.path()),
-        "read\ndocument:lib:docs/design.md\nread\nclose\ndropped\n"
+        "read\ndocument:lib:docs/design.md\nread\ndropped\n"
     );
 }
 
 #[test]
-fn ctrl_c_restores_before_waiting_for_the_close_acknowledgement() {
+fn ctrl_c_restores_and_exits_without_a_close_operation() {
     if child_fixture() {
         return;
     }
     let root = tempfile::tempdir().unwrap();
-    let mut pty = start(root.path(), "blocked-close", false);
+    let mut pty = start(root.path(), "normal", false);
     ready(&mut pty);
     pty.send(b"\x03");
-    // Deliberately leave cleanup bytes unread: the acknowledgement is not stdout.
-    let deadline = Instant::now() + Duration::from_secs(10);
-    while !events(root.path()).contains("close\n") {
-        assert!(Instant::now() < deadline, "close was not dispatched");
-        thread::sleep(Duration::from_millis(5));
-    }
-    pty.assert_cleanup(); // Must drain stdout while the child still waits in close().
-    release(root.path(), "release-close");
     finish(&mut pty, root.path());
     assert_eq!(result(root.path()), Ok(()));
-    assert_eq!(events(root.path()), "read\nclose\ndropped\n");
+    assert_eq!(events(root.path()), "read\ndropped\n");
 }
 
 #[test]
-fn quit_settles_the_initial_read_but_never_replays_busy_input() {
+fn quit_cancels_the_initial_read_and_never_replays_busy_input() {
     if child_fixture() {
         return;
     }
@@ -306,12 +292,14 @@ fn quit_settles_the_initial_read_but_never_replays_busy_input() {
     pty.until(|_| events(root.path()) == "read\n");
     pty.send(b"aq");
     pty.until(Pty::restored);
-    assert_eq!(events(root.path()), "read\n");
     pty.assert_cleanup();
-    release(root.path(), "release-read");
     finish(&mut pty, root.path());
     assert_eq!(result(root.path()), Ok(()));
-    assert_eq!(events(root.path()), "read\nclose\ndropped\n");
+    assert!(
+        !root.path().join("release-read").exists(),
+        "quit must not await the blocked read"
+    );
+    assert_eq!(events(root.path()), "read\ncancelled\ndropped\n");
 }
 
 #[test]
@@ -337,7 +325,7 @@ fn external_signals_cancel_and_join_inflight_work_without_closing() {
 }
 
 #[test]
-fn failed_observation_disables_actions_and_refuses_close() {
+fn failed_observation_disables_actions_but_allows_exit_without_effects() {
     if child_fixture() {
         return;
     }
@@ -346,11 +334,7 @@ fn failed_observation_disables_actions_and_refuses_close() {
     pty.until(|p| p.screen().contains("injected read failure"));
     pty.send(b"aq");
     finish(&mut pty, root.path());
-    assert!(
-        result(root.path())
-            .unwrap_err()
-            .contains("No current attested display snapshot")
-    );
+    assert_eq!(result(root.path()), Ok(()));
     assert_eq!(events(root.path()), "read\ndropped\n");
 }
 
@@ -386,12 +370,15 @@ fn refresh_clears_failure_notice_and_clipped_documents_cannot_activate() {
     release(root.path(), "block-read");
     pty.send(b"\x12");
     pty.until(|p| {
-        events(root.path()).matches("read\n").count() == 3 && p.screen().contains("Refreshing")
+        events(root.path()).matches("read\n").count() == 3
+            && p.screen().contains("docs/design.md")
+            && !p.screen().contains("Refreshing")
+            && !p.screen().contains("Activation failed")
     });
     pty.send(b"a"); // This visible-but-stale shortcut must be discarded while refreshing.
     release(root.path(), "release-read");
     pty.until(|p| {
-        events(root.path()).matches("read\n").count() == 3
+        fs::read_to_string(root.path().join("reads-completed")).is_ok_and(|text| text == "3")
             && !p.screen().contains("Activation failed")
             && !p.screen().contains("Refreshing")
     });
@@ -411,7 +398,7 @@ fn refresh_clears_failure_notice_and_clipped_documents_cannot_activate() {
 }
 
 #[test]
-fn worker_panic_restores_terminal_and_retains_the_card() {
+fn worker_panic_restores_terminal_without_native_effects() {
     if child_fixture() {
         return;
     }

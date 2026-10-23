@@ -5,6 +5,7 @@
 
 mod actions;
 mod config;
+mod display;
 mod documents;
 mod handover;
 mod inspection;
@@ -14,6 +15,7 @@ mod projection;
 mod tests;
 
 pub use config::NativeCardsConfig;
+pub use display::{CardPlacement, DisplayLifetime};
 pub use inspection::{DisplayCondition, NativeCardStatus, NativeOwnerContext, NativeOwnerView};
 pub use launch_context::LaunchedCardContext;
 pub use projection::{NameOutcome, NameProjectionIntent, NameReport};

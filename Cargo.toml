@@ -25,6 +25,8 @@ path = "tests/verification.rs"
 [dependencies]
 chrono = { version = "0.4", features = ["serde"] }
 clap = { version = "4", features = ["derive"] }
+crossterm = { version = "0.28", features = ["event-stream"] }
+futures-core = "0.3"
 icu_casemap = "2"
 libc = "0.2"
 notify = { version = "8", default-features = false, features = ["macos_fsevent"] }

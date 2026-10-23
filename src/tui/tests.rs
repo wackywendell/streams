@@ -337,6 +337,38 @@ fn view_lifetimes_never_share_refresh_tokens_or_actions() {
 }
 
 #[test]
+fn membership_and_owner_moves_keep_the_view_but_invalidate_old_actions() {
+    let original = snapshot();
+    let mut view = view(original.clone());
+    let area = Rect::new(0, 0, 120, 12);
+    let old = view.paint(area).documents[&'a'].clone();
+    let token = view.begin_quiet_refresh();
+    assert!(!view.is_current(&old));
+    assert!(
+        !lines(&view.paint(area).buffer)
+            .iter()
+            .any(|line| line.contains("Refreshing"))
+    );
+    let mut moved = original;
+    moved.stream.id = "destination".into();
+    moved.session.stream_id = moved.stream.id.clone();
+    moved.scope.stream_id = moved.stream.id.clone();
+    moved.context.owner.tab_id = "new-tab".into();
+    moved.context.owner.workspace_id = "new-workspace".into();
+    assert!(view.complete_refresh(token, Ok(moved.clone())));
+    let frame = view.paint(area);
+    assert_eq!(frame.freshness, Freshness::Current);
+    let new = frame.documents[&'a'].clone();
+    let Target::Document(target) = new.target() else {
+        panic!("missing document");
+    };
+    assert_eq!(target.scope, *moved.scope());
+    assert_eq!(target.owner, *moved.owner());
+    assert!(view.is_current(&new));
+    assert!(!view.is_current(&old));
+}
+
+#[test]
 fn stale_completion_failure_and_scope_switch_never_authorize_actions() {
     let mut view = view(snapshot());
     let first = view.begin_refresh();

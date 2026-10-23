@@ -44,6 +44,8 @@ pub struct EventPane {
     pub tab_id: String,
     #[serde(deserialize_with = "deserialize_id")]
     pub workspace_id: String,
+    #[serde(default)]
+    pub terminal_id: Option<String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
@@ -126,9 +128,11 @@ impl From<&HerdrEvent> for EventKind {
 
 /// ID sets are deliberately separate: subscribing to a workspace's metadata
 /// must not cause every pane update in that workspace to pass the first filter.
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Default)]
 pub struct EventFilter {
     pub kinds: BTreeSet<EventKind>,
+    pub unscoped_kinds: BTreeSet<EventKind>,
+    pub terminal_ids: BTreeSet<String>,
     pub pane_ids: BTreeSet<String>,
     pub tab_ids: BTreeSet<String>,
     pub workspace_ids: BTreeSet<String>,
@@ -144,6 +148,8 @@ struct Envelope<'a> {
 
 #[derive(Default, Deserialize)]
 struct Ids<'a> {
+    #[serde(borrow)]
+    terminal_id: Option<Cow<'a, str>>,
     #[serde(borrow)]
     pane_id: Option<Cow<'a, str>>,
     #[serde(borrow)]
@@ -200,31 +206,39 @@ impl EventFilter {
             id.ok_or_else(|| SubscriptionError::InvalidEvent("missing event routing ID".into()))
                 .and_then(routing_id)
         }
-        let matched = match kind {
-            EventKind::PaneMoved => {
-                let previous = required(header.previous_pane_id.as_deref())?;
-                let current = required(header.pane.as_ref().and_then(|p| p.pane_id.as_deref()))?;
-                self.pane_ids.contains(previous) || self.pane_ids.contains(current)
-            }
-            EventKind::PaneUpdated => self.pane_ids.contains(required(
-                header.pane.as_ref().and_then(|p| p.pane_id.as_deref()),
-            )?),
-            EventKind::PaneClosed | EventKind::PaneExited | EventKind::PaneAgentDetected => {
-                self.pane_ids.contains(required(header.pane_id.as_deref())?)
-            }
-            EventKind::TabMoved | EventKind::TabClosed => {
-                self.tab_ids.contains(required(header.tab_id.as_deref())?)
-            }
-            EventKind::WorkspaceClosed => self
-                .workspace_ids
-                .contains(required(header.workspace_id.as_deref())?),
-            EventKind::WorkspaceMetadataUpdated => self.workspace_ids.contains(required(
-                header
-                    .workspace
-                    .as_ref()
-                    .and_then(|w| w.workspace_id.as_deref()),
-            )?),
-        };
+        let matched = self.unscoped_kinds.contains(&kind)
+            || match kind {
+                EventKind::PaneMoved => {
+                    let previous = required(header.previous_pane_id.as_deref())?;
+                    let current =
+                        required(header.pane.as_ref().and_then(|p| p.pane_id.as_deref()))?;
+                    self.pane_ids.contains(previous) || self.pane_ids.contains(current)
+                }
+                EventKind::PaneUpdated => {
+                    self.pane_ids.contains(required(
+                        header.pane.as_ref().and_then(|p| p.pane_id.as_deref()),
+                    )?) || header
+                        .pane
+                        .as_ref()
+                        .and_then(|p| p.terminal_id.as_deref())
+                        .is_some_and(|terminal| self.terminal_ids.contains(terminal))
+                }
+                EventKind::PaneClosed | EventKind::PaneExited | EventKind::PaneAgentDetected => {
+                    self.pane_ids.contains(required(header.pane_id.as_deref())?)
+                }
+                EventKind::TabMoved | EventKind::TabClosed => {
+                    self.tab_ids.contains(required(header.tab_id.as_deref())?)
+                }
+                EventKind::WorkspaceClosed => self
+                    .workspace_ids
+                    .contains(required(header.workspace_id.as_deref())?),
+                EventKind::WorkspaceMetadataUpdated => self.workspace_ids.contains(required(
+                    header
+                        .workspace
+                        .as_ref()
+                        .and_then(|w| w.workspace_id.as_deref()),
+                )?),
+            };
         if !matched {
             return Ok(None);
         }

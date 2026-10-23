@@ -1,4 +1,7 @@
 //! Explicit Rust native trial. This module never installs or selects a default CLI.
+mod events;
+mod files;
+mod host;
 mod source;
 
 use std::sync::{Arc, atomic::AtomicBool};
@@ -9,7 +12,7 @@ use streams_temper::runtime::native_cards::{
     NativeCardsConfig, SOURCE_ENV_KEYS,
 };
 use streams_temper::runtime::native_state::NativeState;
-use streams_temper::tui::{CardSnapshot, Target as ViewTarget, application::PaneHost};
+use streams_temper::tui::{CardSnapshot, Target as ViewTarget};
 
 use super::{
     App, BTreeMap, CliError, Config, Output, PathBuf, Result,
@@ -56,20 +59,10 @@ impl App {
                     "native pane requires a protected launched-card context",
                 ));
             }
-            let interval = config.poll_interval();
             let app = self.clone();
-            streams_temper::tui::application::run(
-                move |cancel| {
-                    let environment = app.environment.clone();
-                    build(app, options, config, cancel)
-                        .map(|engine| Host {
-                            engine,
-                            environment,
-                        })
-                        .map_err(|e| e.to_string())
-                },
-                interval,
-            )
+            streams_temper::tui::application::run(move |cancel, events| {
+                host::Host::new(app, options, config, cancel, events)
+            })
             .map_err(CliError::message)?;
             return Ok(Output::plain(json!(null), String::new()));
         }
@@ -371,77 +364,63 @@ impl Expectation {
         }
     }
 }
-struct Host {
-    engine: NativeCardEngine,
-    environment: BTreeMap<String, String>,
-}
-impl PaneHost for Host {
-    fn read(&mut self) -> std::result::Result<CardSnapshot, String> {
-        self.engine.verify_display().map_err(|e| e.to_string())
+fn activate(
+    engine: &mut NativeCardEngine,
+    environment: &BTreeMap<String, String>,
+    snapshot: &CardSnapshot,
+    target: &ViewTarget,
+) -> std::result::Result<(), String> {
+    let fresh = engine.verify_display().map_err(|e| e.to_string())?;
+    if fresh.scope() != snapshot.scope() || fresh.owner() != snapshot.owner() {
+        return Err("painted viewing scope changed".into());
     }
-    fn activate(
-        &mut self,
-        snapshot: &CardSnapshot,
-        target: &ViewTarget,
-    ) -> std::result::Result<(), String> {
-        let fresh = self.engine.verify_display().map_err(|e| e.to_string())?;
-        if fresh.scope() != snapshot.scope() || fresh.owner() != snapshot.owner() {
-            return Err("painted viewing scope changed".into());
-        }
-        match target {
-            ViewTarget::Document(document) => self
-                .engine
-                .open_document(document)
-                .map_err(|e| e.to_string()),
-            ViewTarget::Link(url) => {
-                if !snapshot.contains_link(url)
-                    || !fresh.contains_link(url)
-                    || !matches!(url.scheme(), "https" | "http")
-                    || !url.username().is_empty()
-                    || url.password().is_some()
-                {
-                    return Err("unsafe browser URL".into());
-                }
-                let env = self
-                    .environment
-                    .iter()
-                    .filter(|(key, _)| {
-                        [
-                            "HOME",
-                            "PATH",
-                            "DISPLAY",
-                            "WAYLAND_DISPLAY",
-                            "XDG_RUNTIME_DIR",
-                            "DBUS_SESSION_BUS_ADDRESS",
-                        ]
-                        .contains(&key.as_str())
-                    })
-                    .map(|(key, value)| (key.into(), value.into()))
-                    .collect();
-                NativeProcessRunner
-                    .run(&ProcessRequest {
-                        program: if cfg!(target_os = "macos") {
-                            "/usr/bin/open"
-                        } else {
-                            "xdg-open"
-                        }
-                        .into(),
-                        args: vec![url.as_str().into()],
-                        cwd: None,
-                        input: None,
-                        env,
-                        allowed: vec![0],
-                        timeout: 3.0,
-                    })
-                    .map(|_| ())
-                    .map_err(|e| e.message)
+    match target {
+        ViewTarget::Document(document) => engine.open_document(document).map_err(|e| e.to_string()),
+        ViewTarget::Link(url) => {
+            if !snapshot.contains_link(url)
+                || !fresh.contains_link(url)
+                || !matches!(url.scheme(), "https" | "http")
+                || !url.username().is_empty()
+                || url.password().is_some()
+            {
+                return Err("unsafe browser URL".into());
             }
+            let env = environment
+                .iter()
+                .filter(|(key, _)| {
+                    [
+                        "HOME",
+                        "PATH",
+                        "DISPLAY",
+                        "WAYLAND_DISPLAY",
+                        "XDG_RUNTIME_DIR",
+                        "DBUS_SESSION_BUS_ADDRESS",
+                    ]
+                    .contains(&key.as_str())
+                })
+                .map(|(key, value)| (key.into(), value.into()))
+                .collect();
+            NativeProcessRunner
+                .run(&ProcessRequest {
+                    program: if cfg!(target_os = "macos") {
+                        "/usr/bin/open"
+                    } else {
+                        "xdg-open"
+                    }
+                    .into(),
+                    args: vec![url.as_str().into()],
+                    cwd: None,
+                    input: None,
+                    env,
+                    allowed: vec![0],
+                    timeout: 3.0,
+                })
+                .map(|_| ())
+                .map_err(|e| e.message)
         }
     }
-    fn close(&mut self) -> std::result::Result<(), String> {
-        self.engine.close_display().map_err(|e| e.to_string())
-    }
 }
+
 #[cfg(test)]
 mod tests {
     use super::*;

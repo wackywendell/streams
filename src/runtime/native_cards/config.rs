@@ -3,7 +3,6 @@ use std::fs::OpenOptions;
 use std::io::Read;
 use std::os::unix::fs::OpenOptionsExt;
 use std::path::{Path, PathBuf};
-use std::time::Duration;
 
 use serde::{Deserialize, Serialize};
 use strum::{EnumString, VariantNames};
@@ -29,7 +28,8 @@ struct Wire {
     tab_naming: bool,
     session_naming: bool,
     document_command: Option<String>,
-    pane_poll_interval_ms: u32,
+    #[serde(rename = "pane_poll_interval_ms")]
+    _pane_poll_interval_ms: u32,
     herdr_timeout_ms: u32,
     pane_height_fraction: f64,
 }
@@ -41,7 +41,7 @@ impl Default for Wire {
             tab_naming: true,
             session_naming: true,
             document_command: None,
-            pane_poll_interval_ms: 1000,
+            _pane_poll_interval_ms: 1000,
             herdr_timeout_ms: 3000,
             pane_height_fraction: 0.2,
         }
@@ -59,7 +59,6 @@ pub struct NativeCardsConfig {
     pub(super) pane_height_fraction: f64,
     pub(super) plugin_root: PathBuf,
     pub(super) source_path: PathBuf,
-    poll_interval: Duration,
 }
 impl NativeCardsConfig {
     /// Ordinary user configuration may be Stow-managed; unlike launch evidence,
@@ -114,8 +113,7 @@ impl NativeCardsConfig {
             Err(error) if error.kind() == std::io::ErrorKind::NotFound => Wire::default(),
             Err(error) => return Err(error.into()),
         };
-        if !(1..=2_147_483_647).contains(&wire.pane_poll_interval_ms)
-            || !(1..=2_147_483_647).contains(&wire.herdr_timeout_ms)
+        if !(1..=2_147_483_647).contains(&wire.herdr_timeout_ms)
             || !wire.pane_height_fraction.is_finite()
             || !(0.0..1.0).contains(&wire.pane_height_fraction)
             || wire.pane_height_fraction == 0.0
@@ -135,11 +133,7 @@ impl NativeCardsConfig {
             pane_height_fraction: wire.pane_height_fraction,
             plugin_root,
             source_path,
-            poll_interval: Duration::from_millis(u64::from(wire.pane_poll_interval_ms)),
         })
-    }
-    pub fn poll_interval(&self) -> Duration {
-        self.poll_interval
     }
     pub fn session_naming(&self) -> bool {
         self.session_naming
@@ -197,12 +191,11 @@ mod tests {
         let cfg = NativeCardsConfig::load(&env, root.path(), root.path()).unwrap();
         assert!(cfg.startup_automatic());
         assert_eq!(cfg.timeout_seconds(), 3.0);
-        assert_eq!(cfg.poll_interval(), Duration::from_secs(1));
         assert!(!root.path().join(".pi").exists());
         for input in [
             "[]",
             r#"{"workspace_startup":{"automatic":null}}"#,
-            r#"{"pane_poll_interval_ms":0}"#,
+            r#"{"herdr_timeout_ms":0}"#,
             r#"{"pane_height_fraction":1}"#,
             r#"{"workspace_naming":null}"#,
             r#"{"unknown":true}"#,

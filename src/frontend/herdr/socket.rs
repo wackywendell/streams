@@ -18,10 +18,27 @@ pub struct SocketClient {
     pub path: PathBuf,
     timeout: Duration,
     sequence: AtomicU64,
+    cancellation: Option<crate::cancellation::Cancellation>,
 }
 
 impl SocketClient {
     pub fn connect(path: PathBuf, timeout: f64) -> Result<Self, FrontendError> {
+        Self::connect_inner(path, timeout, None)
+    }
+
+    pub fn connect_cancellable(
+        path: PathBuf,
+        timeout: f64,
+        cancellation: crate::cancellation::Cancellation,
+    ) -> Result<Self, FrontendError> {
+        Self::connect_inner(path, timeout, Some(cancellation))
+    }
+
+    fn connect_inner(
+        path: PathBuf,
+        timeout: f64,
+        cancellation: Option<crate::cancellation::Cancellation>,
+    ) -> Result<Self, FrontendError> {
         crate::process::deadline(timeout, "Herdr")
             .map_err(|e| FrontendError::invalid(e.message))?;
         let timeout = Duration::from_secs_f64(timeout);
@@ -32,6 +49,7 @@ impl SocketClient {
             path,
             timeout,
             sequence: AtomicU64::new(1),
+            cancellation,
         };
         let pong = client.request("ping", json!({}))?;
         if pong["type"] != "pong"
@@ -77,7 +95,8 @@ impl SocketClient {
         frame: &mut Vec<u8>,
     ) -> Result<(BufReader<UnixStream>, String), FrontendError> {
         let deadline = Instant::now() + self.timeout;
-        let mut stream = connect(&self.path, deadline).map_err(socket_error)?;
+        let mut stream =
+            connect(&self.path, deadline, self.cancellation.as_ref()).map_err(socket_error)?;
         let id = self.sequence.fetch_add(1, Ordering::Relaxed).to_string();
         let request = json!({"id":id,"method":method,"params":params});
         let mut bytes =
@@ -88,7 +107,13 @@ impl SocketClient {
             .map_err(socket_error)?;
         stream.write_all(&bytes).map_err(socket_error)?;
         let mut reader = BufReader::new(stream);
-        read_frame_into(&mut reader, Some(deadline), frame).map_err(socket_error)?;
+        read_frame_into(
+            &mut reader,
+            Some(deadline),
+            frame,
+            self.cancellation.as_ref(),
+        )
+        .map_err(socket_error)?;
         Ok((reader, id))
     }
 }
@@ -131,7 +156,7 @@ pub(super) fn read_frame(
     deadline: Option<Instant>,
 ) -> io::Result<Vec<u8>> {
     let mut frame = Vec::new();
-    read_frame_into(reader, deadline, &mut frame)?;
+    read_frame_into(reader, deadline, &mut frame, None)?;
     Ok(frame)
 }
 
@@ -140,35 +165,22 @@ fn read_frame_into(
     reader: &mut BufReader<UnixStream>,
     deadline: Option<Instant>,
     frame: &mut Vec<u8>,
+    cancellation: Option<&crate::cancellation::Cancellation>,
 ) -> io::Result<()> {
     loop {
+        if let Some(cancellation) = cancellation {
+            cancellation.check()?;
+        }
         if let Some(deadline) = deadline
             && reader.buffer().is_empty()
         {
             use std::os::fd::AsRawFd;
-            let duration = remaining(deadline).map_err(io::Error::other)?;
-            let mut poll = libc::pollfd {
-                fd: reader.get_ref().as_raw_fd(),
-                events: libc::POLLIN,
-                revents: 0,
-            };
-            let millis = duration.as_millis().saturating_add(1).min(i32::MAX as u128) as i32;
-            match unsafe { libc::poll(&mut poll, 1, millis) } {
-                -1 => {
-                    let error = io::Error::last_os_error();
-                    if error.kind() == io::ErrorKind::Interrupted {
-                        continue;
-                    }
-                    return Err(error);
-                }
-                0 => {
-                    return Err(io::Error::new(
-                        io::ErrorKind::TimedOut,
-                        "Herdr response timed out",
-                    ));
-                }
-                _ => {}
-            }
+            wait(
+                reader.get_ref().as_raw_fd(),
+                libc::POLLIN,
+                deadline,
+                cancellation,
+            )?;
         }
         let buffer = match reader.fill_buf() {
             Ok(buffer) => buffer,
@@ -203,7 +215,14 @@ fn read_frame_into(
 
 // A full local listen backlog can block connect too. Use a nonblocking socket
 // and wait within the same absolute deadline, including interrupted polls.
-fn connect(path: &Path, deadline: Instant) -> io::Result<UnixStream> {
+fn connect(
+    path: &Path,
+    deadline: Instant,
+    cancellation: Option<&crate::cancellation::Cancellation>,
+) -> io::Result<UnixStream> {
+    if let Some(cancellation) = cancellation {
+        cancellation.check()?;
+    }
     use std::os::fd::{AsRawFd, FromRawFd, OwnedFd};
     use std::os::unix::ffi::OsStrExt;
     let bytes = path.as_os_str().as_bytes();
@@ -237,35 +256,59 @@ fn connect(path: &Path, deadline: Instant) -> io::Result<UnixStream> {
         if !matches!(error.raw_os_error(), Some(libc::EINPROGRESS | libc::EINTR)) {
             return Err(error);
         }
-        let mut poll = libc::pollfd {
-            fd: stream.as_raw_fd(),
-            events: libc::POLLOUT,
-            revents: 0,
-        };
-        loop {
-            let timeout = remaining(deadline).map_err(io::Error::other)?;
-            let millis = timeout.as_millis().saturating_add(1).min(i32::MAX as u128) as i32;
-            match unsafe { libc::poll(&mut poll, 1, millis) } {
-                -1 => {
-                    let error = io::Error::last_os_error();
-                    if error.kind() == io::ErrorKind::Interrupted {
-                        continue;
-                    }
-                    return Err(error);
-                }
-                0 => {
-                    return Err(io::Error::new(
-                        io::ErrorKind::TimedOut,
-                        "Herdr connect timed out",
-                    ));
-                }
-                _ => break,
-            }
-        }
+        wait(stream.as_raw_fd(), libc::POLLOUT, deadline, cancellation)?;
         if let Some(error) = stream.take_error()? {
             return Err(error);
         }
     }
     stream.set_nonblocking(false)?;
     Ok(stream)
+}
+
+fn wait(
+    fd: std::os::fd::RawFd,
+    events: libc::c_short,
+    deadline: Instant,
+    cancellation: Option<&crate::cancellation::Cancellation>,
+) -> io::Result<()> {
+    let mut descriptors = [
+        libc::pollfd {
+            fd,
+            events,
+            revents: 0,
+        },
+        libc::pollfd {
+            fd: cancellation.map_or(-1, |cancel| cancel.descriptor()),
+            events: libc::POLLIN,
+            revents: 0,
+        },
+    ];
+    loop {
+        if let Some(cancellation) = cancellation {
+            cancellation.check()?;
+        }
+        let duration = remaining(deadline).map_err(io::Error::other)?;
+        let millis = duration.as_millis().saturating_add(1).min(i32::MAX as u128) as i32;
+        match unsafe { libc::poll(descriptors.as_mut_ptr(), descriptors.len() as _, millis) } {
+            -1 => {
+                let error = io::Error::last_os_error();
+                if error.kind() == io::ErrorKind::Interrupted {
+                    continue;
+                }
+                return Err(error);
+            }
+            0 => {
+                return Err(io::Error::new(
+                    io::ErrorKind::TimedOut,
+                    "Herdr request timed out",
+                ));
+            }
+            _ => {
+                if let Some(cancellation) = cancellation {
+                    cancellation.check()?;
+                }
+                return Ok(());
+            }
+        }
+    }
 }

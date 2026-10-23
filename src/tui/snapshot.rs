@@ -14,6 +14,16 @@ pub struct Scope {
     pub native_session_id: String,
 }
 
+impl Scope {
+    /// Native identity survives membership changes and record-ID migration.
+    pub fn same_conversation(&self, other: &Self) -> bool {
+        self.catalog_source == other.catalog_source
+            && self.host_id == other.host_id
+            && self.harness == other.harness
+            && self.native_session_id == other.native_session_id
+    }
+}
+
 /// Supplied display context; callers must separately obtain live native attestation.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct NativeOwnerObservation {

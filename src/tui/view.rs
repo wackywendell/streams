@@ -87,6 +87,7 @@ pub struct CardView {
     scope: Option<Scope>,
     observation: Observation,
     pending: Option<RefreshToken>,
+    quiet_refresh: bool,
     notice: Option<String>,
     painted: Option<PaintedFrame>,
 }
@@ -106,6 +107,7 @@ impl CardView {
             scope: None,
             observation: Observation::Empty,
             pending: None,
+            quiet_refresh: false,
             notice: None,
             painted: None,
         }
@@ -122,6 +124,7 @@ impl CardView {
     /// Must be called before dispatching any read. Previously captured actions become
     /// invalid immediately, even while a stale snapshot is still being repainted.
     pub fn begin_refresh(&mut self) -> RefreshToken {
+        self.quiet_refresh = false;
         self.invalidate();
         self.observation = match std::mem::replace(&mut self.observation, Observation::Empty) {
             Observation::Current(snapshot) => Observation::Refreshing(Some(snapshot)),
@@ -137,8 +140,14 @@ impl CardView {
         token
     }
 
-    /// Returns false for a superseded completion or retired scope. A scope change fails closed and
-    /// requires a new view lifetime rather than silently attaching this pane elsewhere.
+    pub(super) fn begin_quiet_refresh(&mut self) -> RefreshToken {
+        let token = self.begin_refresh();
+        self.quiet_refresh = true;
+        token
+    }
+
+    /// Rejects superseded completions or another conversation. Verified membership
+    /// and placement changes invalidate old actions without retiring this card.
     pub fn complete_refresh(
         &mut self,
         token: RefreshToken,
@@ -157,7 +166,7 @@ impl CardView {
                 if self
                     .scope
                     .as_ref()
-                    .is_none_or(|scope| *scope == snapshot.scope) =>
+                    .is_none_or(|scope| scope.same_conversation(&snapshot.scope)) =>
             {
                 self.scope = Some(snapshot.scope.clone());
                 Observation::Current(snapshot)
@@ -197,7 +206,7 @@ impl CardView {
             Observation::Refreshing(previous) => (
                 previous.as_ref(),
                 Freshness::Refreshing,
-                Some("Refreshing…".into()),
+                (!self.quiet_refresh).then(|| "Refreshing…".into()),
             ),
             Observation::Failed(message) => (
                 None,

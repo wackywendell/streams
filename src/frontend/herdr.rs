@@ -155,8 +155,29 @@ impl HerdrClient {
     /// The single protocol check rejects incompatible servers without
     /// updating or restarting them, and pins the endpoint for this process.
     pub fn connect(context: BTreeMap<String, String>, timeout: f64) -> Result<Self, FrontendError> {
+        Self::connect_inner(context, timeout, None)
+    }
+
+    pub fn connect_cancellable(
+        context: BTreeMap<String, String>,
+        timeout: f64,
+        cancellation: crate::cancellation::Cancellation,
+    ) -> Result<Self, FrontendError> {
+        Self::connect_inner(context, timeout, Some(cancellation))
+    }
+
+    fn connect_inner(
+        context: BTreeMap<String, String>,
+        timeout: f64,
+        cancellation: Option<crate::cancellation::Cancellation>,
+    ) -> Result<Self, FrontendError> {
         let endpoint = HerdrEndpoint::resolve(&context)?;
-        let socket = Arc::new(SocketClient::connect(endpoint.socket.clone(), timeout)?);
+        let socket = Arc::new(match cancellation {
+            Some(cancel) => {
+                SocketClient::connect_cancellable(endpoint.socket.clone(), timeout, cancel)?
+            }
+            None => SocketClient::connect(endpoint.socket.clone(), timeout)?,
+        });
         Ok(Self {
             socket,
             endpoint,

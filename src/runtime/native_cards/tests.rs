@@ -1,6 +1,8 @@
 #![cfg(test)]
 
 use super::*;
+#[path = "display_tests.rs"]
+mod display_tests;
 #[path = "../../../tests/support/herdr.rs"]
 mod fake_herdr;
 use crate::model::{Document, Repository, Session, Stream};
@@ -90,6 +92,7 @@ struct World {
     fail_after_open: bool,
     deny_read: bool,
     inventory_reads: usize,
+    observation_reads: usize,
     clear_binding_after_caption_rename: bool,
 }
 struct Source {
@@ -104,6 +107,7 @@ impl NativeCardSource for Source {
         inventory: bool,
     ) -> Result<CardObservation> {
         let mut world = self.world.lock().unwrap();
+        world.observation_reads += 1;
         if inventory {
             world.inventory_reads += 1;
         }
@@ -446,6 +450,7 @@ impl Fixture {
             fail_after_open: false,
             deny_read: false,
             inventory_reads: 0,
+            observation_reads: 0,
             clear_binding_after_caption_rename: false,
         }));
         let plugin = json!({"plugin_id":PLUGIN_ID,"enabled":true,"plugin_root":plugin_root,
@@ -464,7 +469,13 @@ impl Fixture {
         });
         let server = fake_herdr::FakeHerdr::start(&runner.socket, {
             let runner = runner.clone();
-            move |method, params| fake_herdr::Reply::Result(runner.handle(method, params))
+            move |method, params| {
+                fake_herdr::Reply::Result(if method == "events.subscribe" {
+                    json!({"type":"subscription_started"})
+                } else {
+                    runner.handle(method, params)
+                })
+            }
         });
         Self {
             server,
@@ -878,7 +889,7 @@ fn authority_loss_after_creation_stops_stamping_and_retains_pending() {
 }
 
 #[test]
-fn ready_and_closed_absent_resources_suppress_automatic_but_allow_explicit_reopen() {
+fn ready_and_closed_absent_resources_allow_automatic_open_in_a_new_pi_lifetime() {
     for close in [false, true] {
         let f = Fixture::new();
         let mut engine = f.engine();
@@ -888,15 +899,15 @@ fn ready_and_closed_absent_resources_suppress_automatic_but_allow_explicit_reope
         } else {
             remove_card(&mut f.runner.world.lock().unwrap());
         }
-        let effects = f.effects();
-        assert_eq!(
-            engine.open_display(OpenMode::Automatic).unwrap(),
-            DisplayOutcome::Suppressed
-        );
-        assert_eq!(f.effects(), effects);
+        // Pi admits automatic opening only at session start/resume. The native
+        // layer still proves absence, but earlier close evidence is not a veto.
         assert!(matches!(
-            engine.open_display(OpenMode::Explicit).unwrap(),
+            f.engine().open_display(OpenMode::Automatic).unwrap(),
             DisplayOutcome::Opened(_)
+        ));
+        assert!(matches!(
+            f.engine().open_display(OpenMode::Explicit).unwrap(),
+            DisplayOutcome::Existing(_)
         ));
         assert_eq!(f.launches(), 2);
         assert_eq!(

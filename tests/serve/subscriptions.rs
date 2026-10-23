@@ -13,6 +13,9 @@ use streams_temper::{
     runtime::state::{RuntimeState, herdr_scope},
 };
 
+#[path = "cards.rs"]
+mod cards;
+
 type PendingSnapshot = (mpsc::Sender<()>, Receiver<()>);
 
 struct SnapshotGate {
