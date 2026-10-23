@@ -16,7 +16,7 @@ Some reads also scale with data that has nothing to do with them. Finding one Se
 
 ### Fixed cost per operation
 
-Every operation should have a declared budget of process starts, Herdr requests, files read and fsyncs. The budget must not grow with the number of Streams, Sessions or panes. Only `list`, `check` and `sync` may read the whole catalog. Tests should enforce budgets by counting calls through the existing fake Herdr and process runner, not by timing; host load makes timings unreliable. A new loop that performs I/O for each item then needs a deliberate budget change, rather than appearing as a slowdown later.
+Every operation should have a declared budget of process starts, Herdr requests, files read and fsyncs. A single-Session budget must not grow with unrelated Streams, Sessions or panes. Stream-wide `open`, `resume`, `show`, capture and handover read the Stream and exactly the Sessions named by its stored member IDs, with a declared per-member budget. Only `list`, `check` and `sync` may read the whole catalog. Tests should enforce budgets by counting calls through the existing fake Herdr and process runner, not by timing; host load makes timings unreliable. A new loop that performs I/O for each item then needs a deliberate budget change, rather than appearing as a slowdown later.
 
 Proposed budgets:
 
@@ -58,7 +58,7 @@ To avoid missing a change between a process's first read and its subscription, i
 
 ### Observe once and pass the result down
 
-Each process should keep one Herdr connection. Each operation should take one snapshot and derive the caller, workspace, agent and owner from it. Lower layers should receive that observation rather than reconnecting or observing again. Streams should use Herdr's socket API directly instead of the CLI. It should check the protocol version when it connects, and refuse an unknown version rather than guessing.
+Each process should keep one connection to its active native frontend, behind that frontend's interface. For Herdr work cards, each operation should take one snapshot and derive the caller, workspace, agent and owner from it. Lower layers should receive that observation rather than reconnecting or observing again. Streams should use Herdr's socket API directly instead of the CLI. It should check the protocol version when it connects, and refuse an unknown version rather than guessing.
 
 ### Separate display from effects
 
@@ -66,7 +66,7 @@ Displaying state and acting on it need different freshness. A card displays stat
 
 ### Look records up by key
 
-A card already knows its Stream ID and Session ID from its launch context. It should read only its own records:
+A card knows its conversation identity from its launch context. Its directly addressed Session supplies the current Stream ID; launch-time membership is not fixed identity. It should read only its own records:
 
 - the Stream file
 - the Session file
@@ -81,30 +81,9 @@ Each of these is a direct lookup. The rule is a fixed set of keyed files, not a 
 
 Moving the binding into the Session record would put one host's paths into a portable record. Merging bindings into the registry would make every directory selection rewrite a host-wide file under a host-wide lock, and wake every card on the host. Either merge would trade one cheap keyed read for a coupling cost.
 
-The backend should expose `session_context(host, harness, native_id, stream_hint)`, returning typed Stream, Session and ownership evidence. The store should load each record by key. A card launched with a captured scope should use its explicit Session key. The existing `agent_observation_from_native` interface should select this bounded path internally. Its explicit inventory mode may still scan for handover; ordinary context returns only the current Session in its Sessions collection. `backend.snapshot()` remains a complete snapshot, not a partial catalog.
+The [record-local operations ADR](record-local-operations.md) replaces the earlier lookup-only proposal. The records themselves should supply each operation's inputs and effective authority. Ordinary reads and saves should read their named records, apply their input as a pure function, and write the result. They must not scan the catalog, replay history or consult a derived cache, including at Pi child startup. Git sync alone consults history and merges records.
 
-Opening a context must not first validate the whole catalog. A separate `application::open_context` should check configuration, producer identity and backend recovery fences without calling `snapshot()`. Existing `application::open()` keeps its full-validation behaviour for other callers. Keyed readers must strictly decode each record and check its physical identity, Session membership and checkout alias against the loaded Stream. They do not establish whole-catalog uniqueness or agreement with Git history. `check`, `list`, `sync` and saves retain those full checks; optimising saves is out of scope. A displayed context grants no new save or native-effect authority.
-
-The budget is a fixed list, not just a total. Each operation should count these separately:
-
-| Input | Budget |
-| --- | --- |
-| Stream record | 1 file |
-| Session record | 1 file, with bounded probes of canonical and known legacy paths |
-| Host checkout registry | 1 file, reused for all repositories in the operation |
-| Host-local Session directory binding | 1 canonical file |
-| Configuration and producer identity | fixed named files; no catalog enumeration |
-| Backend recovery fences | fixed named files; no history replay |
-| Ownership and Session lookup bookkeeping | keyed to this Stream or Session; no catalog or history traversal |
-| Native evidence | this Session's own fixed evidence files |
-
-Counting tests should name the machinery reads as well as the 4 record reads. No display or context read may grow with catalog size or history length. The checkout registry remains host-wide by design; reading it once does not permit rereading it per repository.
-
-Resolving a native session ID to its Session may scan once at Pi child startup, after which the child keeps the resolved identity. One-off CLI calls should use a host-local index from native identity to Session path, written at enrollment. Readers must check the indexed record's host, harness and native ID. A missing or stale index may fall back to a scan; a corrupt record is an error, not absence. The canonical Session path takes precedence only when it is the unique physical record. A duplicate at its known legacy path must fail closed. Membership changes alone relocate legacy Session records; keyed reads must not move them.
-
-Legacy directory bindings need a separate, explicit migration because discovering a moved Session's old binding requires a scan. A migration command should run under the binding lock, after the operator makes a backup, and promote legacy Session bindings to their canonical per-Session paths. Display and context reads must never migrate or scan legacy bindings. A constant-cost check for remaining legacy state should fail clearly and direct the operator to migration. `check` and `sync` should report remaining legacy bindings as an error. Stream-only directory defaults remain separate from Session bindings.
-
-Ownership provenance is an unresolved part of the bounded interface. Git currently derives its token by replaying local and confirmed history, not from the Stream's owner field. A keyed reader must not infer a token from that field or silently add a trusted cache. The provenance source, its writers and its stale-state rejection must be decided before implementing bounded Git authority.
+That ADR inventories the current operation paths and defines the required authority state, deterministic Session location, host-local relationships and explicit deploy migration. It supersedes the earlier exception that left full-catalog validation on every save, the native-ID lookup index and scan fallback, and relocation only on membership changes. Stream member IDs supply whole-workspace capture and handover inventory, with a declared per-member budget; ordinary single-Session context does not load that inventory.
 
 ### Event-driven cards
 
@@ -123,7 +102,7 @@ A card should update only when something it displays may have changed. Events sa
 
 The card should ignore focus, output, agent status, layout, and tab or workspace renames. It does not display them.
 
-Saves replace files by atomic rename, so the card should watch the containing directories and filter by file name. An unrelated Session's save in the same directory costs a name comparison, not a read. If the Session's membership changes, the card should switch to watching the new Stream's file. A Session record moves from its legacy Stream-partitioned path to its canonical path only when membership changes, so the card should watch both locations.
+Saves replace files by atomic rename, so the card should watch the containing directories and filter by file name. An unrelated Session's save in the same directory costs a name comparison, not a read. If the Session's membership changes, the card should switch to watching the new Stream's file. After the explicit record migration, a Session has one identity-based path that does not change with membership. New readers require the completed format, with no legacy path watches.
 
 The card should keep showing the last good state during a read. It should show a notice only when a read fails, or takes long enough for a user to notice.
 
