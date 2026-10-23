@@ -229,6 +229,25 @@ fn json_digest(value: &impl Serialize) -> Result<String> {
         &serde_json::to_vec(value).map_err(|e| invalid(e.to_string()))?,
     ))
 }
+/// Stable pair/evidence address; membership, catalog IDs and native location are observations.
+pub fn conversation_key(scope: &Scope) -> Result<String> {
+    for value in [
+        &scope.catalog_source,
+        &scope.host_id,
+        &scope.harness,
+        &scope.native_session_id,
+    ] {
+        super::text(value)?;
+    }
+    json_digest(&(
+        "streams-native-conversation",
+        2,
+        &scope.catalog_source,
+        &scope.host_id,
+        &scope.harness,
+        &scope.native_session_id,
+    ))
+}
 fn attempt_key(socket: &Path, scope: &Scope, owner: &NativeTuple) -> Result<String> {
     json_digest(&(socket, ScopeWire::from(scope), owner.ordered()))
 }

@@ -36,6 +36,50 @@ fn card(native: &str, hints: Option<&str>) -> CardSnapshot {
     .unwrap()
 }
 
+#[test]
+fn conversation_key_excludes_membership_and_catalog_session_id() {
+    let mut scope = card("native", None).scope().clone();
+    let key = conversation_key(&scope).unwrap();
+    assert_eq!(
+        key,
+        "74e4e8706a77d276b78161d6c928a8c08bcd5c336531bdb5f5d00ee83ddae55a"
+    );
+    scope.stream_id = "destination".into();
+    scope.session_id = "migrated-catalog-id".into();
+    assert_eq!(conversation_key(&scope).unwrap(), key);
+}
+
+#[test]
+fn conversation_key_pins_principal_and_uses_compact_utf8_wire() {
+    let base = card("native", None).scope().clone();
+    let changes: [fn(&mut Scope); 4] = [
+        |s| s.catalog_source.push('x'),
+        |s| s.host_id.push('x'),
+        |s| s.harness.push('x'),
+        |s| s.native_session_id.push('x'),
+    ];
+    for change in changes {
+        let mut changed = base.clone();
+        change(&mut changed);
+        assert_ne!(
+            conversation_key(&changed).unwrap(),
+            conversation_key(&base).unwrap()
+        );
+    }
+    let mut unicode = base.clone();
+    unicode.catalog_source = "café".into();
+    unicode.host_id = "hôte".into();
+    unicode.native_session_id = "会話".into();
+    assert_eq!(
+        conversation_key(&unicode).unwrap(),
+        "5309df7f0ce5e0359a87657021bd967bf3b5d43c2b331fd49775d9ad4587f8c6"
+    );
+    for invalid in ["", " ", "bad\nsource"] {
+        unicode.catalog_source = invalid.into();
+        assert!(conversation_key(&unicode).is_err());
+    }
+}
+
 struct World {
     snapshot: Value,
     current: String,
