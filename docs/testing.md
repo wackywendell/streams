@@ -52,7 +52,48 @@ host boundary rather than repeat catalog/enrollment setup. `vt100` 0.15 stays a
 test-only dependency because newer releases conflict with Ratatui 0.29's pinned
 Unicode-width version.
 
-## Latest Rust follow-up
+## Test-value audit after PTY and membership integration
+
+The audit from `803ea54f` assessed each test family's owned claim, not only the
+slowest cases. The follow-up separates these boundaries:
+
+- config values, runtime record schemas and directory-binding schemas use production parsers without files; physical readers and writers still reject malformed evidence without changing its bytes
+- protocol permits use the existing memory journal; disk-backed marker, partial-write and reopen proofs remain
+- descendant termination runs after a readiness handshake and checks real descriptor closure and leader reaping; timeout/output and inherited-pipe tests remain separate
+- history validation owns the relocation matrix; seeded Git tests retain actual local movement, replay, publication, provenance, an independent receiver and duplicate-copy rejection before adoption
+- invalid revision requests use a registered checkout without commits and assert specific validation errors; historical reads and cross-process cache tests keep actual commits, dirty files and blob removal
+- document and checkout constructors directly test portable-path rules, which differ from runtime path lookup
+- accepted-save completion failures keep both CLI paths and their distinct error payloads; fresh YAML stores verify persistence instead of extra CLI show processes
+
+The import preparation failure test still retries the actual import. A fresh
+successful import does not establish that the failed catalog remains reusable.
+No test is ignored, feature-gated or removed from the default gate.
+
+Before the Rust-only child, socket client and subscription integrations, the
+original audit tip `d0b985fb` passed all 594 tests with a warm default
+`cargo test --locked`:
+
+| Target | Tests | Harness time |
+| --- | --- | --- |
+| Library | 193 | 3.15 seconds |
+| Binary | 31 | 0.08 seconds |
+| Contracts | 360 | 10.48 seconds |
+| Dedicated Git boundaries | 3 | 1.70 seconds |
+| Protocol verification | 4 | 0.06 seconds |
+| Compile-checked documentation | 3 | 0.24 seconds |
+
+Command wall time was 20.35 seconds. Cargo reported 0.46 seconds finishing the
+profile; Rustdoc separately spent 0.99 seconds compiling snippets. The one-minute
+load average was 12.43. This sample is not a controlled comparison with the
+147.73-second run on the previous day, a measurement of current `main`, or a
+combined Pi/Herdr/native acceptance run. The few-seconds target remains open.
+Further Git observation
+work must preserve fresh validation at effect boundaries, not cache mutable
+repository state merely to shorten tests. The newer child protocol, socket
+transport, request-budget and subscription tests remain in the normal gates
+alongside these audited cases.
+
+## Earlier Rust follow-up
 
 The post-`7a0eda62` follow-up separates more production decisions and effects:
 
@@ -137,13 +178,11 @@ Real-Git tests retain that separate evidence.
 The `git_io` tests intercept every command without starting Git. They check push
 arguments, unknown outcomes, branch-specific fetches, target validation, signing
 failure without unsigned fallback, ancestry and batched blob observations.
-The dedicated `git_catalog` target retains 5 physical boundary tests:
+The dedicated `git_catalog` target retains 3 physical boundary tests:
 
 - rejection of actual dirty, ignored and unsupported Git histories
 - initialization identity, branch selection and no-clobber checks
 - partial local saves at add, commit creation and branch update, with durable YAML/index evidence and restart fencing
-- legacy Session relocation through local save and candidate replay into a fresh receiving catalog
-- rejection of retained or modified predecessors and reverse or lateral Session relocations in committed Git objects
 
 Publication-fence persistence is tested directly through `State::fence_adoption`
 and the real YAML journal, without Git. The test physically unlinks the marker,
@@ -158,13 +197,16 @@ The former two-catalog lost-reply and partial-adoption traces are split by claim
 Coordinator tests cover projection without adoption, later saves after an uncertain
 push, original provenance, retained histories and fencing after checkout errors.
 The coordinator treats checkout as an opaque effect; its fake need not simulate
-partial filesystem changes. Three direct Git-adapter tests in `src/sync/git/tests.rs` seed just two revisions with
-`fast-import`: one uses a real ref lock to cause the partial checkout; another
-checks retained tips and successful checkout. The third runs the production
-isolated-index candidate builder, pushes its output and initializes a fresh
-catalog from that remote. It checks original intent/provenance and the publisher's
-unchanged index, worktree and tip. The receiver must fetch the pushed objects
-rather than observe objects already present in the publisher. Neither runs catalog initialization/save/sync for setup.
+partial filesystem changes. The library adapter tests in `src/sync/git/tests.rs`
+and its `membership` module seed histories with `fast-import`. One uses a real ref
+lock to cause partial checkout; another checks retained tips and successful
+checkout. Membership tests exercise local save, the production isolated-index
+candidate builder, actual publication and a fresh receiving catalog. They verify
+original intent/provenance, canonical file movement and the publisher's unchanged
+index, worktree and tip. A published duplicate copy is rejected before adoption.
+Other invalid relocation shapes run through production history validation without
+Git. The receiver must fetch pushed objects rather than inspect objects already
+present in the publisher. These tests avoid catalog workflows for incidental setup.
 These replace the earlier 382-subprocess application trace, not real Git itself.
 
 Real Git also remains in storage, import, inspection, revision and CLI contracts.
@@ -399,9 +441,11 @@ as end-to-end evidence.
 
 Keep OS-level timeout and descendant-termination tests real. A TERM-ignoring
 descendant acknowledges that its FIFO is open, then blocks while holding it.
-After timeout cleanup, a nonblocking writer open returning ENXIO observes that
-the reader is gone. This replaces future-sentinel sleeps, not the physical
-teardown claim. The one-second execution budget allows readiness under load;
-a bounded probe checks descriptor release. A mocked clock alone cannot prove
+After that handshake, `src/process/tests.rs` invokes production termination.
+A nonblocking writer open returning ENXIO observes that the reader is gone;
+`waitpid` returning ECHILD checks that the leader was reaped. A positive
+live-reader control checks the probe itself. Timeout, partial-output and
+inherited-pipe contracts remain separate. Bounded probes check descriptor
+release instead of future-sentinel sleeps. A mocked clock alone cannot prove
 a descendant is gone. For new concurrency tests, prefer explicit barriers and
 observable lock/process state over sleeps that guess another worker has started.
