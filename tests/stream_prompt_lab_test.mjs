@@ -61,6 +61,33 @@ test('stream preparation centers all contributions without singling out the repo
  catalog.sessions=[sibling];
  assert.deepEqual(JSON.parse(buildInferencePayload(request).messages[0].content).catalog.sessions,[sibling,catalog.session]);
 });
+test('report prompts name one write target and its exact automatic fields',()=>{
+ for(const [kind,label] of [['stream','Stream'],['session','Session']]) for(const manual of [false,true]) {
+  const catalog=context();
+  if(manual) {catalog[kind].title_mode='manual';if(kind==='stream')catalog.stream.goal_mode='manual';}
+  const payload=buildInferencePayload({type:kind,catalog,messages:[]});
+  const allowed=Object.keys(payload.tools[0].parameters.properties.changes.properties);
+  assert.ok(payload.systemPrompt.includes(`Update only the ${label} card.`));
+  assert.ok(payload.systemPrompt.includes(`Allowed fields in changes: ${JSON.stringify(allowed)}.`));
+  assert.match(payload.systemPrompt,/other catalog records are read-only evidence/);
+  assert.match(payload.systemPrompt,/Never use stream_ or session_ prefixes/);
+  if(manual)assert.ok(!allowed.includes('title'));
+ }
+});
+const targetConfusion=JSON.parse(readFileSync(new URL('./fixtures/reporting-target-confusion.json',import.meta.url),'utf8'));
+for(const fixture of targetConfusion) test(`captured failure remains rejected: ${fixture.name}`,()=>{
+ const catalog=context();catalog.stream.title_mode='automatic';
+ const request={type:'stream',catalog,messages:[]},raw=response(fixture.arguments),before=structuredClone({request,raw});
+ const payload=buildInferencePayload(request);
+ assert.equal(payload.tools[0].parameters.properties.changes.additionalProperties,false);
+ assert.throws(()=>parseInferenceResponse(request,raw,payload),error=>{
+  assert.match(String(error),/invalid structured card fields; nothing was saved/);
+  for(const field of fixture.rejected_fields)assert.ok(String(error).includes(field),String(error));
+  return true;
+ });
+ assert.deepEqual({request,raw},before);
+ assert.deepEqual(parseInferenceResponse(request,response({changes:{goal:'Keep reports scoped to their target.'}}),payload),{changes:{goal:'Keep reports scoped to their target.'}});
+});
 test('capture freezes cards, projected context, open locations and source bytes with private permissions',()=>{
  const f = fixture();try {
   const {capture,directory} = captureSessions(parseCaptureInventory(f.inventory),f.root);

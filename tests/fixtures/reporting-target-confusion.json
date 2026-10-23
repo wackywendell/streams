@@ -1,0 +1,33 @@
+[
+  {
+    "name": "session progress returned for a Stream report",
+    "arguments": {
+      "changes": {
+        "title": "Helper Logging",
+        "goal_short": "Opt-in helper transcript logging",
+        "state": "The logging contribution is complete.",
+        "state_short": "Logging committed",
+        "remaining": "No remaining implementation work for this session.",
+        "status": "done"
+      }
+    },
+    "rejected_fields": ["state", "state_short", "remaining"]
+  },
+  {
+    "name": "prefixed Session fields returned for a Stream report",
+    "arguments": {
+      "changes": {
+        "title": "Lifecycle",
+        "goal": "Keep lifecycle recovery safe.",
+        "goal_short": "Safe lifecycle recovery",
+        "status": "active",
+        "session_title": "Helper Logging",
+        "session_status": "done",
+        "session_state": "The logging contribution is complete.",
+        "session_state_short": "Logging committed",
+        "session_remaining": "Verify the contribution after integration."
+      }
+    },
+    "rejected_fields": ["session_title", "session_status", "session_state", "session_state_short", "session_remaining"]
+  }
+]

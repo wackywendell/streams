@@ -119,7 +119,11 @@ export function buildInferencePayload(request: Inference, timestamp = 0): Infere
   catalog = {stream: visibleCatalog.stream, sessions: [...sessions.values()]};
  }
  messages.push({role: "user", content: JSON.stringify({task: request.type, catalog, instructions: request.instructions, reset, discussion: request.type === "discussion" ? request.discussion : undefined}), timestamp});
- const prompt = request.type === "session" ? `${reportPrompt}\n\n${sessionProgressPrompt}` : request.type === "stream" ? `${reportPrompt}\n\n${streamGoalPrompt}` : systemPrompt;
+ let prompt = request.type === "session" ? `${reportPrompt}\n\n${sessionProgressPrompt}` : request.type === "stream" ? `${reportPrompt}\n\n${streamGoalPrompt}` : systemPrompt;
+ if (request.type === "session" || request.type === "stream") {
+  const target = request.type === "stream" ? "Stream" : "Session";
+  prompt += `\n\nUpdate only the ${target} card. Allowed fields in changes: ${JSON.stringify(Object.keys(schema.properties.changes.properties))}. The other catalog records are read-only evidence, not additional write targets. Use unprefixed field names directly inside changes. Never use stream_ or session_ prefixes or return another card's fields. If this target needs no changes, return {"changes": {}}.`;
+ }
  return {systemPrompt: prompt, messages, tools: [{name: "record_card", description: "Return the structured report or discussion response", parameters: schema}]};
 }
 export function parseInferenceResponse<T extends Inference>(request: T, response: AssistantMessage, payload = buildInferencePayload(request)): InferenceResult<T> {
