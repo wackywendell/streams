@@ -401,6 +401,14 @@ impl RuntimeState {
         }
     }
 
+    /// Exact host-local inputs that can change a workspace's enrollment readiness.
+    pub fn workspace_binding_paths(&self, scope: &str, workspace: &str) -> Result<[PathBuf; 2]> {
+        Ok([
+            self.path("associations", scope, workspace)?,
+            self.path("enrollments", scope, workspace)?,
+        ])
+    }
+
     pub fn association(&self, scope: &str, workspace: &str) -> Result<Option<Association>> {
         let path = self.path("associations", scope, workspace)?;
         self.read_association(&path)

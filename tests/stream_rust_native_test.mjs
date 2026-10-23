@@ -199,6 +199,7 @@ function handle(method,params){
  const value=JSON.parse(fs.readFileSync(file,'utf8')),save=()=>fs.writeFileSync(file,JSON.stringify(value));
  fs.appendFileSync(log,JSON.stringify([method,params])+'\\n');
  if(method==='ping') return {type:'pong',version:'0.9.5',protocol:22};
+ if(method==='events.subscribe') return {type:'subscription_started'};
  if(method==='pane.current') return {type:'pane_current',pane:value.pane};
  if(method==='workspace.get') return {type:'workspace_info',workspace:value.snapshot.workspaces[0]};
  if(method==='session.snapshot') {
@@ -215,7 +216,8 @@ function handle(method,params){
 }
 net.createServer(connection=>{let buffer='';connection.on('data',chunk=>{buffer+=chunk;const end=buffer.indexOf('\\n');if(end<0)return;
  const request=JSON.parse(buffer.slice(0,end)),result=handle(request.method,request.params);
- connection.end(JSON.stringify(result?{id:request.id,result}:{id:request.id,error:{code:'forbidden',message:'FORBIDDEN '+request.method}})+'\\n');});})
+ const reply=JSON.stringify(result?{id:request.id,result}:{id:request.id,error:{code:'forbidden',message:'FORBIDDEN '+request.method}})+'\\n';
+ if(request.method==='events.subscribe') connection.write(reply);else connection.end(reply);});})
  .listen(socket,()=>{Atomics.store(flag,0,1);Atomics.notify(flag,0);});`;
 function herdrServer(t,data) {
  const ready=new SharedArrayBuffer(4),worker=new Worker(herdrServerSource,{eval:true,workerData:{...data,ready}});
@@ -288,12 +290,14 @@ test('real protocol-1 child emits native scope changes, deduplicates observation
  const unready=await next();assert.equal(unready.event,'scope');assert.equal(unready.value,null);assert.equal(typeof unready.reason,'string');
  const unreadyCost=f.commands().length-beforeStart,beforeUnready=f.commands().length;
  request(12,['native','observe']);const unavailable=await next();assert.equal(unavailable.id,12);assert.equal(unavailable.code,1);
- assert.equal(unavailable.value.error.message,unready.reason);assert.equal(f.commands().length-beforeUnready,unreadyCost);
+ assert.equal(unavailable.value.error.message,unready.reason);
+ assert.equal(unreadyCost,3,'startup must ping, subscribe, then observe once');
+ assert.equal(f.commands().length-beforeUnready,1,'a later observation reuses the pinned client');
  const unenrolled=f.cli('agent','context','--harness','pi','--session-id',f.id,'--stream-id',f.stream.id);
  request(10,['agent','enroll'],{operation_id:'child-enroll',catalog_source:unenrolled.catalog_source,harness:'pi',harness_session_id:f.id,
   actor:'user',cwd:f.directory,stream_id:f.stream.id,session:{title:'Real Rust lane'}});
- const enrolled=await next();assert.equal(enrolled.id,10);assert.equal(enrolled.code,0,JSON.stringify(enrolled));
  const readyScope=await next();assert.equal(readyScope.event,'scope');assert.equal(readyScope.value.scope.nativeSessionId,f.id);
+ const enrolled=await next();assert.equal(enrolled.id,10);assert.equal(enrolled.code,0,JSON.stringify(enrolled));
  const beforeCli=f.commands().length;
  assert.deepEqual(readyScope.value,f.cli('native','--session-id',f.id,'observe'));
  const observeCost=f.commands().length-beforeCli;
@@ -301,13 +305,13 @@ test('real protocol-1 child emits native scope changes, deduplicates observation
  const input={operation_id:'child-title',catalog_source:context.catalog_source,actor:'user',kind:'session',before:context.session,
   changes:{title:'Child title'},ownership_token:context.authority.token,inputs:[{kind:'stream',record:context.stream}]};
  request(1,['agent','apply','--json'],input);
- let reply=await next();assert.equal(reply.type,'response');assert.equal(reply.id,1);assert.equal(reply.code,0,JSON.stringify(reply));assert.deepEqual(reply.notices,[]);
  const renamed=await next();assert.equal(renamed.event,'scope');assert.equal(renamed.value.session.title,'Child title');
- // Count work, not time: one child observe costs exactly one CLI observation.
+ let reply=await next();assert.equal(reply.type,'response');assert.equal(reply.id,1);assert.equal(reply.code,0,JSON.stringify(reply));assert.deepEqual(reply.notices,[]);
+ // One snapshot, without repeating the CLI's protocol check.
  const beforeObserve=f.commands().length;
  request(2,['native','--session-id',f.id,'observe','--json']);
  reply=await next();assert.equal(reply.id,2);assert.equal(reply.code,0);assert.deepEqual(reply.value,renamed.value);
- assert.equal(f.commands().length-beforeObserve,observeCost);
+ assert.equal(f.commands().length-beforeObserve,observeCost-1);
  // Neither rejected saves nor unchanged observations should emit scope events.
  request(3,['agent','apply'],null);reply=await next();assert.equal(reply.id,3);assert.equal(reply.code,1);
  request(11,['agent','enroll'],null);reply=await next();assert.equal(reply.id,11);assert.equal(reply.code,1);
@@ -318,8 +322,8 @@ test('real protocol-1 child emits native scope changes, deduplicates observation
  assert.ok(moved.value,JSON.stringify(moved));assert.equal(moved.value.context.tabId,'moved-tab');assert.equal(moved.value.scope.sessionId,renamed.value.scope.sessionId);
  // Adopting the new expectation must permit effects despite inherited tab env.
  request(5,['native','project','--expect',JSON.stringify({version:1,scope:moved.value.scope,context:moved.value.context})]);
- reply=await next();assert.equal(reply.id,5);assert.equal(reply.code,0,JSON.stringify(reply));
  const bound=await next();assert.equal(bound.event,'scope');assert.equal(typeof bound.value.context.binding,'string');
+ reply=await next();assert.equal(reply.id,5);assert.equal(reply.code,0,JSON.stringify(reply));
  request(6,['workspace','capture',f.stream.id]);reply=await next();assert.equal(reply.id,6);assert.equal(reply.code,0,JSON.stringify(reply));
  assert.equal(reply.value.stream_id,f.stream.id);assert.ok(reply.value.arrangement.tabs.length);
  request(7,['sync','--json']);reply=await next();assert.equal(reply.id,7);assert.equal(reply.code,0,JSON.stringify(reply));
@@ -337,6 +341,7 @@ test('Pi native updates reuse one real child with bounded socket work and no Her
  const controller=new NativeController({pi:f.pi,ctx:f.ctx,factory:input=>f.load({...input,child}),capture:assert.fail,warning:text=>notices.push(text)});
  t.after(async()=>{controller.stop();await controller.idle();await child.stop();});
  controller.start();await controller.idle();
+ assert.deepEqual(requests.map(command),['project','capture'],'the first binding echo scheduled a duplicate startup pass');
  for(let i=0;i<4;i++) {
   const before=f.commands().length,requestCount=requests.length;
   controller.update();await controller.idle();
@@ -346,6 +351,15 @@ test('Pi native updates reuse one real child with bounded socket work and no Her
   assert.equal(spawns,1,'a Pi update started another Streams process');
  }
  assert.deepEqual(notices,[]);
+});
+test('an identical child scope echo schedules zero project or capture calls',async t=>{
+ const f=fake(t),child=f.child();f.observation.echoScope=true;f.put(f.observation);
+ const controller=new NativeController({pi:f.pi,ctx:f.ctx,factory:()=>f.load({child}),warning:assert.fail});
+ t.after(async()=>{controller.stop();await controller.idle();});
+ controller.start();await controller.idle();
+ const before=f.commands().filter(args=>['project','capture'].includes(command(args))).length;
+ await child.run(['native','observe','--session-id',f.id]);await controller.idle();
+ assert.equal(f.commands().filter(args=>['project','capture'].includes(command(args))).length,before);
 });
 test('real Rust owner observation is read-only and rejects stale context before metadata effects',t=>{
  const f=real(t),before=readFileSync(join(f.directory,'native.json'),'utf8');
@@ -382,7 +396,7 @@ test('Pi lifecycle preserves the named Herdr namespace through Rust source rerea
  const notices=[],controller=new NativeController({pi:f.pi,ctx:f.ctx,factory:f.load,capture:assert.fail,warning:text=>notices.push(text)});t.after(async()=>{controller.stop();await controller.idle();});
  controller.start();await controller.idle();assert.deepEqual(notices,[]);
  assert.equal(f.name(),'Real Rust lane');assert.ok(f.commands().some(([method])=>method.endsWith('report_metadata')));
- const allowed=['ping','pane.current','workspace.get','session.snapshot','workspace.report_metadata','pane.report_metadata'];
+ const allowed=['ping','events.subscribe','pane.current','workspace.get','session.snapshot','workspace.report_metadata','pane.report_metadata'];
  assert.ok(f.commands().every(([method])=>allowed.includes(method)));
  const snapshot=JSON.parse(readFileSync(join(f.directory,'native.json'),'utf8')).snapshot;
  assert.ok(snapshot.workspaces[0].tokens.strm_binding);

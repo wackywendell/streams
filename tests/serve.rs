@@ -11,6 +11,9 @@ use std::{
 
 use serde_json::{Value, json};
 
+#[path = "serve/subscriptions.rs"]
+mod subscriptions;
+
 struct Fixture {
     directory: tempfile::TempDir,
 }
@@ -77,36 +80,7 @@ impl Fixture {
         value
     }
     fn start(&self) -> Transport {
-        let mut child = self
-            .command()
-            .args(["serve", "--session-id", "pi-session", "--plugin-root"])
-            .arg(concat!(
-                env!("CARGO_MANIFEST_DIR"),
-                "/integrations/herdr-work-cards"
-            ))
-            .stdin(Stdio::piped())
-            .stdout(Stdio::piped())
-            .stderr(Stdio::piped())
-            .spawn()
-            .unwrap();
-        let input = child.stdin.take();
-        let stdout = child.stdout.take().unwrap();
-        let (tx, frames) = mpsc::channel();
-        thread::spawn(move || {
-            for line in BufReader::new(stdout).lines() {
-                let frame = line.map_err(|e| e.to_string()).and_then(|line| {
-                    serde_json::from_str(&line).map_err(|e| format!("{line:?}: {e}"))
-                });
-                if tx.send(frame).is_err() {
-                    break;
-                }
-            }
-        });
-        let transport = Transport {
-            child,
-            input,
-            frames,
-        };
+        let transport = Transport::start(self.command(), "pi-session");
         assert_eq!(transport.next(), json!({"type":"ready","protocol":1}));
         let scope = transport.next();
         assert_eq!(scope["type"], "event");
@@ -146,6 +120,37 @@ struct Transport {
     frames: Receiver<Result<Value, String>>,
 }
 impl Transport {
+    fn start(mut command: Command, session: &str) -> Self {
+        let mut child = command
+            .args(["serve", "--session-id", session, "--plugin-root"])
+            .arg(concat!(
+                env!("CARGO_MANIFEST_DIR"),
+                "/integrations/herdr-work-cards"
+            ))
+            .stdin(Stdio::piped())
+            .stdout(Stdio::piped())
+            .stderr(Stdio::piped())
+            .spawn()
+            .unwrap();
+        let input = child.stdin.take();
+        let stdout = child.stdout.take().unwrap();
+        let (tx, frames) = mpsc::channel();
+        thread::spawn(move || {
+            for line in BufReader::new(stdout).lines() {
+                let frame = line.map_err(|e| e.to_string()).and_then(|line| {
+                    serde_json::from_str(&line).map_err(|e| format!("{line:?}: {e}"))
+                });
+                if tx.send(frame).is_err() {
+                    break;
+                }
+            }
+        });
+        Self {
+            child,
+            input,
+            frames,
+        }
+    }
     fn send(&mut self, frame: Value) {
         writeln!(self.input.as_mut().unwrap(), "{frame}").unwrap();
     }

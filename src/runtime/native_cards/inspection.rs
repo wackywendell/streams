@@ -70,6 +70,16 @@ impl NativeCardEngine {
             card: v.saved.card,
         })
     }
+    /// A private child retains its already-attested caller terminal across requests.
+    pub fn require_caller_terminal(&self, terminal: &str) -> Result<()> {
+        if self.caller.terminal_id != terminal {
+            return Err(super::super::RuntimeError::NativeContextChanged(
+                "Owner pane terminal identity changed".into(),
+            ));
+        }
+        Ok(())
+    }
+
     /// Re-attest the caller and pin the CLI process before any lifecycle mutation.
     pub fn pin_owner(&mut self, scope: &Scope, expected: &NativeOwnerContext) -> Result<()> {
         // Pin construction against its bootstrap snapshot without spending the

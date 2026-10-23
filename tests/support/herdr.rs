@@ -5,7 +5,7 @@
 use serde_json::{Value, json};
 use std::collections::{BTreeMap, VecDeque};
 use std::io::{BufRead, BufReader, Write};
-use std::os::unix::net::UnixListener;
+use std::os::unix::net::{UnixListener, UnixStream};
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
@@ -25,6 +25,7 @@ pub struct FakeHerdr {
     requests: Arc<Mutex<Vec<(String, Value)>>>,
     failure: Arc<Mutex<Option<String>>>,
     stop: Arc<AtomicBool>,
+    subscriptions: Arc<Mutex<Vec<UnixStream>>>,
 }
 
 pub fn pong() -> Reply {
@@ -53,7 +54,9 @@ impl FakeHerdr {
         let requests = Arc::new(Mutex::new(Vec::new()));
         let failure = Arc::new(Mutex::new(None));
         let stop = Arc::new(AtomicBool::new(false));
+        let subscriptions = Arc::new(Mutex::new(Vec::new()));
         std::thread::spawn({
+            let subscriptions = subscriptions.clone();
             let (requests, failure, stop) = (requests.clone(), failure.clone(), stop.clone());
             move || {
                 for stream in listener.incoming() {
@@ -78,6 +81,8 @@ impl FakeHerdr {
                     let reply = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
                         handler(&method, &params)
                     }));
+                    let subscribed = matches!(&reply, Ok(Reply::Result(result))
+                        if method == "events.subscribe" && result["type"] == "subscription_started");
                     let bytes = match reply {
                         Ok(Reply::Result(result)) => {
                             format!("{}\n", json!({"id":request["id"],"result":result}))
@@ -100,7 +105,9 @@ impl FakeHerdr {
                             Vec::new()
                         }
                     };
-                    let _ = reader.get_mut().write_all(&bytes);
+                    if reader.get_mut().write_all(&bytes).is_ok() && subscribed {
+                        subscriptions.lock().unwrap().push(reader.into_inner());
+                    }
                 }
             }
         });
@@ -109,6 +116,21 @@ impl FakeHerdr {
             requests,
             failure,
             stop,
+            subscriptions,
+        }
+    }
+
+    /// Send an unsolicited protocol event to every acknowledged subscriber.
+    pub fn emit(&self, event: Value) {
+        let bytes = format!("{event}\n");
+        let mut subscriptions = self.subscriptions.lock().unwrap();
+        assert!(!subscriptions.is_empty(), "no acknowledged subscriber");
+        subscriptions.retain_mut(|stream| stream.write_all(bytes.as_bytes()).is_ok());
+    }
+
+    pub fn disconnect_subscriptions(&self) {
+        for stream in self.subscriptions.lock().unwrap().drain(..) {
+            let _ = stream.shutdown(std::net::Shutdown::Both);
         }
     }
 

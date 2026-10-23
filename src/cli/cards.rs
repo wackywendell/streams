@@ -261,8 +261,22 @@ fn build(
     };
     uuid::Uuid::parse_str(&session_id)
         .map_err(|_| CliError::message("native Pi session ID must be a UUID"))?;
-    let client = HerdrClient::connect(app.environment.clone(), config.timeout_seconds())
-        .map_err(|e| CliError::message(e.to_string()))?;
+    if let Some(read) = &app.herdr {
+        if let Some(reason) = &read.refusal {
+            return Err(CliError::NativeContextChanged(reason.clone()));
+        }
+        if read.terminal.is_none() {
+            return Err(CliError::NativeContextChanged(
+                "Caller origin was not attested at child startup".into(),
+            ));
+        }
+    }
+    let client = match &app.herdr {
+        Some(read) => read.client.with_context(app.environment.clone()),
+        None => HerdrClient::connect(app.environment.clone(), config.timeout_seconds()),
+    }
+    .map_err(|e| CliError::message(e.to_string()))?;
+    let snapshot = app.herdr.as_ref().and_then(|read| read.snapshot.clone());
     let directory = options
         .state_dir
         .or_else(|| {
@@ -284,16 +298,32 @@ fn build(
         environment: read_environment,
         cwd: read_cwd,
         input: app.input.clone(),
+        herdr: app.herdr.clone(),
     };
     let source = source::ApplicationSource::new(source_app, session_id, scope, owner);
-    let mut engine = NativeCardEngine::new(
-        client,
-        Box::new(source),
-        state,
-        config,
-        app.environment,
-        cancel,
-    )?;
+    let mut engine = if let Some(snapshot) = snapshot {
+        NativeCardEngine::from_snapshot(
+            client,
+            Box::new(source),
+            state,
+            config,
+            app.environment,
+            cancel,
+            snapshot,
+        )
+    } else {
+        NativeCardEngine::new(
+            client,
+            Box::new(source),
+            state,
+            config,
+            app.environment,
+            cancel,
+        )
+    }?;
+    if let Some(terminal) = app.herdr.as_ref().and_then(|read| read.terminal.as_deref()) {
+        engine.require_caller_terminal(terminal)?;
+    }
     if let Some(expected) = expected {
         engine.pin_owner(&expected.scope(), &expected.context)?;
     }

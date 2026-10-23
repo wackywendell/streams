@@ -291,11 +291,20 @@ pub(super) fn run() -> ExitCode {
 }
 
 #[derive(Clone)]
+struct HerdrRead {
+    client: frontend::herdr::HerdrClient,
+    snapshot: Option<frontend::herdr::HerdrNativeSnapshot>,
+    terminal: Option<String>,
+    refusal: Option<String>,
+}
+
+#[derive(Clone)]
 struct App {
     config: Config,
     environment: BTreeMap<String, String>,
     cwd: PathBuf,
     input: Input,
+    herdr: Option<HerdrRead>,
 }
 impl App {
     fn new() -> Result<Self> {
@@ -352,6 +361,7 @@ impl App {
             environment,
             cwd,
             input: Input::Stdin,
+            herdr: None,
         })
     }
     fn selection(&self, requested: Option<FrontendRequest>) -> Result<FrontendSelection> {
@@ -388,6 +398,15 @@ impl App {
             .resolved
             .as_ref()
             .map(|id| {
+                if id.0 == "herdr"
+                    && let Some(read) = &self.herdr
+                {
+                    return Ok(BuiltinFrontend::Herdr(
+                        read.client
+                            .with_context(self.environment.clone())
+                            .map_err(runtime::RuntimeError::from)?,
+                    ));
+                }
                 BuiltinFrontend::connect(
                     id,
                     std::sync::Arc::new(streams_temper::process::NativeProcessRunner),

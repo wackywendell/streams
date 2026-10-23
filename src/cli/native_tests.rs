@@ -14,6 +14,7 @@ fn current_identity_never_suppresses_configuration_errors() {
         environment,
         cwd,
         input: Input::Stdin,
+        herdr: None,
     };
     let opened = application::initialize(&app.config, Strategy::None, None, "main", false).unwrap();
     assert_eq!(app.current_stream_id(&opened, None).unwrap(), "effort");
@@ -31,6 +32,7 @@ fn injected_stdin_is_consumed_by_text_file_reads() {
         environment,
         cwd,
         input: Input::request(Some(json!({"text":"request input"}))),
+        herdr: None,
     };
     assert_eq!(
         app.read_text(Path::new("-")).unwrap(),

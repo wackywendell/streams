@@ -10,13 +10,13 @@ const read = () => JSON.parse(readFileSync(file, 'utf8'));
 const record = argv => appendFileSync(log, JSON.stringify(argv) + '\n');
 const reply = (id, value, code=0) => send({type:'response', id, code, value, notices:[]});
 let previous;
-function scope() {
+function scope(force=false) {
  const value = read();
  const event = value.fail === 'observe'
   ? {type:'event', event:'scope', value:null, reason:value.failMessage}
   : {type:'event', event:'scope', value:Object.fromEntries(['version','scope','native','context','session','config'].map(key => [key,value[key]]))};
  const serialized = JSON.stringify(event);
- if (serialized !== previous) {previous = serialized;send(event);}
+ if (force || serialized !== previous) {previous = serialized;send(event);}
 }
 send({type:'ready', protocol:1});
 record(['native', 'observe', '--session-id', sessionId, '--json']);scope();
@@ -31,5 +31,5 @@ createInterface({input:process.stdin}).on('line', line => {
   session_id:value.scope.sessionId, native_session_id:value.scope.nativeSessionId, binding:value.ackBinding ?? value.context.binding};
  reply(id, value.invalid === command ? {} : command === 'observe' ? value : command === 'open' ? {display:'opened',native}
   : command === 'close' ? {closed:true} : command === 'project' ? {names:{workspace:'disabled',tab:'disabled'},native} : {captured:true});
- scope();
+ scope(value.echoScope);
 });

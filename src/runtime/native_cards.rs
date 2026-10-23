@@ -260,6 +260,28 @@ impl NativeCardEngine {
         environment: BTreeMap<String, String>,
         cancelled: Arc<AtomicBool>,
     ) -> Result<Self> {
+        let snapshot = HerdrNativeSnapshot::parse(&client.session_snapshot()?)?;
+        Self::from_snapshot(
+            client,
+            source,
+            state,
+            config,
+            environment,
+            cancelled,
+            snapshot,
+        )
+    }
+
+    /// Reuse a caller's fresh bootstrap snapshot without spending another native read.
+    pub fn from_snapshot(
+        client: HerdrClient,
+        source: Box<dyn NativeCardSource>,
+        state: Arc<NativeState>,
+        config: NativeCardsConfig,
+        environment: BTreeMap<String, String>,
+        cancelled: Arc<AtomicBool>,
+        snapshot: HerdrNativeSnapshot,
+    ) -> Result<Self> {
         let launched = LaunchedCardContext::from_environment(&environment)?;
         if let Some(context) = &launched
             && (context.state_directory() != state.directory()
@@ -270,7 +292,6 @@ impl NativeCardEngine {
                 "launched-card state or plugin root differs from its protected context",
             ));
         }
-        let snapshot = HerdrNativeSnapshot::parse(&client.session_snapshot()?)?;
         let current = client.current_pane_from(snapshot.raw())?;
         if launched
             .as_ref()

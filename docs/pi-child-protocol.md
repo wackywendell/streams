@@ -58,7 +58,7 @@ The child accepts only the commands the extension uses:
 
 Any other command gets code 1 with error kind `unsupported-command`. A native request whose `--session-id` differs from the child's launch session gets code 1 with error kind `session-mismatch`. `debug`, `replay` and the prompt lab keep running as separate processes; they are rare and user-invoked.
 
-The child runs requests concurrently and responds in completion order, so callers match responses by `id`. Locking is the same as for separate CLI processes.
+The child runs requests concurrently and responds in completion order, so callers match responses by `id`. Locking is the same as for separate CLI processes. If a request changes scope, the child emits that scope before the response. A response fences the scope reads caused by that request; independent external events may still arrive later.
 
 ## Cancellation
 
