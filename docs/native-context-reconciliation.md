@@ -51,4 +51,6 @@ This changes the earlier fixed-membership proposal: verified workspace moves int
 
 Physical-pairing requirements for separated resource navigation and explicit recovery from uncertain native launches remain open. They must not silently become blanket restrictions on conversation reporting.
 
-The existing [native reconciliation model](../specs/native_reconciliation.ioa.toml) and [tests](../tests/native_reconciliation.rs) cover resource-effect safety under the earlier fixed-membership assumptions. They do not yet establish the membership history and per-card result admission described here. Concrete identity, crash durability and native API safety also require separate verification before activation.
+The [resource model](../specs/native_reconciliation.ioa.toml) covers native-effect safety under the earlier fixed-membership assumptions. The [membership/admission model](../specs/native_membership.ioa.toml) and [tests](../tests/native_membership.rs) cover conversation-only moves, per-card context checks, membership revisits and observation recovery. Both abstract identity and commit evidence; neither proves concrete caller attestation, ordered-history persistence or crash-safe report receipts.
+
+A retried report must retain its original intent across a move and a lost acknowledgement, rather than becoming a newly retargeted edit. The production admission protocol still needs to establish that guarantee before activation.

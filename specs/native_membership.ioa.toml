@@ -1,0 +1,477 @@
+# Proposed admission contract, not wired into production reconciliation.
+# One conversation and its work card, two Stream/workspace identities A/B, and
+# one independent peer. B starts unassociated. Membership episodes and branch
+# identity are abstract equality classes, not counters that can wrap or collide.
+# Fresh caller evidence, destination creation/association and commits abstract
+# successful locked/CAS operations. This does not prove their concrete witnesses,
+# ordered history persistence, request receipts, or native-effect durability.
+[automaton]
+name = "NativeMembershipAdmission"
+states = ["Ready", "Captured", "Retired"]
+initial = "Ready"
+terminal = ["Retired"]
+
+[[state]]
+name = "workspace_b"
+type = "bool"
+initial = false
+
+[[state]]
+name = "member_b"
+type = "bool"
+initial = false
+
+[[state]]
+name = "visited_b"
+type = "bool"
+initial = false
+
+[[state]]
+name = "destination_exists"
+type = "bool"
+initial = false
+
+[[state]]
+name = "source_owned"
+type = "bool"
+initial = true
+
+[[state]]
+name = "destination_owned"
+type = "bool"
+initial = true
+
+[[state]]
+name = "identity_available"
+type = "bool"
+initial = true
+
+[[state]]
+name = "caller_verified"
+type = "bool"
+initial = false
+
+[[state]]
+name = "captured_member_b"
+type = "bool"
+initial = false
+
+[[state]]
+name = "membership_current"
+type = "bool"
+initial = true
+
+[[state]]
+name = "branch_current"
+type = "bool"
+initial = true
+
+[[state]]
+name = "work_base_current"
+type = "bool"
+initial = true
+
+[[state]]
+name = "stream_base_current"
+type = "bool"
+initial = true
+
+[[state]]
+name = "work_pending"
+type = "bool"
+initial = false
+
+[[state]]
+name = "stream_pending"
+type = "bool"
+initial = false
+
+# Snapshot preconditions before capture, binding, membership or acceptance.
+# Later changes cannot invalidate an earlier valid transition. Audit defaults
+# satisfy their predicates before the first transition; copies precede writes.
+[[state]]
+name = "accepted_caller_valid"
+type = "bool"
+initial = true
+
+[[state]]
+name = "accepted_branch_valid"
+type = "bool"
+initial = true
+
+[[state]]
+name = "accepted_work_base_valid"
+type = "bool"
+initial = true
+
+[[state]]
+name = "accepted_stream_base_valid"
+type = "bool"
+initial = true
+
+[[state]]
+name = "accepted_membership_valid"
+type = "bool"
+initial = true
+
+[[state]]
+name = "accepted_member_b"
+type = "bool"
+initial = false
+
+[[state]]
+name = "accepted_capture_b"
+type = "bool"
+initial = false
+
+[[state]]
+name = "accepted_workspace_b"
+type = "bool"
+initial = false
+
+[[state]]
+name = "accepted_source_owned"
+type = "bool"
+initial = true
+
+[[state]]
+name = "accepted_destination_owned"
+type = "bool"
+initial = true
+
+[[state]]
+name = "captured_caller_valid"
+type = "bool"
+initial = true
+
+[[state]]
+name = "captured_workspace_b"
+type = "bool"
+initial = false
+
+[[state]]
+name = "captured_source_owned"
+type = "bool"
+initial = true
+
+[[state]]
+name = "captured_destination_owned"
+type = "bool"
+initial = true
+
+[[state]]
+name = "bound_caller_valid"
+type = "bool"
+initial = true
+
+[[state]]
+name = "bound_workspace_b"
+type = "bool"
+initial = true
+
+[[state]]
+name = "bound_source_owned"
+type = "bool"
+initial = true
+
+[[state]]
+name = "bound_destination_owned"
+type = "bool"
+initial = true
+
+[[state]]
+name = "bound_destination_existed"
+type = "bool"
+initial = false
+
+[[state]]
+name = "committed_caller_valid"
+type = "bool"
+initial = true
+
+[[state]]
+name = "committed_source_owned"
+type = "bool"
+initial = true
+
+[[state]]
+name = "committed_destination_owned"
+type = "bool"
+initial = true
+
+[[state]]
+name = "committed_from_b"
+type = "bool"
+initial = false
+
+[[state]]
+name = "committed_to_b"
+type = "bool"
+initial = true
+
+[[state]]
+name = "committed_destination_existed"
+type = "bool"
+initial = true
+
+# Any actual A/B membership change witnesses participation in B. This latch
+# never clears, so history must survive returning to A, not just current B.
+[[state]]
+name = "membership_changed"
+type = "bool"
+initial = false
+
+[[state]]
+name = "accepted_work_was_pending"
+type = "bool"
+initial = true
+
+[[state]]
+name = "accepted_stream_was_pending"
+type = "bool"
+initial = true
+
+[[state]]
+name = "work_consumed"
+type = "bool"
+initial = false
+
+[[state]]
+name = "stream_consumed"
+type = "bool"
+initial = false
+
+# A ghost copy records the peer's own intended membership. Environment actions
+# may move that peer; moving this conversation must not move it as a side effect.
+[[state]]
+name = "peer_member_b"
+type = "bool"
+initial = false
+
+[[state]]
+name = "peer_intended_b"
+type = "bool"
+initial = false
+
+[[state]]
+name = "native_pending"
+type = "bool"
+initial = false
+
+[[state]]
+name = "native_uncertain"
+type = "bool"
+initial = false
+
+[[action]]
+name = "ExternalMoveToB"
+kind = "input"
+from = ["Ready", "Captured"]
+guard = "true"
+effect = ["workspace_b = true", "caller_verified = false"]
+
+[[action]]
+name = "ExternalMoveToA"
+kind = "input"
+from = ["Ready", "Captured"]
+guard = "true"
+effect = ["workspace_b = false", "caller_verified = false"]
+
+[[action]]
+name = "ExternalUnavailable"
+kind = "input"
+from = ["Ready", "Captured"]
+guard = "true"
+effect = ["identity_available = false", "caller_verified = false"]
+
+[[action]]
+name = "ExternalObservationReturns"
+kind = "input"
+from = ["Ready", "Captured"]
+guard = "true"
+effect = ["identity_available = true"]
+
+[[action]]
+name = "ExternalTreeNavigation"
+kind = "input"
+from = ["Ready", "Captured"]
+guard = "true"
+effect = ["branch_current = false"]
+
+[[action]]
+name = "ExternalWorkConflict"
+kind = "input"
+from = ["Ready", "Captured"]
+guard = "true"
+effect = ["work_base_current = false"]
+
+[[action]]
+name = "ExternalStreamConflict"
+kind = "input"
+from = ["Ready", "Captured"]
+guard = "true"
+effect = ["stream_base_current = false"]
+
+[[action]]
+name = "ExternalSourceOwnershipLost"
+kind = "input"
+from = ["Ready", "Captured"]
+guard = "true"
+effect = ["source_owned = false", "stream_base_current = false"]
+
+[[action]]
+name = "ExternalSourceOwnershipReturns"
+kind = "input"
+from = ["Ready", "Captured"]
+guard = "true"
+effect = ["source_owned = true", "stream_base_current = false"]
+
+[[action]]
+name = "ExternalDestinationClaimed"
+kind = "input"
+from = ["Ready", "Captured"]
+guard = "true"
+effect = ["destination_exists = true", "destination_owned = false", "stream_base_current = false"]
+
+[[action]]
+name = "ExternalDestinationOwnershipReturns"
+kind = "input"
+from = ["Ready", "Captured"]
+guard = "true"
+effect = ["destination_owned = true", "stream_base_current = false"]
+
+[[action]]
+name = "ExternalPeerToB"
+kind = "input"
+from = ["Ready", "Captured"]
+guard = "true"
+effect = ["peer_member_b = true", "peer_intended_b = true", "stream_base_current = false"]
+
+[[action]]
+name = "ExternalPeerToA"
+kind = "input"
+from = ["Ready", "Captured"]
+guard = "true"
+effect = ["peer_member_b = false", "peer_intended_b = false", "stream_base_current = false"]
+
+[[action]]
+name = "ExternalNativeAttemptUncertain"
+kind = "input"
+from = ["Ready", "Captured"]
+guard = "true"
+effect = ["native_pending = true", "native_uncertain = true"]
+
+[[action]]
+name = "ExternalForkOrReplacement"
+kind = "input"
+from = ["Ready", "Captured"]
+to = "Retired"
+guard = "true"
+effect = ["caller_verified = false", "work_pending = false", "stream_pending = false"]
+hint = "Retire this conversation's proposal context. A fresh UUID/card uses another instance; native attempt evidence remains."
+
+[[action]]
+name = "AttestCaller"
+kind = "internal"
+from = ["Ready", "Captured"]
+guard = "identity_available"
+effect = ["caller_verified = true"]
+hint = "Fresh endpoint-scoped proof of this same conversation/terminal, not a successful inventory lookup."
+
+[[action]]
+name = "CreateAndBindDestination"
+kind = "internal"
+from = ["Ready", "Captured"]
+guard = "caller_verified && workspace_b && !destination_exists && destination_owned && source_owned"
+effect = ["bound_caller_valid = caller_verified", "bound_workspace_b = workspace_b", "bound_source_owned = source_owned", "bound_destination_owned = destination_owned", "bound_destination_existed = destination_exists", "destination_exists = true"]
+hint = "Abstract successful catalog creation and exclusive workspace binding; an uncertain attempt is not this transition."
+
+[[action]]
+name = "CommitMembership"
+kind = "internal"
+from = ["Ready", "Captured"]
+guard = "caller_verified && source_owned && destination_owned && member_b != workspace_b && (!workspace_b || destination_exists)"
+effect = ["committed_caller_valid = caller_verified", "committed_source_owned = source_owned", "committed_destination_owned = destination_owned", "committed_from_b = member_b", "committed_to_b = workspace_b", "committed_destination_existed = destination_exists", "membership_changed = true", "member_b = workspace_b", "visited_b = true", "membership_current = false"]
+hint = "One conversation changes membership. Its work card, peer membership and native evidence are not retargeted."
+
+[[action]]
+name = "CaptureContext"
+kind = "internal"
+from = ["Ready"]
+to = "Captured"
+guard = "caller_verified && member_b == workspace_b && ((member_b && destination_exists && destination_owned) || (!member_b && source_owned))"
+effect = ["captured_caller_valid = caller_verified", "captured_workspace_b = workspace_b", "captured_source_owned = source_owned", "captured_destination_owned = destination_owned", "captured_member_b = member_b", "membership_current = true", "branch_current = true", "work_base_current = true", "stream_base_current = true", "work_pending = true", "stream_pending = true", "work_consumed = false", "stream_consumed = false"]
+
+[[action]]
+name = "AcceptWork"
+kind = "internal"
+from = ["Captured"]
+to = "Captured"
+guard = "work_pending && caller_verified && branch_current && work_base_current"
+effect = ["accepted_caller_valid = caller_verified", "accepted_branch_valid = branch_current", "accepted_work_base_valid = work_base_current", "accepted_work_was_pending = work_pending", "work_consumed = true", "work_pending = false"]
+hint = "The target is this conversation's original work card. Membership and native launch uncertainty do not invalidate local work."
+
+[[action]]
+name = "AcceptStream"
+kind = "internal"
+from = ["Captured"]
+to = "Captured"
+guard = "stream_pending && caller_verified && branch_current && stream_base_current && membership_current && member_b == captured_member_b && workspace_b == member_b && ((member_b && destination_owned) || (!member_b && source_owned))"
+effect = ["accepted_caller_valid = caller_verified", "accepted_branch_valid = branch_current", "accepted_stream_base_valid = stream_base_current", "accepted_membership_valid = membership_current", "accepted_member_b = member_b", "accepted_capture_b = captured_member_b", "accepted_workspace_b = workspace_b", "accepted_source_owned = source_owned", "accepted_destination_owned = destination_owned", "accepted_stream_was_pending = stream_pending", "stream_consumed = true", "stream_pending = false"]
+hint = "Check the original Stream/membership episode. Never substitute the destination Stream into a captured proposal."
+
+[[action]]
+name = "DiscardRemainingProposals"
+kind = "input"
+from = ["Captured"]
+to = "Ready"
+guard = "true"
+effect = ["work_pending = false", "stream_pending = false"]
+
+[[invariant]]
+name = "ContextWasCapturedFromVerifiedCurrentMembership"
+assert = "captured_caller_valid && captured_member_b == captured_workspace_b && ((captured_member_b && captured_destination_owned) || (!captured_member_b && captured_source_owned))"
+
+[[invariant]]
+name = "DestinationBindingRequiredFreshAuthorityAndAnUnassociatedWorkspace"
+assert = "bound_caller_valid && bound_workspace_b && bound_source_owned && bound_destination_owned && !bound_destination_existed"
+
+[[invariant]]
+name = "MembershipCommitRequiredFreshAuthorityAndADifferentAvailableDestination"
+assert = "committed_caller_valid && committed_source_owned && committed_destination_owned && committed_from_b != committed_to_b && (!committed_to_b || committed_destination_existed)"
+
+[[invariant]]
+name = "EndedMembershipRemainsParticipationHistory"
+assert = "membership_changed => visited_b"
+
+[[invariant]]
+name = "ConsumedProposalsStayConsumedUntilNewContext"
+assert = "(!work_consumed || !work_pending) && (!stream_consumed || !stream_pending)"
+
+[[invariant]]
+name = "WorkUsesItsCapturedConversationBranchAndFields"
+assert = "accepted_caller_valid && accepted_branch_valid && accepted_work_base_valid && accepted_work_was_pending"
+
+[[invariant]]
+name = "StreamUsesItsCapturedMembershipEpisodeAndFields"
+assert = "accepted_caller_valid && accepted_branch_valid && accepted_stream_base_valid && accepted_stream_was_pending && accepted_membership_valid && accepted_member_b == accepted_capture_b && accepted_workspace_b == accepted_member_b && ((accepted_member_b && accepted_destination_owned) || (!accepted_member_b && accepted_source_owned))"
+
+[[invariant]]
+name = "OnlyTheMovedConversationChangesMembership"
+assert = "peer_member_b == peer_intended_b"
+
+[[invariant]]
+name = "CurrentMembershipHasParticipationHistory"
+assert = "member_b => visited_b"
+
+[[invariant]]
+name = "MembershipRequiresAnExistingDestination"
+assert = "member_b => destination_exists"
+
+[[invariant]]
+name = "ReportsAndMovesCannotEraseUncertainNativeEvidence"
+assert = "native_uncertain => native_pending"
+
+[[invariant]]
+name = "ReplacementCannotReuseCapturedProposals"
+assert = "status in ['Retired'] => !caller_verified && !work_pending && !stream_pending"
