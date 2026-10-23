@@ -191,105 +191,52 @@ fn all_read_only_inventories_and_missing_reads_leave_no_state() {
 }
 
 #[test]
-fn malformed_associations_fail_closed() {
+fn malformed_associations_fail_closed_without_changing_evidence() {
     let temp = fixture();
     let state = state(temp.path());
     let path = workspace_path(&state, "associations");
-    let mut cases = Vec::new();
-    for field in ["version", "session_id", "command", "stream_id", "ready"] {
-        let mut value = association_wire();
-        value.as_object_mut().unwrap().remove(field);
-        cases.push(value);
-    }
-    for (field, value) in [
-        ("version", json!(2)),
-        ("version", json!(true)),
-        ("version", json!(1.0)),
-        ("session_id", json!("session")),
-        ("command", json!("command")),
-        ("ready", json!(1)),
-        ("stream_id", json!(" ")),
-        ("workspace_id", json!("different")),
-        ("workspace_id", json!("work\u{0}space")),
-        ("unknown", json!(null)),
-    ] {
-        let mut record = association_wire();
-        record[field] = value;
-        cases.push(record);
-    }
-    cases.push(json!([1, "stream", "workspace", null, null, true]));
-    for malformed in cases {
-        put(&path, &malformed);
-        assert!(
-            state.association(SCOPE, "workspace").is_err(),
-            "accepted {malformed}"
-        );
-        assert!(state.associations(None).is_err());
-    }
-    fs::write(&path, r#"{"version":1,"stream_id":"stream","stream_id":"stream","workspace_id":"workspace","session_id":null,"command":null,"ready":true}"#).unwrap();
+    let mut malformed = association_wire();
+    malformed["ready"] = json!(1);
+    put(&path, &malformed);
+    let bytes = fs::read(&path).unwrap();
     assert!(state.association(SCOPE, "workspace").is_err());
+    assert!(state.associations(None).is_err());
+    assert_eq!(fs::read(&path).unwrap(), bytes);
+
+    let duplicate = r#"{"version":1,"stream_id":"stream","stream_id":"stream","workspace_id":"workspace","session_id":null,"command":null,"ready":true}"#;
+    fs::write(&path, duplicate).unwrap();
+    assert!(state.association(SCOPE, "workspace").is_err());
+    assert!(state.associations(None).is_err());
+    assert_eq!(fs::read(&path).unwrap(), duplicate.as_bytes());
 }
 
 #[test]
-fn malformed_claims_attempt_pairs_and_arrays_fail_closed() {
+fn malformed_claims_and_attempts_fail_closed_without_changing_evidence() {
     let temp = fixture();
     let state = state(temp.path());
     let path = workspace_path(&state, "enrollments");
-    for (field, bad) in [
-        ("version", json!(0)),
-        ("stream_id", json!(null)),
-        ("workspace_id", json!("wrong")),
-        ("extra", json!(true)),
-    ] {
-        let mut value = claim_wire();
-        value[field] = bad;
-        put(&path, &value);
-        assert!(state.enrollment_claim(SCOPE, "workspace").is_err());
-    }
+    let mut malformed = claim_wire();
+    malformed["extra"] = json!(true);
+    put(&path, &malformed);
+    let bytes = fs::read(&path).unwrap();
+    assert!(state.enrollment_claim(SCOPE, "workspace").is_err());
+    assert!(state.enrollment_claims(None).is_err());
+    assert_eq!(fs::read(&path).unwrap(), bytes);
+
     let path = attempt_path(&state);
-    for field in [
-        "session_id",
-        "command",
-        "workspace_id",
-        "effects",
-        "launches",
-        "cwd",
-        "version",
-    ] {
-        let mut value = attempt_wire();
-        value.as_object_mut().unwrap().remove(field);
-        put(&path, &value);
-        assert!(
-            state.pending_attempt(SCOPE, "stream").is_err(),
-            "accepted missing {field}"
-        );
-    }
-    for (field, bad) in [
-        ("version", json!(2)),
-        ("session_id", json!("session")),
-        ("command", json!("command")),
-        ("workspace_id", json!("")),
-        ("cwd", json!(null)),
-        ("effects", json!({})),
-        ("launches", json!(null)),
-        ("stream_id", json!("wrong")),
-        ("extra", json!([])),
-    ] {
-        let mut value = attempt_wire();
-        value[field] = bad;
-        put(&path, &value);
-        assert!(
-            state.pending_attempt(SCOPE, "stream").is_err(),
-            "accepted {value}"
-        );
-    }
-    let mut value = attempt_wire();
-    value["effects"] = json!([null, 1, ["anything"], {"unknown":"evidence"}]);
-    value["launches"] = json!([false]);
-    put(&path, &value);
-    assert!(state.pending_attempt(SCOPE, "stream").is_ok());
-    fs::write(&path, r#"{"version":1,"stream_id":"stream","session_id":null,"command":null,"cwd":"/chosen","workspace_id":null,"effects":[{"x":1,"x":2}],"launches":[]}"#).unwrap();
+    let mut malformed = attempt_wire();
+    malformed["session_id"] = json!("session");
+    put(&path, &malformed);
+    let bytes = fs::read(&path).unwrap();
     assert!(state.pending_attempt(SCOPE, "stream").is_err());
+    assert!(state.pending_attempts(None).is_err());
+    assert_eq!(fs::read(&path).unwrap(), bytes);
+
+    let duplicate = r#"{"version":1,"stream_id":"stream","session_id":null,"command":null,"cwd":"/chosen","workspace_id":null,"effects":[{"x":1,"x":2}],"launches":[]}"#;
+    fs::write(&path, duplicate).unwrap();
+    assert!(state.pending_attempt(SCOPE, "stream").is_err());
+    assert!(state.pending_attempts(None).is_err());
+    assert_eq!(fs::read(&path).unwrap(), duplicate.as_bytes());
 }
 
 #[test]

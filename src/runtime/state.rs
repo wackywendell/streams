@@ -6,6 +6,9 @@ use std::path::{Path, PathBuf};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
+#[cfg(test)]
+mod tests;
+
 use crate::codec::{ascii_json, required_nullable};
 use crate::file_io;
 use crate::operations::Authority;
