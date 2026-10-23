@@ -12,17 +12,31 @@ Separate the conversation, its current Stream membership and its native location
 
 The conversation follows the workspace. When it moves into a workspace associated with Stream B, the CLI changes its membership to B. Other conversations remain where they are; the Streams are not merged or relocated. If the destination has no associated Stream, create one. The conversation need not wait for the rest of its old working arrangement to move.
 
+Every verified owner move brings its existing owned card below the owner, as at launch, even if the user previously moved the card independently. The Pi child performs this reconciliation; the card only observes. This does not reopen a closed card or replace a missing one automatically.
+
 Retain previous membership relationships as participation history, with one current membership. This records that a conversation participated in a Stream, not what its work card said then. Do not duplicate or freeze work cards. A historical relationship grants no authority to update that Stream.
 
 Changing membership preserves the conversation's repository, checkout and working-directory knowledge. These belong to the conversation, not its current Stream's repository aliases. Do not reinterpret them through the destination or add repositories to that Stream as a side effect.
 
+## Card lifetime and native evidence
+
+Card identity is the conversation identity plus its launch nonce, within the catalog source. Current Stream membership and the owner tuple are observations, not immutable identity or write authority. Only the Pi child/native executor writes card evidence and owner markers. On `q` or owner exit the card just exits, without writes. This replaces the earlier [card-written self-close proposal](bounded-work-and-card-events.md#closing-a-card). A card's launch scope identifies its original lifetime; it never grants authority to write the current or former Stream.
+
+The canonical conversation key is lowercase SHA256 of the compact UTF-8 JSON array `["streams-native-conversation",2,catalog_source,host_id,harness,native_session_id]`, in that order. Use this key for both native pair identity and version-2 evidence lookup. It excludes the catalog Session ID, Stream, socket and owner location, so a catalog ID migration does not rekey the lifetime. Evidence retains the endpoint and resource observations separately; a different endpoint does not establish continuity.
+
+The child subscribes to `pane.closed` and `pane.exited` for its own card. An event says to re-read: after one fresh positive-absence check, the child records closure and clears the stale owner marker. If no child is running, its next start observes and records closure. Missing or uncertain observations retain uncertainty.
+
+Use a versioned, conversation-keyed evidence record carrying that lifetime's nonce, phase and resources. Normal operations use direct keyed reads and require the completed new format. They never read legacy keys, replay history or scan for evidence. If migration is required, fail clearly and name the migration command.
+
+At deploy, the coordinator stops native writers, takes a backup and runs `streams native migrate-evidence` under the native lock. This explicit offline step may scan version-1 records and take one Herdr snapshot. Promote only records unambiguously attributable to the same conversation and attempt, using captured context or exact nonce, terminal and pair evidence. Archive the original bytes; the promoted record preserves the nonce, phase and resources. Promotion is neither a new launch nor proof of an unknown outcome. Live cards retain their lifetime through promotion and later moves.
+
+Move unattributable records to quarantine and list them in the migration report. The coordinator resolves these with the user; quarantining an unresolved attempt does not clear its fence. Install the completed-format marker only after active legacy records are removed and quarantined uncertainty has an explicit resolution. Normal operations do not support a mixed layout or fall back to legacy reads.
+
 ## Cross-host participation
 
-A Stream should represent one effort across hosts, with an independent workspace association on each participating host. Herdr workspaces remain local to their servers; Streams need not share or move them between machines.
+Each Stream belongs to exactly one host. Stream authority is that host; cross-host moves and handover are unsupported. A native move into a workspace associated with another host's Stream must fail before creating records, binding workspaces or dispatching native effects. Do not silently duplicate the Stream, change its host or redirect participation. Reading synchronized records remains allowed.
 
-Session identity is `(host, agent, native Session ID)`, where agent means the coding harness, such as Pi. Resuming a copied conversation on another host creates a separate Session and work card, even if its native ID is unchanged. Both Sessions may participate in the same Stream. Participation does not transfer Stream ownership or permission to write another host's Session.
-
-This is the intended model, not current cross-host native support. Current ownership checks block this participation. Until supported, cross-host enrollment or reassociation must fail explicitly before creating records, binding workspaces or dispatching native effects. Do not silently duplicate the Stream, change ownership or redirect participation. Reading synchronized records remains allowed.
+Session identity is `(host, agent, native Session ID)`, where agent means the coding harness, such as Pi. Resuming a copied conversation on another host creates a separate Session and work card, even if its native ID is unchanged. It does not join or gain authority over the original host's Stream.
 
 ## CLI and Pi boundary
 
@@ -38,7 +52,8 @@ Pi carries request context without interpreting membership or orchestrating reco
 | --- | --- |
 | Rename a native surface | Preserve user-chosen names. Resume automatic naming only after explicit reclaim of that surface. |
 | Reorder panes or change pane IDs | Follow verified live conversation and terminal identity, not inherited addresses. Membership changes only if the workspace changes. |
-| Move a card or editor independently | Retain its conversation association. Do not automatically move it back, close it or launch a replacement. |
+| Move a card independently | Retain its conversation association. The next owner move brings it below the owner, regardless of the card's chosen placement. Do not close it or launch a replacement. |
+| Move an editor independently | Retain its conversation association. Do not automatically move it back, close it or launch a replacement. |
 | Close a display | Reporting continues. No background respawn; explicit reopen requires positive absence and duplicate checks. |
 | Lose observations or restore a workspace | Pause affected effects until fresh proof is available. Missing observations do not prove closure; recycled handles do not prove continuity. |
 | Fork or create a conversation | Create a fresh Session and work card and join the verified workspace's Stream automatically. Do not copy the parent's identity or outstanding effect authority. |
@@ -59,6 +74,6 @@ This changes the earlier fixed-membership proposal: verified workspace moves int
 
 Physical-pairing requirements for separated resource navigation and explicit recovery from uncertain native launches remain open. They must not silently become blanket restrictions on conversation reporting.
 
-The [resource model](../specs/native_reconciliation.ioa.toml) covers native-effect safety under the earlier fixed-membership assumptions. The [membership/admission model](../specs/native_membership.ioa.toml) and [tests](../tests/native_membership.rs) cover conversation-only moves, per-card context checks, membership revisits and observation recovery. Both abstract identity and commit evidence; neither proves concrete caller attestation, ordered-history persistence or crash-safe report receipts.
+The [resource model](../specs/native_reconciliation.ioa.toml) covers native-effect safety under the earlier fixed-membership assumptions; it does not yet model the card-follow policy. The [membership/admission model](../specs/native_membership.ioa.toml) and [tests](../tests/native_membership.rs) cover conversation-only moves, per-card context checks, membership revisits and observation recovery. Both abstract identity and commit evidence; neither proves concrete caller attestation, ordered-history persistence or crash-safe report receipts.
 
 A retried report must retain its original intent across a move and a lost acknowledgement, rather than becoming a newly retargeted edit. The production admission protocol still needs to establish that guarantee before activation.

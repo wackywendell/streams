@@ -1,6 +1,6 @@
 # ADR: Plan effects as data, then execute them
 
-Status: proposed. Nothing here is implemented. The first use will be `streams native project`; this record will be revised from what that pilot shows. It builds on the [bounded work ADR](bounded-work-and-card-events.md), which sets the cost budgets this structure is meant to make reachable.
+Status: proposed. Nothing here is implemented. The first use will be native reconciliation and `streams native project`; this record will be revised from what that implementation shows. It builds on the [bounded work ADR](bounded-work-and-card-events.md), which sets the cost budgets this structure is meant to make reachable.
 
 ## Problem
 
@@ -39,7 +39,7 @@ Each system writes only fields the other does not decide from:
 - Herdr structure — which workspace and tab a pane is in — feeds the catalog. A move changes Session membership.
 - The catalog feeds Herdr display: names, metadata and the card caption.
 
-Display actions never move panes, so a projection can never cause a catalog change that causes another projection. Names are the one place Streams reads display state: it compares the current Herdr name with the name it last wrote, to tell a manual rename from its own. That comparison only decides whether to write, and once the name matches there is nothing left to do.
+Display actions never move the owner. Reconciliation may move its owned card, following the [card-follow policy](native-context-reconciliation.md#decision), but card placement does not select Stream membership. A projection therefore cannot cause a catalog change that causes another projection. Names are the one place Streams reads display state: it compares the current Herdr name with the name it last wrote, to tell a manual rename from its own. That comparison only decides whether to write, and once the name matches there is nothing left to do.
 
 A process's own effects come back as events, such as `tab.renamed` after a rename. Those are triggers like any other and get their one pass, which finds nothing to do.
 
@@ -49,14 +49,14 @@ An executor should take Herdr's reply to an action as its confirmation, without 
 
 If an action fails, or its reply does not match, the executor should stop the list there and report the action and the reply. Remaining actions in the list do not run: lists are short and ordered, and "record intent, act, record outcome" depends on that order.
 
-A process should also never apply the same action to the same target twice for the same desired value. If a later pass plans an action the process has already applied, Streams has misunderstood Herdr — for example, Herdr normalised a name differently — and applying it again would only produce another echo event and another identical plan. The executor should skip it and report it as a bug instead. This one rule catches mismatches whether or not the reply showed them, without an extra snapshot. The record of applied actions is small and lives only as long as the process. A changed desired value, such as a new Stream title, is a new action and applies normally.
+A process should also never apply the same action to the same target twice for the same desired value. Card-follow actions include the verified owner-move transition in their identity, so a later owner move may legitimately request the same placement again. If a later pass plans an action the process has already applied, Streams has misunderstood Herdr — for example, Herdr normalised a name differently — and applying it again would only produce another echo event and another identical plan. The executor should skip it and report it as a bug instead. This one rule catches mismatches whether or not the reply showed them, without an extra snapshot. The record of applied actions is small and lives only as long as the process. A changed desired value, such as a new Stream title, is a new action and applies normally.
 
 ### Each system has its own action type and executor
 
 Herdr effects and catalog changes should use separate action types, each with its own executor:
 
 ```rust
-// Provisional sketch. The variants will come from the pilot.
+// Provisional sketch. The variants will come from native reconciliation.
 enum HerdrAction { SetWorkspaceMetadata { .. }, RenameTab { .. }, RenamePane { .. }, .. }
 enum CatalogAction { SaveSession { .. }, SaveStream { .. }, Publish }
 ```
@@ -83,11 +83,11 @@ This applies to native cards, the catalog and sync, `streams serve` reacting to 
 
 ## Order of work
 
-1. Pilot on `native project`: one locked section, one fresh snapshot, and all projection actions confirmed by Herdr's replies. Revise this record from what it shows.
-2. Then card open and close, capture, `streams serve`'s response to moves, and card display.
+1. Apply this structure to the Pi child's native reconciliation and `native project`: one fresh snapshot per locked pass, and native actions confirmed by Herdr's replies. Revise this record from what it shows.
+2. Then extend it to the remaining card open and close, capture and card-display paths.
 
 The socket client and `streams serve` should land first, because they rewrite the same native card code.
 
 ## Open questions
 
-Some Herdr replies may not carry the updated object, only an acknowledgement. Pane rename returns the renamed pane, and the caption projection already checks it; the pilot should find out what the metadata and tab and workspace rename replies contain. Where a reply carries no state, should the executor accept the acknowledgement alone? Proposal: yes, consistent with trusting Herdr's reply. A wrong result then shows up when a later pass plans the same action again, which the no-repeat rule reports.
+Some Herdr replies may not carry the updated object, only an acknowledgement. Pane rename returns the renamed pane, and the caption projection already checks it; native reconciliation should establish what metadata, tab and workspace rename, and card-move replies contain. Where a reply carries no state, should the executor accept the acknowledgement alone? Proposal: yes, consistent with trusting Herdr's reply. A wrong result then shows up when a later pass plans the same action again, which the no-repeat rule reports.
