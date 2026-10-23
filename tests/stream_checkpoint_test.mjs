@@ -128,7 +128,7 @@ function reporterFixture(settings={}) {
  const catalog=context();const ctx={cwd:'/repo',sessionManager:{getSessionId:()=> 'native',getLeafId:()=>leaf,getBranch:()=>branch.map(id=>({id})),buildSessionProjection:()=>({messages:[{role:'user',content:'Build catalog reporting'},{role:'assistant',content:[{type:'text',text:'Done'}],stopReason:'stop'}]})}};
  const cli={context:async()=>structuredClone(catalog),apply:async(req)=>{saves.push(req);Object.assign(catalog[req.kind],req.changes);return {save:{local:'persisted',sharing:'local-only',domain:{outcome:'changes'}}};}};
  const reporter=new Reporter({cli:()=>cli,settings:()=>({...defaults,...settings}),infer:async(_ctx,req,signal)=>{inferences.push({req,signal});if(inferences.length===1)await new Promise(resolve=>{release=resolve;});return {changes:req.type==='session'?{state:'Reported'}:{goal:'Refined'}};},notice:text=>notices.push(text),receipt:()=>{}});
- return {reporter,ctx,saves,inferences,notices,catalog,append(){leaf='two';branch.push(leaf);},rewind(){leaf='other';branch.splice(0,branch.length,'other');},release:()=>release?.()};
+ return {reporter,ctx,cli,saves,inferences,notices,catalog,append(){leaf='two';branch.push(leaf);},rewind(){leaf='other';branch.splice(0,branch.length,'other');},release:()=>release?.()};
 }
 test('response cadence coalesces and accepts old prefixes then follows up; captures metadata after session save',async()=>{
  const f=reporterFixture({frequency:2});f.reporter.response(f.ctx);assert.equal(f.inferences.length,0);
@@ -157,6 +157,45 @@ test('native, cwd and environment changes cannot reuse captured report evidence'
    if(previous===undefined)delete process.env.STREAMS_STREAM_ID;else process.env.STREAMS_STREAM_ID=previous;
   }
  } finally {if(previous===undefined)delete process.env.STREAMS_STREAM_ID;else process.env.STREAMS_STREAM_ID=previous;}
+});
+test('membership moves submit the original Session result to the CLI and never start destination metadata',async()=>{
+ const previous=process.env.STREAMS_STREAM_ID;process.env.STREAMS_STREAM_ID='effort';
+ try {
+  for(const outcome of ['changes','conflict','superseded']) {
+   const f=reporterFixture(),captured=context(),reads=[];
+   f.cli.context=async(...args)=>{reads.push(args);return structuredClone(f.catalog);};
+   f.cli.apply=async req=>{f.saves.push(req);return {operation_id:req.operation_id,save:{local:outcome==='changes'?'persisted':'unchanged',sharing:'local-only',domain:{outcome}}};};
+   f.reporter.request(f.ctx);await until(()=>f.inferences.length===1);
+   f.catalog.stream.id='destination';f.catalog.session.stream_id='destination';f.catalog.session.previous_stream_ids=['effort'];f.catalog.authority.token='destination-owner';
+   f.release();await f.reporter.idle();
+   assert.equal(f.saves.length,1);const request=f.saves[0];
+   assert.deepEqual(request,editRequest(captured,'session',{state:'Reported'},'automatic',request.operation_id,true));
+   assert.deepEqual(f.inferences.map(item=>item.req.type),['session']);
+   assert.ok(reads.length>=2);assert.ok(reads.every(args=>args.length===1&&args[0]==='native'));
+   assert.equal(f.catalog.stream.goal,'Goal');
+  }
+ } finally {if(previous===undefined)delete process.env.STREAMS_STREAM_ID;else process.env.STREAMS_STREAM_ID=previous;}
+});
+test('membership moves during shared inference retain the old Stream target and dependencies for CLI refusal',async()=>{
+ for(const outcome of ['conflict','superseded'])for(const destination of ['destination','effort']) {
+  const f=reporterFixture(),catalog=context(),captured=context(),requests=[],writes=[],receipts=[];
+  const reporter=new Reporter({cli:()=>({context:async()=>structuredClone(catalog),apply:async req=>{writes.push(req);return {operation_id:req.operation_id,save:{local:'unchanged',sharing:'local-only',domain:{outcome}}};}}),settings:()=>defaults,infer:async(_ctx,req)=>{
+   requests.push(req);if(req.type==='session')return {changes:{}};
+   catalog.stream.id=destination;catalog.session.stream_id=destination;catalog.session.previous_stream_ids=destination==='effort'?['effort','destination']:['effort'];catalog.authority.token='destination-owner';
+   return {changes:{goal:'Old effort result'}};
+  },notice:assert.fail,receipt:value=>receipts.push(value)});
+  reporter.request(f.ctx);await reporter.idle();
+  assert.deepEqual(requests.map(req=>req.type),['session','stream']);assert.equal(writes.length,1);
+  assert.deepEqual(writes[0],editRequest(captured,'stream',{goal:'Old effort result'},'automatic',writes[0].operation_id,true));
+  assert.equal(receipts.length,1);assert.equal(catalog.stream.goal,'Goal');
+ }
+});
+test('membership moves do not weaken catalog source, conversation or branch fences',async()=>{
+ for(const change of [f=>{f.catalog.catalog_source='replacement-source';},f=>{f.catalog.session.id='different-session';},f=>f.rewind(),f=>f.reporter.invalidate()]) {
+  const f=reporterFixture();f.reporter.request(f.ctx);await until(()=>f.inferences.length===1);
+  f.catalog.stream.id='destination';f.catalog.session.stream_id='destination';change(f);
+  f.release();await f.reporter.idle();assert.equal(f.saves.length,0);
+ }
 });
 test('publication failures retain accepted saves and allow metadata, but repair or refusal stops inference',async()=>{
  for(const publication of [{local:'unchanged',sharing:'failed',domain:null},{local:'unchanged',sharing:'blocked',domain:null},{local:'unchanged',sharing:'uncertain',domain:null},{local:'repair-required',sharing:'local-only',domain:null}]) {
@@ -936,7 +975,7 @@ test('infer normalizes null remaining/state, empty nullable fields, overlong sho
  const streamResult=await infer(ctx({title:'Echoed manual',status:'active',goal:'   ',goal_short:'Orphan short'}),{type:'stream',catalog:streamCatalog,messages:[],reset:true},new AbortController().signal);
  assert.deepEqual(streamResult,{changes:{goal:null,goal_short:null}});
 });
-test('concurrent sibling updates that supersede an in-flight report retry against the fresh catalog and coalesce native updates once',async()=>{
+test('a superseded report retains its receipt without retrying inference or scheduling native effects',async()=>{
  const catalog=context(),sibling={...session,id:'sibling',harness_session_id:'sibling-native',state:'Before'};
  catalog.sessions.push(sibling);
  const receipts=[],updates=[],reclaims=[];let sessionAttempts=0;
@@ -951,11 +990,12 @@ test('concurrent sibling updates that supersede an in-flight report retry agains
  }};
  const reporter=new Reporter({cli:()=>cli,settings:()=>defaults,infer:async(_ctx,req)=>({changes:req.type==='session'?{state:'Recovered progress'}:{goal:'Updated goal'}}),notice:text=>assert.fail(text),receipt:(value,defer)=>receipts.push({value,defer}),onUpdateNative:()=>updates.push('update'),onReclaimNames:()=>reclaims.push('reclaim')});
  reporter.request(f.ctx);await reporter.idle();
- assert.equal(sessionAttempts,2);
- assert.equal(receipts.length,2);assert.ok(receipts.every(item=>item.defer===true));
- assert.deepEqual(updates,['update']);assert.deepEqual(reclaims,[]);
+ assert.equal(sessionAttempts,1);
+ assert.equal(receipts.length,1);assert.ok(receipts.every(item=>item.defer===true));
+ assert.equal(receipts[0].value.save.domain.outcome,'superseded');
+ assert.deepEqual(updates,[]);assert.deepEqual(reclaims,[]);
  reporter.reset(f.ctx,true);await reporter.idle();
- assert.deepEqual(reclaims,['reclaim']);assert.deepEqual(updates,['update']);
+ assert.deepEqual(reclaims,['reclaim']);assert.deepEqual(updates,[]);
 });
 test('failed manual field edit can rebase onto updated live catalog and save retained input',async()=>{
  const state={discussion:{input:'',messages:[]},edits:new Map()},live=context();

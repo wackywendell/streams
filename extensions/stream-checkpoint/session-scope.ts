@@ -25,15 +25,16 @@ export class SessionScope {
 }
 
 /** Immutable inference inputs, with an attachment reread that never replaces the base. */
-export async function captureInputs(ctx: ExtensionContext, cli: StreamCli, mode: ReportingSettings["context"], fence: SessionFence) {
+export async function captureInputs(ctx: ExtensionContext, cli: StreamCli, mode: ReportingSettings["context"], fence: SessionFence, purpose: "report" | "discussion" = "discussion") {
  const native = ctx.sessionManager.getSessionId(), cwd = ctx.cwd, source = process.env.STREAMS_STREAM_ID;
  const evidence = checkpointContext(ctx.sessionManager, mode);
- const catalog = structuredClone(await cli.context(native, source));
+ const catalog = structuredClone(await cli.context(native));
  const valid = () => fence.current() && ctx.sessionManager.getSessionId() === native && ctx.cwd === cwd && process.env.STREAMS_STREAM_ID === source && (evidence.leafId === null ? ctx.sessionManager.getLeafId() === null : ctx.sessionManager.getBranch().some((entry) => entry.id === evidence.leafId));
  const attached = async () => {
   if (!valid()) return false;
-  const current = await cli.context(native, source);
-  return valid() && current.catalog_source === catalog.catalog_source && current.stream?.id === catalog.stream?.id && current.session?.id === catalog.session?.id;
+  const current = await cli.context(native);
+  // Keep the captured base; the CLI admits local and shared results across membership changes.
+  return valid() && current.catalog_source === catalog.catalog_source && current.session?.id === catalog.session?.id && (purpose === "report" || current.stream?.id === catalog.stream?.id);
  };
  return {native, cwd, evidence, catalog, valid, attached};
 }

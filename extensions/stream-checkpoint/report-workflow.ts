@@ -29,25 +29,15 @@ export async function runReport(action: ReportAction, environment: ReportEnviron
  let capture = await captureNow(), savedAny = false, reclaimReady = false;
  if (!capture.valid() || signal.aborted) return false;
  const inferAndApply = async (kind: "session" | "stream"): Promise<boolean> => {
-  for (let attempt = 0; ; attempt++) {
-   const inferred = await generate({type: kind, catalog: capture.catalog, messages: capture.evidence.messages, instructions, reset});
-   if (signal.aborted || !await capture.attached()) return false;
-   if (kind === "session" && reset && capture.catalog.session!.state_short !== null && !Object.hasOwn(inferred.changes, "state_short")) inferred.changes.state_short = null;
-   if (kind === "stream" && reset && capture.catalog.stream!.goal_mode === "automatic" && capture.catalog.stream!.goal_short !== null && !Object.hasOwn(inferred.changes, "goal_short")) inferred.changes.goal_short = null;
-   if (!Object.keys(inferred.changes).length) return true;
-   const receipt = await environment.apply(editRequest(capture.catalog, kind, inferred.changes, "automatic", environment.operationId(), true));
-   if (attempt < 2 && receipt.save?.domain?.outcome === "superseded" && receipt.save.local === "unchanged" && !receipt.completion_error && receipt.publication?.local !== "repair-required") {
-    const fresh = await captureNow();
-    if (fresh.valid() && fresh.catalog.catalog_source === capture.catalog.catalog_source && fresh.catalog.stream?.id === capture.catalog.stream?.id && fresh.catalog.session?.id === capture.catalog.session?.id && JSON.stringify(fresh.catalog) !== JSON.stringify(capture.catalog)) {
-     capture = fresh;
-     if (kind === "stream" && (!capture.catalog.stream || !automaticFields("stream", capture.catalog.stream).length)) return true;
-     continue;
-    }
-   }
-   environment.receipt(receipt);
-   if (receiptCanContinue(receipt)) {savedAny = true;return true;}
-   return false;
-  }
+  const inferred = await generate({type: kind, catalog: capture.catalog, messages: capture.evidence.messages, instructions, reset});
+  if (signal.aborted || !await capture.attached()) return false;
+  if (kind === "session" && reset && capture.catalog.session!.state_short !== null && !Object.hasOwn(inferred.changes, "state_short")) inferred.changes.state_short = null;
+  if (kind === "stream" && reset && capture.catalog.stream!.goal_mode === "automatic" && capture.catalog.stream!.goal_short !== null && !Object.hasOwn(inferred.changes, "goal_short")) inferred.changes.goal_short = null;
+  if (!Object.keys(inferred.changes).length) return true;
+  const receipt = await environment.apply(editRequest(capture.catalog, kind, inferred.changes, "automatic", environment.operationId(), true));
+  environment.receipt(receipt);
+  if (receiptCanContinue(receipt)) {savedAny = true;return true;}
+  return false;
  };
  try {
   if (!capture.catalog.session) {

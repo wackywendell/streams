@@ -70,7 +70,7 @@ export class Reporter {
   const cli = this.options.cli(ctx), generate = this.options.infer ?? modelInfer;
   return runReport(reset ? {kind: "reset", target, auto: Boolean(auto), instructions} : {kind: "report", force, instructions}, {
    signal: fence.signal, operationId: randomUUID, automaticEnrollment: this.options.settings().enrollment === "automatic",
-   capture: () => captureInputs(ctx, cli, this.options.settings().context, fence),
+   capture: () => captureInputs(ctx, cli, this.options.settings().context, fence, "report"),
    generate: request => generate(ctx, request, fence.signal, this.options.settings().model, this.options.logging?.()),
    apply: (request) => cli.apply(request), enroll: (request) => cli.enroll(request),
    receipt: (receipt) => {if (fence.live()) this.options.receipt(receipt, true, !force);},
