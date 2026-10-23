@@ -416,6 +416,7 @@ fn captured_apply_persists_stdin_and_rejects_wrong_source_without_enrollment() {
 
 #[test]
 fn accepted_save_keeps_receipt_when_directory_completion_fails() {
+    use streams_temper::{storage::StorageError, yaml_store::YamlStore};
     let f = Fixture::new();
     f.init();
     let missing = f.home.join("missing-cwd");
@@ -426,8 +427,12 @@ fn accepted_save_keeps_receipt_when_directory_completion_fails() {
     assert_eq!(code, 2, "{value}");
     assert_eq!(value["save"]["local"], "persisted");
     assert!(value["runtime"]["error"]["message"].is_string());
+    let snapshot = YamlStore::new(f.root())
+        .with_inspection::<_, StorageError>(|tx| tx.read())
+        .unwrap();
+    assert_eq!(snapshot.catalog.streams().len(), 1);
     assert_eq!(
-        f.ok(&["show", value["stream"]["id"].as_str().unwrap()])["stream"],
+        serde_json::to_value(&snapshot.catalog.streams()[0]).unwrap(),
         value["stream"]
     );
     let stream_id = value["stream"]["id"].as_str().unwrap();
@@ -450,12 +455,12 @@ fn accepted_save_keeps_receipt_when_directory_completion_fails() {
     assert_eq!(code, 2, "{attached}");
     assert_eq!(attached["save"]["local"], "persisted");
     assert!(attached["runtime"]["error"].is_string());
+    let snapshot = YamlStore::new(f.root())
+        .with_inspection::<_, StorageError>(|tx| tx.read())
+        .unwrap();
+    assert_eq!(snapshot.catalog.sessions().len(), 1);
     assert_eq!(
-        f.ok(&[
-            "session",
-            "show",
-            attached["session"]["id"].as_str().unwrap()
-        ])["session"],
+        serde_json::to_value(&snapshot.catalog.sessions()[0]).unwrap(),
         attached["session"]
     );
 }
