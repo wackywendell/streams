@@ -10,7 +10,6 @@ struct Fixture {
     home: PathBuf,
     cwd: PathBuf,
     checkout_id: String,
-    revision: String,
 }
 
 impl Fixture {
@@ -26,35 +25,13 @@ impl Fixture {
             home: fs::canonicalize(home).unwrap(),
             cwd: fs::canonicalize(cwd).unwrap(),
             checkout_id: String::new(),
-            revision: String::new(),
         };
         fixture.git(&["init", "--quiet", "--template="]);
-        for (key, value) in [
-            ("user.name", "Streams Test"),
-            ("user.email", "streams@example.test"),
-            ("commit.gpgSign", "false"),
-            ("tag.gpgSign", "false"),
-            ("core.hooksPath", "/dev/null"),
-            ("gc.auto", "0"),
-        ] {
-            fixture.git(&["config", "--local", key, value]);
-        }
-        fs::write(fixture.cwd.join("docs/design.md"), "Historical design\n").unwrap();
-        fixture.git(&["add", "docs/design.md"]);
-        fixture.git(&["commit", "--quiet", "-m", "Original document"]);
-        fixture.revision = fixture.git(&["rev-parse", "HEAD"]);
-        fs::write(
-            fixture.cwd.join("docs/design.md"),
-            "Current committed design\n",
-        )
-        .unwrap();
-        fixture.git(&["commit", "--quiet", "-am", "New document"]);
         fs::write(
             fixture.cwd.join("docs/design.md"),
             "Unsaved current design\n",
         )
         .unwrap();
-        fs::write(fixture.cwd.join("untracked.txt"), "Keep me\n").unwrap();
         fixture.ok(&["init", "--sync", "none"]);
         fixture.checkout_id = fixture.ok(&[
             "checkout",
@@ -67,6 +44,27 @@ impl Fixture {
             .unwrap()
             .into();
         fixture
+    }
+
+    fn historical() -> (Self, String) {
+        let fixture = Self::new();
+        fs::write(fixture.cwd.join("docs/design.md"), "Historical design\n").unwrap();
+        fixture.git(&["add", "docs/design.md"]);
+        fixture.git(&["commit", "--quiet", "-m", "Original document"]);
+        let revision = fixture.git(&["rev-parse", "HEAD"]);
+        fs::write(
+            fixture.cwd.join("docs/design.md"),
+            "Current committed design\n",
+        )
+        .unwrap();
+        fixture.git(&["commit", "--quiet", "-am", "New document"]);
+        fs::write(
+            fixture.cwd.join("docs/design.md"),
+            "Unsaved current design\n",
+        )
+        .unwrap();
+        fs::write(fixture.cwd.join("untracked.txt"), "Keep me\n").unwrap();
+        (fixture, revision)
     }
 
     fn command(&self, program: &str) -> Command {
@@ -86,7 +84,18 @@ impl Fixture {
     }
 
     fn git_output(&self, args: &[&str]) -> Output {
-        self.command("git").args(args).output().unwrap()
+        let mut command = self.command("git");
+        for (key, value) in [
+            ("user.name", "Streams Test"),
+            ("user.email", "streams@example.test"),
+            ("commit.gpgSign", "false"),
+            ("tag.gpgSign", "false"),
+            ("core.hooksPath", "/dev/null"),
+            ("gc.auto", "0"),
+        ] {
+            command.arg("-c").arg(format!("{key}={value}"));
+        }
+        command.args(args).output().unwrap()
     }
 
     fn git(&self, args: &[&str]) -> String {
@@ -130,11 +139,11 @@ impl Fixture {
 
 #[test]
 fn historical_document_is_direct_json_and_preserves_dirty_worktree_and_revision_spelling() {
-    let f = Fixture::new();
+    let (f, revision) = Fixture::historical();
     let head = f.git(&["rev-parse", "HEAD"]);
     let status = f.git(&["status", "--porcelain=v1", "--untracked-files=all"]);
     let index = fs::read(f.cwd.join(".git/index")).unwrap();
-    let spelling = format!("  {}  ", f.revision);
+    let spelling = format!("  {}  ", revision);
     let output = f.document_output("docs/design.md", &spelling);
     assert!(output.status.success(), "{output:?}");
     let value: Value = serde_json::from_slice(&output.stdout).unwrap();
@@ -152,7 +161,7 @@ fn historical_document_is_direct_json_and_preserves_dirty_worktree_and_revision_
     let root = Path::new(value["root"].as_str().unwrap());
     let file = Path::new(value["file"].as_str().unwrap());
     assert!(root.starts_with(f.home.join("state/streams/catalogs")));
-    assert_eq!(root.file_name().unwrap(), &f.revision[..12]);
+    assert_eq!(root.file_name().unwrap(), &revision[..12]);
     assert_eq!(
         root.parent().unwrap().file_name().unwrap(),
         f.checkout_id.as_str()
@@ -186,13 +195,13 @@ fn historical_document_is_direct_json_and_preserves_dirty_worktree_and_revision_
 
 #[test]
 fn immutable_document_and_missing_hint_are_reused_without_available_git_content() {
-    let f = Fixture::new();
-    let first = f.document_output("docs/design.md", &f.revision);
+    let (f, revision) = Fixture::historical();
+    let first = f.document_output("docs/design.md", &revision);
     assert!(first.status.success(), "{first:?}");
     let value: Value = serde_json::from_slice(&first.stdout).unwrap();
     let file = Path::new(value["file"].as_str().unwrap());
     let modified = fs::metadata(file).unwrap().modified().unwrap();
-    let missing = f.document_output("docs/absent.md", &f.revision);
+    let missing = f.document_output("docs/absent.md", &revision);
     assert_eq!(missing.status.code(), Some(2), "{missing:?}");
     let error: Value = serde_json::from_slice(&missing.stdout).unwrap();
     assert!(error["error"]["message"].as_str().unwrap().contains("git"));
@@ -200,7 +209,7 @@ fn immutable_document_and_missing_hint_are_reused_without_available_git_content(
     assert_eq!(fs::read(&sentinel).unwrap(), b"");
     let sentinel_modified = fs::metadata(&sentinel).unwrap().modified().unwrap();
 
-    let object = f.git(&["rev-parse", &format!("{}:docs/design.md", f.revision)]);
+    let object = f.git(&["rev-parse", &format!("{revision}:docs/design.md")]);
     let object_path = f
         .cwd
         .join(".git/objects")
@@ -208,11 +217,11 @@ fn immutable_document_and_missing_hint_are_reused_without_available_git_content(
         .join(&object[2..]);
     fs::rename(&object_path, f.home.join("offline-blob")).unwrap();
     assert!(
-        !f.git_output(&["show", &format!("{}:docs/design.md", f.revision)])
+        !f.git_output(&["show", &format!("{revision}:docs/design.md")])
             .status
             .success()
     );
-    let repeated = f.document_output("docs/design.md", &f.revision);
+    let repeated = f.document_output("docs/design.md", &revision);
     assert!(repeated.status.success(), "{repeated:?}");
     assert_eq!(
         serde_json::from_slice::<Value>(&repeated.stdout).unwrap(),
@@ -220,33 +229,31 @@ fn immutable_document_and_missing_hint_are_reused_without_available_git_content(
     );
     assert_eq!(fs::metadata(file).unwrap().modified().unwrap(), modified);
     assert_eq!(fs::read_to_string(file).unwrap(), "Historical design\n");
-    for _ in 0..2 {
-        let repeated = f.document_output("docs/absent.md", &f.revision);
-        assert_eq!(repeated.status.code(), Some(2), "{repeated:?}");
-        let error: Value = serde_json::from_slice(&repeated.stdout).unwrap();
-        assert_eq!(error["error"]["kind"], "not-found");
-        assert_eq!(
-            error["error"]["message"],
-            format!(
-                "document revision is unavailable: docs/absent.md at {}",
-                f.revision
-            )
-        );
-        assert_eq!(
-            fs::metadata(&sentinel).unwrap().modified().unwrap(),
-            sentinel_modified
-        );
-    }
+    let repeated = f.document_output("docs/absent.md", &revision);
+    assert_eq!(repeated.status.code(), Some(2), "{repeated:?}");
+    let error: Value = serde_json::from_slice(&repeated.stdout).unwrap();
+    assert_eq!(error["error"]["kind"], "not-found");
+    assert_eq!(
+        error["error"]["message"],
+        format!("document revision is unavailable: docs/absent.md at {revision}")
+    );
+    assert_eq!(
+        fs::metadata(&sentinel).unwrap().modified().unwrap(),
+        sentinel_modified
+    );
 }
 
 #[test]
 fn unsafe_paths_and_leading_dash_revisions_exit_two_without_changing_current_file() {
     let f = Fixture::new();
     for path in ["../design.md", "docs/../../design.md", "/tmp/design.md"] {
-        let output = f.document_output(path, &f.revision);
+        let output = f.document_output(path, "HEAD");
         assert_eq!(output.status.code(), Some(2), "{path}: {output:?}");
         let value: Value = serde_json::from_slice(&output.stdout).unwrap();
-        assert!(value.get("error").is_some(), "{value}");
+        assert_eq!(
+            value["error"]["message"],
+            "invalid host-local state: expected a nonescaping portable relative path"
+        );
     }
     for revision in ["--revision=-HEAD", "--revision= -HEAD "] {
         let output = f.run(&[
