@@ -16,7 +16,7 @@ Some reads also scale with data that has nothing to do with them. Finding one Se
 
 ### Fixed cost per operation
 
-Every operation should have a declared budget of process starts, Herdr requests, files read and fsyncs. A single-Session budget must not grow with unrelated Streams, Sessions or panes. Stream-wide `open`, `resume`, `show`, capture and handover read the Stream and exactly the Sessions named by its stored member IDs, with a declared per-member budget. Only `list`, `check` and `sync` may read the whole catalog. Tests should enforce budgets by counting calls through the existing fake Herdr and process runner, not by timing; host load makes timings unreliable. A new loop that performs I/O for each item then needs a deliberate budget change, rather than appearing as a slowdown later.
+Every operation should have a declared budget of process starts, Herdr requests, files read and fsyncs. A single-Session budget must not grow with unrelated Streams, Sessions or panes. Capture reads Sessions named by the workspace's Pi panes; open/resume read the saved arrangement's Sessions and skip changed membership. Stream-member listing and title resolution are explicit user discovery, like `list`; they never run on an event or report path. `check` and `sync` may also enumerate records. Tests should enforce budgets by counting calls through the existing fake Herdr and process runner, not by timing; host load makes timings unreliable. A new loop that performs I/O for each item then needs a deliberate budget change, rather than appearing as a slowdown later.
 
 Proposed budgets:
 
@@ -26,7 +26,7 @@ Proposed budgets:
 | Card update after a native event | 0 | at most 1 snapshot | 0 |
 | Pi lifecycle event, through the Pi child | 0 | at most 1 | the card's keyed files |
 | One-off CLI `check` or `observe` | the CLI itself | 1 snapshot | the card's keyed files |
-| Card closes itself | 0 | 0 | the evidence file |
+| Card closes itself | 0 | 0 | 0 |
 | `open`, `close`, `focus` | the CLI itself | 1 snapshot, the effect and its confirmation | keyed files and the evidence file |
 
 ### Every process is event-driven
@@ -81,9 +81,9 @@ Each of these is a direct lookup. The rule is a fixed set of keyed files, not a 
 
 Moving the binding into the Session record would put one host's paths into a portable record. Merging bindings into the registry would make every directory selection rewrite a host-wide file under a host-wide lock, and wake every card on the host. Either merge would trade one cheap keyed read for a coupling cost.
 
-The [record-local operations ADR](record-local-operations.md) replaces the earlier lookup-only proposal. The records themselves should supply each operation's inputs and effective authority. Ordinary reads and saves should read their named records, apply their input as a pure function, and write the result. They must not scan the catalog, replay history or consult a derived cache, including at Pi child startup. Git sync alone consults history and merges records.
+The [record-local operations ADR](record-local-operations.md) replaces the earlier lookup-only proposal. The records themselves should supply each operation's inputs, with exactly one writing host per Stream and its Sessions. Ordinary reads and saves should read their named records, apply their input as a pure function, and write the result. They must not scan the catalog, replay history or consult a derived cache, including at Pi child startup. Git sync alone consults history for commit/pull/push. It does not merge domain records; same-file concurrent changes fail.
 
-That ADR inventories the current operation paths and defines the required authority state, deterministic Session location, host-local relationships and explicit deploy migration. It supersedes the earlier exception that left full-catalog validation on every save, the native-ID lookup index and scan fallback, and relocation only on membership changes. Stream member IDs supply whole-workspace capture and handover inventory, with a declared per-member budget; ordinary single-Session context does not load that inventory.
+That ADR inventories current operation paths and defines host-partitioned records, deterministic Session location, host-local relationships and explicit deploy migration. It supersedes full-catalog save validation, authority replay, native-ID indexes and scan fallback. Session.stream_id alone records membership. Moves atomically replace one Session file with its embedded retry receipt; there is no roster or multi-file transaction. Captured native panes and saved arrangements supply bounded inventory, not ordinary single-Session context.
 
 ### Event-driven cards
 
@@ -117,10 +117,9 @@ The card should check document availability when it opens, when its records chan
 When the user presses `q`, or the owner pane closes, the card should close itself:
 
 1. Cancel any in-flight read. Reads have no effects.
-2. Under the native workspace lock, mark its evidence record closed. Do this only if the record still holds this card's launch nonce and pane, so a stale card cannot close a newer card's record.
-3. Exit.
+2. Exit without writing evidence or owner markers.
 
-Herdr removes a plugin pane when its process exits. The server log shows this for card panes today. A self-close therefore needs no Herdr requests and no confirmation snapshot. The card is the resource being closed, and its exit is the proof.
+Herdr removes a plugin pane when its process exits. The server log shows this for card panes today. The Pi child/native executor is the sole evidence and marker writer. It handles the card's pane.closed/pane.exited event with one positive-absence snapshot, or checks on next start if it was absent. Uncertainty remains until positively resolved. Self-close itself needs no Herdr requests, evidence reads or writes.
 
 Today, `q` first restores the terminal, which leaves the blank pane with a cursor. It then waits for any in-flight read to finish, which can take 30 seconds. Then it runs the external close path from inside the card: an attestation, two marked observations, two source reads, a Herdr snapshot and a `plugin pane close` request. At current costs, that can keep the blank pane visible for minutes. None of that work protects anything a self-close leaves exposed.
 
