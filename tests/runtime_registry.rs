@@ -724,7 +724,7 @@ fn directory_selections_never_infer_checkout_identity_or_rewrite_on_read() {
 }
 
 #[test]
-fn invalid_binding_identity_schema_and_relative_intent_cannot_be_overwritten() {
+fn malformed_bindings_cannot_be_read_or_overwritten() {
     let f = Fixture::new();
     let bindings = f.bindings();
     let root = f.repo("repo");
@@ -733,67 +733,21 @@ fn invalid_binding_identity_schema_and_relative_intent_cannot_be_overwritten() {
         .unwrap();
     let path = bindings.path("stream", Some("session"));
     let good: Value = serde_json::from_slice(&fs::read(&path).unwrap()).unwrap();
-    let mut cases = vec![
-        json!(null),
-        json!([]),
-        json!([2, "stream", "session", good["location"]]),
-        json!({"version":1,"stream_id":"stream","session_id":"session","cwd":root}),
-    ];
-    for location in [
-        json!(null),
-        json!(["directory", root]),
-        json!({"kind":"directory","cwd":"relative"}),
-        json!({"kind":"directory","cwd":"~/repo"}),
-        json!({"kind":"directory","cwd":""}),
-        json!({"kind":"directory","cwd":"/bad\u{7f}"}),
-        json!({"kind":"directory","cwd":root,"extra":true}),
-        json!({"kind":"checkout","id":"saved-id","within":"."}),
+    let mut version = good.clone();
+    version["version"] = json!(1);
+    let mut escaping = good;
+    escaping["location"]["within"] = json!("../escape");
+    let duplicate = format!(
+        r#"{{"version":3,"version":3,"session_id":"session","location":{{"kind":"directory","cwd":{}}}}}"#,
+        serde_json::to_string(&f.root).unwrap()
+    );
+    for bytes in [
+        serde_json::to_vec(&version).unwrap(),
+        serde_json::to_vec(&escaping).unwrap(),
+        duplicate.into_bytes(),
     ] {
-        let mut state = good.clone();
-        state["location"] = location;
-        cases.push(state);
-    }
-    for (key, value) in [
-        ("version", json!(true)),
-        ("version", json!(1)),
-        ("version", json!(4)),
-        ("stream_id", json!("wrong")),
-        ("session_id", json!(null)),
-        ("extra", json!(1)),
-    ] {
-        let mut state = good.clone();
-        state[key] = value;
-        cases.push(state);
-    }
-    for (key, value) in [
-        ("kind", json!("guess")),
-        ("within", json!("../escape")),
-        ("within", json!("/absolute")),
-        ("id", json!("bad\x7f")),
-        ("id", json!("")),
-        ("repository_url", json!("bad\x7f")),
-        ("extra", json!(1)),
-    ] {
-        let mut state = good.clone();
-        state["location"][key] = value;
-        cases.push(state);
-    }
-    let mut missing = good.clone();
-    missing.as_object_mut().unwrap().remove("session_id");
-    cases.push(missing);
-    let mut missing = good.clone();
-    missing["location"]
-        .as_object_mut()
-        .unwrap()
-        .remove("repository_url");
-    cases.push(missing);
-    for state in cases {
-        let bytes = serde_json::to_vec(&state).unwrap();
         fs::write(&path, &bytes).unwrap();
-        assert!(
-            bindings.read("stream", Some("session")).is_err(),
-            "accepted {state}"
-        );
+        assert!(bindings.read("stream", Some("session")).is_err());
         assert!(
             bindings
                 .remember("stream", &f.root, Some("session"), false, None, None)

@@ -5,6 +5,9 @@ use std::path::{Path, PathBuf};
 
 use serde::{Deserialize, Serialize};
 
+#[cfg(test)]
+mod tests;
+
 use crate::codec::{object, required_nullable};
 
 use super::checkouts::{CheckoutRegistry, canonical_directory, relative_path};
