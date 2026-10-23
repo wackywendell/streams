@@ -28,6 +28,40 @@ fn creation(id: &str) -> Operation {
 }
 
 #[test]
+fn document_and_checkout_paths_reject_nonportable_spellings() {
+    for path in ["docs/design.md", "docs/..draft.md", "notes with spaces.md"] {
+        let document = Document::new("repo", "main", path, "", None).unwrap();
+        let checkout = Checkout::new("repo", "main", path).unwrap();
+        assert_eq!(document.path, path);
+        assert_eq!(checkout.directory_within_checkout, path);
+    }
+    assert_eq!(
+        Checkout::new("repo", "main", ".")
+            .unwrap()
+            .directory_within_checkout,
+        "."
+    );
+    for path in [
+        "",
+        " ",
+        "bad\0path",
+        "../design.md",
+        "docs/../design.md",
+        "/absolute/design.md",
+        "C:/design.md",
+        "z:drive-relative.md",
+        r"docs\design.md",
+        r"\\server\design.md",
+    ] {
+        assert!(
+            Document::new("repo", "main", path, "", None).is_err(),
+            "{path:?}"
+        );
+        assert!(Checkout::new("repo", "main", path).is_err(), "{path:?}");
+    }
+}
+
+#[test]
 fn record_and_operation_roundtrip() {
     let op = creation("create");
     let data = record_to_data(op.after());
