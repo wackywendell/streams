@@ -81,7 +81,30 @@ Each of these is a direct lookup. The rule is a fixed set of keyed files, not a 
 
 Moving the binding into the Session record would put one host's paths into a portable record. Merging bindings into the registry would make every directory selection rewrite a host-wide file under a host-wide lock, and wake every card on the host. Either merge would trade one cheap keyed read for a coupling cost.
 
-The one lookup that needs a scan today is resolving a Pi native session ID to its Session. That happens once per process. The Pi child does it at startup and keeps the result. One-off CLI calls should use an index from native ID to Session path, written at enrollment. The CLI should check the indexed record when it reads it, and fall back to a scan when the record is missing or wrong.
+The backend should expose `session_context(host, harness, native_id, stream_hint)`, returning typed Stream, Session and ownership evidence. The store should load each record by key. A card launched with a captured scope should use its explicit Session key. The existing `agent_observation_from_native` interface should select this bounded path internally. Its explicit inventory mode may still scan for handover; ordinary context returns only the current Session in its Sessions collection. `backend.snapshot()` remains a complete snapshot, not a partial catalog.
+
+Opening a context must not first validate the whole catalog. A separate `application::open_context` should check configuration, producer identity and backend recovery fences without calling `snapshot()`. Existing `application::open()` keeps its full-validation behaviour for other callers. Keyed readers must strictly decode each record and check its physical identity, Session membership and checkout alias against the loaded Stream. They do not establish whole-catalog uniqueness or agreement with Git history. `check`, `list`, `sync` and saves retain those full checks; optimising saves is out of scope. A displayed context grants no new save or native-effect authority.
+
+The budget is a fixed list, not just a total. Each operation should count these separately:
+
+| Input | Budget |
+| --- | --- |
+| Stream record | 1 file |
+| Session record | 1 file, with bounded probes of canonical and known legacy paths |
+| Host checkout registry | 1 file, reused for all repositories in the operation |
+| Host-local Session directory binding | 1 canonical file |
+| Configuration and producer identity | fixed named files; no catalog enumeration |
+| Backend recovery fences | fixed named files; no history replay |
+| Ownership and Session lookup bookkeeping | keyed to this Stream or Session; no catalog or history traversal |
+| Native evidence | this Session's own fixed evidence files |
+
+Counting tests should name the machinery reads as well as the 4 record reads. No display or context read may grow with catalog size or history length. The checkout registry remains host-wide by design; reading it once does not permit rereading it per repository.
+
+Resolving a native session ID to its Session may scan once at Pi child startup, after which the child keeps the resolved identity. One-off CLI calls should use a host-local index from native identity to Session path, written at enrollment. Readers must check the indexed record's host, harness and native ID. A missing or stale index may fall back to a scan; a corrupt record is an error, not absence. The canonical Session path takes precedence only when it is the unique physical record. A duplicate at its known legacy path must fail closed. Membership changes alone relocate legacy Session records; keyed reads must not move them.
+
+Legacy directory bindings need a separate, explicit migration because discovering a moved Session's old binding requires a scan. A migration command should run under the binding lock, after the operator makes a backup, and promote legacy Session bindings to their canonical per-Session paths. Display and context reads must never migrate or scan legacy bindings. A constant-cost check for remaining legacy state should fail clearly and direct the operator to migration. `check` and `sync` should report remaining legacy bindings as an error. Stream-only directory defaults remain separate from Session bindings.
+
+Ownership provenance is an unresolved part of the bounded interface. Git currently derives its token by replaying local and confirmed history, not from the Stream's owner field. A keyed reader must not infer a token from that field or silently add a trusted cache. The provenance source, its writers and its stale-state rejection must be decided before implementing bounded Git authority.
 
 ### Event-driven cards
 
