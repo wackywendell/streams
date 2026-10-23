@@ -79,7 +79,7 @@ export async function debugCommand(input: string, ctx: ExtensionContext, client:
  const count = capture.samples.filter(sample => sample.evidence && !sample.unavailable).length;
  if (!await ctx.ui.confirm("Run model inference on frozen samples?", `${count} available conversations using ${model.provider}/${model.id}. Each may run enrollment, session and effort helpers. Normal provider requests/costs apply. Results stay local; real cards, sessions, names and layout are not changed.`, {signal})) return;
  current();
- ctx.ui.setStatus("stream-debug", "Streams debug · Replaying...");
+ ctx.ui.setStatus("stream-debug", "Streams debug · Replaying…");
  try {
   const {run, directory} = await replayCapture(capture, root, ctx, model, command.action, (input, signal) => client.preview(input, signal), signal);
   if (!signal.aborted) ctx.ui.notify(`Replay ${run.id}: ${run.samples.filter(sample => sample.status === "completed").length} completed, ${run.samples.filter(sample => sample.status === "failed").length} failed, ${run.samples.filter(sample => sample.status === "skipped").length} skipped, ${run.samples.filter(sample => sample.status === "unavailable").length} unavailable, ${run.samples.filter(sample => sample.status === "not-run" || sample.status === "cancelled").length} unrun/cancelled. Comparison: ${directory}/comparison.md`, run.samples.some(sample => sample.status !== "completed") ? "warning" : "info");

@@ -351,5 +351,5 @@ test('debug replay clears UI status after cancellation',async()=>temporary(async
  const controller=new AbortController(), statuses=[];
  const ctx={...runtime(async()=>{controller.abort();return response({changes:{state:'Cancelled'}});}),hasUI:true,ui:{confirm:async()=>true,setStatus:(...args)=>statuses.push(args),notify:()=>assert.fail('cancelled notification')}};
  await debugCommand(`replay ${capture.id} --model fake/chosen`,ctx,{preview:()=>assert.fail('cancelled preview')},root,{...defaults,debug_commands:true},controller.signal);
- assert.deepEqual(statuses,[['stream-debug','Streams debug · Replaying...'],['stream-debug',undefined]]);
+ assert.deepEqual(statuses,[['stream-debug','Streams debug · Replaying…'],['stream-debug',undefined]]);
 }));

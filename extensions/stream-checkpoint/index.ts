@@ -111,7 +111,7 @@ export default function registerWorkCard(pi: ExtensionAPI, options: Options = {}
      const operation = randomUUID();
      const prospective = structuredClone([...state.discussion.messages, {role: "user" as const, text: input}]);
      clearStatusTimer();
-     ctx.ui.setStatus?.("stream-reporting", "Streams · ⟳ Thinking...");
+     ctx.ui.setStatus?.("stream-reporting", "Streams · Thinking…");
      let response;
      try {
       response = await (options.infer ?? infer)(ctx, {type: "discussion", catalog, messages: evidence.messages, discussion: structuredClone(prospective)}, signal, settings().model, logging());
@@ -238,7 +238,7 @@ export default function registerWorkCard(pi: ExtensionAPI, options: Options = {}
     else if (command === "pane") {
      if (!native) throw Error("Native work cards require session startup in an interactive Herdr pane.");
      clearStatusTimer();
-     ctx.ui.setStatus?.("stream-reporting", instructions === "close" ? "Streams · ⟳ Closing pane..." : "Streams · ⟳ Opening pane...");
+     ctx.ui.setStatus?.("stream-reporting", instructions === "close" ? "Streams · Closing…" : "Streams · Opening…");
      let ok = false;
      try {
       if (instructions === "close") await native.close();else await native.open();
