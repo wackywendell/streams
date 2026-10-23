@@ -55,7 +55,7 @@ Give the model native context alongside conversation evidence and the cards. It 
 
 ## Scope and open questions
 
-This changes the earlier fixed-membership proposal: verified workspace moves intentionally change membership, but cannot change which conversation a result belongs to. Reconciliation still requires current identity and ownership proof; user confirmation cannot substitute for it.
+This changes the earlier fixed-membership proposal: verified workspace moves intentionally change membership, but cannot change which conversation a result belongs to. Reconciliation still requires current identity and ownership proof; user confirmation cannot substitute for it. The [caller-attestation proposal](native-caller-attestation.md) separates request-origin proof from native location.
 
 Physical-pairing requirements for separated resource navigation and explicit recovery from uncertain native launches remain open. They must not silently become blanket restrictions on conversation reporting.
 
