@@ -225,6 +225,33 @@ fn unresolved_foreign_workspace_is_not_read_for_capture_but_blocks_full_inventor
 }
 
 #[test]
+fn unresolved_sibling_identity_reports_its_pane_without_returning_partial_inventory() {
+    for metadata in [
+        None,
+        Some(Value::Null),
+        Some(json!({"agent":"codex", "kind":"id", "value":"n2"})),
+    ] {
+        let mut value = snapshot();
+        let sibling = value["agents"][1].as_object_mut().unwrap();
+        if let Some(metadata) = metadata {
+            sibling.insert("agent_session".into(), metadata);
+        } else {
+            sibling.remove("agent_session");
+        }
+        let topology = HerdrTopology::parse(&value).unwrap();
+        for result in [
+            verified_inventory(&topology, Some("w")).map(|_| ()),
+            capture(&topology, "w", &stream(), &sessions(), "host").map(|_| ()),
+        ] {
+            let message = result.unwrap_err().to_string();
+            assert!(message.contains("pane p2"), "{message}");
+            assert!(message.contains("workspace w"), "{message}");
+            assert!(message.contains("tab z"), "{message}");
+        }
+    }
+}
+
+#[test]
 fn duplicate_live_and_eligible_catalog_identities_fail_closed() {
     let mut value = snapshot();
     value["agents"][1]["agent_session"]["value"] = json!("n1");

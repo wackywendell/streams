@@ -39,13 +39,21 @@ pub fn verified_inventory<'a>(
         else {
             continue;
         };
-        let metadata = native
-            .native
-            .get("agent_session")
-            .ok_or_else(|| invalid("missing native agent_session"))?;
-        let metadata: NativeSessionMetadata =
-            decode(&serde_json::to_vec(metadata).map_err(|error| invalid(error.to_string()))?)?;
-        let identity = native_identity(&metadata, harness)?;
+        let identity = (|| {
+            let metadata = native
+                .native
+                .get("agent_session")
+                .ok_or_else(|| invalid("missing native agent_session"))?;
+            let metadata: NativeSessionMetadata =
+                decode(&serde_json::to_vec(metadata).map_err(|error| invalid(error.to_string()))?)?;
+            native_identity(&metadata, harness)
+        })()
+        .map_err(|error| {
+            invalid(format!(
+                "Herdr pane {} (workspace {}, tab {}): {error}",
+                native.pane_id, native.workspace_id, native.tab_id
+            ))
+        })?;
         if !seen.insert((harness.to_string(), identity.id.clone())) {
             return Err(invalid("ambiguous live native conversation identity"));
         }

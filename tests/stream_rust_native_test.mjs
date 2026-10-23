@@ -390,6 +390,26 @@ test('launched-card readers reject a socket or namespace that contradicts the pi
  }
  assert.ok(f.commands().every(([method])=>['ping','session.snapshot'].includes(method)));
 });
+test('an unresolved sibling pane blocks capture with its identity and preserves the saved layout',t=>{
+ const f=real(t);
+ f.cli('native','--session-id',f.id,'capture');
+ const arrangements=readdirSync(join(f.state,'arrangements'),{recursive:true}).filter(path=>path.endsWith('.json'));
+ assert.equal(arrangements.length,1);
+ const path=join(f.state,'arrangements',arrangements[0]),before=readFileSync(path,'utf8');
+ const sibling={...f.native.pane,pane_id:'unresolved-sibling',terminal_id:'sibling-terminal',agent_session:null};
+ f.native.snapshot.panes.push(sibling);f.native.snapshot.agents.push(sibling);
+ f.native.snapshot.layouts[0].panes.push({pane_id:sibling.pane_id});
+ for(const metadata of [null,undefined,{agent:'codex',kind:'id',value:'wrong-harness'}]) {
+  sibling.agent_session=metadata;f.put();
+  const refused=f.invoke('native','--session-id',f.id,'capture');
+  assert.notEqual(refused.code,0);
+  assert.match(refused.data.error.message,/pane unresolved-sibling/);
+  assert.match(refused.data.error.message,/workspace workspace/);
+  assert.match(refused.data.error.message,/tab tab/);
+  assert.equal(readFileSync(path,'utf8'),before);
+ }
+ assert.ok(f.commands().every(([method])=>['ping','session.snapshot'].includes(method)));
+});
 test('Pi lifecycle preserves the named Herdr namespace through Rust source rereads, projection and capture',async t=>{
  const f=real(t);
  assert.equal(process.env.HERDR_SESSION,'fixture');
