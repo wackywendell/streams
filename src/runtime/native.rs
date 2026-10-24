@@ -2,7 +2,7 @@
 
 use std::{
     collections::{BTreeMap, BTreeSet},
-    path::PathBuf,
+    path::{Path, PathBuf},
     sync::Arc,
 };
 
@@ -12,7 +12,9 @@ use serde_json::Value;
 use crate::{
     codec::object,
     frontend::{
-        FrontendId, WorkspaceFrontend, WorkspaceSelector, cmux::CmuxClient, herdr::HerdrClient,
+        FrontendId, WorkspaceFrontend, WorkspaceSelector,
+        cmux::CmuxClient,
+        herdr::{HerdrClient, HerdrEndpoint, HerdrNativeSnapshot, HerdrTopology},
     },
     model::{Session, Stream},
     operations::Authority,
@@ -21,11 +23,16 @@ use crate::{
 
 use super::{
     Result,
-    conversations::{Harness, NativeIdentityKind, NativeSessionMetadata, native_identity},
+    conversations::{
+        Harness, NativeIdentity, NativeIdentityKind, NativeSessionMetadata, native_identity,
+    },
     invalid,
     state::{RuntimeState, cmux_scope, herdr_scope},
     text,
 };
+
+#[cfg(test)]
+mod tests;
 
 /// Built-in connection policy, not a replacement for the extensible frontend trait.
 #[derive(Clone)]
@@ -185,7 +192,11 @@ pub struct NativeCaller {
     tab_id: String,
     workspace_id: String,
     #[serde(skip)]
-    native_session_id: String,
+    identity: NativeIdentity,
+    #[serde(skip)]
+    endpoint: HerdrEndpoint,
+    #[serde(skip)]
+    terminal_id: String,
 }
 
 impl NativeCaller {
@@ -199,14 +210,62 @@ impl NativeCaller {
         &self.workspace_id
     }
     pub fn native_session_id(&self) -> &str {
-        &self.native_session_id
+        &self.identity.id
+    }
+    pub fn locator(&self) -> Option<&Path> {
+        self.identity.locator.as_deref()
+    }
+    pub fn endpoint(&self) -> &HerdrEndpoint {
+        &self.endpoint
+    }
+    pub fn terminal_id(&self) -> &str {
+        &self.terminal_id
+    }
+    pub fn calling_workspace(&self) -> CallingWorkspace {
+        CallingWorkspace {
+            scope: herdr_scope(&self.endpoint.socket, self.endpoint.session.as_deref()),
+            workspace_id: self.workspace_id.clone(),
+        }
     }
 }
 
-fn pi_identity(metadata: &Value) -> Result<String> {
+/// One observation owns its resolved caller; a new snapshot requires a new resolution.
+#[derive(Debug)]
+pub struct PiCallerObservation {
+    snapshot: HerdrNativeSnapshot,
+    caller: NativeCaller,
+}
+
+impl PiCallerObservation {
+    pub fn from_snapshot(
+        client: &HerdrClient,
+        snapshot: HerdrNativeSnapshot,
+        native_session_id: &str,
+    ) -> Result<Self> {
+        let caller = resolve_pi_caller(
+            client,
+            snapshot.raw(),
+            snapshot.topology(),
+            native_session_id,
+        )?;
+        Ok(Self { snapshot, caller })
+    }
+
+    pub fn snapshot(&self) -> &HerdrNativeSnapshot {
+        &self.snapshot
+    }
+    pub fn caller(&self) -> &NativeCaller {
+        &self.caller
+    }
+    pub fn calling_workspace(&self) -> CallingWorkspace {
+        self.caller.calling_workspace()
+    }
+}
+
+fn pi_identity(metadata: &Value) -> Result<NativeIdentity> {
     let metadata: NativeSessionMetadata = object(metadata.clone())
         .map_err(|error| invalid(format!("invalid native Pi metadata: {error}")))?;
-    Ok(native_identity(&metadata, Harness::Pi)?.id)
+    native_identity(&metadata, Harness::Pi)
 }
 
 /// Verify the conversation registered in this exact caller pane. No state is written.
@@ -220,8 +279,17 @@ pub fn verify_pi_caller_from_snapshot(
     snapshot: &Value,
     native_session_id: &str,
 ) -> Result<NativeCaller> {
+    let topology = HerdrTopology::parse(snapshot)?;
+    resolve_pi_caller(client, snapshot, &topology, native_session_id)
+}
+
+fn resolve_pi_caller(
+    client: &HerdrClient,
+    snapshot: &Value,
+    topology: &HerdrTopology,
+    native_session_id: &str,
+) -> Result<NativeCaller> {
     text(native_session_id)?;
-    let topology = crate::frontend::herdr::HerdrTopology::parse(snapshot)?;
     let pane = client.current_pane_from(snapshot)?;
     let agents: Vec<_> = topology
         .agents
@@ -241,8 +309,8 @@ pub fn verify_pi_caller_from_snapshot(
     {
         return Err(invalid("native agent pane, workspace or harness mismatch"));
     }
-    let actual = pi_identity(&row["agent_session"])?;
-    if actual != native_session_id {
+    let identity = pi_identity(&row["agent_session"])?;
+    if identity.id != native_session_id {
         return Err(invalid(
             "requested Pi session differs from the native pane session; a background helper cannot automatically enroll its parent's workspace",
         ));
@@ -251,7 +319,9 @@ pub fn verify_pi_caller_from_snapshot(
         pane_id: pane.id,
         tab_id: pane.tab_id,
         workspace_id: pane.workspace_id,
-        native_session_id: actual,
+        identity,
+        endpoint: client.endpoint().clone(),
+        terminal_id: agents[0].terminal_id.clone(),
     })
 }
 
@@ -281,6 +351,29 @@ pub fn attest_context_from_snapshot(
     session: &Session,
     authority: Option<&Authority>,
 ) -> Result<NativeCaller> {
+    check_context_records(state, stream, session, authority)?;
+    let caller = verify_pi_caller_from_snapshot(client, snapshot, &session.harness_session_id)?;
+    attest_verified_caller(caller, state, stream, session)
+}
+
+/// Add catalog checks to the same observed caller without resolving its identity again.
+pub fn attest_context_from_caller(
+    observed: &PiCallerObservation,
+    state: &RuntimeState,
+    stream: &Stream,
+    session: &Session,
+    authority: Option<&Authority>,
+) -> Result<NativeCaller> {
+    check_context_records(state, stream, session, authority)?;
+    attest_verified_caller(observed.caller.clone(), state, stream, session)
+}
+
+fn check_context_records(
+    state: &RuntimeState,
+    stream: &Stream,
+    session: &Session,
+    authority: Option<&Authority>,
+) -> Result<()> {
     if authority.is_none_or(|authority| {
         authority.host_id != state.host_id()
             || crate::model::check_text(&authority.token, "authority token", false).is_err()
@@ -297,19 +390,23 @@ pub fn attest_context_from_snapshot(
             "native projection requires the exact local Pi Session",
         ));
     }
-    let caller = verify_pi_caller_from_snapshot(client, snapshot, &session.harness_session_id)?;
-    if snapshot["workspaces"].as_array().is_none_or(|rows| {
-        rows.iter()
-            .filter(|row| row["workspace_id"].as_str() == Some(caller.workspace_id()))
-            .count()
-            != 1
-    }) {
-        return Err(invalid("native caller workspace missing or ambiguous"));
+    Ok(())
+}
+
+fn attest_verified_caller(
+    caller: NativeCaller,
+    state: &RuntimeState,
+    stream: &Stream,
+    session: &Session,
+) -> Result<NativeCaller> {
+    if caller.native_session_id() != session.harness_session_id {
+        return Err(invalid(
+            "observed Pi caller differs from the catalog Session",
+        ));
     }
-    let endpoint = client.endpoint();
-    let scope = herdr_scope(&endpoint.socket, endpoint.session.as_deref());
+    let workspace = caller.calling_workspace();
     if !state
-        .association(&scope, caller.workspace_id())?
+        .association(workspace.scope(), workspace.workspace_id())?
         .is_some_and(|binding| binding.ready() && binding.stream_id() == stream.id)
     {
         return Err(invalid(
@@ -317,7 +414,7 @@ pub fn attest_context_from_snapshot(
         ));
     }
     if state
-        .enrollment_claim(&scope, caller.workspace_id())?
+        .enrollment_claim(workspace.scope(), workspace.workspace_id())?
         .is_some_and(|claim| claim.stream_id() != stream.id)
     {
         return Err(invalid(

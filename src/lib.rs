@@ -5,6 +5,9 @@
 extern crate self as streams_temper;
 
 #[cfg(test)]
+#[path = "../tests/support/herdr.rs"]
+mod fake_herdr;
+#[cfg(test)]
 #[path = "../tests/support/memory.rs"]
 mod memory;
 

@@ -16,6 +16,12 @@ const LIMIT: usize = 65536;
 const DISCOVERY_LIMIT: usize = 10000;
 
 #[cfg(test)]
+thread_local! {
+    pub(super) static IDENTITY_FILE_OPENS: std::cell::RefCell<Vec<PathBuf>> =
+        const { std::cell::RefCell::new(Vec::new()) };
+}
+
+#[cfg(test)]
 mod tests;
 
 /// Native transcript formats supported by saved identity verification.
@@ -191,6 +197,8 @@ fn verified_file(harness: Harness, path: &Path) -> Result<(String, PathBuf)> {
         .read(true)
         .custom_flags(libc::O_NOFOLLOW | libc::O_NONBLOCK)
         .open(&canonical)?;
+    #[cfg(test)]
+    IDENTITY_FILE_OPENS.with(|opened| opened.borrow_mut().push(canonical.clone()));
     if !file.metadata()?.is_file() {
         return Err(invalid("saved conversation must be a regular file"));
     }

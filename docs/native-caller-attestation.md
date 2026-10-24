@@ -1,6 +1,6 @@
 # Caller attestation after native moves
 
-Proposal only. A live Pi conversation can remain the same while its workspace-qualified pane address changes. Finding that conversation in Herdr is not proof that it issued a request.
+Movement proposal only. A live Pi conversation can remain the same while its workspace-qualified pane address changes. Finding that conversation in Herdr is not proof that it issued a request. The implemented observation helper below does not activate movement or restart recovery.
 
 ## Separate origin from location
 
@@ -36,3 +36,11 @@ Shell code should validate observations into typed evidence before pure reconcil
 Retire the caller lifetime on conversation replacement. Same-conversation tree navigation instead invalidates its captured branch context. The version-1 child launch Session ID is not, by itself, either proof. Any additional lifetime protocol needs an explicit versioned contract. Cancellation or pipe closure cannot undo an accepted save or erase an uncertain native attempt.
 
 Before activation, test moved addresses, duplicate live identities, inherited helper context, child restart after a move, server replacement and workspace restore. Distinguish absence from unknown evidence and reject recycled handles. Cross-host copies remain distinct Sessions; unsupported participation must fail explicitly as specified in the [reconciliation ADR](native-context-reconciliation.md#cross-host-participation).
+
+## Implemented observation boundary
+
+[`PiCallerObservation`](../src/runtime/native.rs) owns one immutable typed Herdr snapshot and its resolved caller. Its constructor checks the exact inherited caller, resolves only that pane's Pi identity and retains the verified locator, endpoint namespace and terminal. It does not search other transcripts or infer origin from an inventory UUID. The bundle has no deserializer or wire representation.
+
+Callers obtain the snapshot, caller and endpoint-bound `CallingWorkspace` through read-only accessors. `attest_context_from_caller` adds the existing catalog and ready-association checks to that same proof without reopening its transcript. A new observation must construct a new bundle and resolve a path-backed identity again, even when the raw metadata and path have not changed. Do not cache a caller independently and attach it to a later snapshot.
+
+This API is available for the child and record-local Source conversion. Its addition alone does not switch those callers, remove the existing Authority-bearing entry points or establish continuity after a move. Tests use fixture transcripts and an injected Herdr server; transcript-open counts do not claim to measure total filesystem I/O or live latency.

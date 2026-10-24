@@ -8,8 +8,7 @@ mod config;
 mod display;
 mod documents;
 #[cfg(test)]
-#[path = "../../tests/support/herdr.rs"]
-mod fake_herdr;
+use crate::fake_herdr;
 mod handover;
 mod inspection;
 mod launch_context;
