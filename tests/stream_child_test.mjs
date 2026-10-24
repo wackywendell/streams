@@ -57,6 +57,12 @@ test('one launch, exact envelope, ready gating and out-of-order typed outcomes',
  respond(child,child.messages[0].id,{context:true});assert.deepEqual(await first,{status:'success',result:{context:true}});
  assert.equal(f.launches.length,1);
 });
+test('typed intent is captured before readiness and is not retargeted by later caller mutations',async t=>{
+ const f=fixture(t),intent={kind:'apply',request:{before:{id:'captured'},inputs:[{record:{id:'dependency'}}]}};
+ const pending=f.manager.run(intent);intent.request.before.id='destination';intent.request.inputs[0].record.id='new dependency';
+ const child=await f.ready();await tick();assert.deepEqual(child.messages[0].request,{kind:'apply',request:{before:{id:'captured'},inputs:[{record:{id:'dependency'}}]}});
+ respond(child,child.messages[0].id);await pending;
+});
 test('structured domain errors preserve kind and message without a process-style code',async t=>{
  const f=fixture(t),child=await f.ready(),pending=f.manager.run({kind:'open_card'});await tick();
  const outcome={status:'error',error:{kind:'native-context-changed',message:'caller moved'}};

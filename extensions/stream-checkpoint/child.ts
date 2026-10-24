@@ -111,6 +111,7 @@ export class StreamsChild {
  }
  readonly run: Runner = async (request, options) => {
   const signal = options?.signal;signal?.throwIfAborted();
+  const intent = structuredClone(request);
   let id: number | undefined, timer: ReturnType<typeof setTimeout> | undefined;
   let abort!: () => void;
   const cancellation = new Promise<never>((_resolve, reject) => {
@@ -130,7 +131,7 @@ export class StreamsChild {
    if (this.stopped || child !== this.process || ready !== this.ready) throw Error("Streams child lifetime ended before request dispatch");
    const response = new Promise<ChildOutcome>((resolve, reject) => {
     id = ++this.nextId;this.pending.set(id, {resolve, reject});
-    this.send({type:"request", id, request});
+    this.send({type:"request", id, request:intent});
    });
    return await Promise.race([response, cancellation]);
   } finally {clearTimeout(timer);signal?.removeEventListener("abort", abort);}

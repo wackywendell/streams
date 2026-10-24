@@ -57,7 +57,11 @@ export default function registerWorkCard(pi: ExtensionAPI, options: Options = {}
  }
  const states = new Map<string, CardState>();
  const warning = (error: unknown) => {scope.context?.ui.notify(`Streams — ${error instanceof Error ? error.message : String(error)}`, "warning");};
- const sessionChild = (ctx: ExtensionContext) => child ??= options.child?.(ctx) ?? new StreamsChild({sessionId:ctx.sessionManager.getSessionId(), cwd:ctx.cwd, env:{...process.env}, warning});
+ const sessionChild = (ctx: ExtensionContext) => {
+  if (child) return child;
+  const fence = scope.fence();
+  return child = options.child?.(ctx) ?? new StreamsChild({sessionId:ctx.sessionManager.getSessionId(), cwd:ctx.cwd, env:{...process.env}, warning:message => {if (fence.live()) warning(message);}});
+ };
  const cli = (ctx: ExtensionContext) => options.cli ?? new StreamCli(ctx.cwd, sessionChild(ctx).run);
  const receipt = (value: Receipt, _deferNative = false, quiet = false) => {
   const text = receiptText(value), hasWarning = receiptHasWarning(value);
