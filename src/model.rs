@@ -469,6 +469,37 @@ pub struct Session {
 }
 
 impl Session {
+    /// Stable native identity, independent of current membership or physical location.
+    pub fn id_for(host_id: &str, harness: &str, native_id: &str) -> String {
+        let identity = format!(
+            "streams:session:[{}, {}, {}]",
+            crate::codec::ascii_json(host_id),
+            crate::codec::ascii_json(harness),
+            crate::codec::ascii_json(native_id),
+        );
+        uuid::Uuid::new_v5(&uuid::Uuid::NAMESPACE_URL, identity.as_bytes()).to_string()
+    }
+
+    /// The portable record format requires a direct identity and self-contained checkout.
+    pub fn validate_portable(&self) -> Result<(), ValidationError> {
+        self.validate()?;
+        if self.id != Self::id_for(&self.host_id, &self.harness, &self.harness_session_id) {
+            return Err(ValidationError::new(
+                "session ID does not match its native identity; run offline catalog cutover",
+            ));
+        }
+        if self
+            .checkout
+            .as_ref()
+            .is_some_and(|checkout| checkout.repository_url.is_none())
+        {
+            return Err(ValidationError::new(
+                "session checkout must contain its portable repository URL; run offline catalog cutover",
+            ));
+        }
+        Ok(())
+    }
+
     /// Creates an active conversation; stream and checkout relationships are catalog checks.
     pub fn new(
         id: impl Into<String>,
@@ -623,6 +654,14 @@ impl Record {
             Self::Stream(s) => s.validate(),
             Self::Session(s) => s.validate(),
             Self::Host(h) => h.validate(),
+        }
+    }
+
+    /// Validate the current portable schema, including directly addressable Sessions.
+    pub fn validate_portable(&self) -> Result<(), ValidationError> {
+        match self {
+            Self::Session(session) => session.validate_portable(),
+            _ => self.validate(),
         }
     }
 

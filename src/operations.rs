@@ -1,5 +1,7 @@
 //! Domain-owned intent and pure reconciliation, independent of persistence.
 
+pub mod membership;
+
 use std::collections::{BTreeMap, BTreeSet};
 
 use serde::{Deserialize, Serialize};

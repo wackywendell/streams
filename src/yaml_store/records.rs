@@ -232,6 +232,7 @@ fn decode_envelope(
     }
     check_text(&envelope.revision, "record revision", false).map_err(invalid)?;
     let record = record_from_data(envelope.kind, &envelope.record).map_err(invalid)?;
+    record.validate_portable().map_err(invalid)?;
     if RecordAddress::for_record(&record) != *address {
         return Err(StorageError::new(
             "record identity does not match its physical location",
@@ -292,7 +293,7 @@ impl RecordStore for YamlRecordStore {
             });
         }
         let change = apply(&scope, previous.as_ref().map(|(_, current)| current))?;
-        change.record.validate().map_err(invalid)?;
+        change.record.validate_portable().map_err(invalid)?;
         if RecordAddress::for_record(&change.record) != request.target {
             return Err(StorageError::new("save cannot change target identity or host").into());
         }

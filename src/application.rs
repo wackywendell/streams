@@ -1,4 +1,4 @@
-//! Host-bound backend selection. Catalog operations use the backend contract thereafter.
+//! Host-bound backend selection and record-local catalog actions.
 
 use std::fs;
 use std::path::{Path, PathBuf};
@@ -71,6 +71,77 @@ fn opened(
         root,
         host,
         backend,
+    })
+}
+
+/// Persist one verified membership change. Native effects are deliberately not part of this save.
+pub fn move_session(
+    store: &impl crate::storage::records::RecordStore,
+    operation_id: &str,
+    intent: &crate::operations::membership::MoveIntent,
+) -> Result<crate::storage::records::RecordSave> {
+    use crate::{
+        model::{Record, RecordKind},
+        operations::{DomainOutcome, membership::apply_move},
+        storage::records::{RecordAddress, RecordChange, RecordRequest},
+    };
+    let address = RecordAddress::new(intent.host_id(), RecordKind::Session, intent.session_id())?;
+    let request = RecordRequest::new(address, operation_id, &serde_json::json!(intent))?;
+    store.save(&request, |reader, before| {
+        let Some(before) = before else {
+            return Err(ValidationError::new("native conversation is not enrolled").into());
+        };
+        let Record::Session(session) = &before.record else {
+            return Err(ValidationError::new("membership target must be a Session").into());
+        };
+        let source_key =
+            RecordAddress::new(&session.host_id, RecordKind::Stream, &session.stream_id)?;
+        let source = reader.read(&source_key)?;
+        let Some(crate::storage::records::RecordRead {
+            record: Record::Stream(source),
+            ..
+        }) = source
+        else {
+            return Err(ValidationError::new("current Stream is missing or invalid").into());
+        };
+        let destination = if source.id == intent.destination_stream_id() {
+            source.clone()
+        } else {
+            let key = RecordAddress::new(
+                intent.host_id(),
+                RecordKind::Stream,
+                intent.destination_stream_id(),
+            )?;
+            let Some(crate::storage::records::RecordRead {
+                record: Record::Stream(destination),
+                ..
+            }) = reader.read(&key)?
+            else {
+                return Err(ValidationError::new(
+                    "destination Stream is missing; create it before moving",
+                )
+                .into());
+            };
+            destination
+        };
+        let moved = apply_move(session, &source, &destination, intent)?;
+        let outcome = if moved.is_some() {
+            DomainOutcome::Changes
+        } else {
+            DomainOutcome::NoChange
+        };
+        let after = moved.unwrap_or_else(|| session.clone());
+        let receipt = serde_json::json!({
+            "outcome": outcome,
+            "session_id": after.id,
+            "from_stream_id": session.stream_id,
+            "stream_id": after.stream_id,
+            "membership_period": after.previous_stream_ids.len(),
+        });
+        Ok(RecordChange {
+            record: Record::Session(after),
+            outcome: receipt.as_object().expect("receipt object").clone(),
+        })
     })
 }
 

@@ -111,6 +111,54 @@ fn exact_reads_create_nothing_and_require_explicit_completed_format() {
 }
 
 #[test]
+fn portable_sessions_require_native_ids_and_resolved_checkout_urls() {
+    let (_dir, store) = setup();
+    let session = Session::new(
+        Session::id_for("host", "pi", "native"),
+        "host",
+        "work",
+        "pi",
+        "native",
+        "Work",
+    )
+    .unwrap();
+    let mut legacy = session.clone();
+    legacy.id = "legacy".into();
+    let key = RecordAddress::for_record(&Record::Session(legacy.clone()));
+    let request = RecordRequest::new(key.clone(), "bad", &json!({})).unwrap();
+    assert!(
+        store
+            .save::<StorageError>(&request, |_, _| Ok(RecordChange {
+                record: Record::Session(legacy),
+                outcome: Map::new()
+            }))
+            .is_err()
+    );
+    assert!(
+        !store
+            .root
+            .join(relative_record_path(&key).unwrap())
+            .exists()
+    );
+    let record = Record::Session(session);
+    put(&store, "valid", record.clone());
+    let key = RecordAddress::for_record(&record);
+    let path = store.root.join(relative_record_path(&key).unwrap());
+    let original: Value = serde_json::from_slice(&fs::read(&path).unwrap()).unwrap();
+    for edit in [
+        |v: &mut Value| v["record"]["harness_session_id"] = json!("different"),
+        |v: &mut Value| v["record"]["checkout"] = json!({"repository":"label", "ref":"main"}),
+    ] {
+        let mut value = original.clone();
+        edit(&mut value);
+        let bytes = value.to_string();
+        fs::write(&path, &bytes).unwrap();
+        assert!(read(&store, &key).is_err());
+        assert!(decode_record(&key, bytes.as_bytes()).is_err());
+    }
+}
+
+#[test]
 fn format_marker_requires_strict_json_and_the_configured_producer() {
     let (_dir, store) = setup();
     let key = RecordAddress::for_record(&stream("work", "Work"));
@@ -166,8 +214,17 @@ fn shell_reads_only_explicit_dependencies_and_save_returns_without_reopening() {
     let (_dir, store) = setup();
     let source = stream("source", "Source");
     let destination = stream("destination", "Destination");
-    let session =
-        Record::Session(Session::new("session", "host", "source", "pi", "native", "Work").unwrap());
+    let session = Record::Session(
+        Session::new(
+            Session::id_for("host", "pi", "native"),
+            "host",
+            "source",
+            "pi",
+            "native",
+            "Work",
+        )
+        .unwrap(),
+    );
     for (id, record) in [
         ("source", source.clone()),
         ("destination", destination.clone()),
