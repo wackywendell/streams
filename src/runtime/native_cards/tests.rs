@@ -1027,6 +1027,91 @@ fn fresh_open_persists_pending_then_exact_pair_and_ready_and_launches_once() {
 }
 
 #[test]
+fn ready_card_moves_keep_the_original_launch_receipt() {
+    for close_intent in [false, true] {
+        for another_tab in [false, true] {
+            let f = Fixture::new();
+            f.engine().open_display(OpenMode::Explicit).unwrap();
+            if close_intent {
+                let ready = f.record();
+                let mut closed = ready.clone();
+                closed.mark_closed().unwrap();
+                f.runner
+                    .state
+                    .lock(1.0, &AtomicBool::new(false))
+                    .unwrap()
+                    .write(Some(&ready), &closed)
+                    .unwrap();
+            }
+            let receipt = f.record();
+            let path = f.runner.state.path(&f.runner.key).unwrap();
+            let bytes = std::fs::read(&path).unwrap();
+            {
+                let mut w = f.runner.world.lock().unwrap();
+                w.snapshot["panes"][1]["pane_id"] = json!("relocated");
+                if another_tab {
+                    w.snapshot["tabs"].as_array_mut().unwrap().push(json!({
+                        "workspace_id":"w","tab_id":"other-tab","label":"2","number":2
+                    }));
+                    w.snapshot["panes"][1]["tab_id"] = json!("other-tab");
+                    w.snapshot["layouts"][0]["panes"] = json!([{"pane_id":"owner"}]);
+                    w.snapshot["layouts"].as_array_mut().unwrap().push(json!({
+                        "workspace_id":"w","tab_id":"other-tab","panes":[{"pane_id":"relocated"}]
+                    }));
+                } else {
+                    w.snapshot["layouts"][0]["panes"][1]["pane_id"] = json!("relocated");
+                }
+            }
+            let effects = f.effects();
+            let status = f.engine().status().unwrap();
+            assert_eq!(
+                status.condition,
+                if another_tab {
+                    DisplayCondition::Separated
+                } else {
+                    DisplayCondition::Ready
+                }
+            );
+            if another_tab {
+                assert!(f.engine().open_display(OpenMode::Explicit).is_err());
+            } else {
+                assert_eq!(
+                    f.engine().open_display(OpenMode::Explicit).unwrap(),
+                    DisplayOutcome::Existing(
+                        Resources::new("relocated", "display-terminal", "t").unwrap()
+                    )
+                );
+            }
+            assert_eq!(f.record(), receipt);
+            assert_eq!(std::fs::read(path).unwrap(), bytes);
+            assert_eq!(f.effects(), effects);
+            assert_eq!(f.launches(), 1);
+        }
+    }
+}
+
+#[test]
+fn ready_card_receipt_does_not_claim_a_recycled_pane_address() {
+    let f = Fixture::new();
+    f.engine().open_display(OpenMode::Explicit).unwrap();
+    let receipt = f.record();
+    {
+        let mut w = f.runner.world.lock().unwrap();
+        remove_card(&mut w);
+        w.snapshot["panes"][0]["tokens"] = json!({});
+        add_card(&mut w, "display", "unrelated-terminal");
+    }
+    let effects = f.effects();
+    assert_eq!(
+        f.engine().status().unwrap().condition,
+        DisplayCondition::Absent
+    );
+    assert_eq!(f.record(), receipt);
+    assert_eq!(f.effects(), effects);
+    assert_eq!(f.launches(), 1);
+}
+
+#[test]
 fn malformed_open_ack_retains_unlaunched_and_never_duplicates_resource() {
     let f = Fixture::new();
     f.runner.world.lock().unwrap().malformed_open = true;
@@ -1739,6 +1824,37 @@ fn predecessor_retirement_uses_private_conversation_evidence_not_a_catalog_roste
     let effects = f.effects();
     assert_eq!(effects.len(), before + 1);
     assert_eq!(effects.last().unwrap().0, "pane.report_metadata");
+}
+
+#[test]
+fn predecessor_retirement_treats_saved_locations_as_launch_receipts() {
+    for closed in [false, true] {
+        let f = Fixture::new();
+        f.prepare_predecessor();
+        let old = f.record();
+        let mut receipt =
+            NativeAttempt::new(old.key(), old.nonce(), old.endpoint(), NativePurpose::Card)
+                .unwrap();
+        receipt
+            .reserve(
+                Resources::new(
+                    "original-pane",
+                    old.resources().unwrap().terminal_id(),
+                    "original-tab",
+                )
+                .unwrap(),
+            )
+            .unwrap();
+        receipt.mark_ready().unwrap();
+        if closed {
+            receipt.mark_closed().unwrap();
+        }
+        // The fixture was created at a previous placement; this is not a runtime rewrite.
+        crate::file_io::write_json(&f.runner.state.path(old.key()).unwrap(), &receipt).unwrap();
+        let observed = f.engine().guard_recovering().unwrap();
+        assert!(matches!(observed.pair().unwrap(), PairState::Empty));
+        assert_eq!(f.record(), receipt);
+    }
 }
 
 #[test]

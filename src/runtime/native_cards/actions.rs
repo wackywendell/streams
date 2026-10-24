@@ -110,13 +110,12 @@ impl MetadataTarget {
     }
 }
 
-fn recorded_live(v: &Verified, attempt: &NativeAttempt) -> bool {
+pub(super) fn recorded_live(v: &Verified, attempt: &NativeAttempt) -> bool {
     attempt.resources().is_some_and(|r| {
-        v.snapshot
-            .topology()
-            .panes
-            .iter()
-            .any(|p| p.pane.id == r.pane_id() || p.terminal_id == r.terminal_id())
+        v.snapshot.topology().panes.iter().any(|p| {
+            p.terminal_id == r.terminal_id()
+                || matches!(attempt.phase(), NativePhase::Reserved(_)) && p.pane.id == r.pane_id()
+        })
     })
 }
 fn paired_tuple(v: &Verified) -> Result<NativeTuple> {
@@ -194,7 +193,7 @@ impl NativeCardEngine {
                 attempt.as_ref().is_some_and(|a| {
                     a.nonce() == nonce
                         && a.resources().is_some_and(|r| {
-                            NativeTuple::from_pane(card).matches_resources(r)
+                            card.terminal_id == r.terminal_id()
                                 && v.owner_tokens().get("strm_card").map(String::as_str)
                                     == Some(r.terminal_id())
                         })

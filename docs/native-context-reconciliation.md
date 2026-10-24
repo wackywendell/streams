@@ -28,6 +28,8 @@ Card identity is the conversation identity plus its launch nonce, within the cat
 
 The canonical conversation key is lowercase SHA256 of the compact UTF-8 JSON array `["streams-native-conversation",2,catalog_source,host_id,harness,native_session_id]`, in that order. Use this key for both native pair identity and version-2 evidence lookup. It excludes the catalog Session ID, Stream, socket and owner location, so a catalog ID migration does not rekey the lifetime. Evidence retains the endpoint and resource observations separately; a different endpoint does not establish continuity.
 
+For a completed card launch, the saved pane and tab IDs are an immutable launch receipt, not the current placement. Locate the card by its verified terminal and launch nonce in the fresh snapshot before acting; the native ownership markers must still agree. Moving the card does not rewrite its evidence. This does not relax interrupted-launch or partial-publication fences.
+
 The child subscribes to `pane.closed` and `pane.exited` for its own card. An event says to re-read: after one fresh positive-absence check, the child records closure and clears the stale owner marker. If no child is running, its next start observes and records closure. Missing or uncertain observations retain uncertainty.
 
 At startup and after every event batch, the card reads its own evidence by conversation key and launch nonce. If the record is absent or its nonce differs, the card exits without writing. Legitimate launch intent exists before dispatch. An orphan therefore cannot outlive the removal or replacement of its evidence, including after offline reset.

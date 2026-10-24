@@ -98,8 +98,7 @@ impl NativeCardEngine {
         if !matches!(old.phase(), NativePhase::Ready(_) | NativePhase::Closed(_))
             || old.nonce() != markers["strm_nonce"]
             || resources.terminal_id() != markers["strm_card"]
-            || resources.tab_id() != observed.owner.tab_id
-            || resource_live(&observed, resources)
+            || super::actions::recorded_live(&observed, &old)
         {
             return Err(self.refuse("predecessor launch is pending, mismatched or still live"));
         }
@@ -108,9 +107,7 @@ impl NativeCardEngine {
             matches!(
                 record.phase(),
                 NativePhase::Unlaunched | NativePhase::Reserved(_)
-            ) || record
-                .resources()
-                .is_some_and(|resources| resource_live(&observed, resources))
+            ) || super::actions::recorded_live(&observed, record)
         }) {
             return Err(self.refuse("current conversation has unresolved native evidence"));
         }
@@ -168,11 +165,6 @@ impl NativeCardEngine {
     }
 }
 
-fn resource_live(proof: &Verified, resources: &Resources) -> bool {
-    proof.snapshot.topology().panes.iter().any(|pane| {
-        pane.pane.id == resources.pane_id() || pane.terminal_id == resources.terminal_id()
-    })
-}
 fn validate_inventory(
     proof: &Verified,
     inventory: &NativeInventory,
