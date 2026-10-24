@@ -362,12 +362,6 @@ pub fn decide_name(input: NameInput<'_>) -> Result<NameDecision> {
     })
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct NameSnapshot {
-    pub path: PathBuf,
-    pub revision: String,
-    pub record: NameProvenance,
-}
 pub struct NameStore;
 fn private(meta: &fs::Metadata) -> Result<()> {
     if meta.uid() != unsafe { libc::geteuid() } || meta.mode() & 0o077 != 0 {
@@ -441,7 +435,7 @@ impl NameStore {
     }
     /// No creation on read. Ancestors above the root are trusted; same-user directory
     /// swaps are outside this path-based boundary. Never reenter the workspace flock.
-    pub fn read(guard: &NativeStateGuard<'_>, scope: &NameScope) -> Result<Option<NameSnapshot>> {
+    pub fn read(guard: &NativeStateGuard<'_>, scope: &NameScope) -> Result<Option<NameProvenance>> {
         let cache = Self::root(guard, scope)?;
         match directory(&cache) {
             Err(super::RuntimeError::Io(e)) if e.kind() == std::io::ErrorKind::NotFound => {
@@ -472,42 +466,21 @@ impl NameStore {
         if record.scope() != scope {
             return Err(invalid("naming scope mismatch"));
         }
-        Ok(Some(NameSnapshot {
-            path,
-            revision: digest(&bytes),
-            record,
-        }))
+        Ok(Some(record))
     }
-    /// Raw-byte CAS under the caller's flock, not CAS against uncooperating writers.
+    /// Replace the record under the caller's flock, after its single read and decision.
     /// Native success followed by cache failure is partial progress, never rollback proof.
     pub fn write(
         guard: &NativeStateGuard<'_>,
         scope: &NameScope,
         record: &NameProvenance,
-        expected: Option<&str>,
         signal: &AtomicBool,
-    ) -> Result<NameSnapshot> {
+    ) -> Result<()> {
         if record.scope() != scope {
             return Err(invalid("naming scope mismatch"));
         }
-        if expected.is_some_and(|s| {
-            s.len() != 64
-                || !s
-                    .bytes()
-                    .all(|b| b.is_ascii_digit() || (b'a'..=b'f').contains(&b))
-        }) {
-            return Err(invalid("invalid naming revision"));
-        }
         cancelled(signal)?;
         let cache = Self::root(guard, scope)?;
-        let current = Self::read(guard, scope)?;
-        if current.as_ref().map(|s| s.revision.as_str()) != expected {
-            return Err(invalid("naming revision conflict; reread before retrying"));
-        }
-        if let Some(current) = current.as_ref().filter(|s| &s.record == record) {
-            cancelled(signal)?;
-            return Ok(current.clone());
-        }
         match fs::DirBuilder::new().mode(0o700).create(&cache) {
             Ok(()) => {
                 file_io::sync_directory(&cache)?;
@@ -523,32 +496,11 @@ impl NameStore {
         let mut temp = tempfile::NamedTempFile::new_in(&cache)?;
         temp.write_all(&bytes)?;
         temp.as_file().sync_all()?;
-        // Recheck the exact bytes before publication; no-clobber link closes initial-create races.
-        if Self::read(guard, scope)?
-            .as_ref()
-            .map(|s| s.revision.as_str())
-            != expected
-        {
-            return Err(invalid("naming revision conflict; reread before retrying"));
-        }
         cancelled(signal)?;
-        if current.is_some() {
-            fs::rename(temp.path(), &path)?;
-            drop(temp); // The temporary name no longer exists after rename.
-        } else {
-            fs::hard_link(temp.path(), &path)?;
-            temp.close().map_err(|e| {
-                crate::storage::StorageError::after_write(crate::storage::StorageError::new(
-                    e.to_string(),
-                ))
-            })?;
-        }
+        fs::rename(temp.path(), &path)?;
+        drop(temp); // The temporary name no longer exists after rename.
         file_io::sync_directory(&cache).map_err(crate::storage::StorageError::after_write)?;
-        Ok(NameSnapshot {
-            path,
-            revision: digest(&bytes),
-            record: record.clone(),
-        })
+        Ok(())
     }
 }
 
@@ -731,7 +683,7 @@ mod tests {
         ));
     }
     #[test]
-    fn missing_read_cas_raw_bytes_noop_and_cancellation() {
+    fn missing_read_atomic_replacement_and_cancellation() {
         let temp = tempfile::tempdir().unwrap();
         let state = NativeState::new(temp.path().join("state")).unwrap();
         let guard = locked(&state);
@@ -745,43 +697,22 @@ mod tests {
         assert!(!cache.exists());
         let record = automatic(&scope, "One");
         let signal = AtomicBool::new(false);
-        let first = NameStore::write(&guard, &scope, &record, None, &signal).unwrap();
-        assert!(NameStore::write(&guard, &scope, &record, None, &signal).is_err());
-        let formatted = format!("  {}  \n", serde_json::to_string_pretty(&record).unwrap());
-        fs::write(&first.path, &formatted).unwrap();
-        let observed = NameStore::read(&guard, &scope).unwrap().unwrap();
-        assert_eq!(observed.revision, digest(formatted.as_bytes()));
-        let mtime = fs::metadata(&first.path).unwrap().modified().unwrap();
-        let same =
-            NameStore::write(&guard, &scope, &record, Some(&observed.revision), &signal).unwrap();
-        assert_eq!(same, observed);
-        assert_eq!(fs::read(&first.path).unwrap(), formatted.as_bytes());
+        NameStore::write(&guard, &scope, &record, &signal).unwrap();
+        let path = NameStore::path(&guard, &scope).unwrap();
         assert_eq!(
-            fs::metadata(&first.path).unwrap().modified().unwrap(),
-            mtime
+            NameStore::read(&guard, &scope).unwrap(),
+            Some(record.clone())
         );
-        assert!(NameStore::write(&guard, &scope, &record, Some(&first.revision), &signal).is_err());
+        let formatted = format!("  {}  \n", serde_json::to_string_pretty(&record).unwrap());
+        fs::write(&path, &formatted).unwrap();
+        assert_eq!(NameStore::read(&guard, &scope).unwrap(), Some(record));
         signal.store(true, Ordering::Release);
-        assert!(
-            NameStore::write(
-                &guard,
-                &scope,
-                &automatic(&scope, "Two"),
-                Some(&observed.revision),
-                &signal
-            )
-            .is_err()
-        );
+        assert!(NameStore::write(&guard, &scope, &automatic(&scope, "Two"), &signal).is_err());
+        assert_eq!(fs::read(&path).unwrap(), formatted.as_bytes());
         signal.store(false, Ordering::Release);
-        let next = NameStore::write(
-            &guard,
-            &scope,
-            &automatic(&scope, "Two"),
-            Some(&observed.revision),
-            &signal,
-        )
-        .unwrap();
-        assert_ne!(next.revision, observed.revision);
+        let next = automatic(&scope, "Two");
+        NameStore::write(&guard, &scope, &next, &signal).unwrap();
+        assert_eq!(NameStore::read(&guard, &scope).unwrap(), Some(next));
         assert_eq!(fs::read_dir(cache).unwrap().count(), 1);
     }
     #[test]
@@ -816,7 +747,6 @@ mod tests {
                 &guard,
                 &scope,
                 &automatic(&scope, "Name"),
-                None,
                 &AtomicBool::new(false)
             )
             .is_err()
@@ -831,22 +761,23 @@ mod tests {
         let scope = local_scope(&guard);
         let signal = AtomicBool::new(false);
         let record = automatic(&scope, "Name");
-        let first = NameStore::write(&guard, &scope, &record, None, &signal).unwrap();
-        fs::set_permissions(&first.path, fs::Permissions::from_mode(0o644)).unwrap();
+        NameStore::write(&guard, &scope, &record, &signal).unwrap();
+        let path = NameStore::path(&guard, &scope).unwrap();
+        fs::set_permissions(&path, fs::Permissions::from_mode(0o644)).unwrap();
         assert!(NameStore::read(&guard, &scope).is_err());
-        fs::remove_file(&first.path).unwrap();
-        symlink(temp.path().join("missing"), &first.path).unwrap();
+        fs::remove_file(&path).unwrap();
+        symlink(temp.path().join("missing"), &path).unwrap();
         assert!(NameStore::read(&guard, &scope).is_err());
-        fs::remove_file(&first.path).unwrap();
-        let cpath = CString::new(first.path.as_os_str().as_encoded_bytes()).unwrap();
+        fs::remove_file(&path).unwrap();
+        let cpath = CString::new(path.as_os_str().as_encoded_bytes()).unwrap();
         assert_eq!(unsafe { libc::mkfifo(cpath.as_ptr(), 0o600) }, 0);
         assert!(NameStore::read(&guard, &scope).is_err());
-        fs::remove_file(&first.path).unwrap();
-        fs::write(&first.path, b"not JSON").unwrap();
-        fs::set_permissions(&first.path, fs::Permissions::from_mode(0o600)).unwrap();
+        fs::remove_file(&path).unwrap();
+        fs::write(&path, b"not JSON").unwrap();
+        fs::set_permissions(&path, fs::Permissions::from_mode(0o600)).unwrap();
         assert!(NameStore::read(&guard, &scope).is_err());
-        fs::remove_file(&first.path).unwrap();
-        let cache = first.path.parent().unwrap();
+        fs::remove_file(&path).unwrap();
+        let cache = path.parent().unwrap();
         fs::set_permissions(cache, fs::Permissions::from_mode(0o755)).unwrap();
         assert!(NameStore::read(&guard, &scope).is_err());
         fs::set_permissions(cache, fs::Permissions::from_mode(0o700)).unwrap();

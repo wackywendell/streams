@@ -265,18 +265,19 @@ impl NativeCardEngine {
         }
         let decision = decide_name(NameInput {
             scope: &scope,
-            provenance: prior.as_ref().map(|p| &p.record),
+            provenance: prior.as_ref(),
             owner: &owner,
             current_label: &label.0,
             desired_name: desired,
             default_label_proven: label.0 == (label.2 + 1).to_string(),
             intent: NameIntent::Automatic,
         })?;
-        let revision = prior.as_ref().map(|p| p.revision.as_str());
         match decision {
             NameDecision::Noop => {}
             NameDecision::Adopt(provenance) | NameDecision::Manual(provenance) => {
-                NameStore::write(lock, &scope, &provenance, revision, &self.cancelled)?;
+                if prior.as_ref() != Some(&provenance) {
+                    NameStore::write(lock, &scope, &provenance, &self.cancelled)?;
+                }
             }
             NameDecision::Rename {
                 name,
@@ -302,7 +303,7 @@ impl NativeCardEngine {
                     return Err(self
                         .refuse("editor name acknowledgement changed; provenance not published"));
                 }
-                NameStore::write(lock, &scope, &after_success, revision, &self.cancelled)?;
+                NameStore::write(lock, &scope, &after_success, &self.cancelled)?;
             }
         }
         Ok(())

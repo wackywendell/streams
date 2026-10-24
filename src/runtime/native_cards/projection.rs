@@ -297,7 +297,7 @@ impl NativeCardEngine {
                     .is_some_and(|index| label.label == (index + 1).to_string());
             let decision = decide_name(NameInput {
                 scope: &scope,
-                provenance: prior.as_ref().map(|p| &p.record),
+                provenance: prior.as_ref(),
                 owner: &owner,
                 current_label: &label.label,
                 desired_name: &desired,
@@ -308,7 +308,6 @@ impl NativeCardEngine {
                     NameIntent::Automatic
                 },
             })?;
-            let revision = prior.as_ref().map(|p| p.revision.as_str());
             let outcome = match decision {
                 NameDecision::Noop => NameOutcome::Unchanged,
                 NameDecision::Adopt(provenance) | NameDecision::Manual(provenance) => {
@@ -316,7 +315,9 @@ impl NativeCardEngine {
                         provenance,
                         super::super::native_names::NameProvenance::Manual { .. }
                     );
-                    NameStore::write(&lock, &scope, &provenance, revision, &self.cancelled)?;
+                    if prior.as_ref() != Some(&provenance) {
+                        NameStore::write(&lock, &scope, &provenance, &self.cancelled)?;
+                    }
                     if manual {
                         NameOutcome::Manual
                     } else {
@@ -357,7 +358,7 @@ impl NativeCardEngine {
                             "native name acknowledgement changed; provenance not published",
                         ));
                     }
-                    NameStore::write(&lock, &scope, &after_success, revision, &self.cancelled)?;
+                    NameStore::write(&lock, &scope, &after_success, &self.cancelled)?;
                     NameOutcome::Renamed
                 }
             };
