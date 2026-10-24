@@ -49,7 +49,7 @@ An executor should take Herdr's reply to an action as its confirmation, without 
 
 If an action fails, or its reply does not match, the executor should stop the list there and report the action and the reply. Remaining actions in the list do not run: lists are short and ordered, and "record intent, act, record outcome" depends on that order.
 
-For projections, a process should never apply the same action to the same target twice consecutively for the same desired value. Owner-event card follow is exempt: each verified move triggers an idempotent placement into the owner's tab, with no no-repeat guard. If a later pass repeats the last applied desired value for that target, Streams has misunderstood Herdr — for example, Herdr normalised a name differently — and applying it again would only produce another echo event and another identical plan. The executor should skip it and report it as a bug instead. This one rule catches mismatches whether or not the reply showed them, without an extra snapshot. The record of applied actions is small and lives only as long as the process. A changed desired value, such as a new Stream title, is a new action and applies normally.
+Projections plan only real differences. The planner compares each desired value with the value observed in the trigger's snapshot, both normalised the way the frontend normalises them, and plans an action only where they differ. An echo of Streams' own write therefore plans nothing. Streams keeps no history of applied actions: whether an action runs depends only on the desired and observed values. Restoring a value that someone else cleared is an ordinary difference, and applies normally.
 
 ### Each system has its own action type and executor
 
@@ -77,7 +77,7 @@ These files describe Herdr state and are protected by the host-local native writ
 
 A crash between those steps leaves a state layer 1 must recognise: the intent is recorded but the outcome is unknown. Uncertainty then becomes an explicit state rather than checks spread through the effect code. Pending launch and editor outcomes stay fenced; reappearance or reattestation alone cannot clear them.
 
-[Owner-event card follow](native-context-reconciliation.md#decision) is different: putting an existing owned card in its owner's tab is idempotent. It needs no pending intent or no-repeat guard. An uncertain reply ends the pass with a warning, without replanning; the next owner move is a new trigger.
+[Owner-event card follow](native-context-reconciliation.md#decision) is different: putting an existing owned card in its owner's tab is idempotent. It needs no pending intent. An uncertain reply ends the pass with a warning, without replanning; the next owner move is a new trigger.
 
 ### Applies across the stack
 
@@ -92,4 +92,4 @@ The socket client and `streams serve` should land first, because they rewrite th
 
 ## Open questions
 
-Some Herdr replies may not carry the updated object, only an acknowledgement. Pane rename returns the renamed pane, and the caption projection already checks it; native reconciliation should establish what metadata, tab and workspace rename, and card-move replies contain. Where a reply carries no state, should the executor accept the acknowledgement alone? Proposal: yes, consistent with trusting Herdr's reply. A wrong result then shows up when a later pass plans the same action again, which the no-repeat rule reports.
+Some Herdr replies may not carry the updated object, only an acknowledgement. Pane rename returns the renamed pane, and the caption projection already checks it; native reconciliation should establish what metadata, tab and workspace rename, and card-move replies contain. Where a reply carries no state, should the executor accept the acknowledgement alone? Proposal: only where the adapter models that field's normalisation exactly, for example metadata that Herdr stores verbatim. Otherwise a value Herdr normalised differently would look like a difference on every echo, and each pass would apply it again. A field whose normalisation the adapter can't model must get its value back in the reply, or not be projected.
