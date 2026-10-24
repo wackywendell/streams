@@ -1,16 +1,20 @@
 //! Native card effects consume fresh application attestation, not painted UI frames.
 //!
 //! Catalog ownership/enrollment remains in the application. This coordinator owns
-//! the separate Herdr resource lifetime and its shared native workspace lock.
+//! the separate Herdr resource lifetime and its host-local native writer lock.
 
 mod actions;
 mod config;
 mod display;
 mod documents;
+#[cfg(test)]
+#[path = "../../tests/support/herdr.rs"]
+mod fake_herdr;
 mod handover;
 mod inspection;
 mod launch_context;
 mod projection;
+mod reset;
 #[cfg(test)]
 mod tests;
 
@@ -19,6 +23,7 @@ pub use display::{CardPlacement, DisplayLifetime};
 pub use inspection::{DisplayCondition, NativeCardStatus, NativeOwnerContext, NativeOwnerView};
 pub use launch_context::LaunchedCardContext;
 pub use projection::{NameOutcome, NameProjectionIntent, NameReport};
+pub use reset::{EvidenceResetReport, reset_evidence};
 
 use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
@@ -29,7 +34,9 @@ use serde::Serialize;
 use serde_json::Value;
 
 use super::native::NativeInventory;
-use super::native_state::{NativeAttempt, NativePhase, NativeState, NativeStateGuard, Resources};
+use super::native_state::{
+    NativeAttempt, NativePhase, NativePurpose, NativeState, NativeStateGuard, Resources,
+};
 use super::{Result, digest, invalid};
 use crate::frontend::herdr::{HerdrClient, HerdrInventoryPane, HerdrNativeSnapshot, PairState};
 use crate::frontend::{CommandEvidence, FrontendError};
@@ -132,14 +139,6 @@ impl NativeTuple {
             workspace_id: pane.pane.workspace_id.clone(),
             tab_id: pane.pane.tab_id.clone(),
         }
-    }
-    fn ordered(&self) -> [&str; 4] {
-        [
-            &self.pane_id,
-            &self.terminal_id,
-            &self.workspace_id,
-            &self.tab_id,
-        ]
     }
     fn resources(&self) -> Result<Resources> {
         Resources::new(&self.pane_id, &self.terminal_id, &self.tab_id)
@@ -250,10 +249,6 @@ pub fn conversation_key(scope: &Scope) -> Result<String> {
         &scope.native_session_id,
     ))
 }
-fn attempt_key(socket: &Path, scope: &Scope, owner: &NativeTuple) -> Result<String> {
-    json_digest(&(socket, ScopeWire::from(scope), owner.ordered()))
-}
-
 pub struct NativeCardEngine {
     client: HerdrClient,
     source: Box<dyn NativeCardSource>,
@@ -378,6 +373,24 @@ impl NativeCardEngine {
             .expect("observed snapshot")
             .clone())
     }
+    fn read_attempt(&self, key: &str, purpose: NativePurpose) -> Result<Option<NativeAttempt>> {
+        let record = self.state.read(key)?;
+        if record
+            .as_ref()
+            .is_some_and(|record| record.purpose() != purpose)
+        {
+            return Err(self.refuse("native evidence has another purpose; fence retained"));
+        }
+        if record
+            .as_ref()
+            .is_some_and(|record| record.endpoint() != self.client.endpoint().socket)
+        {
+            return Err(
+                self.refuse("native evidence belongs to another Herdr endpoint; fence retained")
+            );
+        }
+        Ok(record)
+    }
     fn check_cancelled(&self) -> Result<()> {
         if self.cancelled.load(Ordering::Acquire) {
             Err(invalid("native operation cancelled"))
@@ -442,8 +455,8 @@ impl NativeCardEngine {
         if scope.harness != "pi" {
             return Err(self.refuse("native cards require an attested Pi Session"));
         }
-        let identity = json_digest(&ScopeWire::from(scope))?;
-        let key = attempt_key(&self.client.endpoint().socket, scope, &tuple)?;
+        let identity = conversation_key(scope)?;
+        let key = identity.clone();
         let binding = BTreeMap::from([
             ("strm_catalog".into(), json_digest(&scope.catalog_source)?),
             ("strm_host".into(), scope.host_id.clone()),

@@ -28,17 +28,23 @@ impl DisplayLifetime {
     // The native format cutover changes this single reader together with its
     // producer and migration. Display never probes or mixes evidence formats.
     pub fn read_evidence(&self) -> Result<Option<NativeAttempt>> {
-        let owner = NativeTuple {
-            pane_id: self.context.owner().pane_id.clone(),
-            tab_id: self.context.owner().tab_id.clone(),
-            workspace_id: self.context.owner().workspace_id.clone(),
-            terminal_id: self.context.owner_terminal().into(),
+        let key = conversation_key(self.context.scope())?;
+        let record = match self.state.read(&key) {
+            Ok(record) => record.filter(|record| record.nonce() == self.context.nonce()),
+            Err(crate::runtime::RuntimeError::NativeEvidenceResetRequired) => return Ok(None),
+            Err(error) => return Err(error),
         };
-        let key = attempt_key(&self.socket, self.context.scope(), &owner)?;
-        Ok(self
-            .state
-            .read(&key)?
-            .filter(|record| record.nonce() == self.context.nonce()))
+        if let Some(record) = &record {
+            if record.purpose() != NativePurpose::Card {
+                return Err(invalid("card evidence has another purpose; fence retained"));
+            }
+            if record.endpoint() != self.socket {
+                return Err(invalid(
+                    "card evidence belongs to another Herdr endpoint; fence retained",
+                ));
+            }
+        }
+        Ok(record)
     }
     pub fn context(&self) -> &LaunchedCardContext {
         &self.context

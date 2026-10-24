@@ -18,6 +18,12 @@ pub(super) struct Cli {
 
 #[derive(Debug, Subcommand)]
 pub(super) enum NativeCommand {
+    /// Offline reset of card/editor evidence; stop native writers and back up first.
+    MigrateEvidence {
+        /// Known v1 evidence root; never discovered from the current endpoint.
+        #[arg(long)]
+        legacy_state_dir: PathBuf,
+    },
     /// Read the attested owner and lifecycle configuration without native effects.
     Observe,
     /// Capture the current attested owner's arrangement through the Rust runtime.

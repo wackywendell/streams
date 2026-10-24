@@ -104,7 +104,7 @@ impl NativeCardEngine {
     pub fn status(&mut self) -> Result<NativeCardStatus> {
         self.begin_observation();
         let v = self.guard()?;
-        let evidence = self.state.read(&v.key)?;
+        let evidence = self.read_attempt(&v.key, NativePurpose::Card)?;
         if !matches!(v.pair()?, PairState::Empty)
             || evidence
                 .as_ref()

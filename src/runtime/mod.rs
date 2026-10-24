@@ -34,6 +34,8 @@ use crate::storage::StorageError;
 pub enum RuntimeError {
     #[error("invalid host-local state: {0}")]
     Invalid(String),
+    #[error("native evidence requires reset; run streams native migrate-evidence")]
+    NativeEvidenceResetRequired,
     #[error("{0}")]
     NativeContextChanged(String),
     #[error("not found: {0}")]

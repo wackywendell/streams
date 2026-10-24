@@ -46,6 +46,8 @@ impl NativeCardEngine {
             return Err(self.refuse("application document resolution changed"));
         }
         let key = json_digest(&(
+            "streams-native-editor",
+            2,
             &resolved.identity.catalog_source,
             &resolved.identity.host_id,
             &resolved.identity.checkout_id,
@@ -56,12 +58,7 @@ impl NativeCardEngine {
     pub fn open_document(&mut self, target: &DocumentTarget) -> Result<()> {
         self.begin_observation();
         let state = self.state.clone();
-        let _lock = state.lock(
-            &self.client.endpoint().socket,
-            &self.caller.workspace_id,
-            self.config.timeout_seconds,
-            &self.cancelled,
-        )?;
+        let _lock = state.lock(self.config.timeout_seconds, &self.cancelled)?;
         self.fresh_under_lock();
         let (mut v, resolved, key) = self.document_proof(target)?;
         let evidence_key = json_digest(&(
@@ -70,7 +67,7 @@ impl NativeCardEngine {
             "editor",
             &key,
         ))?;
-        let old = state.read(&evidence_key)?;
+        let old = self.read_attempt(&evidence_key, NativePurpose::Editor)?;
         if let Some(editor) = editor_match(&v, &key)? {
             if let Some(record) = old
                 .as_ref()
@@ -114,7 +111,12 @@ impl NativeCardEngine {
             return Err(self.refuse("document or editor changed during preparation"));
         }
         v = fresh;
-        let pending = NativeAttempt::new(&evidence_key, uuid::Uuid::new_v4().to_string())?;
+        let pending = NativeAttempt::new(
+            &evidence_key,
+            uuid::Uuid::new_v4().to_string(),
+            &self.client.endpoint().socket,
+            NativePurpose::Editor,
+        )?;
         _lock.write(old.as_ref(), &pending)?;
         let protocol = Protocol::new()?.next(Action::Dispatch)?;
         let mut env = BTreeMap::from([
@@ -212,6 +214,7 @@ impl NativeCardEngine {
             .ok_or_else(|| self.refuse("editor disappeared"))?;
         if actual_key != key
             || record.key() != evidence_key
+            || record.purpose() != NativePurpose::Editor
             || !matches!(
                 record.phase(),
                 NativePhase::Reserved(_) | NativePhase::Ready(_)
@@ -312,8 +315,7 @@ impl NativeCardEngine {
         expected: &NativeTuple,
     ) -> Result<()> {
         let record = self
-            .state
-            .read(evidence_key)?
+            .read_attempt(evidence_key, NativePurpose::Editor)?
             .ok_or_else(|| self.refuse("editor lacks durable launch proof"))?;
         self.editor_proof(target, key, evidence_key, expected, &record)?;
         if !matches!(record.phase(), NativePhase::Ready(_)) {

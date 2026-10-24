@@ -139,7 +139,7 @@ impl NativeCardEngine {
                 "uncertain card-only launch retained; owner must complete its exact reservation",
             ));
         }
-        let attempt = self.state.read(&v.key)?;
+        let attempt = self.read_attempt(&v.key, NativePurpose::Card)?;
         if let Some(record) = &attempt {
             if matches!(record.phase(), NativePhase::Unlaunched) {
                 return Err(self.refuse("uncertain native launch retained; no retry permitted"));
@@ -455,15 +455,10 @@ impl NativeCardEngine {
             return Err(self.refuse("only the attested Pi owner may open a display"));
         }
         let state = Arc::clone(&self.state);
-        let lock = state.lock(
-            &self.client.endpoint().socket,
-            &self.caller.workspace_id,
-            self.config.timeout_seconds,
-            &self.cancelled,
-        )?;
+        let lock = state.lock(self.config.timeout_seconds, &self.cancelled)?;
         self.fresh_under_lock();
         let mut v = self.guard()?;
-        let raw = lock.read(&v.key)?;
+        let raw = self.read_attempt(&v.key, NativePurpose::Card)?;
         if let Some(attempt) = raw
             .as_ref()
             .filter(|a| matches!(a.phase(), NativePhase::Reserved(_)))
@@ -520,7 +515,12 @@ impl NativeCardEngine {
             ("STREAMS_CARDS_STATE_DIR".into(), path_text(state.directory())?),
             ("STREAMS_CARDS_PLUGIN_ROOT".into(), path_text(&root)?),
         ]));
-        let pending = NativeAttempt::new(&v.key, nonce)?;
+        let pending = NativeAttempt::new(
+            &v.key,
+            nonce,
+            &self.client.endpoint().socket,
+            NativePurpose::Card,
+        )?;
         lock.write(attempt.as_ref(), &pending)?;
         // Pending is deliberately retained on every later error, including a
         // cancellation before dispatch. Conservative fencing beats an inferred retry.
@@ -625,12 +625,7 @@ impl NativeCardEngine {
         self.begin_observation();
         self.guard()?;
         let state = Arc::clone(&self.state);
-        let _lock = state.lock(
-            &self.client.endpoint().socket,
-            &self.caller.workspace_id,
-            self.config.timeout_seconds,
-            &self.cancelled,
-        )?;
+        let _lock = state.lock(self.config.timeout_seconds, &self.cancelled)?;
         self.fresh_under_lock();
         let v = self.marked()?;
         let card = paired_tuple(&v)?;
@@ -659,12 +654,7 @@ impl NativeCardEngine {
         self.begin_observation();
         self.guard()?;
         let state = Arc::clone(&self.state);
-        let lock = state.lock(
-            &self.client.endpoint().socket,
-            &self.caller.workspace_id,
-            self.config.timeout_seconds,
-            &self.cancelled,
-        )?;
+        let lock = state.lock(self.config.timeout_seconds, &self.cancelled)?;
         self.fresh_under_lock();
         let v = self.marked()?;
         if matches!(v.pair()?, PairState::Absent { .. }) {

@@ -3,14 +3,13 @@
 use super::*;
 #[path = "display_tests.rs"]
 mod display_tests;
-#[path = "../../../tests/support/herdr.rs"]
-mod fake_herdr;
 use crate::model::{Document, Repository, Session, Stream};
 use crate::tui::{
     CardView, CheckoutBinding, CheckoutSelection, DisplayContext, DocumentLocation,
     NativeOwnerObservation, Rect, ResolvedDocument,
 };
 use serde_json::json;
+use std::os::unix::fs::DirBuilderExt;
 use std::sync::Mutex;
 
 fn card(native: &str, hints: Option<&str>) -> CardSnapshot {
@@ -173,6 +172,8 @@ fn add_card(world: &mut World, id: &str, terminal: &str) {
 fn document_keys(socket: &Path, target: &DocumentTarget) -> (String, String) {
     let identity = target.editor_identity().unwrap();
     let key = json_digest(&(
+        "streams-native-editor",
+        2,
         &identity.catalog_source,
         &identity.host_id,
         &identity.checkout_id,
@@ -427,13 +428,16 @@ impl Fixture {
             card: card("native", None),
             handover: None,
         };
-        let owner = NativeTuple {
-            pane_id: "owner".into(),
-            terminal_id: "owner-terminal".into(),
-            workspace_id: "w".into(),
-            tab_id: "t".into(),
-        };
-        let key = attempt_key(&socket, observation.card.scope(), &owner).unwrap();
+        let key = conversation_key(observation.card.scope()).unwrap();
+        std::fs::DirBuilder::new()
+            .mode(0o700)
+            .create(state.directory())
+            .unwrap();
+        crate::file_io::write_json(
+            &state.directory().join("format.json"),
+            &json!({"version":2}),
+        )
+        .unwrap();
         let world = Arc::new(Mutex::new(World {
             snapshot: json!({
                 "workspaces":[{"workspace_id":"w","label":"Workspace","number":1,"tokens":{}}],
@@ -611,7 +615,7 @@ impl Fixture {
         let cancelled = AtomicBool::new(false);
         self.runner
             .state
-            .lock(&self.runner.socket, "w", 1.0, &cancelled)
+            .lock(1.0, &cancelled)
             .unwrap()
             .write(old, next)
             .unwrap();
@@ -634,7 +638,13 @@ impl Fixture {
     }
     fn reserve(&self, partial: bool) {
         self.bind();
-        let pending = NativeAttempt::new(&self.runner.key, "reserved-nonce").unwrap();
+        let pending = NativeAttempt::new(
+            &self.runner.key,
+            "reserved-nonce",
+            &self.runner.socket,
+            NativePurpose::Card,
+        )
+        .unwrap();
         self.write(None, &pending);
         let mut attempt = pending.clone();
         attempt
@@ -644,7 +654,7 @@ impl Fixture {
         let mut w = self.runner.world.lock().unwrap();
         add_card(&mut w, "display", "display-terminal");
         if partial {
-            let identity = json_digest(&ScopeWire::from(w.observation.card.scope())).unwrap();
+            let identity = conversation_key(w.observation.card.scope()).unwrap();
             w.snapshot["panes"][1]["tokens"] = json!({"strm_agent":identity,
                 "strm_nonce":attempt.nonce(),"strm_pi":"owner-terminal","strm_card":"display-terminal",
                 "strm_native":"native","strm_role":"card"});
@@ -658,7 +668,7 @@ fn owner_observation_is_readonly_and_lifetime_expectations_fail_closed() {
     let mut engine = f.engine();
     let observed = engine.observe_owner().unwrap();
     assert_eq!(observed.context.pane_id, "owner");
-    assert!(!f.runner.state.directory().exists());
+    assert!(f.runner.state.read(&f.runner.key).unwrap().is_none());
     assert!(f.effects().is_empty());
     engine
         .pin_owner(observed.card.scope(), &observed.context)
@@ -692,7 +702,7 @@ fn owner_observation_is_readonly_and_lifetime_expectations_fail_closed() {
         assert!(f.engine().pin_owner(&changed, &observed.context).is_err());
     }
     assert!(f.effects().is_empty());
-    assert!(!f.runner.state.directory().exists());
+    assert!(f.runner.state.read(&f.runner.key).unwrap().is_none());
     engine.open_display(OpenMode::Explicit).unwrap();
     let current = f.engine().observe_owner().unwrap();
     assert!(current.context.binding.is_some());
@@ -813,15 +823,28 @@ fn native_open_baseline_source_evidence_and_wait_counts() {
         .count();
     // The fake source counts context requests, not real catalog file reads.
     // The CLI/catalog integration budget must count those separately.
-    assert_eq!((source_reads, probes, reads, waits), (32, 19, 12, 0));
+    assert_eq!((source_reads, probes, reads, waits), (32, 38, 31, 0));
     let evidence = f
         .runner
         .state
         .directory()
         .join(format!("{}.json", f.runner.key));
+    let format = f.runner.state.directory().join("format.json");
+    assert_eq!(
+        io.iter()
+            .filter(|event| matches!(event, Io::Read(path) if path == &format))
+            .count(),
+        19
+    );
+    assert_eq!(
+        io.iter()
+            .filter(|event| matches!(event, Io::Read(path) if path == &evidence))
+            .count(),
+        12
+    );
     for event in io {
         if let Io::Probe(path) | Io::Read(path) = event {
-            assert_eq!(path, evidence);
+            assert!(path == evidence || path == format);
         }
     }
 }
@@ -831,11 +854,8 @@ fn bootstrap_and_verify_are_read_only_and_require_pair_and_durable_evidence() {
     let f = Fixture::new();
     let mut engine = f.engine();
     assert!(engine.verify_display().is_err());
-    assert!(!f.runner.state.directory().exists());
-    let lock = f.runner.socket.parent().unwrap().join(format!(
-        ".work-cards-{}.lock",
-        digest(format!("{}\0w", f.runner.socket.display()).as_bytes())
-    ));
+    assert!(f.runner.state.read(&f.runner.key).unwrap().is_none());
+    let lock = f.runner.state.directory().join(".native.lock");
     assert!(!lock.exists());
     assert!(f.effects().is_empty());
     f.reserve(true);
@@ -854,6 +874,48 @@ fn bootstrap_and_verify_are_read_only_and_require_pair_and_durable_evidence() {
 }
 
 #[test]
+fn missing_completed_format_refuses_launch_without_legacy_lookup_or_repair() {
+    let f = Fixture::new();
+    std::fs::remove_file(f.runner.state.directory().join("format.json")).unwrap();
+    let error = f.engine().open_display(OpenMode::Explicit).unwrap_err();
+    assert!(matches!(
+        error,
+        super::super::RuntimeError::NativeEvidenceResetRequired
+    ));
+    assert!(f.effects().is_empty());
+    assert!(!f.runner.state.directory().join("format.json").exists());
+}
+
+#[test]
+fn conversation_key_cannot_adopt_evidence_from_another_endpoint() {
+    let f = Fixture::new();
+    f.engine().open_display(OpenMode::Explicit).unwrap();
+    let original = f.record();
+    let mut wire = serde_json::to_value(&original).unwrap();
+    wire["endpoint"] = "/another/herdr.sock".into();
+    crate::file_io::write_json(
+        &f.runner
+            .state
+            .directory()
+            .join(format!("{}.json", f.runner.key)),
+        &wire,
+    )
+    .unwrap();
+    let before = f.effects();
+    assert!(
+        f.engine()
+            .open_display(OpenMode::Explicit)
+            .unwrap_err()
+            .to_string()
+            .contains("another Herdr endpoint")
+    );
+    assert!(f.engine().status().is_err());
+    assert_eq!(f.effects(), before);
+    assert_eq!(f.record().nonce(), original.nonce());
+    assert_eq!(f.record().phase(), original.phase());
+}
+
+#[test]
 fn fresh_open_persists_pending_then_exact_pair_and_ready_and_launches_once() {
     let f = Fixture::new();
     let mut engine = f.engine();
@@ -869,7 +931,7 @@ fn fresh_open_persists_pending_then_exact_pair_and_ready_and_launches_once() {
     assert!(matches!(ready.phase(), NativePhase::Ready(_)));
     let w = f.runner.world.lock().unwrap();
     let snapshot = HerdrNativeSnapshot::parse(&w.snapshot).unwrap();
-    let identity = json_digest(&ScopeWire::from(w.observation.card.scope())).unwrap();
+    let identity = conversation_key(w.observation.card.scope()).unwrap();
     assert!(
         matches!(snapshot.classify_pair(&identity, "owner-terminal").unwrap(), PairState::Paired { nonce, .. } if nonce == ready.nonce())
     );
@@ -1181,6 +1243,61 @@ fn document_launch_persists_pending_and_exact_editor_then_reuses_by_focus() {
         &[("tab.focus".into(), json!({"tab_id":"editor-tab-1"}))]
     );
     assert_eq!(f.runner.state.read(&evidence).unwrap().unwrap(), ready);
+}
+
+#[test]
+fn editor_left_by_reset_is_not_adopted_or_closed() {
+    let f = Fixture::new();
+    let target = f.document();
+    let mut engine = f.engine();
+    engine.open_display(OpenMode::Explicit).unwrap();
+    engine.open_document(&target).unwrap();
+    let (_, evidence) = document_keys(&f.runner.socket, &target);
+    std::fs::remove_file(f.runner.state.directory().join(format!("{evidence}.json"))).unwrap();
+    let identity = target.editor_identity().unwrap();
+    let legacy_key = json_digest(&(
+        &identity.catalog_source,
+        &identity.host_id,
+        &identity.checkout_id,
+        &identity.file,
+    ))
+    .unwrap();
+    let old = {
+        let mut world = f.runner.world.lock().unwrap();
+        let editor = world.snapshot["panes"]
+            .as_array_mut()
+            .unwrap()
+            .iter_mut()
+            .find(|p| p["pane_id"] == "editor-1")
+            .unwrap();
+        editor["tokens"]["strm_doc"] = legacy_key.into();
+        editor.clone()
+    };
+    let before = f.effects().len();
+    engine.open_document(&target).unwrap();
+    let world = f.runner.world.lock().unwrap();
+    assert_eq!(
+        world.snapshot["panes"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|p| p["pane_id"] == "editor-1")
+            .unwrap(),
+        &old
+    );
+    assert!(
+        world.effects[before..]
+            .iter()
+            .all(|(method, _)| method != "plugin.pane.close")
+    );
+    assert_eq!(
+        world
+            .effects
+            .iter()
+            .filter(|(method, p)| method == "plugin.pane.open" && p["entrypoint"] == "document")
+            .count(),
+        2
+    );
 }
 
 #[test]

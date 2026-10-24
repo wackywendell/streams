@@ -55,7 +55,7 @@ impl NativeCardEngine {
                 && scope.catalog_source == current_scope.catalog_source
                 && scope.host_id == current_scope.host_id
                 && scope.stream_id == current_scope.stream_id
-                && json_digest(&ScopeWire::from(scope))? == markers["strm_agent"]
+                && conversation_key(scope)? == markers["strm_agent"]
             {
                 candidates.push(scope);
             }
@@ -90,10 +90,9 @@ impl NativeCardEngine {
         }) {
             return Err(self.refuse("predecessor has live native markers"));
         }
-        let old_key = attempt_key(&self.client.endpoint().socket, previous, &observed.owner)?;
+        let old_key = conversation_key(previous)?;
         let old = self
-            .state
-            .read(&old_key)?
+            .read_attempt(&old_key, NativePurpose::Card)?
             .ok_or_else(|| self.refuse("predecessor has no durable proof"))?;
         let Some(resources) = old.resources() else {
             return Err(self.refuse("uncertain predecessor launch retained"));
@@ -106,7 +105,7 @@ impl NativeCardEngine {
         {
             return Err(self.refuse("predecessor launch is pending, mismatched or still live"));
         }
-        let current = self.state.read(&observed.key)?;
+        let current = self.read_attempt(&observed.key, NativePurpose::Card)?;
         if current.as_ref().is_some_and(|record| {
             matches!(
                 record.phase(),
@@ -132,12 +131,7 @@ impl NativeCardEngine {
     fn retire_predecessor(&mut self) -> Result<()> {
         let state = self.state.clone();
         let socket = self.client.endpoint().socket.clone();
-        let _lock = state.lock(
-            &socket,
-            &self.caller.workspace_id,
-            self.config.timeout_seconds,
-            &self.cancelled,
-        )?;
+        let _lock = state.lock(self.config.timeout_seconds, &self.cancelled)?;
         self.fresh_under_lock();
         let (_, before) = self.retirement_proof()?;
         let (_, fresh) = self.retirement_proof()?;

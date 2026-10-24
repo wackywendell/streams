@@ -186,23 +186,123 @@ fn missing_or_replaced_evidence_retires_the_card_without_mutating_the_replacemen
     let lifetime = DisplayLifetime::new(context, f.runner.socket.clone()).unwrap();
     assert!(lifetime.read_evidence().unwrap().is_some());
     let old = f.record();
-    let replacement = NativeAttempt::new(old.key(), "replacement").unwrap();
+    let replacement = NativeAttempt::new(
+        old.key(),
+        "replacement",
+        &f.runner.socket,
+        NativePurpose::Card,
+    )
+    .unwrap();
     f.write(Some(&old), &replacement);
     f.server.clear();
     assert!(lifetime.read_evidence().unwrap().is_none());
     assert_eq!(f.record(), replacement);
     {
-        let lock = f
-            .runner
-            .state
-            .lock(&f.runner.socket, "w", 1.0, &AtomicBool::new(false))
-            .unwrap();
+        let lock = f.runner.state.lock(1.0, &AtomicBool::new(false)).unwrap();
         lock.discard_unlaunched(&replacement, None).unwrap();
     }
     assert!(lifetime.read_evidence().unwrap().is_none());
     assert!(f.runner.state.read(replacement.key()).unwrap().is_none());
     assert!(f.server.methods().is_empty());
 }
+#[test]
+fn v2_reader_addresses_only_the_conversation_and_reads_its_two_named_files() {
+    use crate::runtime::native_state::accounting::{self, Io};
+    let f = Fixture::new();
+    f.engine().open_display(OpenMode::Explicit).unwrap();
+    let evidence = f.record();
+    let mut environment = f.launched_environment();
+    let mut scope: Value = serde_json::from_str(&environment["STREAMS_CARDS_SCOPE"]).unwrap();
+    scope["streamId"] = json!("earlier-stream");
+    scope["sessionId"] = json!("earlier-session");
+    environment.insert("STREAMS_CARDS_SCOPE".into(), scope.to_string());
+    environment.insert("STREAMS_CARDS_OWNER".into(),
+        json!({"pane_id":"earlier-owner","tab_id":"earlier-tab","workspace_id":"earlier-workspace"}).to_string());
+    let context = LaunchedCardContext::from_environment(&environment)
+        .unwrap()
+        .unwrap();
+    let lifetime = DisplayLifetime::new(context, f.runner.socket.clone()).unwrap();
+    f.server.clear();
+    accounting::take();
+    assert_eq!(lifetime.read_evidence().unwrap(), Some(evidence.clone()));
+    let reads: Vec<_> = accounting::take()
+        .into_iter()
+        .filter_map(|event| match event {
+            Io::Read(path) => Some(path),
+            _ => None,
+        })
+        .collect();
+    assert_eq!(
+        reads,
+        [
+            f.runner.state.directory().join("format.json"),
+            f.runner.state.path(evidence.key()).unwrap(),
+        ]
+    );
+    assert!(f.server.methods().is_empty());
+}
+
+#[test]
+fn incomplete_v2_format_is_a_read_only_orphan_exit() {
+    let f = Fixture::new();
+    f.engine().open_display(OpenMode::Explicit).unwrap();
+    let environment = f.launched_environment();
+    let context = LaunchedCardContext::from_environment(&environment)
+        .unwrap()
+        .unwrap();
+    let lifetime = DisplayLifetime::new(context, f.runner.socket.clone()).unwrap();
+    let path = f.runner.state.path(f.record().key()).unwrap();
+    let bytes = std::fs::read(&path).unwrap();
+    let marker = f.runner.state.directory().join("format.json");
+    std::fs::remove_file(&marker).unwrap();
+    f.server.clear();
+    assert!(lifetime.read_evidence().unwrap().is_none());
+    assert_eq!(std::fs::read(path).unwrap(), bytes);
+    assert!(!marker.exists());
+    assert!(f.server.methods().is_empty());
+}
+
+#[test]
+fn wrong_endpoint_purpose_or_corrupt_v2_input_is_fatal_without_writes_or_connection() {
+    for failure in ["endpoint", "purpose", "format", "record"] {
+        let f = Fixture::new();
+        f.engine().open_display(OpenMode::Explicit).unwrap();
+        let environment = f.launched_environment();
+        let context = LaunchedCardContext::from_environment(&environment)
+            .unwrap()
+            .unwrap();
+        let path = f.runner.state.path(f.record().key()).unwrap();
+        let marker = f.runner.state.directory().join("format.json");
+        let mut socket = f.runner.socket.clone();
+        match failure {
+            "endpoint" => socket = "/another/herdr.sock".into(),
+            "purpose" => {
+                let mut wire = serde_json::to_value(f.record()).unwrap();
+                wire["purpose"] = json!("editor");
+                crate::file_io::write_json(&path, &wire).unwrap();
+            }
+            "format" => std::fs::write(&marker, r#"{"version":99}"#).unwrap(),
+            "record" => std::fs::write(&path, r#"{"version":2}"#).unwrap(),
+            _ => unreachable!(),
+        }
+        let before = (
+            std::fs::read(&path).unwrap(),
+            std::fs::read(&marker).unwrap(),
+        );
+        let lifetime = DisplayLifetime::new(context, socket).unwrap();
+        f.server.clear();
+        assert!(lifetime.read_evidence().is_err(), "{failure}");
+        assert_eq!(
+            (
+                std::fs::read(&path).unwrap(),
+                std::fs::read(&marker).unwrap()
+            ),
+            before
+        );
+        assert!(f.server.methods().is_empty());
+    }
+}
+
 #[test]
 fn complete_native_observation_of_a_missing_owner_requires_no_source_read_or_writes() {
     let f = Fixture::new();

@@ -90,12 +90,7 @@ impl NativeCardEngine {
             return Err(self.refuse("only owning Pi may publish Session progress"));
         }
         let state = self.state.clone();
-        let _lock = state.lock(
-            &self.client.endpoint().socket,
-            &self.caller.workspace_id,
-            self.config.timeout_seconds,
-            &self.cancelled,
-        )?;
+        let _lock = state.lock(self.config.timeout_seconds, &self.cancelled)?;
         self.fresh_under_lock();
         for workspace in [true, false] {
             let v = self.projection_proof()?;
@@ -145,12 +140,7 @@ impl NativeCardEngine {
     pub fn project_caption(&mut self) -> Result<()> {
         self.begin_observation();
         let state = self.state.clone();
-        let _lock = state.lock(
-            &self.client.endpoint().socket,
-            &self.caller.workspace_id,
-            self.config.timeout_seconds,
-            &self.cancelled,
-        )?;
+        let _lock = state.lock(self.config.timeout_seconds, &self.cancelled)?;
         self.fresh_under_lock();
         let before = self.projection_observation()?;
         let PairState::Paired { card, .. } = before.pair()? else {
@@ -240,12 +230,7 @@ impl NativeCardEngine {
         self.begin_observation();
         self.guard_recovering()?;
         let state = self.state.clone();
-        let lock = state.lock(
-            &self.client.endpoint().socket,
-            &self.caller.workspace_id,
-            self.config.timeout_seconds,
-            &self.cancelled,
-        )?;
+        let lock = state.lock(self.config.timeout_seconds, &self.cancelled)?;
         self.fresh_under_lock();
         let mut report = NameReport {
             workspace: NameOutcome::Disabled,

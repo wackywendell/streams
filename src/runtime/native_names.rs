@@ -589,10 +589,8 @@ mod tests {
         })
         .unwrap()
     }
-    fn locked<'a>(state: &'a NativeState, socket: &Path) -> NativeStateGuard<'a> {
-        state
-            .lock(socket, "ws-1", 0.0, &AtomicBool::new(false))
-            .unwrap()
+    fn locked(state: &NativeState) -> NativeStateGuard<'_> {
+        state.lock(0.0, &AtomicBool::new(false)).unwrap()
     }
     fn local_scope(guard: &NativeStateGuard<'_>) -> NameScope {
         NameStore::prepare_scope(
@@ -736,11 +734,11 @@ mod tests {
     fn missing_read_cas_raw_bytes_noop_and_cancellation() {
         let temp = tempfile::tempdir().unwrap();
         let state = NativeState::new(temp.path().join("state")).unwrap();
-        let guard = locked(&state, &temp.path().join("socket"));
+        let guard = locked(&state);
         assert!(
-            NameStore::scope(&guard, "/tmp/sock", "ws", "n", SurfaceKind::Workspace, "ws").is_err()
+            NameStore::scope(&guard, "/tmp/sock", "ws", "n", SurfaceKind::Workspace, "ws").is_ok()
         );
-        assert!(!state.directory().exists());
+        assert!(state.directory().join(".native.lock").exists());
         let scope = local_scope(&guard);
         let cache = state.directory().join(".native-names");
         assert!(NameStore::read(&guard, &scope).unwrap().is_none());
@@ -796,7 +794,7 @@ mod tests {
         let alias = temp.path().join("alias");
         symlink(&actual, &alias).unwrap();
         let state = NativeState::new(alias.join("state")).unwrap();
-        let guard = locked(&state, &temp.path().join("socket"));
+        let guard = locked(&state);
         let scope = local_scope(&guard);
         assert_eq!(
             scope.store_path(),
@@ -829,7 +827,7 @@ mod tests {
     fn unsafe_cache_leaf_modes_fifo_and_root_changes() {
         let temp = tempfile::tempdir().unwrap();
         let state = NativeState::new(temp.path().join("state")).unwrap();
-        let guard = locked(&state, &temp.path().join("socket"));
+        let guard = locked(&state);
         let scope = local_scope(&guard);
         let signal = AtomicBool::new(false);
         let record = automatic(&scope, "Name");

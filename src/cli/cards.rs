@@ -29,6 +29,9 @@ pub(super) struct Options {
 }
 impl App {
     pub(super) fn native_cards(&self, options: Options, command: NativeCommand) -> Result<Output> {
+        if let NativeCommand::MigrateEvidence { legacy_state_dir } = command {
+            return self.reset_native_evidence(options, legacy_state_dir);
+        }
         let launched = LaunchedCardContext::from_environment(&self.environment)?;
         if let (Some(path), Some(context)) = (&options.plugin_root, &launched)
             && std::fs::canonicalize(if path.is_absolute() {
@@ -132,12 +135,37 @@ impl App {
                 engine.close_display()?;
                 Ok(Output::value(json!({"closed":true})))
             }
-            NativeCommand::Pane => unreachable!("interactive branch handled above"),
+            NativeCommand::Pane | NativeCommand::MigrateEvidence { .. } => {
+                unreachable!("special branch handled above")
+            }
         }
     }
 }
 
 impl App {
+    fn reset_native_evidence(&self, options: Options, legacy_state_dir: PathBuf) -> Result<Output> {
+        if options.session_id.is_some() || options.expect.is_some() {
+            return Err(CliError::message(
+                "evidence reset is not Session-scoped; omit --session-id and --expect",
+            ));
+        }
+        let plugin_root = options.plugin_root.unwrap_or_else(|| {
+            PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("integrations/herdr-work-cards")
+        });
+        let config = NativeCardsConfig::load(&self.environment, &self.cwd, &plugin_root)?;
+        let client = HerdrClient::connect(self.environment.clone(), config.timeout_seconds())
+            .map_err(streams_temper::runtime::RuntimeError::from)?;
+        let state = NativeState::new(evidence_directory(options.state_dir, &self.environment)?)?;
+        let legacy = NativeState::new(legacy_state_dir)?;
+        let report = streams_temper::runtime::native_cards::reset_evidence(
+            &client,
+            &state,
+            &legacy,
+            config.timeout_seconds(),
+            &AtomicBool::new(false),
+        )?;
+        Ok(Output::value(json!({"version":2,"evidence_reset":report})))
+    }
     fn capture_native_owner(&self, engine: &mut NativeCardEngine) -> Result<Output> {
         use streams_temper::runtime::{
             conversations::ConversationRoots, workspace::WorkspaceRuntime,
@@ -270,21 +298,7 @@ fn build(
     }
     .map_err(|e| CliError::message(e.to_string()))?;
     let snapshot = app.herdr.as_ref().and_then(|read| read.snapshot.clone());
-    let directory = options
-        .state_dir
-        .or_else(|| {
-            app.environment
-                .get("STREAMS_CARDS_STATE_DIR")
-                .map(PathBuf::from)
-        })
-        .unwrap_or_else(|| {
-            client
-                .endpoint()
-                .socket
-                .parent()
-                .expect("absolute socket parent")
-                .join("streams-native")
-        });
+    let directory = evidence_directory(options.state_dir, &app.environment)?;
     let state = Arc::new(NativeState::new(directory)?);
     let source_app = App {
         config: Config::new(&read_environment, &read_cwd)?,
@@ -364,6 +378,29 @@ impl Expectation {
         }
     }
 }
+fn evidence_directory(
+    explicit: Option<PathBuf>,
+    environment: &BTreeMap<String, String>,
+) -> Result<PathBuf> {
+    if let Some(path) = explicit.or_else(|| {
+        environment
+            .get("STREAMS_CARDS_STATE_DIR")
+            .map(PathBuf::from)
+    }) {
+        return Ok(path);
+    }
+    let state_home =
+        if let Some(path) = environment.get("XDG_STATE_HOME").filter(|s| !s.is_empty()) {
+            PathBuf::from(path)
+        } else {
+            PathBuf::from(environment.get("HOME").ok_or_else(|| {
+                CliError::message("native evidence requires XDG_STATE_HOME or HOME")
+            })?)
+            .join(".local/state")
+        };
+    Ok(state_home.join("streams/native"))
+}
+
 fn activate(
     engine: &mut NativeCardEngine,
     environment: &BTreeMap<String, String>,
@@ -424,6 +461,31 @@ fn activate(
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn evidence_root_is_host_local_and_only_explicit_overrides_change_it() {
+        let mut environment = BTreeMap::from([("HOME".into(), "/home/user".into())]);
+        assert_eq!(
+            evidence_directory(None, &environment).unwrap(),
+            PathBuf::from("/home/user/.local/state/streams/native")
+        );
+        environment.insert("XDG_STATE_HOME".into(), "/state".into());
+        environment.insert("HERDR_SOCKET_PATH".into(), "/first/herdr.sock".into());
+        let first = evidence_directory(None, &environment).unwrap();
+        environment.insert("HERDR_SOCKET_PATH".into(), "/other/herdr.sock".into());
+        assert_eq!(first, PathBuf::from("/state/streams/native"));
+        assert_eq!(evidence_directory(None, &environment).unwrap(), first);
+        environment.insert("STREAMS_CARDS_STATE_DIR".into(), "/configured".into());
+        assert_eq!(
+            evidence_directory(None, &environment).unwrap(),
+            PathBuf::from("/configured")
+        );
+        assert_eq!(
+            evidence_directory(Some("/explicit".into()), &environment).unwrap(),
+            PathBuf::from("/explicit")
+        );
+        assert!(evidence_directory(None, &BTreeMap::new()).is_err());
+    }
+
     #[test]
     fn expectation_requires_versioned_named_complete_context() {
         let valid = json!({"version":1,"scope":{"catalogSource":"source","hostId":"host","streamId":"stream","sessionId":"session","nativeSessionId":"native"},

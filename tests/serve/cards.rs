@@ -1,10 +1,11 @@
 use super::*;
 use crate::support::pty::Pty;
+use std::os::unix::fs::PermissionsExt;
 use streams_temper::{
     model::Record,
     runtime::{
         native_cards::SOURCE_ENV_KEYS,
-        native_state::{NativeAttempt, NativeState, Resources},
+        native_state::{NativeAttempt, NativePurpose, NativeState, Resources},
     },
     yaml_store::YamlStore,
 };
@@ -18,6 +19,13 @@ struct CardFixture {
 impl CardFixture {
     fn new() -> Self {
         let native = NativeFixture::new();
+        let home = native.fixture.directory.path();
+        let state = NativeState::new(home.join("state/streams/native")).unwrap();
+        fs::create_dir_all(state.directory()).unwrap();
+        fs::set_permissions(state.directory(), fs::Permissions::from_mode(0o700)).unwrap();
+        let marker = state.directory().join("format.json");
+        fs::write(&marker, r#"{"version":2}"#).unwrap();
+        fs::set_permissions(&marker, fs::Permissions::from_mode(0o600)).unwrap();
         let output = native
             .command()
             .args(["native", "check", "--session-id", &native.id, "--json"])
@@ -40,34 +48,23 @@ impl CardFixture {
                     .then(|| (key.to_owned(), value.unwrap().to_str().unwrap().to_owned()))
             })
             .collect();
-        let home = native.fixture.directory.path();
         let config = Config::new(&read_environment, home).unwrap();
         let opened = application::open(&config).unwrap();
         let scope = json!({"catalogSource":opened.source_id().unwrap(), "hostId":opened.host().as_str(),
             "streamId":native.session["stream_id"], "sessionId":native.session["id"], "nativeSessionId":native.id});
-        let state = NativeState::new(
-            native
-                .server
-                .socket
-                .parent()
-                .unwrap()
-                .join("streams-native"),
+        let pending = NativeAttempt::new(
+            key,
+            "fixture-launch",
+            &native.server.socket,
+            NativePurpose::Card,
         )
         .unwrap();
-        let pending = NativeAttempt::new(key, "fixture-launch").unwrap();
         let mut evidence = pending.clone();
         evidence
             .reserve(Resources::new("card", "card-terminal", "tab").unwrap())
             .unwrap();
         {
-            let lock = state
-                .lock(
-                    &native.server.socket,
-                    "workspace",
-                    1.0,
-                    &AtomicBool::new(false),
-                )
-                .unwrap();
+            let lock = state.lock(1.0, &AtomicBool::new(false)).unwrap();
             lock.write(None, &pending).unwrap();
             lock.write(Some(&pending), &evidence).unwrap();
         }
@@ -230,15 +227,7 @@ fn real_card_retargets_record_watches_after_a_catalog_session_id_change() {
 fn real_card_quit_cancels_initial_snapshot_without_waiting_for_server_or_native_lock() {
     let f = CardFixture::new();
     let gate = f.native.block_next_snapshot();
-    let _lock = f
-        .state
-        .lock(
-            &f.native.server.socket,
-            "workspace",
-            1.0,
-            &AtomicBool::new(false),
-        )
-        .unwrap();
+    let _lock = f.state.lock(1.0, &AtomicBool::new(false)).unwrap();
     f.native.server.clear();
     let mut card = f.start();
     card.until(|_| gate.entered.try_recv().is_ok());
@@ -318,17 +307,15 @@ fn real_card_exits_on_replaced_evidence_and_does_not_touch_the_new_nonce() {
     let mut card = f.start();
     painted(&mut card, "Before");
     f.native.server.clear();
-    let next = NativeAttempt::new(f.evidence.key(), "next-launch").unwrap();
+    let next = NativeAttempt::new(
+        f.evidence.key(),
+        "next-launch",
+        &f.native.server.socket,
+        NativePurpose::Card,
+    )
+    .unwrap();
     {
-        let lock = f
-            .state
-            .lock(
-                &f.native.server.socket,
-                "workspace",
-                1.0,
-                &AtomicBool::new(false),
-            )
-            .unwrap();
+        let lock = f.state.lock(1.0, &AtomicBool::new(false)).unwrap();
         let mut ready = f.evidence.clone();
         ready.mark_ready().unwrap();
         lock.write(Some(&f.evidence), &ready).unwrap();
@@ -415,15 +402,7 @@ fn real_card_explicit_refresh_is_full_even_when_evidence_notifications_are_queue
     let mut ready = f.evidence.clone();
     ready.mark_ready().unwrap();
     {
-        let lock = f
-            .state
-            .lock(
-                &f.native.server.socket,
-                "workspace",
-                1.0,
-                &AtomicBool::new(false),
-            )
-            .unwrap();
+        let lock = f.state.lock(1.0, &AtomicBool::new(false)).unwrap();
         lock.write(Some(&f.evidence), &ready).unwrap();
     }
     card.send(b"\x12");
