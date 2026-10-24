@@ -849,16 +849,16 @@ for(const inside of [true,false])test(`real checkout CLI enroll/context/guarded 
   const init=await run(['init','--sync','none','--json']);assert.equal(init.code,0,init.stderr);
   assert.equal((await run(['config','set','frontend.mode','none','--json'])).code,0);
   const cli=new StreamCli(cwd,run);const empty=await cli.context('native');assert.equal(empty.session,null);assert.equal(empty.stream,null);
-  const enrolled=await cli.enroll({catalog_source:empty.catalog_source,operation_id:randomUUID(),harness:'pi',harness_session_id:'native',stream:{title:'Catalog port',goal:'Safe durable reports'},session:{title:'Implement reporting'},actor:'automatic',cwd});
+  const enrolled=await cli.enroll({version:2,catalog_source:empty.catalog_source,operation_id:randomUUID(),harness:'pi',harness_session_id:'native',stream:{title:'Catalog port',goal:'Safe durable reports'},session:{title:'Implement reporting'},actor:'automatic',cwd});
   assert.ok(enrolled.saves.length>=2);const captured=await cli.context('native');assert.equal(captured.stream.id,enrolled.stream.id);assert.equal(captured.session.harness_session_id,'native');assert.ok(captured.authority.token);assert.ok(captured.catalog_source);
-  const again=await cli.enroll({catalog_source:empty.catalog_source,operation_id:randomUUID(),harness:'pi',harness_session_id:'native',stream_id:captured.stream.id,session:{title:'Ignored existing'},actor:'automatic',cwd});assert.deepEqual(again.saves,[]);
+  const again=await cli.enroll({version:2,catalog_source:empty.catalog_source,operation_id:randomUUID(),harness:'pi',harness_session_id:'native',stream_id:captured.stream.id,session:{title:'Ignored existing'},actor:'automatic',cwd});assert.deepEqual(again.saves,[]);
   const wrongSource=editRequest(captured,'session',{state:'Never write cloned source'},'automatic');wrongSource.catalog_source='different-source';await assert.rejects(cli.apply(wrongSource),/source/i);
   const human=await cli.apply(editRequest(captured,'session',{state:'Human progress'},'user'));assert.equal(human.save.domain.outcome,'changes');
   const stale=await cli.apply(editRequest(captured,'session',{state:'Stale generated progress'},'automatic'));assert.equal(stale.save.domain.outcome,'superseded');assert.equal((await cli.context('native')).session.state,'Human progress');
   const protectedTitle=await cli.apply(editRequest(await cli.context('native'),'stream',{title:'Human title'},'user'));assert.equal(protectedTitle.stream.title_mode,'manual');
   const fresh=await cli.context('native');assert.ok(!automaticFields('stream',fresh.stream).includes('title'));
   const goal=await cli.apply(editRequest(fresh,'stream',{goal:'New automatic goal'},'automatic'));assert.equal(goal.stream.title,'Human title');assert.equal(goal.stream.goal_mode,'automatic');
-  await cli.enroll({catalog_source:empty.catalog_source,operation_id:randomUUID(),harness:'pi',harness_session_id:'sibling-native',stream_id:captured.stream.id,session:{title:'Sibling contribution'},actor:'user',cwd});
+  await cli.enroll({version:2,catalog_source:empty.catalog_source,operation_id:randomUUID(),harness:'pi',harness_session_id:'sibling-native',stream_id:captured.stream.id,session:{title:'Sibling contribution'},actor:'user',cwd});
   const withSibling=await cli.context('native');const guardedSession=editRequest(withSibling,'session',{state:'Own progress unaffected by sibling'},'automatic');
   const guardedStream=editRequest(withSibling,'stream',{goal:'Based on all contributions'},'automatic');
   const siblingContext=await cli.context('sibling-native');await cli.apply(editRequest(siblingContext,'session',{state:'Changed sibling evidence'},'user'));
@@ -867,7 +867,7 @@ for(const inside of [true,false])test(`real checkout CLI enroll/context/guarded 
   const independent=await cli.apply(editRequest(withSibling,'session',{title:'Independent manual edit'},'user'));assert.equal(independent.save.domain.outcome,'changes');
   const blocked=await cli.apply(editRequest(await cli.context('native'),'session',{status:'blocked'},'automatic'));assert.equal(blocked.session.status,'blocked');
   const invalid=await run(['agent','apply','--json'],'{"operation_id":"bad","kind":"stream","changes":{"repositories":{}}}');assert.equal(invalid.code,2);
-  const other=await cli.enroll({catalog_source:empty.catalog_source,operation_id:randomUUID(),harness:'pi',harness_session_id:'other-native',stream:{title:'Other effort'},session:{title:'Other'},actor:'user',cwd});
+  const other=await cli.enroll({version:2,catalog_source:empty.catalog_source,operation_id:randomUUID(),harness:'pi',harness_session_id:'other-native',stream:{title:'Other effort'},session:{title:'Other'},actor:'user',cwd});
   await assert.rejects(cli.context('native',other.stream.id),/move|fork|different|mismatch/i);
  } finally {rmSync(root,{recursive:true,force:true});}
 });

@@ -5,9 +5,13 @@ mod context;
 pub use capture::{CaptureTarget, capture_inputs};
 mod enrollment;
 mod preview;
+mod record_context;
+pub(crate) mod record_update;
 pub use context::{AgentContext, ContextError, ContextRequest, context, session_id_for};
 pub use enrollment::{EnrollmentRequest, StreamProposal, effort_id_for};
 pub use preview::preview;
+pub use record_context::{RecordContext, RecordContextError, record_context};
+pub use record_update::{RecordUpdate, parse_record_update};
 
 use serde::Deserialize;
 use serde_json::{Map, Value};

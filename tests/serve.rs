@@ -227,7 +227,7 @@ fn input_is_private_stdin_for_preview_apply_and_enroll() {
     assert_eq!(applied["value"]["save"]["domain"]["outcome"], "changes");
     let id = context["stream"]["id"].as_str().unwrap();
     assert_eq!(f.ok(&["show", id], None)["stream"]["goal"], "Captured");
-    let enrollment = json!({"operation_id":"enroll", "catalog_source":context["catalog_source"],
+    let enrollment = json!({"version":2,"operation_id":"enroll", "catalog_source":context["catalog_source"],
         "harness":"pi", "harness_session_id":"pi-session", "actor":"user",
         "cwd":f.directory.path(), "stream_id":id, "session":{"title":"Session"}});
     child.request(3, &["agent", "enroll"], Some(enrollment));

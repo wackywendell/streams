@@ -11,6 +11,7 @@ pub mod local;
 pub mod outcomes;
 pub mod policy;
 pub mod protocol;
+pub mod records;
 pub mod replay;
 pub mod scalars;
 pub mod state;

@@ -37,7 +37,7 @@ fn empty() -> Value {
 
 fn enrollment() -> Value {
     json!({
-        "operation_id": "enroll", "catalog_source": "physical-source", "harness": "pi",
+        "version": 2, "operation_id": "enroll", "catalog_source": "physical-source", "harness": "pi",
         "harness_session_id": "native", "session": {"title": "Contribution"},
         "actor": "automatic", "cwd": "/does/not/exist/and/is/not/read",
     })
@@ -526,6 +526,7 @@ fn unknown_fields_positional_arrays_and_map_shaped_enums_are_rejected() {
 fn enrollment_request_shape_and_text_validation_match_the_live_boundary() {
     let base = enrollment();
     for field in [
+        "version",
         "operation_id",
         "catalog_source",
         "harness",
@@ -543,6 +544,10 @@ fn enrollment_request_shape_and_text_validation_match_the_live_boundary() {
     }
     for (field, value) in [
         ("unexpected", json!(true)),
+        ("version", json!(1)),
+        ("version", json!("2")),
+        ("authority", Value::Null),
+        ("ownership_token", json!("old")),
         ("session", json!({"title": "X", "state": "No"})),
         ("session", json!(["Title"])),
         ("stream", json!(["Title", null, null])),

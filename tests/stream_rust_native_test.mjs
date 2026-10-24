@@ -333,7 +333,7 @@ test('real protocol-1 child emits native scope changes, deduplicates observation
  assert.equal(unreadyCost,3,'startup must ping, subscribe, then observe once');
  assert.equal(f.commands().length-beforeUnready,1,'a later observation reuses the pinned client');
  const unenrolled=f.cli('agent','context','--harness','pi','--session-id',f.id,'--stream-id',f.stream.id);
- request(10,['agent','enroll'],{operation_id:'child-enroll',catalog_source:unenrolled.catalog_source,harness:'pi',harness_session_id:f.id,
+ request(10,['agent','enroll'],{version:2,operation_id:'child-enroll',catalog_source:unenrolled.catalog_source,harness:'pi',harness_session_id:f.id,
   actor:'user',cwd:f.directory,stream_id:f.stream.id,session:{title:'Real Rust lane'}});
  const readyScope=await next();assert.equal(readyScope.event,'scope');assert.equal(readyScope.value.scope.nativeSessionId,f.id);
  const enrolled=await next();assert.equal(enrolled.id,10);assert.equal(enrolled.code,0,JSON.stringify(enrolled));

@@ -106,5 +106,8 @@ pub fn prepare(inspection: &Inspection, host: &str) -> Result<PreparedCatalog, V
     })
 }
 
+mod install;
+pub use install::{InstalledCatalog, run};
+
 #[cfg(test)]
 mod tests;

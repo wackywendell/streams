@@ -1,7 +1,11 @@
 //! Host-bound backend selection and record-local catalog actions.
 
 pub mod cutover;
+mod enrollment;
+pub use enrollment::{enroll_session, enroll_stream};
+mod record_update;
 mod records;
+pub use record_update::save_record_update;
 pub use records::{OpenedRecords, open_records, open_records_observed};
 
 use std::fs;
@@ -25,6 +29,8 @@ pub enum ApplicationError {
     Validation(#[from] ValidationError),
     #[error(transparent)]
     Repair(#[from] RepairRequired),
+    #[error(transparent)]
+    Runtime(#[from] crate::runtime::RuntimeError),
 }
 
 pub type Result<T> = std::result::Result<T, ApplicationError>;

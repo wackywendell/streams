@@ -1,6 +1,6 @@
 //! Validated enrollment intent shared by live adapters and effect-free replay.
 
-use serde::Deserialize;
+use serde::{Deserialize, Serialize};
 
 use crate::{
     codec::{ascii_json, load_json, object, optional_object, require_object},
@@ -12,7 +12,7 @@ use crate::{
 use super::session_id_for;
 
 /// Initial effort text, not an update or a claim of effective ownership.
-#[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct StreamProposal {
     title: String,
@@ -41,6 +41,7 @@ struct SessionProposal {
 #[derive(Deserialize)]
 #[serde(deny_unknown_fields)]
 struct EnrollmentWire {
+    version: u32,
     operation_id: String,
     catalog_source: String,
     harness: Harness,
@@ -55,7 +56,7 @@ struct EnrollmentWire {
 }
 
 /// Parsed and locally validated intent. It neither attests native identity nor resolves cwd.
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 pub struct EnrollmentRequest {
     operation_id: String,
     catalog_source: String,
@@ -75,6 +76,16 @@ impl EnrollmentRequest {
         require_object(&value, "agent enrollment")?;
         let wire: EnrollmentWire = serde_json::from_value(value)
             .map_err(|e| ValidationError::new(format!("invalid agent enrollment: {e}")))?;
+        if wire.version != 2 {
+            return Err(ValidationError::new(
+                "captured enrollment requires version 2",
+            ));
+        }
+        if wire.stream_id.is_some() && wire.stream.is_some() {
+            return Err(ValidationError::new(
+                "select an existing Stream or propose a new one, not both",
+            ));
+        }
         if wire.actor == Actor::Native {
             return Err(ValidationError::new(
                 "native operations are library-owned, not enrollment requests",

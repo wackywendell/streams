@@ -37,6 +37,7 @@ mod native_reconciliation;
 mod process;
 mod reconciliation;
 mod record_local;
+mod record_updates;
 mod runtime_arrangements;
 mod runtime_conversations;
 mod runtime_inference;

@@ -1,5 +1,6 @@
 //! Domain-owned intent and pure reconciliation, independent of persistence.
 
+pub mod edits;
 pub mod membership;
 
 use std::collections::{BTreeMap, BTreeSet};
@@ -700,36 +701,38 @@ const TITLE_GROUP: [&str; 2] = ["title", "title_mode"];
 const STREAM_GOAL_GROUP: [&str; 3] = ["goal", "goal_short", "goal_mode"];
 
 // A concurrent edit to any member invalidates intent captured from the whole text group.
-fn guard_fields(operation: &Operation) -> BTreeSet<&'static str> {
-    let mut fields = operation.changed_fields();
+fn text_group_guards(
+    kind: RecordKind,
+    mut fields: BTreeSet<&'static str>,
+) -> BTreeSet<&'static str> {
     if fields.iter().any(|f| TITLE_GROUP.contains(f)) {
         fields.extend(TITLE_GROUP);
     }
-    match operation.after {
-        Record::Stream(_) => {
+    match kind {
+        RecordKind::Stream => {
             if fields.iter().any(|f| STREAM_GOAL_GROUP.contains(f)) {
                 fields.extend(STREAM_GOAL_GROUP);
             }
         }
-        Record::Session(_) => {
-            // Generic edits must not carry a former Stream's authority across a move.
-            fields.extend(["stream_id", "previous_stream_ids"]);
-            if operation.actor == Actor::Native {
-                fields.extend([
-                    "stream_id",
-                    "previous_stream_ids",
-                    "host_id",
-                    "harness",
-                    "harness_session_id",
-                    "checkout",
-                ]);
-            }
+        RecordKind::Session => {
             let state_group = ["state", "state_short", "remaining", "status"];
             if fields.iter().any(|f| state_group.contains(f)) {
                 fields.extend(state_group);
             }
         }
-        Record::Host(_) => {}
+        RecordKind::Host => {}
+    }
+    fields
+}
+
+fn guard_fields(operation: &Operation) -> BTreeSet<&'static str> {
+    let mut fields = text_group_guards(operation.after.kind(), operation.changed_fields());
+    if matches!(operation.after, Record::Session(_)) {
+        // Legacy reconciliation still fences membership and native checkout capture.
+        fields.extend(["stream_id", "previous_stream_ids"]);
+        if operation.actor == Actor::Native {
+            fields.extend(["host_id", "harness", "harness_session_id", "checkout"]);
+        }
     }
     fields
 }

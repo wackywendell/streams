@@ -1,6 +1,9 @@
 //! New-format host partitions. Legacy command wiring remains in `YamlStore` until cutover.
 //! Opening this store never imports, scans or falls back to that legacy layout.
 
+mod inventory;
+pub use inventory::{address_from_relative_path, decode_record_tree};
+
 use std::{
     collections::BTreeMap,
     fs::File,
@@ -189,7 +192,7 @@ impl YamlRecordStore {
 }
 
 /// Check each owned ancestor, including missing ones, without enumerating directories.
-fn check_parents(root: &Path, relative: &Path) -> Result<(), StorageError> {
+pub(crate) fn check_parents(root: &Path, relative: &Path) -> Result<(), StorageError> {
     let mut parent = root.to_path_buf();
     for part in relative
         .parent()

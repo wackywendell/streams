@@ -4,7 +4,7 @@ use std::path::Path;
 
 use crate::{
     config::{Config, HostIdentity, source_id},
-    storage::records::RecordStore,
+    storage::records::{RecordInventory, RecordRead, RecordStore},
     yaml_store::records::{RecordIoEvent, YamlRecordStore},
 };
 
@@ -29,6 +29,10 @@ impl OpenedRecords {
     }
     pub fn records(&self) -> &impl RecordStore {
         &self.records
+    }
+    /// Explicit human discovery/inspection only; ordinary commands use `records()`.
+    pub fn inventory(&self) -> Result<Vec<RecordRead>> {
+        Ok(self.records.inventory()?)
     }
 }
 

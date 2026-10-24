@@ -60,7 +60,18 @@ pub enum NamingMode {
 
 /// The record schemas accepted by catalog files and operation envelopes.
 #[derive(
-    Debug, Clone, Copy, PartialEq, Eq, Serialize, EnumString, VariantNames, Display, AsRefStr,
+    Debug,
+    Clone,
+    Copy,
+    PartialEq,
+    Eq,
+    PartialOrd,
+    Ord,
+    Serialize,
+    EnumString,
+    VariantNames,
+    Display,
+    AsRefStr,
 )]
 #[serde(rename_all = "kebab-case")]
 #[strum(serialize_all = "kebab-case")]

@@ -1,9 +1,11 @@
 //! Per-stream or per-session directory intent; reads never register or repair selections.
 
-use std::fs;
 use std::path::{Path, PathBuf};
 
 use serde::{Deserialize, Serialize};
+
+mod cutover;
+pub(crate) use cutover::PreparedDirectoryCutover;
 
 #[cfg(test)]
 mod tests;
@@ -28,7 +30,7 @@ pub struct BoundCheckout {
     pub repository_url: Option<String>,
 }
 
-#[derive(Clone, Serialize, Deserialize)]
+#[derive(Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(tag = "kind", rename_all = "lowercase", deny_unknown_fields)]
 enum Location {
     Directory {
@@ -78,10 +80,10 @@ impl DirectoryBindings {
                 .join("session-directories")
                 .join(format!("{}.json", digest(session_id.as_bytes())));
         }
-        self.legacy_path(stream_id, None)
+        self.stream_path(stream_id, None)
     }
 
-    fn legacy_path(&self, stream_id: &str, session_id: Option<&str>) -> PathBuf {
+    fn stream_path(&self, stream_id: &str, session_id: Option<&str>) -> PathBuf {
         let key = format!(
             "[{}, {}]",
             crate::codec::ascii_json(stream_id),
@@ -126,85 +128,27 @@ impl DirectoryBindings {
         Ok(())
     }
 
-    fn selection(
-        &self,
-        stream_id: &str,
-        session_id: Option<&str>,
-    ) -> Result<Option<(Current, PathBuf)>> {
+    fn selection(&self, stream_id: &str, session_id: Option<&str>) -> Result<Option<Current>> {
         text(stream_id)?;
         if let Some(id) = session_id {
             text(id)?;
         }
         let path = self.path(stream_id, session_id);
-        let read_current = || -> Result<_> {
-            let Some(selection) = read_json::<Current>(&path)? else {
-                return Ok(None);
-            };
-            Self::validate(&selection)?;
-            // A renamed v2 Session selection is also readable after interrupted promotion.
-            if selection.session_id.as_deref() != session_id
-                || (session_id.is_none() && selection.stream_id.as_deref() != Some(stream_id))
-            {
-                return Err(invalid("directory binding identity mismatch"));
-            }
-            Ok(Some((selection, path.clone())))
-        };
-        if let Some(selection) = read_current()? {
-            return Ok(Some(selection));
-        }
-        let Some(session_id) = session_id else {
+        let Some(selection) = read_json::<Current>(&path)? else {
             return Ok(None);
         };
-        let directory = self.state_dir.join("directories");
-        crate::file_io::ensure_directory(&directory, false)?;
-        let entries = match fs::read_dir(&directory) {
-            Ok(entries) => entries,
-            Err(error) if error.kind() == std::io::ErrorKind::NotFound => return read_current(),
-            Err(error) => return Err(error.into()),
-        };
-        let exact = self.legacy_path(stream_id, Some(session_id));
-        let mut found = None;
-        for entry in entries {
-            let path = entry?.path();
-            let Some(name) = path.file_name().and_then(|name| name.to_str()) else {
-                continue;
-            };
-            let Some(hash) = name.strip_suffix(".json") else {
-                continue;
-            };
-            if hash.len() != 64 || !hash.bytes().all(|c| c.is_ascii_hexdigit()) {
-                continue;
+        Self::validate(&selection)?;
+        if selection.session_id.as_deref() != session_id
+            || match session_id {
+                Some(_) => selection.version != 3 || selection.stream_id.is_some(),
+                None => selection.version != 2 || selection.stream_id.as_deref() != Some(stream_id),
             }
-            // An unreadable legacy record could belong to this Session before its move.
-            // Do not mistake unknown identity for proof that no selection exists.
-            let Some(selection) = read_json::<Current>(&path)? else {
-                continue;
-            };
-            if selection.session_id.as_deref() != Some(session_id) {
-                if path == exact {
-                    return Err(invalid("directory binding identity mismatch"));
-                }
-                continue;
-            }
-            Self::validate(&selection)?;
-            if selection.version != 2
-                || selection
-                    .stream_id
-                    .as_deref()
-                    .is_none_or(|stream| self.legacy_path(stream, Some(session_id)) != path)
-            {
-                return Err(invalid("legacy directory binding identity mismatch"));
-            }
-            if found.is_some() {
-                return Err(invalid("ambiguous legacy directory selections for Session"));
-            }
-            found = Some((selection, path));
+        {
+            return Err(invalid(
+                "directory binding identity or format mismatch; run offline catalog cutover",
+            ));
         }
-        // Promotion can move the selection between the first probe and legacy discovery.
-        match found {
-            Some(selection) => Ok(Some(selection)),
-            None => read_current(),
-        }
+        Ok(Some(selection))
     }
 
     fn resolve(&self, selection: Current) -> Result<DirectoryBinding> {
@@ -236,7 +180,7 @@ impl DirectoryBindings {
         session_id: Option<&str>,
     ) -> Result<Option<DirectoryBinding>> {
         self.selection(stream_id, session_id)?
-            .map(|(selection, _)| self.resolve(selection))
+            .map(|selection| self.resolve(selection))
             .transpose()
     }
 
@@ -262,7 +206,7 @@ impl DirectoryBindings {
         let path = self.path(stream_id, session_id);
         let _lock = lock(&path.with_extension("lock"))?;
         let previous = self.selection(stream_id, session_id)?;
-        if if_missing && let Some((previous, _)) = &previous {
+        if if_missing && let Some(previous) = &previous {
             return self.resolve(previous.clone());
         }
         let found = self.checkouts.inspect(&directory)?;
@@ -310,17 +254,6 @@ impl DirectoryBindings {
         };
         // Validate the selection before writing, retaining uncertainty only for the durable write itself.
         let binding = self.resolve(current.clone())?;
-        if let Some((_, legacy)) = previous
-            && legacy != path
-        {
-            // Preserve the original bytes at one readable path even if replacement is interrupted.
-            fs::rename(&legacy, &path)?;
-            crate::file_io::sync_directory(path.parent().expect("selection parent"))
-                .and_then(|()| {
-                    crate::file_io::sync_directory(legacy.parent().expect("legacy parent"))
-                })
-                .map_err(crate::storage::StorageError::after_write)?;
-        }
         write_json(&path, &current)?;
         Ok(binding)
     }

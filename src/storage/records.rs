@@ -9,7 +9,7 @@ use crate::model::{Record, RecordKind, check_text};
 use super::StorageError;
 
 /// Host is part of every portable record's identity, including Streams.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Serialize)]
 pub struct RecordAddress {
     host: String,
     kind: RecordKind,
@@ -119,6 +119,11 @@ pub struct RecordSave {
 /// The shell may read named dependencies; it has no enumeration or write capability.
 pub trait RecordReader {
     fn read(&self, address: &RecordAddress) -> Result<Option<RecordRead>, StorageError>;
+}
+
+/// Explicit human discovery, inspection and sync, separate from a point reader's capability.
+pub trait RecordInventory {
+    fn inventory(&self) -> Result<Vec<RecordRead>, StorageError>;
 }
 
 /// Serialization belongs to the adapter. No action manages a multi-file transaction.

@@ -5,7 +5,7 @@ use crate::{
     storage::Snapshot,
 };
 
-fn old() -> Inspection {
+pub(super) fn old() -> Inspection {
     let mut local = Stream::new("local", "Local", None, "host").unwrap();
     local.repositories.insert(
         "repo".into(),

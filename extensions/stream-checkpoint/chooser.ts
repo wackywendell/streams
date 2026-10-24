@@ -24,7 +24,7 @@ export async function chooseInitial(ctx: ExtensionContext, cli: StreamCli, optio
  const sessionTitle = await ctx.ui.editor("This session title", "Pi contribution");if (!sessionTitle?.trim() || signal?.aborted) return {status: "cancelled"};
  if (!await ctx.ui.confirm("Enroll this conversation?", `Effort: ${title ?? streamId}\nSession: ${sessionTitle}\nMembership cannot be switched through this card.`)) return {status: "cancelled"};
  if (ctx.sessionManager.getSessionId() !== native || signal?.aborted) return {status: "cancelled"};
- const value = await cli.enroll({catalog_source: before.catalog_source, operation_id: randomUUID(), harness: "pi", harness_session_id: native, ...(streamId ? {stream_id: streamId} : {stream: {title}}), session: {title: sessionTitle}, actor: "user", cwd: ctx.cwd});
+ const value = await cli.enroll({version: 2, catalog_source: before.catalog_source, operation_id: randomUUID(), harness: "pi", harness_session_id: native, ...(streamId ? {stream_id: streamId} : {stream: {title}}), session: {title: sessionTitle}, actor: "user", cwd: ctx.cwd});
  receipt(value);
  return {status: receiptCanContinue(value) ? "enrolled" : "receipts retained; inspect save outcomes before further writes", stream_id: value.stream?.id};
 }

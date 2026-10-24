@@ -829,7 +829,7 @@ fn explicit_checkout_must_contain_cwd_and_have_requested_binding() {
 }
 
 #[test]
-fn python_wire_fixtures_remain_readable_without_rewriting_or_registering() {
+fn python_registry_and_current_binding_fixtures_read_without_rewriting_or_registering() {
     let f = Fixture::new();
     fs::create_dir_all(f.registry.path().parent().unwrap()).unwrap();
     let registry_fixture = include_bytes!("fixtures/runtime/registry-v1.json");
@@ -839,7 +839,7 @@ fn python_wire_fixtures_remain_readable_without_rewriting_or_registering() {
     assert_eq!(checkout.repository_urls, ["https://example.test/repo.git"]);
     assert_eq!(fs::read(f.registry.path()).unwrap(), registry_fixture);
     let bindings = f.bindings();
-    let path = legacy_binding_path(&bindings, "stream", "session");
+    let path = bindings.path("stream", Some("session"));
     fs::create_dir_all(path.parent().unwrap()).unwrap();
     let root = f.repo("checkout");
     let metadata = fs::metadata(&root).unwrap();
@@ -848,7 +848,7 @@ fn python_wire_fixtures_remain_readable_without_rewriting_or_registering() {
     state["checkouts"][0]["device"] = json!(metadata.dev());
     state["checkouts"][0]["inode"] = json!(metadata.ino());
     f.overwrite(&state);
-    fs::write(&path, include_bytes!("fixtures/runtime/directory-v2.json")).unwrap();
+    fs::write(&path, include_bytes!("fixtures/runtime/directory-v3.json")).unwrap();
     assert_eq!(
         bindings
             .read("stream", Some("session"))
@@ -859,7 +859,7 @@ fn python_wire_fixtures_remain_readable_without_rewriting_or_registering() {
     );
     assert_eq!(
         fs::read(&path).unwrap(),
-        include_bytes!("fixtures/runtime/directory-v2.json")
+        include_bytes!("fixtures/runtime/directory-v3.json")
     );
 }
 
@@ -894,9 +894,9 @@ fn non_uuid_registry_ids_load_in_current_directory_bindings() {
         Err(RuntimeError::NotFound(_))
     ));
     let bindings = f.bindings();
-    let path = legacy_binding_path(&bindings, "stream", "session");
+    let path = bindings.path("stream", Some("session"));
     fs::create_dir_all(path.parent().unwrap()).unwrap();
-    let current = include_str!("fixtures/runtime/directory-v2.json")
+    let current = include_str!("fixtures/runtime/directory-v3.json")
         .replace("b9345696-ffbf-42d1-8255-6fdc9d2ab7d2", "legacy-checkout-1");
     fs::write(&path, &current).unwrap();
     let binding = bindings.read("stream", Some("session")).unwrap().unwrap();
@@ -958,38 +958,25 @@ fn directory_hash_keeps_stream_tuple_compatibility_and_uses_session_identity() {
 }
 
 #[test]
-fn legacy_session_selection_survives_membership_move_without_rewrite_and_promotes_on_update() {
+fn current_session_selection_survives_membership_move_without_rewrite() {
     let f = Fixture::new();
     let bindings = f.bindings();
-    let path = legacy_binding_path(&bindings, "old-stream", "session");
-    fs::create_dir_all(path.parent().unwrap()).unwrap();
-    let bytes = serde_json::to_vec(&json!({
-        "version": 2, "stream_id": "old-stream", "session_id": "session",
-        "location": {"kind": "directory", "cwd": f.root}
-    }))
-    .unwrap();
-    fs::write(&path, &bytes).unwrap();
     let before = bindings
-        .read("old-stream", Some("session"))
-        .unwrap()
+        .remember("old-stream", &f.root, Some("session"), false, None, None)
         .unwrap();
+    let canonical = bindings.path("old-stream", Some("session"));
+    let bytes = fs::read(&canonical).unwrap();
     assert_eq!(
         bindings.read("new-stream", Some("session")).unwrap(),
-        Some(before.clone())
+        Some(before)
     );
-    assert_eq!(fs::read(&path).unwrap(), bytes);
-    let canonical = bindings.path("new-stream", Some("session"));
-    assert!(!canonical.exists());
-    assert!(!canonical.parent().unwrap().exists());
+    assert_eq!(bindings.path("new-stream", Some("session")), canonical);
+    assert_eq!(fs::read(&canonical).unwrap(), bytes);
     let updated = f.root.join("updated");
     fs::create_dir(&updated).unwrap();
     bindings
         .remember("new-stream", &updated, Some("session"), false, None, None)
         .unwrap();
-    assert!(!path.exists());
-    let saved: Value = serde_json::from_slice(&fs::read(&canonical).unwrap()).unwrap();
-    assert_eq!(saved["version"], 3);
-    assert!(saved.get("stream_id").is_none());
     assert_eq!(
         bindings
             .read("old-stream", Some("session"))
@@ -998,49 +985,29 @@ fn legacy_session_selection_survives_membership_move_without_rewrite_and_promote
             .cwd,
         updated
     );
-
-    // A process interrupted after rename must still expose the original v2 selection.
-    fs::write(&canonical, &bytes).unwrap();
-    assert_eq!(
-        bindings.read("new-stream", Some("session")).unwrap(),
-        Some(before)
-    );
+    let saved: Value = serde_json::from_slice(&fs::read(&canonical).unwrap()).unwrap();
+    assert_eq!(saved["version"], 3);
+    assert!(saved.get("stream_id").is_none());
+    fs::write(&canonical, serde_json::to_vec(&json!({"version":2,"stream_id":"old-stream","session_id":"session","location":{"kind":"directory","cwd":f.root}})).unwrap()).unwrap();
+    assert!(bindings.read("new-stream", Some("session")).is_err());
 }
 
 #[test]
-fn ambiguous_legacy_sessions_fail_closed_but_canonical_selection_is_authoritative() {
+fn unrelated_legacy_choices_do_not_change_point_reads_or_explicit_current_writes() {
     let f = Fixture::new();
     let bindings = f.bindings();
+    let mut old = Vec::new();
     for stream in ["first", "second"] {
         let path = legacy_binding_path(&bindings, stream, "session");
         fs::create_dir_all(path.parent().unwrap()).unwrap();
-        fs::write(
-            &path,
-            serde_json::to_vec(&json!({
-                "version": 2, "stream_id": stream, "session_id": "session",
-                "location": {"kind": "directory", "cwd": f.root}
-            }))
-            .unwrap(),
-        )
-        .unwrap();
+        let bytes = serde_json::to_vec(&json!({"version":2,"stream_id":stream,"session_id":"session","location":{"kind":"directory","cwd":f.root}})).unwrap();
+        fs::write(&path, &bytes).unwrap();
+        old.push((path, bytes));
     }
-    assert!(bindings.read("third", Some("session")).is_err());
-    assert!(
-        bindings
-            .remember("third", &f.root, Some("session"), false, None, None)
-            .is_err()
-    );
-    let canonical = bindings.path("third", Some("session"));
-    fs::create_dir_all(canonical.parent().unwrap()).unwrap();
-    fs::write(
-        &canonical,
-        serde_json::to_vec(&json!({
-            "version": 3, "session_id": "session",
-            "location": {"kind": "directory", "cwd": f.root}
-        }))
-        .unwrap(),
-    )
-    .unwrap();
+    assert!(bindings.read("third", Some("session")).unwrap().is_none());
+    bindings
+        .remember("third", &f.root, Some("session"), false, None, None)
+        .unwrap();
     assert_eq!(
         bindings
             .read("third", Some("session"))
@@ -1049,12 +1016,15 @@ fn ambiguous_legacy_sessions_fail_closed_but_canonical_selection_is_authoritativ
             .cwd,
         f.root
     );
-    fs::write(&canonical, "malformed").unwrap();
+    for (path, bytes) in old {
+        assert_eq!(fs::read(path).unwrap(), bytes);
+    }
+    fs::write(bindings.path("third", Some("session")), "malformed").unwrap();
     assert!(bindings.read("third", Some("session")).is_err());
 }
 
 #[test]
-fn canonical_session_special_files_and_legacy_exact_identity_are_not_absence() {
+fn canonical_session_special_files_and_old_format_are_not_absence() {
     use std::ffi::CString;
     use std::os::unix::ffi::OsStrExt;
     let f = Fixture::new();
@@ -1070,17 +1040,7 @@ fn canonical_session_special_files_and_legacy_exact_identity_are_not_absence() {
             .is_err()
     );
     fs::remove_file(&canonical).unwrap();
-    let path = legacy_binding_path(&bindings, "source", "session");
-    fs::create_dir_all(path.parent().unwrap()).unwrap();
-    fs::write(
-        &path,
-        serde_json::to_vec(&json!({
-            "version": 2, "stream_id": "source", "session_id": "wrong-session",
-            "location": {"kind": "directory", "cwd": f.root}
-        }))
-        .unwrap(),
-    )
-    .unwrap();
+    fs::write(&canonical, serde_json::to_vec(&json!({"version":2,"stream_id":"source","session_id":"session","location":{"kind":"directory","cwd":f.root}})).unwrap()).unwrap();
     assert!(bindings.read("source", Some("session")).is_err());
     assert!(
         bindings
@@ -1090,39 +1050,38 @@ fn canonical_session_special_files_and_legacy_exact_identity_are_not_absence() {
 }
 
 #[test]
-fn legacy_session_filename_must_match_its_stored_tuple() {
+fn current_session_filename_must_match_its_stored_identity() {
     let f = Fixture::new();
     let bindings = f.bindings();
-    let path = legacy_binding_path(&bindings, "wrong-stream", "session");
+    let path = bindings.path("stream", Some("session"));
     fs::create_dir_all(path.parent().unwrap()).unwrap();
-    fs::write(
-        &path,
-        serde_json::to_vec(&json!({
-            "version": 2, "stream_id": "actual-stream", "session_id": "session",
-            "location": {"kind": "directory", "cwd": f.root}
-        }))
-        .unwrap(),
-    )
-    .unwrap();
+    fs::write(&path, serde_json::to_vec(&json!({"version":3,"session_id":"wrong-session","location":{"kind":"directory","cwd":f.root}})).unwrap()).unwrap();
     assert!(bindings.read("destination", Some("session")).is_err());
-    assert!(!bindings.path("destination", Some("session")).exists());
+    assert!(
+        bindings
+            .remember("destination", &f.root, Some("session"), false, None, None)
+            .is_err()
+    );
 }
 
 #[test]
-fn unreadable_legacy_identity_is_not_absence_after_a_move() {
+fn unreadable_legacy_files_are_not_runtime_inputs() {
     let f = Fixture::new();
     let bindings = f.bindings();
     let path = legacy_binding_path(&bindings, "source", "session");
     fs::create_dir_all(path.parent().unwrap()).unwrap();
     fs::write(&path, b"broken legacy record").unwrap();
-    assert!(bindings.read("destination", Some("session")).is_err());
     assert!(
         bindings
-            .remember("destination", &f.root, Some("session"), true, None, None)
-            .is_err()
+            .read("destination", Some("session"))
+            .unwrap()
+            .is_none()
     );
-    assert!(!bindings.path("destination", Some("session")).exists());
-    assert_eq!(fs::read(&path).unwrap(), b"broken legacy record");
+    bindings
+        .remember("destination", &f.root, Some("session"), true, None, None)
+        .unwrap();
+    assert!(bindings.path("destination", Some("session")).exists());
+    assert_eq!(fs::read(path).unwrap(), b"broken legacy record");
 }
 
 #[derive(Default)]

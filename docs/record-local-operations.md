@@ -37,7 +37,7 @@ Apply assesses conversation-local and Stream-shared proposals separately. A Sess
 
 Strict decoding includes supported schema versions, unique object keys, regular files, safe paths, physical identity and relationships among the named records. A malformed record is not absence. Creation distinguishes a missing key from unreadable or conflicting state. Whole-catalog validation belongs to explicit inspection and cutover, not opening a backend handle. `list` and `check` may enumerate current records; neither replays history.
 
-Human title and substring matching stays in the CLI shell. A human-supplied title triggers explicit discovery using the same enumeration as `list`, resolves to exactly one host-qualified ID or fails on ambiguity, and then invokes the operation by exact key. This is user-requested discovery before the operation, not a fallback inside it. Exact-ID CLI requests, the Pi child and cards do not enumerate records. Discovery of a foreign Stream does not grant permission to modify it.
+A positional CLI `REF` requests explicit human discovery by ID, title or substring, using the same enumeration as `list`. It must resolve to exactly one host-qualified ID or fail on ambiguity before invoking the operation. UUID-looking strings are not reserved, and there is no new `--id` flag. Automation, the Pi child, cards and Pi keep their existing exact-key paths, including `--stream-id`, `--session-id` and `--current`. Those paths use point reads, never catalog enumeration. Discovery of a foreign Stream does not grant permission to modify it.
 
 ### Membership move contract
 

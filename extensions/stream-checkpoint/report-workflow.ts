@@ -47,7 +47,7 @@ export async function runReport(action: ReportAction, environment: ReportEnviron
    const result = await generate({type: "enroll", catalog: capture.catalog, messages: capture.evidence.messages, instructions});
    if (signal.aborted || !await capture.attached() || (!result.meaningful && !force)) return false;
    if (!result.session?.title?.trim() || (!capture.catalog.stream && !result.stream?.title?.trim())) throw Error("Enrollment requires meaningful effort and session titles");
-   const receipt = await environment.enroll({catalog_source: capture.catalog.catalog_source, operation_id: operationId, harness: "pi", harness_session_id: capture.native, ...(capture.catalog.stream ? {stream_id: capture.catalog.stream.id} : {stream: result.stream}), session: result.session, actor: "automatic", cwd: capture.cwd});
+   const receipt = await environment.enroll({version: 2, catalog_source: capture.catalog.catalog_source, operation_id: operationId, harness: "pi", harness_session_id: capture.native, ...(capture.catalog.stream ? {stream_id: capture.catalog.stream.id} : {stream: result.stream}), session: result.session, actor: "automatic", cwd: capture.cwd});
    environment.receipt(receipt);
    if (receiptCanContinue(receipt)) savedAny = true;
    if (!capture.valid() || !receiptCanContinue(receipt)) return false;

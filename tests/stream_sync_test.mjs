@@ -188,7 +188,7 @@ test('Pi/CLI reports publish across two isolated Git catalogs, remain saved offl
  await command(a,'config','set','sync.stream_seconds','0');await command(a,'config','set','sync.session_seconds','999999');
  const initialized=await command(a,'init','--sync','git','--remote',remote);
  let cli=new StreamCli(checkout,a);const empty=await cli.context('native');
- const enrollment=await cli.enroll({catalog_source:empty.catalog_source,operation_id:'enrollment',harness:'pi',harness_session_id:'native',stream:{title:'Shared effort'},session:{title:'Implement sharing'},actor:'automatic',cwd:checkout});
+ const enrollment=await cli.enroll({version:2,catalog_source:empty.catalog_source,operation_id:'enrollment',harness:'pi',harness_session_id:'native',stream:{title:'Shared effort'},session:{title:'Implement sharing'},actor:'automatic',cwd:checkout});
  assert.equal(enrollment.publication.sharing,'confirmed');
  await command(b,'init','--sync','git','--remote',remote);
  const shown=await command(b,'show',enrollment.stream.id,'--refresh');assert.equal(shown.sessions.length,1);
@@ -239,7 +239,7 @@ test('Pi/CLI adopts populated local state and keeps captured membership valid wi
  await command('config','set','frontend.mode','none');
  const initialized=await command('init','--sync','none');
  let cli=new StreamCli(checkout,run);const empty=await cli.context('native');
- const enrollment=await cli.enroll({catalog_source:empty.catalog_source,operation_id:'local-enrollment',harness:'pi',harness_session_id:'native',stream:{title:'Existing effort'},session:{title:'Continue work'},actor:'automatic',cwd:checkout});
+ const enrollment=await cli.enroll({version:2,catalog_source:empty.catalog_source,operation_id:'local-enrollment',harness:'pi',harness_session_id:'native',stream:{title:'Existing effort'},session:{title:'Continue work'},actor:'automatic',cwd:checkout});
  assert.equal(enrollment.publication.sharing,'local-only');assert.ok(enrollment.saves.every(item=>item.save.local==='persisted'));
  const captured=await cli.context('native');
  const adopted=await command('init','--sync','git','--adopt');
