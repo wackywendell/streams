@@ -1,9 +1,7 @@
 use super::*;
+use crate::fake_herdr::{FakeHerdr, Reply};
 use serde_json::json;
 use std::{collections::BTreeMap, sync::mpsc, time::Duration};
-#[path = "../../../tests/support/herdr.rs"]
-mod fake;
-use fake::{FakeHerdr, Reply};
 
 fn fixture() -> (
     tempfile::TempDir,

@@ -12,7 +12,10 @@ use streams_temper::tui::{
     DocumentProblem, DocumentTarget, NativeOwnerObservation, ResolvedDocument, Scope,
 };
 
-use super::super::{App, CliError, Result, application};
+use super::super::{App, CliError, NativeObservation, Result, application};
+
+#[cfg(test)]
+mod tests;
 
 pub(super) struct ApplicationSource {
     app: App,
@@ -40,11 +43,14 @@ impl ApplicationSource {
         snapshot: &streams_temper::frontend::herdr::HerdrNativeSnapshot,
         inventory: bool,
     ) -> Result<CardObservation> {
-        let connection = streams_temper::runtime::native::BuiltinFrontend::Herdr(
-            client
-                .with_context(self.app.environment.clone())
-                .map_err(RuntimeError::from)?,
-        );
+        let client = client
+            .with_context(self.app.environment.clone())
+            .map_err(RuntimeError::from)?;
+        let caller = streams_temper::runtime::native::PiCallerObservation::from_snapshot(
+            &client,
+            snapshot.clone(),
+            &self.native_session_id,
+        )?;
         let observed = self.app.agent_observation_from_native(
             Harness::Pi,
             &self.native_session_id,
@@ -53,7 +59,7 @@ impl ApplicationSource {
                 .map(|scope| scope.stream_id.as_str()),
             true,
             inventory,
-            Some((&connection, Some(snapshot.raw()))),
+            Some(NativeObservation::Pi(&caller)),
         )?;
         let context = observed.context;
         let (stream, session) = context.stream.zip(context.session).ok_or_else(|| {

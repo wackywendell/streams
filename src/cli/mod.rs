@@ -298,6 +298,11 @@ struct HerdrRead {
     refusal: Option<String>,
 }
 
+enum NativeObservation<'a> {
+    Pi(&'a native::PiCallerObservation),
+    Workspace(native::CallingWorkspace),
+}
+
 #[derive(Clone)]
 struct App {
     config: Config,
@@ -933,15 +938,38 @@ impl App {
             .map(|client| client.session_snapshot())
             .transpose()
             .map_err(|e| CliError::message(e.to_string()))?;
+        let caller = connection
+            .as_ref()
+            .and_then(BuiltinFrontend::herdr)
+            .filter(|_| attest)
+            .map(|client| {
+                let snapshot = frontend::herdr::HerdrNativeSnapshot::parse(
+                    snapshot.as_ref().expect("observed Herdr snapshot"),
+                )
+                .map_err(runtime::RuntimeError::from)?;
+                native::PiCallerObservation::from_snapshot(client, snapshot, session_id)
+            })
+            .transpose()?;
+        let observed = match caller.as_ref() {
+            Some(caller) => Some(NativeObservation::Pi(caller)),
+            None => connection
+                .as_ref()
+                .map(|frontend| {
+                    match snapshot.as_ref() {
+                        Some(snapshot) => frontend.caller_from_snapshot(snapshot),
+                        None => frontend.caller(),
+                    }
+                    .map(NativeObservation::Workspace)
+                })
+                .transpose()?,
+        };
         self.agent_observation_from_native(
             harness,
             session_id,
             stream_id,
             attest,
             include_inventory,
-            connection
-                .as_ref()
-                .map(|connection| (connection, snapshot.as_ref())),
+            observed,
         )
     }
 
@@ -952,19 +980,18 @@ impl App {
         stream_id: Option<&str>,
         attest: bool,
         include_inventory: bool,
-        observed: Option<(&BuiltinFrontend, Option<&Value>)>,
+        observed: Option<NativeObservation<'_>>,
     ) -> Result<AgentObservation> {
         let opened = application::open(&self.config)?;
         let state = self.state(&opened)?;
-        let connection = observed.map(|(connection, _)| connection);
-        let workspace_stream = connection
+        let workspace_stream = observed
             .as_ref()
-            .map(|frontend| {
-                match observed.and_then(|(_, snapshot)| snapshot) {
-                    Some(snapshot) => frontend.caller_from_snapshot(snapshot)?,
-                    None => frontend.caller()?,
-                }
-                .context_stream_id(
+            .map(|observed| match observed {
+                NativeObservation::Pi(caller) => caller.calling_workspace(),
+                NativeObservation::Workspace(workspace) => workspace.clone(),
+            })
+            .map(|workspace| {
+                workspace.context_stream_id(
                     &state,
                     self.environment
                         .get("STREAMS_STREAM_ID")
@@ -1008,14 +1035,13 @@ impl App {
                 .ok_or_else(|| {
                     CliError::message("native projection requires an enrolled Stream and Session")
                 })?;
-            let client = connection.and_then(BuiltinFrontend::herdr).ok_or_else(|| {
-                CliError::message("native projection attestation requires an exact Herdr caller")
-            })?;
-            Some(native::attest_context_from_snapshot(
-                client,
-                observed
-                    .and_then(|(_, snapshot)| snapshot)
-                    .expect("attested snapshot"),
+            let Some(NativeObservation::Pi(caller)) = observed.as_ref() else {
+                return Err(CliError::message(
+                    "native projection attestation requires an exact Herdr caller",
+                ));
+            };
+            Some(native::attest_context_from_caller(
+                caller,
                 &state,
                 stream,
                 session,
@@ -1028,14 +1054,10 @@ impl App {
             if !attest {
                 return Err(CliError::message("native inventory requires --attest"));
             }
-            Some(native::native_inventory_from_snapshot(
-                connection
-                    .and_then(BuiltinFrontend::herdr)
-                    .expect("attestation requires Herdr"),
-                observed
-                    .and_then(|(_, snapshot)| snapshot)
-                    .expect("attested snapshot"),
-            )?)
+            let Some(NativeObservation::Pi(caller)) = observed.as_ref() else {
+                unreachable!("attestation requires a Pi caller observation");
+            };
+            Some(native::native_inventory_from_caller(caller)?)
         } else {
             None
         };

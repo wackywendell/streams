@@ -484,6 +484,23 @@ pub fn native_inventory_from_snapshot(
     client: &HerdrClient,
     snapshot: &Value,
 ) -> Result<NativeInventory> {
+    read_native_inventory(client.endpoint(), snapshot, None)
+}
+
+/// Explicit inventory reuses the observed owner's identity, not its transcript path.
+pub fn native_inventory_from_caller(observed: &PiCallerObservation) -> Result<NativeInventory> {
+    read_native_inventory(
+        observed.caller().endpoint(),
+        observed.snapshot().raw(),
+        Some(observed.caller()),
+    )
+}
+
+fn read_native_inventory(
+    endpoint: &HerdrEndpoint,
+    snapshot: &Value,
+    caller: Option<&NativeCaller>,
+) -> Result<NativeInventory> {
     let rows = snapshot
         .get("panes")
         .and_then(Value::as_array)
@@ -550,15 +567,20 @@ pub fn native_inventory_from_snapshot(
                 return Err(invalid("native Pi metadata harness mismatch"));
             }
             Some(
-                native_identity(
-                    &NativeSessionMetadata {
-                        agent: Harness::Pi,
-                        kind: metadata.kind,
-                        value: metadata.value,
-                    },
-                    Harness::Pi,
-                )?
-                .id,
+                match caller.filter(|caller| row["pane_id"] == caller.pane_id()) {
+                    Some(caller) => caller.native_session_id().into(),
+                    None => {
+                        native_identity(
+                            &NativeSessionMetadata {
+                                agent: Harness::Pi,
+                                kind: metadata.kind,
+                                value: metadata.value,
+                            },
+                            Harness::Pi,
+                        )?
+                        .id
+                    }
+                },
             )
         } else {
             None
@@ -577,7 +599,7 @@ pub fn native_inventory_from_snapshot(
         });
     }
     Ok(NativeInventory {
-        socket: client.endpoint().socket.clone(),
+        socket: endpoint.socket.clone(),
         panes,
     })
 }

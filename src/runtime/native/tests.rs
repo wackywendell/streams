@@ -147,6 +147,41 @@ fn owner_observation_reads_one_transcript_not_unreadable_neighbors() {
 }
 
 #[test]
+fn explicit_inventory_reuses_the_owner_and_resolves_other_pi_paths() {
+    let fixture = Fixture::new(2);
+    let neighbor = fixture.directory.path().join("neighbor-2.jsonl");
+    std::fs::write(&neighbor, "{\"type\":\"session\",\"id\":\"other-2\"}\n").unwrap();
+    opened();
+    let observed =
+        PiCallerObservation::from_snapshot(&fixture.client, fixture.snapshot.clone(), "native")
+            .unwrap();
+    let inventory = native_inventory_from_caller(&observed).unwrap();
+    assert_eq!(inventory.socket(), fixture.client.endpoint().socket);
+    assert_eq!(
+        inventory
+            .panes()
+            .iter()
+            .map(NativeInventoryPane::native_session_id)
+            .collect::<Vec<_>>(),
+        [Some("native"), Some("other-1"), Some("other-2")]
+    );
+    assert_eq!(
+        opened(),
+        vec![
+            fixture.transcript.canonicalize().unwrap(),
+            fixture
+                .directory
+                .path()
+                .join("neighbor-1.jsonl")
+                .canonicalize()
+                .unwrap(),
+            neighbor.canonicalize().unwrap(),
+        ]
+    );
+    assert_eq!(fixture.server.methods(), ["ping"]);
+}
+
+#[test]
 fn unchanged_snapshot_paths_are_resolved_again_for_each_observation() {
     let fixture = Fixture::new(0);
     opened();
