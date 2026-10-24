@@ -241,7 +241,7 @@ fn jj_failures_never_dispatch_git_or_persist_absence() {
 fn timeout_followed_by_success_is_not_cached_as_absence() {
     for jj in [false, true] {
         let f = Fixture::new(jj);
-        let kind = if jj { "file\0" } else { "blob\0" };
+        let kind = if jj { "file\0" } else { "100644\0" };
         let runner = Fake::new(&[
             Ok(CID),
             Ok(kind),
@@ -298,10 +298,10 @@ fn full_commit_ids_with_the_same_prefix_and_mutable_expressions_stay_distinct() 
     assert_eq!(&CID[..12], &NEXT[..12]);
     let runner = Fake::new(&[
         Ok(CID),
-        Ok("blob\0"),
+        Ok("100644\0"),
         Ok("one"),
         Ok(NEXT),
-        Ok("blob\0"),
+        Ok("100644\0"),
         Ok("two"),
         Ok(CID),
     ]);
@@ -332,13 +332,32 @@ fn proven_missing_paths_are_distinct_from_failures_and_are_not_cached() {
 }
 
 #[test]
+fn nonregular_tree_entries_fail_without_extraction_or_cache_creation() {
+    for (use_jj, kinds) in [
+        (true, ["symlink\0", "git-submodule\0", "conflict\0"]),
+        (false, ["120000\0", "160000\0", "040000\0"]),
+    ] {
+        for kind in kinds {
+            let f = Fixture::new(use_jj);
+            let runner = Fake::new(&[Ok(CID), Ok(kind)]);
+            assert!(matches!(
+                f.extract("a", CID, &runner),
+                Err(RuntimeError::Invalid(_))
+            ));
+            assert_eq!(runner.args().len(), 2);
+            assert!(!f.cache.exists());
+        }
+    }
+}
+
+#[test]
 fn old_cache_bytes_and_missing_markers_are_not_inputs() {
     let f = Fixture::new(false);
     let old = f.cache.join(&f.id).join(&CID[..12]);
     private_dir(&old);
     fs::write(old.join("a"), b"transformed\n").unwrap();
     fs::write(old.join(".a.missing"), b"").unwrap();
-    let runner = Fake::new(&[Ok(CID), Ok("blob\0"), Ok("exact\r\n\n")]);
+    let runner = Fake::new(&[Ok(CID), Ok("100644\0"), Ok("exact\r\n\n")]);
     let target = f.extract("a", CID, &runner).unwrap();
     assert_eq!(target.root, f.revision_root());
     assert_eq!(fs::read(target.file).unwrap(), b"exact\r\n\n");
@@ -449,7 +468,7 @@ fn aliases_above_cache_boundary_are_allowed() {
             &f.id,
             "a",
             CID,
-            &Fake::new(&[Ok(CID), Ok("blob\0"), Ok("text")]),
+            &Fake::new(&[Ok(CID), Ok("100644\0"), Ok("text")]),
             3.0,
             &alias.join("cache"),
         )
@@ -524,10 +543,13 @@ fn real_backends_preserve_exact_bytes_literal_paths_and_dirty_worktree() {
             ("a*[1]", b"literal wildcard"),
             ("-option", b"literal option"),
             ("a\"(1)", b"literal fileset"),
+            ("executable", b"regular executable"),
         ];
         for (path, content) in files {
             fs::write(f.repo.join(path), content).unwrap();
         }
+        fs::set_permissions(f.repo.join("executable"), fs::Permissions::from_mode(0o755)).unwrap();
+        symlink("crlf", f.repo.join("link")).unwrap();
         git(&f.repo, &["add", "."]);
         git(&f.repo, &["commit", "-m", "initial"]);
         let revision = git(&f.repo, &["rev-parse", "HEAD"]);
@@ -564,6 +586,18 @@ fn real_backends_preserve_exact_bytes_literal_paths_and_dirty_worktree() {
                 target
             );
         }
+        assert!(matches!(
+            f.extract("link", &revision, &NativeProcessRunner),
+            Err(RuntimeError::Invalid(_))
+        ));
+        assert!(
+            !f.cache
+                .join("v2")
+                .join(&f.id)
+                .join(&revision)
+                .join("link")
+                .exists()
+        );
         assert!(matches!(
             f.extract("absent", &revision, &NativeProcessRunner),
             Err(RuntimeError::NotFound(_))

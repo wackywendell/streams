@@ -55,14 +55,6 @@ fn command(
     let output = runner
         .run(&request)
         .map_err(|e| RuntimeError::Inspection(format!("{}: {e}", context())))?;
-    if !output.status.success() {
-        return Err(RuntimeError::Inspection(format!(
-            "{}: {}: {}",
-            context(),
-            output.status,
-            String::from_utf8_lossy(&output.stderr)
-        )));
-    }
     Ok(output.stdout)
 }
 
@@ -260,7 +252,7 @@ pub(super) fn extract(
             "ls-tree",
             "-z",
             "--full-tree",
-            "--format=%(objecttype)",
+            "--format=%(objectmode)",
             resolved,
             "--",
             path,
@@ -271,13 +263,12 @@ pub(super) fn extract(
             "document does not exist in {program}: {path} at {revision}"
         )));
     }
-    if kind
-        != if program == "jj" {
-            b"file\0".as_slice()
-        } else {
-            b"blob\0".as_slice()
-        }
-    {
+    let regular = if program == "jj" {
+        kind == b"file\0"
+    } else {
+        matches!(kind.as_slice(), b"100644\0" | b"100755\0")
+    };
+    if !regular {
         return Err(invalid(format!(
             "document is not a regular file in {program}: {path} at {revision}"
         )));
