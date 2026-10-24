@@ -12,7 +12,7 @@ const {defaults}=await jiti.import('../extensions/stream-checkpoint/settings.ts'
 const wire=JSON.parse(readFileSync(new URL('./fixtures/pi-child-v2.json',import.meta.url),'utf8'));
 const tick=()=>new Promise(resolve=>setImmediate(resolve));
 function respond(child,id,result={},warnings) {child.emitMessage({type:'response',id,outcome:warnings?{status:'saved_with_warnings',result,warnings}:{status:'success',result}});}
-function fixture(t, sessionId='pi-session') {
+function fixture(t, sessionId='pi-session', env={}) {
  const children=[],launches=[],warnings=[];
  const spawn=(binary,argv,options)=>{
   const child=new EventEmitter(),messages=[];
@@ -22,7 +22,7 @@ function fixture(t, sessionId='pi-session') {
   child.messages=messages;child.emitMessage=value=>child.stdout.write(JSON.stringify(value)+'\n');
   launches.push({binary,argv,options});children.push(child);return child;
  };
- const manager=new StreamsChild({sessionId,cwd:'/tmp',env:{STREAMS_BIN_PATH:process.execPath},warning:text=>warnings.push(text),spawn});
+ const manager=new StreamsChild({sessionId,cwd:'/tmp',env:{STREAMS_BIN_PATH:process.execPath,...env},warning:text=>warnings.push(text),spawn});
  t.after(async()=>{const stopped=manager.stop();for(const child of children)child.emit('close',0);await stopped;});
  const ready=async()=>{
   const started=manager.start(),child=children.at(-1);
@@ -96,17 +96,30 @@ test('restart rejects in-flight work, attaches before new requests and never rep
  respond(first,first.messages[0].id,{native:'active',display:'opened'});await startup;
  const pending=f.manager.run({kind:'open_card'});await tick();first.emit('close',1);await assert.rejects(pending,/exited/);
  const second=f.children[1],next=f.manager.run({kind:'context'});second.emitMessage({type:'ready',protocol:2});await tick();
- assert.deepEqual(second.messages.map(frame=>frame.request),[{kind:'attach'}]);
- respond(second,second.messages[0].id,{native:'active'});await tick();assert.deepEqual(second.messages.map(frame=>frame.request),[{kind:'attach'},{kind:'context'}]);
- respond(second,second.messages[1].id,{catalog:true});await next;
+ assert.deepEqual(second.messages.map(frame=>frame.request),[{kind:'attach'},{kind:'context'}]);
+ respond(second,second.messages[1].id,{catalog:true});await next;respond(second,second.messages[0].id,{native:'active'});
  assert.equal(f.launches.length,2);assert.match(f.warnings[0],/Restarting once/);
  second.emit('close',1);assert.match(f.warnings[1],/stopped/);await assert.rejects(f.manager.run({kind:'context'}),/stopped/);assert.equal(f.launches.length,2);
 });
-test('a failed attach stops the session rather than replaying any request',async t=>{
- const f=fixture(t),first=await f.ready();first.emit('close',1);
+for(const outcome of [{status:'error',error:{kind:'runtime',message:'origin not proved'}},{status:'success',result:{}}])test('native attach failure warns but leaves catalog requests available',async t=>{
+ const f=fixture(t),first=await f.ready(),startup=f.manager.run({kind:'session_started'});await tick();respond(first,first.messages[0].id,{native:'inactive',reason:'not_enrolled'});await startup;first.emit('close',1);
  const second=f.children[1],next=f.manager.run({kind:'context'});second.emitMessage({type:'ready',protocol:2});await tick();
- second.emitMessage({type:'response',id:second.messages[0].id,outcome:{status:'error',error:{kind:'runtime',message:'origin not proved'}}});
- await assert.rejects(next,/origin not proved/);assert.equal(f.launches.length,2);assert.equal(second.messages.length,1);assert.match(f.warnings.at(-1),/stopped/);
+ second.emitMessage({type:'response',id:second.messages[0].id,outcome});respond(second,second.messages[1].id,{catalog:true});assert.deepEqual(await next,{status:'success',result:{catalog:true}});
+ assert.equal(f.launches.length,2);assert.equal(second.killed,undefined);assert.equal(f.warnings.length,2);assert.match(f.warnings[1],/origin not proved|attach acknowledgement/);
+});
+test('catalog-only restart remains ready-only despite inherited Herdr environment',async t=>{
+ const f=fixture(t,'12345678-1234-1234-1234-123456789abc',{HERDR_ENV:'1',HERDR_PANE_ID:'inherited'}),first=await f.ready(),pending=f.manager.run({kind:'context'});await tick();first.emit('close',1);await assert.rejects(pending,/exited/);
+ const second=await f.ready();assert.deepEqual(second.messages,[]);const next=f.manager.run({kind:'context'});await tick();assert.deepEqual(second.messages.map(frame=>frame.request),[{kind:'context'}]);respond(second,second.messages[0].id);await next;
+});
+test('a crash before native startup readiness cannot replay session_started into the replacement',async t=>{
+ const f=fixture(t),pending=f.manager.run({kind:'session_started'}),first=f.children[0];first.emit('close',1);await assert.rejects(pending,/exited/);
+ const second=await f.ready();assert.deepEqual(second.messages.map(frame=>frame.request),[{kind:'attach'}]);
+});
+test('native attach timeout cancels only attachment and does not stop catalog transport',async t=>{
+ t.mock.timers.enable({apis:['setTimeout']});const f=fixture(t),first=await f.ready(),startup=f.manager.run({kind:'session_started'});await tick();respond(first,first.messages[0].id,{native:'active',display:'suppressed'});await startup;first.emit('close',1);
+ const second=f.children[1],ready=f.manager.start();second.emitMessage({type:'ready',protocol:2});await ready;t.mock.timers.tick(120000);
+ assert.deepEqual(second.messages.at(-1),{type:'cancel',id:second.messages[0].id});assert.match(f.warnings.at(-1),/attach timed out/);assert.equal(second.killed,undefined);
+ const next=f.manager.run({kind:'context'});await tick();respond(second,second.messages.at(-1).id,{catalog:true});await next;
 });
 for(const message of [{type:'ready',protocol:1},{type:'response',id:1,outcome:{status:'success',result:{}}}])test('unsupported first frame fails without a v1 fallback',async t=>{
  const f=fixture(t),started=f.manager.start();f.children[0].emitMessage(message);await assert.rejects(started,/handshake/);assert.equal(f.children[0].killed,true);assert.equal(f.launches.length,2);await f.ready();
@@ -134,7 +147,8 @@ test('aborting a draining request writes no cancel after EOF and never kills the
  assert.equal(child.killed,undefined);assert.deepEqual(child.messages.map(value=>value.type),['request']);child.emit('close',0);await stopping;
 });
 test('attach warnings are not emitted after shutdown starts, but its accepted reply still drains',async t=>{
- const f=fixture(t),first=await f.ready();first.emit('close',1);const second=f.children[1],attached=f.manager.start();second.emitMessage({type:'ready',protocol:2});await tick();
+ const f=fixture(t),first=await f.ready(),startup=f.manager.run({kind:'session_started'});await tick();respond(first,first.messages[0].id,{native:'active',display:'suppressed'});await startup;first.emit('close',1);
+ const second=f.children[1],attached=f.manager.start();second.emitMessage({type:'ready',protocol:2});await tick();
  const stopped=f.manager.stop();respond(second,second.messages[0].id,{native:'active'},['Retired attach warning']);await attached;second.emit('close',0);await stopped;
  assert.equal(f.warnings.length,1);assert.match(f.warnings[0],/Restarting once/);
 });

@@ -6,12 +6,13 @@ import { decodeServerFrame, type ChildOutcome, type ChildView, type Runner } fro
 type Pending = {resolve: (value: ChildOutcome) => void; reject: (error: Error) => void};
 const pluginRoot = fileURLToPath(new URL("../../integrations/herdr-work-cards", import.meta.url));
 
-/** One transport per Pi session. Restart attaches; it never replays a request. */
+/** One transport per Pi session. Restart reattaches enabled native work, never requests. */
 export class StreamsChild {
  private process?: ReturnType<typeof spawn>;
  private ready?: Promise<void>;
  private stopped = false;
  private restarted = false;
+ private nativeEnabled = false;
  private nextId = 0;
  private pending = new Map<number, Pending>();
  private listeners = new Set<(view: ChildView) => void>();
@@ -34,7 +35,7 @@ export class StreamsChild {
   let resolve!: () => void, reject!: (error: Error) => void;
   this.ready = new Promise<void>((yes, no) => {resolve = yes;reject = no;});
   void this.ready.catch(() => {});
-  const result = this.ready, attaching = this.restarted;
+  const result = this.ready, attaching = this.restarted && this.nativeEnabled;
   let child: ReturnType<typeof spawn>;
   try {
    const env = this.options.env ?? process.env, binary = resolveStreamsBin(env);
@@ -57,21 +58,25 @@ export class StreamsChild {
    const value = decodeServerFrame(line);
    if (first) {
     if (value.type !== "ready") throw Error("Unsupported Streams child handshake (expected protocol 2)");
-    first = false;
-    if (!attaching) {clearTimeout(timer);resolve();return;}
-    // Readiness after a restart includes attachment, so a new catalog caller
-    // cannot overtake it. The failed request stays rejected on the old lifetime.
-    const id = ++this.nextId;
-    this.pending.set(id, {reject:fail, resolve:outcome => {
-     if (outcome.status === "error") {fail(Error(outcome.error.message));return;}
-     const native = outcome.result;
-     if (!(native.native === "active" && !Object.hasOwn(native, "display") || native.native === "inactive" && ["outside_herdr", "not_enrolled"].includes(native.reason as string))) {
-      fail(Error("Invalid Streams child attach acknowledgement"));return;
-     }
-     if (!this.stopped && outcome.status === "saved_with_warnings") for (const warning of outcome.warnings) this.options.warning(warning);
-     clearTimeout(timer);resolve();
-    }});
-    this.send({type:"request", id, request:{kind:"attach"}});return;
+    first = false;clearTimeout(timer);
+    if (attaching) {
+     // Dispatch attachment first; its native outcome must not gate catalog work.
+     const id = ++this.nextId;
+     const warn = (message: string) => {if (!this.stopped) this.options.warning(message);};
+     const deadline = setTimeout(() => {
+      this.pending.delete(id);this.send({type:"cancel", id});
+      warn("Streams native attach timed out; catalog requests remain available.");
+     }, 120_000);
+     this.pending.set(id, {reject:() => {clearTimeout(deadline);}, resolve:outcome => {
+      clearTimeout(deadline);
+      if (outcome.status === "error") {warn(`Streams native attach: ${outcome.error.message}`);return;}
+      const native = outcome.result;
+      if (!(native.native === "active" && !Object.hasOwn(native, "display") || native.native === "inactive" && ["outside_herdr", "not_enrolled"].includes(native.reason as string))) warn("Invalid Streams child attach acknowledgement");
+      if (outcome.status === "saved_with_warnings") for (const warning of outcome.warnings) warn(warning);
+     }});
+     this.send({type:"request", id, request:{kind:"attach"}});
+    }
+    resolve();return;
    }
    if (value.type === "response") {
     const request = this.pending.get(value.id);this.pending.delete(value.id);request?.resolve(value.outcome);return;
@@ -112,6 +117,7 @@ export class StreamsChild {
  readonly run: Runner = async (request, options) => {
   const signal = options?.signal;signal?.throwIfAborted();
   const intent = structuredClone(request);
+  if (intent.kind === "session_started" || intent.kind === "attach") this.nativeEnabled = true;
   let id: number | undefined, timer: ReturnType<typeof setTimeout> | undefined;
   let abort!: () => void;
   const cancellation = new Promise<never>((_resolve, reject) => {

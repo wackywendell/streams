@@ -278,7 +278,9 @@ export default function registerWorkCard(pi: ExtensionAPI, options: Options = {}
   if (!fence.current()) return;
   native = new NativeController({pi, ctx, current: () => scope.context, factory:options.native, warning,
    child:options.cli ? undefined : sessionChild(ctx)});
-  await Promise.all([native.start(), sync(ctx, "start")]);
+  const starting = native.start();
+  if (starting) {await starting;if (!fence.live()) return;}
+  await sync(ctx, "start");
  });
  pi.on("agent_end", (event, ctx) => {
   if (scope.stopped) return;

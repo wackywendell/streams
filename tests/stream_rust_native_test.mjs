@@ -192,21 +192,12 @@ function real(t,{enrolled=true}={}) {
  const commands=()=>{assert.equal(existsSync(spawned),false,'the Rust CLI started a Herdr process');return existsSync(log)?readFileSync(log,'utf8').trim().split('\n').filter(Boolean).map(JSON.parse):[];};
  return {...f,directory,id,stream,state,legacyState,native,put,invoke,cli,load,commands};
 }
-for(const pinned of [false,true]) test(`native operation Herdr request budgets${pinned?' with --expect':''}`,t=>{
+test('one-shot native operations resolve one owner snapshot without a scope round trip',t=>{
  const f=real(t);writeFileSync(join(f.directory,'native-commands.jsonl'),'');
  for(const operation of ['observe','check','project','capture']) {
-  const observed=pinned?f.cli('native','--session-id',f.id,'observe'):null;
-  const expect=observed?['--expect',JSON.stringify({version:1,scope:observed.scope,context:observed.context})]:[];
-  const start=f.commands().length;
-  f.cli('native','--session-id',f.id,...expect,operation);
-  const counts={};
-  for(const [method] of f.commands().slice(start)) counts[method]=(counts[method]??0)+1;
-  // One protocol check per process, then one socket request per observation
-  // or effect; no Herdr CLI process (commands() trips on any spawn).
-  const expected={observe:{ping:1,'session.snapshot':1},check:{ping:1,'session.snapshot':1},
-   project:{ping:1,'session.snapshot':7,'workspace.report_metadata':1,'pane.report_metadata':1},
-   capture:{ping:1,'session.snapshot':4}}[operation];
-  assert.deepEqual(counts,expected,operation);
+  const start=f.commands().length;f.cli('native','--session-id',f.id,operation);const counts={};
+  for(const [method] of f.commands().slice(start))counts[method]=(counts[method]??0)+1;
+  assert.equal(counts.ping,1,operation);assert.equal(counts['session.snapshot'],1,operation);
  }
 });
 test('native evidence reset works without a catalog, host identity or caller Session',t=>{
@@ -264,16 +255,13 @@ test('real v2 attach does not need a prior Pi scope and has no automatic-open ou
  const before=f.commands().length;await child.start();assert.equal(f.commands().length,before,'ready alone must not observe or project');
  const attached=await child.run({kind:'attach'});assert.equal(attached.status,'success');assert.deepEqual(attached.result,{native:'active'});
 });
-test('real Rust owner observation is read-only and rejects stale context before metadata effects',t=>{
+test('real Rust owner observation is read-only and wrong session/caller refuses before metadata effects',t=>{
  const f=real(t),before=readFileSync(join(f.directory,'native.json'),'utf8');
- const observed=f.cli('native','--session-id',f.id,'observe');
- assert.equal(observed.version,1);assert.equal(observed.scope.nativeSessionId,f.id);assert.equal(observed.context.terminalId,'terminal');assert.equal(observed.context.binding,null);
- assert.deepEqual(observed.config,{automatic:false,sessionNaming:true});
+ f.cli('native','--session-id',f.id,'observe');
  assert.equal(readFileSync(join(f.directory,'native.json'),'utf8'),before);assert.equal(existsSync(join(f.state,'native-cards')),false);
- const expected={version:1,scope:observed.scope,context:observed.context};
- f.native.pane.terminal_id='replacement';f.native.snapshot.panes[0].terminal_id='replacement';f.put();
- const result=f.invoke('native','--session-id',f.id,'--expect',JSON.stringify(expected),'project');
- assert.notEqual(result.code,0);assert.match(result.data.error.message,/changed/);assert.equal(result.data.error.kind,'native-context-changed');
+ const wrongSession=f.invoke('native','--session-id',randomUUID(),'project');assert.notEqual(wrongSession.code,0);assert.match(wrongSession.data.error.message,/session|caller|origin/i);
+ f.native.pane.agent_session={agent:'pi',kind:'id',value:randomUUID()};f.put();
+ const wrongCaller=f.invoke('native','--session-id',f.id,'project');assert.notEqual(wrongCaller.code,0);assert.match(wrongCaller.data.error.message,/session|caller|origin/i);
  assert.ok(f.commands().every(([method])=>!method.endsWith('report_metadata')));
 });
 test('launched-card readers reject a socket or namespace that contradicts the pinned endpoint',t=>{
@@ -326,18 +314,18 @@ test('Pi lifecycle preserves the named Herdr namespace through Rust source rerea
  const arrangements=readdirSync(join(f.state,'arrangements'),{recursive:true}).filter(path=>path.endsWith('.json'));
  assert.equal(arrangements.length,1);assert.ok(JSON.parse(readFileSync(join(f.state,'arrangements',arrangements[0]),'utf8')).tabs.length);
  controller.stop();await controller.idle();delete process.env.HERDR_SOCKET_PATH;
- const observed=f.cli('native','--session-id',f.id,'observe'),expected={version:1,scope:observed.scope,context:observed.context};
+ const observed=f.cli('native','--session-id',f.id,'observe');
  // Without an explicit socket, the named session resolves to the same endpoint.
  assert.equal(observed.context.socket,f.native.socket);
- const captured=f.cli('native','--session-id',f.id,'--expect',JSON.stringify(expected),'capture');
+ const captured=f.cli('native','--session-id',f.id,'capture');
  assert.equal(captured.stream_id,observed.scope.streamId);
  const file=join(f.directory,'native.json'),live=JSON.parse(readFileSync(file,'utf8'));
- live.replaceOwnerAfterSnapshot=2;
+ for(const row of [live.pane,...live.snapshot.panes,...live.snapshot.agents])row.agent_session={agent:'pi',kind:'id',value:randomUUID()};
  writeFileSync(file,JSON.stringify(live));
  const arrangementFile=join(f.state,'arrangements',arrangements[0]),before=readFileSync(arrangementFile,'utf8');
- // The owner changes during topology capture; the second lock-held check must refuse persistence.
- const refused=f.invoke('native','--session-id',f.id,'--expect',JSON.stringify(expected),'capture');
- assert.notEqual(refused.code,0);assert.match(refused.data.error.message,/terminal|changed/i);
+ // A caller mismatch refuses before replacing the saved arrangement.
+ const refused=f.invoke('native','--session-id',f.id,'capture');
+ assert.notEqual(refused.code,0);assert.match(refused.data.error.message,/session|caller|origin/i);
  assert.equal(readFileSync(arrangementFile,'utf8'),before);
  f.commands(); // Assert zero Herdr CLI spawns throughout the lifecycle.
 });

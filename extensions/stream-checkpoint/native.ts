@@ -35,8 +35,8 @@ export class NativeController {
   if (!current?.hasUI || current.mode !== "tui" || current.cwd !== this.cwd || current.sessionManager.getSessionId() !== this.sessionId
    || environmentKeys.some(key => process.env[key] !== this.env[key])) throw Error("Native work-card session or environment changed; reload required");
  };
- start(): Promise<void> {
-  if (!this.eligible()) return Promise.resolve();
+ start(): Promise<void> | undefined {
+  if (!this.eligible()) return;
   return this.startup ??= (async () => {
    this.assertCurrent();
    this.adapter = (this.options.factory ?? loadNative)({pi:this.options.pi, ctx:this.options.ctx, sessionId:this.sessionId, cwd:this.cwd, env:{...this.env}, child:this.options.child, assertCurrent:this.assertCurrent, warning:this.options.warning});
