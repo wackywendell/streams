@@ -19,7 +19,7 @@ use streams_temper::tui::{
     application::{self, PaneHost},
 };
 
-fn snapshot() -> CardSnapshot {
+fn snapshot(read: usize) -> CardSnapshot {
     let fixtures: serde_json::Value =
         serde_json::from_str(include_str!("../src/tui/fixtures/active-renderer.json")).unwrap();
     let source = &fixtures[0]["snapshot"];
@@ -27,9 +27,11 @@ fn snapshot() -> CardSnapshot {
         checkout_id: "lib".into(),
         root: "/code/library".into(),
     };
+    let mut session = source["session"].clone();
+    session["title"] = format!("{} [read {read}]", session["title"].as_str().unwrap()).into();
     CardSnapshot::new(
         serde_json::from_value(source["stream"].clone()).unwrap(),
-        serde_json::from_value(source["session"].clone()).unwrap(),
+        serde_json::from_value(session).unwrap(),
         DisplayContext {
             catalog_source: "catalog".into(),
             owner: NativeOwnerObservation {
@@ -107,11 +109,8 @@ impl PaneHost for Host {
         if matches!(self.mode, Scenario::ReadError) {
             return Err("injected read failure".into());
         }
-        fs::write(
-            self.root.join("reads-completed"),
-            events(&self.root).matches("read\n").count().to_string(),
-        )
-        .unwrap();
+        let read = events(&self.root).matches("read\n").count();
+        self.snapshot = snapshot(read);
         Ok(self.snapshot.clone())
     }
     fn activate(&mut self, observed: &CardSnapshot, target: &Target) -> Result<(), String> {
@@ -166,7 +165,7 @@ fn child_fixture() -> bool {
             root,
             mode,
             cancel: cancel.flag(),
-            snapshot: snapshot(),
+            snapshot: snapshot(0),
         })
     });
     fs::write(
@@ -363,8 +362,9 @@ fn refresh_clears_failure_notice_and_clipped_documents_cannot_activate() {
     ready(&mut pty);
     pty.send(b"a");
     pty.until(|p| {
-        p.screen()
-            .contains("Activation failed: injected activation failure")
+        p.screen().contains("[read 2]")
+            && p.screen()
+                .contains("Activation failed: injected activation failure")
     });
     fs::remove_file(root.path().join("activation-error")).unwrap();
     release(root.path(), "block-read");
@@ -378,7 +378,7 @@ fn refresh_clears_failure_notice_and_clipped_documents_cannot_activate() {
     pty.send(b"a"); // This visible-but-stale shortcut must be discarded while refreshing.
     release(root.path(), "release-read");
     pty.until(|p| {
-        fs::read_to_string(root.path().join("reads-completed")).is_ok_and(|text| text == "3")
+        p.screen().contains("[read 3]")
             && !p.screen().contains("Activation failed")
             && !p.screen().contains("Refreshing")
     });
