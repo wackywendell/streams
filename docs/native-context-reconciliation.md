@@ -12,7 +12,11 @@ Separate the conversation, its current Stream membership and its native location
 
 The conversation follows the workspace. When it moves into a workspace associated with Stream B, the CLI changes its membership to B. Other conversations remain where they are; the Streams are not merged or relocated. If the destination has no associated Stream, create one. The conversation need not wait for the rest of its old working arrangement to move.
 
-Every verified owner move brings its existing owned card below the owner, as at launch, even if the user previously moved the card independently. The Pi child performs this reconciliation; the card only observes. This does not reopen a closed card or replace a missing one automatically.
+Every verified owner move brings its existing owned card into the owner's tab, even if the user previously moved the card independently. The Pi child performs this reconciliation; the card only observes. This does not reopen a closed card or replace a missing one automatically.
+
+The trigger is an owner `pane.moved` event matched by `previous_pane_id` and confirmed by the child's already-attested `terminal_id`. The child takes one snapshot. If the card is already in its owner's tab, it does nothing. Otherwise it plans one move into that tab, targeting the owner with `split: "down"` so the card arrives below it. Moving a card on its own does not trigger this action. A child that missed a move while stopped does not reposition the card on startup; the next owner move reconciles it.
+
+Follow is idempotent toward a placement, not a launch. It stores no owner tuple, move generation, pending follow intent or no-repeat guard. An uncertain move reply produces a warning and ends that pass; a later owner move is a new trigger. Herdr's `same_tab` no-op is success; `zoomed_tab` produces a warning. A cross-workspace move may change the card's pane ID, so take the returned pane rather than retaining the old ID. Do not swap, rebuild the layout or relaunch. This does not clear or bypass pending launch or editor evidence.
 
 Retain previous membership relationships as participation history, with one current membership. This records that a conversation participated in a Stream, not what its work card said then. Do not duplicate or freeze work cards. A historical relationship grants no authority to update that Stream.
 
@@ -32,7 +36,7 @@ Native evidence lives at `$XDG_STATE_HOME/streams/native`, defaulting to `~/.loc
 
 One native writer lock lives in this root. Its identity includes neither socket nor workspace. It replaces the per-socket and per-workspace native locks; do not nest them. Hold it for one bounded plan and effect/reply pass, then release it. This serializes writes to conversation-keyed evidence across owner moves and endpoints.
 
-Use a versioned, conversation-keyed evidence record carrying that lifetime's nonce, phase and resources. Normal operations use direct keyed reads and require the completed new format. They never read legacy keys, replay history or scan for evidence. If migration is required, fail clearly and name the migration command.
+Use a versioned, conversation-keyed evidence record carrying that lifetime's nonce, phase and resources. Version 2 records declare `purpose: "card"` or `purpose: "editor"`; editors carry no owner or follow state. Normal operations use direct keyed reads and require the completed new format. They never read legacy keys, replay history or scan for evidence. If migration is required, fail clearly and name the migration command.
 
 ### Offline reset
 
@@ -74,7 +78,7 @@ Pi carries request context without interpreting membership or orchestrating reco
 | --- | --- |
 | Rename a native surface | Preserve user-chosen names. Resume automatic naming only after explicit reclaim of that surface. |
 | Reorder panes or change pane IDs | Follow verified live conversation and terminal identity, not inherited addresses. Membership changes only if the workspace changes. |
-| Move a card independently | Retain its conversation association. The next owner move brings it below the owner, regardless of the card's chosen placement. Do not close it or launch a replacement. |
+| Move a card independently | Retain its conversation association. The next owner move brings it into the owner's tab, unless it is already there. Do not close it or launch a replacement. |
 | Move an editor independently | Retain its conversation association. Do not automatically move it back, close it or launch a replacement. |
 | Close a display | Reporting continues. No background respawn; explicit reopen requires positive absence and duplicate checks. |
 | Lose observations or restore a workspace | Pause affected effects until fresh proof is available. Missing observations do not prove closure; recycled handles do not prove continuity. |

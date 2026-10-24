@@ -49,7 +49,7 @@ An executor should take Herdr's reply to an action as its confirmation, without 
 
 If an action fails, or its reply does not match, the executor should stop the list there and report the action and the reply. Remaining actions in the list do not run: lists are short and ordered, and "record intent, act, record outcome" depends on that order.
 
-A process should also never apply the same action to the same target twice for the same desired value. Card-follow actions include the verified owner-move transition in their identity, so a later owner move may legitimately request the same placement again. If a later pass plans an action the process has already applied, Streams has misunderstood Herdr — for example, Herdr normalised a name differently — and applying it again would only produce another echo event and another identical plan. The executor should skip it and report it as a bug instead. This one rule catches mismatches whether or not the reply showed them, without an extra snapshot. The record of applied actions is small and lives only as long as the process. A changed desired value, such as a new Stream title, is a new action and applies normally.
+For projections, a process should never apply the same action to the same target twice consecutively for the same desired value. Owner-event card follow is exempt: each verified move triggers an idempotent placement into the owner's tab, with no no-repeat guard. If a later pass repeats the last applied desired value for that target, Streams has misunderstood Herdr — for example, Herdr normalised a name differently — and applying it again would only produce another echo event and another identical plan. The executor should skip it and report it as a bug instead. This one rule catches mismatches whether or not the reply showed them, without an extra snapshot. The record of applied actions is small and lives only as long as the process. A changed desired value, such as a new Stream title, is a new action and applies normally.
 
 ### Each system has its own action type and executor
 
@@ -61,21 +61,23 @@ enum HerdrAction { SetWorkspaceMetadata { .. }, RenameTab { .. }, RenamePane { .
 enum CatalogAction { SaveSession { .. }, SaveStream { .. }, Publish }
 ```
 
-The types enforce the boundary: the Herdr executor cannot be given a catalog action, so it only ever needs the workspace lock, and the catalog executor only the catalog lock. No plan holds both locks or needs a transaction across them.
+The types enforce the boundary: the Herdr executor cannot be given a catalog action, so it only ever needs the host-local native writer lock, and the catalog executor only the catalog lock. No plan holds both locks or needs a transaction across them.
 
 When one system's change requires the other to act, events connect them. For example, a conversation moves to another workspace. Herdr reports the move, the catalog side saves the Session under the new workspace's Stream, and that save is a record change the Herdr side then plans from, for example to rename the tab. Because data flows one way per field, this chain ends: the Herdr side's display actions are not inputs to the catalog side. It costs one extra pass when both systems change, which is cheap next to holding two locks.
 
 ### Plan under the lock
 
-An executor should take its lock, read fresh state once, and plan from that state, rather than checking whether a plan made before the lock still holds. A plan made before the lock only decides whether there is anything to do. Planning is pure, so doing it under the lock costs almost nothing, and the plan that runs is always the one fresh state calls for. This is not a retry: each trigger is still planned and executed once. This replaces the per-step re-checks that account for most of today's snapshots. The existing rule stands: effects act only on a fresh snapshot taken under the native workspace lock.
+An executor should take its lock, read fresh state once, and plan from that state, rather than checking whether a plan made before the lock still holds. A plan made before the lock only decides whether there is anything to do. Planning is pure, so doing it under the lock costs almost nothing, and the plan that runs is always the one fresh state calls for. This is not a retry: each trigger is still planned and executed once. This replaces the per-step re-checks that account for most of today's snapshots. The existing rule stands: effects act only on a fresh snapshot taken under the host-local native writer lock.
 
 ### Durable records are actions too
 
-Some effects must be preceded by a durable record, so a crash leaves evidence. Today these are card launch evidence (the pending fence written before a card opens) and the record of which names Streams wrote. An action list should express the order directly: record the intent, act, record the outcome.
+Some effects must be preceded by a durable record, so a crash leaves evidence. These include card and editor launch evidence (the pending fence written before dispatch) and the record of which names Streams wrote. An action list should express the order directly: record the intent, act, record the outcome.
 
-These files describe Herdr state and are protected by the native workspace lock, so they are `HerdrAction`s written by the Herdr executor. That keeps the whole "record, act, record" sequence in one executor under one lock.
+These files describe Herdr state and are protected by the host-local native writer lock, so they are `HerdrAction`s written by the Herdr executor. That keeps the whole "record, act, record" sequence in one executor under one lock.
 
-A crash between those steps leaves a state layer 1 must recognise: the intent is recorded but the outcome is unknown. Uncertainty then becomes an explicit state rather than checks spread through the effect code. The current fail-closed behaviour must not change: unknown outcomes stay fenced until fresh evidence resolves them, and are never retried blindly.
+A crash between those steps leaves a state layer 1 must recognise: the intent is recorded but the outcome is unknown. Uncertainty then becomes an explicit state rather than checks spread through the effect code. Pending launch and editor outcomes stay fenced; reappearance or reattestation alone cannot clear them.
+
+[Owner-event card follow](native-context-reconciliation.md#decision) is different: putting an existing owned card in its owner's tab is idempotent. It needs no pending intent or no-repeat guard. An uncertain reply ends the pass with a warning, without replanning; the next owner move is a new trigger.
 
 ### Applies across the stack
 
