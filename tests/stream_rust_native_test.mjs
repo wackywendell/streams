@@ -4,7 +4,7 @@ import { spawn, spawnSync } from 'node:child_process';
 import { once } from 'node:events';
 import { createInterface } from 'node:readline';
 import { createHash, randomUUID } from 'node:crypto';
-import { existsSync, mkdtempSync, mkdirSync, readFileSync, readdirSync, realpathSync, rmSync, symlinkSync, writeFileSync } from 'node:fs';
+import { closeSync, existsSync, mkdtempSync, mkdirSync, openSync, readFileSync, readdirSync, realpathSync, renameSync, rmSync, symlinkSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { dirname, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -37,7 +37,7 @@ function fake(t) {
  const directory=temporary(t,async()=>{await Promise.all(adapters.map(adapter=>adapter.dispose()));await Promise.all(children.map(child=>child.stop()));}),id=randomUUID(),f=piContext(directory,id);
  const file=join(directory,'observation.json'),log=join(directory,'commands.jsonl'),executable=join(directory,'rust child');
  const observation={version:1,scope:{catalogSource:'catalog',hostId:'host',streamId:'stream',sessionId:'session',nativeSessionId:id},native:{pane_id:'pane',tab_id:'tab',workspace_id:'workspace'},context:{socket:join(directory,'not-live.sock'),paneId:'pane',terminalId:'terminal',tabId:'tab',workspaceId:'workspace',binding:null},session:{title:'Saved title',title_mode:'automatic'},config:{automatic:false,sessionNaming:true}};
- const put=value=>writeFileSync(file,JSON.stringify(value));put(observation);
+ const put=value=>{const staged=file+'.new';writeFileSync(staged,JSON.stringify(value));renameSync(staged,file);};put(observation);
  writeFileSync(executable,`#!${process.execPath}\nimport(${JSON.stringify(new URL('./helpers/native-child.mjs',import.meta.url).href)});\n`,{mode:0o700});
  lifetime(t,directory,{STREAMS_BIN_PATH:executable,STREAMS_NATIVE_FIXTURE:file,STREAMS_NATIVE_LOG:log});
  const commands=()=>existsSync(log)?readFileSync(log,'utf8').trim().split('\n').filter(Boolean).map(JSON.parse):[];
@@ -57,6 +57,15 @@ async function observe(child, id) {
  assert.equal(result.code,0,result.stdout);await changed;
 }
 async function until(check) {const deadline=Date.now()+5000;while(!check()&&Date.now()<deadline) await new Promise(resolve=>setTimeout(resolve,5));assert.ok(check(),'child did not reach requested command');}
+
+test('native fixture replaces observations without truncating an active child reader',t=>{
+ const f=fake(t),file=join(f.directory,'observation.json'),before=readFileSync(file,'utf8'),reader=openSync(file,'r');
+ try {
+  f.observation.session.title='New title';f.put(f.observation);
+  assert.equal(readFileSync(reader,'utf8'),before);
+  assert.deepEqual(JSON.parse(readFileSync(file,'utf8')),f.observation);
+ } finally {closeSync(reader);}
+});
 
 test('Rust routing stays lazy and routes the Pi lane without TypeScript native effects or Python capture',async t=>{
  const f=fake(t),notices=[];
