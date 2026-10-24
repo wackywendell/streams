@@ -111,6 +111,10 @@ impl YamlRecordStore {
         })
     }
 
+    pub(crate) fn root(&self) -> &Path {
+        &self.root
+    }
+
     pub fn with_io_observer(
         mut self,
         observe: impl Fn(RecordIoEvent) + Send + Sync + 'static,

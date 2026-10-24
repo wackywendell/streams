@@ -14,6 +14,7 @@ mod agent_context;
 mod agent_preview;
 mod agent_requests;
 mod application;
+mod application_records;
 mod catalog;
 mod catalog_conformance;
 mod cli;

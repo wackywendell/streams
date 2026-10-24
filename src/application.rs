@@ -1,5 +1,9 @@
 //! Host-bound backend selection and record-local catalog actions.
 
+pub mod cutover;
+mod records;
+pub use records::{OpenedRecords, open_records, open_records_observed};
+
 use std::fs;
 use std::path::{Path, PathBuf};
 
