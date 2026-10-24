@@ -1,14 +1,9 @@
-use super::super::native_names::{
-    NameDecision, NameInput, NameIntent, NameOwner, NameStore, SurfaceKind, decide_name,
-};
 use super::actions::MetadataTarget;
 use super::config::validate_title;
 use super::*;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum NameProjectionIntent {
-    Automatic,
-    Explicit,
+enum SurfaceKind {
     Workspace,
     Tab,
 }
@@ -18,7 +13,6 @@ pub enum NameOutcome {
     Disabled,
     NotFirst,
     Unchanged,
-    Manual,
     Renamed,
 }
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
@@ -169,38 +163,10 @@ impl NativeCardEngine {
             }
             Ok(())
         };
-        let tokens = before
-            .snapshot
-            .pane_tokens(&tuple.pane_id)
-            .expect("paired tokens");
-        if tokens.get("strm_caption_manual").map(String::as_str) == Some("1") {
+        if before.snapshot.pane_label(&tuple.pane_id) == Some(desired.as_str()) {
             return Ok(());
         }
-        let expected = tokens
-            .get("strm_caption")
-            .map(String::as_str)
-            .unwrap_or("Streams work card");
-        if before.snapshot.pane_label(&tuple.pane_id) != Some(expected) {
-            let target = MetadataTarget::pane(&before, &tuple.pane_id)?;
-            self.stamp(
-                target,
-                BTreeMap::from([("strm_caption_manual".into(), Some("1".into()))]),
-                &verify,
-            )?;
-            return Ok(());
-        }
-        if tokens.get("strm_caption").map(String::as_str) == Some(desired.as_str()) {
-            return Ok(());
-        }
-        if expected == desired {
-            let target = MetadataTarget::pane(&before, &tuple.pane_id)?;
-            self.stamp(
-                target,
-                BTreeMap::from([("strm_caption".into(), Some(desired.clone()))]),
-                &verify,
-            )?;
-            return Ok(());
-        }
+        verify(&before)?;
         let renamed = self.call(
             "pane.rename",
             serde_json::json!({"pane_id":tuple.pane_id,"label":desired}),
@@ -217,38 +183,25 @@ impl NativeCardEngine {
         {
             return Err(self.refuse("caption source changed; effect may be partial"));
         }
-        let target = MetadataTarget::pane(&after, &tuple.pane_id)?;
-        self.stamp(
-            target,
-            BTreeMap::from([("strm_caption".into(), Some(desired.clone()))]),
-            &verify,
-        )?;
+        verify(&after)?;
         Ok(())
     }
 
-    pub fn project_names(&mut self, intent: NameProjectionIntent) -> Result<NameReport> {
+    pub fn project_names(&mut self) -> Result<NameReport> {
         self.begin_observation();
         self.guard_recovering()?;
         let state = self.state.clone();
-        let lock = state.lock(self.config.timeout_seconds, &self.cancelled)?;
+        let _lock = state.lock(self.config.timeout_seconds, &self.cancelled)?;
         self.fresh_under_lock();
         let mut report = NameReport {
             workspace: NameOutcome::Disabled,
             tab: NameOutcome::Disabled,
         };
         for kind in [SurfaceKind::Workspace, SurfaceKind::Tab] {
-            let explicit = matches!(intent, NameProjectionIntent::Explicit)
-                || matches!(
-                    (intent, kind),
-                    (NameProjectionIntent::Workspace, SurfaceKind::Workspace)
-                        | (NameProjectionIntent::Tab, SurfaceKind::Tab)
-                );
-            if !explicit
-                && !match kind {
-                    SurfaceKind::Workspace => self.config.workspace_naming,
-                    SurfaceKind::Tab => self.config.tab_naming,
-                }
-            {
+            if !match kind {
+                SurfaceKind::Workspace => self.config.workspace_naming,
+                SurfaceKind::Tab => self.config.tab_naming,
+            } {
                 continue;
             }
             let before = self.projection_proof()?;
@@ -262,105 +215,37 @@ impl NativeCardEngine {
             let label = surface(&before, kind)?;
             let desired = desired_name(&before, kind);
             validate_title(&desired)?;
-            let scope = NameStore::prepare_scope(
-                &lock,
-                path_text(&self.client.endpoint().socket)?,
-                &before.caller.workspace_id,
-                before.bound()?,
-                kind,
-                &label.id,
-            )?;
-            let prior = NameStore::read(&lock, &scope)?;
-            let nonce = match before.pair()? {
-                PairState::Empty => before.saved.card.scope().native_session_id.as_str(),
-                PairState::Absent { nonce, .. } | PairState::Paired { nonce, .. } => nonce,
-                _ => return Err(self.refuse("naming requires a verified owner")),
-            };
-            let owner = NameOwner::new(&before.owner.terminal_id, nonce)?;
-            let fresh = self.projection_proof()?;
-            if desired_name(&fresh, kind) != desired
-                || surface(&fresh, kind)? != label
-                || fresh.owner != before.owner
-                || fresh.pair()? != before.pair()?
-                || fresh.bound()? != before.bound()?
-            {
-                return Err(self.refuse("naming source, owner or label changed"));
-            }
-            let default_label_proven = kind == SurfaceKind::Tab
-                && before
-                    .snapshot
-                    .topology()
-                    .tabs
-                    .iter()
-                    .filter(|tab| tab.workspace_id == before.owner.workspace_id)
-                    .position(|tab| tab.id == label.id)
-                    .is_some_and(|index| label.label == (index + 1).to_string());
-            let decision = decide_name(NameInput {
-                scope: &scope,
-                provenance: prior.as_ref(),
-                owner: &owner,
-                current_label: &label.label,
-                desired_name: &desired,
-                default_label_proven,
-                intent: if explicit {
-                    NameIntent::Explicit
-                } else {
-                    NameIntent::Automatic
-                },
-            })?;
-            let outcome = match decision {
-                NameDecision::Noop => NameOutcome::Unchanged,
-                NameDecision::Adopt(provenance) | NameDecision::Manual(provenance) => {
-                    let manual = matches!(
-                        provenance,
-                        super::super::native_names::NameProvenance::Manual { .. }
-                    );
-                    if prior.as_ref() != Some(&provenance) {
-                        NameStore::write(&lock, &scope, &provenance, &self.cancelled)?;
-                    }
-                    if manual {
-                        NameOutcome::Manual
-                    } else {
-                        NameOutcome::Unchanged
-                    }
+            let outcome = if label.label == desired {
+                NameOutcome::Unchanged
+            } else {
+                let (native_kind, id_field, result_kind) = match kind {
+                    SurfaceKind::Workspace => ("workspace", "workspace_id", "workspace_info"),
+                    SurfaceKind::Tab => ("tab", "tab_id", "tab_info"),
+                };
+                let result = self.call(
+                    &format!("{native_kind}.rename"),
+                    serde_json::json!({id_field:label.id,"label":desired}),
+                    Some(result_kind),
+                    true,
+                )?;
+                let ack = &result[native_kind];
+                let after = self.projection_proof()?;
+                let actual = surface(&after, kind)?;
+                if ack[id_field] != label.id
+                    || ack["workspace_id"] != before.owner.workspace_id
+                    || ack["number"].as_u64() != Some(label.number)
+                    || ack["label"] != desired
+                    || actual.id != label.id
+                    || actual.number != label.number
+                    || actual.label != desired
+                    || desired_name(&after, kind) != desired
+                    || after.owner != before.owner
+                    || after.bound()? != before.bound()?
+                    || (kind == SurfaceKind::Tab && !after.snapshot.first_pane(after.owner_pane()))
+                {
+                    return Err(self.refuse("native name acknowledgement changed"));
                 }
-                NameDecision::Rename {
-                    name,
-                    after_success,
-                } => {
-                    let (native_kind, id_field, result_kind) = match kind {
-                        SurfaceKind::Workspace => ("workspace", "workspace_id", "workspace_info"),
-                        SurfaceKind::Tab => ("tab", "tab_id", "tab_info"),
-                    };
-                    let result = self.call(
-                        &format!("{native_kind}.rename"),
-                        serde_json::json!({id_field:label.id,"label":name}),
-                        Some(result_kind),
-                        true,
-                    )?;
-                    let ack = &result[native_kind];
-                    let after = self.projection_proof()?;
-                    let actual = surface(&after, kind)?;
-                    if ack[id_field] != label.id
-                        || ack["workspace_id"] != before.owner.workspace_id
-                        || ack["number"].as_u64() != Some(label.number)
-                        || ack["label"] != name
-                        || actual.id != label.id
-                        || actual.number != label.number
-                        || actual.label != name
-                        || desired_name(&after, kind) != desired
-                        || after.owner != before.owner
-                        || after.bound()? != scope.binding_nonce()
-                        || (kind == SurfaceKind::Tab
-                            && !after.snapshot.first_pane(after.owner_pane()))
-                    {
-                        return Err(self.refuse(
-                            "native name acknowledgement changed; provenance not published",
-                        ));
-                    }
-                    NameStore::write(&lock, &scope, &after_success, &self.cancelled)?;
-                    NameOutcome::Renamed
-                }
+                NameOutcome::Renamed
             };
             match kind {
                 SurfaceKind::Workspace => report.workspace = outcome,
@@ -421,8 +306,4 @@ fn surface(v: &Verified, kind: SurfaceKind) -> Result<Label> {
             })
         }
     }
-}
-fn path_text(path: &Path) -> Result<&str> {
-    path.to_str()
-        .ok_or_else(|| invalid("native path must be UTF-8"))
 }

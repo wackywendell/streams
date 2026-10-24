@@ -384,7 +384,7 @@ impl Server {
                     NativeCommand::Observe
                     | NativeCommand::Open { .. }
                     | NativeCommand::Close
-                    | NativeCommand::Project { .. }
+                    | NativeCommand::Project
                     | NativeCommand::Capture,
                 ..
             } => {

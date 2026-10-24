@@ -11,7 +11,7 @@ type Expectation = Pick<Observation, "version" | "scope" | "context">;
 const object = (value: unknown): value is Record<string, any> => !!value && typeof value === "object" && !Array.isArray(value);
 const text = (value: unknown): value is string => typeof value === "string" && !!value.trim() && !/[\x00-\x1f\x7f]/.test(value);
 
-/** Pi keeps its event lane and session-name provenance; the session child owns observations and effects. */
+/** Pi keeps its event lane and session-name setter; the session child owns observations and effects. */
 export const loadRustNative: NativeFactory = async ({pi, ctx, sessionId, cwd, env, child: shared, warning}) => {
  const child = shared ?? new StreamsChild({sessionId, cwd, env, warning:warning ?? (() => {})});
  let expected: Expectation | undefined, current: Observation | undefined, revision = -1, waiting = -1, initialized = false;
@@ -102,11 +102,10 @@ export const loadRustNative: NativeFactory = async ({pi, ctx, sessionId, cwd, en
    if (result.closed !== true) throw Error("Invalid Rust close acknowledgement");
    return result;
   },
-  project: (context, signal, intent = "automatic") => statusOperation(async () => {
+  project: (context, signal) => statusOperation(async () => {
    check(context, signal);const expectation = expected!;
-   const reclaim = {"automatic":undefined, "explicit":"all", "explicit-workspace":"workspace", "explicit-tab":"tab"}[intent];
-   const result = await call(["project", ...(reclaim ? ["--reclaim", reclaim] : [])], signal);
-   const outcomes = ["disabled", "not-first", "unchanged", "manual", "renamed"];
+   const result = await call(["project"], signal);
+   const outcomes = ["disabled", "not-first", "unchanged", "renamed"];
    if (!object(result.names) || !outcomes.includes(result.names.workspace) || !outcomes.includes(result.names.tab)) throw Error("Invalid Rust projection acknowledgement");
    acceptStatus(result, expectation);return result;
   }),
@@ -115,10 +114,10 @@ export const loadRustNative: NativeFactory = async ({pi, ctx, sessionId, cwd, en
    if (!expected || scopeKeys.some(key => snapshot.scope[key] !== expected!.scope[key])) throw new StreamsCliError("Native capture scope changed", "native-context-changed");
    return call(["capture"], signal);
   },
-  sessionName: (snapshot, assertCurrent, intent) => {
+  sessionName: (snapshot, assertCurrent) => {
    adopt();
    if (!expected || waiting >= child.revision || scopeKeys.some(key => snapshot.scope[key] !== expected!.scope[key])) throw new StreamsCliError("Native Pi naming scope changed", "native-context-changed");
-   projectSessionName(pi, ctx.sessionManager, sessionId, snapshot.session.title, assertCurrent, intent);
+   projectSessionName(pi, ctx.sessionManager, sessionId, snapshot.session.title, assertCurrent);
   },
  };
 };

@@ -1,6 +1,6 @@
 # ADR 3 Automatic naming and manual overrides
 
-Status: accepted naming policy from the imported Work Cards implementation. Independent manual protection, surface-scoped provenance and first-pane eligibility remain requirements of the [Streams native port](../../../docs/native-herdr-work-cards.md). Record types, commands and adapter signatures below describe the original runtime; they must be adapted to Streams identities and do not authorize activating its old writer or namer. [ADR 2](workspace-context.md) preserves the original membership context.
+Status: superseded by [Streams name ownership](../../../docs/name-ownership.md). The policy below records the imported implementation's historical rationale, not current naming behavior. Streams now owns enabled frontend names as projections of saved titles; independent manual protection, naming provenance and reclaim no longer apply. First-layout-pane eligibility and native identity checks remain required. [ADR 2](workspace-context.md) preserves the original membership context.
 
 ## Context and problem
 

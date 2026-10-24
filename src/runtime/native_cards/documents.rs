@@ -1,6 +1,3 @@
-use super::super::native_names::{
-    NameDecision, NameInput, NameIntent, NameOwner, NameStore, SurfaceKind, decide_name,
-};
 use super::super::open_protocol::{Action, Protocol};
 use super::actions::MetadataTarget;
 use super::config::validate_title;
@@ -69,14 +66,17 @@ impl NativeCardEngine {
         ))?;
         let old = self.read_attempt(&evidence_key, NativePurpose::Editor)?;
         if let Some(editor) = editor_match(&v, &key)? {
-            if let Some(record) = old
+            let record = old
                 .as_ref()
-                .filter(|record| matches!(record.phase(), NativePhase::Reserved(_)))
-            {
-                self.editor_proof(target, &key, &evidence_key, &editor, record)?;
-                let mut ready = record.clone();
+                .ok_or_else(|| self.refuse("editor lacks evidence"))?;
+            self.editor_proof(target, &key, &evidence_key, &editor, record)?;
+            let mut ready = record.clone();
+            if matches!(record.phase(), NativePhase::Reserved(_)) {
                 ready.mark_ready()?;
                 _lock.write(Some(record), &ready)?;
+            }
+            if self.config.tab_naming {
+                self.name_editor(target, &key, &evidence_key, &editor, &ready)?;
             }
             return self.focus_editor(target, &key, &evidence_key, &editor);
         }
@@ -195,7 +195,7 @@ impl NativeCardEngine {
         _lock.write(Some(&reserved), &ready)?;
         protocol.next(Action::Complete)?;
         if self.config.tab_naming {
-            self.name_editor(target, &key, &evidence_key, &returned, &ready, &_lock)?;
+            self.name_editor(target, &key, &evidence_key, &returned, &ready)?;
         }
         self.focus_editor(target, &key, &evidence_key, &returned)
     }
@@ -237,7 +237,6 @@ impl NativeCardEngine {
         evidence_key: &str,
         expected: &NativeTuple,
         ready: &NativeAttempt,
-        lock: &NativeStateGuard<'_>,
     ) -> Result<()> {
         if !matches!(ready.phase(), NativePhase::Ready(_)) {
             return Err(self.refuse("editor naming requires ready evidence"));
@@ -246,65 +245,27 @@ impl NativeCardEngine {
         let label = editor_tab(&before, expected)?;
         let desired = &target.document.path;
         validate_title(desired)?;
-        let scope = NameStore::prepare_scope(
-            lock,
-            path_text(&self.client.endpoint().socket)?,
-            &expected.workspace_id,
-            before.bound()?,
-            SurfaceKind::Tab,
-            &expected.tab_id,
-        )?;
-        let prior = NameStore::read(lock, &scope)?;
-        let owner = NameOwner::new(&expected.terminal_id, ready.nonce())?;
-        let fresh = self.editor_proof(target, key, evidence_key, expected, ready)?;
-        if editor_tab(&fresh, expected)? != label
-            || fresh.owner != before.owner
-            || fresh.bound()? != scope.binding_nonce()
-        {
-            return Err(self.refuse("editor naming source, owner or label changed"));
+        if label.0 == *desired {
+            return Ok(());
         }
-        let decision = decide_name(NameInput {
-            scope: &scope,
-            provenance: prior.as_ref(),
-            owner: &owner,
-            current_label: &label.0,
-            desired_name: desired,
-            default_label_proven: label.0 == (label.2 + 1).to_string(),
-            intent: NameIntent::Automatic,
-        })?;
-        match decision {
-            NameDecision::Noop => {}
-            NameDecision::Adopt(provenance) | NameDecision::Manual(provenance) => {
-                if prior.as_ref() != Some(&provenance) {
-                    NameStore::write(lock, &scope, &provenance, &self.cancelled)?;
-                }
-            }
-            NameDecision::Rename {
-                name,
-                after_success,
-            } => {
-                let result = self.call(
-                    "tab.rename",
-                    serde_json::json!({"tab_id":expected.tab_id,"label":name}),
-                    Some("tab_info"),
-                    true,
-                )?;
-                let ack = &result["tab"];
-                let after = self.editor_proof(target, key, evidence_key, expected, ready)?;
-                let actual = editor_tab(&after, expected)?;
-                if ack["tab_id"] != expected.tab_id
-                    || ack["workspace_id"] != expected.workspace_id
-                    || ack["number"].as_u64() != Some(label.1)
-                    || ack["label"] != name
-                    || actual != (name, label.1, label.2)
-                    || after.owner != before.owner
-                    || after.bound()? != scope.binding_nonce()
-                {
-                    return Err(self
-                        .refuse("editor name acknowledgement changed; provenance not published"));
-                }
-                NameStore::write(lock, &scope, &after_success, &self.cancelled)?;
-            }
+        let result = self.call(
+            "tab.rename",
+            serde_json::json!({"tab_id":expected.tab_id,"label":desired}),
+            Some("tab_info"),
+            true,
+        )?;
+        let ack = &result["tab"];
+        let after = self.editor_proof(target, key, evidence_key, expected, ready)?;
+        let actual = editor_tab(&after, expected)?;
+        if ack["tab_id"] != expected.tab_id
+            || ack["workspace_id"] != expected.workspace_id
+            || ack["number"].as_u64() != Some(label.1)
+            || ack["label"] != *desired
+            || actual != (desired.clone(), label.1)
+            || after.owner != before.owner
+            || after.bound()? != before.bound()?
+        {
+            return Err(self.refuse("editor name acknowledgement changed"));
         }
         Ok(())
     }
@@ -332,15 +293,13 @@ impl NativeCardEngine {
         Ok(())
     }
 }
-fn editor_tab(v: &Verified, expected: &NativeTuple) -> Result<(String, u64, usize)> {
-    let (position, tab) = v
+fn editor_tab(v: &Verified, expected: &NativeTuple) -> Result<(String, u64)> {
+    let tab = v
         .snapshot
         .topology()
         .tabs
         .iter()
-        .filter(|tab| tab.workspace_id == expected.workspace_id)
-        .enumerate()
-        .find(|(_, tab)| tab.id == expected.tab_id)
+        .find(|tab| tab.workspace_id == expected.workspace_id && tab.id == expected.tab_id)
         .ok_or_else(|| invalid("editor tab disappeared"))?;
     Ok((
         tab.label
@@ -349,7 +308,6 @@ fn editor_tab(v: &Verified, expected: &NativeTuple) -> Result<(String, u64, usiz
         v.snapshot
             .tab_number(&tab.id)
             .ok_or_else(|| invalid("editor tab lacks number"))?,
-        position,
     ))
 }
 fn editor_match(v: &Verified, key: &str) -> Result<Option<NativeTuple>> {

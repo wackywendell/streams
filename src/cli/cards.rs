@@ -8,17 +8,13 @@ use std::sync::{Arc, atomic::AtomicBool};
 use streams_temper::frontend::herdr::HerdrClient;
 use streams_temper::process::{NativeProcessRunner, ProcessRequest, ProcessRunner};
 use streams_temper::runtime::native_cards::{
-    DisplayCondition, DisplayOutcome, LaunchedCardContext, NameProjectionIntent, NativeCardEngine,
-    NativeCardsConfig, SOURCE_ENV_KEYS,
+    DisplayCondition, DisplayOutcome, LaunchedCardContext, NativeCardEngine, NativeCardsConfig,
+    SOURCE_ENV_KEYS,
 };
 use streams_temper::runtime::native_state::NativeState;
 use streams_temper::tui::{CardSnapshot, Target as ViewTarget};
 
-use super::{
-    App, BTreeMap, CliError, Config, Output, PathBuf, Result,
-    args::{NativeCommand, NativeReclaim},
-    json,
-};
+use super::{App, BTreeMap, CliError, Config, Output, PathBuf, Result, args::NativeCommand, json};
 
 #[derive(Clone)]
 pub(super) struct Options {
@@ -105,15 +101,9 @@ impl App {
                     json!({"display":kind,"native":engine.status()?}),
                 ))
             }
-            NativeCommand::Project { reclaim } => {
+            NativeCommand::Project => {
                 engine.project_summaries()?;
-                let intent = match reclaim {
-                    None => NameProjectionIntent::Automatic,
-                    Some(NativeReclaim::All) => NameProjectionIntent::Explicit,
-                    Some(NativeReclaim::Workspace) => NameProjectionIntent::Workspace,
-                    Some(NativeReclaim::Tab) => NameProjectionIntent::Tab,
-                };
-                let names = engine.project_names(intent)?;
+                let names = engine.project_names()?;
                 engine.project_caption()?;
                 Ok(Output::value(
                     json!({"names":names,"native":engine.status()?}),

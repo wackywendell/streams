@@ -55,14 +55,14 @@ test('a changed Pi lifetime after Rust projection fences inline naming and captu
  assert.equal(f.events.some(event=>event.startsWith('capture:')),false);
  assert.match(f.notices[0],/session or environment changed/);
 });
-test('explicit naming reclaim shares the effect lane without reopening the display', async t => {
+test('explicit projection respects disabled Pi naming without reopening the display', async t => {
  environment(t);const intents=[],f=fixture(t,{sessionNaming:false,names:intent=>intents.push(intent)});
  f.controller.start();await f.controller.idle();f.pi.setSessionName('Manual name');
  const before=f.events.length;
  await f.controller.reclaimNames();
- assert.equal(intents.at(-1),'explicit');assert.equal(f.name(),'Saved title');
+ assert.equal(intents.at(-1),'explicit');assert.equal(f.name(),'Manual name');
  assert.ok(!f.events.slice(before).some(event=>event.startsWith('open:')));
- assert.equal(f.entries.filter(entry=>entry.customType===naming.sessionNamingEntry).at(-1).data.mode,'auto');
+ assert.equal(f.entries.filter(entry=>entry.type==='custom').length,0);
 });
 test('discovery and controller construction have no effects; only gated session_start loads', async t => {
  environment(t);const f = fixture(t);await turn();assert.equal(f.loads(), 0);assert.deepEqual(f.events, []);
@@ -70,9 +70,9 @@ test('discovery and controller construction have no effects; only gated session_
  assert.equal(f.captured().sessionId, f.id);assert.equal(f.captured().cwd, '/repo');assert.notEqual(f.captured().env, process.env);
  assert.ok(f.events.indexOf('read') < f.events.indexOf('bootstrap'));assert.ok(f.events.includes('open:automatic'));
  assert.equal(f.name(), 'Saved title');assert.equal(f.events.at(-1), 'capture:stream');
- assert.equal(f.entries.filter(entry => entry.customType === naming.sessionNamingEntry).length, 1);
+ assert.equal(f.entries.filter(entry => entry.type === 'session_info').length, 1);
  f.controller.update();await f.controller.idle();
- assert.equal(f.entries.filter(entry => entry.customType === naming.sessionNamingEntry).length, 1);
+ assert.equal(f.entries.filter(entry => entry.type === 'session_info').length, 1);
 });
 for (const [label, env, ctx] of [
  ['headless', {}, {hasUI:false}], ['rpc', {}, {mode:'rpc'}], ['outside Herdr', {HERDR_ENV:undefined}, {}], ['no exact pane', {HERDR_PANE_ID:undefined}, {}],
@@ -163,16 +163,16 @@ test('catalog title modes both project into Pi while the session naming switch r
   assert.equal(f.events.includes('sessionName'), mode !== 'disabled');
  }
 });
-test('Pi naming provenance survives reload and permanently preserves manual overrides, even equal labels', async t => {
+test('enabled Pi naming restores saved titles after external edits and reload', async t => {
  environment(t);const f = fixture(t);f.controller.start();await f.controller.idle();assert.equal(f.name(), 'Saved title');
  f.saved.session.title = 'Updated';f.controller.update();await f.controller.idle();assert.equal(f.name(), 'Updated');
- f.pi.setSessionName('Updated');f.saved.session.title = 'Next';f.controller.update();await f.controller.idle();assert.equal(f.name(), 'Updated');
+ f.pi.setSessionName('Updated');f.saved.session.title = 'Next';f.controller.update();await f.controller.idle();assert.equal(f.name(), 'Next');
  f.controller.stop();const reload = new NativeController({pi:f.pi, ctx:f.ctx, factory:f.factory, warning:assert.fail});t.after(() => reload.stop());
- reload.start();await reload.idle();assert.equal(f.name(), 'Updated');
+ reload.start();await reload.idle();assert.equal(f.name(), 'Next');
 });
-test('preexisting manual Pi names are not adopted by matching catalog title', async t => {
+test('preexisting Pi names do not prevent enabled projection of later saved titles', async t => {
  environment(t);const f = fixture(t);f.pi.setSessionName('Saved title');f.controller.start();await f.controller.idle();
- f.saved.session.title = 'Updated';f.controller.update();await f.controller.idle();assert.equal(f.name(), 'Saved title');
+ f.saved.session.title = 'Updated';f.controller.update();await f.controller.idle();assert.equal(f.name(), 'Updated');
 });
 
 function registration(t, f, cli = {}) {

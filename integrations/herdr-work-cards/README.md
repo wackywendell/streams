@@ -10,7 +10,7 @@ The card shows the shared Stream goal, documents, issues and pull requests along
 
 Each card captures an exact catalog, host, Stream, Session and native Pi session identity. Native effects also require the attested Herdr pane, tab and workspace. A changed or unavailable identity clears the view and shortcuts rather than displaying stale records or selecting another workspace by name.
 
-The projection does not create Streams, attach conversations, launch agents or manage checkouts. It can create and close its owned card and document displays, update eligible native names and open registered references. Manual native names remain protected.
+The projection does not create Streams, attach conversations, launch agents or manage checkouts. It can create and close its owned card and document displays, update eligible native names and open registered references. Enabled naming surfaces mirror saved Streams titles; disable a surface's naming switch to manage its label independently.
 
 ## Commands and display lifecycle
 
@@ -50,7 +50,7 @@ Global configuration lives at `$PI_CODING_AGENT_DIR/work-cards.json`, defaulting
 | `herdr_timeout_ms` | `3000` | Native operation and document lock-wait timeout |
 | `pane_height_fraction` | `0.2` | Requested share of a new pair's initial split, within native layout constraints |
 
-Startup accepts `automatic` or `manual`. Each naming setting accepts only a boolean and defaults to `true`, independently of startup. `null` is invalid for naming. Disabling naming preserves manual protection; re-enabling it does not reclaim pinned names.
+Startup accepts `automatic` or `manual`. Each naming setting accepts only a boolean and defaults to `true`, independently of startup. `null` is invalid for naming. Disabling naming leaves that surface independently managed. Re-enabling it projects the saved Streams title, replacing a different frontend name.
 
 `herdr_timeout_ms` must be an integer from 1 to 2,147,483,647. Pane height must be strictly between zero and one. `document_command` accepts `null` or a nonblank command without control characters; malformed nonblank `$EDITOR` values also fail visibly.
 
@@ -60,7 +60,7 @@ Inference settings belong to the root extension's `stream-reporting.json`. Remov
 
 Rust is the only native implementation on this branch. The Pi extension defaults to this checkout's `target/debug/streams`, respecting `CARGO_TARGET_DIR`. Build it with `mise run build`. Set `STREAMS_BIN_PATH` to an absolute matching executable when using a packaged extension or a different build. Missing or invalid executables fail; there is no Python, TypeScript-coordinator or `PATH` fallback. This source cutover does not activate or replace installed tools.
 
-The Pi extension keeps commands, tools, event serialization and Pi session-name provenance. Rust handles native card open/close, metadata, Herdr names and arrangement capture. Every effect re-attests the captured catalog, host, conversation, endpoint, terminal and workspace binding. A changed scope permanently suspends the old adapter until reload. Cancellation drains the child process group; it does not clear uncertain launch evidence or close displays.
+The Pi extension keeps commands, tools, event serialization and the Pi session-name setter. Rust handles native card open/close, metadata, Herdr names and arrangement capture. Every effect re-attests the captured catalog, host, conversation, endpoint, terminal and workspace binding. A changed scope permanently suspends the old adapter until reload. Cancellation drains the child process group; it does not clear uncertain launch evidence or close displays.
 
 Reporting and native effects share one executable selector. `STREAMS_RUST_BIN` remains a compatibility alias; when both variables are set, their canonical paths must match. Load only one checkout's Streams extension.
 

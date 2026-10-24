@@ -300,12 +300,14 @@ impl FakeHerdr {
                 json!({"type":"plugin_pane_opened","plugin_pane":{
                     "plugin_id":PLUGIN_ID,"entrypoint":entrypoint,"pane":created}})
             }
-            "tab.rename" | "pane.rename" => {
+            "workspace.rename" | "tab.rename" | "pane.rename" => {
                 w.effects.push(call);
-                let (kind, collection, key, result) = if method == "tab.rename" {
-                    ("tab", "tabs", "tab_id", "tab_info")
-                } else {
-                    ("pane", "panes", "pane_id", "pane_info")
+                let (kind, collection, key, result) = match method {
+                    "workspace.rename" => {
+                        ("workspace", "workspaces", "workspace_id", "workspace_info")
+                    }
+                    "tab.rename" => ("tab", "tabs", "tab_id", "tab_info"),
+                    _ => ("pane", "panes", "pane_id", "pane_info"),
                 };
                 let target = w.snapshot[collection]
                     .as_array_mut()
@@ -828,9 +830,7 @@ fn operation_request_budgets() {
             }
             "project" => {
                 engine.project_summaries().unwrap();
-                engine
-                    .project_names(NameProjectionIntent::Automatic)
-                    .unwrap();
+                engine.project_names().unwrap();
                 engine.project_caption().unwrap();
             }
             _ => unreachable!(),
@@ -858,8 +858,9 @@ fn operation_request_budgets() {
             "project" => &[
                 ("pane.report_metadata", 1),
                 ("ping", 1),
-                ("session.snapshot", 8),
+                ("session.snapshot", 9),
                 ("tab.rename", 1),
+                ("workspace.rename", 1),
                 ("workspace.report_metadata", 1),
             ],
             _ => unreachable!(),
@@ -1305,16 +1306,54 @@ fn document_launch_persists_pending_and_exact_editor_then_reuses_by_focus() {
     engine.open_document(&target).unwrap();
     assert_eq!(
         f.runner.world.lock().unwrap().snapshot["tabs"][1]["label"],
-        "My document"
+        "docs/design.md"
     );
     assert_eq!(f.launches(), 2); // One display and one document, never a duplicate editor.
     let after = f.effects();
     assert_eq!(&after[..effects.len()], effects.as_slice());
     assert_eq!(
         &after[effects.len()..],
-        &[("tab.focus".into(), json!({"tab_id":"editor-tab-1"}))]
+        &[
+            (
+                "tab.rename".into(),
+                json!({"tab_id":"editor-tab-1","label":"docs/design.md"})
+            ),
+            ("tab.focus".into(), json!({"tab_id":"editor-tab-1"})),
+        ]
     );
     assert_eq!(f.runner.state.read(&evidence).unwrap().unwrap(), ready);
+    let effects = f.effects();
+    engine.open_document(&target).unwrap();
+    assert_eq!(
+        &f.effects()[effects.len()..],
+        &[("tab.focus".into(), json!({"tab_id":"editor-tab-1"}))]
+    );
+}
+
+#[test]
+fn disabled_tab_naming_leaves_new_and_reused_document_tabs_independent() {
+    let mut f = Fixture::new();
+    f.config.tab_naming = false;
+    let target = f.document();
+    let mut engine = f.engine();
+    engine.open_display(OpenMode::Explicit).unwrap();
+    engine.open_document(&target).unwrap();
+    assert_eq!(
+        f.runner.world.lock().unwrap().snapshot["tabs"][1]["label"],
+        "2"
+    );
+    f.runner.world.lock().unwrap().snapshot["tabs"][1]["label"] = json!("My document");
+    let effects = f.effects();
+    engine.open_document(&target).unwrap();
+    assert_eq!(
+        f.runner.world.lock().unwrap().snapshot["tabs"][1]["label"],
+        "My document"
+    );
+    assert_eq!(
+        &f.effects()[effects.len()..],
+        &[("tab.focus".into(), json!({"tab_id":"editor-tab-1"}))]
+    );
+    assert!(!f.effects().iter().any(|(method, _)| method == "tab.rename"));
 }
 
 #[test]
@@ -1440,7 +1479,7 @@ fn fully_paired_reserved_card_completes_without_restamping() {
     assert_eq!(f.effects(), effects);
 }
 #[test]
-fn exact_reserved_editor_promotes_without_relaunch_or_renaming() {
+fn exact_reserved_editor_promotes_and_restores_its_document_title_without_relaunch() {
     let f = Fixture::new();
     let target = f.document();
     let (_, key) = document_keys(&f.runner.socket, &target);
@@ -1463,11 +1502,17 @@ fn exact_reserved_editor_promotes_without_relaunch_or_renaming() {
     assert_eq!(f.launches(), 2);
     assert_eq!(
         &f.effects()[effects.len()..],
-        &[("tab.focus".into(), json!({"tab_id":"editor-tab-1"}))]
+        &[
+            (
+                "tab.rename".into(),
+                json!({"tab_id":"editor-tab-1", "label":"docs/design.md"})
+            ),
+            ("tab.focus".into(), json!({"tab_id":"editor-tab-1"})),
+        ]
     );
     assert_eq!(
         f.runner.world.lock().unwrap().snapshot["tabs"][1]["label"],
-        "Manual title"
+        "docs/design.md"
     );
 }
 #[test]
@@ -1537,6 +1582,95 @@ fn status_and_caption_fail_closed_when_workspace_binding_disappears() {
             .is_none()
     );
 }
+#[test]
+fn enabled_names_restore_saved_titles_and_do_not_write_unchanged_names() {
+    let f = Fixture::new();
+    let mut engine = f.engine();
+    engine.project_summaries().unwrap();
+    assert_eq!(
+        engine.project_names().unwrap(),
+        NameReport {
+            workspace: NameOutcome::Renamed,
+            tab: NameOutcome::Renamed,
+        }
+    );
+    let effects = f.effects();
+    assert_eq!(
+        engine.project_names().unwrap(),
+        NameReport {
+            workspace: NameOutcome::Unchanged,
+            tab: NameOutcome::Unchanged,
+        }
+    );
+    assert_eq!(f.effects(), effects);
+    {
+        let mut world = f.runner.world.lock().unwrap();
+        world.snapshot["workspaces"][0]["label"] = json!("External workspace name");
+        world.snapshot["tabs"][0]["label"] = json!("External tab name");
+    }
+    assert_eq!(
+        engine.project_names().unwrap(),
+        NameReport {
+            workspace: NameOutcome::Renamed,
+            tab: NameOutcome::Renamed,
+        }
+    );
+    let world = f.runner.world.lock().unwrap();
+    assert_eq!(world.snapshot["workspaces"][0]["label"], "Effort");
+    assert_eq!(world.snapshot["tabs"][0]["label"], "Conversation");
+}
+
+#[test]
+fn disabled_name_surfaces_are_not_renamed_and_tab_naming_requires_first_pane() {
+    let mut f = Fixture::new();
+    f.config.workspace_naming = false;
+    f.config.tab_naming = false;
+    let mut engine = f.engine();
+    engine.project_summaries().unwrap();
+    let effects = f.effects();
+    assert_eq!(
+        engine.project_names().unwrap(),
+        NameReport {
+            workspace: NameOutcome::Disabled,
+            tab: NameOutcome::Disabled,
+        }
+    );
+    assert_eq!(f.effects(), effects);
+
+    let f = Fixture::new();
+    let mut engine = f.engine();
+    engine.open_display(OpenMode::Explicit).unwrap();
+    f.runner.world.lock().unwrap().snapshot["layouts"][0]["panes"] =
+        json!([{"pane_id":"display"},{"pane_id":"owner"}]);
+    assert_eq!(engine.project_names().unwrap().tab, NameOutcome::NotFirst);
+    assert!(!f.effects().iter().any(|(method, _)| method == "tab.rename"));
+}
+
+#[test]
+fn caption_ignores_old_manual_tokens_and_restores_its_saved_title() {
+    let f = Fixture::new();
+    let mut engine = f.engine();
+    engine.open_display(OpenMode::Explicit).unwrap();
+    {
+        let mut world = f.runner.world.lock().unwrap();
+        world.snapshot["panes"][1]["label"] = json!("External caption");
+        world.snapshot["panes"][1]["tokens"]["strm_caption_manual"] = json!("1");
+    }
+    let effects = f.effects().len();
+    engine.project_caption().unwrap();
+    assert_eq!(
+        f.runner.world.lock().unwrap().snapshot["panes"][1]["label"],
+        "Effort"
+    );
+    assert_eq!(
+        &f.effects()[effects..],
+        &[(
+            "pane.rename".into(),
+            json!({"pane_id":"display","label":"Effort"})
+        )]
+    );
+}
+
 #[test]
 fn caption_publication_is_idempotent() {
     let f = Fixture::new();

@@ -33,11 +33,8 @@ pub(super) enum NativeCommand {
         #[arg(long)]
         automatic: bool,
     },
-    /// Publish bounded native hints and manual-safe names.
-    Project {
-        #[arg(long, value_enum)]
-        reclaim: Option<NativeReclaim>,
-    },
+    /// Publish bounded native hints and synchronize enabled names.
+    Project,
     /// Inspect exact native evidence without creating locks or state.
     Check,
     Focus,
@@ -45,13 +42,6 @@ pub(super) enum NativeCommand {
     #[command(hide = true)]
     Pane,
 }
-#[derive(Debug, Clone, Copy, clap::ValueEnum)]
-pub(super) enum NativeReclaim {
-    All,
-    Workspace,
-    Tab,
-}
-
 #[derive(Debug, Subcommand)]
 pub(super) enum Command {
     /// Serve protocol-1 requests for one Pi session over stdio.

@@ -156,7 +156,7 @@ export class NativeController {
   await adapter.project(this.context, signal, nameIntent);check();
   const snapshot = await read();
   const sessionIntent = kind === "reclaim" && action?.target !== "stream" ? "explicit" : "automatic";
-  if (adapter.sessionNaming || sessionIntent === "explicit") adapter.sessionName(snapshot, check, sessionIntent);
+  if (adapter.sessionNaming) adapter.sessionName(snapshot, check, sessionIntent);
   check();
   // Capture only the attested existing association, never receipt/model text or membership.
   return snapshot;

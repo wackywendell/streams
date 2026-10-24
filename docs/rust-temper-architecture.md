@@ -136,7 +136,7 @@ Only library-owned native operations can reassociate membership; agent requests 
 
 Native start, open, resume, arrangement capture and the Ratatui card use Rust. Launched cards require protected context and cannot act as their Pi owner. Acknowledged resource tuples remain journalled if later authority checks fail. Every effect re-attests its captured owner; arrangement capture pins the endpoint and checks owner/workspace identity under the Stream lock before persistence.
 
-Pi retains its event lane, commands/tools, inline UI and session-name provenance. Reporting and native calls share one executable selector: an explicit absolute `STREAMS_BIN_PATH`, its compatible `STREAMS_RUST_BIN` alias, or this checkout's debug Cargo target. Conflicting selectors fail. There is no Python or `PATH` fallback; a missing build must not select an older installed implementation.
+Pi retains its event lane, commands/tools, inline UI and the Pi session-name setter. Reporting and native calls share one executable selector: an explicit absolute `STREAMS_BIN_PATH`, its compatible `STREAMS_RUST_BIN` alias, or this checkout's debug Cargo target. Conflicting selectors fail. There is no Python or `PATH` fallback; a missing build must not select an older installed implementation.
 
 Saved helper requests use TypeScript preparation and execution with Rust's pure preview boundary. `streams debug` replaces its process with the Node runner before opening configuration or catalog state, retaining signal delivery and exit status. Capture keeps verified conversations when neighboring panes are unresolved, while unmatched historical conversations remain unknown rather than falsely closed.
 

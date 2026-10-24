@@ -14,7 +14,7 @@ The imported [orientation](../integrations/herdr-work-cards/docs/design.md), [wo
 
 Retain a card beside each owning agent, not a new workspace-overview tab. Its shared section comes from the Stream; its title, status, current state and remaining scope come from the exact Session. Finishing that contribution must not imply finishing the effort. The field mapping is recorded in the catalog ADR.
 
-Preserve the existing renderer's density, Unicode handling, clipping, quiet section grouping, responsive document grid and visible-shortcut rules. Keep terminal-link gestures, exact-target document navigation, editor reuse and independent manual names. The port must carry their regression coverage forward rather than treating a similar screenshot as equivalence.
+Preserve the existing renderer's density, Unicode handling, clipping, quiet section grouping, responsive document grid and visible-shortcut rules. Keep terminal-link gestures, exact-target document navigation and editor reuse. [Streams name ownership](name-ownership.md) supersedes the imported independent manual-name protections. The port must carry their regression coverage forward rather than treating a similar screenshot as equivalence.
 
 The stream ID, catalog source, host and native conversation identity establish the view's scope. A native workspace association identifies an effort, not an arbitrary session within it. Resolve the owning conversation exactly; do not select a contribution by title, cwd, GUI focus or the number of sessions found. A missing or contradictory association is unavailable state, not permission to enroll or guess.
 
@@ -22,11 +22,11 @@ Catalog reads and validated operations remain behind the Streams application bou
 
 ## Keep native effects host-local
 
-Pane ownership, display attempts, terminal identities, naming provenance and editor bindings stay on the execution host. They are not portable catalog fields. Reuse the existing safety policies, but adapt their proofs to Streams identities: an old Work Cards store binding is not proof of a current Streams association.
+Pane ownership, display attempts, terminal identities and editor bindings stay on the execution host. Naming has no provenance ledger. They are not portable catalog fields. Reuse the existing safety policies, but adapt their proofs to Streams identities: an old Work Cards store binding is not proof of a current Streams association.
 
 Closing with `q` remains display-only. It must not stop catalog reporting, delete records, detach the conversation or cause background respawn. Persist uncertain launch attempts before effects; a timeout or missing display after an attempt must not authorize a duplicate launch. Cleanup may affect only positively verified owned resources.
 
-Native workspace names and card captions project `stream.title`; Pi and eligible agent-tab names project `session.title`; editor names come from exact document identity. Compact purpose and progress use `goal_short` and `state_short`, not another inference or text truncation. Preserve the imported naming policy's independent switches, manual protection and actual-first-pane rule. Manual catalog text and manual native labels are separate decisions.
+Native workspace names and card captions project `stream.title`; Pi and eligible agent-tab names project `session.title`; editor names come from exact document identity. Compact purpose and progress use `goal_short` and `state_short`, not another inference or text truncation. Preserve independent synchronization switches and the actual-first-pane rule. An enabled naming surface mirrors the saved title, whether that title was generated or written manually. Disable synchronization to manage a frontend label independently.
 
 Native metadata is a bounded hint, not another copy of the narrative. [Herdr's token contract](https://github.com/herdrdev/herdr/blob/v0.9.5/src/app/api_helpers.rs#L244-L279) trims values, removes controls and caps text at 80 Unicode scalar values. Publish an existing compact summary only when Herdr retains it unchanged. Otherwise clear the hint; keep the full text in the catalog and card. Do not truncate or infer a replacement just to fill a native field.
 
@@ -40,7 +40,7 @@ The accepted recovery follow-up separates local painting, conversation verificat
 
 Resizing repaints the current snapshot without waiting for catalog reads or native effects. That snapshot remains display data, never authority for navigation or mutation. Refresh and effects stay serialized; a resize invalidates shortcuts selected against an older painted frame. Failed capture retries on the next actual update, without replaying successful display and naming effects.
 
-Unchanged projections need no effect lock. Fresh attestation, ownership and naming-provenance reads may establish that nothing needs changing. Any effect still acquires the workspace lock and repeats its authority checks. This reduces contention without allowing a cached card to authorize a rename or launch.
+Unchanged projections need no effect lock. Fresh attestation, ownership checks and observed labels may establish that nothing needs changing. Any effect still acquires the workspace lock and repeats its authority checks. This reduces contention without allowing a cached card to authorize a rename or launch.
 
 Workspace exclusion must survive process death without stale-lock theft. Retain a descriptor to a persistent lock inode and use the operating system's advisory lock. A short isolated Python helper acquires through an inherited descriptor; Node retains the lock after the helper exits. Descriptor closure or process death releases ownership. This requires Python 3 with `fcntl` and adds interpreter startup cost when acquiring a lock. It avoids native-addon packaging and does not depend on asynchronous unlink cleanup.
 

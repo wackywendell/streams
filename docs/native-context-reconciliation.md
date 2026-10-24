@@ -76,7 +76,7 @@ Pi carries request context without interpreting membership or orchestrating reco
 
 | Change | Intended response |
 | --- | --- |
-| Rename a native surface | Preserve user-chosen names. Resume automatic naming only after explicit reclaim of that surface. |
+| Rename a native surface | Apply the saved Streams title when that surface's synchronization is enabled; see [name ownership](name-ownership.md). |
 | Reorder panes or change pane IDs | Follow verified live conversation and terminal identity, not inherited addresses. Membership changes only if the workspace changes. |
 | Move a card independently | Retain its conversation association. The next owner move brings it into the owner's tab, unless it is already there. Do not close it or launch a replacement. |
 | Move an editor independently | Retain its conversation association. Do not automatically move it back, close it or launch a replacement. |

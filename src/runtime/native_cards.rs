@@ -22,7 +22,7 @@ pub use config::NativeCardsConfig;
 pub use display::{CardPlacement, DisplayLifetime};
 pub use inspection::{DisplayCondition, NativeCardStatus, NativeOwnerContext, NativeOwnerView};
 pub use launch_context::LaunchedCardContext;
-pub use projection::{NameOutcome, NameProjectionIntent, NameReport};
+pub use projection::{NameOutcome, NameReport};
 pub use reset::{EvidenceResetReport, reset_evidence};
 
 use std::collections::BTreeMap;

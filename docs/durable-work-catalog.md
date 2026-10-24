@@ -108,7 +108,7 @@ Each session normally updates only its own record. Persistence must preserve acc
 
 The short fields are optional display derivatives. `goal_short` condenses the goal; `state_short` summarises the session's status, state and remaining work. Generate them alongside the full descriptions, not by truncation or separate per-surface inference. Regenerate or clear a short field when its source content changes. The short workspace description is purpose, not aggregate progress.
 
-These naming mappings are defaults, not permission to overwrite manual names. Work Cards retains independent workspace, tab and Pi naming controls and overrides in local runtime state. A tab rename does not redefine the catalog title or Pi session name. Editor-tab names continue to come from document identity. The stream's lifecycle status has no equivalent in the current shared Work Cards record; it must not replace the agent-status indicator.
+These naming mappings are authoritative when their synchronization switches are enabled; see [name ownership](name-ownership.md). Disable a surface's synchronization to manage its label independently. A direct tab rename does not redefine the catalog title or Pi session name. Editor-tab names continue to come from document identity. The stream's lifecycle status has no equivalent in the current shared Work Cards record; it must not replace the agent-status indicator.
 
 ### Freshness and host state
 

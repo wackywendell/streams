@@ -83,9 +83,9 @@ test('Rust routing stays lazy and routes the Pi lane without TypeScript native e
  await controller.open();await controller.close();
  assert.equal(f.commands().filter(args=>command(args)==='open').length,1);
  assert.equal(f.commands().map(command).filter(value=>value!=='observe').at(-1),'close');
- for(const [target,reclaim] of [['all','all'],['session','tab'],['stream','workspace']]) {
+ for(const target of ['all','session','stream']) {
   await controller.reclaimNames(target);
-  const args=f.commands().findLast(args=>command(args)==='project');assert.equal(args[args.indexOf('--reclaim')+1],reclaim);
+  const args=f.commands().findLast(args=>command(args)==='project');assert.equal(args.includes('--reclaim'),false);
  }
  assert.equal(f.commands().filter(args=>command(args)==='open').length,1);
 });

@@ -10,7 +10,6 @@ pub mod launch;
 pub mod locations;
 pub mod native;
 pub mod native_cards;
-pub mod native_names;
 pub mod native_state;
 pub mod open_protocol;
 pub mod revisions;
