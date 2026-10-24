@@ -21,7 +21,6 @@ pub(super) struct Options {
     pub session_id: Option<String>,
     pub plugin_root: Option<PathBuf>,
     pub state_dir: Option<PathBuf>,
-    pub expect: Option<String>,
 }
 impl App {
     pub(super) fn native_cards(&self, options: Options, command: NativeCommand) -> Result<Output> {
@@ -134,9 +133,9 @@ impl App {
 
 impl App {
     fn reset_native_evidence(&self, options: Options, legacy_state_dir: PathBuf) -> Result<Output> {
-        if options.session_id.is_some() || options.expect.is_some() {
+        if options.session_id.is_some() {
             return Err(CliError::message(
-                "evidence reset is not Session-scoped; omit --session-id and --expect",
+                "evidence reset is not Session-scoped; omit --session-id",
             ));
         }
         let plugin_root = options.plugin_root.unwrap_or_else(|| {
@@ -156,7 +155,7 @@ impl App {
         )?;
         Ok(Output::value(json!({"version":2,"evidence_reset":report})))
     }
-    fn capture_native_owner(&self, engine: &mut NativeCardEngine) -> Result<Output> {
+    pub(super) fn capture_native_owner(&self, engine: &mut NativeCardEngine) -> Result<Output> {
         use streams_temper::runtime::{
             conversations::ConversationRoots, workspace::WorkspaceRuntime,
         };
@@ -214,7 +213,7 @@ impl App {
         ))
     }
 }
-fn build(
+pub(super) fn build(
     app: App,
     options: Options,
     config: NativeCardsConfig,
@@ -223,11 +222,6 @@ fn build(
     let mut read_environment = app.environment.clone();
     let mut read_cwd = app.cwd.clone();
     let launched = LaunchedCardContext::from_environment(&app.environment)?;
-    let expected = options
-        .expect
-        .as_deref()
-        .map(Expectation::parse)
-        .transpose()?;
     let (scope, owner) = if let Some(context) = &launched {
         for key in SOURCE_ENV_KEYS {
             read_environment.remove(key);
@@ -247,12 +241,6 @@ fn build(
     } else {
         (None, None)
     };
-    if let Some(expected) = &expected {
-        let captured = expected.scope();
-        if scope.as_ref().is_some_and(|scope| scope != &captured) {
-            return Err(CliError::message("conflicting captured native scopes"));
-        }
-    }
     if !read_cwd.is_absolute() {
         return Err(CliError::message("reader cwd must be absolute"));
     }
@@ -321,52 +309,7 @@ fn build(
     if let Some(terminal) = app.herdr.as_ref().and_then(|read| read.terminal.as_deref()) {
         engine.require_caller_terminal(terminal)?;
     }
-    if let Some(expected) = expected {
-        engine.pin_owner(&expected.scope(), &expected.context)?;
-    }
     Ok(engine)
-}
-#[derive(serde::Deserialize)]
-#[serde(deny_unknown_fields)]
-struct Expectation {
-    version: u8,
-    scope: ExpectedScope,
-    context: streams_temper::runtime::native_cards::NativeOwnerContext,
-}
-#[derive(serde::Deserialize)]
-#[serde(rename_all = "camelCase", deny_unknown_fields)]
-struct ExpectedScope {
-    catalog_source: String,
-    host_id: String,
-    stream_id: String,
-    session_id: String,
-    native_session_id: String,
-}
-impl Expectation {
-    fn parse(input: &str) -> Result<Self> {
-        let value = streams_temper::codec::load_json(input)
-            .map_err(|e| CliError::message(e.to_string()))?;
-        if !value.is_object() || !value["scope"].is_object() || !value["context"].is_object() {
-            return Err(CliError::message(
-                "captured native expectation and its scope/context must be objects",
-            ));
-        }
-        let expected: Self = serde_json::from_value(value)?;
-        if expected.version != 1 {
-            return Err(CliError::message("unsupported native expectation version"));
-        }
-        Ok(expected)
-    }
-    fn scope(&self) -> streams_temper::tui::Scope {
-        streams_temper::tui::Scope {
-            catalog_source: self.scope.catalog_source.clone(),
-            host_id: self.scope.host_id.clone(),
-            stream_id: self.scope.stream_id.clone(),
-            session_id: self.scope.session_id.clone(),
-            native_session_id: self.scope.native_session_id.clone(),
-            harness: "pi".into(),
-        }
-    }
 }
 fn evidence_directory(
     explicit: Option<PathBuf>,
@@ -474,41 +417,5 @@ mod tests {
             PathBuf::from("/explicit")
         );
         assert!(evidence_directory(None, &BTreeMap::new()).is_err());
-    }
-
-    #[test]
-    fn expectation_requires_versioned_named_complete_context() {
-        let valid = json!({"version":1,"scope":{"catalogSource":"source","hostId":"host","streamId":"stream","sessionId":"session","nativeSessionId":"native"},
-            "context":{"socket":"/socket","paneId":"pane","terminalId":"terminal","workspaceId":"workspace","tabId":"tab","binding":null}});
-        assert!(Expectation::parse(&valid.to_string()).is_ok());
-        for invalid in [
-            json!([]),
-            json!({}),
-            {
-                let mut value = valid.clone();
-                value["version"] = json!(2);
-                value
-            },
-            {
-                let mut value = valid.clone();
-                value["context"].as_object_mut().unwrap().remove("binding");
-                value
-            },
-            {
-                let mut value = valid.clone();
-                value["context"] = json!(["/socket", "pane", "terminal", "workspace", "tab", null]);
-                value
-            },
-            {
-                let mut value = valid;
-                value["scope"]["unexpected"] = json!(true);
-                value
-            },
-        ] {
-            assert!(
-                Expectation::parse(&invalid.to_string()).is_err(),
-                "{invalid}"
-            );
-        }
     }
 }

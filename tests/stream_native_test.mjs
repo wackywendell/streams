@@ -2,287 +2,119 @@ import assert from 'node:assert/strict';
 import test from 'node:test';
 import { randomUUID } from 'node:crypto';
 import { createJiti } from 'jiti';
-const jiti = createJiti(import.meta.url);
-const { NativeController } = await jiti.import(new URL('../extensions/stream-checkpoint/native.ts', import.meta.url).pathname);
-const { default: register } = await jiti.import(new URL('../extensions/stream-checkpoint/index.ts', import.meta.url).pathname);
-const naming = await jiti.import(new URL('../integrations/herdr-work-cards/src/pi/session-naming.ts', import.meta.url).pathname);
-const { defaults } = await jiti.import(new URL('../extensions/stream-checkpoint/settings.ts', import.meta.url).pathname);
-const turn = () => new Promise(resolve => setImmediate(resolve));
-async function until(check) {for (let i = 0; i < 100 && !check(); i++) await turn();assert.ok(check());}
-function environment(t, changes = {}) {
- const values = {HERDR_ENV:'1', HERDR_PANE_ID:'pane', HERDR_TAB_ID:'tab', HERDR_WORKSPACE_ID:'workspace', HERDR_SOCKET_PATH:'/socket', ...changes};
- const previous = Object.fromEntries(Object.keys(values).map(key => [key, process.env[key]]));
- for (const [key, value] of Object.entries(values)) {if (value === undefined) delete process.env[key];else process.env[key] = value;}
- t.after(() => {for (const [key, value] of Object.entries(previous)) {if (value === undefined) delete process.env[key];else process.env[key] = value;}});
+const jiti=createJiti(import.meta.url);
+const {NativeController}=await jiti.import('../extensions/stream-checkpoint/native.ts');
+const {loadRustNative}=await jiti.import('../extensions/stream-checkpoint/native-rust.ts');
+const {default:register}=await jiti.import('../extensions/stream-checkpoint/index.ts');
+const {isProjectedSessionNameChange}=await jiti.import('../integrations/herdr-work-cards/src/pi/session-naming.ts');
+const {defaults}=await jiti.import('../extensions/stream-checkpoint/settings.ts');
+const turn=()=>new Promise(resolve=>setImmediate(resolve));
+async function until(check) {for(let i=0;i<100&&!check();i++)await turn();assert.ok(check());}
+function environment(t,changes={}) {
+ const values={HERDR_ENV:'1',HERDR_PANE_ID:'pane',HERDR_TAB_ID:'tab',HERDR_WORKSPACE_ID:'workspace',HERDR_SOCKET_PATH:'/not-live.sock',...changes};
+ const previous=Object.fromEntries(Object.keys(values).map(key=>[key,process.env[key]]));
+ for(const [key,value] of Object.entries(values)) {if(value===undefined)delete process.env[key];else process.env[key]=value;}
+ t.after(()=>{for(const [key,value] of Object.entries(previous)) {if(value===undefined)delete process.env[key];else process.env[key]=value;}});
 }
-function fixture(t, options = {}) {
- const id = randomUUID(), events = [], notices = [], entries = [];
- let name, count = 0, closed = false;
- const session = {id:'session', host_id:'host', stream_id:'stream', harness:'pi', harness_session_id:id, title:'Saved title', title_mode:'automatic', status:'active', state:'Saved state', state_short:null, remaining:'', checkout:null};
- const saved = {catalog_source:'catalog', host_id:'host', authority:{host_id:'host', token:'owner'}, stream:{id:'stream', title:'Effort', title_mode:'automatic', goal:null, goal_short:null, goal_mode:'automatic', owner:{host_id:'host'}, status:'active', archived:false, repositories:{}, documents:[], issues:[], prs:[]}, session, sessions:[session], native:{frontend:'herdr', pane_id:'pane', tab_id:'tab', workspace_id:'workspace'}, checkouts:[], document_locations:[]};
- const ctx = {hasUI:true, mode:'tui', cwd:'/repo', sessionManager:{getSessionId:() => id, getEntries:() => entries, getLeafId:() => 'leaf', getBranch:() => [{id:'leaf'}], buildSessionProjection:() => ({messages:[]})}, ui:{notify:text => notices.push(text), setStatus:() => {}, select:async () => 'Close'}};
- const pi = {getSessionName:() => name, setSessionName:value => {name = value;entries.push({id:`name-${++count}`, type:'session_info', name:value});}, appendEntry:(customType, data) => entries.push({type:'custom', customType, data})};
- const adapter = {
-  automatic:options.automatic ?? true, sessionNaming:options.sessionNaming ?? true,
-  read:async signal => {
-   if (options.readSignal) await options.readSignal(signal);
-   events.push('read');if (options.read) await options.read();
-   return structuredClone({
-    scope:{catalogSource:saved.catalog_source,hostId:saved.host_id,streamId:saved.stream.id,sessionId:saved.session.id,nativeSessionId:id},
-    native:{pane_id:saved.native.pane_id,tab_id:saved.native.tab_id,workspace_id:saved.native.workspace_id},
-    session:{title:saved.session.title,title_mode:saved.session.title_mode},
-   });
-  },
-  bootstrap:async signal => {events.push('bootstrap');if (options.bootstrap) await options.bootstrap(signal);return {socket:'/socket', paneId:'pane', terminalId:'terminal', tabId:'tab', workspaceId:'workspace'};},
-  open:async (_context, signal, mode) => {events.push(`open:${mode}`);if (options.open) await options.open(signal);if (mode === 'explicit') closed = false;return {kind:closed ? 'suppressed' : 'paired'};},
-  close:async () => {events.push('close');closed = true;},
-  project:async (_context, _signal, intent) => {events.push('summaries', 'names');options.names?.(intent);},
-  sessionName:(snapshot, check, intent) => {events.push('sessionName');naming.projectSessionName(pi, ctx.sessionManager, id, snapshot.session.title, check, intent);},
- };
- let loads = 0, captured;
- const factory = async input => {loads++;captured = input;return adapter;};
- const capture = async (streamId, signal) => {events.push(`capture:${streamId}`);if (options.capture) return options.capture(streamId, signal);};
- const controller = new NativeController({pi, ctx, factory, capture, warning:text => notices.push(text)});
- t.after(() => controller.stop());
- return {id, ctx, pi, saved, entries, adapter, controller, events, notices, factory, capture, loads:() => loads, captured:() => captured, name:() => name};
+function fixture(t,options={}) {
+ const id=randomUUID(),requests=[],notices=[],listeners=new Set(),entries=[];
+ let name,disposed=0,loads=0,loaded;
+ const ctx={hasUI:true,mode:'tui',cwd:'/repo',sessionManager:{getSessionId:()=>id,getLeafId:()=> 'leaf',getBranch:()=>[{id:'leaf'}],buildSessionProjection:()=>({messages:[]})},ui:{notify:text=>notices.push(text),setStatus:()=>{},select:async()=> 'Close'}};
+ const pi={getSessionName:()=>name,setSessionName:value=>{name=value;entries.push({value,projected:isProjectedSessionNameChange()});},appendEntry:()=>{}};
+ const child={subscribe:listener=>{listeners.add(listener);return()=>listeners.delete(listener);},stop:async()=>{disposed++;},run:async(request,runOptions)=>{
+  requests.push(structuredClone(request));
+  if(options.run)return options.run(request,runOptions);
+  return {status:'success',result:request.kind==='session_started'?{native:'active',display:'suppressed'}:request.kind==='close_card'?{closed:true}:{display:'existing'}};
+ }};
+ const factory=async input=>{loads++;loaded=input;return loadRustNative(input);};
+ const controller=new NativeController({pi,ctx,child,factory,warning:text=>notices.push(text)});
+ t.after(async()=>{controller.stop();await controller.idle();});
+ return {id,ctx,pi,child,controller,requests,notices,entries,factory,loads:()=>loads,loaded:()=>loaded,name:()=>name,disposed:()=>disposed,view:desired_pi_name=>{for(const listener of listeners)listener({desired_pi_name});}};
 }
-
-test('a changed Pi lifetime after Rust projection fences inline naming and capture', async t => {
+test('construction is inert; startup sends only session_started and explicit actions send one typed intent each',async t=>{
+ environment(t);const f=fixture(t);await turn();assert.deepEqual(f.requests,[]);assert.equal(f.loads(),0);
+ await f.controller.start();await f.controller.start();await f.controller.idle();
+ assert.deepEqual(f.requests,[{kind:'session_started'}]);assert.equal(f.loads(),1);
+ assert.equal(f.loaded().sessionId,f.id);assert.equal(f.loaded().cwd,'/repo');assert.notEqual(f.loaded().env,process.env);
+ await f.controller.open();await f.controller.close();assert.deepEqual(f.requests.map(request=>request.kind),['session_started','open_card','close_card']);
+});
+for(const [label,env,ctx] of [
+ ['headless',{}, {hasUI:false}],['rpc',{}, {mode:'rpc'}],['outside Herdr',{HERDR_ENV:undefined},{}],['no exact pane',{HERDR_PANE_ID:undefined},{}],
+])test(`${label} never loads UI native dependencies`,async t=>{
+ environment(t,env);const f=fixture(t);Object.assign(f.ctx,ctx);await f.controller.start();assert.equal(f.loads(),0);await assert.rejects(f.controller.open(),/interactive/);assert.deepEqual(f.requests,[]);
+});
+test('helper identities never trigger session startup',async t=>{
+ environment(t);const f=fixture(t);f.ctx.sessionManager.getSessionId=()=> 'helper';
+ const controller=new NativeController({pi:f.pi,ctx:f.ctx,child:f.child,factory:f.factory,warning:assert.fail});t.after(()=>controller.stop());
+ await controller.start();assert.equal(f.loads(),0);
+});
+for(const reason of ['outside_herdr','not_enrolled'])test(`inactive ${reason} lifecycle is expected, without error-text matching`,async t=>{
+ environment(t);const f=fixture(t,{run:async request=>request.kind==='session_started'?{status:'success',result:{native:'inactive',reason}}:{status:'error',error:{kind:'inactive',message:'No active native owner'}}});
+ await f.controller.start();assert.deepEqual(f.notices,[]);await assert.rejects(f.controller.open(),error=>error.kind==='inactive');assert.deepEqual(f.requests.map(value=>value.kind),['session_started','open_card']);
+});
+test('startup failures warn; explicit errors preserve their kind and are never retried',async t=>{
+ environment(t);const f=fixture(t,{run:async()=>({status:'error',error:{kind:'native-context-changed',message:'Origin not proved'}})});
+ await f.controller.start();assert.match(f.notices[0],/Origin not proved/);
+ await assert.rejects(f.controller.close(),error=>error.kind==='native-context-changed');await turn();assert.deepEqual(f.requests.map(value=>value.kind),['session_started','close_card']);
+});
+test('failed startup before adapter assignment reports a lifecycle error rather than dereferencing undefined',async t=>{
+ environment(t);const f=fixture(t);process.env.HERDR_PANE_ID='changed';await f.controller.start();process.env.HERDR_PANE_ID='pane';
+ await assert.rejects(f.controller.open(),/startup did not initialize/);assert.deepEqual(f.requests,[]);
+});
+test('an explicit open rejects automatic-only suppression instead of reporting a pane open',async t=>{
+ environment(t);const f=fixture(t,{run:async()=>({status:'success',result:{native:'active',display:'suppressed'}})});
+ await f.controller.start();await assert.rejects(f.controller.open(),/display acknowledgement/);assert.equal(f.requests.length,2);
+});
+test('the child, not TypeScript, serializes explicit actions',async t=>{
+ environment(t);let release;const f=fixture(t,{run:async request=>{
+  if(request.kind==='session_started')return {status:'success',result:{native:'active',display:'suppressed'}};
+  if(request.kind==='open_card')await new Promise(resolve=>release=resolve);
+  return {status:'success',result:request.kind==='open_card'?{display:'opened'}:{closed:true}};
+ }});
+ await f.controller.start();const opening=f.controller.open();await until(()=>!!release);
+ await f.controller.close();assert.deepEqual(f.requests.map(value=>value.kind),['session_started','open_card','close_card']);release();await opening;
+});
+test('desired names use the checked setter and projected-change context; null and identical names are inert',async t=>{
+ environment(t);const f=fixture(t);await f.controller.start();
+ f.view('Saved title');f.view('Saved title');f.view(null);assert.equal(f.name(),'Saved title');assert.deepEqual(f.entries,[{value:'Saved title',projected:true}]);
+ // Independent user edits do not enter the projected-change context.
+ f.pi.setSessionName('User edit');assert.equal(f.entries.at(-1).projected,false);f.view('Catalog wins');assert.equal(f.name(),'Catalog wins');
+ assert.deepEqual(f.requests,[{kind:'session_started'}]);f.controller.stop();await f.controller.idle();f.view('Retired');assert.equal(f.name(),'Catalog wins');assert.equal(f.disposed(),0,'shared transport is retired by index, not the UI adapter');
+});
+test('name application errors are UI warnings, not protocol failures or native refresh triggers',async t=>{
+ environment(t);const f=fixture(t);await f.controller.start();f.view(' ');assert.match(f.notices[0],/nonempty/);assert.equal(f.requests.length,1);
+});
+for(const change of ['pane','endpoint','cwd','session','cargo-target'])test(`changed ${change} fences UI facts and explicit commands`,async t=>{
+ environment(t);const f=fixture(t);await f.controller.start();
+ if(change==='pane')process.env.HERDR_PANE_ID='other';
+ if(change==='endpoint')process.env.HERDR_SOCKET_PATH='/other';
+ if(change==='cwd')f.ctx.cwd='/other';
+ if(change==='session')f.ctx.sessionManager.getSessionId=()=>randomUUID();
+ if(change==='cargo-target')environment(t,{CARGO_TARGET_DIR:'/other-target'});
+ f.view('Stale title');assert.equal(f.name(),undefined);await assert.rejects(f.controller.open(),/session or environment changed/);assert.equal(f.requests.length,1);
+});
+test('shutdown cancels a pending native request but never sends close or final capture',async t=>{
+ environment(t);let signal,release;const f=fixture(t,{run:async(_request,options)=>{signal=options.signal;await new Promise(resolve=>release=resolve);return {status:'success',result:{native:'active',display:'opened'}};}});
+ const starting=f.controller.start();await until(()=>!!release);f.controller.stop();assert.equal(signal.aborted,true);release();await starting;await f.controller.idle();assert.deepEqual(f.notices,[]);assert.deepEqual(f.requests,[{kind:'session_started'}]);
+});
+test('index branch events and already-bound attach do not request projection, capture or reclaim',async t=>{
  environment(t);const f=fixture(t);
- f.adapter.project=async ()=>{f.events.push('project');f.ctx.cwd='/different';};
- f.controller.start();await f.controller.idle();
- assert.ok(f.events.includes('project'));assert.equal(f.events.includes('sessionName'),false);
- assert.equal(f.events.some(event=>event.startsWith('capture:')),false);
- assert.match(f.notices[0],/session or environment changed/);
+ // The test factory uses the same child while the index is given a fake catalog client.
+ const original=f.factory;const adapter=await original({pi:f.pi,ctx:f.ctx,sessionId:f.id,cwd:f.ctx.cwd,env:{...process.env},child:f.child,assertCurrent:()=>{},warning:assert.fail});
+ const handlers=new Map(),commands=new Map();
+ register({...f.pi,on:(key,value)=>handlers.set(key,value),registerCommand:(key,value)=>commands.set(key,value),registerTool:()=>{}},{cli:{context:async()=>({session:{stream_id:'effort'}}),sync:async()=>({local:'unchanged',sharing:'local-only',domain:null})},native:async()=>adapter,settings:{...defaults,reporting:'manual',enrollment:'manual'}});
+ await handlers.get('session_start')({},f.ctx);for(let i=0;i<20;i++)handlers.get('session_tree')({},f.ctx);
+ await commands.get('streams').handler('attach',f.ctx);assert.deepEqual(f.requests,[{kind:'session_started'}]);
+ await handlers.get('session_shutdown')({},f.ctx);assert.deepEqual(f.requests,[{kind:'session_started'}]);
 });
-test('explicit projection respects disabled Pi naming without reopening the display', async t => {
- environment(t);const intents=[],f=fixture(t,{sessionNaming:false,names:intent=>intents.push(intent)});
- f.controller.start();await f.controller.idle();f.pi.setSessionName('Manual name');
- const before=f.events.length;
- await f.controller.reclaimNames();
- assert.equal(intents.at(-1),'explicit');assert.equal(f.name(),'Manual name');
- assert.ok(!f.events.slice(before).some(event=>event.startsWith('open:')));
- assert.equal(f.entries.filter(entry=>entry.type==='custom').length,0);
+test('index sends session_started before startup sync and still syncs after a native lifecycle error',async t=>{
+ environment(t);let release;const f=fixture(t,{run:async()=>new Promise(resolve=>release=resolve)}),handlers=new Map(),syncs=[];
+ register({...f.pi,on:(name,handler)=>handlers.set(name,handler),registerCommand:()=>{},registerTool:()=>{}},{cli:{sync:async event=>{syncs.push(event);return {local:'unchanged',sharing:'local-only',domain:null};}},native:input=>f.factory({...input,child:f.child}),settings:{...defaults,reporting:'manual',enrollment:'manual'}});
+ const starting=handlers.get('session_start')({},f.ctx);await until(()=>!!release);assert.deepEqual(f.requests,[{kind:'session_started'}]);assert.deepEqual(syncs,[]);
+ release({status:'error',error:{kind:'runtime',message:'Origin not proved'}});await starting;assert.deepEqual(syncs,['start']);assert.match(f.notices[0],/Origin not proved/);
+ await handlers.get('session_shutdown')({},f.ctx);assert.deepEqual(syncs,['start','shutdown']);
 });
-test('discovery and controller construction have no effects; only gated session_start loads', async t => {
- environment(t);const f = fixture(t);await turn();assert.equal(f.loads(), 0);assert.deepEqual(f.events, []);
- f.controller.start();await f.controller.idle();assert.equal(f.loads(), 1);
- assert.equal(f.captured().sessionId, f.id);assert.equal(f.captured().cwd, '/repo');assert.notEqual(f.captured().env, process.env);
- assert.ok(f.events.indexOf('read') < f.events.indexOf('bootstrap'));assert.ok(f.events.includes('open:automatic'));
- assert.equal(f.name(), 'Saved title');assert.equal(f.events.at(-1), 'capture:stream');
- assert.equal(f.entries.filter(entry => entry.type === 'session_info').length, 1);
- f.controller.update();await f.controller.idle();
- assert.equal(f.entries.filter(entry => entry.type === 'session_info').length, 1);
-});
-for (const [label, env, ctx] of [
- ['headless', {}, {hasUI:false}], ['rpc', {}, {mode:'rpc'}], ['outside Herdr', {HERDR_ENV:undefined}, {}], ['no exact pane', {HERDR_PANE_ID:undefined}, {}],
-]) test(`${label} never loads native dependencies or effects`, async t => {
- environment(t, env);const f = fixture(t);Object.assign(f.ctx, ctx);f.controller.start();f.controller.update();await f.controller.idle();
- assert.equal(f.loads(), 0);await assert.rejects(f.controller.open(), /interactive/);assert.deepEqual(f.events, []);
-});
-test('non-UUID helper identity is ineligible', async t => {
- environment(t);const f = fixture(t);f.ctx.sessionManager.getSessionId = () => 'helper';
- const controller = new NativeController({pi:f.pi, ctx:f.ctx, factory:f.factory, warning:assert.fail});t.after(() => controller.stop());
- controller.start();await controller.idle();assert.equal(f.loads(), 0);
-});
-test('unbound and inherited helper attestation failures stay quiet, with actionable explicit errors', async t => {
- environment(t);let failure = 'unbound';
- const f = fixture(t, {read:async () => {throw Error(failure);}});
- f.controller.start();await f.controller.idle();assert.deepEqual(f.events, ['read']);assert.deepEqual(f.notices, []);
- await assert.rejects(f.controller.open(), /unbound/);assert.equal(f.loads(), 1);assert.ok(!f.events.some(event => event.startsWith('capture:')));
- failure = 'exact host/pi/native attestation mismatch';
- await assert.rejects(f.controller.open(), /exact host\/pi\/native/);assert.deepEqual(f.notices, []);
-});
-test('transient native startup reference mismatch waits for fresh attestation without replacing the real conversation', async t => {
- environment(t);let stale = true;
- const f = fixture(t, {read:async () => {if (stale) throw Error('Streams context read failed: requested Pi session differs from the native pane session');}});
- const before = structuredClone(f.saved);
- f.controller.start();await f.controller.idle();
- assert.equal(f.ctx.sessionManager.getSessionId(), f.id);assert.deepEqual(f.events, ['read']);assert.deepEqual(f.notices, []);
- stale = false;f.controller.update();await f.controller.idle();
- assert.equal(f.loads(), 1);assert.equal(f.events.filter(e => e === 'open:automatic').length, 1);
- assert.deepEqual(f.saved, before);assert.equal(f.events.at(-1), 'capture:stream');
-});
-test('missed native reference refresh never authorizes effects even when the real conversation is unchanged', async t => {
- environment(t);t.mock.timers.enable({apis:['setTimeout']});
- const f = fixture(t, {read:async () => {throw Error('Streams context read failed: requested Pi session differs from the native pane session');}});
- f.controller.start();await f.controller.idle();
- for (let i = 0; i < 6; i++) {t.mock.timers.tick(15000);await f.controller.idle();}
- assert.equal(f.events.filter(e => e === 'read').length, 1);assert.equal(f.loads(), 1);
- assert.equal(f.ctx.sessionManager.getSessionId(), f.id);assert.ok(f.events.every(e => e === 'read'));
- await assert.rejects(f.controller.open(), /native pane session/);
- assert.ok(f.events.every(e => e === 'read'));assert.deepEqual(f.notices, []);
-});
-test('ready enrollment recovers on update using the same adapter without model work', async t => {
- environment(t);let ready = false;
- const f = fixture(t, {read:async () => {if (!ready) throw Error('unbound');}});
- f.controller.start();await f.controller.idle();ready = true;f.controller.update();await f.controller.idle();
- assert.equal(f.loads(), 1);assert.ok(f.events.includes('open:automatic'));assert.equal(f.events.at(-1), 'capture:stream');
-});
-test('refreshes coalesce and explicit open/close share one serial lane', async t => {
- environment(t);let release, entered = false;
- const f = fixture(t, {open:async () => {if (!entered) {entered = true;await new Promise(resolve => {release = resolve;});}}});
- f.controller.start();await until(() => entered);for (let i = 0; i < 10; i++) f.controller.update();
- const close = f.controller.close(), open = f.controller.open();assert.equal(f.events.includes('close'), false);
- release();await Promise.all([close, open]);await f.controller.idle();
- assert.deepEqual(f.events.filter(event => event.startsWith('open:') || event === 'close'), ['open:automatic', 'close', 'open:explicit']);
-});
-test('tree invalidation aborts stale work without recreating the adapter or reopening suppressed cards', async t => {
- environment(t);let release, signal;
- const f = fixture(t, {open:async value => {if (!signal) {signal = value;await new Promise(resolve => {release = resolve;});}}});
- f.controller.start();await until(() => !!release);f.controller.invalidate();assert.equal(signal.aborted, true);release();await f.controller.idle();
- assert.equal(f.loads(), 1);assert.equal(f.events.filter(event => event === 'capture:stream').length, 1);
- await f.controller.close();f.controller.invalidate();await f.controller.idle();
- assert.equal(f.events.at(-1), 'capture:stream');assert.equal(f.events.filter(event => event === 'open:explicit').length, 0);
-});
-test('shutdown aborts stale responses, never closes surfaces or captures final progress', async t => {
- environment(t);let release, signal;const f = fixture(t, {open:async value => {signal = value;await new Promise(resolve => {release = resolve;});}});
- f.controller.start();await until(() => !!release);f.controller.stop();f.controller.stop();assert.equal(signal.aborted, true);release();await f.controller.idle();
- assert.equal(f.events.includes('close'), false);assert.equal(f.events.includes('summaries'), false);assert.equal(f.events.some(event => event.startsWith('capture:')), false);
-});
-for (const change of ['pane', 'endpoint', 'cwd', 'session', 'cargo-target']) test(`changed ${change} fences pending native effects`, async t => {
- environment(t);let release;const f = fixture(t, {read:async () => {if (!release) await new Promise(resolve => {release = resolve;});}});
- f.controller.start();await until(() => !!release);
- if (change === 'pane') process.env.HERDR_PANE_ID = 'other';
- if (change === 'endpoint') process.env.HERDR_SOCKET_PATH = '/other';
- if (change === 'cwd') f.ctx.cwd = '/other';
- if (change === 'session') f.ctx.sessionManager.getSessionId = () => randomUUID();
- if (change === 'cargo-target') {environment(t, {CARGO_TARGET_DIR:'/other-target'});}
- release();await f.controller.idle();assert.equal(f.events.includes('bootstrap'), false);assert.equal(f.events.includes('sessionName'), false);assert.equal(f.events.some(event => event.startsWith('capture:')), false);
-});
-test('manual startup keeps independently enabled naming and summaries, without opening a pane', async t => {
- environment(t);const f = fixture(t, {automatic:false});f.controller.start();await f.controller.idle();
- assert.equal(f.events.some(event => event.startsWith('open:')), false);assert.ok(f.events.includes('names'));assert.equal(f.name(), 'Saved title');
- await f.controller.open();assert.ok(f.events.includes('open:explicit'));
-});
-test('catalog title modes both project into Pi while the session naming switch remains independent', async t => {
- environment(t);for (const mode of ['disabled', 'manual', 'automatic']) {
-  const f = fixture(t, {sessionNaming:mode !== 'disabled'});if (mode === 'manual') f.saved.session.title_mode = 'manual';
-  f.controller.start();await f.controller.idle();
-  assert.equal(f.name(), mode === 'disabled' ? undefined : 'Saved title');
-  assert.equal(f.events.includes('sessionName'), mode !== 'disabled');
- }
-});
-test('enabled Pi naming restores saved titles after external edits and reload', async t => {
- environment(t);const f = fixture(t);f.controller.start();await f.controller.idle();assert.equal(f.name(), 'Saved title');
- f.saved.session.title = 'Updated';f.controller.update();await f.controller.idle();assert.equal(f.name(), 'Updated');
- f.pi.setSessionName('Updated');f.saved.session.title = 'Next';f.controller.update();await f.controller.idle();assert.equal(f.name(), 'Next');
- f.controller.stop();const reload = new NativeController({pi:f.pi, ctx:f.ctx, factory:f.factory, warning:assert.fail});t.after(() => reload.stop());
- reload.start();await reload.idle();assert.equal(f.name(), 'Next');
-});
-test('preexisting Pi names do not prevent enabled projection of later saved titles', async t => {
- environment(t);const f = fixture(t);f.pi.setSessionName('Saved title');f.controller.start();await f.controller.idle();
- f.saved.session.title = 'Updated';f.controller.update();await f.controller.idle();assert.equal(f.name(), 'Updated');
-});
-
-function registration(t, f, cli = {}) {
- const handlers = new Map(), commands = new Map(), tools = new Map(), shortcuts = new Map();
- const client = {sync:async () => ({local:'unchanged', sharing:'local-only', domain:null}), context:async () => structuredClone(f.saved), captureArrangement:f.capture, ...cli};
- register({...f.pi, on:(name, handler) => handlers.set(name, handler), registerCommand:(name, value) => commands.set(name, value), registerTool:value => tools.set(value.name, value), registerShortcut:(name, value) => shortcuts.set(name, value)}, {cli:client, native:f.factory, settings:{...defaults, reporting:'manual', enrollment:'manual'}, infer:async () => {throw Error('native lifecycle must not infer');}});
- t.after(async () => {await handlers.get('session_shutdown')({}, f.ctx);});
- return {handlers, commands, tools, shortcuts, run:args => commands.get('streams').handler(args, f.ctx)};
-}
-test('extension reload/start replaces stale lifetime and pane commands do not report or attach', async t => {
- environment(t);const f = fixture(t), r = registration(t, f);assert.equal(f.loads(), 0);
- await r.handlers.get('session_start')({}, f.ctx);await until(() => f.events.includes('capture:stream'));
- assert.deepEqual([...r.commands.keys()], ['streams']);assert.deepEqual([...r.shortcuts.keys()], []);
- await r.run('pane close');await r.run('pane');assert.ok(f.events.includes('close'));assert.ok(f.events.includes('open:explicit'));
- const before = f.events.length;await r.run('pane close extra');assert.equal(f.events.length, before);assert.match(f.notices.at(-1), /pane \[close\]/);
- await r.handlers.get('session_shutdown')({}, f.ctx);await r.handlers.get('session_start')({}, f.ctx);await until(() => f.loads() === 2);await turn();
- assert.equal(f.events.filter(event => event === 'close').length, 1);
-});
-test('successful guided edits refresh from persisted source immediately; existing receipt entry is unchanged', async t => {
- environment(t);const f = fixture(t);let menu = 0;
- const receipt = {operation_id:'edit', save:{local:'persisted', sharing:'local-only', domain:{outcome:'changes'}}};
- const r = registration(t, f, {apply:async () => {f.saved.session.state = 'Manually saved';return receipt;}});
- f.ctx.ui.select = async () => {assert.ok(menu < 4, f.notices.join('\n'));return ['This session — edit fields', 'state: "Saved state"', 'Save field', 'Close'][menu++];};
- f.ctx.ui.editor = async () => 'Manually saved';
- await r.handlers.get('session_start')({}, f.ctx);await until(() => f.events.includes('capture:stream'));const initial = f.events.filter(event => event === 'capture:stream').length;
- await r.run('card');await until(() => f.events.filter(event => event === 'capture:stream').length > initial);
- assert.deepEqual(f.entries.filter(entry => entry.customType === 'stream-catalog-receipt').map(entry => entry.data), [receipt]);assert.equal(f.loads(), 1);
-});
-test('tree changes reject queued explicit actions instead of replaying them on a later branch', async t => {
- environment(t);let release;const f = fixture(t, {open:async () => {if (!release) await new Promise(resolve => {release = resolve;});}});
- f.controller.start();await until(() => !!release);const close = f.controller.close();
- const rejected = assert.rejects(close, /tree changed/);f.controller.invalidate();await rejected;release();await f.controller.idle();
- assert.equal(f.events.includes('close'), false);
-});
-test('a reload retires pending old startup responses before they can project or capture', async t => {
- environment(t);let release;const f = fixture(t, {read:async () => {if (!release) await new Promise(resolve => {release = resolve;});}}), r = registration(t, f);
- await r.handlers.get('session_start')({}, f.ctx);await until(() => !!release);
- let settled = false;const replacement = r.handlers.get('session_start')({}, f.ctx).then(() => {settled = true;});
- await turn();assert.equal(settled, false);assert.equal(f.loads(), 1);
- release();await replacement;await until(() => f.events.includes('capture:stream'));
- assert.equal(f.loads(), 2);assert.equal(f.events.filter(event => event === 'bootstrap').length, 1);assert.equal(f.events.filter(event => event === 'capture:stream').length, 1);
-});
-test('normal attach receipts immediately recover native projection without another model response', async t => {
- environment(t);let ready = false;
- const f = fixture(t, {read:async () => {if (!ready) throw Error('unbound');}}), session = f.saved.session;f.saved.session = null;f.saved.sessions = [];
- const receipt = {stream:f.saved.stream, session, authority:f.saved.authority, saves:[{operation_id:'enroll', save:{local:'persisted', sharing:'local-only', domain:{outcome:'changes'}}}]};
- const r = registration(t, f, {list:async () => [f.saved.stream], enroll:async () => {f.saved.session = session;f.saved.sessions = [session];ready = true;return receipt;}});
- f.ctx.ui.select = async (_title, rows) => rows.find(row => row.startsWith('stream ·'));
- f.ctx.ui.editor = async () => 'Contribution';f.ctx.ui.confirm = async () => true;
- await r.handlers.get('session_start')({}, f.ctx);await until(() => f.events.includes('read'));assert.equal(f.events.includes('bootstrap'), false);
- await r.run('attach');await until(() => f.events.includes('capture:stream'));
- assert.equal(f.loads(), 1);assert.deepEqual(f.entries.filter(entry => entry.customType === 'stream-catalog-receipt').map(entry => entry.data), [receipt]);
-});
-test('retired explicit pane failures do not notify a replacement lifetime', async t => {
- environment(t);let release;const f = fixture(t, {automatic:false, open:async () => {await new Promise(resolve => {release = resolve;});}}), r = registration(t, f);
- await r.handlers.get('session_start')({}, f.ctx);await until(() => f.events.includes('capture:stream'));
- const command = r.run('pane');await until(() => !!release);
- const replacement = r.handlers.get('session_start')({}, f.ctx);release();await replacement;await command;await turn();
- assert.deepEqual(f.notices, []);
-});
-test('capture failure defers recovery to a real update without retrying native projection', async t => {
- environment(t);t.mock.timers.enable({apis:['setTimeout']});let fail = true;
- const f = fixture(t, {capture:async () => {if (fail) throw Error('workspace lock timed out');}});
- f.controller.start();await f.controller.idle();
- const before = [...f.events];assert.match(f.notices[0], /Arrangement capture deferred.*workspace lock timed out/);
- t.mock.timers.tick(90000);await f.controller.idle();assert.deepEqual(f.events, before);
- // Explicit pane success is not falsely reported as failure merely because capture deferred.
- await f.controller.open();assert.equal(f.events.filter(event => event === 'open:explicit').length, 1);
- assert.equal(f.notices.length, 1);
- fail = false;f.controller.update();await f.controller.idle();
- assert.equal(f.events.filter(event => event === 'capture:stream').length, 3);
- assert.equal(f.events.filter(event => event === 'open:automatic').length, 1);
- assert.equal(f.loads(), 1);
- const recovered = [...f.events];t.mock.timers.tick(90000);await f.controller.idle();assert.deepEqual(f.events, recovered);
-});
-test('failed automatic opens are dropped without timers or a later automatic reopen', async t => {
- environment(t);t.mock.timers.enable({apis:['setTimeout']});let fail = true;
- const f = fixture(t, {open:async () => {if (fail) throw Error('workspace lock timed out');}, capture:async () => {throw Error('capture unavailable');}});
- f.controller.start();await f.controller.idle();
- for (let i = 0; i < 4; i++) {t.mock.timers.tick(15000);await f.controller.idle();}
- assert.equal(f.events.filter(event => event === 'open:automatic').length, 1);
- t.mock.timers.tick(15000);await f.controller.idle();assert.equal(f.events.filter(event => event === 'open:automatic').length, 1);
- fail = false;f.controller.update();await f.controller.idle();
- fail = true;f.controller.update();await f.controller.idle();
- for (let i = 0; i < 4; i++) {t.mock.timers.tick(15000);await f.controller.idle();}
- assert.equal(f.events.filter(event => event === 'open:automatic').length, 1);
- await assert.rejects(f.controller.open(), /workspace lock timed out/);
- assert.equal(f.events.filter(event => event === 'open:explicit').length, 1);
-});
-for (const stage of ['read', 'bootstrap', 'capture']) test(`shutdown awaits retired ${stage} while sync runs independently`, async t => {
- environment(t);let release, signal, syncFinished = false;t.after(() => release?.());
- const gate = async value => {signal = value;await new Promise(resolve => {release = resolve;});};
- const f = fixture(t, {[stage === 'read' ? 'readSignal' : stage]:stage === 'capture' ? (_streamId, signal) => gate(signal) : gate});
- const r = registration(t, f, {sync:async event => {if (event === 'shutdown') syncFinished = true;return {local:'unchanged', sharing:'local-only', domain:null};}});
- await r.handlers.get('session_start')({}, f.ctx);await until(() => !!release);
- let settled = false;const shutdown = r.handlers.get('session_shutdown')({}, f.ctx).then(() => {settled = true;});
- await turn();assert.equal(signal.aborted, true);assert.equal(syncFinished, true);assert.equal(settled, false);
- release();await shutdown;assert.equal(settled, true);assert.equal(f.events.includes('close'), false);
- if (stage !== 'capture') assert.equal(f.events.some(event => event.startsWith('capture:')), false);
- assert.deepEqual(f.notices, []);
-});
-test('pane effect errors propagate without misleading enrollment instructions', async t => {
- environment(t);const f = fixture(t, {automatic:false, open:async () => {throw Error('workspace lock timed out');}}), r = registration(t, f);
- await r.handlers.get('session_start')({}, f.ctx);await until(() => f.events.includes('capture:stream'));
- await r.run('pane');assert.match(f.notices.at(-1), /workspace lock timed out/);
- assert.doesNotMatch(f.notices.at(-1), /attach|enrollment|reload/);
- assert.equal(f.events.filter(event => event === 'capture:stream').length, 1);
-});
-test('old injected CLI without arrangement capture remains supported', async t => {
- environment(t);const f = fixture(t), r = registration(t, f, {captureArrangement:undefined});
- await r.handlers.get('session_start')({}, f.ctx);await until(() => f.events.includes('sessionName'));await r.run('pane');
- assert.equal(f.events.some(event => event.startsWith('capture:')), false);
+test('native actions retain accepted warning outcomes and return display results without confirmation reads',async t=>{
+ environment(t);const f=fixture(t,{run:async request=>({status:request.kind==='session_started'?'success':'saved_with_warnings',result:request.kind==='session_started'?{native:'active',display:'suppressed'}:{display:'opened'},...(request.kind==='session_started'?{}:{warnings:['Title saved; projection deferred']})})});
+ await f.controller.start();assert.deepEqual(await f.controller.open(),{display:'opened'});assert.deepEqual(f.notices,['Title saved; projection deferred']);assert.equal(f.requests.length,2);
 });

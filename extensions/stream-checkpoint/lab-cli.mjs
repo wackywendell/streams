@@ -2,6 +2,7 @@
 import { accessSync, constants, readFileSync, realpathSync } from "node:fs";
 import { delimiter, dirname, isAbsolute, join, resolve } from "node:path";
 import { homedir } from "node:os";
+import { randomUUID } from "node:crypto";
 import { fileURLToPath, pathToFileURL } from "node:url";
 
 export const HELP = `Usage: streams debug <operation> [options]
@@ -153,8 +154,8 @@ export async function loadModules(sdkEntry) {
  return {
   loadSettings: settings.loadSettings,
   async core() {
-   const [lab, streams] = await Promise.all([jiti.import("./lab.ts"), jiti.import("./streams.ts")]);
-   return {executeLab: lab.executeLab, StreamCli: streams.StreamCli};
+   const [lab, streams, child] = await Promise.all([jiti.import("./lab.ts"), jiti.import("./streams.ts"), jiti.import("./child.ts")]);
+   return {executeLab: lab.executeLab, StreamCli: streams.StreamCli, StreamsChild:child.StreamsChild};
   },
   sdk: () => import(pathToFileURL(sdkEntry).href),
  };
@@ -184,12 +185,14 @@ export async function main(argv = process.argv.slice(2), dependencies = {}) {
   const modules = await (dependencies.loadModules ?? loadModules)(resolveSdkEntry(env, cwd));
   if (!modules.loadSettings(agentDir).debug_commands) throw Error("Streams debug commands are disabled; enable debug_commands in stream-reporting.json");
   if (parsed.promptFile !== undefined) parsed.operation.prompt = readFileSync(resolve(cwd, parsed.promptFile), "utf8");
-  const {executeLab, StreamCli} = await modules.core();
+  const {executeLab, StreamCli, StreamsChild} = await modules.core();
   const controller = new AbortController();
   const cancel = () => controller.abort(Error("Streams debug command cancelled"));
   process.on("SIGINT", cancel); process.on("SIGTERM", cancel);
+  // Debug has no Pi lifecycle: its lazy child serves explicit capture/preview only.
+  const child = new StreamsChild({sessionId:randomUUID(), cwd, env, warning:message => stderr(`streams debug: ${message}\n`)});
   try {
-   const environment = {root: join(agentDir, "stream-debug"), client: new StreamCli(cwd)};
+   const environment = {root: join(agentDir, "stream-debug"), client: new StreamCli(cwd, child.run)};
    if (["run", "replay"].includes(parsed.operation.operation)) environment.runtime = await createRuntime(await modules.sdk(), parsed.operation.model, cwd, agentDir, controller.signal);
    const result = await executeLab(parsed.operation, environment, controller.signal);
    const inspection = parsed.operation.operation === "inspect" && parsed.operation.section && parsed.operation.section !== "summary" && typeof result?.text === "string";
@@ -197,7 +200,7 @@ export async function main(argv = process.argv.slice(2), dependencies = {}) {
    if (controller.signal.aborted || result?.status === "cancelled") return 130;
    return result?.status === "partial" || result?.status === "failed" || typeof result?.failed === "number" && result.failed > 0 || typeof result?.unrun === "number" && result.unrun > 0 ? 2 : 0;
   } finally {
-   process.removeListener("SIGINT", cancel); process.removeListener("SIGTERM", cancel);
+   try {await child.stop();} finally {process.removeListener("SIGINT", cancel); process.removeListener("SIGTERM", cancel);}
   }
  } catch (error) {
   if (parsed?.json || argv.includes("--json")) stdout(JSON.stringify({error: {message: error.message ?? String(error)}}) + "\n");

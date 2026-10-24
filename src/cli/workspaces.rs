@@ -135,16 +135,37 @@ impl App {
         let opened = application::open(&self.config)?;
         let catalog = opened.backend().snapshot()?.catalog;
         let stream = self.target(&opened, &catalog, &target)?;
+        self.capture_workspace_record(&opened, &catalog, stream, target.frontend)
+    }
+
+    pub(super) fn capture_workspace_stream_id(&self, stream_id: &str) -> Result<Output> {
+        let opened = application::open(&self.config)?;
+        let catalog = opened.backend().snapshot()?.catalog;
+        let stream = catalog
+            .streams()
+            .iter()
+            .find(|stream| stream.id == stream_id)
+            .ok_or_else(|| CliError::NotFound(format!("Stream {stream_id} not found")))?;
+        self.capture_workspace_record(&opened, &catalog, stream, None)
+    }
+
+    fn capture_workspace_record(
+        &self,
+        opened: &OpenedCatalog,
+        catalog: &Catalog,
+        stream: &Stream,
+        requested: Option<FrontendRequest>,
+    ) -> Result<Output> {
         let sessions: Vec<_> = catalog
             .sessions()
             .iter()
             .filter(|s| s.stream_id == stream.id)
             .cloned()
             .collect();
-        let selected = self.selection(target.frontend)?;
+        let selected = self.selection(requested)?;
         let frontend = self.native_frontend(&selected, 30.0)?;
-        let state = self.state(&opened)?;
-        let locations = self.locations(&opened)?;
+        let state = self.state(opened)?;
+        let locations = self.locations(opened)?;
         let roots = ConversationRoots::from_environment()?;
         let arrangement = WorkspaceRuntime::new(
             &state,

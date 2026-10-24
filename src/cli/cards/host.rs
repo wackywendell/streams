@@ -147,9 +147,6 @@ impl Host {
         cancel: Cancellation,
         events: PaneEvents,
     ) -> Result<Self> {
-        if options.expect.is_some() {
-            return Err("native pane cannot use an owner expectation".into());
-        }
         let context = LaunchedCardContext::from_environment(&app.environment)
             .map_err(|e| e.to_string())?
             .ok_or("native pane requires a protected launched-card context")?;

@@ -201,12 +201,12 @@ test('tampered capture paths, snapshot hashes, card identity, and live tokens ar
  const inventory=setup(root,['different']).inventory;inventory.samples[0].catalog.session.harness_session_id='wrong';assert.throws(()=>parseCaptureInventory(inventory),/identity mismatch/);
 }));
 
-test('StreamCli debug boundary invokes only capture-inputs and stdin pure preview',async()=>{
+test('StreamCli debug boundary sends typed capture-inputs and pure preview',async()=>{
  const calls=[], base=catalog('native');const receipt={operation_id:'sim',save:{local:'persisted',sharing:'local-only',domain:{outcome:'changes'}},simulated:true};
- const cli=new StreamCli('/repo',async(args,input)=>{calls.push({args,input});return {code:0,stderr:'',stdout:JSON.stringify(input?{catalog:base,receipt}:{version:1})};});
+ const cli=new StreamCli('/repo',async request=>{calls.push(request);return {status:'success',result:request.kind==='preview'?{catalog:base,receipt}:{version:1}};});
  await cli.captureInputs({kind:'workspace',id:'workspace'},new AbortController().signal);
  await cli.preview({catalog:base,action:'apply',request:{operation_id:'sim'}});
- assert.deepEqual(calls.map(call=>call.args),[['agent','capture-inputs','--workspace-id','workspace','--json'],['agent','preview','--json']]);assert.equal(JSON.parse(calls[1].input).action,'apply');
+ assert.deepEqual(calls,[{kind:'capture_inputs',target:{kind:'workspace',workspace_id:'workspace'}},{kind:'preview',catalog:base,action:'apply',request:{operation_id:'sim'}}]);
 });
 
 test('opt-in helper logging saves a private Pi transcript with response and parse error',async()=>temporary(async root=>{

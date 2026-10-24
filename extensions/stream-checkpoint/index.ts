@@ -57,14 +57,17 @@ export default function registerWorkCard(pi: ExtensionAPI, options: Options = {}
  }
  const states = new Map<string, CardState>();
  const warning = (error: unknown) => {scope.context?.ui.notify(`Streams — ${error instanceof Error ? error.message : String(error)}`, "warning");};
- const sessionChild = (ctx: ExtensionContext) => child ??= options.child?.(ctx) ?? new StreamsChild({sessionId:ctx.sessionManager.getSessionId(), cwd:ctx.cwd, env:{...process.env}, warning});
+ const sessionChild = (ctx: ExtensionContext) => {
+  if (child) return child;
+  const fence = scope.fence();
+  return child = options.child?.(ctx) ?? new StreamsChild({sessionId:ctx.sessionManager.getSessionId(), cwd:ctx.cwd, env:{...process.env}, warning:message => {if (fence.live()) warning(message);}});
+ };
  const cli = (ctx: ExtensionContext) => options.cli ?? new StreamCli(ctx.cwd, sessionChild(ctx).run);
- const receipt = (value: Receipt, deferNative = false, quiet = false) => {
+ const receipt = (value: Receipt, quiet = false) => {
   const text = receiptText(value), hasWarning = receiptHasWarning(value);
   // Receipts do not enter model context or count as fresh user work.
   pi.appendEntry("stream-catalog-receipt", value);
   if (!quiet || hasWarning) scope.context?.ui.notify(`Streams — ${text}`, hasWarning ? "warning" : "info");
-  if (!deferNative && receiptCanContinue(value)) native?.update();
  };
  const showDoneStatus = (label = "Updated") => {
   clearStatusTimer();
@@ -75,8 +78,6 @@ export default function registerWorkCard(pi: ExtensionAPI, options: Options = {}
  };
  const reporter = new Reporter({
   scope, cli, settings, logging, infer: options.infer, notice: warning, receipt,
-  onUpdateNative: () => native?.update(),
-  onReclaimNames: (target) => native?.reclaimNames(target).catch(() => {}),
   activity: (text, completed) => {
    clearStatusTimer();
    if (text) scope.context?.ui.setStatus("stream-reporting", `Streams · ${text}`);
@@ -153,7 +154,7 @@ export default function registerWorkCard(pi: ExtensionAPI, options: Options = {}
  async function attach(ctx: ExtensionContext, args: {streamId?: string; title?: string; reason?: string}) {
   scope.use(ctx);
   const before = await cli(ctx).context(ctx.sessionManager.getSessionId(), process.env.STREAMS_STREAM_ID);
-  if (before.session) {native?.update();return {status: "already-bound; membership moves/forks are not implemented", stream_id: before.session.stream_id};}
+  if (before.session) {return {status: "already-bound; membership moves/forks are not implemented", stream_id: before.session.stream_id};}
   return reporter.exclusive((signal) => chooseInitial(ctx, cli(ctx), args, receipt, signal));
  }
  pi.registerCommand("streams", {
@@ -275,11 +276,10 @@ export default function registerWorkCard(pi: ExtensionAPI, options: Options = {}
   if (retired) await retired;
   if (previousChild) await previousChild.stop();
   if (!fence.current()) return;
-  const client = cli(ctx) as StreamCli & {captureArrangement?: (streamId: string, signal?: AbortSignal) => Promise<unknown>};
-  native = new NativeController({pi, ctx, current: () => scope.context, factory: options.native, warning,
-   child:options.cli ? undefined : sessionChild(ctx),
-   capture: client.captureArrangement ? (streamId, signal) => client.captureArrangement!(streamId, signal) : undefined});
-  native.start();
+  native = new NativeController({pi, ctx, current: () => scope.context, factory:options.native, warning,
+   child:options.cli ? undefined : sessionChild(ctx)});
+  const starting = native.start();
+  if (starting) {await starting;if (!fence.live()) return;}
   await sync(ctx, "start");
  });
  pi.on("agent_end", (event, ctx) => {
@@ -288,7 +288,7 @@ export default function registerWorkCard(pi: ExtensionAPI, options: Options = {}
   if (!event.messages.some((message) => message.role === "assistant" && ["stop", "length"].includes(message.stopReason))) return;
   try {reporter.response(ctx);} catch(error) {warning(error);}
  });
- pi.on("session_tree", (_event, ctx) => {clearStatusTimer();ctx.ui.setStatus?.("stream-debug", undefined);scope.invalidate();native?.invalidate();});
+ pi.on("session_tree", (_event, ctx) => {clearStatusTimer();ctx.ui.setStatus?.("stream-debug", undefined);scope.invalidate();});
  pi.on("session_shutdown", (_event, ctx) => shutdown ??= (async () => {
   clearStatusTimer();ctx.ui.setStatus?.("stream-debug", undefined);
   const retired = retireNative();

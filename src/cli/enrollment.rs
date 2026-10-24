@@ -68,10 +68,13 @@ impl Receipt {
 
 impl App {
     pub(super) fn enroll(&self) -> Result<Output> {
-        let source = self.input.read()?;
+        self.enroll_request(&self.input.read()?)
+    }
+
+    pub(super) fn enroll_request(&self, source: &str) -> Result<Output> {
         let opened = application::open(&self.config)?;
         let catalog_source = opened.source_id()?;
-        let request = EnrollmentRequest::parse(&source, &catalog_source)?;
+        let request = EnrollmentRequest::parse(source, &catalog_source)?;
         let directory = canonical_directory(&self.path(Path::new(request.cwd()))?)?;
         let state = self.state(&opened)?;
         let connection = self.native_frontend(&self.selection(None)?, 30.0)?;
@@ -268,11 +271,13 @@ impl App {
             }
             receipt.publication = Some(result_data(&publication)?);
         }
+        let accepted_save = receipt.saves.iter().any(|saved| saved.save.accepted());
         Ok(Output {
             value: serde_json::to_value(receipt)?,
             code,
             plain: None,
             notices: vec![],
+            accepted_save,
         })
     }
 }

@@ -44,7 +44,7 @@ pub(super) enum NativeCommand {
 }
 #[derive(Debug, Subcommand)]
 pub(super) enum Command {
-    /// Serve protocol-1 requests for one Pi session over stdio.
+    /// Serve typed protocol-2 requests for one Pi session over stdio.
     Serve {
         #[arg(long)]
         session_id: String,
@@ -83,9 +83,6 @@ pub(super) enum Command {
         plugin_root: Option<PathBuf>,
         #[arg(long, global = true)]
         state_dir: Option<PathBuf>,
-        /// Captured version-1 owner envelope; re-attested before effects.
-        #[arg(long, global = true)]
-        expect: Option<String>,
         #[command(subcommand)]
         command: NativeCommand,
     },

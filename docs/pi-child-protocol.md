@@ -1,13 +1,17 @@
 # One native controller for each Pi session
 
-Accepted version 2 contract. Version 1 remains implemented until both sides switch together.
+Active version 2 transport, switched together in Rust and Pi. There is no version-1 adapter.
+
+The child owns the native queue, lifecycle, observation and existing projection handlers.
+Pure effect planning, membership reconciliation, card following and closure cleanup remain separate work.
+Moving a conversation does not yet change its catalog Stream membership.
 
 ## Why change the protocol
 
-Version 1 sends CLI argument vectors over the child's pipe. Pi receives native
-scope, turns it into `--expect`, and requests projection, capture and opening.
-The child also watches native events and refreshes that scope. Both sides decide
-when native work should run, and the same observation crosses the pipe only to
+Version 1 sent CLI argument vectors over the child's pipe. Pi received native
+scope, turned it into `--expect`, and requested projection, capture and opening.
+The child also watched native events and refreshed that scope. Both sides decided
+when native work should run, and the same observation crossed the pipe only to
 be checked again.
 
 The child should own native observation, planning and execution for its Pi
@@ -65,11 +69,14 @@ project a frontend name or permit changing the live child's catalog root.
 
 A response has an ID and an outcome: `success`, `saved_with_warnings` or `error`.
 Result payloads are objects. Successful catalog results retain their existing
-domain shapes. Accepted saves with warnings retain the same result and a
+domain shapes. Domain refusals, repair requirements and publication failures
+remain in those results, even when the one-shot CLI exits nonzero.
+An error means the operation could not produce its domain result.
+Accepted saves with warnings retain the same result and a
 nonempty list of warning messages; they are not failed or rolled-back saves.
-Errors carry a kind and message. Native opening returns its own `display`
-outcome (`opened`, `existing` or `suppressed`), and closing returns `closed: true`,
-without a status confirmation read.
+Errors carry a kind and message. Explicit opening returns its own `display`
+outcome (`opened` or `existing`), and closing returns `closed: true`, without a
+status confirmation read.
 
 An active `attach` returns `{"native":"active"}`, with no display outcome.
 An active `session_started` returns `{"native":"active","display":"..."}`
@@ -90,8 +97,7 @@ A null desired name means no Pi rename. A non-null name is the current saved
 Session title when session-name synchronization is enabled. Pi applies it with
 its checked setter. Neither event supplies caller proof or selects another
 projection, capture or observation pass. Unknown fields, duplicate JSON keys,
-unsupported versions and positional struct arrays are rejected. Version 1
-remains active until the coordinated transport cutover.
+unsupported versions and positional struct arrays are rejected.
 
 ## One native queue
 
@@ -121,18 +127,24 @@ the old child. The first line should be `{"type":"ready","protocol":2}`.
 Readiness means the transport can accept requests; it should not itself trigger
 native observation, projection, capture or opening.
 
-Pi should send `session_started` for an actual Pi session start. Only that
-lifecycle input may consider configured automatic opening. After a child crash,
-Pi should send `attach` instead. Attachment may restore subscriptions and fresh
-observations and refresh projections. It must not repeat automatic opening or
-perform startup catch-up follow.
+An eligible interactive Pi session should send `session_started` before startup
+sync. Only that lifecycle input may consider configured automatic opening.
+Catalog-only and headless callers should send no native lifecycle request,
+including after a child restart. Inherited Herdr environment variables must not
+enable native work for those callers.
+
+After a crash, a child whose native lifecycle was enabled should send `attach`
+before new requests. Attachment may restore subscriptions, observe the owner
+and refresh projections. It must not repeat automatic opening or startup
+catch-up follow. Catalog requests need not await the attachment outcome.
+Lifecycle errors should warn without disabling catalog operations.
 
 The extension should retain the existing limit of one automatic child restart
-per Pi session. It should reject requests whose child died, warn and reattach,
-without replaying those requests. A second failure stops Streams until reload.
-Closing stdin should end the child and its subscriptions after bounded shutdown.
-A restarted child has no inherited caller proof; an unprovable moved origin
-must still refuse, even if the previous child could attest it.
+per Pi session. It should reject requests whose child died without replaying
+them. A second transport failure stops Streams until reload. Closing stdin
+should end the child and its subscriptions after bounded shutdown. A restarted
+child has no inherited caller proof; an unprovable moved origin must still
+refuse, even if the previous child could attest it.
 
 ## Pi keeps model and branch admission
 
@@ -173,8 +185,8 @@ protocol version should fail the connection, not select a fallback. Version 2
 must replace the CLI-vector transport and the scope-to-`--expect` loop together,
 including their fakes and tests. There should be no version-1 adapter.
 
-This decision does not settle whether ready evidence stores a launch receipt
-or current location. It also does not settle whether a later explicit open
-finishes an acknowledged but incompletely published card. Those choices remain
-open before the dependent card planner changes. Neither can relax pending-launch
-uncertainty, caller origin or the rule against replacement during follow.
+Ready evidence now stores an [immutable launch receipt](native-context-reconciliation.md),
+not the card's current placement. Whether a later explicit open finishes an
+acknowledged but incompletely published card remains undecided before the dependent
+planner changes. Neither choice can relax pending-launch uncertainty, caller origin
+or the rule against replacement during follow.

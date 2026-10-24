@@ -1083,9 +1083,37 @@ fn ready_card_moves_keep_the_original_launch_receipt() {
                 );
             }
             assert_eq!(f.record(), receipt);
-            assert_eq!(std::fs::read(path).unwrap(), bytes);
+            assert_eq!(std::fs::read(&path).unwrap(), bytes);
             assert_eq!(f.effects(), effects);
             assert_eq!(f.launches(), 1);
+            if !close_intent {
+                if another_tab {
+                    assert!(f.engine().project_caption().is_err());
+                    assert_eq!(f.effects(), effects);
+                } else {
+                    f.engine().project_caption().unwrap();
+                    let after = f.effects();
+                    let title = f
+                        .runner
+                        .world
+                        .lock()
+                        .unwrap()
+                        .observation
+                        .card
+                        .stream()
+                        .title
+                        .clone();
+                    assert_eq!(
+                        &after[effects.len()..],
+                        &[(
+                            "pane.rename".into(),
+                            json!({"pane_id":"relocated","label":title})
+                        )]
+                    );
+                }
+                assert_eq!(f.record(), receipt);
+                assert_eq!(std::fs::read(&path).unwrap(), bytes);
+            }
         }
     }
 }

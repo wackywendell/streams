@@ -12,6 +12,7 @@ mod fields;
 #[cfg(test)]
 mod native_tests;
 mod serve;
+mod settings;
 mod workspaces;
 
 use args::{
@@ -27,7 +28,6 @@ use std::{
     io::{self, Write},
     path::{Path, PathBuf},
     process::ExitCode,
-    sync::{Arc, Mutex},
 };
 use streams_temper::{
     agent::{self, ContextRequest},
@@ -56,12 +56,12 @@ pub(super) enum CliError {
     InvalidRef(String),
     #[error("{0}")]
     NativeContextChanged(String),
+    #[error("native projection requires an enrolled Stream and Session")]
+    NotEnrolled,
     #[error("{0}")]
     NotFound(String),
     #[error("{0}")]
     UnsupportedCommand(String),
-    #[error("Native session differs from the child session")]
-    SessionMismatch,
     #[error("{message}")]
     Ambiguous {
         message: String,
@@ -79,8 +79,8 @@ impl CliError {
             Self::InvalidRef(_) => "invalid-ref",
             Self::NativeContextChanged(_) => "native-context-changed",
             Self::NotFound(_) => "not-found",
+            Self::NotEnrolled => "not-enrolled",
             Self::UnsupportedCommand(_) => "unsupported-command",
-            Self::SessionMismatch => "session-mismatch",
             Self::Ambiguous { .. } => "ambiguous",
         };
         let mut error = json!({"kind":kind,"message":self.to_string()});
@@ -142,6 +142,7 @@ struct Output {
     plain: Option<String>,
     notices: Vec<String>,
     code: u8,
+    accepted_save: bool,
 }
 impl Output {
     fn value(value: Value) -> Self {
@@ -150,6 +151,7 @@ impl Output {
             plain: None,
             notices: Vec::new(),
             code: 0,
+            accepted_save: false,
         }
     }
     fn plain(value: Value, plain: String) -> Self {
@@ -158,6 +160,7 @@ impl Output {
             plain: Some(plain),
             notices: Vec::new(),
             code: 0,
+            accepted_save: false,
         }
     }
     fn receipt(value: Value, ok: bool) -> Self {
@@ -166,6 +169,7 @@ impl Output {
             plain: None,
             notices: Vec::new(),
             code: if ok { 0 } else { 2 },
+            accepted_save: false,
         }
     }
 }
@@ -174,21 +178,11 @@ impl Output {
 enum Input {
     #[default]
     Stdin,
-    Request(Arc<Mutex<String>>),
 }
 impl Input {
-    fn request(value: Option<Value>) -> Self {
-        let text = value.map(|value| value.to_string()).unwrap_or_default();
-        Self::Request(Arc::new(Mutex::new(text)))
-    }
     fn read(&self) -> Result<String> {
         match self {
             Self::Stdin => Ok(io::read_to_string(io::stdin())?),
-            Self::Request(input) => Ok(std::mem::take(
-                &mut *input
-                    .lock()
-                    .map_err(|error| CliError::message(error.to_string()))?,
-            )),
         }
     }
 }
@@ -519,14 +513,12 @@ impl App {
                 session_id,
                 plugin_root,
                 state_dir,
-                expect,
                 command,
             } => self.native_cards(
                 cards::Options {
                     session_id,
                     plugin_root,
                     state_dir,
-                    expect,
                 },
                 command,
             ),
@@ -634,7 +626,20 @@ impl App {
             let key = match action {
                 ConfigCommand::Get { key } => key,
                 ConfigCommand::Set { key, value } => {
-                    self.config.set(key, &value)?;
+                    match key {
+                        ConfigKey::StreamNaming | ConfigKey::SessionNaming => {
+                            let target = if key == ConfigKey::StreamNaming {
+                                streams_temper::child_protocol::TitleTarget::Stream
+                            } else {
+                                streams_temper::child_protocol::TitleTarget::Session
+                            };
+                            let mode = value.parse().map_err(|_| {
+                                CliError::message(format!("{key} must be automatic or manual"))
+                            })?;
+                            self.set_title_default(target, mode)?;
+                        }
+                        _ => self.config.set(key, &value)?,
+                    }
                     key
                 }
             };
@@ -1028,13 +1033,10 @@ impl App {
             json!({"checkouts":[],"document_locations":[]})
         };
         let native = if attest {
-            let (stream, session) = context
-                .stream
-                .as_ref()
-                .zip(context.session.as_ref())
-                .ok_or_else(|| {
-                    CliError::message("native projection requires an enrolled Stream and Session")
-                })?;
+            let session = context.session.as_ref().ok_or(CliError::NotEnrolled)?;
+            let stream = context.stream.as_ref().ok_or_else(|| {
+                CliError::message("enrolled native Session has no current Stream")
+            })?;
             let Some(NativeObservation::Pi(caller)) = observed.as_ref() else {
                 return Err(CliError::message(
                     "native projection attestation requires an exact Herdr caller",
@@ -1077,11 +1079,7 @@ impl App {
                 stream_id,
                 workspace_id,
             } => self.capture_inputs(stream_id.as_deref(), workspace_id.as_deref()),
-            AgentCommand::Apply => {
-                let opened = application::open(&self.config)?;
-                let source = self.input.read()?;
-                catalog::apply(opened.backend(), &source, &opened.source_id()?)
-            }
+            AgentCommand::Apply => self.apply_request(&self.input.read()?),
             AgentCommand::Context {
                 harness,
                 session_id,
@@ -1097,23 +1095,14 @@ impl App {
                     native_inventory,
                     30.0,
                 )?;
-                let mut value = serde_json::to_value(&observed.context)?;
-                value.as_object_mut().expect("context object").extend(
-                    observed
-                        .documents
-                        .as_object()
-                        .expect("document context object")
-                        .clone(),
-                );
-                if let Some(native) = observed.native {
-                    value["native"] = serde_json::to_value(native)?;
-                }
-                if let Some(inventory) = observed.native_inventory {
-                    value["native_inventory"] = serde_json::to_value(inventory)?;
-                }
-                Ok(Output::value(value))
+                observed.output(self.config.load()?.naming)
             }
         }
+    }
+
+    fn apply_request(&self, source: &str) -> Result<Output> {
+        let opened = application::open(&self.config)?;
+        catalog::apply(opened.backend(), source, &opened.source_id()?)
     }
 }
 
@@ -1122,6 +1111,25 @@ struct AgentObservation {
     documents: Value,
     native: Option<native::NativeCaller>,
     native_inventory: Option<native::NativeInventory>,
+}
+impl AgentObservation {
+    fn output(self, title_defaults: streams_temper::model::TitleDefaults) -> Result<Output> {
+        let mut value = serde_json::to_value(&self.context)?;
+        value["title_defaults"] = serde_json::to_value(title_defaults)?;
+        value.as_object_mut().expect("context object").extend(
+            self.documents
+                .as_object()
+                .expect("document context object")
+                .clone(),
+        );
+        if let Some(native) = self.native {
+            value["native"] = serde_json::to_value(native)?;
+        }
+        if let Some(inventory) = self.native_inventory {
+            value["native_inventory"] = serde_json::to_value(inventory)?;
+        }
+        Ok(Output::value(value))
+    }
 }
 
 fn mode(mode: &FrontendMode) -> &str {
@@ -1283,7 +1291,9 @@ fn finish(
             .expect("receipt object")
             .extend(extra);
     }
-    Ok(Output::receipt(payload, ok && completed))
+    let mut output = Output::receipt(payload, ok && completed);
+    output.accepted_save = saved.accepted();
+    Ok(output)
 }
 fn binding_data(binding: &runtime::DirectoryBinding) -> Value {
     json!({"cwd":binding.cwd,"checkout_id":binding.checkout.as_ref().map(|c|&c.id),"relative_cwd":binding.checkout.as_ref().map(|c|&c.relative_cwd),"repository_url":binding.checkout.as_ref().and_then(|c|c.repository_url.as_ref())})

@@ -157,7 +157,7 @@ impl NativeCardEngine {
                 || !matches!(record.phase(), NativePhase::Ready(_))
                 || record
                     .resources()
-                    .is_none_or(|resources| !tuple.matches_resources(resources))
+                    .is_none_or(|resources| tuple.terminal_id != resources.terminal_id())
             {
                 return Err(invalid("caption ready lifetime changed"));
             }

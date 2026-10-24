@@ -86,6 +86,21 @@ impl Owner {
         sample: Option<&Sample>,
         session: &str,
     ) -> Result<Self, String> {
+        self.confirm_terminal(target, sample)?;
+        let sample = sample.expect("confirmed caller read target");
+        if sample.session.as_deref() != Some(session) {
+            return Err("Owner pane no longer has the exact Pi session".into());
+        }
+        Ok(Self {
+            pane: sample.pane.clone(),
+            tab: sample.tab.clone(),
+            workspace: sample.workspace.clone(),
+            terminal: Some(sample.terminal.clone()),
+            refusal: None,
+        })
+    }
+
+    pub fn confirm_terminal(&self, target: &Self, sample: Option<&Sample>) -> Result<(), String> {
         if let Some(reason) = &self.refusal {
             return Err(reason.clone());
         }
@@ -94,9 +109,6 @@ impl Owner {
         )?;
         if sample.pane != target.pane {
             return Err("Fresh owner does not match the exact caller read target".into());
-        }
-        if sample.session.as_deref() != Some(session) {
-            return Err("Owner pane no longer has the exact Pi session".into());
         }
         if self
             .terminal
@@ -108,13 +120,7 @@ impl Owner {
         if sample.pane != self.pane && self.terminal.is_none() {
             return Err("Cannot adopt a moved pane without its previous terminal identity".into());
         }
-        Ok(Self {
-            pane: sample.pane.clone(),
-            tab: sample.tab.clone(),
-            workspace: sample.workspace.clone(),
-            terminal: Some(sample.terminal.clone()),
-            refusal: None,
-        })
+        Ok(())
     }
 
     pub fn apply(&self, env: &mut BTreeMap<String, String>) {

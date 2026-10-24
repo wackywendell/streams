@@ -1,141 +1,36 @@
-//! Protocol 1 transports concurrent CLI calls in-process. Stdout is exclusively frames.
+//! Typed transport with one FIFO for native work; read-only catalog work is independent.
+mod dispatch;
 mod files;
+mod native;
 mod scope;
 
-use scope::{Owner, Sample};
-use streams_temper::{
-    frontend::herdr::{
-        HerdrClient, HerdrNativeSnapshot,
-        events::{HerdrEvent, SubscriptionUpdate},
-    },
-    runtime::native::native_inventory_from_snapshot,
-};
-
+use super::{App, CliError, Output, PathBuf, Result};
+use scope::Owner;
 use std::{
-    collections::BTreeSet,
+    collections::{BTreeMap, BTreeSet},
     io::{BufRead, Write},
-    sync::{Arc, Mutex, mpsc},
+    sync::{
+        Arc, Mutex,
+        atomic::{AtomicBool, Ordering},
+        mpsc,
+    },
     thread,
+    time::{Duration, Instant},
+};
+use streams_temper::{
+    child_protocol::{
+        self, ClientFrame, Outcome, Request, RequestError, RequestId, ServerFrame, Version2,
+        Warnings,
+    },
+    frontend::herdr::events::SubscriptionUpdate,
 };
 
-use clap::Parser;
-use serde::{Deserialize, Serialize};
-
-use super::{
-    AgentCommand, CliError, Command, Input, NativeCommand, Output, PathBuf, Result, Value,
-};
-
-#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Deserialize, Serialize)]
-#[serde(try_from = "u64", into = "u64")]
-struct RequestId(u64);
-impl TryFrom<u64> for RequestId {
-    type Error = &'static str;
-
-    fn try_from(value: u64) -> std::result::Result<Self, Self::Error> {
-        if (1..=9_007_199_254_740_991).contains(&value) {
-            Ok(Self(value))
-        } else {
-            Err("request id must be a positive JavaScript safe integer")
-        }
-    }
-}
-impl From<RequestId> for u64 {
-    fn from(value: RequestId) -> Self {
-        value.0
-    }
-}
-
-#[derive(Deserialize)]
-#[serde(tag = "type", rename_all = "lowercase", deny_unknown_fields)]
-enum Incoming {
-    Request {
-        id: RequestId,
-        argv: Vec<String>,
-        #[serde(default, deserialize_with = "present_input")]
-        input: Option<Value>,
-    },
-    Cancel {
-        id: RequestId,
-    },
-}
-
-// JSON null is stdin text "null", not absent input (empty stdin).
-fn present_input<'de, D: serde::Deserializer<'de>>(
-    deserializer: D,
-) -> std::result::Result<Option<Value>, D::Error> {
-    Value::deserialize(deserializer).map(Some)
-}
-
-#[derive(Serialize)]
-#[serde(tag = "type", rename_all = "lowercase")]
-enum Outgoing<'a> {
-    Ready {
-        protocol: u8,
-    },
-    Response {
-        id: RequestId,
-        code: u8,
-        value: Value,
-        notices: Vec<String>,
-    },
-    Event {
-        #[serde(flatten)]
-        event: Event<'a>,
-    },
-}
-
-#[derive(Serialize)]
-#[serde(tag = "event", rename_all = "lowercase")]
-enum Event<'a> {
-    Scope {
-        #[serde(flatten)]
-        scope: &'a Scope,
-    },
-    Warning {
-        message: &'a str,
-    },
-}
-
-#[derive(PartialEq, Serialize)]
-struct Scope {
-    value: Value,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    reason: Option<String>,
-}
-impl From<&Result<Output>> for Scope {
-    fn from(outcome: &Result<Output>) -> Self {
-        match outcome {
-            Ok(output) if output.code == 0 && !output.value.is_null() => Self {
-                value: output.value.clone(),
-                reason: None,
-            },
-            Ok(output) => Self {
-                value: Value::Null,
-                reason: Some(
-                    output.value["error"]["message"]
-                        .as_str()
-                        .map(str::to_owned)
-                        .unwrap_or_else(|| {
-                            if output.notices.is_empty() {
-                                "No owner observation".into()
-                            } else {
-                                output.notices.join("\n")
-                            }
-                        }),
-                ),
-            },
-            Err(error) => Self {
-                value: Value::Null,
-                reason: Some(error.to_string()),
-            },
-        }
-    }
-}
-
-type Worker = thread::JoinHandle<Result<()>>;
+type SharedOutput = Arc<Mutex<std::io::Stdout>>;
 
 enum Wake {
-    InputFinished(Result<Vec<Worker>>),
+    Request(RequestId, Request),
+    Finished,
+    InputFinished,
     Failed(String),
     Files(u8, notify::Result<notify::Event>),
     Native(
@@ -144,645 +39,386 @@ enum Wake {
     ),
 }
 
-enum Trigger<'a> {
-    Refresh,
-    Native(&'a HerdrEvent),
-    NativeRecovery,
-    FileRecovery,
+enum NativeWork {
+    Request(RequestId, Request),
+    Files(u8, notify::Result<notify::Event>),
+    Native(
+        std::result::Result<SubscriptionUpdate, String>,
+        mpsc::SyncSender<Owner>,
+    ),
 }
 
-struct Context {
-    owner: Owner,
-    files: files::Files,
-}
+const SHUTDOWN_GRACE: Duration = Duration::from_secs(5);
 
 struct Server {
     session_id: String,
-    plugin_root: PathBuf,
-    output: Arc<Mutex<std::io::Stdout>>,
-    failures: mpsc::Sender<Wake>,
-    previous_scope: Mutex<Option<Scope>>,
-    app: Mutex<super::App>,
-    context: Mutex<Context>,
+    output: SharedOutput,
+    app: Mutex<Option<App>>,
+    active: Mutex<BTreeMap<u64, Arc<AtomicBool>>>,
+    sender: mpsc::Sender<Wake>,
 }
+
 impl Server {
-    fn send(&self, frame: &Outgoing<'_>) -> Result<()> {
-        send(&self.output, frame)
-    }
-
-    fn warning(&self, message: &str) -> Result<()> {
-        self.send(&Outgoing::Event {
-            event: Event::Warning { message },
-        })
-    }
-
-    // Serialize observation I/O, never stdout. Each matching trigger spends one snapshot.
-    fn recompute_scope(&self, trigger: Trigger<'_>) -> Result<Output> {
-        let resubscribed = matches!(trigger, Trigger::NativeRecovery);
-        let mut previous = self
-            .previous_scope
-            .lock()
-            .map_err(|e| CliError::message(e.to_string()))?;
-        let mut context = self
-            .context
-            .lock()
-            .map_err(|e| CliError::message(e.to_string()))?;
-        if let Some(reason) = &context.owner.refusal {
-            let outcome = Err(CliError::NativeContextChanged(reason.clone()));
-            self.emit_scope(&mut previous, Scope::from(&outcome))?;
-            return Ok(response_output(outcome));
-        }
-        let target = match trigger {
-            Trigger::Native(event) => match context.owner.event_target(event) {
-                Some(target) => target,
-                None => return Ok(Output::value(Value::Null)),
-            },
-            _ => context.owner.clone(),
-        };
-        let workspace = context.owner.workspace.clone();
-        context.files.prepare(Some(&workspace))?;
+    fn app(&self) -> Result<App> {
         let mut app = self
             .app
             .lock()
-            .map_err(|e| CliError::message(e.to_string()))?
-            .clone();
-        let input = (|| -> Result<_> {
-            let read = app
-                .herdr
-                .as_ref()
-                .ok_or_else(|| CliError::message("No Herdr owner context"))?;
-            let snapshot = HerdrNativeSnapshot::parse(
-                &read
-                    .client
-                    .session_snapshot()
-                    .map_err(|e| CliError::message(e.to_string()))?,
-            )
-            .map_err(|e| CliError::message(e.to_string()))?;
-            let inventory = native_inventory_from_snapshot(&read.client, snapshot.raw())?;
-            let samples: Vec<_> = inventory
-                .panes()
-                .iter()
-                .map(|pane| Sample {
-                    pane: pane.pane_id().into(),
-                    tab: pane.tab_id().into(),
-                    workspace: pane.workspace_id().into(),
-                    terminal: pane.terminal_id().into(),
-                    session: pane.native_session_id().map(str::to_owned),
-                })
-                .collect();
-            Ok((snapshot, samples))
-        })();
-        let input = match input {
-            Err(error)
-                if matches!(trigger, Trigger::NativeRecovery | Trigger::FileRecovery)
-                    && app.herdr.is_some() =>
-            {
-                return Err(error);
-            }
-            input => input,
-        };
-        let prepared = (|| -> Result<super::App> {
-            let (snapshot, samples) = match input {
-                Err(error) if context.owner.terminal.is_none() && app.herdr.is_some() => {
-                    let reason = error.to_string();
-                    self.refuse_origin(&mut context, &reason)?;
-                    return Err(CliError::NativeContextChanged(reason));
-                }
-                input => input?,
-            };
-            let read = app.herdr.as_ref().expect("validated native input");
-            let sample = if resubscribed && let Some(terminal) = &context.owner.terminal {
-                samples.iter().find(|sample| &sample.terminal == terminal)
-            } else {
-                samples.iter().find(|sample| sample.pane == target.pane)
-            };
-            let target = if resubscribed
-                && context.owner.terminal.is_some()
-                && let Some(sample) = sample
-            {
-                Owner {
-                    pane: sample.pane.clone(),
-                    tab: sample.tab.clone(),
-                    workspace: sample.workspace.clone(),
-                    terminal: context.owner.terminal.clone(),
-                    refusal: None,
-                }
-            } else {
-                target
-            };
-            let owner = match context.owner.confirm(&target, sample, &self.session_id) {
-                Ok(owner) => owner,
-                Err(reason) => {
-                    self.refuse_origin(&mut context, &reason)?;
-                    return Err(CliError::NativeContextChanged(reason));
-                }
-            };
-            let mut environment = app.environment.clone();
-            owner.apply(&mut environment);
-            let client = read
-                .client
-                .with_context(environment)
-                .map_err(|e| CliError::message(e.to_string()))?;
-            // Bind through the existing strict caller check, not an inventory match.
-            // The same check re-verifies the Pi identity after each continuity move.
-            if let Err(error) = streams_temper::runtime::native::verify_pi_caller_from_snapshot(
-                &client,
-                snapshot.raw(),
-                &self.session_id,
-            ) {
-                let reason = error.to_string();
-                self.refuse_origin(&mut context, &reason)?;
-                return Err(CliError::NativeContextChanged(reason));
-            }
-            owner.apply(&mut app.environment);
-            app.herdr.as_mut().expect("pinned Herdr read").terminal = owner.terminal.clone();
+            .map_err(|error| CliError::message(error.to_string()))?;
+        if app.is_none() {
+            *app = Some(App::new()?);
+        }
+        Ok(app.as_ref().expect("application initialized").clone())
+    }
+
+    fn remember_app(&self, app: Option<&App>) -> Result<()> {
+        if let Some(app) = app {
             *self
                 .app
                 .lock()
-                .map_err(|e| CliError::message(e.to_string()))? = app.clone();
-            context.owner = owner;
-            app.herdr.as_mut().expect("pinned Herdr read").snapshot = Some(snapshot);
-            app.input = Input::request(None);
-            Ok(app)
+                .map_err(|error| CliError::message(error.to_string()))? = Some(app.clone());
+        }
+        Ok(())
+    }
+
+    fn cancelled(&self, id: RequestId) -> Result<Arc<AtomicBool>> {
+        Ok(self
+            .active
+            .lock()
+            .map_err(|error| CliError::message(error.to_string()))?
+            .get(&id.get())
+            .expect("admitted request")
+            .clone())
+    }
+
+    fn respond(&self, id: RequestId, result: Result<Output>) -> Result<()> {
+        let outcome = match result {
+            Err(error) => Outcome::Error {
+                error: RequestError {
+                    kind: error.data()["error"]["kind"]
+                        .as_str()
+                        .expect("error kind")
+                        .into(),
+                    message: error.to_string(),
+                },
+            },
+            Ok(mut output) => {
+                let result = output.value.as_object().cloned().ok_or_else(|| {
+                    CliError::message("application operation returned a non-object result")
+                })?;
+                if output.accepted_save && (output.code != 0 || !output.notices.is_empty()) {
+                    if output.notices.is_empty() {
+                        output.notices.push("local save accepted; completion needs attention; inspect the saved result before retrying".into());
+                    }
+                    Outcome::SavedWithWarnings {
+                        result,
+                        warnings: Warnings::new(output.notices)?,
+                    }
+                } else {
+                    Outcome::Success { result }
+                }
+            }
+        };
+        send(&self.output, &ServerFrame::Response { id, outcome })?;
+        self.active
+            .lock()
+            .map_err(|error| CliError::message(error.to_string()))?
+            .remove(&id.get());
+        Ok(())
+    }
+
+    fn warning(&self, error: &CliError) -> Result<()> {
+        send(
+            &self.output,
+            &ServerFrame::Warning {
+                message: error.to_string(),
+            },
+        )
+    }
+
+    fn catalog(&self, request: Request, cancelled: &AtomicBool) -> Result<Output> {
+        if cancelled.load(Ordering::Acquire) {
+            return Err(CliError::message("request cancelled before dispatch"));
+        }
+        // Replay has no application/config/catalog/native capability, even in a poisoned environment.
+        if let Request::Preview {
+            catalog,
+            action,
+            request,
+        } = request
+        {
+            return dispatch::preview(catalog, action, request);
+        }
+        dispatch::execute(&self.app()?, &self.session_id, request)
+    }
+
+    fn native_request(
+        &self,
+        controller: &mut native::Controller,
+        id: RequestId,
+        request: Request,
+    ) -> Result<()> {
+        let cancelled = self.cancelled(id)?;
+        let outcome = (|| {
+            if cancelled.load(Ordering::Acquire) {
+                return Err(CliError::message("request cancelled before dispatch"));
+            }
+            let app = self.app()?;
+            match request {
+                Request::SessionStarted {}
+                | Request::Attach {}
+                | Request::OpenCard {}
+                | Request::CloseCard {} => controller.request(app, request, cancelled),
+                request => {
+                    let saved = matches!(request, Request::Apply { .. } | Request::Enroll { .. });
+                    let app = controller.app.as_ref().unwrap_or(&app);
+                    let mut output = dispatch::execute(app, &self.session_id, request)?;
+                    if saved && (output.code == 0 || output.accepted_save) {
+                        output.accepted_save = true;
+                        if let Err(error) = controller.saved(self.app()?, cancelled) {
+                            output.notices.push(error.to_string());
+                        }
+                    }
+                    Ok(output)
+                }
+            }
         })();
-        let outcome = match prepared {
-            Ok(app) => {
-                if context.owner.workspace != workspace {
-                    let workspace = context.owner.workspace.clone();
-                    // Watch-registration failure is fatal, not a null native observation.
-                    context.files.prepare(Some(&workspace))?;
-                }
-                app.execute(self.observe_command())
-            }
-            Err(error) => Err(error),
-        };
-        self.emit_scope(&mut previous, Scope::from(&outcome))?;
-        Ok(response_output(outcome))
-    }
-
-    fn refuse_origin(&self, context: &mut Context, reason: &str) -> Result<()> {
-        context.owner.refusal = Some(reason.into());
-        let mut app = self
-            .app
-            .lock()
-            .map_err(|e| CliError::message(e.to_string()))?;
-        app.herdr.as_mut().expect("native caller refusal").refusal = Some(reason.into());
-        Ok(())
-    }
-
-    fn observe_command(&self) -> Command {
-        Command::Native {
-            session_id: Some(self.session_id.clone()),
-            plugin_root: Some(self.plugin_root.clone()),
-            state_dir: None,
-            expect: None,
-            command: NativeCommand::Observe,
-        }
-    }
-
-    fn execute(&self, command: Command, input: Input) -> Result<Output> {
-        let mut app = self
-            .app
-            .lock()
-            .map_err(|e| CliError::message(e.to_string()))?
-            .clone();
-        if matches!(command, Command::Native { .. }) && app.herdr.is_none() {
-            return Err(CliError::message("No Herdr owner context"));
-        }
-        app.input = input;
-        app.execute(command)
-    }
-
-    fn emit_scope(&self, previous: &mut Option<Scope>, scope: Scope) -> Result<()> {
-        if previous.as_ref() != Some(&scope) {
-            self.send(&Outgoing::Event {
-                event: Event::Scope { scope: &scope },
-            })?;
-            *previous = Some(scope);
-        }
-        Ok(())
-    }
-
-    fn finish_worker(&self, worker: thread::JoinHandle<Result<()>>) -> Result<()> {
-        worker.join().unwrap_or_else(|_| {
-            let message = "Streams request worker panicked";
-            let _ = self.warning(message);
-            Err(CliError::message(message))
-        })
-    }
-
-    fn prepare(&self, command: &mut Command) -> Result<()> {
-        match command {
-            Command::Agent { .. }
-            | Command::List { .. }
-            | Command::Sync { .. }
-            | Command::Workspace { .. } => Ok(()),
-            Command::Native {
-                session_id,
-                plugin_root,
-                command:
-                    NativeCommand::Observe
-                    | NativeCommand::Open { .. }
-                    | NativeCommand::Close
-                    | NativeCommand::Project
-                    | NativeCommand::Capture,
-                ..
-            } => {
-                if session_id.as_ref().is_some_and(|id| id != &self.session_id) {
-                    return Err(CliError::SessionMismatch);
-                }
-                *session_id = Some(self.session_id.clone());
-                if plugin_root.is_none() {
-                    *plugin_root = Some(self.plugin_root.clone());
-                }
-                Ok(())
-            }
-            _ => Err(CliError::UnsupportedCommand(
-                "Command is not supported by the child".into(),
-            )),
-        }
-    }
-
-    fn request(&self, id: RequestId, argv: Vec<String>, input: Option<Value>) -> Result<()> {
-        let parsed = allow_command(&argv).and_then(|()| {
-            super::args::Cli::try_parse_from(std::iter::once("streams".to_owned()).chain(argv))
-                .map_err(|error| CliError::message(error.to_string()))
-        });
-        let command = parsed.and_then(|mut parsed| {
-            self.prepare(&mut parsed.command)?;
-            Ok(parsed.command)
-        });
-        let command = match command {
-            Ok(command) => command,
-            Err(error) => return self.respond(id, Err(error)),
-        };
-        let native = matches!(command, Command::Native { .. });
-        let save = matches!(
-            command,
-            Command::Agent {
-                command: AgentCommand::Enroll | AgentCommand::Apply
-            }
-        );
-        let unfenced_observe = matches!(
-            &command,
-            Command::Native {
-                command: NativeCommand::Observe,
-                expect: None,
-                ..
-            }
-        );
-        let standard_observe = matches!(
-            &command,
-            Command::Native {
-                command: NativeCommand::Observe,
-                plugin_root: Some(root),
-                state_dir: None,
-                ..
-            } if root == &self.plugin_root
-        );
-        if standard_observe && unfenced_observe {
-            // Default observations share owner confirmation, watches and refusal state.
-            let output = self.recompute_scope(Trigger::Refresh)?;
-            return self.respond(id, Ok(output));
-        }
-        // Serialize successful fenced observations with refreshes, never stdout.
-        let previous = if standard_observe {
-            Some(
-                self.previous_scope
-                    .lock()
-                    .map_err(|error| CliError::message(error.to_string()))?,
-            )
-        } else {
-            None
-        };
-        let outcome = self.execute(command, Input::request(input));
-        let observation = previous.as_ref().and_then(|_| {
-            outcome
-                .as_ref()
-                .is_ok_and(|output| output.code == 0)
-                .then(|| Scope::from(&outcome))
-        });
-        let refresh_scope = native || (save && outcome.is_ok());
-        if let Some(mut previous) = previous {
-            if let Some(scope) = observation {
-                self.emit_scope(&mut previous, scope)?;
-                return self.respond(id, outcome);
-            }
-            drop(previous);
-        }
-        if refresh_scope {
-            // Complete the caused scope change before acknowledging request completion.
-            self.recompute_scope(Trigger::Refresh)?;
-        }
+        self.remember_app(controller.app.as_ref())?;
         self.respond(id, outcome)
     }
 
-    fn respond(&self, id: RequestId, outcome: Result<Output>) -> Result<()> {
-        let output = response_output(outcome);
-        self.send(&Outgoing::Response {
-            id,
-            code: output.code,
-            value: output.value,
-            notices: output.notices,
-        })
+    fn cancel_all(&self) {
+        if let Ok(active) = self.active.lock() {
+            for flag in active.values() {
+                flag.store(true, Ordering::Release);
+            }
+        }
     }
 }
 
-// Check command tokens before clap: forbidden commands must not leak usage
-// errors (or successful help exits) from the full one-shot CLI grammar.
-fn allow_command(argv: &[String]) -> Result<()> {
-    let mut tokens = argv
-        .iter()
-        .map(String::as_str)
-        .filter(|arg| *arg != "--json");
-    let supported = !argv
-        .iter()
-        .any(|arg| matches!(arg.as_str(), "--help" | "-h"))
-        && match tokens.next() {
-            Some("list" | "sync") => true,
-            Some("agent") => matches!(
-                tokens.next(),
-                Some("context" | "capture-inputs" | "preview" | "enroll" | "apply")
-            ),
-            Some("workspace") => matches!(tokens.next(), Some("capture")),
-            Some("native") => loop {
-                match tokens.next() {
-                    Some("--session-id" | "--plugin-root" | "--state-dir" | "--expect") => {
-                        tokens.next();
-                    }
-                    Some(arg)
-                        if [
-                            "--session-id=",
-                            "--plugin-root=",
-                            "--state-dir=",
-                            "--expect=",
-                        ]
-                        .iter()
-                        .any(|prefix| arg.starts_with(prefix)) => {}
-                    command => {
-                        break matches!(
-                            command,
-                            Some("observe" | "open" | "close" | "project" | "capture")
-                        );
-                    }
-                }
-            },
-            _ => false,
-        };
-    if supported {
-        Ok(())
-    } else {
-        Err(CliError::UnsupportedCommand(
-            "Command is not supported by the child".into(),
-        ))
-    }
+fn native_queue(request: &Request) -> bool {
+    matches!(
+        request,
+        Request::SessionStarted {}
+            | Request::Attach {}
+            | Request::OpenCard {}
+            | Request::CloseCard {}
+            | Request::Apply { .. }
+            | Request::Enroll { .. }
+            | Request::CaptureWorkspace { .. }
+    )
 }
 
-fn response_output(outcome: Result<Output>) -> Output {
-    outcome.unwrap_or_else(|error| {
-        let mut output = Output::value(error.data());
-        output.code = 1;
-        output
-    })
-}
-
-fn send(output: &Mutex<std::io::Stdout>, frame: &Outgoing<'_>) -> Result<()> {
-    let mut bytes = serde_json::to_vec(frame)?;
-    bytes.push(b'\n');
+fn send(output: &SharedOutput, frame: &ServerFrame) -> Result<()> {
     let mut output = output
         .lock()
-        .map_err(|e| CliError::message(e.to_string()))?;
-    output.write_all(&bytes)?;
+        .map_err(|error| CliError::message(error.to_string()))?;
+    serde_json::to_writer(&mut *output, frame)?;
+    output.write_all(b"\n")?;
     output.flush()?;
     Ok(())
 }
 
-fn read_input(sender: mpsc::Sender<Wake>, server: Arc<Server>) {
-    let mut input = std::io::stdin().lock();
-    let mut frame = Vec::new();
-    let mut workers = Vec::new();
-    let mut seen = BTreeSet::new();
-    let result = (|| -> Result<Vec<Worker>> {
-        loop {
-            frame.clear();
-            let message = (|| -> Result<Option<Incoming>> {
-                if input.read_until(b'\n', &mut frame)? == 0 {
-                    return Ok(None);
-                }
-                if !frame.ends_with(b"\n") {
-                    return Err(CliError::message("Unterminated protocol frame"));
-                }
-                // Reject duplicate object keys, including private request input.
-                let value = streams_temper::codec::load_json(
-                    std::str::from_utf8(&frame).map_err(|e| CliError::message(e.to_string()))?,
-                )?;
-                Ok(Some(serde_json::from_value(value)?))
-            })();
-            // Intake is independent of unsolicited observation I/O on the main lane.
-            while let Some(index) = workers.iter().position(thread::JoinHandle::is_finished) {
-                server.finish_worker(workers.swap_remove(index))?;
-            }
-            match message? {
-                None => return Ok(workers),
-                Some(Incoming::Request { id, argv, input }) => {
-                    if !seen.insert(id) {
-                        return Err(CliError::message("Duplicate request id"));
-                    }
-                    let server = Arc::clone(&server);
-                    workers.push(thread::spawn(move || {
-                        let result = server.request(id, argv, input);
-                        if let Err(error) = &result {
-                            let _ = server.warning(&error.to_string());
-                            let _ = server.failures.send(Wake::Failed(error.to_string()));
-                        }
-                        result
-                    }));
-                }
-                Some(Incoming::Cancel { id }) => {
-                    let _ = id;
-                }
-            }
-        }
-    })();
-    let _ = sender.send(Wake::InputFinished(result));
-}
-
-pub(super) fn run(session_id: String, plugin_root: PathBuf) -> Result<()> {
-    let output = Arc::new(Mutex::new(std::io::stdout()));
-    send(&output, &Outgoing::Ready { protocol: 1 })?;
-    let (sender, receiver) = mpsc::channel();
-    let setup = (|| -> Result<_> {
-        let mut app = super::App::new()?;
-        let owner = Owner::inherited(&app.environment);
-        let subscription = if app.environment.get("HERDR_ENV").map(String::as_str) == Some("1") {
-            let config = streams_temper::runtime::native_cards::NativeCardsConfig::load(
-                &app.environment,
-                &app.cwd,
-                &plugin_root,
-            )?;
-            let client = HerdrClient::connect(app.environment.clone(), config.timeout_seconds())
-                .map_err(|e| CliError::message(e.to_string()))?;
-            let subscription = client
-                .socket()
-                .subscribe(owner.filter())
-                .map_err(|e| CliError::message(e.to_string()))?;
-            app.herdr = Some(super::HerdrRead {
-                client,
-                snapshot: None,
-                terminal: None,
-                refusal: None,
-            });
-            Some(subscription)
-        } else {
-            None
-        };
-        let mut files = files::Files::new(&app, &session_id, sender.clone())?;
-        files.discover(&app, &session_id)?;
-        Ok((app, Context { owner, files }, subscription))
-    })();
-    let (app, context, subscription) = match setup {
-        Ok(setup) => setup,
-        Err(error) => {
-            send(
-                &output,
-                &Outgoing::Event {
-                    event: Event::Warning {
-                        message: &error.to_string(),
-                    },
-                },
-            )?;
-            return Err(error);
-        }
-    };
-    let server = Arc::new(Server {
-        session_id,
-        plugin_root,
-        output,
-        failures: sender.clone(),
-        previous_scope: Mutex::new(None),
-        app: Mutex::new(app),
-        context: Mutex::new(context),
-    });
-    if let Err(error) = server.recompute_scope(Trigger::Refresh) {
-        server.warning(&error.to_string())?;
-        return Err(error);
-    }
-    let cancellation = subscription
-        .as_ref()
-        .map(|subscription| subscription.cancellation_handle());
-    let native = subscription.map(|mut subscription| {
-        let sender = sender.clone();
-        let filter = server.context.lock().expect("serve context").owner.filter();
-        subscription.set_watched_ids(filter.pane_ids, filter.tab_ids, filter.workspace_ids);
-        thread::spawn(move || {
-            loop {
-                let update = subscription.receive().map_err(|e| e.to_string());
-                let failed = update.is_err();
-                let (reply, owner) = mpsc::sync_channel(0);
-                if sender.send(Wake::Native(update, reply)).is_err() || failed {
-                    break;
-                }
-                let Ok(owner) = owner.recv() else {
-                    break;
-                };
-                let filter = owner.filter();
-                subscription.set_watched_ids(filter.pane_ids, filter.tab_ids, filter.workspace_ids);
-            }
-        })
-    });
-    let input_server = Arc::clone(&server);
-    thread::spawn(move || read_input(sender, input_server));
-    let mut workers = Vec::new();
-    let mut subscription_error = false;
+fn read_input(server: Arc<Server>) {
     let result = (|| -> Result<()> {
-        for wake in &receiver {
-            match wake {
-                Wake::Failed(message) => {
-                    subscription_error = false;
-                    return Err(CliError::message(message));
-                }
-                Wake::InputFinished(completed) => {
-                    workers = completed?;
-                    break;
-                }
-                Wake::Native(update, reply) => {
-                    subscription_error = true;
-                    match update.map_err(CliError::message)? {
-                        SubscriptionUpdate::Event(event) => {
-                            server.recompute_scope(Trigger::Native(&event))?;
-                        }
-                        SubscriptionUpdate::Resubscribed => {
-                            server.recompute_scope(Trigger::NativeRecovery)?;
-                        }
-                    }
-                    let owner = server
-                        .context
+        let mut seen = BTreeSet::new();
+        let stdin = std::io::stdin();
+        let mut input = stdin.lock();
+        let mut line = String::new();
+        loop {
+            line.clear();
+            if input.read_line(&mut line)? == 0 {
+                break;
+            }
+            if !line.ends_with('\n') {
+                return Err(CliError::message("unterminated protocol frame"));
+            }
+            let frame = child_protocol::decode_client(&line)?;
+            match frame {
+                ClientFrame::Cancel { id } => {
+                    if let Some(flag) = server
+                        .active
                         .lock()
-                        .map_err(|e| CliError::message(e.to_string()))?
-                        .owner
-                        .clone();
-                    let _ = reply.send(owner);
-                    subscription_error = false;
+                        .map_err(|error| CliError::message(error.to_string()))?
+                        .get(&id.get())
+                    {
+                        flag.store(true, Ordering::Release);
+                    }
                 }
-                Wake::Files(generation, event) => {
-                    subscription_error = true;
-                    let mut context = server
-                        .context
+                ClientFrame::Request { id, request } => {
+                    if !seen.insert(id.get()) {
+                        return Err(CliError::message("request ID reused"));
+                    }
+                    server
+                        .active
                         .lock()
-                        .map_err(|e| CliError::message(e.to_string()))?;
-                    if !context.files.current(generation) {
-                        subscription_error = false;
-                        continue;
+                        .map_err(|error| CliError::message(error.to_string()))?
+                        .insert(id.get(), Arc::new(AtomicBool::new(false)));
+                    if native_queue(&request) {
+                        server
+                            .sender
+                            .send(Wake::Request(id, request))
+                            .map_err(|error| CliError::message(error.to_string()))?;
+                    } else {
+                        let worker = Arc::clone(&server);
+                        thread::spawn(move || {
+                            let completed =
+                                std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+                                    let flag = worker.cancelled(id)?;
+                                    let result = worker.catalog(request, &flag);
+                                    worker.respond(id, result)
+                                }));
+                            let wake = match completed {
+                                Ok(Ok(())) => Wake::Finished,
+                                Ok(Err(error)) => Wake::Failed(error.to_string()),
+                                Err(_) => Wake::Failed("Streams catalog worker panicked".into()),
+                            };
+                            let _ = worker.sender.send(wake);
+                        });
                     }
-                    let recovered = event.as_ref().map_or(true, |event| event.need_rescan());
-                    let relevant = recovered
-                        || event
-                            .as_ref()
-                            .is_ok_and(|event| context.files.relevant(event));
-                    if !relevant {
-                        subscription_error = false;
-                        continue;
-                    }
-                    if recovered {
-                        context.files.recover()?;
-                    }
-                    let workspace = context.owner.workspace.clone();
-                    let changed = context.files.prepare(Some(&workspace))?;
-                    drop(context);
-                    if recovered || changed {
-                        server.recompute_scope(if recovered {
-                            Trigger::FileRecovery
-                        } else {
-                            Trigger::Refresh
-                        })?;
-                    }
-                    subscription_error = false;
                 }
             }
         }
         Ok(())
     })();
-    // Drop queued reply handles before joining a subscriber waiting for routing acknowledgement.
+    let wake = match result {
+        Ok(()) => Wake::InputFinished,
+        Err(error) => Wake::Failed(error.to_string()),
+    };
+    let _ = server.sender.send(wake);
+}
+
+fn native_worker(
+    server: Arc<Server>,
+    receiver: mpsc::Receiver<NativeWork>,
+    stopping: Arc<AtomicBool>,
+    plugin_root: PathBuf,
+) -> Result<()> {
+    let mut controller = native::Controller::new(
+        server.session_id.clone(),
+        plugin_root,
+        server.sender.clone(),
+        server.output.clone(),
+    );
+    let result = (|| -> Result<()> {
+        for work in &receiver {
+            if stopping.load(Ordering::Acquire) {
+                break;
+            }
+            match work {
+                NativeWork::Request(id, request) => {
+                    server.native_request(&mut controller, id, request)?
+                }
+                NativeWork::Native(update, reply) => {
+                    let result = controller.update(update);
+                    let _ = reply.send(controller.owner());
+                    server.remember_app(controller.app.as_ref())?;
+                    if let Err(error) = result {
+                        server.warning(&error)?;
+                    }
+                }
+                NativeWork::Files(generation, event) => {
+                    if let Err(error) = controller.file_event(generation, event) {
+                        server.warning(&error)?;
+                    }
+                    server.remember_app(controller.app.as_ref())?;
+                }
+            }
+            let _ = server.sender.send(Wake::Finished);
+        }
+        Ok(())
+    })();
+    // Release routing acknowledgements before joining the subscription reader.
     drop(receiver);
-    if let Some(cancellation) = cancellation {
-        let _ = cancellation.cancel();
-    }
-    if let Some(native) = native {
-        let _ = native.join();
-    }
-    if let Err(error) = result {
-        if subscription_error {
-            server.warning(&error.to_string())?;
-        }
-        return Err(error);
-    }
-    // Only clean EOF drains requests. Their responses fence their own native work.
-    let mut result = Ok(());
-    for worker in workers {
-        let completed = server.finish_worker(worker);
-        if result.is_ok() {
-            result = completed;
-        }
-    }
+    controller.shutdown();
     result
+}
+
+pub(super) fn run(session_id: String, plugin_root: PathBuf) -> Result<()> {
+    let output = Arc::new(Mutex::new(std::io::stdout()));
+    send(&output, &ServerFrame::Ready { protocol: Version2 })?;
+    let (sender, receiver) = mpsc::channel();
+    let server = Arc::new(Server {
+        session_id,
+        output,
+        app: Mutex::new(None),
+        active: Mutex::new(BTreeMap::new()),
+        sender,
+    });
+    let (native_sender, native_receiver) = mpsc::channel();
+    let (done, completed) = mpsc::sync_channel(1);
+    let stopping = Arc::new(AtomicBool::new(false));
+    let native = {
+        let server = server.clone();
+        let stopping = stopping.clone();
+        thread::spawn(move || {
+            let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+                native_worker(server.clone(), native_receiver, stopping, plugin_root)
+            }))
+            .unwrap_or_else(|_| Err(CliError::message("Streams native worker panicked")));
+            if let Err(error) = &result {
+                let _ = server.sender.send(Wake::Failed(error.to_string()));
+            }
+            let _ = done.send(result);
+        })
+    };
+    let input = server.clone();
+    thread::spawn(move || read_input(input));
+    let mut deadline: Option<Instant> = None;
+    let result = (|| -> Result<()> {
+        loop {
+            if deadline.is_some()
+                && server
+                    .active
+                    .lock()
+                    .map_err(|error| CliError::message(error.to_string()))?
+                    .is_empty()
+            {
+                break;
+            }
+            let wake = match deadline {
+                Some(deadline) => receiver
+                    .recv_timeout(deadline.saturating_duration_since(Instant::now()))
+                    .map_err(|_| {
+                        CliError::message(
+                            "child shutdown timed out; unfinished operations remain uncertain",
+                        )
+                    })?,
+                None => receiver
+                    .recv()
+                    .map_err(|error| CliError::message(error.to_string()))?,
+            };
+            let work = match wake {
+                Wake::Request(id, request) => Some(NativeWork::Request(id, request)),
+                Wake::Native(update, reply) => Some(NativeWork::Native(update, reply)),
+                Wake::Files(generation, event) => Some(NativeWork::Files(generation, event)),
+                Wake::Finished => None,
+                Wake::InputFinished => {
+                    deadline = Some(Instant::now() + SHUTDOWN_GRACE);
+                    None
+                }
+                Wake::Failed(error) => return Err(CliError::message(error)),
+            };
+            if let Some(work) = work {
+                native_sender
+                    .send(work)
+                    .map_err(|error| CliError::message(error.to_string()))?;
+            }
+        }
+        Ok(())
+    })();
+    server.cancel_all();
+    stopping.store(true, Ordering::Release);
+    drop(native_sender);
+    drop(receiver);
+    let deadline = deadline.unwrap_or_else(|| Instant::now() + SHUTDOWN_GRACE);
+    let joined = completed.recv_timeout(deadline.saturating_duration_since(Instant::now()));
+    match joined {
+        Ok(native_result) => {
+            let _ = native.join();
+            result.and(native_result)
+        }
+        Err(_) => result.and(Err(CliError::message(
+            "native shutdown timed out; existing uncertainty fences retained",
+        ))),
+    }
 }

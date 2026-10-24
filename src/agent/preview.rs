@@ -48,6 +48,8 @@ struct ContextWire {
     _checkouts: Option<Value>,
     #[serde(default, rename = "native")]
     _native: Option<Value>,
+    #[serde(default, rename = "title_defaults")]
+    _title_defaults: Option<crate::model::TitleDefaults>,
 }
 
 #[derive(Deserialize)]
