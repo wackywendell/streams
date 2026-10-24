@@ -15,6 +15,47 @@ fn shared_wire_fixtures_round_trip_without_cli_translation() {
 }
 
 #[test]
+fn title_defaults_have_closed_targets_and_resolved_modes_without_native_proofs() {
+    for target in ["stream", "session"] {
+        for mode in ["automatic", "manual"] {
+            let request = json!({"kind":"set_title_default","target":target,"mode":mode});
+            let frame = json!({"type":"request","id":1,"request":request});
+            assert_eq!(
+                serde_json::to_value(decode_client(&frame.to_string()).unwrap()).unwrap(),
+                frame
+            );
+        }
+    }
+    for (field, invalid) in [
+        ("target", json!("host")),
+        ("target", json!("Stream")),
+        ("target", json!(null)),
+        ("target", json!({"stream":null})),
+        ("mode", json!("inherit")),
+        ("mode", json!("Automatic")),
+        ("mode", json!(null)),
+        ("mode", json!(false)),
+        ("mode", json!({"automatic":null})),
+        ("native", json!({})),
+        ("catalog_root", json!("/other")),
+        ("argv", json!(["config", "set"])),
+    ] {
+        let mut request = json!({"kind":"set_title_default","target":"session","mode":"manual"});
+        request[field] = invalid;
+        assert!(
+            decode_client(&json!({"type":"request","id":1,"request":request}).to_string()).is_err()
+        );
+    }
+    for missing in ["target", "mode"] {
+        let mut request = json!({"kind":"set_title_default","target":"session","mode":"manual"});
+        request.as_object_mut().unwrap().remove(missing);
+        assert!(
+            decode_client(&json!({"type":"request","id":1,"request":request}).to_string()).is_err()
+        );
+    }
+}
+
+#[test]
 fn request_ids_are_positive_javascript_safe_integers() {
     for id in [1, 9_007_199_254_740_991] {
         assert_eq!(RequestId::new(id).unwrap().get(), id);

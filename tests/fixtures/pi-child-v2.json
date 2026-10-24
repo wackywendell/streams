@@ -17,6 +17,10 @@
     {"type":"request","id":15,"request":{"kind":"capture_workspace","stream_id":"effort"}},
     {"type":"request","id":16,"request":{"kind":"sync","event":"start"}},
     {"type":"request","id":17,"request":{"kind":"sync","event":"shutdown"}},
+    {"type":"request","id":18,"request":{"kind":"set_title_default","target":"stream","mode":"automatic"}},
+    {"type":"request","id":19,"request":{"kind":"set_title_default","target":"stream","mode":"manual"}},
+    {"type":"request","id":20,"request":{"kind":"set_title_default","target":"session","mode":"automatic"}},
+    {"type":"request","id":21,"request":{"kind":"set_title_default","target":"session","mode":"manual"}},
     {"type":"cancel","id":9007199254740991}
   ],
   "server": [
@@ -34,6 +38,8 @@
     {"type":"response","id":4,"outcome":{"status":"success","result":{"closed":true}}},
     {"type":"response","id":13,"outcome":{"status":"saved_with_warnings","result":{"operation_id":"save-1"},"warnings":["Title saved; native projection failed"]}},
     {"type":"response","id":3,"outcome":{"status":"error","error":{"kind":"runtime","message":"Caller origin is not proven"}}},
+    {"type":"response","id":19,"outcome":{"status":"success","result":{"title_defaults":{"stream":"manual","session":"automatic"}}}},
+    {"type":"response","id":21,"outcome":{"status":"success","result":{"title_defaults":{"stream":"automatic","session":"manual"}}}},
     {"type":"view","view":{"desired_pi_name":"Café 会話"}},
     {"type":"view","view":{"desired_pi_name":null}},
     {"type":"warning","message":"Card follow could not enter a zoomed tab"}

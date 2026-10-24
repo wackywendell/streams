@@ -57,6 +57,11 @@ Capture-input selectors explicitly distinguish inventory, Stream and workspace.
 Preview carries its catalog, action and request as separate fields. Enrollment
 and apply carry their domain request object, not serialized stdin. Workspace
 capture names its target Stream. Sync carries the domain scheduling event.
+`set_title_default` accepts only a `stream` or `session` target and an
+`automatic` or `manual` mode. It saves the corresponding global naming setting
+and returns `{"title_defaults":{"stream":"...","session":"..."}}`.
+Context includes current title defaults. This request does not generate a title,
+project a frontend name or permit changing the live child's catalog root.
 
 A response has an ID and an outcome: `success`, `saved_with_warnings` or `error`.
 Result payloads are objects. Successful catalog results retain their existing

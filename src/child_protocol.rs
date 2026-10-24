@@ -6,7 +6,11 @@
 use serde::{Deserialize, Serialize};
 use serde_json::{Map, Value};
 
-use crate::{codec, model::ValidationError, sync::policy::SyncEvent};
+use crate::{
+    codec,
+    model::{NamingMode, ValidationError},
+    sync::policy::SyncEvent,
+};
 
 pub type DomainObject = Map<String, Value>;
 
@@ -127,12 +131,24 @@ pub enum Request {
         request: DomainObject,
     },
     ListStreams {},
+    SetTitleDefault {
+        target: TitleTarget,
+        mode: NamingMode,
+    },
     CaptureWorkspace {
         stream_id: String,
     },
     Sync {
         event: SyncEvent,
     },
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, strum::EnumString, strum::VariantNames)]
+#[serde(rename_all = "snake_case")]
+#[strum(serialize_all = "snake_case")]
+pub enum TitleTarget {
+    Stream,
+    Session,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -151,7 +167,7 @@ pub enum PreviewAction {
     Enroll,
 }
 
-crate::codec::deserialize_string_enum!(PreviewAction);
+crate::codec::deserialize_string_enum!(PreviewAction, TitleTarget);
 
 /// A desired label for the bound Pi session, not a native scope or work selector.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
