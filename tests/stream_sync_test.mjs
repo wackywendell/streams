@@ -125,12 +125,12 @@ test('shutdown suppresses late accepted report receipts without another inferenc
  await new Promise(resolve=>setImmediate(resolve));assert.equal(models,1);assert.deepEqual(f.warnings,[]);assert.deepEqual(f.entries,[]);
 });
 
-test('native capture forwards cancellation and never starts a pre-aborted request', async()=>{
+test('explicit debug capture inputs forward cancellation and never start a pre-aborted request', async()=>{
  const calls=[], controller=new AbortController();
  const cli=new StreamCli('/tmp',async(...args)=>{calls.push(args);return {status:'success',result:{}};});
- await cli.captureArrangement('effort',controller.signal);
- assert.deepEqual(calls[0],[{kind:'capture_workspace',stream_id:'effort'},{timeout:10000,signal:controller.signal}]);
- controller.abort();await assert.rejects(cli.captureArrangement('effort',controller.signal),/abort/i);
+ await cli.captureInputs({kind:'stream',id:'effort'},controller.signal);
+ assert.deepEqual(calls[0],[{kind:'capture_inputs',target:{kind:'stream',stream_id:'effort'}},{timeout:10000,signal:controller.signal}]);
+ controller.abort();await assert.rejects(cli.captureInputs({kind:'stream',id:'effort'},controller.signal),/abort/i);
  assert.equal(calls.length,1);
 });
 

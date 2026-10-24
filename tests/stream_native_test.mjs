@@ -57,6 +57,14 @@ test('startup failures warn; explicit errors preserve their kind and are never r
  await f.controller.start();assert.match(f.notices[0],/Origin not proved/);
  await assert.rejects(f.controller.close(),error=>error.kind==='native-context-changed');await turn();assert.deepEqual(f.requests.map(value=>value.kind),['session_started','close_card']);
 });
+test('failed startup before adapter assignment reports a lifecycle error rather than dereferencing undefined',async t=>{
+ environment(t);const f=fixture(t);process.env.HERDR_PANE_ID='changed';await f.controller.start();process.env.HERDR_PANE_ID='pane';
+ await assert.rejects(f.controller.open(),/startup did not initialize/);assert.deepEqual(f.requests,[]);
+});
+test('an explicit open rejects automatic-only suppression instead of reporting a pane open',async t=>{
+ environment(t);const f=fixture(t,{run:async()=>({status:'success',result:{native:'active',display:'suppressed'}})});
+ await f.controller.start();await assert.rejects(f.controller.open(),/display acknowledgement/);assert.equal(f.requests.length,2);
+});
 test('the child, not TypeScript, serializes explicit actions',async t=>{
  environment(t);let release;const f=fixture(t,{run:async request=>{
   if(request.kind==='session_started')return {status:'success',result:{native:'active',display:'suppressed'}};

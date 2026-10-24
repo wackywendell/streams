@@ -68,7 +68,7 @@ export class StreamsChild {
      if (!(native.native === "active" && !Object.hasOwn(native, "display") || native.native === "inactive" && ["outside_herdr", "not_enrolled"].includes(native.reason as string))) {
       fail(Error("Invalid Streams child attach acknowledgement"));return;
      }
-     if (outcome.status === "saved_with_warnings") for (const warning of outcome.warnings) this.options.warning(warning);
+     if (!this.stopped && outcome.status === "saved_with_warnings") for (const warning of outcome.warnings) this.options.warning(warning);
      clearTimeout(timer);resolve();
     }});
     this.send({type:"request", id, request:{kind:"attach"}});return;
@@ -79,7 +79,7 @@ export class StreamsChild {
    if (value.type === "view") {
     for (const listener of this.listeners) listener(value.view);return;
    }
-   if (value.type === "warning") {this.options.warning(value.message);return;}
+   if (value.type === "warning") {if (!this.stopped) this.options.warning(value.message);return;}
    throw Error("Unexpected Streams child ready frame");
   };
   child.stdout!.setEncoding("utf8").on("data", (chunk: string) => {

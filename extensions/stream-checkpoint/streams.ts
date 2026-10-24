@@ -65,7 +65,6 @@ export class StreamCli {
   if (!object(value) || !receipt(value.receipt) || value.receipt.simulated !== true) throw new StreamsCliError("Invalid simulated catalog receipt");
   return {catalog:parseLocalContext(value.catalog), receipt:value.receipt};
  }
- async captureArrangement(streamId: string, signal?: AbortSignal): Promise<unknown> {return this.run({kind:"capture_workspace", stream_id:streamId}, "read", {timeout:10000, ...(signal ? {signal} : {})});}
  async sync(event: "start" | "shutdown"): Promise<PublicationResult> {return this.run({kind:"sync", event}, "publication");}
  async enroll(request: unknown): Promise<Receipt> {return this.run({kind:"enroll", request:request as DomainObject}, "save");}
  async apply(request: ApplyRequest): Promise<Receipt> {return this.run({kind:"apply", request}, "save");}

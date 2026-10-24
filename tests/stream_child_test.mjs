@@ -133,6 +133,11 @@ test('aborting a draining request writes no cancel after EOF and never kills the
  const stopping=f.manager.stop();controller.abort(Error('cancelled during shutdown'));await assert.rejects(request,/cancelled during shutdown/);await tick();
  assert.equal(child.killed,undefined);assert.deepEqual(child.messages.map(value=>value.type),['request']);child.emit('close',0);await stopping;
 });
+test('attach warnings are not emitted after shutdown starts, but its accepted reply still drains',async t=>{
+ const f=fixture(t),first=await f.ready();first.emit('close',1);const second=f.children[1],attached=f.manager.start();second.emitMessage({type:'ready',protocol:2});await tick();
+ const stopped=f.manager.stop();respond(second,second.messages[0].id,{native:'active'},['Retired attach warning']);await attached;second.emit('close',0);await stopped;
+ assert.equal(f.warnings.length,1);assert.match(f.warnings[0],/Restarting once/);
+});
 test('ready has a fixed ten-second deadline',async t=>{
  t.mock.timers.enable({apis:['setTimeout']});const f=fixture(t),started=f.manager.start();
  t.mock.timers.tick(9999);assert.equal(f.launches.length,1);t.mock.timers.tick(1);await assert.rejects(started,/handshake timed out/);assert.equal(f.launches.length,2);await f.ready();
@@ -140,6 +145,7 @@ test('ready has a fixed ten-second deadline',async t=>{
 test('shutdown closes stdin, drains accepted responses and never restarts',async t=>{
  const f=fixture(t),child=await f.ready(),request=f.manager.run({kind:'sync',event:'shutdown'});await tick();
  const stopped=f.manager.stop();assert.equal(child.ended,true);assert.equal(child.killed,undefined);
+ child.emitMessage({type:'warning',message:'Retired background warning'});child.emitMessage({type:'view',view:{desired_pi_name:'Retired name'}});
  respond(child,child.messages[0].id);await request;child.emit('close',0);await stopped;assert.deepEqual(f.warnings,[]);assert.equal(f.launches.length,1);
 });
 test('Pi lifecycle shares one child, branch events do no native work and switching closes the old pipe',async t=>{

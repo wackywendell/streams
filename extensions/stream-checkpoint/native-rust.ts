@@ -27,7 +27,7 @@ export const loadRustNative: NativeFactory = async ({pi, ctx, sessionId, cwd, en
   },
   open: async signal => {
    const result = await call({kind:"open_card"}, signal);
-   if (!["opened", "existing", "suppressed"].includes(result.display as string)) throw Error("Invalid Rust display acknowledgement");
+   if (!["opened", "existing"].includes(result.display as string)) throw Error("Invalid Rust display acknowledgement");
    return result;
   },
   close: async signal => {
