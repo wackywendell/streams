@@ -8,7 +8,7 @@ use std::path::{Path, PathBuf};
 use serde::Serialize;
 
 use super::checkouts::{CheckoutLocation, relative_path};
-use super::{Result, RuntimeError, digest, invalid, text};
+use super::{Result, RuntimeError, invalid, text};
 use crate::process::{ProcessRequest, ProcessRunner};
 
 /// A cached document location, not authorization to execute a native action.
@@ -20,24 +20,31 @@ pub struct RevisionDocument {
     pub revision: String,
 }
 
-fn immutable(value: &str) -> bool {
-    value.len() >= 12 && value.bytes().all(|byte| byte.is_ascii_hexdigit())
-}
-
 fn command(
     runner: &dyn ProcessRunner,
     timeout: f64,
     cwd: &Path,
     program: &str,
     args: &[&str],
-) -> std::result::Result<String, String> {
+) -> Result<Vec<u8>> {
     let mut env: std::collections::BTreeMap<_, _> = std::env::vars_os()
         .filter(|(key, _)| !key.to_string_lossy().starts_with("GIT_"))
         .collect();
     env.insert("GIT_OPTIONAL_LOCKS".into(), "0".into());
+    env.insert("GIT_LITERAL_PATHSPECS".into(), "1".into());
+    let prefix: &[&str] = if program == "jj" {
+        &[
+            "--ignore-working-copy",
+            "--at-operation=@",
+            "--color=never",
+            "--no-pager",
+        ]
+    } else {
+        &[]
+    };
     let request = ProcessRequest {
         program: program.into(),
-        args: args.iter().map(Into::into).collect(),
+        args: prefix.iter().chain(args).map(Into::into).collect(),
         cwd: Some(cwd.into()),
         input: None,
         env,
@@ -47,22 +54,16 @@ fn command(
     let context = || format!("{program} {args:?} in {}", cwd.display());
     let output = runner
         .run(&request)
-        .map_err(|e| format!("{}: {e}", context()))?;
+        .map_err(|e| RuntimeError::Inspection(format!("{}: {e}", context())))?;
     if !output.status.success() {
-        return Err(format!(
+        return Err(RuntimeError::Inspection(format!(
             "{}: {}: {}",
             context(),
             output.status,
             String::from_utf8_lossy(&output.stderr)
-        ));
+        )));
     }
-    // Python subprocess text mode normalizes universal newlines before rstrip.
-    let output = String::from_utf8(output.stdout).map_err(|e| format!("{}: {e}", context()))?;
-    Ok(output
-        .replace("\r\n", "\n")
-        .replace('\r', "\n")
-        .trim_end_matches('\n')
-        .into())
+    Ok(output.stdout)
 }
 
 fn private(metadata: &fs::Metadata, path: &Path) -> Result<()> {
@@ -165,7 +166,7 @@ fn inspect_entry(path: &Path) -> Result<Option<u64>> {
 fn persist(base: &Path, path: &Path, content: &[u8]) -> Result<()> {
     let parent = path.parent().expect("cache file parent");
     directories(base, parent, true)?;
-    // Recheck the leaf even when replacing an unresolved mutable expression.
+    // Preserve cache ingress checks even if another extraction populated the leaf.
     inspect_entry(path)?;
     let write_error = |e| {
         invalid(format!(
@@ -202,138 +203,90 @@ pub(super) fn extract(
         return Err(invalid("checkout ID cannot be used as a cache component"));
     }
     let base = cache_base(cache_root)?;
-    directories(&base, &base.join(&checkout.id), false)?;
-    let has_jj = checkout.directory.join(".jj").is_dir();
-    let mut resolved = rev.to_owned();
-    let mut failures = Vec::new();
-    if !immutable(rev) {
-        if has_jj {
-            match command(
-                runner,
-                timeout,
-                &checkout.directory,
-                "jj",
-                &[
-                    "--ignore-working-copy",
-                    "--at-operation=@",
-                    "log",
-                    "--no-graph",
-                    "-r",
-                    rev,
-                    "-T",
-                    "commit_id ++ \"\\n\"",
-                ],
-            ) {
-                Ok(output) => {
-                    if let Some(first) = output
-                        .lines()
-                        .next()
-                        .map(str::trim)
-                        .filter(|s| !s.is_empty())
-                    {
-                        resolved = first.into();
-                    }
-                }
-                Err(error) => failures.push(error),
-            }
-        }
-        if resolved == rev {
-            match command(
-                runner,
-                timeout,
-                &checkout.directory,
-                "git",
-                &["rev-parse", "--verify", &format!("{rev}^{{commit}}")],
-            ) {
-                Ok(output) if !output.trim().is_empty() => resolved = output.trim().into(),
-                Ok(_) => {}
-                Err(error) => failures.push(error),
-            }
-        }
-    }
-    let reusable = immutable(rev) || resolved != rev;
-    let key = if immutable(&resolved) {
-        resolved[..12].to_owned()
+    // v2 starts fresh: v1 truncated identities, transformed bytes and missing hints
+    // are derived state, not inputs to this cache.
+    let checkout_root = base.join("v2").join(&checkout.id);
+    directories(&base, &checkout_root, false)?;
+    let program = if checkout.directory.join(".jj").is_dir() {
+        "jj"
     } else {
-        digest(resolved.as_bytes())[..12].to_owned()
+        "git"
     };
-    let root = base.join(&checkout.id).join(key);
-    let file = root.join(path);
-    let missing = file.with_file_name(format!(
-        ".{}.missing",
-        file.file_name().expect("relative file").to_string_lossy()
-    ));
-    directories(&base, file.parent().expect("cache parent"), false)?;
-    let content = inspect_entry(&file)?;
-    let absent = inspect_entry(&missing)?;
-    if absent.is_some_and(|size| size != 0 || content.is_some() || !reusable) {
-        return Err(invalid(format!(
-            "corrupt revision missing hint: {}",
-            missing.display()
-        )));
+    let run = |args: &[&str]| command(runner, timeout, &checkout.directory, program, args);
+    let output = if program == "jj" {
+        run(&["log", "--no-graph", "-r", rev, "-T", "commit_id ++ \"\\n\""])?
+    } else {
+        run(&["rev-parse", "--verify", &format!("{rev}^{{commit}}")])?
+    };
+    let resolved = std::str::from_utf8(&output)
+        .map_err(|_| invalid("revision resolution must return one full commit ID"))?
+        .trim();
+    if !matches!(resolved.len(), 40 | 64) || !resolved.bytes().all(|byte| byte.is_ascii_hexdigit())
+    {
+        return Err(invalid(
+            "revision resolution must return one full commit ID",
+        ));
     }
     let target = RevisionDocument {
         checkout_id: checkout.id.clone(),
-        root,
-        file,
+        root: checkout_root.join(resolved),
+        file: checkout_root.join(resolved).join(path),
         revision: revision.into(),
     };
-    if reusable && content.is_some() {
+    directories(&base, target.file.parent().expect("cache parent"), false)?;
+    if inspect_entry(&target.file)?.is_some() {
         return Ok(target);
     }
-    let unavailable = |failures: &[String]| {
-        RuntimeError::NotFound(format!(
-            "document revision is unavailable: {path} at {revision}{}",
-            if failures.is_empty() {
-                String::new()
-            } else {
-                format!("; {}", failures.join("; "))
-            }
-        ))
+
+    // A successful exact-path listing proves absence; a failed command does not.
+    // Quote jj's fileset syntax and disable Git pathspec expansion.
+    let fileset = format!(
+        "root-file:{}",
+        serde_json::to_string(path).expect("path string")
+    );
+    let kind = if program == "jj" {
+        run(&[
+            "file",
+            "list",
+            "-r",
+            resolved,
+            "-T",
+            "file_type ++ \"\\0\"",
+            "--",
+            &fileset,
+        ])?
+    } else {
+        run(&[
+            "ls-tree",
+            "-z",
+            "--full-tree",
+            "--format=%(objecttype)",
+            resolved,
+            "--",
+            path,
+        ])?
     };
-    if reusable && absent.is_some() {
-        return Err(unavailable(&[]));
+    if kind.is_empty() {
+        return Err(RuntimeError::NotFound(format!(
+            "document does not exist in {program}: {path} at {revision}"
+        )));
     }
-    let mut content = None;
-    if has_jj {
-        match command(
-            runner,
-            timeout,
-            &checkout.directory,
-            "jj",
-            &[
-                "--ignore-working-copy",
-                "--at-operation=@",
-                "file",
-                "show",
-                "-r",
-                &resolved,
-                path,
-            ],
-        ) {
-            Ok(output) => content = Some(output),
-            Err(error) => failures.push(error),
+    if kind
+        != if program == "jj" {
+            b"file\0".as_slice()
+        } else {
+            b"blob\0".as_slice()
         }
+    {
+        return Err(invalid(format!(
+            "document is not a regular file in {program}: {path} at {revision}"
+        )));
     }
-    if content.is_none() {
-        match command(
-            runner,
-            timeout,
-            &checkout.directory,
-            "git",
-            &["show", &format!("{resolved}:{path}")],
-        ) {
-            Ok(output) => content = Some(output),
-            Err(error) => failures.push(error),
-        }
-    }
-    if let Some(mut content) = content {
-        content.push('\n');
-        persist(&base, &target.file, content.as_bytes())?;
-        return Ok(target);
-    }
-    if reusable {
-        persist(&base, &missing, b"")?;
-    }
-    Err(unavailable(&failures))
+    let content = if program == "jj" {
+        run(&["file", "show", "-r", resolved, "-T", "\"\"", "--", &fileset])?
+    } else {
+        run(&["show", &format!("{resolved}:{path}")])?
+    };
+    persist(&base, &target.file, &content)?;
+    Ok(target)
 }

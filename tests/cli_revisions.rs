@@ -161,20 +161,14 @@ fn historical_document_is_direct_json_and_preserves_dirty_worktree_and_revision_
     let root = Path::new(value["root"].as_str().unwrap());
     let file = Path::new(value["file"].as_str().unwrap());
     assert!(root.starts_with(f.home.join("state/streams/catalogs")));
-    assert_eq!(root.file_name().unwrap(), &revision[..12]);
+    assert_eq!(root.file_name().unwrap(), revision.as_str());
     assert_eq!(
         root.parent().unwrap().file_name().unwrap(),
         f.checkout_id.as_str()
     );
-    assert_eq!(
-        root.parent()
-            .unwrap()
-            .parent()
-            .unwrap()
-            .file_name()
-            .unwrap(),
-        "revisions"
-    );
+    let version = root.parent().unwrap().parent().unwrap();
+    assert_eq!(version.file_name().unwrap(), "v2");
+    assert_eq!(version.parent().unwrap().file_name().unwrap(), "revisions");
     assert_eq!(file, root.join("docs/design.md"));
     assert_eq!(fs::read_to_string(file).unwrap(), "Historical design\n");
     assert_eq!(f.git(&["rev-parse", "HEAD"]), head);
@@ -194,21 +188,23 @@ fn historical_document_is_direct_json_and_preserves_dirty_worktree_and_revision_
 }
 
 #[test]
-fn immutable_document_and_missing_hint_are_reused_without_available_git_content() {
+fn successful_content_is_reused_but_proven_absence_is_not_persisted() {
     let (f, revision) = Fixture::historical();
     let first = f.document_output("docs/design.md", &revision);
     assert!(first.status.success(), "{first:?}");
     let value: Value = serde_json::from_slice(&first.stdout).unwrap();
     let file = Path::new(value["file"].as_str().unwrap());
     let modified = fs::metadata(file).unwrap().modified().unwrap();
-    let missing = f.document_output("docs/absent.md", &revision);
-    assert_eq!(missing.status.code(), Some(2), "{missing:?}");
-    let error: Value = serde_json::from_slice(&missing.stdout).unwrap();
-    assert!(error["error"]["message"].as_str().unwrap().contains("git"));
-    let sentinel = file.parent().unwrap().join(".absent.md.missing");
-    assert_eq!(fs::read(&sentinel).unwrap(), b"");
-    let sentinel_modified = fs::metadata(&sentinel).unwrap().modified().unwrap();
+    for _ in 0..2 {
+        let missing = f.document_output("docs/absent.md", &revision);
+        assert_eq!(missing.status.code(), Some(2), "{missing:?}");
+        let error: Value = serde_json::from_slice(&missing.stdout).unwrap();
+        assert_eq!(error["error"]["kind"], "not-found");
+        assert!(error["error"]["message"].as_str().unwrap().contains("git"));
+        assert!(!file.parent().unwrap().join(".absent.md.missing").exists());
+    }
 
+    // Resolution still requires the commit, but cached content needs no blob read.
     let object = f.git(&["rev-parse", &format!("{revision}:docs/design.md")]);
     let object_path = f
         .cwd
@@ -229,18 +225,6 @@ fn immutable_document_and_missing_hint_are_reused_without_available_git_content(
     );
     assert_eq!(fs::metadata(file).unwrap().modified().unwrap(), modified);
     assert_eq!(fs::read_to_string(file).unwrap(), "Historical design\n");
-    let repeated = f.document_output("docs/absent.md", &revision);
-    assert_eq!(repeated.status.code(), Some(2), "{repeated:?}");
-    let error: Value = serde_json::from_slice(&repeated.stdout).unwrap();
-    assert_eq!(error["error"]["kind"], "not-found");
-    assert_eq!(
-        error["error"]["message"],
-        format!("document revision is unavailable: docs/absent.md at {revision}")
-    );
-    assert_eq!(
-        fs::metadata(&sentinel).unwrap().modified().unwrap(),
-        sentinel_modified
-    );
 }
 
 #[test]
