@@ -1,6 +1,7 @@
 import { randomUUID } from "node:crypto";
 import { receiptCanContinue, type ApplyRequest, type LocalContext, type Receipt, type SessionWire, type StreamWire } from "./streams.ts";
 export const statuses = ["active", "waiting", "blocked", "parked", "done"];
+export const titleModes = ["automatic", "manual", "inherit"] as const;
 export const fields = {
  stream: ["title", "title_mode", "goal", "goal_short", "goal_mode", "status", "archived", "documents", "issues", "prs"],
  session: ["title", "title_mode", "status", "state", "state_short", "remaining"],
@@ -19,7 +20,8 @@ export function validateChanges(kind: "stream" | "session", before: StreamWire |
  for (const [key, value] of Object.entries(changes)) {
   if (!allowed.includes(key)) throw Error(`${key} is not allowed for ${actor} ${kind} edits`);
   if (key === "title") nonempty(value, key);
-  else if (key.endsWith("_mode") && !["automatic", "manual"].includes(String(value))) throw Error(`${key}: choose automatic or manual`);
+  else if (key === "title_mode" && !titleModes.some(mode => mode === value)) throw Error("title_mode: choose automatic, manual or inherit");
+  else if (key === "goal_mode" && !["automatic", "manual"].includes(String(value))) throw Error("goal_mode: choose automatic or manual");
   else if (key === "status" && !statuses.includes(String(value))) throw Error("Choose a valid status");
   else if (key === "archived" && typeof value !== "boolean") throw Error("archived must be boolean");
   else if (["goal", "goal_short", "state_short"].includes(key) && value !== null) nonempty(value, key);

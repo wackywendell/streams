@@ -2,7 +2,7 @@ import { Editor, SelectList, type SelectItem, matchesKey, truncateToWidth, wrapT
 import { DynamicBorder, getSelectListTheme } from "@earendil-works/pi-coding-agent";
 import type { ExtensionContext } from "@earendil-works/pi-coding-agent";
 import type { LocalContext, Receipt, StreamCli } from "./streams.ts";
-import { FieldEdit, fields, statuses, validateReferences } from "./core.ts";
+import { FieldEdit, fields, statuses, titleModes, validateReferences } from "./core.ts";
 export type DiscussionState = {input: string; messages: {role: "user" | "assistant"; text: string}[]; error?: string};
 export type CardState = {discussion: DiscussionState; edits: Map<string, FieldEdit>};
 /** A small composer built around Pi's editor; unsent input survives close/reopen. */
@@ -57,7 +57,7 @@ export async function editField(ctx: ExtensionContext, cli: StreamCli, catalog: 
    if (editValue) {
     if (["documents", "issues", "prs"].includes(field)) await referenceRows(ctx, field, edit);
     else if (field === "status" || field.endsWith("_mode")) {
-     const value = await ctx.ui.select(`${kind} ${field} · current: ${edit.value}${edit.error ? `\n${edit.error}` : ""}`, field === "status" ? statuses : ["automatic", "manual"]);if (value === undefined) return;edit.value = value;
+     const value = await ctx.ui.select(`${kind} ${field} · current: ${edit.value}${edit.error ? `\n${edit.error}` : ""}`, field === "status" ? statuses : field === "title_mode" ? [...titleModes] : ["automatic", "manual"]);if (value === undefined) return;edit.value = value;
     } else if (field === "archived") edit.value = !edit.base.stream!.archived;
     else {
      const value = await ctx.ui.editor(`${kind} ${field}${edit.error ? `\n${edit.error}` : ""}`, String(edit.value ?? ""));
@@ -90,14 +90,14 @@ export async function openCard(ctx: ExtensionContext, cli: StreamCli, state: Car
   const actionItems: SelectItem[] = [
    {value: "Report now", label: "Report now", description: "Summarize recent conversation turns into the work card"},
    {value: "Reset generated fields", label: "Reset generated fields", description: "Regenerate both session and effort fields"},
-   {value: "Re-enable automatic naming & reset", label: "Re-enable automatic naming & reset", description: "Unlock all manual names (Pi + Herdr) and regenerate"},
+   {value: "Re-enable automatic naming & reset", label: "Re-enable automatic naming & reset", description: "Make title and goal generation automatic, then regenerate"},
    {value: "Discuss live card", label: "Discuss live card", description: "Chat with the reporting helper to refine fields"},
    ...(session ? [
     {value: "Reset this session only", label: "Reset this session only", description: "Regenerate only this tab's title, state, and remaining work"},
-    {value: "Re-enable session auto-naming & reset", label: "Re-enable session auto-naming & reset", description: "Unlock only this tab's Pi/Herdr names and regenerate"},
+    {value: "Re-enable session auto-naming & reset", label: "Re-enable session auto-naming & reset", description: "Make this session's title generation automatic, then regenerate"},
    ] : []),
    {value: "Reset whole effort only", label: "Reset whole effort only", description: "Regenerate only the shared effort title and goal"},
-   {value: "Re-enable effort auto-naming & reset", label: "Re-enable effort auto-naming & reset", description: "Unlock only the shared effort/workspace name and regenerate"},
+   {value: "Re-enable effort auto-naming & reset", label: "Re-enable effort auto-naming & reset", description: "Make effort title and goal generation automatic, then regenerate"},
    {value: "Whole effort — edit fields", label: "Whole effort — edit fields", description: "Switch to the Stream tab to edit shared effort fields"},
    ...(session ? [
     {value: "This session — edit fields", label: "This session — edit fields", description: "Switch to the Session tab to edit this tab's fields"},

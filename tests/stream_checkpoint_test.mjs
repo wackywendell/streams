@@ -279,11 +279,12 @@ test('all settings explain their effects and leave description room on short ter
     'Model used to summarize progress and generate short titles.',
     'Configure debug commands and optional helper session logging.',
     'Automatically open the side-by-side Herdr work-card pane',
-    "Sync the Herdr workspace name with the effort's short title",
-    "Sync this Herdr tab's name with this session's short title",
-    "Sync the Pi session name (/name) with this session's short title",
+    "Mirror the saved effort title in Herdr.",
+    "Mirror saved Session titles in agent tabs",
+    "Mirror the saved Session title in Pi.",
    ]) {
     const lines=component.render(100);assert.ok(lines.length<=16,lines.join('\n'));
+    assert.doesNotMatch(lines.join(' '),/manual renames.*protected/);
     assert.ok(lines.join(' ').includes(description),lines.join('\n'));
     component.handleInput('\x1b[B');
    }

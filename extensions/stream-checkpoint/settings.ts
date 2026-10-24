@@ -57,9 +57,9 @@ export async function settingsDialog(ctx: ExtensionContext, settings: ReportingS
   ...(nativePath ? [
    {id: "workspace_startup", label: "Herdr workspace startup", currentValue: String(native.workspace_startup), description: "Automatically open the side-by-side Herdr work-card pane when a chat is attached, or only when you run /streams pane.", values: ["automatic", "manual"]},
    ...Object.entries({
-    workspace_naming: ["Herdr workspace naming", "Sync the Herdr workspace name with the effort's short title (manual renames in Herdr stay protected)."],
-    tab_naming: ["Herdr tab naming", "Sync this Herdr tab's name with this session's short title (manual renames stay protected)."],
-    session_naming: ["Pi session naming", "Sync the Pi session name (/name) with this session's short title."],
+    workspace_naming: ["Herdr workspace naming", "Mirror the saved effort title in Herdr. While enabled, replaces direct workspace renames; disable for an independent frontend name."],
+    tab_naming: ["Herdr tab naming", "Mirror saved Session titles in agent tabs and document identities in editor tabs. While enabled, replaces direct tab renames."],
+    session_naming: ["Pi session naming", "Mirror the saved Session title in Pi. Turning this off stops Streams from changing Pi's displayed name."],
    }).map(([id, [label, description]]) => ({id, description, label, currentValue: native[id] === false ? "disabled" : "enabled", values: ["enabled", "disabled"]})),
   ] : []),
  ];
