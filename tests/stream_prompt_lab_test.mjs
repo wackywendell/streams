@@ -4,6 +4,7 @@ import { existsSync, mkdirSync, mkdtempSync, readFileSync, renameSync, rmSync, s
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { createJiti } from 'jiti';
+import { childCli } from './helpers/stream-cli.mjs';
 import { SessionManager } from '@earendil-works/pi-coding-agent';
 const jiti = createJiti(import.meta.url);
 const load = name => jiti.import(new URL(`../extensions/stream-checkpoint/${name}.ts`, import.meta.url).pathname);
@@ -270,9 +271,9 @@ test('loaded captures reject malformed samples and incomplete or unsafe evidence
   }
  }finally{f.dispose();}
 });
-test('real preview subprocess applies live derivative-clearing and reconciliation rules only to supplied cards',async()=>{
+test('real preview child applies live derivative-clearing and reconciliation rules only to supplied cards',async t=>{
  const f=fixture();try {
-  const {capture}=captureSessions(f.inventory,f.root),client=new StreamCli(f.dir);
+  const {capture}=captureSessions(f.inventory,f.root),client=childCli(f.dir);t.after(()=>client.stop());
   const rt=runtime(async(_model,payload)=>response({changes:JSON.parse(payload.messages.at(-1).content).task==='session'?{remaining:'Finish tests'}:{goal:'Updated goal'}}));
   const {run}=await replayCapture(capture,f.root,rt,model,update,(input,signal)=>client.preview(input,signal),new AbortController().signal);
   const result=run.samples[0];assert.equal(result.status,'completed',result.error);
@@ -282,10 +283,10 @@ test('real preview subprocess applies live derivative-clearing and reconciliatio
   assert.equal(readFileSync(f.source,'utf8'),f.raw);
  }finally{f.dispose();}
 });
-test('real enrollment preview feeds later helpers with deterministic private working-copy identities',async()=>{
+test('real enrollment preview feeds later helpers with deterministic private working-copy identities',async t=>{
  const f=fixture();try {
   Object.assign(f.inventory.samples[0].catalog,{stream:null,session:null,sessions:[],authority:null});
-  const {capture}=captureSessions(f.inventory,f.root),client=new StreamCli(f.dir);
+  const {capture}=captureSessions(f.inventory,f.root),client=childCli(f.dir);t.after(()=>client.stop());
   const rt=runtime(async(_model,payload)=>{
    const request=JSON.parse(payload.messages.at(-1).content);
    return response(request.task==='enroll'?{meaningful:true,stream:{title:'Synthetic effort',goal:'Finish work'},session:{title:'Contribution'}}:{changes:{}});
@@ -314,7 +315,7 @@ test('debug argument grammar keeps incremental default and scoped reset/--auto s
  assert.deepEqual(parsed.model,{provider:'test',id:'family/model'});assert.deepEqual(parsed.action,{kind:'reset',target:'session',auto:true});
  for(const args of ['replay --auto','replay --model missing-slash','replay --reset --reset','capture unknown x','replay id extra','replay --model x/y --model x/y']) assert.throws(()=>parseDebugCommand(args));
 });
-test('enabled Pi commands capture both cards and evidence, then replay reset through the real preview adapter',async()=>{
+test('enabled Pi commands capture both cards and evidence, then replay reset through the real preview adapter',async t=>{
  const f=fixture();try {
   let command,calls=0;const notices=[],statuses=[],dialogs=[],menus=[],before=f.manager.getEntries();
   f.inventory.samples[0].catalog.session.title_mode='manual';
@@ -325,7 +326,7 @@ test('enabled Pi commands capture both cards and evidence, then replay reset thr
    confirm:async(title,message,options)=>{assert.ok(options.signal);dialogs.push([title,message]);return true;},
    select:async(title,labels,options)=>{assert.ok(options.signal);menus.push([title,labels]);return labels[0];},
   }};
-  const real=new StreamCli(f.dir),client={captureInputs:async target=>{assert.deepEqual(target,{kind:'stream',id:'effort'});return f.inventory;},preview:(input,signal)=>real.preview(input,signal)};
+  const real=childCli(f.dir);t.after(()=>real.stop());const client={captureInputs:async target=>{assert.deepEqual(target,{kind:'stream',id:'effort'});return f.inventory;},preview:(input,signal)=>real.preview(input,signal)};
   extension({registerCommand:(_name,value)=>{command=value;},registerTool(){},on(){},appendEntry:()=>assert.fail('debug must not append to real history')},{agentDir:f.dir,cli:client,settings:{...defaults,debug_commands:true}});
   assert.equal(command.getArgumentCompletions('debug')[0].value,'debug capture');
   await command.handler('debug capture stream effort',ctx);assert.equal(calls,0);

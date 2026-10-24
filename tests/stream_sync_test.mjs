@@ -1,11 +1,12 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
 import { spawn, execFileSync } from 'node:child_process';
-import { mkdtempSync, mkdirSync, writeFileSync, readFileSync, chmodSync, renameSync, rmSync } from 'node:fs';
+import { mkdtempSync, mkdirSync, writeFileSync, readFileSync, renameSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { createJiti } from 'jiti';
+import { childCli } from './helpers/stream-cli.mjs';
 const jiti = createJiti(import.meta.url);
 const load = name => jiti.import(new URL(`../extensions/stream-checkpoint/${name}.ts`, import.meta.url).pathname);
 const { StreamCli, StreamsCliError } = await load('streams');
@@ -20,16 +21,16 @@ function hooks(cli, infer = () => assert.fail('lifecycle sync must not invoke a 
  return {handlers,ctx,warnings,entries};
 }
 
-test('lifecycle CLI preserves failed publication results, passes the trigger and requests a total deadline',async()=>{
+test('typed lifecycle preserves publication results, passes the trigger and requests a total deadline',async()=>{
  for(const sharing of ['local-only','pending','confirmed','failed','blocked','uncertain']) {
   const calls=[], value={...local,sharing};
-  const cli=new StreamCli('/tmp',async(...args)=>{calls.push(args);return {code:['failed','blocked','uncertain'].includes(sharing)?2:0,stdout:JSON.stringify(value),stderr:''};});
+  const cli=new StreamCli('/tmp',async(...args)=>{calls.push(args);return {status:'success',result:value};});
   assert.deepEqual(await cli.sync('start'),value);
-  assert.deepEqual(calls[0],[['sync','--event','start','--json'],undefined,{timeout:10000}]);
-  await cli.sync('shutdown');assert.deepEqual(calls[1][0],['sync','--event','shutdown','--json']);
+  assert.deepEqual(calls[0],[{kind:'sync',event:'start'},{timeout:10000}]);
+  await cli.sync('shutdown');assert.deepEqual(calls[1][0],{kind:'sync',event:'shutdown'});
  }
- for(const stdout of ['not JSON','{}',JSON.stringify({error:{kind:'repair-required',message:'Inspect marker'}}),JSON.stringify({...local,sharing:'made-up'})]) {
-  await assert.rejects(new StreamCli('/tmp',async()=>({code:2,stdout,stderr:'failed'})).sync('shutdown'),StreamsCliError);
+ for(const outcome of [{status:'success',result:{}},{status:'error',error:{kind:'repair-required',message:'Inspect marker'}},{status:'success',result:{...local,sharing:'made-up'}}]) {
+  await assert.rejects(new StreamCli('/tmp',async()=>outcome).sync('shutdown'),StreamsCliError);
  }
 });
 
@@ -124,49 +125,17 @@ test('shutdown suppresses late accepted report receipts without another inferenc
  await new Promise(resolve=>setImmediate(resolve));assert.equal(models,1);assert.deepEqual(f.warnings,[]);assert.deepEqual(f.entries,[]);
 });
 
-test('native lifecycle deadline kills the CLI and its child processes', {timeout:20000}, async t=>{
- const root=mkdtempSync(join(tmpdir(),'streams-sync-timeout-'));t.after(()=>rmSync(root,{recursive:true,force:true}));
- const bin=join(root,'bin');mkdirSync(bin);const pidfile=join(root,'pids.json');
- const shim=join(bin,'streams');
- writeFileSync(shim,`#!${process.execPath}\nconst {spawn}=require('node:child_process');const fs=require('node:fs');const child=spawn(process.execPath,['-e','setInterval(()=>{},1000)'],{stdio:'inherit'});fs.writeFileSync(${JSON.stringify(pidfile)},JSON.stringify([process.pid,child.pid]));setInterval(()=>{},1000);\n`);chmodSync(shim,0o755);
- const before=process.env.STREAMS_BIN_PATH;process.env.STREAMS_BIN_PATH=shim;t.after(()=>{if(before===undefined)delete process.env.STREAMS_BIN_PATH;else process.env.STREAMS_BIN_PATH=before;});
- await assert.rejects(new StreamCli(root).sync('shutdown'),/timed out.*uncertain.*repair state/);
- for(const pid of JSON.parse(readFileSync(pidfile,'utf8'))) {
-  let state='';try {state=execFileSync('ps',['-p',String(pid),'-o','stat='],{encoding:'utf8',stdio:['ignore','pipe','pipe']}).trim();} catch(error) {assert.equal(error.status,1);}
-  assert.ok(!state || state.startsWith('Z'),`sync process ${pid} still running: ${state}`);
- }
-});
-
 test('native capture forwards cancellation and never starts a pre-aborted request', async()=>{
  const calls=[], controller=new AbortController();
- const cli=new StreamCli('/tmp',async(...args)=>{calls.push(args);return {code:0,stdout:'{}',stderr:''};});
+ const cli=new StreamCli('/tmp',async(...args)=>{calls.push(args);return {status:'success',result:{}};});
  await cli.captureArrangement('effort',controller.signal);
- assert.deepEqual(calls[0],[['workspace','capture','effort','--json'],undefined,{timeout:10000,signal:controller.signal}]);
+ assert.deepEqual(calls[0],[{kind:'capture_workspace',stream_id:'effort'},{timeout:10000,signal:controller.signal}]);
  controller.abort();await assert.rejects(cli.captureArrangement('effort',controller.signal),/abort/i);
  assert.equal(calls.length,1);
 });
 
-test('native capture abort settles only after CLI and descendants stop', {timeout:10000}, async t=>{
- const root=mkdtempSync(join(tmpdir(),'streams-capture-abort-'));t.after(()=>rmSync(root,{recursive:true,force:true}));
- const bin=join(root,'bin');mkdirSync(bin);const pidfile=join(root,'pids.json');
- const shim=join(bin,'streams');
- writeFileSync(shim,`#!${process.execPath}\nconst {spawn}=require('node:child_process');const fs=require('node:fs');process.on('SIGTERM',()=>{});const child=spawn(process.execPath,['-e','process.on("SIGTERM",()=>{});setInterval(()=>{},1000)'],{stdio:'inherit'});fs.writeFileSync(${JSON.stringify(pidfile+'.tmp')},JSON.stringify([process.pid,child.pid]));fs.renameSync(${JSON.stringify(pidfile+'.tmp')},${JSON.stringify(pidfile)});setInterval(()=>{},1000);\n`);chmodSync(shim,0o755);
- const before=process.env.STREAMS_BIN_PATH;process.env.STREAMS_BIN_PATH=shim;t.after(()=>{if(before===undefined)delete process.env.STREAMS_BIN_PATH;else process.env.STREAMS_BIN_PATH=before;});
- const controller=new AbortController(), pending=new StreamCli(root).captureArrangement('effort',controller.signal);
- const rejected=assert.rejects(pending,/abort/i), deadline=performance.now()+5000;
- while(true) {
-  try {readFileSync(pidfile);break;} catch(error) {if(error.code!=='ENOENT'||performance.now()>deadline)throw error;}
-  await new Promise(resolve=>setTimeout(resolve,5));
- }
- controller.abort();await rejected;
- for(const pid of JSON.parse(readFileSync(pidfile,'utf8'))) {
-  let state='';try {state=execFileSync('ps',['-p',String(pid),'-o','stat='],{encoding:'utf8',stdio:['ignore','pipe','pipe']}).trim();} catch(error) {assert.equal(error.status,1);}
-  assert.ok(!state || state.startsWith('Z'),`native capture process ${pid} still running: ${state}`);
- }
-});
-
 test('Pi/CLI reports publish across two isolated Git catalogs, remain saved offline and retry after restart', {timeout:120000}, async t=>{
- const root=mkdtempSync(join(tmpdir(),'streams-sync-acceptance-'));t.after(()=>rmSync(root,{recursive:true,force:true}));
+ const root=mkdtempSync(join(tmpdir(),'streams-sync-acceptance-')),clients=[];t.after(async()=>{await Promise.all(clients.map(cli=>cli.stop()));rmSync(root,{recursive:true,force:true});});
  const checkout=fileURLToPath(new URL('..',import.meta.url)), remote=join(root,'remote.git'), unavailable=join(root,'offline.git');
  const binary=resolve(checkout,process.env.CARGO_TARGET_DIR??'target','debug','streams');
  const gitconfig=join(root,'gitconfig');writeFileSync(gitconfig,'[user]\n name = Acceptance\n email = acceptance@example.org\n[commit]\n gpgsign = false\n');
@@ -177,17 +146,18 @@ test('Pi/CLI reports publish across two isolated Git catalogs, remain saved offl
  const runner=host=>{
   const home=join(root,host);mkdirSync(home,{recursive:true});
   const env={...baseEnv,HOME:home,XDG_CONFIG_HOME:join(home,'config'),XDG_DATA_HOME:join(home,'data'),XDG_STATE_HOME:join(home,'state')};
-  return (args,input)=>new Promise((resolve,reject)=>{
+  const run=(args,input)=>new Promise((resolve,reject)=>{
    const child=spawn(binary,args,{cwd:checkout,env,stdio:['pipe','pipe','pipe']});let stdout='',stderr='';
    child.stdout.on('data',chunk=>stdout+=chunk);child.stderr.on('data',chunk=>stderr+=chunk);child.on('error',reject);child.on('close',code=>resolve({code,stdout,stderr}));child.stdin.on('error',error=>{if(error.code!=='EPIPE')reject(error);});child.stdin.end(input);
   });
+  return Object.assign(run,{env});
  };
  const a=runner('a'), b=runner('b');
  const command=async(run,...args)=>{const value=await run([...args,'--json']);assert.equal(value.code,0,value.stderr||value.stdout);return JSON.parse(value.stdout);};
  for(const run of [a,b])await command(run,'config','set','frontend.mode','none');
  await command(a,'config','set','sync.stream_seconds','0');await command(a,'config','set','sync.session_seconds','999999');
  const initialized=await command(a,'init','--sync','git','--remote',remote);
- let cli=new StreamCli(checkout,a);const empty=await cli.context('native');
+ let cli=childCli(checkout,'native',a.env);clients.push(cli);const empty=await cli.context('native');
  const enrollment=await cli.enroll({version:2,catalog_source:empty.catalog_source,operation_id:'enrollment',harness:'pi',harness_session_id:'native',stream:{title:'Shared effort'},session:{title:'Implement sharing'},actor:'automatic',cwd:checkout});
  assert.equal(enrollment.publication.sharing,'confirmed');
  await command(b,'init','--sync','git','--remote',remote);
@@ -216,8 +186,8 @@ test('Pi/CLI reports publish across two isolated Git catalogs, remain saved offl
  assert.equal(f.warnings.length,1);assert.equal(f.entries[0].value.result.sharing,'failed');assert.equal(git(initialized.catalog,'rev-parse','HEAD'),localTip);
  assert.equal((await cli.context('native')).session.state,'Saved while offline');
  renameSync(unavailable,remote);
- // Each command is a fresh CLI process; the new client also loses all in-memory state.
- cli=new StreamCli(checkout,a);f=hooks(cli);await f.handlers.get('session_start')({},f.ctx);
+ // A new session child loses all in-memory state.
+ await cli.stop();cli=childCli(checkout,'native',a.env);clients.push(cli);f=hooks(cli);await f.handlers.get('session_start')({},f.ctx);
  assert.equal(git(remote,'rev-parse','main'),published); // persisted failure cooldown, not discarded intent
  assert.equal((await command(a,'sync')).sharing,'confirmed');
  assert.equal((await command(b,'show',enrollment.stream.id,'--refresh')).sessions[0].state,'Saved while offline');
@@ -225,7 +195,7 @@ test('Pi/CLI reports publish across two isolated Git catalogs, remain saved offl
 });
 
 test('Pi/CLI adopts populated local state and keeps captured membership valid without a remote', {timeout:120000}, async t=>{
- const root=mkdtempSync(join(tmpdir(),'streams-local-git-acceptance-'));t.after(()=>rmSync(root,{recursive:true,force:true}));
+ const root=mkdtempSync(join(tmpdir(),'streams-local-git-acceptance-')),clients=[];t.after(async()=>{await Promise.all(clients.map(cli=>cli.stop()));rmSync(root,{recursive:true,force:true});});
  const checkout=fileURLToPath(new URL('..',import.meta.url)), home=join(root,'home');mkdirSync(home);
  const binary=resolve(checkout,process.env.CARGO_TARGET_DIR??'target','debug','streams');
  const gitconfig=join(root,'gitconfig');writeFileSync(gitconfig,'[user]\n name = Local Acceptance\n email = local@example.org\n[commit]\n gpgsign = false\n');
@@ -238,7 +208,7 @@ test('Pi/CLI adopts populated local state and keeps captured membership valid wi
  const command=async(...args)=>{const result=await run([...args,'--json']);assert.equal(result.code,0,result.stderr||result.stdout);return JSON.parse(result.stdout);};
  await command('config','set','frontend.mode','none');
  const initialized=await command('init','--sync','none');
- let cli=new StreamCli(checkout,run);const empty=await cli.context('native');
+ let cli=childCli(checkout,'native',env);clients.push(cli);const empty=await cli.context('native');
  const enrollment=await cli.enroll({version:2,catalog_source:empty.catalog_source,operation_id:'local-enrollment',harness:'pi',harness_session_id:'native',stream:{title:'Existing effort'},session:{title:'Continue work'},actor:'automatic',cwd:checkout});
  assert.equal(enrollment.publication.sharing,'local-only');assert.ok(enrollment.saves.every(item=>item.save.local==='persisted'));
  const captured=await cli.context('native');
@@ -250,7 +220,7 @@ test('Pi/CLI adopts populated local state and keeps captured membership valid wi
  const git=(...args)=>execFileSync('git',['-C',adopted.catalog,...args],{env,encoding:'utf8',stdio:['ignore','pipe','pipe']}).trim();
  assert.equal(git('rev-parse','HEAD^'),adopted.baseline_revision);assert.equal(git('remote'),'');
  assert.equal(JSON.parse(readFileSync(join(adopted.catalog,'.catalog-sync/config.json'),'utf8')).remote,null);
- cli=new StreamCli(checkout,run);const f=hooks(cli);await f.handlers.get('session_start')({},f.ctx);await f.handlers.get('session_shutdown')({reason:'quit'},f.ctx);
+ await cli.stop();cli=childCli(checkout,'native',env);clients.push(cli);const f=hooks(cli);await f.handlers.get('session_start')({},f.ctx);await f.handlers.get('session_shutdown')({reason:'quit'},f.ctx);
  assert.deepEqual(f.warnings,[]);assert.deepEqual(f.entries,[]);
  const shown=await command('show',enrollment.stream.id,'--refresh');assert.equal(shown.sessions[0].id,enrollment.session.id);assert.equal(shown.sessions[0].state,'Reported after adoption');
  assert.equal((await command('sync')).sharing,'local-only');assert.equal((await command('init','--sync','git','--adopt')).baseline_revision,adopted.baseline_revision);

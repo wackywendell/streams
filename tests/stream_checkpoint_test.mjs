@@ -7,6 +7,7 @@ import { join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { randomUUID } from 'node:crypto';
 import { createJiti } from 'jiti';
+import { childCli } from './helpers/stream-cli.mjs';
 const jiti = createJiti(import.meta.url);
 const load = (name) => jiti.import(new URL(`../extensions/stream-checkpoint/${name}.ts`, import.meta.url).pathname);
 const { StreamCli, StreamsCliError, receiptText } = await load('streams');
@@ -26,27 +27,27 @@ const session = { id:'session', host_id:'host', stream_id:'effort', harness:'pi'
 const context = () => structuredClone({catalog_source:'source-a',host_id:'host',stream,session,sessions:[session],authority:{host_id:'host',token:'owner'}});
 const localSync = async () => ({local:'unchanged',sharing:'local-only',domain:null});
 
-test('catalog CLI uses stdin; accepted code2 receipt is retained without retry', async () => {
- const calls=[]; const receipt={operation_id:'op',save:{local:'persisted',sharing:'local-only',domain:{outcome:'changes'}},session,completion_error:'offline'};
- const cli=new StreamCli('/tmp',async(args,input)=>{calls.push({args,input});return {code:2,stdout:JSON.stringify(receipt),stderr:'offline'};});
- assert.deepEqual(await cli.apply({operation_id:'op'}),receipt);
- assert.equal(calls.length,1); assert.deepEqual(calls[0].args,['agent','apply','--json']); assert.equal(JSON.parse(calls[0].input).operation_id,'op');
+test('typed catalog apply retains accepted warning receipts without retry or target rewriting', async () => {
+ const calls=[],warnings=['Saved; projection deferred'];const receipt={operation_id:'op',save:{local:'persisted',sharing:'local-only',domain:{outcome:'changes'}},session,completion_error:'offline'};
+ const cli=new StreamCli('/tmp',async request=>{calls.push(request);return {status:'saved_with_warnings',result:receipt,warnings};});
+ const request={operation_id:'op'};assert.deepEqual(await cli.apply(request),{...receipt,warnings});
+ assert.equal(calls.length,1);assert.deepEqual(calls[0],{kind:'apply',request});assert.equal(calls[0].request,request);assert.match(receiptText({...receipt,warnings}),/Saved; projection deferred/);
 });
 test('idempotent enrollment with no new saves is a valid receipt, including publication',async()=>{
  const value={stream,session,authority:context().authority,saves:[],publication:{local:'unchanged',sharing:'local-only',domain:null}};
- const cli=new StreamCli('/tmp',async()=>({code:0,stdout:JSON.stringify(value),stderr:''}));
+ const cli=new StreamCli('/tmp',async()=>({status:'success',result:value}));
  assert.deepEqual(await cli.enroll({}),value);assert.match(receiptText(value),/Already enrolled; no new local saves/);
 });
 test('repair-required null-domain receipts retain uncertainty and dirty input without retry',async()=>{
  const value={operation_id:'uncertain',save:{local:'repair-required',sharing:'local-only',domain:null,detail:'interrupted save marker'}};let calls=0;const receipts=[];
- const cli=new StreamCli('/tmp',async()=>{calls++;return {code:2,stdout:JSON.stringify(value),stderr:''};});
+ const cli=new StreamCli('/tmp',async()=>{calls++;return {status:'success',result:value};});
  const edit=new FieldEdit('session',context(),'state');edit.value='Keep this input';
  await assert.rejects(edit.save(cli,receipt=>receipts.push(receipt)),/uncertain/);
  assert.equal(calls,1);assert.deepEqual(receipts,[value]);assert.equal(edit.value,'Keep this input');assert.match(receiptText(value),/interrupted save marker/);assert.match(receiptText(value),/uncertain/);
 });
-test('CLI rejects invalid payload and nonreceipt failures',async()=>{
- for(const stdout of ['not json','{}',JSON.stringify({error:{kind:'invalid',message:'Fix input'}})]){
-  const cli=new StreamCli('/tmp',async()=>({code:2,stdout,stderr:'failed'}));
+test('typed catalog rejects nonreceipts and preserves structured failures',async()=>{
+ for(const outcome of [{status:'success',result:{}},{status:'error',error:{kind:'invalid',message:'Fix input'}}]){
+  const cli=new StreamCli('/tmp',async()=>outcome);
   await assert.rejects(cli.apply({}),StreamsCliError);
  }
 });
@@ -57,7 +58,7 @@ test('StreamCli validates strict catalog fields and nullable document provenance
  initial.native={frontend:'herdr',pane_id:'pane',tab_id:'tab',workspace_id:'workspace'};
  initial.checkouts=[{repository:'repo',checkout_id:'checkout',root:'/checkout'}];
  initial.document_locations=[{kind:'local',repository:'repo',path:'design.md',checkout_id:'checkout',root:'/checkout',file:'/checkout/design.md',error:null}];
- const read=value=>new StreamCli('/tmp',async()=>({code:0,stdout:JSON.stringify(value),stderr:''})).context(id);
+ const read=value=>new StreamCli('/tmp',async()=>({status:'success',result:value})).context(id);
  for(const provenance of [{},{commit:'abc',source_session_id:'origin'},{commit:null,source_session_id:null}]) {
   const value=structuredClone(initial);Object.assign(value.stream.documents[0],provenance);
   const app=await read(value);
@@ -95,11 +96,26 @@ test('StreamCli validates strict catalog fields and nullable document provenance
 });
 test('catalog list accepts only the current object contract',async()=>{
  for(const value of [[],[stream],null,{}, {streams:[{...stream,title_mode:'other'}]}]) {
-  const cli=new StreamCli('/tmp',async()=>({code:0,stdout:JSON.stringify(value),stderr:''}));
+  const cli=new StreamCli('/tmp',async()=>({status:'success',result:value}));
   await assert.rejects(cli.list(),StreamsCliError);
  }
- const cli=new StreamCli('/tmp',async()=>({code:0,stdout:JSON.stringify({streams:[stream]}),stderr:''}));
+ const cli=new StreamCli('/tmp',async()=>({status:'success',result:{streams:[stream]}}));
  assert.deepEqual(await cli.list(),[stream]);
+});
+test('context is bound to the child while the caller still admits only its own Session',async()=>{
+ const calls=[];const cli=new StreamCli('/tmp',async request=>{calls.push(request);return {status:'success',result:context()};});
+ await cli.context('native','effort');assert.deepEqual(calls,[{kind:'context',stream_id:'effort'}]);
+ await assert.rejects(cli.context('different'),/does not match this Pi session/);
+});
+test('title defaults use typed config intent and validate the returned policy',async()=>{
+ for(const target of ['stream','session'])for(const mode of ['automatic','manual']) {
+  const calls=[],title_defaults={stream:'manual',session:'automatic'};
+  const cli=new StreamCli('/tmp',async request=>{calls.push(request);return {status:'success',result:{title_defaults}};});
+  assert.deepEqual(await cli.setTitleDefault(target,mode),title_defaults);assert.deepEqual(calls,[{kind:'set_title_default',target,mode}]);
+ }
+ for(const title_defaults of [null,{}, {stream:'inherit',session:'manual'},{stream:'automatic',session:42}]) {
+  const cli=new StreamCli('/tmp',async()=>({status:'success',result:{title_defaults}}));await assert.rejects(cli.setTitleDefault('session','manual'),/Invalid title defaults/);
+ }
 });
 test('automatic fields omit protected names and all lifecycle and identity fields',()=>{
  assert.deepEqual(automaticFields('stream',stream),['goal','goal_short']);
@@ -845,11 +861,12 @@ for(const inside of [true,false])test(`real checkout CLI enroll/context/guarded 
  const shim=join(process.env.CARGO_TARGET_DIR ?? join(checkout,'target'),'debug','streams');
  const env={...process.env,HOME:root,XDG_CONFIG_HOME:join(root,'config'),XDG_DATA_HOME:join(root,'data'),XDG_STATE_HOME:join(root,'state')};
  for(const key of Object.keys(env))if(key.startsWith('STREAMS_'))delete env[key];
+ const clients=[];
  const run=(args,input)=>new Promise((resolve,reject)=>{const child=spawn(shim,args,{cwd,env,stdio:['pipe','pipe','pipe']});let stdout='',stderr='';child.stdout.on('data',chunk=>stdout+=chunk);child.stderr.on('data',chunk=>stderr+=chunk);child.on('error',reject);child.on('close',code=>resolve({code,stdout,stderr}));child.stdin.on('error',error=>{if(error.code!=='EPIPE')reject(error);});child.stdin.end(input);});
  try {
   const init=await run(['init','--sync','none','--json']);assert.equal(init.code,0,init.stderr);
   assert.equal((await run(['config','set','frontend.mode','none','--json'])).code,0);
-  const cli=new StreamCli(cwd,run);const empty=await cli.context('native');assert.equal(empty.session,null);assert.equal(empty.stream,null);
+  const cli=childCli(cwd,'native',env),sibling=childCli(cwd,'sibling-native',env),otherClient=childCli(cwd,'other-native',env);clients.push(cli,sibling,otherClient);const empty=await cli.context('native');assert.equal(empty.session,null);assert.equal(empty.stream,null);
   const enrolled=await cli.enroll({version:2,catalog_source:empty.catalog_source,operation_id:randomUUID(),harness:'pi',harness_session_id:'native',stream:{title:'Catalog port',goal:'Safe durable reports'},session:{title:'Implement reporting'},actor:'automatic',cwd});
   assert.ok(enrolled.saves.length>=2);const captured=await cli.context('native');assert.equal(captured.stream.id,enrolled.stream.id);assert.equal(captured.session.harness_session_id,'native');assert.ok(captured.authority.token);assert.ok(captured.catalog_source);
   const again=await cli.enroll({version:2,catalog_source:empty.catalog_source,operation_id:randomUUID(),harness:'pi',harness_session_id:'native',stream_id:captured.stream.id,session:{title:'Ignored existing'},actor:'automatic',cwd});assert.deepEqual(again.saves,[]);
@@ -862,15 +879,15 @@ for(const inside of [true,false])test(`real checkout CLI enroll/context/guarded 
   await cli.enroll({version:2,catalog_source:empty.catalog_source,operation_id:randomUUID(),harness:'pi',harness_session_id:'sibling-native',stream_id:captured.stream.id,session:{title:'Sibling contribution'},actor:'user',cwd});
   const withSibling=await cli.context('native');const guardedSession=editRequest(withSibling,'session',{state:'Own progress unaffected by sibling'},'automatic');
   const guardedStream=editRequest(withSibling,'stream',{goal:'Based on all contributions'},'automatic');
-  const siblingContext=await cli.context('sibling-native');await cli.apply(editRequest(siblingContext,'session',{state:'Changed sibling evidence'},'user'));
+  const siblingContext=await sibling.context('sibling-native');await sibling.apply(editRequest(siblingContext,'session',{state:'Changed sibling evidence'},'user'));
   const sessionSaved=await cli.apply(guardedSession);assert.equal(sessionSaved.save.domain.outcome,'changes');
   const superseded=await cli.apply(guardedStream);assert.equal(superseded.save.domain.outcome,'superseded');
   const independent=await cli.apply(editRequest(withSibling,'session',{title:'Independent manual edit'},'user'));assert.equal(independent.save.domain.outcome,'changes');
   const blocked=await cli.apply(editRequest(await cli.context('native'),'session',{status:'blocked'},'automatic'));assert.equal(blocked.session.status,'blocked');
   const invalid=await run(['agent','apply','--json'],'{"operation_id":"bad","kind":"stream","changes":{"repositories":{}}}');assert.equal(invalid.code,2);
-  const other=await cli.enroll({version:2,catalog_source:empty.catalog_source,operation_id:randomUUID(),harness:'pi',harness_session_id:'other-native',stream:{title:'Other effort'},session:{title:'Other'},actor:'user',cwd});
+  const other=await otherClient.enroll({version:2,catalog_source:empty.catalog_source,operation_id:randomUUID(),harness:'pi',harness_session_id:'other-native',stream:{title:'Other effort'},session:{title:'Other'},actor:'user',cwd});
   await assert.rejects(cli.context('native',other.stream.id),/move|fork|different|mismatch/i);
- } finally {rmSync(root,{recursive:true,force:true});}
+ } finally {await Promise.all(clients.map(cli=>cli.stop()));rmSync(root,{recursive:true,force:true});}
 });
 
 test('structured automatic no-op remains valid but discussion empty edits cannot write',async()=>{

@@ -33,12 +33,12 @@ test('wire parsing rejects unknown outcomes and ambiguous receipt shapes', async
   {...receipt,saves:[]},
   {save},
  ]) {
-  const cli = new StreamCli('/unused',async()=>({code:0,stdout:JSON.stringify(value),stderr:''}));
+  const cli = new StreamCli('/unused',async()=>({status:'success',result:value}));
   await assert.rejects(cli.apply({operation_id:'edit'}));
  }
  const retained = {...receipt,publication:{...publication,local:'repair-required'}};
  let calls=0;
- const cli = new StreamCli('/unused',async()=>{calls++;return {code:2,stdout:JSON.stringify(retained),stderr:''};});
+ const cli = new StreamCli('/unused',async()=>{calls++;return {status:'success',result:retained};});
  assert.deepEqual(await cli.apply({operation_id:'edit'}),retained);
  assert.equal(calls,1);
 });

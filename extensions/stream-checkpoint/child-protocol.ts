@@ -1,0 +1,60 @@
+export type DomainObject = Record<string, unknown>;
+export type TitleDefault = "automatic" | "manual";
+export type ChildRequest =
+ | {kind: "session_started" | "attach" | "open_card" | "close_card" | "list_streams"}
+ | {kind: "context"; stream_id?: string}
+ | {kind: "capture_inputs"; target: {kind: "inventory"} | {kind: "stream"; stream_id: string} | {kind: "workspace"; workspace_id: string}}
+ | {kind: "preview"; catalog: DomainObject; action: "apply" | "enroll"; request: DomainObject}
+ | {kind: "enroll" | "apply"; request: DomainObject}
+ | {kind: "capture_workspace"; stream_id: string}
+ | {kind: "sync"; event: "start" | "shutdown"}
+ | {kind: "set_title_default"; target: "stream" | "session"; mode: TitleDefault};
+export type ChildOutcome =
+ | {status: "success"; result: DomainObject}
+ | {status: "saved_with_warnings"; result: DomainObject; warnings: string[]}
+ | {status: "error"; error: {kind: string; message: string}};
+export type ChildView = {desired_pi_name: string | null};
+export type ServerFrame =
+ | {type: "ready"; protocol: 2}
+ | {type: "response"; id: number; outcome: ChildOutcome}
+ | {type: "view"; view: ChildView}
+ | {type: "warning"; message: string};
+export type Runner = (request: ChildRequest, options?: {timeout: number; signal?: AbortSignal}) => Promise<ChildOutcome>;
+const object = (value: unknown): value is DomainObject => !!value && typeof value === "object" && !Array.isArray(value);
+const fields = (value: unknown, keys: string[]): value is DomainObject => object(value) && Object.keys(value).length === keys.length && keys.every(key => Object.hasOwn(value, key));
+
+/** JSON.parse admits duplicate keys; reject them, including escaped and nested keys. */
+function parse(line: string): unknown {
+ const value: unknown = JSON.parse(line);
+ const stack: ({keys: Set<string>; key: boolean} | null)[] = [];
+ for (const token of line.match(/"(?:\\.|[^"\\])*"|[{}\[\]:,]|[^{}\[\]:,\s]+/g) ?? []) {
+  if (token === "{") stack.push({keys: new Set(), key: true});
+  else if (token === "[") stack.push(null);
+  else if (token === "}" || token === "]") stack.pop();
+  else {
+   const frame = stack.at(-1);
+   if (token === ",") {if (frame) frame.key = true;}
+   else if (frame?.key && token.startsWith('"')) {
+    const key: string = JSON.parse(token);
+    if (frame.keys.has(key)) throw Error("Duplicate Streams child JSON key");
+    frame.keys.add(key);frame.key = false;
+   }
+  }
+ }
+ return value;
+}
+export function decodeServerFrame(line: string): ServerFrame {
+ const value = parse(line);
+ if (object(value)) {
+  if (value.type === "ready" && fields(value, ["type", "protocol"]) && value.protocol === 2) return value as ServerFrame;
+  if (value.type === "warning" && fields(value, ["type", "message"]) && typeof value.message === "string") return value as ServerFrame;
+  if (value.type === "view" && fields(value, ["type", "view"]) && fields(value.view, ["desired_pi_name"]) && (value.view.desired_pi_name === null || typeof value.view.desired_pi_name === "string")) return value as ServerFrame;
+  if (value.type === "response" && fields(value, ["type", "id", "outcome"]) && Number.isSafeInteger(value.id) && (value.id as number) > 0 && object(value.outcome)) {
+   const outcome = value.outcome;
+   if (outcome.status === "success" && fields(outcome, ["status", "result"]) && object(outcome.result)
+    || outcome.status === "saved_with_warnings" && fields(outcome, ["status", "result", "warnings"]) && object(outcome.result) && Array.isArray(outcome.warnings) && outcome.warnings.length > 0 && outcome.warnings.every(item => typeof item === "string")
+    || outcome.status === "error" && fields(outcome, ["status", "error"]) && fields(outcome.error, ["kind", "message"]) && typeof outcome.error.kind === "string" && typeof outcome.error.message === "string") return value as ServerFrame;
+  }
+ }
+ throw Error("Invalid Streams child v2 frame");
+}
