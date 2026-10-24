@@ -143,6 +143,80 @@ fn stream_report_checks_membership_period_without_retargeting_old_prose() {
 }
 
 #[test]
+fn report_receipts_keep_work_text_only_in_the_current_record() {
+    fn saved_bytes(payload: &str) -> Vec<u8> {
+        let directory = tempfile::tempdir().unwrap();
+        let store = setup(directory.path());
+        let mut current = session();
+        for index in 0..16 {
+            let saved = update(
+                &store,
+                &wire(
+                    &format!("report-{index}"),
+                    &current,
+                    "user",
+                    &format!("{index}: {payload}"),
+                ),
+            );
+            assert_eq!(
+                saved.outcome,
+                json!({"outcome":"changes","conflicts":[],"reason":""})
+                    .as_object()
+                    .unwrap()
+                    .clone()
+            );
+            let Record::Session(session) = saved.current.record else {
+                unreachable!()
+            };
+            current = session;
+        }
+        let target = RecordAddress::for_record(&Record::Session(current));
+        let bytes = std::fs::read(
+            directory
+                .path()
+                .join(relative_record_path(&target).unwrap()),
+        )
+        .unwrap();
+        let envelope: Value = serde_json::from_slice(&bytes).unwrap();
+        assert_eq!(envelope["receipts"].as_object().unwrap().len(), 17);
+        bytes
+    }
+    let small = saved_bytes("");
+    let payload = "x".repeat(64 * 1024);
+    let large = saved_bytes(&payload);
+    assert_eq!(large.len() - small.len(), payload.len());
+}
+
+#[test]
+fn no_change_and_refused_report_retries_retain_only_the_original_decision() {
+    let directory = tempfile::tempdir().unwrap();
+    let store = setup(directory.path());
+    let unchanged = wire("unchanged", &session(), "user", "");
+    let no_change = update(&store, &unchanged);
+    assert_eq!(no_change.outcome["outcome"], "no-change");
+    update(&store, &wire("newer", &session(), "user", "current"));
+    for (actor, expected) in [("user", "conflict"), ("automatic", "superseded")] {
+        let request = wire(actor, &session(), actor, "stale proposal");
+        let first = update(&store, &request);
+        assert_eq!(first.outcome["outcome"], expected);
+        assert!(!first.outcome["conflicts"].as_array().unwrap().is_empty());
+        assert!(!first.outcome["reason"].as_str().unwrap().is_empty());
+        assert_eq!(first.outcome.len(), 3);
+        let repeated = update(&store, &request);
+        assert!(repeated.repeated);
+        assert_eq!(repeated.outcome, first.outcome);
+        assert_eq!(repeated.current, first.current);
+    }
+    let repeated = update(&store, &unchanged);
+    assert!(repeated.repeated);
+    assert_eq!(repeated.outcome, no_change.outcome);
+    let Record::Session(current) = repeated.current.record else {
+        unreachable!()
+    };
+    assert_eq!(current.state, "current");
+}
+
+#[test]
 fn accepted_report_retry_after_later_edits_reads_only_target_and_retains_original_outcome() {
     let directory = tempfile::tempdir().unwrap();
     let store = setup(directory.path());

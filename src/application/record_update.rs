@@ -52,11 +52,14 @@ pub fn save_record_update(store: &impl RecordStore, update: &RecordUpdate) -> Re
             Reconciliation::Changes { record, .. } => record.as_ref().clone(),
             _ => target.record.clone(),
         };
-        let outcome = serde_json::to_value(decision)
-            .expect("validated reconciliation serializes")
-            .as_object()
-            .expect("reconciliation serializes an object")
-            .clone();
+        let outcome = serde_json::json!({
+            "outcome": decision.outcome(),
+            "conflicts": decision.conflicts(),
+            "reason": decision.reason(),
+        })
+        .as_object()
+        .expect("decision outcome is an object")
+        .clone();
         Ok(RecordChange { record, outcome })
     })
 }
