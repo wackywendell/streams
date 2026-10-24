@@ -257,7 +257,9 @@ pub struct NativeCardEngine {
     environment: BTreeMap<String, String>,
     launched: Option<LaunchedCardContext>,
     cancelled: Arc<AtomicBool>,
-    caller: NativeTuple,
+    caller: Option<NativeTuple>,
+    required_caller_terminal: Option<String>,
+    expected_owner: Option<(Scope, NativeOwnerContext)>,
     captured: Option<CapturedOwner>,
     commands: Vec<CommandEvidence>,
     observation: Option<HerdrNativeSnapshot>,
@@ -276,16 +278,37 @@ impl NativeCardEngine {
         environment: BTreeMap<String, String>,
         cancelled: Arc<AtomicBool>,
     ) -> Result<Self> {
-        let snapshot = HerdrNativeSnapshot::parse(&client.session_snapshot()?)?;
-        Self::from_snapshot(
+        let launched = LaunchedCardContext::from_environment(&environment)?;
+        if let Some(context) = &launched
+            && (context.state_directory() != state.directory()
+                || std::fs::canonicalize(context.plugin_root())?
+                    != std::fs::canonicalize(&config.plugin_root)?)
+        {
+            return Err(invalid(
+                "launched-card state or plugin root differs from its protected context",
+            ));
+        }
+        if launched.as_ref().is_some_and(|context| {
+            environment.get("HERDR_PANE_ID") == Some(&context.owner().pane_id)
+        }) {
+            return Err(invalid("a launched card cannot run as the Pi owner pane"));
+        }
+        Ok(Self {
             client,
             source,
             state,
             config,
             environment,
+            launched,
             cancelled,
-            snapshot,
-        )
+            caller: None,
+            required_caller_terminal: None,
+            expected_owner: None,
+            captured: None,
+            commands: Vec::new(),
+            observation: None,
+            bootstrap: false,
+        })
     }
 
     /// Reuse a caller's fresh bootstrap snapshot without spending another native read.
@@ -298,23 +321,15 @@ impl NativeCardEngine {
         cancelled: Arc<AtomicBool>,
         snapshot: HerdrNativeSnapshot,
     ) -> Result<Self> {
-        let launched = LaunchedCardContext::from_environment(&environment)?;
-        if let Some(context) = &launched
-            && (context.state_directory() != state.directory()
-                || std::fs::canonicalize(context.plugin_root())?
-                    != std::fs::canonicalize(&config.plugin_root)?)
-        {
-            return Err(invalid(
-                "launched-card state or plugin root differs from its protected context",
-            ));
-        }
-        let current = client.current_pane_from(snapshot.raw())?;
-        if launched
-            .as_ref()
-            .is_some_and(|context| context.owner().pane_id == current.id)
-        {
-            return Err(invalid("a launched card cannot run as the Pi owner pane"));
-        }
+        let mut engine = Self::new(client, source, state, config, environment, cancelled)?;
+        engine.verify_caller(&snapshot)?;
+        engine.observation = Some(snapshot);
+        engine.bootstrap = true;
+        Ok(engine)
+    }
+
+    fn verify_caller(&mut self, snapshot: &HerdrNativeSnapshot) -> Result<NativeTuple> {
+        let current = self.client.current_pane_from(snapshot.raw())?;
         let pane = snapshot
             .topology()
             .panes
@@ -324,34 +339,30 @@ impl NativeCardEngine {
         let caller = NativeTuple::from_pane(pane);
         if caller.workspace_id != current.workspace_id
             || caller.tab_id != current.tab_id
-            || environment.get("HERDR_PANE_ID") != Some(&caller.pane_id)
-            || (launched.is_some()
-                && (environment
+            || self.environment.get("HERDR_PANE_ID") != Some(&caller.pane_id)
+            || self.caller.as_ref().is_some_and(|old| old != &caller)
+            || self
+                .required_caller_terminal
+                .as_ref()
+                .is_some_and(|terminal| terminal != &caller.terminal_id)
+            || (self.launched.is_some()
+                && (self
+                    .environment
                     .get("HERDR_TAB_ID")
                     .is_some_and(|v| v != &caller.tab_id)
-                    || environment
+                    || self
+                        .environment
                         .get("HERDR_WORKSPACE_ID")
                         .is_some_and(|v| v != &caller.workspace_id)))
         {
             return Err(super::RuntimeError::NativeContextChanged(
-                "caller native tuple changed during bootstrap".into(),
+                "caller native tuple moved or changed".into(),
             ));
         }
-        Ok(Self {
-            client,
-            source,
-            state,
-            config,
-            environment,
-            launched,
-            cancelled,
-            caller,
-            captured: None,
-            commands: Vec::new(),
-            observation: Some(snapshot),
-            bootstrap: true,
-        })
+        self.caller = Some(caller.clone());
+        Ok(caller)
     }
+
     fn begin_observation(&mut self) {
         if !std::mem::take(&mut self.bootstrap) {
             self.observation = None;
@@ -431,11 +442,8 @@ impl NativeCardEngine {
     fn inspect(&mut self, inventory: bool) -> Result<Verified> {
         self.check_cancelled()?;
         let snapshot = self.snapshot()?;
+        let caller = self.verify_caller(&snapshot)?;
         let before = self.source.read(&self.client, &snapshot, inventory)?;
-        let caller = snapshot.locate_terminal(&self.caller.terminal_id)?;
-        if NativeTuple::from_pane(caller) != self.caller {
-            return Err(self.refuse("caller native tuple moved or changed"));
-        }
         let owner = snapshot
             .topology()
             .panes
@@ -446,8 +454,8 @@ impl NativeCardEngine {
         let claimed = before.card.owner();
         if tuple.tab_id != claimed.tab_id
             || tuple.workspace_id != claimed.workspace_id
-            || tuple.workspace_id != self.caller.workspace_id
-            || tuple.tab_id != self.caller.tab_id
+            || tuple.workspace_id != caller.workspace_id
+            || tuple.tab_id != caller.tab_id
         {
             return Err(self.refuse("attested owner moved outside this card workspace/tab"));
         }
@@ -463,8 +471,13 @@ impl NativeCardEngine {
             ("strm_stream".into(), scope.stream_id.clone()),
         ]);
         let tokens = snapshot
-            .workspace_tokens(&self.caller.workspace_id)
+            .workspace_tokens(&caller.workspace_id)
             .expect("linked workspace");
+        self.check_expected_owner(
+            scope,
+            &tuple,
+            tokens.get("strm_binding").map(String::as_str),
+        )?;
         if self.captured.as_ref().is_some_and(|old| {
             old.scope != *scope
                 || old.tuple != tuple
@@ -490,18 +503,11 @@ impl NativeCardEngine {
             tuple: tuple.clone(),
             binding: tokens.get("strm_binding").cloned(),
         });
-        let latest = self.source.read(&self.client, &snapshot, inventory)?;
-        if latest.card.scope() != scope
-            || latest.card.owner() != claimed
-            || latest.handover != before.handover
-        {
-            return Err(self.refuse("Streams context changed during native verification"));
-        }
         self.check_cancelled()?;
         Ok(Verified {
-            saved: latest,
+            saved: before,
             snapshot,
-            caller: self.caller.clone(),
+            caller,
             owner: tuple,
             identity,
             key,

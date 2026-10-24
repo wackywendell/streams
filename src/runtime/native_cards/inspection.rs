@@ -70,29 +70,60 @@ impl NativeCardEngine {
             card: v.saved.card,
         })
     }
-    /// A private child retains its already-attested caller terminal across requests.
-    pub fn require_caller_terminal(&self, terminal: &str) -> Result<()> {
-        if self.caller.terminal_id != terminal {
+    /// Register private child continuity as a restriction on the command's observation.
+    pub fn require_caller_terminal(&mut self, terminal: &str) -> Result<()> {
+        super::super::text(terminal)?;
+        if self
+            .caller
+            .as_ref()
+            .is_some_and(|caller| caller.terminal_id != terminal)
+            || self
+                .required_caller_terminal
+                .as_ref()
+                .is_some_and(|old| old != terminal)
+        {
             return Err(super::super::RuntimeError::NativeContextChanged(
                 "Owner pane terminal identity changed".into(),
             ));
         }
+        self.required_caller_terminal = Some(terminal.into());
         Ok(())
     }
 
-    /// Re-attest the caller and pin the CLI process before any lifecycle mutation.
+    /// Register captured intent; observation must verify it before any effect.
     pub fn pin_owner(&mut self, scope: &Scope, expected: &NativeOwnerContext) -> Result<()> {
-        // Pin construction against its bootstrap snapshot without spending the
-        // first command's observation. Later pinning must still refresh.
-        if !self.bootstrap {
-            self.observation = None;
+        if self.launched.is_some()
+            || expected.socket != self.client.endpoint().socket
+            || self
+                .expected_owner
+                .as_ref()
+                .is_some_and(|old| old != &(scope.clone(), expected.clone()))
+        {
+            return Err(super::super::RuntimeError::NativeContextChanged(
+                "captured native owner scope, endpoint, tuple or binding changed".into(),
+            ));
         }
-        let observed = self.observe_owner_current()?;
-        let mut context = observed.context;
-        if expected.binding.is_none() {
-            context.binding = None;
-        }
-        if observed.card.scope() != scope || context != *expected {
+        self.expected_owner = Some((scope.clone(), expected.clone()));
+        Ok(())
+    }
+
+    pub(super) fn check_expected_owner(
+        &self,
+        scope: &Scope,
+        owner: &NativeTuple,
+        binding: Option<&str>,
+    ) -> Result<()> {
+        if let Some((expected_scope, expected)) = &self.expected_owner
+            && (scope != expected_scope
+                || owner.pane_id != expected.pane_id
+                || owner.terminal_id != expected.terminal_id
+                || owner.workspace_id != expected.workspace_id
+                || owner.tab_id != expected.tab_id
+                || expected
+                    .binding
+                    .as_deref()
+                    .is_some_and(|expected| binding != Some(expected)))
+        {
             return Err(super::super::RuntimeError::NativeContextChanged(
                 "captured native owner scope, endpoint, tuple or binding changed".into(),
             ));

@@ -38,7 +38,7 @@ fn startup_first_paint_uses_one_observation_instead_of_two_and_adds_only_the_req
     assert!(view.complete_refresh(token, Ok(old)));
     view.paint(Rect::new(0, 0, 100, 20));
     assert_eq!(f.server.methods(), ["ping", "session.snapshot"]);
-    assert_eq!(f.runner.world.lock().unwrap().observation_reads, 2);
+    assert_eq!(f.runner.world.lock().unwrap().observation_reads, 1);
     let evidence = f.record();
 
     f.server.clear();

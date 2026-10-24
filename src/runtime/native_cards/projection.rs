@@ -265,7 +265,7 @@ impl NativeCardEngine {
             let scope = NameStore::prepare_scope(
                 &lock,
                 path_text(&self.client.endpoint().socket)?,
-                &self.caller.workspace_id,
+                &before.caller.workspace_id,
                 before.bound()?,
                 kind,
                 &label.id,

@@ -683,9 +683,11 @@ fn owner_observation_is_readonly_and_lifetime_expectations_fail_closed() {
             4 => changed.tab_id = "different".into(),
             _ => changed.binding = Some("different".into()),
         }
+        let mut candidate = f.engine();
         assert!(
-            f.engine()
+            candidate
                 .pin_owner(observed.card.scope(), &changed)
+                .and_then(|()| candidate.observe_owner())
                 .is_err()
         );
     }
@@ -699,29 +701,73 @@ fn owner_observation_is_readonly_and_lifetime_expectations_fail_closed() {
             4 => changed.native_session_id = "different".into(),
             _ => changed.harness = "different".into(),
         }
-        assert!(f.engine().pin_owner(&changed, &observed.context).is_err());
+        let mut candidate = f.engine();
+        assert!(
+            candidate
+                .pin_owner(&changed, &observed.context)
+                .and_then(|()| candidate.observe_owner())
+                .is_err()
+        );
     }
     assert!(f.effects().is_empty());
     assert!(f.runner.state.read(&f.runner.key).unwrap().is_none());
     engine.open_display(OpenMode::Explicit).unwrap();
     let current = f.engine().observe_owner().unwrap();
     assert!(current.context.binding.is_some());
-    f.engine()
+    let mut candidate = f.engine();
+    candidate
         .pin_owner(observed.card.scope(), &observed.context)
+        .and_then(|()| candidate.observe_owner())
         .unwrap();
-    f.engine()
+    let mut candidate = f.engine();
+    candidate
         .pin_owner(current.card.scope(), &current.context)
+        .and_then(|()| candidate.observe_owner())
         .unwrap();
     f.runner.world.lock().unwrap().snapshot["workspaces"][0]["tokens"]["strm_binding"] =
         json!("replacement");
     let before = f.effects().len();
+    let mut candidate = f.engine();
     assert!(
-        f.engine()
+        candidate
             .pin_owner(current.card.scope(), &current.context)
+            .and_then(|()| candidate.observe_owner())
             .is_err()
     );
     assert_eq!(before, f.effects().len());
 }
+#[test]
+fn native_preparation_registers_restrictions_without_observing() {
+    let f = Fixture::new();
+    let observed = f.engine().observe_owner().unwrap();
+    f.server.clear();
+    f.runner.world.lock().unwrap().observation_reads = 0;
+    let mut engine = f.engine();
+    engine
+        .require_caller_terminal(&observed.context.terminal_id)
+        .unwrap();
+    engine
+        .pin_owner(observed.card.scope(), &observed.context)
+        .unwrap();
+    assert_eq!(f.server.methods(), ["ping"]);
+    assert_eq!(f.runner.world.lock().unwrap().observation_reads, 0);
+    assert!(f.effects().is_empty());
+    engine.observe_owner().unwrap();
+    assert_eq!(f.server.methods(), ["ping", "session.snapshot"]);
+    assert_eq!(f.runner.world.lock().unwrap().observation_reads, 1);
+}
+
+#[test]
+fn caller_restriction_is_verified_before_catalog_reads_or_effects() {
+    let f = Fixture::new();
+    let mut engine = f.engine();
+    engine.require_caller_terminal("another-terminal").unwrap();
+    assert!(engine.open_display(OpenMode::Explicit).is_err());
+    assert_eq!(f.runner.world.lock().unwrap().observation_reads, 0);
+    assert!(f.effects().is_empty());
+    assert!(f.runner.state.read(&f.runner.key).unwrap().is_none());
+}
+
 #[test]
 fn card_pane_cannot_use_the_owner_bridge() {
     let f = Fixture::new();
@@ -823,7 +869,7 @@ fn native_open_baseline_source_evidence_and_wait_counts() {
         .count();
     // The fake source counts context requests, not real catalog file reads.
     // The CLI/catalog integration budget must count those separately.
-    assert_eq!((source_reads, probes, reads, waits), (32, 38, 31, 0));
+    assert_eq!((source_reads, probes, reads, waits), (16, 38, 31, 0));
     let evidence = f
         .runner
         .state
@@ -1107,6 +1153,7 @@ fn caller_terminal_workspace_or_tab_change_never_effects() {
     for field in ["terminal_id", "workspace_id", "tab_id"] {
         let f = Fixture::new();
         let mut engine = f.engine();
+        engine.observe_owner().unwrap();
         {
             let mut w = f.runner.world.lock().unwrap();
             w.snapshot["panes"][0][field] = json!("moved");

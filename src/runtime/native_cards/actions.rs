@@ -133,13 +133,20 @@ fn path_text(path: &Path) -> Result<String> {
 
 impl NativeCardEngine {
     pub(super) fn evidence(&self, v: &Verified) -> Result<Option<NativeAttempt>> {
+        self.validate_evidence(v, self.read_attempt(&v.key, NativePurpose::Card)?)
+    }
+
+    pub(super) fn validate_evidence(
+        &self,
+        v: &Verified,
+        attempt: Option<NativeAttempt>,
+    ) -> Result<Option<NativeAttempt>> {
         let pair = v.pair()?;
         if matches!(pair, PairState::CardOnly { .. }) {
             return Err(self.refuse(
                 "uncertain card-only launch retained; owner must complete its exact reservation",
             ));
         }
-        let attempt = self.read_attempt(&v.key, NativePurpose::Card)?;
         if let Some(record) = &attempt {
             if matches!(record.phase(), NativePhase::Unlaunched) {
                 return Err(self.refuse("uncertain native launch retained; no retry permitted"));
