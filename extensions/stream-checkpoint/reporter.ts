@@ -10,7 +10,7 @@ import { SessionScope, captureInputs } from "./session-scope.ts";
 import type { SessionFence } from "./session-scope.ts";
 import type { ReportingSettings } from "./settings.ts";
 
-type Options = {scope?: SessionScope; cli(ctx: ExtensionContext): StreamCli; settings(): ReportingSettings; infer?: typeof modelInfer; logging?(): InferenceLogOptions | undefined; notice(text: string): void; receipt(value: Receipt, deferNative?: boolean, quiet?: boolean): void; activity?(text?: string, completed?: boolean): void; onUpdateNative?(): void; onReclaimNames?(target: ResetTarget): Promise<void> | void};
+type Options = {scope?: SessionScope; cli(ctx: ExtensionContext): StreamCli; settings(): ReportingSettings; infer?: typeof modelInfer; logging?(): InferenceLogOptions | undefined; notice(text: string): void; receipt(value: Receipt, quiet?: boolean): void; activity?(text?: string, completed?: boolean): void};
 type Pending = {ctx: ExtensionContext; force: boolean; instructions?: string; reset?: boolean; auto?: boolean; target?: ResetTarget};
 export class Reporter {
  readonly scope: SessionScope;
@@ -73,11 +73,7 @@ export class Reporter {
    capture: () => captureInputs(ctx, cli, this.options.settings().context, fence, "report"),
    generate: request => generate(ctx, request, fence.signal, this.options.settings().model, this.options.logging?.()),
    apply: (request) => cli.apply(request), enroll: (request) => cli.enroll(request),
-   receipt: (receipt) => {if (fence.live()) this.options.receipt(receipt, true, !force);},
+   receipt: (receipt) => {if (fence.live()) this.options.receipt(receipt, !force);},
    notice: (text) => this.options.notice(text),
-   completed: async ({savedAny, reclaimReady, target}) => {
-    if (reclaimReady && fence.live()) await this.options.onReclaimNames?.(target);
-    else if (savedAny && fence.live()) this.options.onUpdateNative?.();
-   },
   });
  }}

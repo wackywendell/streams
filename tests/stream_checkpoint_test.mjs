@@ -994,10 +994,10 @@ test('infer normalizes null remaining/state, empty nullable fields, overlong sho
  const streamResult=await infer(ctx({title:'Echoed manual',status:'active',goal:'   ',goal_short:'Orphan short'}),{type:'stream',catalog:streamCatalog,messages:[],reset:true},new AbortController().signal);
  assert.deepEqual(streamResult,{changes:{goal:null,goal_short:null}});
 });
-test('a superseded report retains its receipt without retrying inference or scheduling native effects',async()=>{
+test('a superseded report retains its receipt without retrying inference; a later explicit reset remains possible',async()=>{
  const catalog=context(),sibling={...session,id:'sibling',harness_session_id:'sibling-native',state:'Before'};
  catalog.sessions.push(sibling);
- const receipts=[],updates=[],reclaims=[];let sessionAttempts=0;
+ const receipts=[];let sessionAttempts=0;
  const f=reporterFixture();
  const cli={context:async()=>structuredClone(catalog),apply:async req=>{
   if(req.kind==='session'&&++sessionAttempts===1){
@@ -1007,14 +1007,11 @@ test('a superseded report retains its receipt without retrying inference or sche
   Object.assign(catalog[req.kind],req.changes);
   return {operation_id:req.operation_id,save:{local:'persisted',sharing:'local-only',domain:{outcome:'changes'}}};
  }};
- const reporter=new Reporter({cli:()=>cli,settings:()=>defaults,infer:async(_ctx,req)=>({changes:req.type==='session'?{state:'Recovered progress'}:{goal:'Updated goal'}}),notice:text=>assert.fail(text),receipt:(value,defer)=>receipts.push({value,defer}),onUpdateNative:()=>updates.push('update'),onReclaimNames:()=>reclaims.push('reclaim')});
+ const reporter=new Reporter({cli:()=>cli,settings:()=>defaults,infer:async(_ctx,req)=>({changes:req.type==='session'?{state:'Recovered progress'}:{goal:'Updated goal'}}),notice:text=>assert.fail(text),receipt:value=>receipts.push(value)});
  reporter.request(f.ctx);await reporter.idle();
  assert.equal(sessionAttempts,1);
- assert.equal(receipts.length,1);assert.ok(receipts.every(item=>item.defer===true));
- assert.equal(receipts[0].value.save.domain.outcome,'superseded');
- assert.deepEqual(updates,[]);assert.deepEqual(reclaims,[]);
- reporter.reset(f.ctx,true);await reporter.idle();
- assert.deepEqual(reclaims,['reclaim']);assert.deepEqual(updates,[]);
+ assert.equal(receipts.length,1);assert.equal(receipts[0].save.domain.outcome,'superseded');
+ reporter.reset(f.ctx,true);await reporter.idle();assert.ok(receipts.length>1);assert.equal(receipts.at(-1).save.domain.outcome,'changes');
 });
 test('failed manual field edit can rebase onto updated live catalog and save retained input',async()=>{
  const state={discussion:{input:'',messages:[]},edits:new Map()},live=context();
