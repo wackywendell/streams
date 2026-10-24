@@ -26,11 +26,27 @@ The canonical conversation key is lowercase SHA256 of the compact UTF-8 JSON arr
 
 The child subscribes to `pane.closed` and `pane.exited` for its own card. An event says to re-read: after one fresh positive-absence check, the child records closure and clears the stale owner marker. If no child is running, its next start observes and records closure. Missing or uncertain observations retain uncertainty.
 
+At startup and after every event batch, the card reads its own evidence by conversation key and launch nonce. If the record is absent or its nonce differs, the card exits without writing. Legitimate launch intent exists before dispatch. An orphan therefore cannot outlive the removal or replacement of its evidence, including after offline reset.
+
 Use a versioned, conversation-keyed evidence record carrying that lifetime's nonce, phase and resources. Normal operations use direct keyed reads and require the completed new format. They never read legacy keys, replay history or scan for evidence. If migration is required, fail clearly and name the migration command.
 
-At deploy, the coordinator stops native writers, takes a backup and runs `streams native migrate-evidence` under the native lock. This explicit offline step may scan version-1 records and take one Herdr snapshot. Promote only records unambiguously attributable to the same conversation and attempt, using captured context or exact nonce, terminal and pair evidence. Archive the original bytes; the promoted record preserves the nonce, phase and resources. Promotion is neither a new launch nor proof of an unknown outcome. Live cards retain their lifetime through promotion and later moves.
+### Offline reset
 
-Move unattributable records to quarantine and list them in the migration report. The coordinator resolves these with the user; quarantining an unresolved attempt does not clear its fence. Install the completed-format marker only after active legacy records are removed and quarantined uncertainty has an explicit resolution. Normal operations do not support a mixed layout or fall back to legacy reads.
+The alpha cutover resets native evidence instead of attributing old records. After backup, the coordinator stops Streams Pi children and their serve processes, then runs `streams native migrate-evidence` under the native lock. Card panes will restart; preserving their old nonce or lifetime through deploy is not required. Catalog identity migration can run in either order.
+
+For this first deploy, the coordinator also stops every pre-rule card process by command line, including `~/code/streams/target/debug/streams native pane`. They inspect a snapshot for leftover card panes and close them by hand. Replacing the executable does not upgrade running readers. Late launch requests must use the deployed binary at their captured `STREAMS_RUST_BIN` path. These are deploy steps, not runtime attribution.
+
+The reset takes one Herdr snapshot and runs one ordered plan, without retries:
+
+1. Close known card resources named by version-1 evidence, matching their nonce, resource tuple and card markers against the snapshot. The record shape alone cannot distinguish cards from editors. Leave editor and unclassified panes open.
+2. Clear Streams pair markers on every pane, guarding each target against its snapshot identity.
+3. Delete all version-1 card and editor evidence, then install the completed-version-2 marker.
+
+A late card from an in-flight version-1 launch starts the deployed binary, finds no matching version-2 evidence and exits. Unmarked or otherwise unclassified cards follow the same rule. The reset needs neither plugin provenance in the snapshot nor a frontend dispatch barrier. If an effect reply fails or mismatches, stop before deleting evidence or installing completion.
+
+Editor evidence is discarded even when a launch was uncertain. Editors may contain unsaved work, so the reset leaves them open. A later request may create a duplicate editor pane; this is an accepted alpha cost. This exception does not cover workspace-open attempts.
+
+After reset, automatic open or `/streams pane` can launch fresh cards. Normal operations never perform this reset, read version-1 evidence or support a mixed layout. There is no attribution, quarantine, migration manifest or editor evidence upgrade.
 
 ## Cross-host participation
 
@@ -60,7 +76,7 @@ Pi carries request context without interpreting membership or orchestrating reco
 
 Tree navigation preserves conversation identity but invalidates work captured against the old branch. A completed conversation replacement retires the old runtime's work; cancellation leaves it usable.
 
-Reconcile on relevant native events and Streams interactions, following the [event-driven process contract](bounded-work-and-card-events.md). Every transition preserves pending native-effect evidence. Membership changes or resource reappearance cannot erase launch uncertainty or authorize duplicate effects.
+Reconcile on relevant native events and Streams interactions, following the [event-driven process contract](bounded-work-and-card-events.md). Normal transitions preserve pending native-effect evidence. Membership changes or resource reappearance cannot erase launch uncertainty or authorize duplicate effects. The explicit offline reset above is the deploy exception.
 
 ## Work status and native presence
 
