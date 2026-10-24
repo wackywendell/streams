@@ -11,6 +11,7 @@ mod memory;
 pub mod agent;
 pub mod application;
 pub mod cancellation;
+pub mod child_protocol;
 pub mod codec;
 pub mod config;
 mod file_io;

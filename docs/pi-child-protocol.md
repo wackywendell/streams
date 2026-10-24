@@ -46,6 +46,48 @@ than requiring another native query to discover what execution just did. The
 concrete request and response types must be shared before either side activates
 version 2; the examples above do not define the remaining payloads.
 
+## Concrete wire schema
+
+[`child_protocol`](../src/child_protocol.rs) defines the version-2 frames and
+application request fields. [Shared fixtures](../tests/fixtures/pi-child-v2.json)
+cover both directions. Their catalog objects illustrate the envelope, not valid
+domain submissions; the existing domain codecs still admit those packets.
+Context is bound to the child's Pi session, with an optional Stream selector.
+Capture-input selectors explicitly distinguish inventory, Stream and workspace.
+Preview carries its catalog, action and request as separate fields. Enrollment
+and apply carry their domain request object, not serialized stdin. Workspace
+capture names its target Stream. Sync carries the domain scheduling event.
+
+A response has an ID and an outcome: `success`, `saved_with_warnings` or `error`.
+Result payloads are objects. Successful catalog results retain their existing
+domain shapes. Accepted saves with warnings retain the same result and a
+nonempty list of warning messages; they are not failed or rolled-back saves.
+Errors carry a kind and message. Native opening returns its own `display`
+outcome (`opened`, `existing` or `suppressed`), and closing returns `closed: true`,
+without a status confirmation read.
+
+An active `attach` returns `{"native":"active"}`, with no display outcome.
+An active `session_started` returns `{"native":"active","display":"..."}`
+with the automatic-open outcome, including `suppressed` when automatic opening
+is disabled. Either lifecycle request succeeds with
+`{"native":"inactive","reason":"outside_herdr"}` outside Herdr, or
+`{"native":"inactive","reason":"not_enrolled"}` when the addressed Session
+does not exist. These are expected inactive states, not string-matched errors.
+Malformed or unreadable records, unproved caller origin and native failures
+remain errors. Explicit open or close requests report a refusal in inactive
+states rather than claiming an effect succeeded.
+
+Background work can emit `view` with `desired_pi_name`, or a `warning` message.
+Request-scoped warnings belong to the response; the child must not emit them
+again as unsolicited warnings. The shared fixtures are independent frames,
+not a transcript with several responses to one request.
+A null desired name means no Pi rename. A non-null name is the current saved
+Session title when session-name synchronization is enabled. Pi applies it with
+its checked setter. Neither event supplies caller proof or selects another
+projection, capture or observation pass. Unknown fields, duplicate JSON keys,
+unsupported versions and positional struct arrays are rejected. Version 1
+remains active until the coordinated transport cutover.
+
 ## One native queue
 
 The child should serialize native user requests and selected native or catalog

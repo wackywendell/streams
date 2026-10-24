@@ -1,0 +1,41 @@
+{
+  "client": [
+    {"type":"request","id":1,"request":{"kind":"session_started"}},
+    {"type":"request","id":2,"request":{"kind":"attach"}},
+    {"type":"request","id":3,"request":{"kind":"open_card"}},
+    {"type":"request","id":4,"request":{"kind":"close_card"}},
+    {"type":"request","id":5,"request":{"kind":"context"}},
+    {"type":"request","id":6,"request":{"kind":"context","stream_id":"effort"}},
+    {"type":"request","id":7,"request":{"kind":"capture_inputs","target":{"kind":"inventory"}}},
+    {"type":"request","id":8,"request":{"kind":"capture_inputs","target":{"kind":"stream","stream_id":"effort"}}},
+    {"type":"request","id":9,"request":{"kind":"capture_inputs","target":{"kind":"workspace","workspace_id":"w"}}},
+    {"type":"request","id":10,"request":{"kind":"preview","catalog":{},"action":"apply","request":{}}},
+    {"type":"request","id":11,"request":{"kind":"preview","catalog":{},"action":"enroll","request":{}}},
+    {"type":"request","id":12,"request":{"kind":"enroll","request":{"version":2}}},
+    {"type":"request","id":13,"request":{"kind":"apply","request":{}}},
+    {"type":"request","id":14,"request":{"kind":"list_streams"}},
+    {"type":"request","id":15,"request":{"kind":"capture_workspace","stream_id":"effort"}},
+    {"type":"request","id":16,"request":{"kind":"sync","event":"start"}},
+    {"type":"request","id":17,"request":{"kind":"sync","event":"shutdown"}},
+    {"type":"cancel","id":9007199254740991}
+  ],
+  "server": [
+    {"type":"ready","protocol":2},
+    {"type":"response","id":2,"outcome":{"status":"success","result":{"native":"active"}}},
+    {"type":"response","id":1,"outcome":{"status":"success","result":{"native":"active","display":"opened"}}},
+    {"type":"response","id":1,"outcome":{"status":"success","result":{"native":"active","display":"existing"}}},
+    {"type":"response","id":1,"outcome":{"status":"success","result":{"native":"inactive","reason":"outside_herdr"}}},
+    {"type":"response","id":1,"outcome":{"status":"success","result":{"native":"inactive","reason":"not_enrolled"}}},
+    {"type":"response","id":2,"outcome":{"status":"success","result":{"native":"inactive","reason":"outside_herdr"}}},
+    {"type":"response","id":2,"outcome":{"status":"success","result":{"native":"inactive","reason":"not_enrolled"}}},
+    {"type":"response","id":3,"outcome":{"status":"success","result":{"display":"opened"}}},
+    {"type":"response","id":3,"outcome":{"status":"success","result":{"display":"existing"}}},
+    {"type":"response","id":1,"outcome":{"status":"success","result":{"native":"active","display":"suppressed"}}},
+    {"type":"response","id":4,"outcome":{"status":"success","result":{"closed":true}}},
+    {"type":"response","id":13,"outcome":{"status":"saved_with_warnings","result":{"operation_id":"save-1"},"warnings":["Title saved; native projection failed"]}},
+    {"type":"response","id":3,"outcome":{"status":"error","error":{"kind":"runtime","message":"Caller origin is not proven"}}},
+    {"type":"view","view":{"desired_pi_name":"Café 会話"}},
+    {"type":"view","view":{"desired_pi_name":null}},
+    {"type":"warning","message":"Card follow could not enter a zoomed tab"}
+  ]
+}
