@@ -79,7 +79,11 @@ pub fn parse_update(source: &str, catalog_source: &str) -> Result<Operation, Val
     }
     let before = record_from_data(request.kind, &request.before)?;
     let changes = if request.actor == Actor::Automatic {
-        filter_automatic_changes(&before, &request.changes)
+        filter_automatic_changes(
+            &before,
+            &request.changes,
+            crate::model::NamingMode::Automatic,
+        )
     } else {
         request.changes
     };

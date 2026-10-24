@@ -23,7 +23,7 @@ pub fn save_record_update(store: &impl RecordStore, update: &RecordUpdate) -> Re
                 let Record::Stream(stream) = dependency.record else {
                     return Err(ValidationError::new("expected current Stream").into());
                 };
-                edit.apply(session, &stream)
+                edit.apply(session, &stream, update.title_defaults.session)
             }
             (CapturedEdit::Stream(edit), Record::Stream(stream)) => {
                 let session = edit
@@ -44,7 +44,7 @@ pub fn save_record_update(store: &impl RecordStore, update: &RecordUpdate) -> Re
                     }
                     None => None,
                 };
-                edit.apply(stream, session)
+                edit.apply(stream, session, update.title_defaults.stream)
             }
             _ => return Err(ValidationError::new("captured edit target kind changed").into()),
         };

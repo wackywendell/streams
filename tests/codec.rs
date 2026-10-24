@@ -221,9 +221,8 @@ fn goal_is_required_but_nullable_and_owner_is_nested() {
 #[test]
 fn defaults_apply_only_to_missing_nonnullable_fields() {
     let encoded = roundtrip(RecordKind::Stream, &stream());
-    for field in ["title_mode", "goal_mode"] {
-        assert_eq!(encoded[field], "automatic");
-    }
+    assert_eq!(encoded["title_mode"], "inherit");
+    assert_eq!(encoded["goal_mode"], "automatic");
     assert_eq!(encoded["status"], "active");
     assert_eq!(encoded["archived"], false);
     assert_eq!(encoded["repositories"], json!({}));
@@ -249,7 +248,7 @@ fn defaults_apply_only_to_missing_nonnullable_fields() {
         );
     }
     let encoded = roundtrip(RecordKind::Session, &session());
-    assert_eq!(encoded["title_mode"], "automatic");
+    assert_eq!(encoded["title_mode"], "inherit");
     assert_eq!(encoded["status"], "active");
     assert_eq!(encoded["state"], "");
     assert_eq!(encoded["remaining"], "");

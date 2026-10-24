@@ -70,8 +70,27 @@ fn addressed_context_reads_only_this_session_and_stream_despite_unrelated_growth
         let observed = events.clone();
         let store = store.with_io_observer(move |event| observed.lock().unwrap().push(event));
         let context = store
-            .with_reader(|reader| record_context(reader, "host", "source", request("native")))
+            .with_reader(|reader| {
+                record_context(
+                    reader,
+                    "host",
+                    "source",
+                    request("native"),
+                    crate::model::TitleDefaults {
+                        stream: crate::model::NamingMode::Manual,
+                        ..Default::default()
+                    },
+                )
+            })
             .unwrap();
+        assert_eq!(
+            context.title_defaults.stream,
+            crate::model::NamingMode::Manual
+        );
+        assert_eq!(
+            context.title_defaults.session,
+            crate::model::NamingMode::Automatic
+        );
         assert_eq!(context.session, Some(session.clone()));
         assert_eq!(context.sessions, [session]);
         assert_eq!(context.stream.unwrap().id, "effort");
@@ -118,13 +137,27 @@ fn valid_membership_wins_over_stale_ambient_associations_but_explicit_mismatch_r
     input.environment_stream_id = Some("source");
     input.workspace_stream_id = Some("source");
     let context = store
-        .with_reader(|reader| record_context(reader, "host", "source", input))
+        .with_reader(|reader| {
+            record_context(
+                reader,
+                "host",
+                "source",
+                input,
+                crate::model::TitleDefaults::default(),
+            )
+        })
         .unwrap();
     assert_eq!(context.stream.unwrap().id, "destination");
     input.stream_id = Some("source");
     assert!(
         store
-            .with_reader(|reader| record_context(reader, "host", "source", input))
+            .with_reader(|reader| record_context(
+                reader,
+                "host",
+                "source",
+                input,
+                crate::model::TitleDefaults::default()
+            ))
             .is_err()
     );
 }
@@ -135,7 +168,15 @@ fn completed_format_missing_session_is_unenrolled_but_a_missing_relationship_is_
     let store = YamlRecordStore::new(directory.path(), "host").unwrap();
     store.initialize().unwrap();
     let context = store
-        .with_reader(|reader| record_context(reader, "host", "source", request("native")))
+        .with_reader(|reader| {
+            record_context(
+                reader,
+                "host",
+                "source",
+                request("native"),
+                crate::model::TitleDefaults::default(),
+            )
+        })
         .unwrap();
     assert!(context.session.is_none() && context.stream.is_none() && context.sessions.is_empty());
     assert!(
@@ -155,7 +196,15 @@ fn completed_format_missing_session_is_unenrolled_but_a_missing_relationship_is_
     .unwrap();
     put(&store, Record::Session(session));
     let error = store
-        .with_reader(|reader| record_context(reader, "host", "source", request("native")))
+        .with_reader(|reader| {
+            record_context(
+                reader,
+                "host",
+                "source",
+                request("native"),
+                crate::model::TitleDefaults::default(),
+            )
+        })
         .unwrap_err();
     assert!(error.to_string().contains("Stream is missing"));
 }
@@ -172,14 +221,28 @@ fn unenrolled_context_uses_only_unambiguous_exact_hints() {
     let mut input = request("native");
     input.environment_stream_id = Some("effort");
     let context = store
-        .with_reader(|reader| record_context(reader, "host", "source", input))
+        .with_reader(|reader| {
+            record_context(
+                reader,
+                "host",
+                "source",
+                input,
+                crate::model::TitleDefaults::default(),
+            )
+        })
         .unwrap();
     assert_eq!(context.stream.unwrap().id, "effort");
     assert!(context.session.is_none());
     input.workspace_stream_id = Some("different");
     assert!(
         store
-            .with_reader(|reader| record_context(reader, "host", "source", input))
+            .with_reader(|reader| record_context(
+                reader,
+                "host",
+                "source",
+                input,
+                crate::model::TitleDefaults::default()
+            ))
             .is_err()
     );
 }

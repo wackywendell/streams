@@ -4,7 +4,7 @@ use serde::{Deserialize, Serialize};
 
 use crate::{
     codec::{ascii_json, load_json, object, optional_object, require_object},
-    model::{NamingMode, Session, Stream, ValidationError, check_text},
+    model::{NamingMode, Session, Stream, TitleMode, ValidationError, check_text},
     operations::Actor,
     runtime::conversations::Harness,
 };
@@ -160,7 +160,7 @@ impl EnrollmentRequest {
         let mut stream = Stream::new(id, &proposal.title, proposal.goal.clone(), host_id)?;
         stream.goal_short = proposal.goal_short.clone();
         if self.actor == Actor::User {
-            stream.title_mode = NamingMode::Manual;
+            stream.title_mode = TitleMode::Manual;
             if stream.goal.is_some() {
                 stream.goal_mode = NamingMode::Manual;
             }
@@ -179,7 +179,7 @@ impl EnrollmentRequest {
             &self.session_title,
         )?;
         if self.actor == Actor::User {
-            session.title_mode = NamingMode::Manual;
+            session.title_mode = TitleMode::Manual;
         }
         session.validated()
     }

@@ -3,7 +3,7 @@ use std::sync::{Arc, Mutex};
 use streams_temper::{
     agent::parse_record_update,
     application::{move_session, save_record_update},
-    model::{Record, RecordKind, Session, Stream},
+    model::{NamingMode, Record, RecordKind, Session, Stream, TitleDefaults, TitleMode},
     operations::membership::MoveIntent,
     storage::{
         StorageError,
@@ -51,12 +51,19 @@ fn setup(root: &std::path::Path) -> YamlRecordStore {
     store
 }
 fn wire(id: &str, before: &Session, actor: &str, state: &str) -> Value {
-    json!({"version":2,"catalog_source":"source","operation_id":id,"kind":"session","actor":actor,"before":before,"changes":{"state":state},"inputs":[]})
+    json!({"version":2,"title_default":"automatic","catalog_source":"source","operation_id":id,"kind":"session","actor":actor,"before":before,"changes":{"state":state},"inputs":[]})
 }
 fn update(store: &YamlRecordStore, value: &Value) -> streams_temper::storage::records::RecordSave {
+    update_with_defaults(store, value, TitleDefaults::default())
+}
+fn update_with_defaults(
+    store: &YamlRecordStore,
+    value: &Value,
+    defaults: TitleDefaults,
+) -> streams_temper::storage::records::RecordSave {
     save_record_update(
         store,
-        &parse_record_update(&value.to_string(), "source").unwrap(),
+        &parse_record_update(&value.to_string(), "source", defaults).unwrap(),
     )
     .unwrap()
 }
@@ -108,7 +115,7 @@ fn session_report_reads_its_current_stream_after_a_valid_move() {
 fn stream_report_checks_membership_period_without_retargeting_old_prose() {
     let directory = tempfile::tempdir().unwrap();
     let store = setup(directory.path());
-    let request = json!({"version":2,"catalog_source":"source","operation_id":"report","kind":"stream","actor":"automatic","before":stream("a"),"changes":{"goal":"old prose"},"inputs":[{"kind":"session","record":session()}]});
+    let request = json!({"version":2,"title_default":"automatic","catalog_source":"source","operation_id":"report","kind":"stream","actor":"automatic","before":stream("a"),"changes":{"goal":"old prose"},"inputs":[{"kind":"session","record":session()}]});
     move_session(
         &store,
         "out",
@@ -139,7 +146,8 @@ fn stream_report_checks_membership_period_without_retargeting_old_prose() {
 fn accepted_report_retry_after_later_edits_reads_only_target_and_retains_original_outcome() {
     let directory = tempfile::tempdir().unwrap();
     let store = setup(directory.path());
-    let original = wire("report", &session(), "automatic", "accepted");
+    let mut original = wire("report", &session(), "automatic", "accepted");
+    original["changes"]["title"] = json!("Accepted generated name");
     let first = update(&store, &original);
     let Record::Session(before) = &first.current.record else {
         unreachable!()
@@ -154,32 +162,165 @@ fn accepted_report_retry_after_later_edits_reads_only_target_and_retains_origina
     let events = Arc::new(Mutex::new(Vec::new()));
     let observed = events.clone();
     let store = store.with_io_observer(move |event| observed.lock().unwrap().push(event));
-    let repeated = update(&store, &original);
+    let repeated = update_with_defaults(
+        &store,
+        &original,
+        TitleDefaults {
+            stream: NamingMode::Manual,
+            session: NamingMode::Manual,
+        },
+    );
     assert!(repeated.repeated);
     assert_eq!(repeated.outcome, first.outcome);
     let Record::Session(current) = repeated.current.record else {
         unreachable!()
     };
     assert_eq!(current.state, "current work");
+    assert_eq!(current.title, "Accepted generated name");
     assert_eq!(current.stream_id, "b");
     assert_eq!(events.lock().unwrap().len(), 3);
+    let mut changed_default = original.clone();
+    changed_default["title_default"] = json!("manual");
+    assert!(
+        save_record_update(
+            &store,
+            &parse_record_update(
+                &changed_default.to_string(),
+                "source",
+                TitleDefaults::default()
+            )
+            .unwrap()
+        )
+        .is_err()
+    );
     let mut changed = original;
     changed["changes"]["state"] = json!("different intent");
     assert!(
         save_record_update(
             &store,
-            &parse_record_update(&changed.to_string(), "source").unwrap()
+            &parse_record_update(
+                &changed.to_string(),
+                "source",
+                streams_temper::model::TitleDefaults::default()
+            )
+            .unwrap()
         )
         .is_err()
     );
 }
 
 #[test]
+fn stale_never_applied_inherited_title_is_superseded_but_unrelated_progress_is_not() {
+    let directory = tempfile::tempdir().unwrap();
+    let store = setup(directory.path());
+    let mut request = wire("stale-title", &session(), "automatic", "captured progress");
+    request["changes"]["title"] = json!("Stale generated name");
+    let manual = TitleDefaults {
+        session: NamingMode::Manual,
+        ..TitleDefaults::default()
+    };
+    let result = update_with_defaults(&store, &request, manual);
+    assert_eq!(result.outcome["outcome"], "superseded");
+    assert_eq!(result.current.record, Record::Session(session()));
+    let progress = update_with_defaults(
+        &store,
+        &wire("progress", &session(), "automatic", "fresh work"),
+        manual,
+    );
+    assert_eq!(progress.outcome["outcome"], "changes");
+    let Record::Session(current) = progress.current.record else {
+        unreachable!()
+    };
+    assert_eq!(current.state, "fresh work");
+    assert_eq!(current.title, "Work");
+}
+
+#[test]
+fn accepted_stream_title_retry_after_default_drift_and_move_reads_only_target() {
+    let directory = tempfile::tempdir().unwrap();
+    let store = setup(directory.path());
+    let request = json!({"version":2,"title_default":"automatic","catalog_source":"source","operation_id":"title","kind":"stream","actor":"automatic","before":stream("a"),"changes":{"title":"Generated effort"},"inputs":[{"kind":"session","record":session()}]});
+    let first = update(&store, &request);
+    move_session(
+        &store,
+        "move",
+        &MoveIntent::new("host", "pi", "native", "b").unwrap(),
+    )
+    .unwrap();
+    let events = Arc::new(Mutex::new(Vec::new()));
+    let observed = events.clone();
+    let store = store.with_io_observer(move |event| observed.lock().unwrap().push(event));
+    let repeated = update_with_defaults(
+        &store,
+        &request,
+        TitleDefaults {
+            stream: NamingMode::Manual,
+            ..TitleDefaults::default()
+        },
+    );
+    assert!(repeated.repeated);
+    assert_eq!(repeated.outcome, first.outcome);
+    assert_eq!(repeated.current.record, first.current.record);
+    assert_eq!(events.lock().unwrap().len(), 3);
+}
+
+#[test]
+fn explicit_title_modes_do_not_depend_on_changed_global_defaults() {
+    for mode in [TitleMode::Automatic, TitleMode::Manual] {
+        let directory = tempfile::tempdir().unwrap();
+        let store = setup(directory.path());
+        let policy = update(
+            &store,
+            &json!({"version":2,"title_default":"automatic","catalog_source":"source","operation_id":"mode","kind":"session","actor":"user","before":session(),"changes":{"title_mode":mode},"inputs":[]}),
+        );
+        let Record::Session(before) = policy.current.record else {
+            unreachable!()
+        };
+        let mut request = wire("report", &before, "automatic", "progress");
+        request["changes"]["title"] = json!("Generated title");
+        let result = update_with_defaults(
+            &store,
+            &request,
+            TitleDefaults {
+                session: NamingMode::Manual,
+                ..TitleDefaults::default()
+            },
+        );
+        assert_eq!(result.outcome["outcome"], "changes");
+        let Record::Session(current) = result.current.record else {
+            unreachable!()
+        };
+        assert_eq!(
+            current.title,
+            if mode == TitleMode::Automatic {
+                "Generated title"
+            } else {
+                "Work"
+            }
+        );
+    }
+}
+
+#[test]
 fn request_schema_rejects_old_tokens_unversioned_requests_and_rosters() {
     let valid = wire("report", &session(), "automatic", "work");
-    assert!(parse_record_update(&valid.to_string(), "source").is_ok());
+    assert!(
+        parse_record_update(
+            &valid.to_string(),
+            "source",
+            streams_temper::model::TitleDefaults::default()
+        )
+        .is_ok()
+    );
     let mut missing = valid.clone();
     missing.as_object_mut().unwrap().remove("version");
+    let mut missing_default = valid.clone();
+    missing_default
+        .as_object_mut()
+        .unwrap()
+        .remove("title_default");
+    let mut inherited_default = valid.clone();
+    inherited_default["title_default"] = json!("inherit");
     let mut old_token = valid.clone();
     old_token["ownership_token"] = json!("old");
     let mut old_authority = valid.clone();
@@ -188,22 +329,58 @@ fn request_schema_rejects_old_tokens_unversioned_requests_and_rosters() {
     old_version["version"] = json!(1);
     let mut dependency = valid.clone();
     dependency["inputs"] = json!([{"kind":"stream","record":stream("a")}]);
-    for invalid in [missing, old_token, old_authority, old_version, dependency] {
-        assert!(parse_record_update(&invalid.to_string(), "source").is_err());
+    for invalid in [
+        missing,
+        missing_default,
+        inherited_default,
+        old_token,
+        old_authority,
+        old_version,
+        dependency,
+    ] {
+        assert!(
+            parse_record_update(
+                &invalid.to_string(),
+                "source",
+                streams_temper::model::TitleDefaults::default()
+            )
+            .is_err()
+        );
     }
-    assert!(parse_record_update(&valid.to_string(), "changed-source").is_err());
-    let roster = json!({"version":2,"catalog_source":"source","operation_id":"report","kind":"stream","actor":"automatic","before":stream("a"),"changes":{"goal":"prose"},"inputs":[{"kind":"session","record":session()},{"kind":"session","record":session()}]});
-    assert!(parse_record_update(&roster.to_string(), "source").is_err());
+    assert!(
+        parse_record_update(
+            &valid.to_string(),
+            "changed-source",
+            streams_temper::model::TitleDefaults::default()
+        )
+        .is_err()
+    );
+    let roster = json!({"version":2,"title_default":"automatic","catalog_source":"source","operation_id":"report","kind":"stream","actor":"automatic","before":stream("a"),"changes":{"goal":"prose"},"inputs":[{"kind":"session","record":session()},{"kind":"session","record":session()}]});
+    assert!(
+        parse_record_update(
+            &roster.to_string(),
+            "source",
+            streams_temper::model::TitleDefaults::default()
+        )
+        .is_err()
+    );
 }
 
 #[test]
 fn manual_stream_edit_has_no_session_dependency_even_after_membership_changes() {
     let directory = tempfile::tempdir().unwrap();
     let store = setup(directory.path());
-    let request = json!({"version":2,"catalog_source":"source","operation_id":"manual","kind":"stream","actor":"user","before":stream("a"),"changes":{"goal":"manual goal"},"inputs":[]});
+    let request = json!({"version":2,"title_default":"automatic","catalog_source":"source","operation_id":"manual","kind":"stream","actor":"user","before":stream("a"),"changes":{"goal":"manual goal"},"inputs":[]});
     let mut invalid = request.clone();
     invalid["inputs"] = json!([{"kind":"session","record":session()}]);
-    assert!(parse_record_update(&invalid.to_string(), "source").is_err());
+    assert!(
+        parse_record_update(
+            &invalid.to_string(),
+            "source",
+            streams_temper::model::TitleDefaults::default()
+        )
+        .is_err()
+    );
     move_session(
         &store,
         "move",
@@ -243,7 +420,7 @@ fn declined_manual_text_is_still_part_of_the_retry_fingerprint() {
     let initial = session();
     let renamed = update(
         &store,
-        &json!({"version":2,"catalog_source":"source","operation_id":"rename","kind":"session","actor":"user","before":initial,"changes":{"title":"Human name"},"inputs":[]}),
+        &json!({"version":2,"title_default":"automatic","catalog_source":"source","operation_id":"rename","kind":"session","actor":"user","before":initial,"changes":{"title":"Human name"},"inputs":[]}),
     );
     let Record::Session(before) = renamed.current.record else {
         unreachable!()
@@ -255,7 +432,12 @@ fn declined_manual_text_is_still_part_of_the_retry_fingerprint() {
     assert!(
         save_record_update(
             &store,
-            &parse_record_update(&request.to_string(), "source").unwrap()
+            &parse_record_update(
+                &request.to_string(),
+                "source",
+                streams_temper::model::TitleDefaults::default()
+            )
+            .unwrap()
         )
         .is_err()
     );

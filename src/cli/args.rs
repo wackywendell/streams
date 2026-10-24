@@ -3,7 +3,7 @@ use std::path::PathBuf;
 use clap::{ArgAction, ArgGroup, Args, Parser, Subcommand, builder::TypedValueParser};
 use streams_temper::config::{ConfigKey, Strategy};
 use streams_temper::frontend::FrontendRequest;
-use streams_temper::model::{NamingMode, Status};
+use streams_temper::model::{NamingMode, Status, TitleMode};
 use streams_temper::runtime::conversations::Harness;
 use streams_temper::sync::policy::SyncEvent;
 
@@ -333,7 +333,7 @@ pub(super) struct StreamFields {
     #[arg(long)]
     pub(super) goal_mode: Option<NamingMode>,
     #[arg(long)]
-    pub(super) title_mode: Option<NamingMode>,
+    pub(super) title_mode: Option<TitleMode>,
     #[arg(long)]
     pub(super) status: Option<Status>,
     #[arg(long, num_args = 2, action = ArgAction::Append, value_names = ["ALIAS", "URL"])]
@@ -372,7 +372,7 @@ pub(super) struct SessionFields {
     #[arg(long)]
     pub(super) remaining_file: Option<PathBuf>,
     #[arg(long)]
-    pub(super) title_mode: Option<NamingMode>,
+    pub(super) title_mode: Option<TitleMode>,
     #[arg(long)]
     pub(super) status: Option<Status>,
 }

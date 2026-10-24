@@ -5,7 +5,7 @@ use serde_json::{Map, Value};
 
 use crate::{
     codec::{load_json, objects, record_from_data, require_object},
-    model::{Record, RecordKind, Session, ValidationError, check_text},
+    model::{NamingMode, Record, RecordKind, Session, TitleDefaults, ValidationError, check_text},
     operations::{
         Actor, agent_field_allowed,
         edits::{SessionEdit, StreamEdit},
@@ -17,6 +17,7 @@ use crate::{
 pub struct RecordUpdate {
     pub(crate) request: RecordRequest,
     pub(crate) edit: CapturedEdit,
+    pub(crate) title_defaults: TitleDefaults,
 }
 #[derive(Debug, Clone)]
 pub(crate) enum CapturedEdit {
@@ -48,6 +49,7 @@ struct Wire {
     actor: Actor,
     before: Value,
     changes: Map<String, Value>,
+    title_default: NamingMode,
     #[serde(deserialize_with = "objects")]
     inputs: Vec<Input>,
 }
@@ -55,6 +57,7 @@ struct Wire {
 pub fn parse_record_update(
     source: &str,
     catalog_source: &str,
+    title_defaults: TitleDefaults,
 ) -> Result<RecordUpdate, ValidationError> {
     let value = load_json(source)?;
     require_object(&value, "captured edit")?;
@@ -95,6 +98,7 @@ pub fn parse_record_update(
                 &session,
                 &wire.changes,
                 wire.actor,
+                wire.title_default,
             )?)
         }
         Record::Stream(stream) => {
@@ -119,6 +123,7 @@ pub fn parse_record_update(
                 &wire.changes,
                 wire.actor,
                 captured_session,
+                wire.title_default,
             )?)
         }
         Record::Host(_) => unreachable!("Host edits refused above"),
@@ -126,5 +131,9 @@ pub fn parse_record_update(
     // Fingerprint the original wire intent, including fields normalization declines to apply.
     let request = RecordRequest::new(target, wire.operation_id, &value)
         .map_err(|error| ValidationError::new(error.to_string()))?;
-    Ok(RecordUpdate { request, edit })
+    Ok(RecordUpdate {
+        request,
+        edit,
+        title_defaults,
+    })
 }

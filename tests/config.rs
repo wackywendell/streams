@@ -11,6 +11,7 @@ use streams_temper::config::{
     Config, ConfigKey, HostIdentity, Marker, Strategy, resolve_path, source_id,
 };
 use streams_temper::frontend::{FrontendId, FrontendMode};
+use streams_temper::model::{NamingMode, TitleDefaults};
 use streams_temper::storage::Transaction;
 use streams_temper::yaml_store::YamlStore;
 
@@ -95,6 +96,7 @@ fn defaults_and_reads_create_nothing() {
     let settings = f.config.load().unwrap();
     assert_eq!(settings.catalog_root, f.home.join("data/streams/catalog"));
     assert_eq!(settings.frontend, FrontendMode::Auto);
+    assert_eq!(settings.naming, TitleDefaults::default());
     assert_eq!(settings.sync.stream_seconds(), 300.0);
     assert_eq!(settings.sync.session_seconds(), 3600.0);
     assert_eq!(
@@ -109,6 +111,27 @@ fn defaults_and_reads_create_nothing() {
     );
     assert!(f.config.host_identity().is_err());
     assert_eq!(fs::read_dir(&f.home).unwrap().count(), 0);
+}
+
+#[test]
+fn generation_defaults_are_persisted_and_resolved_independently_of_frontend_policy() {
+    let f = Fixture::new();
+    f.config.set(ConfigKey::StreamNaming, "manual").unwrap();
+    let settings = f.config.load().unwrap();
+    assert_eq!(settings.naming.stream, NamingMode::Manual);
+    assert_eq!(settings.naming.session, NamingMode::Automatic);
+    assert_eq!(settings.frontend, FrontendMode::Auto);
+    f.config.set(ConfigKey::SessionNaming, "manual").unwrap();
+    f.config.set(ConfigKey::FrontendMode, "none").unwrap();
+    f.config.set(ConfigKey::StreamNaming, "automatic").unwrap();
+    assert_eq!(
+        f.config.values().unwrap()["naming"],
+        json!({"stream":"automatic","session":"manual"})
+    );
+    assert_eq!(
+        f.config.read_overrides().unwrap()["naming"],
+        json!({"stream":"automatic","session":"manual"})
+    );
 }
 
 #[test]

@@ -19,6 +19,7 @@ use uuid::Uuid;
 use crate::codec::load_json;
 use crate::file_io::{self, check_catalog_root};
 use crate::frontend::{FrontendId, FrontendMode};
+use crate::model::{NamingMode, TitleDefaults};
 use crate::storage::{Journal, StorageError};
 use crate::sync::policy::Policy;
 use crate::sync::state::{RepairRequired, State};
@@ -33,6 +34,10 @@ pub enum ConfigKey {
     CatalogRoot,
     #[strum(serialize = "frontend.mode")]
     FrontendMode,
+    #[strum(serialize = "naming.stream")]
+    StreamNaming,
+    #[strum(serialize = "naming.session")]
+    SessionNaming,
     #[strum(serialize = "sync.stream_seconds")]
     StreamSeconds,
     #[strum(serialize = "sync.session_seconds")]
@@ -60,6 +65,7 @@ fn invalid(message: impl Into<String>) -> ConfigError {
 pub struct Settings {
     pub catalog_root: PathBuf,
     pub frontend: FrontendMode,
+    pub naming: TitleDefaults,
     pub sync: Policy,
 }
 
@@ -158,7 +164,7 @@ impl Config {
             .as_object_mut()
             .ok_or_else(|| invalid("config must contain a JSON object"))?;
         for (section, values) in object {
-            if !matches!(section.as_str(), "catalog" | "frontend" | "sync") {
+            if !matches!(section.as_str(), "catalog" | "frontend" | "naming" | "sync") {
                 return Err(invalid(format!("invalid config section: {section}")));
             }
             for (name, value) in values
@@ -206,6 +212,10 @@ impl Config {
                 "none" => FrontendMode::None,
                 name => FrontendMode::Explicit(FrontendId(name.into())),
             },
+            naming: serde_json::from_value(
+                data.get("naming").cloned().unwrap_or_else(|| json!({})),
+            )
+            .expect("validated naming defaults"),
             sync,
         })
     }
@@ -220,6 +230,7 @@ impl Config {
         };
         Ok(
             json!({"catalog":{"root":settings.catalog_root}, "frontend":{"mode":mode},
+            "naming":settings.naming,
             "sync":{"stream_seconds":settings.sync.stream_seconds(),"session_seconds":settings.sync.session_seconds()}}),
         )
     }
@@ -280,7 +291,10 @@ impl Config {
             ConfigKey::StreamSeconds | ConfigKey::SessionSeconds => {
                 load_json(text).map_err(|e| invalid(e.to_string()))?
             }
-            ConfigKey::CatalogRoot | ConfigKey::FrontendMode => json!(text),
+            ConfigKey::CatalogRoot
+            | ConfigKey::FrontendMode
+            | ConfigKey::StreamNaming
+            | ConfigKey::SessionNaming => json!(text),
         };
         self.validate_value(key, value)
     }
@@ -307,6 +321,12 @@ impl Config {
             }
             ConfigKey::FrontendMode => {
                 text()?;
+                Ok(value)
+            }
+            ConfigKey::StreamNaming | ConfigKey::SessionNaming => {
+                text()?
+                    .parse::<NamingMode>()
+                    .map_err(|_| invalid(format!("{key} must be automatic or manual")))?;
                 Ok(value)
             }
             ConfigKey::CatalogRoot => {

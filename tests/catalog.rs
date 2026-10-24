@@ -1,6 +1,6 @@
 use serde_json::{Map, json};
-use streams_temper::model::NamingMode;
 use streams_temper::model::RecordKind;
+use streams_temper::model::TitleMode;
 use streams_temper::operations::{Actor, DomainOutcome, Reconciliation};
 use streams_temper::storage::StorageError;
 use streams_temper::{
@@ -116,7 +116,7 @@ fn user_manual_mode_protects_against_automatic_changes() {
         panic!()
     };
     let Record::Stream(s) = *record else { panic!() };
-    assert_eq!(s.title_mode, NamingMode::Manual);
+    assert_eq!(s.title_mode, TitleMode::Manual);
     let data = record_to_data(&Record::Stream(s));
     assert_eq!(data["title"], "Chosen");
 }

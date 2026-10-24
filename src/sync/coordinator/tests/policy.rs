@@ -1,11 +1,11 @@
 use super::*;
-use crate::model::{Host, NamingMode, Session};
+use crate::model::{Host, Session, TitleMode};
 
 fn edit(catalog: &MemoryRepository, id: &str, stream: &str, title: &str) -> Operation {
     let before = catalog.snapshot().catalog.stream(stream).unwrap().clone();
     let mut after = before.clone();
     after.title = title.into();
-    after.title_mode = NamingMode::Manual;
+    after.title_mode = TitleMode::Manual;
     Operation::new(
         id,
         Some(Record::Stream(before)),

@@ -17,7 +17,7 @@ export function observation(value: unknown, sessionId: string): Observation {
   || !isAbsolute(value.context.socket) || !(value.context.binding === null || text(value.context.binding))
   || !object(value.native) || value.native.pane_id !== value.context.paneId || value.native.tab_id !== value.context.tabId
   || value.native.workspace_id !== value.context.workspaceId || !object(value.session) || !text(value.session.title)
-  || !["automatic", "manual"].includes(value.session.title_mode)
+  || !["automatic", "manual", "inherit"].includes(value.session.title_mode)
   || !object(value.config) || typeof value.config.automatic !== "boolean" || typeof value.config.sessionNaming !== "boolean") {
   throw Error("Invalid Rust native owner observation");
  }

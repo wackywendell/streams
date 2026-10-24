@@ -1,6 +1,6 @@
 use chrono::DateTime;
 use serde_json::{Value, json};
-use streams_temper::model::NamingMode;
+use streams_temper::model::{NamingMode, TitleMode};
 use streams_temper::operations::{Actor, DomainOutcome, Reconciliation};
 use streams_temper::{
     model::{Catalog, Host, Record, Repository, Session, Stream},
@@ -218,7 +218,7 @@ fn applying_fields_normalizes_records_without_capturing_or_mutating_intent() {
     let Record::Stream(after) = after else {
         unreachable!()
     };
-    assert_eq!(after.title_mode, NamingMode::Manual);
+    assert_eq!(after.title_mode, TitleMode::Manual);
     assert_eq!(after.goal_mode, NamingMode::Manual);
     assert_eq!(after.goal_short, None);
     assert!(
@@ -292,7 +292,7 @@ fn native_reassociation_preserves_work_and_uses_source_authority() {
         sync::envelope::{decode_operation, encode_operation},
     };
     let mut before = Session::new("session", "host", "a", "pi", "native", "Session").unwrap();
-    before.title_mode = NamingMode::Manual;
+    before.title_mode = TitleMode::Manual;
     before.state = "Working".into();
     before.state_short = Some("Work".into());
     before.remaining = "Finish".into();
@@ -682,7 +682,7 @@ fn native_operations_reject_non_membership_shapes_and_generic_moves_stay_forbidd
         };
         match field {
             "title" => after.title = "Changed".into(),
-            "title_mode" => after.title_mode = NamingMode::Manual,
+            "title_mode" => after.title_mode = TitleMode::Manual,
             "status" => after.status = streams_temper::model::Status::Done,
             "state" => after.state = "Changed".into(),
             "state_short" => after.state_short = Some("Changed".into()),

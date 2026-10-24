@@ -235,7 +235,7 @@ fn links(
 mod tests {
     use super::*;
     use serde_json::json;
-    use streams_temper::model::{NamingMode, Status};
+    use streams_temper::model::{NamingMode, Status, TitleMode};
 
     fn current_stream() -> Stream {
         Stream::new("stream", "Title", Some("Goal".into()), "host").unwrap()
@@ -272,7 +272,7 @@ mod tests {
         let input = StreamFields {
             goal: Some("\n  user text  \n".into()),
             goal_mode: Some(NamingMode::Automatic),
-            title_mode: Some(NamingMode::Manual),
+            title_mode: Some(TitleMode::Manual),
             status: Some(Status::Waiting),
             ..Default::default()
         };
@@ -327,7 +327,7 @@ mod tests {
         let input = SessionFields {
             state: Some("\n  state  \n".into()),
             remaining_file: Some("-".into()),
-            title_mode: Some(NamingMode::Manual),
+            title_mode: Some(TitleMode::Manual),
             status: Some(Status::Blocked),
             ..Default::default()
         };

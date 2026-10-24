@@ -35,7 +35,7 @@ use streams_temper::{
     codec::record_to_data,
     config::{Config, ConfigKey},
     frontend::{self, FrontendMode, FrontendRequest, FrontendSelection},
-    model::{Catalog, Checkout, NamingMode, Record, Session, Stream, ValidationError},
+    model::{Catalog, Checkout, Record, Session, Stream, TitleMode, ValidationError},
     operations::{self, Actor, Operation},
     runtime::{
         self, CheckoutRegistry, DirectoryBindings,
@@ -646,6 +646,8 @@ impl App {
         for key in [
             ConfigKey::CatalogRoot,
             ConfigKey::FrontendMode,
+            ConfigKey::StreamNaming,
+            ConfigKey::SessionNaming,
             ConfigKey::StreamSeconds,
             ConfigKey::SessionSeconds,
         ] {
@@ -726,7 +728,7 @@ impl App {
                     session_id,
                     title,
                 )?;
-                session.title_mode = NamingMode::Manual;
+                session.title_mode = TitleMode::Manual;
                 session.checkout = checkout;
                 let authority = opened.backend().authority(&stream.id)?;
                 let operation = Operation::new(

@@ -5,7 +5,7 @@ use streams_temper::storage::StorageError;
 use chrono::DateTime;
 use serde_json::{Value, json};
 use streams_temper::{
-    model::{Host, Record, Stream},
+    model::{Host, Record, Stream, TitleMode},
     operations::Operation,
     sync::{
         baseline::{BASELINE, Baseline, decode_baseline, encode_baseline},
@@ -23,10 +23,12 @@ const MESSAGE: &str = concat!(
 );
 
 fn creation() -> Operation {
+    let mut stream = Stream::new("work", "Wörk 🦀", None, "host").unwrap();
+    stream.title_mode = TitleMode::Automatic;
     Operation::new(
         "create",
         None,
-        Record::Stream(Stream::new("work", "Wörk 🦀", None, "host").unwrap()),
+        Record::Stream(stream),
         Actor::User,
         None,
         vec![],

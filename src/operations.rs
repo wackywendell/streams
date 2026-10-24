@@ -11,8 +11,8 @@ use strum::{AsRefStr, Display, EnumString, VariantNames};
 
 use crate::codec::{record_from_data, record_to_data};
 use crate::model::{
-    Catalog, NamingMode, Record, RecordKey, RecordKind, Session, Status, Stream, ValidationError,
-    check_text,
+    Catalog, NamingMode, Record, RecordKey, RecordKind, Session, Status, Stream, TitleMode,
+    ValidationError, check_text,
 };
 
 /// Who supplied the intent. Automatic writes cannot change lifecycle or manual naming modes.
@@ -67,11 +67,12 @@ impl Authority {
 pub fn filter_automatic_changes(
     before: &Record,
     changes: &Map<String, Value>,
+    title_default: NamingMode,
 ) -> Map<String, Value> {
     let mut protected = BTreeSet::new();
     match before {
         Record::Stream(s) => {
-            if s.title_mode == NamingMode::Manual {
+            if s.title_mode.resolve(title_default) == NamingMode::Manual {
                 protected.insert("title");
             }
             if s.goal_mode == NamingMode::Manual {
@@ -80,7 +81,7 @@ pub fn filter_automatic_changes(
             }
         }
         Record::Session(s) => {
-            if s.title_mode == NamingMode::Manual {
+            if s.title_mode.resolve(title_default) == NamingMode::Manual {
                 protected.insert("title");
             }
         }
@@ -411,15 +412,14 @@ impl Operation {
                             "automatic enrollment cannot set personal lifecycle",
                         ));
                     }
-                    if s.title_mode != NamingMode::Automatic || s.goal_mode != NamingMode::Automatic
-                    {
+                    if s.title_mode == TitleMode::Manual || s.goal_mode != NamingMode::Automatic {
                         return Err(ValidationError::new(
                             "automatic creation cannot set manual modes",
                         ));
                     }
                 }
                 if let Record::Session(ref s) = op.after
-                    && s.title_mode != NamingMode::Automatic
+                    && s.title_mode == TitleMode::Manual
                 {
                     return Err(ValidationError::new(
                         "automatic creation cannot set manual modes",
@@ -860,7 +860,7 @@ pub fn reconcile(
             if operation.actor == Actor::Automatic {
                 match cur {
                     Record::Stream(cs) => {
-                        if cs.title_mode == NamingMode::Manual && changed.contains("title") {
+                        if cs.title_mode == TitleMode::Manual && changed.contains("title") {
                             return refuse("manual text is protected", &["title_mode"], true);
                         }
                         if cs.goal_mode == NamingMode::Manual
@@ -870,7 +870,7 @@ pub fn reconcile(
                         }
                     }
                     Record::Session(cs) => {
-                        if cs.title_mode == NamingMode::Manual && changed.contains("title") {
+                        if cs.title_mode == TitleMode::Manual && changed.contains("title") {
                             return refuse("manual text is protected", &["title_mode"], true);
                         }
                     }

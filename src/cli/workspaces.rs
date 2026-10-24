@@ -25,7 +25,7 @@ impl App {
             None,
             opened.host().as_str(),
         )?;
-        stream.title_mode = NamingMode::Manual;
+        stream.title_mode = TitleMode::Manual;
         let changes = fields::stream(&stream, &fields, &mut |path| self.read_text(path))?;
         let base = Record::Stream(stream);
         let desired = operations::apply_changes(&base, &changes, Actor::User)?;

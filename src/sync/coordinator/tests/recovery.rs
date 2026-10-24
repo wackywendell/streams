@@ -1,7 +1,7 @@
 //! Recovery decisions use production histories and fresh coordinator/state wrappers.
 //! These faults describe semantic effects, not filesystem crash durability.
 use super::*;
-use crate::model::{NamingMode, Session};
+use crate::model::{NamingMode, Session, TitleMode};
 use std::sync::{
     Arc, Mutex,
     atomic::{AtomicUsize, Ordering},
@@ -11,7 +11,7 @@ fn edit(repo: &MemoryRepository, id: &str, stream: &str, title: &str) -> Operati
     let before = repo.snapshot().catalog.stream(stream).unwrap().clone();
     let mut after = before.clone();
     after.title = title.into();
-    after.title_mode = NamingMode::Manual;
+    after.title_mode = TitleMode::Manual;
     Operation::new(
         id,
         Some(Record::Stream(before)),

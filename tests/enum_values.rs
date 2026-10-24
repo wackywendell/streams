@@ -7,7 +7,7 @@ use serde::{Serialize, de::DeserializeOwned};
 use serde_json::json;
 use streams_temper::{
     codec::record_from_data,
-    model::{NamingMode, RecordKind, Status},
+    model::{NamingMode, RecordKind, Status, TitleMode},
     operations::{Actor, DomainOutcome},
     runtime::conversations::{Harness, NativeIdentityKind},
     sync::{
@@ -53,6 +53,11 @@ fn domain_enums_have_one_strict_wire_spelling() {
         (NamingMode::Manual, "manual"),
     ]);
     roundtrip(&[
+        (TitleMode::Automatic, "automatic"),
+        (TitleMode::Manual, "manual"),
+        (TitleMode::Inherit, "inherit"),
+    ]);
+    roundtrip(&[
         (RecordKind::Host, "host"),
         (RecordKind::Session, "session"),
         (RecordKind::Stream, "stream"),
@@ -70,6 +75,13 @@ fn domain_enums_have_one_strict_wire_spelling() {
     ]);
     assert_eq!(Status::default(), Status::Active);
     assert_eq!(NamingMode::default(), NamingMode::Automatic);
+    assert_eq!(TitleMode::default(), TitleMode::Inherit);
+    for default in [NamingMode::Automatic, NamingMode::Manual] {
+        assert_eq!(TitleMode::Inherit.resolve(default), default);
+        assert_eq!(TitleMode::Automatic.resolve(default), NamingMode::Automatic);
+        assert_eq!(TitleMode::Manual.resolve(default), NamingMode::Manual);
+    }
+    assert!("inherit".parse::<NamingMode>().is_err());
 }
 
 #[test]

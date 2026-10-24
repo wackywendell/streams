@@ -58,6 +58,46 @@ pub enum NamingMode {
     Manual,
 }
 
+/// Per-record title policy; inheritance resolves against the record type's global default.
+#[derive(
+    Debug,
+    Clone,
+    Copy,
+    Default,
+    PartialEq,
+    Eq,
+    Serialize,
+    EnumString,
+    VariantNames,
+    Display,
+    AsRefStr,
+)]
+#[serde(rename_all = "kebab-case")]
+#[strum(serialize_all = "kebab-case")]
+pub enum TitleMode {
+    Automatic,
+    Manual,
+    #[default]
+    Inherit,
+}
+
+impl TitleMode {
+    pub fn resolve(self, default: NamingMode) -> NamingMode {
+        match self {
+            Self::Automatic => NamingMode::Automatic,
+            Self::Manual => NamingMode::Manual,
+            Self::Inherit => default,
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(default, deny_unknown_fields)]
+pub struct TitleDefaults {
+    pub stream: NamingMode,
+    pub session: NamingMode,
+}
+
 /// The record schemas accepted by catalog files and operation envelopes.
 #[derive(
     Debug,
@@ -81,7 +121,7 @@ pub enum RecordKind {
     Stream,
 }
 
-crate::codec::deserialize_string_enum!(Status, NamingMode, RecordKind);
+crate::codec::deserialize_string_enum!(Status, NamingMode, TitleMode, RecordKind);
 
 fn checkout_directory() -> String {
     ".".into()
@@ -343,7 +383,7 @@ pub struct Stream {
     #[serde(rename = "owner", with = "owner")]
     pub owner_host_id: String,
     #[serde(default)]
-    pub title_mode: NamingMode,
+    pub title_mode: TitleMode,
     pub goal_short: Option<String>,
     #[serde(default)]
     pub goal_mode: NamingMode,
@@ -362,7 +402,7 @@ pub struct Stream {
 }
 
 impl Stream {
-    /// Creates an active, unarchived stream with automatic naming and no references.
+    /// Creates an active, unarchived stream with inherited title policy and no references.
     pub fn new(
         id: impl Into<String>,
         title: impl Into<String>,
@@ -374,7 +414,7 @@ impl Stream {
             title: title.into(),
             goal,
             owner_host_id: owner_host_id.into(),
-            title_mode: NamingMode::Automatic,
+            title_mode: TitleMode::Inherit,
             goal_short: None,
             goal_mode: NamingMode::Automatic,
             status: Status::Active,
@@ -466,7 +506,7 @@ pub struct Session {
     pub harness_session_id: String,
     pub title: String,
     #[serde(default)]
-    pub title_mode: NamingMode,
+    pub title_mode: TitleMode,
     #[serde(default)]
     pub status: Status,
     /// Reported work state, distinct from status and the harness's native lifecycle.
@@ -528,7 +568,7 @@ impl Session {
             harness: harness.into(),
             harness_session_id: harness_session_id.into(),
             title: title.into(),
-            title_mode: NamingMode::Automatic,
+            title_mode: TitleMode::Inherit,
             status: Status::Active,
             state: String::new(),
             state_short: None,

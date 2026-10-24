@@ -2,7 +2,7 @@ use serde_json::{Value, json};
 use streams_temper::{
     agent::parse_update,
     codec::record_to_data,
-    model::{Host, NamingMode, Record, Stream},
+    model::{Host, NamingMode, Record, Stream, TitleMode},
     operations::Actor,
 };
 
@@ -81,7 +81,7 @@ fn automatic_manual_text_is_filtered_before_domain_construction() {
         unreachable!()
     };
     before.title = "My title".into();
-    before.title_mode = NamingMode::Manual;
+    before.title_mode = TitleMode::Manual;
     let wire = request(
         &Record::Stream(before.clone()),
         json!({"title": "Bot title", "goal": "New goal"}),
@@ -92,7 +92,7 @@ fn automatic_manual_text_is_filtered_before_domain_construction() {
         unreachable!()
     };
     assert_eq!(after.title, "My title");
-    assert_eq!(after.title_mode, NamingMode::Manual);
+    assert_eq!(after.title_mode, TitleMode::Manual);
     assert_eq!(after.goal.as_deref(), Some("New goal"));
     assert!(!operation.changed_fields().contains("title"));
 }

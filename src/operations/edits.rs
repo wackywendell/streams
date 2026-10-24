@@ -9,7 +9,7 @@ use super::{
     Actor, Reconciliation, apply_changes, copy_field, field_eq, field_policy,
     filter_automatic_changes, merge_additive, record_field_names, text_group_guards,
 };
-use crate::model::{NamingMode, Record, Session, Stream, ValidationError, check_text};
+use crate::model::{NamingMode, Record, Session, Stream, TitleMode, ValidationError, check_text};
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 pub struct SessionEdit {
@@ -17,6 +17,7 @@ pub struct SessionEdit {
     before: Session,
     after: Session,
     actor: Actor,
+    title_default: NamingMode,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
@@ -26,6 +27,7 @@ pub struct StreamEdit {
     after: Stream,
     actor: Actor,
     captured_session: Option<Session>,
+    title_default: NamingMode,
 }
 
 impl SessionEdit {
@@ -34,12 +36,14 @@ impl SessionEdit {
         before: &Session,
         changes: &Map<String, Value>,
         actor: Actor,
+        title_default: NamingMode,
     ) -> Result<Self, ValidationError> {
         let Record::Session(after) = prepare(
             operation_id,
             &Record::Session(before.clone()),
             changes,
             actor,
+            title_default,
         )?
         else {
             unreachable!("normalization preserves record kind")
@@ -49,6 +53,7 @@ impl SessionEdit {
             before: before.clone(),
             after,
             actor,
+            title_default,
         })
     }
     pub fn operation_id(&self) -> &str {
@@ -59,7 +64,12 @@ impl SessionEdit {
     }
 
     /// A valid move does not invalidate conversation-local work or retarget it to another record.
-    pub fn apply(&self, current: &Session, stream: &Stream) -> Reconciliation {
+    pub fn apply(
+        &self,
+        current: &Session,
+        stream: &Stream,
+        title_default: NamingMode,
+    ) -> Reconciliation {
         if current.id != self.before.id
             || current.native_identity() != self.before.native_identity()
             || current.stream_id != stream.id
@@ -88,6 +98,8 @@ impl SessionEdit {
             &Record::Session(self.before.clone()),
             &Record::Session(self.after.clone()),
             &Record::Session(current.clone()),
+            self.title_default,
+            title_default,
         )
     }
 }
@@ -99,12 +111,14 @@ impl StreamEdit {
         changes: &Map<String, Value>,
         actor: Actor,
         captured_session: Option<Session>,
+        title_default: NamingMode,
     ) -> Result<Self, ValidationError> {
         let Record::Stream(after) = prepare(
             operation_id,
             &Record::Stream(before.clone()),
             changes,
             actor,
+            title_default,
         )?
         else {
             unreachable!("normalization preserves record kind")
@@ -133,6 +147,7 @@ impl StreamEdit {
             after,
             actor,
             captured_session,
+            title_default,
         })
     }
     pub fn operation_id(&self) -> &str {
@@ -146,7 +161,12 @@ impl StreamEdit {
     }
 
     /// Compare the captured membership period, including an A → B → A return.
-    pub fn apply(&self, current: &Stream, session: Option<&Session>) -> Reconciliation {
+    pub fn apply(
+        &self,
+        current: &Stream,
+        session: Option<&Session>,
+        title_default: NamingMode,
+    ) -> Reconciliation {
         if current.id != self.before.id || current.owner_host_id != self.before.owner_host_id {
             return refuse(
                 &self.operation_id,
@@ -173,6 +193,8 @@ impl StreamEdit {
             &Record::Stream(self.before.clone()),
             &Record::Stream(self.after.clone()),
             &Record::Stream(current.clone()),
+            self.title_default,
+            title_default,
         )
     }
 }
@@ -182,6 +204,7 @@ fn prepare(
     before: &Record,
     changes: &Map<String, Value>,
     actor: Actor,
+    title_default: NamingMode,
 ) -> Result<Record, ValidationError> {
     check_text(id, "operation_id", false)?;
     before.validate_portable()?;
@@ -201,7 +224,7 @@ fn prepare(
         }
     }
     let changes = if actor == Actor::Automatic {
-        filter_automatic_changes(before, changes)
+        filter_automatic_changes(before, changes, title_default)
     } else {
         changes.clone()
     };
@@ -233,6 +256,8 @@ fn apply_fields(
     before: &Record,
     after: &Record,
     current: &Record,
+    captured_default: NamingMode,
+    current_default: NamingMode,
 ) -> Reconciliation {
     if let Err(error) = current.validate_portable() {
         return refuse(id, actor, &error.to_string(), &["relationships"], false);
@@ -243,13 +268,29 @@ fn apply_fields(
         .filter(|field| field_eq(before, after, field) == Some(false))
         .collect();
     if actor == Actor::Automatic {
-        let title_manual = match current {
-            Record::Stream(stream) => stream.title_mode == NamingMode::Manual,
-            Record::Session(session) => session.title_mode == NamingMode::Manual,
-            _ => unreachable!(),
-        };
-        if title_manual && changed.contains("title") {
-            return refuse(id, actor, "manual text is protected", &["title_mode"], true);
+        if changed.contains("title") {
+            let captured_mode = match before {
+                Record::Stream(stream) => stream.title_mode,
+                Record::Session(session) => session.title_mode,
+                _ => unreachable!(),
+            };
+            if captured_mode == TitleMode::Inherit && captured_default != current_default {
+                return refuse(
+                    id,
+                    actor,
+                    "title generation default changed",
+                    &["title_default"],
+                    true,
+                );
+            }
+            let current_mode = match current {
+                Record::Stream(stream) => stream.title_mode,
+                Record::Session(session) => session.title_mode,
+                _ => unreachable!(),
+            };
+            if current_mode.resolve(current_default) == NamingMode::Manual {
+                return refuse(id, actor, "manual text is protected", &["title_mode"], true);
+            }
         }
         if let Record::Stream(stream) = current
             && stream.goal_mode == NamingMode::Manual

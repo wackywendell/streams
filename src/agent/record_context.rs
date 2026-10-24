@@ -5,7 +5,7 @@ use std::collections::BTreeSet;
 use serde::Serialize;
 
 use crate::{
-    model::{Record, RecordKind, Session, Stream, ValidationError, check_text},
+    model::{Record, RecordKind, Session, Stream, TitleDefaults, ValidationError, check_text},
     storage::{
         StorageError,
         records::{RecordAddress, RecordReader},
@@ -27,6 +27,7 @@ pub enum RecordContextError {
 pub struct RecordContext {
     pub catalog_source: String,
     pub host_id: String,
+    pub title_defaults: TitleDefaults,
     pub stream: Option<Stream>,
     pub session: Option<Session>,
     pub sessions: Vec<Session>,
@@ -38,6 +39,7 @@ pub fn record_context(
     host: &str,
     catalog_source: &str,
     request: ContextRequest<'_>,
+    title_defaults: TitleDefaults,
 ) -> Result<RecordContext, RecordContextError> {
     check_text(host, "host_id", false)?;
     check_text(catalog_source, "catalog_source", false)?;
@@ -108,6 +110,7 @@ pub fn record_context(
     Ok(RecordContext {
         catalog_source: catalog_source.into(),
         host_id: host.into(),
+        title_defaults,
         sessions: session.iter().cloned().collect(),
         stream,
         session,

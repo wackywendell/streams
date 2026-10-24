@@ -5,7 +5,7 @@ import { StreamsCliError } from "./streams.ts";
 export type NativeSnapshot = {
  scope: {catalogSource: string; hostId: string; streamId: string; sessionId: string; nativeSessionId: string};
  native: {pane_id: string; tab_id: string; workspace_id: string};
- session: {title: string; title_mode: "automatic" | "manual"};
+ session: {title: string; title_mode: "automatic" | "manual" | "inherit"};
 };
 export type NativeContext = {socket: string; paneId: string; terminalId: string; workspaceId: string; tabId: string};
 export type NativeAdapter = {

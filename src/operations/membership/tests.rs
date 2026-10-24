@@ -1,5 +1,5 @@
 use super::*;
-use crate::model::{Checkout, NamingMode, Status};
+use crate::model::{Checkout, Status, TitleMode};
 
 fn records() -> (Session, Stream, Stream, MoveIntent) {
     let mut session = Session::new(
@@ -11,7 +11,7 @@ fn records() -> (Session, Stream, Stream, MoveIntent) {
         "My work",
     )
     .unwrap();
-    session.title_mode = NamingMode::Manual;
+    session.title_mode = TitleMode::Manual;
     session.status = Status::Blocked;
     session.state = "Conversation-local progress".into();
     session.state_short = Some("Progress".into());
