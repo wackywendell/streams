@@ -52,12 +52,13 @@ test("help is usable with missing SDK, invalid settings and no services", async 
  assert.equal(child.status, 0); assert.match(child.stdout, /Usage:/);
 });
 
+class FakeChild {run=()=>assert.fail("fixture must not run a real catalog request");async stop() {}}
 function fakeModules({enabled = true, result = {id: "artifact"}, calls = [], sdk} = {}) {
  return {
   loadSettings(agentDir) {calls.push(["settings", agentDir]); return {debug_commands: enabled};},
   async core() {
    calls.push(["core"]);
-   return {StreamCli: class {constructor(cwd) {this.cwd = cwd;}}, async executeLab(operation, environment, signal) {calls.push(["execute", operation, environment, signal]); return result;}};
+   return {StreamsChild:class extends FakeChild {constructor(options) {super();calls.push(["child",options]);} async stop() {calls.push(["child-stopped"]);}}, StreamCli: class {constructor(cwd,runner) {this.cwd = cwd;assert.equal(typeof runner,"function");}}, async executeLab(operation, environment, signal) {calls.push(["execute", operation, environment, signal]); return result;}};
   },
   async sdk() {calls.push(["sdk"]); if (!sdk) throw Error("unexpected model bootstrap"); return sdk;},
  };
@@ -84,6 +85,8 @@ test("nonmodel operations never bootstrap model services or sessions", async t =
   const call = value.calls.find(call => call[0] === "execute");
   assert.equal(call[2].root, join(value.root, "stream-debug"));
   assert.equal(call[2].client.cwd, value.root); assert.equal(call[2].runtime, undefined); assert.equal(call[2].current, undefined);
+  const child=value.calls.find(call=>call[0]==="child");assert.equal(child[1].cwd,value.root);assert.equal(child[1].env.PI_CODING_AGENT_DIR,value.root);
+  assert.equal(value.calls.at(-1)[0],"child-stopped");
   assert.deepEqual(readdirSync(value.root), ["sdk.mjs"]);
  }
 });
@@ -136,7 +139,7 @@ test("cancellation awaits final artifact save and restores signal handlers", asy
  const {root, sdk} = fixture(t), before = process.listenerCount("SIGINT");
  let finished = false, output = "";
  const modules = fakeModules();
- modules.core = async () => ({StreamCli: class {}, async executeLab(_operation, _environment, signal) {
+ modules.core = async () => ({StreamsChild:FakeChild, StreamCli: class {}, async executeLab(_operation, _environment, signal) {
   try {
    process.emit("SIGINT");
    assert.equal(signal.aborted, true);
@@ -159,7 +162,7 @@ import {writeFileSync} from 'node:fs';
 import {setTimeout} from 'node:timers/promises';
 process.exitCode = await main(['list','run','--json'], {
  env: {PI_CODING_AGENT_DIR: ${JSON.stringify(root)}, STREAMS_PI_SDK_ENTRY: ${JSON.stringify(sdk)}},
- loadModules: async () => ({loadSettings: () => ({debug_commands:true}), core: async () => ({StreamCli: class {}, executeLab: async (_op,_env,signal) => {
+ loadModules: async () => ({loadSettings: () => ({debug_commands:true}), core: async () => ({StreamsChild: class {run() {} async stop() {}}, StreamCli: class {}, executeLab: async (_op,_env,signal) => {
   const hold = globalThis.setInterval(() => {}, 1000);
   process.stdout.write('READY\\n');
   await new Promise(resolve => signal.addEventListener('abort',resolve,{once:true}));
