@@ -136,8 +136,6 @@ function handle(method,params){
  if(method==='workspace.get') return {type:'workspace_info',workspace:value.snapshot.workspaces[0]};
  if(method==='session.snapshot') {
   const result={type:'session_snapshot',snapshot:structuredClone(value.snapshot)};
-  if(value.replaceOwnerAfterSnapshot&&--value.replaceOwnerAfterSnapshot===0){for(const row of [value.pane,value.snapshot.panes[0],value.snapshot.agents[0]]) row.terminal_id='reused-terminal';}
-  if(value.replaceOwnerAfterSnapshot!==undefined) save();
   return result;
  }
  if(method==='workspace.report_metadata'||method==='pane.report_metadata') {
