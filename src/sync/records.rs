@@ -404,6 +404,46 @@ impl RecordSync {
         }
         Ok(())
     }
+    fn local_head(&self) -> Result<String, StorageError> {
+        for path in ["MERGE_HEAD", "rebase-merge", "rebase-apply", "index.lock"] {
+            if self.root.join(".git").join(path).exists() {
+                return Err(invalid(
+                    "Git has unfinished external work; inspect it explicitly",
+                ));
+            }
+        }
+        ensure_directory(&self.root.join(".git"), false)?;
+        if self.root.join(".git/commondir").exists() {
+            return Err(invalid("record transport requires its own repository"));
+        }
+        let configured = super::state::GitConfig::new(
+            self.remote().map(str::to_owned),
+            self.branch().unwrap(),
+            &self.host,
+        )
+        .map_err(invalid)?;
+        self.git.check_target(&configured).map_err(invalid)?;
+        let actual = self
+            .git
+            .text(&["rev-parse", "--show-toplevel"], None, None, &[0])
+            .map_err(git_error)?;
+        if fs::canonicalize(actual).map_err(invalid)?
+            != fs::canonicalize(&self.root).map_err(invalid)?
+        {
+            return Err(invalid("Git worktree is outside catalog root"));
+        }
+        let head = self.git.head().map_err(git_error)?;
+        if self
+            .git
+            .text(&["symbolic-ref", "HEAD"], None, None, &[0])
+            .map_err(git_error)?
+            != format!("refs/heads/{}", self.branch().unwrap())
+        {
+            return Err(invalid("catalog transport branch changed"));
+        }
+        Ok(head)
+    }
+
     pub fn sync(&self) -> SyncResult {
         if self.strategy() == Strategy::None {
             return match YamlRecordStore::new(&self.root, &self.host)
@@ -417,45 +457,13 @@ impl RecordSync {
         let mut local_status = LocalStatus::Unchanged;
         let mut failure = SharingStatus::Blocked;
         let result = (|| -> Result<SharingStatus, StorageError> {
-            let _lock = existing_write_lock(&self.root.join(".catalog.lock"))?;
-            for path in ["MERGE_HEAD", "rebase-merge", "rebase-apply", "index.lock"] {
-                if self.root.join(".git").join(path).exists() {
-                    return Err(invalid(
-                        "Git has unfinished external work; inspect it explicitly",
-                    ));
-                }
-            }
-            ensure_directory(&self.root.join(".git"), false)?;
-            if self.root.join(".git/commondir").exists() {
-                return Err(invalid("record transport requires its own repository"));
-            }
-            let configured = super::state::GitConfig::new(
-                self.remote().map(str::to_owned),
-                self.branch().unwrap(),
-                &self.host,
-            )
-            .map_err(invalid)?;
-            self.git.check_target(&configured).map_err(invalid)?;
-            let actual = self
-                .git
-                .text(&["rev-parse", "--show-toplevel"], None, None, &[0])
-                .map_err(git_error)?;
-            if fs::canonicalize(actual).map_err(invalid)?
-                != fs::canonicalize(&self.root).map_err(invalid)?
-            {
-                return Err(invalid("Git worktree is outside catalog root"));
-            }
-            let head = self.git.head().map_err(git_error)?;
-            if self
-                .git
-                .text(&["symbolic-ref", "HEAD"], None, None, &[0])
-                .map_err(git_error)?
-                != format!("refs/heads/{}", self.branch().unwrap())
-            {
-                return Err(invalid("catalog transport branch changed"));
-            }
-            let working = self.working()?;
-            let local = self.checkpoint(&head, &working, &mut local_status)?;
+            let _transport =
+                crate::file_io::lock(&self.root.join(".catalog-local/transport.lock"))?;
+            let local = {
+                let _catalog = existing_write_lock(&self.root.join(".catalog.lock"))?;
+                let head = self.local_head()?;
+                self.checkpoint(&head, &self.working()?, &mut local_status)?
+            };
             if self.remote().is_none() {
                 return Ok(SharingStatus::LocalOnly);
             }
@@ -470,44 +478,61 @@ impl RecordSync {
                     &[0, 2],
                 )
                 .map_err(git_error)?;
-            if !advertised.is_empty() {
+            let remote = if advertised.is_empty() {
+                None
+            } else {
                 let fields: Vec<_> = advertised.split_whitespace().collect();
                 if fields.len() != 2 || fields[1] != reference {
                     return Err(invalid("remote advertised an unexpected catalog reference"));
                 }
-                if fields[0] == local {
-                    return Ok(SharingStatus::Confirmed);
+                Some(if fields[0] == local {
+                    local.clone()
+                } else {
+                    let fetch = format!("+{reference}:refs/streams/incoming");
+                    self.git
+                        .run(
+                            &["fetch", "--quiet", "--no-tags", "origin", &fetch],
+                            None,
+                            None,
+                            &[0],
+                        )
+                        .map_err(git_error)?;
+                    self.git
+                        .text(&["rev-parse", "refs/streams/incoming"], None, None, &[0])
+                        .map_err(git_error)?
+                })
+            };
+            failure = SharingStatus::Blocked;
+            let next = {
+                let _catalog = existing_write_lock(&self.root.join(".catalog.lock"))?;
+                if self.local_head()? != local {
+                    return Err(invalid(
+                        "catalog Git tip changed while sync awaited the remote",
+                    ));
                 }
-                let fetch = format!("+{reference}:refs/streams/incoming");
-                self.git
-                    .run(
-                        &["fetch", "--quiet", "--no-tags", "origin", &fetch],
-                        None,
-                        None,
-                        &[0],
-                    )
-                    .map_err(git_error)?;
-                let remote = self
-                    .git
-                    .text(&["rev-parse", "refs/streams/incoming"], None, None, &[0])
-                    .map_err(git_error)?;
-                failure = SharingStatus::Blocked;
-                let (next, tree) = self.combine(&local, &remote)?;
-                if next != local {
-                    local_status = LocalStatus::RepairRequired;
-                    self.install(&Self::tree(&self.git, &local)?, &tree)?;
-                    self.advance(&next, &local)?;
-                    local_status = LocalStatus::Committed;
+                let local = self.checkpoint(&local, &self.working()?, &mut local_status)?;
+                match &remote {
+                    Some(remote) => {
+                        let (next, tree) = self.combine(&local, remote)?;
+                        if next != local {
+                            local_status = LocalStatus::RepairRequired;
+                            self.install(&Self::tree(&self.git, &local)?, &tree)?;
+                            self.advance(&next, &local)?;
+                            local_status = LocalStatus::Committed;
+                        }
+                        next
+                    }
+                    None => local,
                 }
-                if next == remote {
-                    return Ok(SharingStatus::Confirmed);
-                }
+            };
+            if remote.as_ref() == Some(&next) {
+                return Ok(SharingStatus::Confirmed);
             }
-            // Any push failure can lose its acknowledgement after publication.
+            // Publish this prepared commit, not changes saved while the network is pending.
             failure = SharingStatus::Uncertain;
             self.git
                 .run(
-                    &["push", "--quiet", "origin", &format!("HEAD:{reference}")],
+                    &["push", "--quiet", "origin", &format!("{next}:{reference}")],
                     None,
                     None,
                     &[0],
