@@ -1,111 +1,133 @@
-# Pi child protocol, version 1
+# One native controller for each Pi session
 
-Status: proposed contract between the Pi extension and the long-lived Rust child described in [Bounded, event-driven work in every Streams process](bounded-work-and-card-events.md). Both sides should implement exactly this; any change bumps the version and updates this file.
+Accepted version 2 contract. Version 1 remains implemented until both sides switch together.
 
-The protocol carries today's CLI calls over one pipe, so each side can move independently. A request is the argument vector the extension already passes to `streams`, and a response is what the CLI would have printed. The new parts are the handshake, cancellation, and child events that replace polling and retry timers.
+## Why change the protocol
 
-## Launch and lifetime
+Version 1 sends CLI argument vectors over the child's pipe. Pi receives native
+scope, turns it into `--expect`, and requests projection, capture and opening.
+The child also watches native events and refreshes that scope. Both sides decide
+when native work should run, and the same observation crosses the pipe only to
+be checked again.
 
-The extension starts one child per Pi session:
+The child should own native observation, planning and execution for its Pi
+session. Pi should send user intent, not a saved native context. This removes
+the second control loop without moving model calls or branch admission into Rust.
 
-```
-streams serve --session-id <Pi session id> --plugin-root <work-cards plugin root>
-```
+## Typed application requests
 
-It uses the same binary selection, environment and working directory as its current native calls. Stdin carries requests, and stdout carries responses and events. Stderr is human-readable diagnostics that the extension may log but never parses.
+Version 2 should carry typed requests for lifecycle changes, user actions and
+catalog operations. It should not carry `argv`, CLI flags or `--expect`. Each
+request's fields should be the inputs to its application operation.
 
-When Pi switches to another session, the extension shuts down the old child and starts a new one. To shut down, the extension closes the child's stdin. The child finishes in-flight requests within their deadlines and exits with status 0.
-
-Any other exit is a crash. The extension rejects in-flight requests, warns the user, and restarts the child once per Pi session. If the restarted child also exits, the extension warns again and stops Streams for that Pi session until reload. A restart is not a session start, so the extension must not request an automatic open after a restart.
-
-## Framing
-
-Each message is one JSON object on one line, terminated by `\n`, with a `type` field. A message of an unknown type, invalid JSON, or a missing field is a protocol error. The receiver treats it as a crash of the other side: the extension kills and handles the child as above, and the child exits with a nonzero status.
-
-## Handshake
-
-The child's first line is:
+For example, the proposed envelope is:
 
 ```json
-{"type":"ready","protocol":1}
+{"type":"request","id":7,"request":{"kind":"open_card"}}
+{"type":"request","id":8,"request":{"kind":"session_started"}}
+{"type":"request","id":9,"request":{"kind":"attach"}}
 ```
 
-The extension sends no requests until it receives this line. It treats any other first line, a different version, or no line within 10 seconds as a failed start, handled like a crash. Immediately after `ready`, the child sends its first `scope` event.
+The child is already bound to the Pi session ID supplied at launch. An open
+request should not supply another session ID, pane address or caller proof.
+The child must establish caller origin itself. It should resolve only the owner
+and pass the typed proof directly to the application operation, not read every
+Pi transcript to reduce an inventory to that owner.
 
-## Requests and responses
+The one-shot CLI should parse its arguments into the same application requests.
+Neither frontend should reconstruct CLI syntax inside the application layer.
+Catalog context, capture inputs, preview, enrollment, apply, listing, workspace
+capture and sync should have typed payloads too. Existing domain request and
+result schemas remain the contracts for those operations.
 
-```json
-{"type":"request","id":7,"argv":["agent","context","--session-id","…","--harness","pi","--json"],"input":{…}}
-{"type":"response","id":7,"code":0,"value":{…},"notices":[]}
-```
+Responses should retain request IDs and distinguish success, failure and a save
+accepted with warnings. Each operation should return its own result, rather
+than requiring another native query to discover what execution just did. The
+concrete request and response types must be shared before either side activates
+version 2; the examples above do not define the remaining payloads.
 
-- **`id`** is a positive integer, unique for the child's lifetime.
-- **`argv`** is the argument vector after `streams`, exactly as the extension passes it today, including `--json` and, for native calls, `--session-id`, `--plugin-root` and `--expect`.
-- **`input`** is present only when the CLI call reads JSON from stdin today.
-- **`code`** is the CLI exit status: 0 for success, 1 for an error, and 2 for an accepted save with warnings.
-- **`value`** is the JSON the CLI prints on stdout.
-- **`notices`** are the lines the CLI would print on stderr.
+## One native queue
 
-The extension can therefore map a response to its existing `{code, stdout, stderr}` handling without changing how it interprets results.
+The child should serialize native user requests and selected native or catalog
+events through one execution queue. It should own startup, projection, native
+layout capture, verified owner movement and card-closure cleanup. An event
+selects records to read; its payload is not proof of current topology.
 
-The child accepts only the commands the extension uses:
+Each handler should collect its concerned inputs, make a pure plan and execute
+that plan through the frontend adapter. The [effect-planning contract](effect-planning.md)
+applies: compare normalized desired and observed values, without an applied-action
+history or a no-repeat map. Use authoritative replies rather than confirmation
+polling. An acknowledgement alone is enough only when the adapter models that
+field's normalization exactly.
 
-- `agent context`, `agent capture-inputs`, `agent preview`, `agent enroll` and `agent apply`
-- `list`
-- `workspace capture`
-- `sync`
-- `native observe`, `native open`, `native close`, `native project` and `native capture`
+Catalog work that cannot mutate native state need not wait behind native work.
+A catalog change that affects projections should select work on the native
+queue, not start another controller. This is one controller per Pi session,
+not a new host daemon. One-shot CLI actions should use the same handlers and
+host-local native lock, without a separate automatic control loop.
 
-Any other command gets code 1 with error kind `unsupported-command`. A native request whose `--session-id` differs from the child's launch session gets code 1 with error kind `session-mismatch`. `debug`, `replay` and the prompt lab keep running as separate processes; they are rare and user-invoked.
+## Lifecycle is not transport startup
 
-The child runs requests concurrently and responds in completion order, so callers match responses by `id`. Locking is the same as for separate CLI processes. If a request changes scope, the child emits that scope before the response. A response fences the scope reads caused by that request; independent external events may still arrive later.
+The extension should still start one child per Pi session with the selected
+binary, environment, working directory and plugin root. A session switch ends
+the old child. The first line should be `{"type":"ready","protocol":2}`.
+Readiness means the transport can accept requests; it should not itself trigger
+native observation, projection, capture or opening.
 
-## Cancellation
+Pi should send `session_started` for an actual Pi session start. Only that
+lifecycle input may consider configured automatic opening. After a child crash,
+Pi should send `attach` instead. Attachment may restore subscriptions and fresh
+observations and refresh projections. It must not repeat automatic opening or
+perform startup catch-up follow.
 
-```json
-{"type":"cancel","id":7}
-```
+The extension should retain the existing limit of one automatic child restart
+per Pi session. It should reject requests whose child died, warn and reattach,
+without replaying those requests. A second failure stops Streams until reload.
+Closing stdin should end the child and its subscriptions after bounded shutdown.
+A restarted child has no inherited caller proof; an unprovable moved origin
+must still refuse, even if the previous child could attest it.
 
-The extension sends this when a request's signal aborts or its deadline passes, then rejects the request locally. The child cancels the operation if it is still running, and still sends a response, which the extension discards. A cancel for an unknown or finished `id` is ignored. A timeout does not kill the child.
+## Pi keeps model and branch admission
 
-## Events
+Pi should keep helper/model execution, branch checks and admission of model
+results. Captured inputs, dependencies and targets remain fixed. A changed
+native location or membership must not replan or retarget a captured shared
+result, including a move away and back.
 
-The child sends events without a request.
+Pi should send the resulting typed catalog intent to the child. Rust still
+checks catalog and membership conditions when applying it. A fresh child view
+is not permission to rewrite the captured target. Discussion retains its
+fixed-membership contract.
 
-```json
-{"type":"event","event":"scope","value":{…}}
-{"type":"event","event":"scope","value":null,"reason":"…"}
-{"type":"event","event":"warning","message":"…"}
-```
+The child may return display facts and a desired Pi session name. Those are UI
+outputs, not caller authority to send back with the next native action. Pi may
+apply the desired name through its checked setter, but must not decide that a
+view change calls for another native projection or capture. Enabled title sync
+uses the authoritative catalog title; the protocol should have no naming
+provenance or reclaim operation.
 
-**`scope`** carries the child's current owner observation. Its `value` uses the same schema as `native observe --json`. `value` is `null`, with a human-readable `reason`, when there is no observation, for example when the session is not enrolled or its workspace is unbound. The child sends a `scope` event after `ready`, and again whenever the observation changes. That happens when:
+## Cancellation does not undo an effect
 
-- the owner pane, tab or workspace moves
-- the workspace binding changes
-- the Session's membership or title changes
-- enrollment becomes ready
+Each request ID should be a positive integer unique within the child's lifetime.
+A `{"type":"cancel","id":7}` message should cancel that request, not kill the
+child. Cancellation before dispatch should prevent the operation from starting.
+Running work should stop at its next cancellable boundary.
 
-The child sends nothing when the observation is unchanged.
+If an unsafe call may already have happened, cancellation cannot prove that it
+did not. The executor must preserve its evidence and any uncertainty fence.
+It must not roll back, retry or replace the request. The child should still
+finish its response; Pi may discard a response to an already-cancelled request.
+Unknown or completed cancellation IDs should have no effect.
 
-The extension should adopt each `scope` value as its current expectation and run its usual update. A changed scope is a valid move, not a reason to require a reload. A request that races a move may fail with error kind `native-context-changed`. The extension should then wait for the next `scope` event, rather than fencing permanently. It retries the operation only if the user requested it; automatic work is simply dropped. These events replace the extension's 15-second native retry timer.
+## Cut over both sides together
 
-**`warning`** is a problem the user should see. The extension shows it the same way it shows today's native warnings. When the child cannot establish a required subscription, it sends a `warning` and then exits with a nonzero status.
+Framing remains one JSON object per newline. Invalid messages and an unsupported
+protocol version should fail the connection, not select a fallback. Version 2
+must replace the CLI-vector transport and the scope-to-`--expect` loop together,
+including their fakes and tests. There should be no version-1 adapter.
 
-## Ownership
-
-The Rust side owns:
-
-- `streams serve` and in-process dispatch
-- the Herdr socket client and event subscriptions
-- `scope` events and move reconciliation
-- event-driven cards and card self-close
-- the automatic-open rule
-
-The Pi side owns:
-
-- the child's lifecycle, including handshake, restart and shutdown
-- routing all of the commands above through the child
-- adopting `scope` events
-- removing timers and per-event process starts from the extension
-
-Until `streams serve` exists, the Pi side can test against a stand-in child. The stand-in implements this protocol by running one CLI process per request, and emits a `scope` event after `ready` by calling `native observe`.
+This decision does not settle whether ready evidence stores a launch receipt
+or current location. It also does not settle whether a later explicit open
+finishes an acknowledged but incompletely published card. Those choices remain
+open before the dependent card planner changes. Neither can relax pending-launch
+uncertainty, caller origin or the rule against replacement during follow.
