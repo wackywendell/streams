@@ -805,8 +805,9 @@ test('invalid streams arguments show actionable usage without catalog, UI dialog
  await turn();assert.equal(f.notices.length,8);assert.equal(f.reads(),0);
  for(const effects of [f.requests,f.writes,f.receipts,f.dialogs,f.activity])assert.deepEqual(effects,[]);
 });
-test('streams settings dispatches to the existing reporting dialog without reporting',async()=>{
- const f=commandFixture();await f.run(' settings ');
+test('streams settings dispatches to the existing reporting dialog without reporting',async t=>{
+ const root=mkdtempSync(join(tmpdir(),'card-settings-command-'));t.after(()=>rmSync(root,{recursive:true,force:true}));
+ const f=commandFixture({agentDir:root});await f.run(' settings ');
  assert.equal(f.dialogs.length,1);assert.match(f.dialogs[0].title,/Work card & Herdr settings/);assert.ok(f.dialogs[0].rows.includes('Response frequency: 1'));
  assert.equal(f.reads(),0);assert.deepEqual(f.requests,[]);assert.deepEqual(f.writes,[]);
 });

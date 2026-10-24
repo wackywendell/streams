@@ -8,7 +8,6 @@ export interface WorkCardsConfig {
   tab_naming: boolean;
   session_naming: boolean;
   document_command: string | null;
-  pane_poll_interval_ms: number;
   herdr_timeout_ms: number;
   pane_height_fraction: number;
 }
@@ -19,7 +18,6 @@ export const DEFAULT_CONFIG: Readonly<WorkCardsConfig> = Object.freeze({
   tab_naming: true,
   session_naming: true,
   document_command: null,
-  pane_poll_interval_ms: 1000,
   herdr_timeout_ms: 3000,
   pane_height_fraction: 0.2,
 });

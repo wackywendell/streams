@@ -24,15 +24,15 @@ Use the root Pi extension:
 | `/streams pane` | Explicitly open the native Herdr card |
 | `/streams pane close` | Close only the owned display |
 
-Opening or closing the pane does not request a report or change membership. Pressing `q` closes the display. Explicit closure suppresses automatic reopening, including after reload; `/streams pane` reopens it. An exact recorded launch can finish interrupted pairing under the workspace lock. A launch without verifiable native identity stays blocked rather than risking a duplicate pane.
+Opening or closing the pane does not request a report or change membership. Pressing `q` closes the display. Automatic opening runs when Pi starts or resumes and `workspace_startup` is `automatic`. Within that Pi lifetime, a closed card stays closed until `/streams pane` reopens it. An exact recorded launch can finish interrupted pairing under the workspace lock. A launch without verifiable native identity stays blocked rather than risking a duplicate pane.
 
-The terminal pane polls saved records and reflows on resize. Its document shortcuts use the currently displayed target and revalidate it before opening. If the reference or checkout changes, redraw and press the shortcut again.
+The terminal pane subscribes to native and saved-record changes and reflows on resize. Its document shortcuts use the currently displayed target and revalidate it before opening. If the reference or checkout changes, redraw and press the shortcut again.
 
 ## Documents and checkouts
 
 Streams owns repository identities, document references and host-local checkout registrations. Register checkouts through the CLI; the card does not discover roots from Git remotes or choose an arbitrary directory.
 
-A document normally opens from the viewing Session's selected checkout, including local edits. The app supplies available locations and any alternate choices. A recorded commit is provenance, not a requirement that the working file match that revision. Revision choices contain explicit metadata, not synthetic checkout IDs. The CLI extracts their contents only when you open them, never while polling the card. The adapter checks the selected binding and canonical file before opening. Missing mappings, missing files and paths escaping the checkout fail visibly; they do not remove the shared reference.
+A document normally opens from the viewing Session's selected checkout, including local edits. The app supplies available locations and any alternate choices. A recorded commit is provenance, not a requirement that the working file match that revision. Revision choices contain explicit metadata, not synthetic checkout IDs. The CLI extracts their contents only when you open them, never while refreshing the card. The adapter checks the selected binding and canonical file before opening. Missing mappings, missing files and paths escaping the checkout fail visibly; they do not remove the shared reference.
 
 `document_command` is a trusted command prefix. It falls back to `$EDITOR`, then `less`. Do not copy untrusted document, record or model text into executable configuration.
 
@@ -47,15 +47,14 @@ Global configuration lives at `$PI_CODING_AGENT_DIR/work-cards.json`, defaulting
 | `tab_naming` | `true` | Track eligible Herdr tab names |
 | `session_naming` | `true` | Track eligible Pi session names |
 | `document_command` | `null` | Trusted command prefix; otherwise `$EDITOR`, then `less` |
-| `pane_poll_interval_ms` | `1000` | Saved-record refresh interval |
 | `herdr_timeout_ms` | `3000` | Native operation and document lock-wait timeout |
 | `pane_height_fraction` | `0.2` | Requested share of a new pair's initial split, within native layout constraints |
 
 Startup accepts `automatic` or `manual`. Each naming setting accepts only a boolean and defaults to `true`, independently of startup. `null` is invalid for naming. Disabling naming preserves manual protection; re-enabling it does not reclaim pinned names.
 
-Timer settings must be integers from 1 to 2,147,483,647. Pane height must be strictly between zero and one. `document_command` accepts `null` or a nonblank command without control characters; malformed nonblank `$EDITOR` values also fail visibly.
+`herdr_timeout_ms` must be an integer from 1 to 2,147,483,647. Pane height must be strictly between zero and one. `document_command` accepts `null` or a nonblank command without control characters; malformed nonblank `$EDITOR` values also fail visibly.
 
-Inference settings belong to the root extension's `stream-reporting.json`. Removed fields such as `model`, `thinking_level`, `show_refresh_spinner`, `check_every_n_responses`, `max_output_tokens` and `request_timeout_ms` are rejected in `work-cards.json`.
+Inference settings belong to the root extension's `stream-reporting.json`. Removed fields such as `model`, `thinking_level`, `show_refresh_spinner`, `check_every_n_responses`, `max_output_tokens`, `request_timeout_ms` and `pane_poll_interval_ms` are rejected in `work-cards.json`.
 
 ## Rust lifecycle routing
 

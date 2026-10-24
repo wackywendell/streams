@@ -30,7 +30,7 @@ test('missing config uses frozen defaults without shared mutable results', async
 
 test('partial config overlays defaults without changing unrelated settings', async t => {
   const path = await fixture(t);
-  const overrides = { pane_height_fraction: 0.35, pane_poll_interval_ms: 250, document_command: 'less -R' };
+  const overrides = { pane_height_fraction: 0.35, herdr_timeout_ms: 250, document_command: 'less -R' };
   await writeFile(path, JSON.stringify(overrides));
   assert.deepEqual(await loadConfig(path), { ...DEFAULT_CONFIG, ...overrides });
 });
@@ -81,23 +81,21 @@ test('removed inference and legacy options are rejected rather than silently ign
   const path = await fixture(t);
   for (const key of ['model', 'thinking_level', 'show_refresh_spinner', 'check_every_n_responses',
     'max_output_tokens', 'request_timeout_ms', 'check_every_n_cycles', 'max_context_chars',
-    'max_document_bytes', 'update_guidance']) {
+    'max_document_bytes', 'update_guidance', 'pane_poll_interval_ms']) {
     await writeFile(path, JSON.stringify({ [key]: 1 }));
     await assert.rejects(loadConfig(path), new RegExp(`unknown field ${key}`));
   }
 });
 
-test('timer settings accept positive integer boundaries and reject invalid or overflowing delays', async t => {
+test('Herdr timeout accepts positive integer boundaries and rejects invalid or overflowing delays', async t => {
   const path = await fixture(t);
-  for (const key of ['pane_poll_interval_ms', 'herdr_timeout_ms']) {
-    for (const value of [1, 2147483647]) {
-      await writeFile(path, JSON.stringify({ [key]: value }));
-      assert.equal((await loadConfig(path))[key], value);
-    }
-    for (const value of [0, -1, 0.5, '100', null, false, [], {}, 2147483648, 1e100]) {
-      await writeFile(path, JSON.stringify({ [key]: value }));
-      await assert.rejects(loadConfig(path), /integer between 1 and 2147483647/);
-    }
+  for (const value of [1, 2147483647]) {
+    await writeFile(path, JSON.stringify({ herdr_timeout_ms: value }));
+    assert.equal((await loadConfig(path)).herdr_timeout_ms, value);
+  }
+  for (const value of [0, -1, 0.5, '100', null, false, [], {}, 2147483648, 1e100]) {
+    await writeFile(path, JSON.stringify({ herdr_timeout_ms: value }));
+    await assert.rejects(loadConfig(path), /integer between 1 and 2147483647/);
   }
 });
 

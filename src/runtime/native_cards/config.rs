@@ -28,8 +28,6 @@ struct Wire {
     tab_naming: bool,
     session_naming: bool,
     document_command: Option<String>,
-    #[serde(rename = "pane_poll_interval_ms")]
-    _pane_poll_interval_ms: u32,
     herdr_timeout_ms: u32,
     pane_height_fraction: f64,
 }
@@ -41,7 +39,6 @@ impl Default for Wire {
             tab_naming: true,
             session_naming: true,
             document_command: None,
-            _pane_poll_interval_ms: 1000,
             herdr_timeout_ms: 3000,
             pane_height_fraction: 0.2,
         }
@@ -184,6 +181,18 @@ pub(super) fn validate_title(value: &str) -> Result<()> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn retired_pane_poll_setting_is_rejected() {
+        let error =
+            serde_json::from_value::<Wire>(serde_json::json!({"pane_poll_interval_ms": 60000}))
+                .err()
+                .expect("retired polling setting must not be accepted");
+        assert!(
+            error
+                .to_string()
+                .contains("unknown field `pane_poll_interval_ms`")
+        );
+    }
     #[test]
     fn defaults_and_strict_configuration() {
         let root = tempfile::tempdir().unwrap();
