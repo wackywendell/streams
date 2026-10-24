@@ -13,3 +13,5 @@ From that follow:
 1. Keep the data model and interaction model well designed enough that an event-driven design just works, with very little computation or I/O for any operation. Reconciliation belongs in the apply step, not in extra lookups.
 2. Keep the system modular. Sync backends and frontends (Herdr, cmux and others) are interchangeable implementations behind interfaces.
 3. This is alpha software. If the data model needs to change, change it. Migrate existing data if needed. Losing some data is acceptable, because it is all generated automatically.
+
+If `AGENTS.local.md` exists in the workspace root, read it too. It holds local permissions for committing, integration and publishing.
