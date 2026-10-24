@@ -110,12 +110,16 @@ impl NativeCardSource for Source {
         if inventory {
             world.inventory_reads += 1;
         }
-        if world.deny_read || inventory {
+        if world.deny_read || (inventory && world.observation.handover.is_none()) {
             return Err(invalid(
                 "fake application authority/creation context unavailable",
             ));
         }
-        Ok(world.observation.clone())
+        let mut observation = world.observation.clone();
+        if !inventory {
+            observation.handover = None;
+        }
+        Ok(observation)
     }
     fn resolve_document(
         &mut self,
@@ -634,6 +638,27 @@ impl Fixture {
         w.snapshot["workspaces"][0]["tokens"] = json!({
             "strm_catalog":json_digest(&"catalog").unwrap(),"strm_host":"host",
             "strm_stream":"effort","strm_binding":"binding-lifetime",
+        });
+    }
+    fn prepare_predecessor(&self) {
+        self.engine().open_display(OpenMode::Explicit).unwrap();
+        let snapshot = {
+            let mut world = self.runner.world.lock().unwrap();
+            remove_card(&mut world);
+            let native = "11111111-1111-4111-8111-111111111111";
+            world.observation.card = card(native, None);
+            world.snapshot["panes"][0]["agent"] = json!("pi");
+            world.snapshot["panes"][0]["agent_session"] =
+                json!({"agent":"pi","kind":"id","value":native});
+            world.snapshot.clone()
+        };
+        let client = HerdrClient::connect(self.environment.clone(), 1.0).unwrap();
+        let native =
+            super::super::native::native_inventory_from_snapshot(&client, &snapshot).unwrap();
+        let mut world = self.runner.world.lock().unwrap();
+        world.observation.handover = Some(HandoverInventory {
+            scopes: vec![world.observation.card.scope().clone()],
+            native,
         });
     }
     fn reserve(&self, partial: bool) {
@@ -1563,6 +1588,67 @@ fn document_acknowledgement_survives_authority_loss() {
     assert!(f.engine().open_document(&target).is_err());
     assert_eq!(f.launches(), 2);
 }
+#[test]
+fn predecessor_retirement_uses_private_conversation_evidence_not_a_catalog_roster() {
+    let f = Fixture::new();
+    f.prepare_predecessor();
+    let old = f.record();
+    let before = f.effects().len();
+    let observed = f.engine().guard_recovering().unwrap();
+    assert_eq!(
+        observed.saved.card.scope().native_session_id,
+        "11111111-1111-4111-8111-111111111111"
+    );
+    assert!(matches!(observed.pair().unwrap(), PairState::Empty));
+    assert_eq!(f.record(), old);
+    assert!(f.runner.state.read(&observed.key).unwrap().is_none());
+    let effects = f.effects();
+    assert_eq!(effects.len(), before + 1);
+    assert_eq!(effects.last().unwrap().0, "pane.report_metadata");
+}
+
+#[test]
+fn predecessor_retirement_rejects_another_catalogs_principal() {
+    let f = Fixture::new();
+    f.prepare_predecessor();
+    f.runner.world.lock().unwrap().snapshot["panes"][0]["tokens"]["strm_agent"] =
+        json!(conversation_key_for("another-catalog", "host", "pi", "native").unwrap());
+    let before = f.effects();
+    assert!(f.engine().guard_recovering().is_err());
+    assert_eq!(f.effects(), before);
+}
+
+#[test]
+fn predecessor_retirement_retains_old_and_current_pending_launches() {
+    for predecessor in [false, true] {
+        let f = Fixture::new();
+        f.prepare_predecessor();
+        let old = f.record();
+        let key = if predecessor {
+            old.key().into()
+        } else {
+            conversation_key(f.runner.world.lock().unwrap().observation.card.scope()).unwrap()
+        };
+        let pending = NativeAttempt::new(
+            key,
+            if predecessor {
+                old.nonce()
+            } else {
+                "current-pending"
+            },
+            &f.runner.socket,
+            NativePurpose::Card,
+        )
+        .unwrap();
+        // An interrupted-launch fixture, not a permitted rollback transition.
+        crate::file_io::write_json(&f.runner.state.path(pending.key()).unwrap(), &pending).unwrap();
+        let before = f.effects();
+        assert!(f.engine().guard_recovering().is_err());
+        assert_eq!(f.effects(), before);
+        assert_eq!(f.runner.state.read(pending.key()).unwrap(), Some(pending));
+    }
+}
+
 #[test]
 fn predecessor_without_fresh_creation_context_has_no_native_effects() {
     let f = Fixture::new();

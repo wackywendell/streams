@@ -232,21 +232,29 @@ fn json_digest(value: &impl Serialize) -> Result<String> {
 }
 /// Stable pair/evidence address; membership, catalog IDs and native location are observations.
 pub fn conversation_key(scope: &Scope) -> Result<String> {
-    for value in [
+    conversation_key_for(
         &scope.catalog_source,
         &scope.host_id,
         &scope.harness,
         &scope.native_session_id,
-    ] {
+    )
+}
+fn conversation_key_for(
+    catalog_source: &str,
+    host_id: &str,
+    harness: &str,
+    native_session_id: &str,
+) -> Result<String> {
+    for value in [catalog_source, host_id, harness, native_session_id] {
         super::text(value)?;
     }
     json_digest(&(
         "streams-native-conversation",
         2,
-        &scope.catalog_source,
-        &scope.host_id,
-        &scope.harness,
-        &scope.native_session_id,
+        catalog_source,
+        host_id,
+        harness,
+        native_session_id,
     ))
 }
 pub struct NativeCardEngine {

@@ -8,7 +8,7 @@ struct RetirementProof {
     binding: String,
     old: NativeAttempt,
     current: Option<NativeAttempt>,
-    inventory: HandoverInventory,
+    inventory: NativeInventory,
 }
 
 impl NativeCardEngine {
@@ -45,24 +45,23 @@ impl NativeCardEngine {
         if old_native == &current_scope.native_session_id {
             return Err(self.refuse("predecessor is current conversation"));
         }
-        let inventory = observed.saved.handover.as_ref().ok_or_else(|| {
-            self.refuse("fresh native inventory is required for predecessor retirement")
-        })?;
-        let mut candidates = Vec::new();
-        for scope in &inventory.scopes {
-            if scope.harness == "pi"
-                && scope.native_session_id == *old_native
-                && scope.catalog_source == current_scope.catalog_source
-                && scope.host_id == current_scope.host_id
-                && scope.stream_id == current_scope.stream_id
-                && conversation_key(scope)? == markers["strm_agent"]
-            {
-                candidates.push(scope);
-            }
+        let inventory = &observed
+            .saved
+            .handover
+            .as_ref()
+            .ok_or_else(|| {
+                self.refuse("fresh native inventory is required for predecessor retirement")
+            })?
+            .native;
+        let old_key = conversation_key_for(
+            &current_scope.catalog_source,
+            &current_scope.host_id,
+            &current_scope.harness,
+            old_native,
+        )?;
+        if old_key != markers["strm_agent"] {
+            return Err(self.refuse("predecessor conversation principal differs"));
         }
-        let [previous] = candidates.as_slice() else {
-            return Err(self.refuse("predecessor catalog scope is not unique"));
-        };
         let PairState::Absent { agent, .. } = observed
             .snapshot
             .classify_pair(&markers["strm_agent"], &observed.owner.terminal_id)?
@@ -90,7 +89,6 @@ impl NativeCardEngine {
         }) {
             return Err(self.refuse("predecessor has live native markers"));
         }
-        let old_key = conversation_key(previous)?;
         let old = self
             .read_attempt(&old_key, NativePurpose::Card)?
             .ok_or_else(|| self.refuse("predecessor has no durable proof"))?;
@@ -143,11 +141,12 @@ impl NativeCardEngine {
             "tokens":tokens});
         self.call("pane.report_metadata", params, None, true)?;
         let after = self.inspect(true)?;
-        let inventory = after
+        let inventory = &after
             .saved
             .handover
             .as_ref()
-            .ok_or_else(|| self.refuse("retirement inventory unavailable"))?;
+            .ok_or_else(|| self.refuse("retirement inventory unavailable"))?
+            .native;
         validate_inventory(&after, inventory, &fresh.markers["strm_native"], &socket)?;
         if after.saved.card.scope() != &fresh.scope
             || after.owner != fresh.owner
@@ -176,19 +175,19 @@ fn resource_live(proof: &Verified, resources: &Resources) -> bool {
 }
 fn validate_inventory(
     proof: &Verified,
-    inventory: &HandoverInventory,
+    inventory: &NativeInventory,
     old_native: &str,
     socket: &Path,
 ) -> Result<()> {
-    if inventory.native.socket() != socket
-        || inventory.native.panes().len() != proof.snapshot.topology().panes.len()
+    if inventory.socket() != socket
+        || inventory.panes().len() != proof.snapshot.topology().panes.len()
     {
         return Err(invalid(
             "native retirement inventory is incomplete or from another endpoint",
         ));
     }
     let mut seen = std::collections::BTreeSet::new();
-    for row in inventory.native.panes() {
+    for row in inventory.panes() {
         let pane = proof.snapshot.locate_terminal(row.terminal_id())?;
         if !seen.insert(row.pane_id())
             || pane.pane.id != row.pane_id()
