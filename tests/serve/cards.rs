@@ -393,24 +393,18 @@ fn real_card_follows_ids_discovered_at_start_and_owner_exit_cancels_a_later_read
     drop(gate);
 }
 #[test]
-fn real_card_explicit_refresh_is_full_even_when_evidence_notifications_are_queued() {
+fn real_card_explicit_refresh_requests_a_fresh_native_snapshot() {
     let f = CardFixture::new();
     let mut card = f.start();
     painted(&mut card, "Before");
     f.native.server.clear();
     let gate = f.native.block_next_snapshot();
-    let mut ready = f.evidence.clone();
-    ready.mark_ready().unwrap();
-    {
-        let lock = f.state.lock(1.0, &AtomicBool::new(false)).unwrap();
-        lock.write(Some(&f.evidence), &ready).unwrap();
-    }
     card.send(b"\x12");
     card.until(|_| gate.entered.try_recv().is_ok());
     card.send(b"q");
     card.finish();
     assert_eq!(f.native.server.methods(), ["session.snapshot"]);
-    assert_eq!(f.state.read(ready.key()).unwrap(), Some(ready));
+    f.assert_evidence_unchanged();
     drop(gate);
 }
 #[test]

@@ -199,6 +199,7 @@ struct Controller {
     snapshot: Option<CardSnapshot>,
     painted: Option<PaintedFrame>,
     busy: Busy,
+    pending_read: Option<Refresh>,
     dirty: bool,
 }
 impl Controller {
@@ -210,53 +211,63 @@ impl Controller {
             snapshot: None,
             painted: None,
             busy: Busy::Starting,
+            pending_read: None,
             dirty: true,
         }
     }
-    fn refresh(&mut self) -> Option<Request> {
-        self.refresh_for(Refresh::Full)
+    fn queue_read(&mut self, refresh: Refresh) {
+        if refresh == Refresh::Full || self.pending_read.is_none() {
+            self.pending_read = Some(refresh);
+        }
     }
-    fn refresh_for(&mut self, refresh: Refresh) -> Option<Request> {
+    fn next_read(&mut self) -> Option<Request> {
         if self.busy != Busy::Idle {
             return None;
         }
+        let refresh = self.pending_read.take()?;
         let token = self.view.begin_quiet_refresh(); // Invalidate BEFORE dispatch, not on completion.
         self.busy = Busy::Read(token);
         self.dirty = true;
         Some(Request::Read(token, refresh))
     }
     #[cfg(test)]
+    fn refresh(&mut self) -> Option<Request> {
+        self.refresh_for(Refresh::Full)
+    }
+    #[cfg(test)]
+    fn refresh_for(&mut self, refresh: Refresh) -> Option<Request> {
+        self.queue_read(refresh);
+        self.next_read()
+    }
+    #[cfg(test)]
     fn complete(&mut self, response: Response) -> Result<Option<Request>, String> {
-        if self.settle(response)? {
-            return Ok(self.refresh());
-        }
-        Ok(None)
+        self.settle(response)?;
+        Ok(self.next_read())
     }
     // Apply the sole operation's result even when quitting, without dispatching more I/O.
-    fn settle(&mut self, response: Response) -> Result<bool, String> {
-        let refresh = match response {
+    fn settle(&mut self, response: Response) -> Result<(), String> {
+        match response {
             Response::Ready(result) if self.busy == Busy::Starting => {
                 result?;
                 self.busy = Busy::Idle;
-                true
+                self.queue_read(Refresh::Full);
             }
             Response::Read(token, result) if self.busy == Busy::Read(token) => {
                 self.view
                     .complete_refresh(token, result.map(|snapshot| *snapshot));
                 self.snapshot = self.view.current_snapshot().cloned();
                 self.busy = Busy::Idle;
-                false
             }
             Response::Activated(result) if self.busy == Busy::Activate => {
                 self.view
                     .set_notice(result.err().map(|e| format!("Activation failed: {e}")));
                 self.busy = Busy::Idle;
-                true
+                self.queue_read(Refresh::Full);
             }
-            _ => return Ok(false),
-        };
+            _ => return Ok(()),
+        }
         self.dirty = true;
-        Ok(refresh)
+        Ok(())
     }
     fn resize(&mut self) {
         self.view.geometry_changed();
@@ -268,15 +279,19 @@ impl Controller {
         self.dirty = false;
         self.painted.as_ref().unwrap()
     }
+    // Activations dispatch immediately; coalesced read intent is pulled by next_read.
     fn input(&mut self, event: Event) -> Option<Request> {
-        if self.busy != Busy::Idle {
-            return None;
-        }
         if matches!(&event, Event::Key(k) if k.kind == KeyEventKind::Press
             && k.code == KeyCode::Char('r') && k.modifiers == KeyModifiers::CONTROL)
         {
             self.view.set_notice(None);
-            return self.refresh();
+            self.painted = None;
+            self.dirty = true;
+            self.queue_read(Refresh::Full);
+            return None;
+        }
+        if self.busy != Busy::Idle || self.pending_read.is_some() {
+            return None;
         }
         let painted = self.painted.as_ref()?;
         let action = match event {
@@ -500,7 +515,6 @@ fn interact(
     worker: &Worker,
     signals: &Signals,
 ) -> Result<(), String> {
-    let mut needs_read = None;
     let waker = Waker::from(Arc::new(InputWake(worker.events.clone())));
     let mut context = Context::from_waker(&waker);
     let mut input_events = event::EventStream::new();
@@ -519,8 +533,8 @@ fn interact(
                 })
                 .map_err(|e| e.to_string())?;
         }
-        // Drain bounded batches BEFORE accepting completions. Input accumulated
-        // during I/O remains busy/discarded, never replayed against a fresh frame.
+        // Drain bounded batches BEFORE accepting completions. Discard activations
+        // accumulated during I/O; coalesced refresh intent is not a captured action.
         let mut drained = false;
         for _ in 0..64 {
             let input = match Pin::new(&mut input_events).poll_next(&mut context) {
@@ -561,15 +575,11 @@ fn interact(
                     );
                 }
                 Ok(Response::Event(PaneEvent::Changed)) => {
-                    needs_read.get_or_insert(Refresh::Changed);
+                    controller.queue_read(Refresh::Changed);
                 }
                 Ok(Response::Event(PaneEvent::Exit)) => return Ok(()),
                 Ok(Response::Event(PaneEvent::Failed(error))) => return Err(error),
-                Ok(response) => {
-                    if controller.settle(response)? {
-                        needs_read = Some(Refresh::Full);
-                    }
-                }
+                Ok(response) => controller.settle(response)?,
                 Err(mpsc::TryRecvError::Disconnected) => {
                     return Err(
                         "Native worker disconnected; native card retained or uncertain".into(),
@@ -578,10 +588,7 @@ fn interact(
                 Err(mpsc::TryRecvError::Empty) => break,
             }
         }
-        if let Some(refresh) = needs_read
-            && let Some(request) = controller.refresh_for(refresh)
-        {
-            needs_read = None;
+        if let Some(request) = controller.next_read() {
             worker.send(request)?;
         }
         if controller.dirty {
@@ -671,6 +678,90 @@ mod tests {
         assert_eq!(cause, Refresh::Full);
     }
     #[test]
+    fn explicit_refresh_during_a_read_is_coalesced_without_replaying_actions() {
+        for cause in [Refresh::Changed, Refresh::Full] {
+            let mut c = ready();
+            let Some(Request::Read(token, _)) = c.refresh_for(cause) else {
+                panic!()
+            };
+            for _ in 0..2 {
+                assert!(
+                    c.input(Event::Key(KeyEvent::new(
+                        KeyCode::Char('r'),
+                        KeyModifiers::CONTROL
+                    )))
+                    .is_none()
+                );
+            }
+            assert!(c.input(key('a')).is_none());
+            assert!(c.refresh_for(Refresh::Changed).is_none());
+            let Some(Request::Read(token, Refresh::Full)) = c
+                .complete(Response::Read(token, Ok(Box::new(snapshot()))))
+                .unwrap()
+            else {
+                panic!(
+                    "Ctrl-R during a read must retain one full refresh, not replay a document action"
+                );
+            };
+            assert!(
+                c.complete(Response::Read(token, Ok(Box::new(snapshot()))))
+                    .unwrap()
+                    .is_none()
+            );
+            assert!(c.busy == Busy::Idle);
+        }
+    }
+    #[test]
+    fn manual_refresh_repaints_a_cleared_notice_while_read_remains_busy() {
+        let mut c = ready();
+        c.view.set_notice(Some("Activation failed: earlier".into()));
+        assert!(matches!(
+            c.refresh_for(Refresh::Changed),
+            Some(Request::Read(_, _))
+        ));
+        c.paint(Rect::new(0, 0, 100, 20));
+        assert!(!c.dirty);
+        assert!(
+            c.input(Event::Key(KeyEvent::new(
+                KeyCode::Char('r'),
+                KeyModifiers::CONTROL
+            )))
+            .is_none()
+        );
+        assert!(c.dirty);
+        assert!(c.painted.is_none());
+        let frame = c.paint(Rect::new(0, 0, 100, 20));
+        let text = (0..20)
+            .map(|y| super::super::render::buffer_line(&frame.buffer, y))
+            .collect::<String>();
+        assert!(!text.contains("Activation failed"));
+        assert!(matches!(c.busy, Busy::Read(_)));
+    }
+    #[test]
+    fn queued_refresh_blocks_painted_actions_until_a_fresh_read() {
+        let mut c = ready();
+        assert!(
+            c.input(Event::Key(KeyEvent::new(
+                KeyCode::Char('r'),
+                KeyModifiers::CONTROL
+            )))
+            .is_none()
+        );
+        assert!(c.input(key('a')).is_none());
+        // A later invalidation cannot downgrade explicit refresh intent.
+        c.queue_read(Refresh::Changed);
+        let Some(Request::Read(token, Refresh::Full)) = c.next_read() else {
+            panic!()
+        };
+        assert!(
+            c.complete(Response::Read(token, Ok(Box::new(snapshot()))))
+                .unwrap()
+                .is_none()
+        );
+        c.paint(Rect::new(0, 0, 100, 20));
+        assert!(matches!(c.input(key('a')), Some(Request::Activate(_, _))));
+    }
+    #[test]
     fn refresh_invalidates_and_stale_completion_is_ignored() {
         let mut c = ready();
         let action = c.painted.as_ref().unwrap().documents[&'a'].clone();
@@ -680,9 +771,10 @@ mod tests {
         assert!(!c.view.is_current(&action));
         assert!(c.input(key('a')).is_none());
         assert!(c.refresh().is_none());
-        c.complete(Response::Read(old, Ok(Box::new(snapshot()))))
-            .unwrap();
-        let Some(Request::Read(new, _)) = c.refresh() else {
+        let Some(Request::Read(new, _)) = c
+            .complete(Response::Read(old, Ok(Box::new(snapshot()))))
+            .unwrap()
+        else {
             panic!()
         };
         c.complete(Response::Read(old, Err("stale".into())))
@@ -748,7 +840,11 @@ mod tests {
         assert!(!quit(&key('r')));
         assert!(quit(&key('q')));
         let refresh = Event::Key(KeyEvent::new(KeyCode::Char('r'), KeyModifiers::CONTROL));
-        assert!(matches!(c.input(refresh), Some(Request::Read(_, _))));
+        assert!(c.input(refresh).is_none());
+        assert!(matches!(
+            c.next_read(),
+            Some(Request::Read(_, Refresh::Full))
+        ));
     }
     #[test]
     fn lowercase_r_is_a_document_key_and_links_use_hit_regions() {
@@ -889,7 +985,8 @@ mod tests {
             .collect::<String>();
         assert!(text.contains("Activation failed: denied"));
         let refresh = Event::Key(KeyEvent::new(KeyCode::Char('r'), KeyModifiers::CONTROL));
-        let Some(Request::Read(token, _)) = c.input(refresh) else {
+        assert!(c.input(refresh).is_none());
+        let Some(Request::Read(token, Refresh::Full)) = c.next_read() else {
             panic!()
         };
         c.complete(Response::Read(token, Ok(Box::new(snapshot()))))

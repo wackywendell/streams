@@ -292,18 +292,18 @@ fn trusted_parent(path: &Path) -> Result<()> {
 
 // An injected pause lets tests release a peer at the exact final-wait boundary.
 fn wait_for_flock(
-    file: &File,
+    file: File,
     started: Instant,
     budget: Duration,
     cancelled: &AtomicBool,
     mut pause: impl FnMut(Duration),
-) -> Result<()> {
+) -> Result<file_io::FileLock> {
     loop {
         if cancelled.load(Ordering::Acquire) {
             return Err(invalid("native lock cancelled"));
         }
         if unsafe { libc::flock(file.as_raw_fd(), libc::LOCK_EX | libc::LOCK_NB) } == 0 {
-            return Ok(());
+            return Ok(file_io::FileLock::from_locked(file));
         }
         let error = std::io::Error::last_os_error();
         if error.kind() != std::io::ErrorKind::WouldBlock {
@@ -472,7 +472,7 @@ impl NativeState {
             return Err(invalid("native lock must be a regular file"));
         }
         private(&identity)?;
-        wait_for_flock(&file, started, budget, cancelled, |duration| {
+        let file = wait_for_flock(file, started, budget, cancelled, |duration| {
             #[cfg(test)]
             accounting::record(accounting::Io::Wait(duration));
             std::thread::sleep(duration);
@@ -493,10 +493,10 @@ impl NativeState {
     }
 }
 
-/// The retained descriptor owns flock until Drop closes it; never unlink the lock file.
+/// The owning scope explicitly releases flock on Drop; never unlink the lock file.
 pub struct NativeStateGuard<'a> {
     state: &'a NativeState,
-    _lock: File,
+    _lock: file_io::FileLock,
 }
 
 impl NativeStateGuard<'_> {
@@ -1128,8 +1128,8 @@ mod tests {
             .unwrap();
         let budget = Duration::from_millis(100);
         let mut pauses = 0;
-        wait_for_flock(
-            &contender,
+        let _held = wait_for_flock(
+            contender,
             Instant::now(),
             budget,
             &AtomicBool::new(false),

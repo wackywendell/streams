@@ -6,7 +6,6 @@ pub use inventory::{address_from_relative_path, decode_record_tree};
 
 use std::{
     collections::BTreeMap,
-    fs::File,
     path::{Path, PathBuf},
 };
 
@@ -207,7 +206,7 @@ pub(crate) fn check_parents(root: &Path, relative: &Path) -> Result<(), StorageE
 
 struct Reader<'a> {
     store: &'a YamlRecordStore,
-    _lock: File,
+    _lock: crate::file_io::FileLock,
 }
 
 impl Reader<'_> {

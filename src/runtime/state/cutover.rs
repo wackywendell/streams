@@ -8,7 +8,7 @@ pub(crate) struct PreparedRelationshipCutover {
     root: PathBuf,
     sources: BTreeMap<PathBuf, Vec<u8>>,
     writes: BTreeMap<PathBuf, Value>,
-    _locks: Vec<File>,
+    _locks: Vec<file_io::FileLock>,
 }
 impl RuntimeState {
     pub(crate) fn prepare_cutover(

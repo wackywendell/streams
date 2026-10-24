@@ -85,20 +85,44 @@ pub(crate) fn ensure_directory(path: &Path, create: bool) -> Result<(), StorageE
     Ok(())
 }
 
+/// Scope ownership must release flock even if a concurrent fork inherited the descriptor.
+pub(crate) struct FileLock {
+    file: File,
+    owner: u32,
+}
+impl FileLock {
+    pub(crate) fn from_locked(file: File) -> Self {
+        Self {
+            file,
+            owner: std::process::id(),
+        }
+    }
+}
+impl Drop for FileLock {
+    fn drop(&mut self) {
+        // An inherited copy is not the owning process's scope and must not unlock it.
+        if std::process::id() == self.owner {
+            unsafe {
+                libc::flock(self.file.as_raw_fd(), libc::LOCK_UN);
+            }
+        }
+    }
+}
+
 /// Open without following symlinks or waiting on special files, then serialize writers.
-pub(crate) fn lock(path: &Path) -> Result<File, StorageError> {
+pub(crate) fn lock(path: &Path) -> Result<FileLock, StorageError> {
     open_lock(path, false, true)
 }
 
-pub(crate) fn inspection_lock(path: &Path) -> Result<File, StorageError> {
+pub(crate) fn inspection_lock(path: &Path) -> Result<FileLock, StorageError> {
     open_lock(path, true, false)
 }
 
-pub(crate) fn existing_write_lock(path: &Path) -> Result<File, StorageError> {
+pub(crate) fn existing_write_lock(path: &Path) -> Result<FileLock, StorageError> {
     open_lock(path, false, false)
 }
 
-fn open_lock(path: &Path, read_only: bool, create: bool) -> Result<File, StorageError> {
+fn open_lock(path: &Path, read_only: bool, create: bool) -> Result<FileLock, StorageError> {
     ensure_directory(path.parent().expect("lock parent"), create)?;
     let file = OpenOptions::new()
         .create(create)
@@ -132,7 +156,7 @@ fn open_lock(path: &Path, read_only: bool, create: bool) -> Result<File, Storage
             std::io::Error::last_os_error()
         )));
     }
-    Ok(file)
+    Ok(FileLock::from_locked(file))
 }
 
 pub(crate) fn decode_json<T: DeserializeOwned>(bytes: &[u8]) -> Result<T, StorageError> {
@@ -251,6 +275,52 @@ mod tests {
             assert!(error.is_uncertain());
             assert_eq!(fs::read(path).unwrap(), bytes);
             assert_eq!(fs::read_dir(staging).unwrap().count(), 0);
+        }
+    }
+
+    #[test]
+    fn scope_unwind_releases_lock_even_when_an_inherited_descriptor_stays_open() {
+        for shared in [false, true] {
+            let directory = tempfile::tempdir().unwrap();
+            let path = directory.path().join("catalog.lock");
+            drop(lock(&path).unwrap());
+            let held = if shared {
+                inspection_lock(&path)
+            } else {
+                existing_write_lock(&path)
+            }
+            .unwrap();
+            // dup and fork retain the same locked open-file description. No child or timing needed.
+            let inherited = held.file.try_clone().unwrap();
+            drop(FileLock {
+                file: held.file.try_clone().unwrap(),
+                owner: held.owner.wrapping_add(1),
+            });
+            let contender = OpenOptions::new()
+                .read(true)
+                .write(true)
+                .open(&path)
+                .unwrap();
+            assert_ne!(
+                unsafe { libc::flock(contender.as_raw_fd(), libc::LOCK_EX | libc::LOCK_NB) },
+                0
+            );
+            assert_eq!(
+                std::io::Error::last_os_error().kind(),
+                std::io::ErrorKind::WouldBlock
+            );
+            assert!(
+                std::panic::catch_unwind(|| {
+                    let _scope = held;
+                    panic!("interrupted lock scope");
+                })
+                .is_err()
+            );
+            assert_eq!(
+                unsafe { libc::flock(contender.as_raw_fd(), libc::LOCK_EX | libc::LOCK_NB) },
+                0
+            );
+            drop(inherited);
         }
     }
 

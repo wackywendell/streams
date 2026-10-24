@@ -2,7 +2,7 @@
 use super::*;
 use std::{
     collections::{BTreeMap, BTreeSet},
-    fs::{self, File},
+    fs,
     path::{Path, PathBuf},
 };
 
@@ -10,7 +10,7 @@ pub(crate) struct PreparedDirectoryCutover {
     state_dir: PathBuf,
     sources: BTreeMap<PathBuf, Vec<u8>>,
     writes: BTreeMap<PathBuf, Current>,
-    _locks: Vec<File>,
+    _locks: Vec<crate::file_io::FileLock>,
 }
 impl DirectoryBindings {
     pub(crate) fn prepare_cutover(

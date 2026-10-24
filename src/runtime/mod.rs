@@ -20,7 +20,6 @@ pub mod workspace;
 pub use checkouts::{CheckoutLocation, CheckoutRegistry, RepositoryInspection};
 pub use locations::{BoundCheckout, DirectoryBinding, DirectoryBindings};
 
-use std::fs::File;
 use std::path::Path;
 
 use serde::Serialize;
@@ -95,7 +94,7 @@ pub(crate) fn read_json<T: DeserializeOwned>(path: &Path) -> Result<Option<T>> {
     Ok(file_io::read_json(path)?)
 }
 
-pub(crate) fn lock(path: &Path) -> Result<File> {
+pub(crate) fn lock(path: &Path) -> Result<file_io::FileLock> {
     Ok(file_io::lock(path)?)
 }
 

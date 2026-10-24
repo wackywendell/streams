@@ -359,7 +359,7 @@ impl Transaction for YamlTransaction {
 pub struct YamlTransaction {
     root: PathBuf,
     journal: FileJournal,
-    _lock: std::fs::File,
+    _lock: crate::file_io::FileLock,
 }
 
 /// Object persistence owned exclusively by a locked YAML transaction.

@@ -1,6 +1,6 @@
 //! Host-local native bindings and durable, non-replayable open journals.
 
-use std::fs::{self, File};
+use std::fs;
 use std::path::{Path, PathBuf};
 
 use serde::{Deserialize, Serialize};
@@ -720,14 +720,14 @@ impl RuntimeState {
 
 pub struct ConversationGuard<'a> {
     _state: &'a RuntimeState,
-    _lock: File,
+    _lock: file_io::FileLock,
 }
 
 pub struct StreamGuard<'a> {
     state: &'a RuntimeState,
     scope: Option<String>,
     stream_id: String,
-    _lock: File,
+    _lock: file_io::FileLock,
 }
 
 impl<'s> StreamGuard<'s> {
@@ -942,7 +942,7 @@ impl<'s> StreamGuard<'s> {
 struct LockedWorkspace {
     scope: String,
     workspace_id: String,
-    _lock: File,
+    _lock: file_io::FileLock,
 }
 
 pub struct EnrollmentGuard<'a> {

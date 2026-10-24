@@ -6,7 +6,7 @@
 
 use std::collections::{BTreeMap, BTreeSet, VecDeque};
 use std::ffi::{CStr, CString};
-use std::fs::{self, File};
+use std::fs;
 use std::os::unix::fs::MetadataExt;
 use std::path::{Component, Path, PathBuf};
 
@@ -325,7 +325,7 @@ impl Config {
 /// A held exclusive config lock. Do not reacquire it through Config inside this scope.
 pub struct ConfigLock<'a> {
     config: &'a Config,
-    _file: File,
+    _file: file_io::FileLock,
 }
 impl ConfigLock<'_> {
     pub fn settings(&self) -> Result<Settings> {
