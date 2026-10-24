@@ -790,6 +790,43 @@ fn operation_request_budgets() {
 }
 
 #[test]
+fn native_open_baseline_source_evidence_and_wait_counts() {
+    use super::super::native_state::accounting::{self, Io};
+    let f = Fixture::new();
+    f.server.clear();
+    accounting::take();
+    let mut engine = f.engine();
+    engine.open_display(OpenMode::Explicit).unwrap();
+    let io = accounting::take();
+    let source_reads = f.runner.world.lock().unwrap().observation_reads;
+    let probes = io
+        .iter()
+        .filter(|event| matches!(event, Io::Probe(_)))
+        .count();
+    let reads = io
+        .iter()
+        .filter(|event| matches!(event, Io::Read(_)))
+        .count();
+    let waits = io
+        .iter()
+        .filter(|event| matches!(event, Io::Wait(_)))
+        .count();
+    // The fake source counts context requests, not real catalog file reads.
+    // The CLI/catalog integration budget must count those separately.
+    assert_eq!((source_reads, probes, reads, waits), (32, 19, 12, 0));
+    let evidence = f
+        .runner
+        .state
+        .directory()
+        .join(format!("{}.json", f.runner.key));
+    for event in io {
+        if let Io::Probe(path) | Io::Read(path) = event {
+            assert_eq!(path, evidence);
+        }
+    }
+}
+
+#[test]
 fn bootstrap_and_verify_are_read_only_and_require_pair_and_durable_evidence() {
     let f = Fixture::new();
     let mut engine = f.engine();

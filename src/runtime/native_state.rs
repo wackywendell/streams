@@ -328,6 +328,8 @@ impl NativeState {
     }
     pub fn read(&self, key: &str) -> Result<Option<NativeAttempt>> {
         let path = self.path(key)?;
+        #[cfg(test)]
+        accounting::record(accounting::Io::Probe(path.clone()));
         if !self.check_directory()? {
             return Ok(None);
         }
@@ -348,6 +350,8 @@ impl NativeState {
         }
         private(&meta)?;
         let mut bytes = Vec::new();
+        #[cfg(test)]
+        accounting::record(accounting::Io::Read(path.clone()));
         file.read_to_end(&mut bytes)?;
         let value: NativeAttempt = file_io::decode_json(&bytes)?;
         if value.key() != key {
@@ -396,7 +400,11 @@ impl NativeState {
             return Err(invalid("native lock must be a regular file"));
         }
         private(&identity)?;
-        wait_for_flock(&file, started, budget, cancelled, std::thread::sleep)?;
+        wait_for_flock(&file, started, budget, cancelled, |duration| {
+            #[cfg(test)]
+            accounting::record(accounting::Io::Wait(duration));
+            std::thread::sleep(duration);
+        })?;
         check_cancelled()?;
         let current = fs::symlink_metadata(&path)?;
         if !current.is_file() || current.dev() != identity.dev() || current.ino() != identity.ino()
@@ -498,6 +506,28 @@ impl NativeStateGuard<'_> {
         file_io::sync_directory(&self.state.directory)
             .map_err(crate::storage::StorageError::after_write)?;
         Ok(())
+    }
+}
+
+#[cfg(test)]
+pub(crate) mod accounting {
+    use super::*;
+    use std::cell::RefCell;
+
+    #[derive(Debug, PartialEq, Eq)]
+    pub(crate) enum Io {
+        Probe(PathBuf),
+        Read(PathBuf),
+        Wait(Duration),
+    }
+    thread_local! {
+        static EVENTS: RefCell<Vec<Io>> = const { RefCell::new(Vec::new()) };
+    }
+    pub(crate) fn record(event: Io) {
+        EVENTS.with_borrow_mut(|events| events.push(event));
+    }
+    pub(crate) fn take() -> Vec<Io> {
+        EVENTS.with_borrow_mut(std::mem::take)
     }
 }
 
