@@ -28,11 +28,17 @@ The child subscribes to `pane.closed` and `pane.exited` for its own card. An eve
 
 At startup and after every event batch, the card reads its own evidence by conversation key and launch nonce. If the record is absent or its nonce differs, the card exits without writing. Legitimate launch intent exists before dispatch. An orphan therefore cannot outlive the removal or replacement of its evidence, including after offline reset.
 
+Native evidence lives at `$XDG_STATE_HOME/streams/native`, defaulting to `~/.local/state/streams/native`. Only explicit configuration can override this host-local root. The socket is an observation in each record, never part of its address or default root. Changing endpoints must not hide the previous conversation's evidence.
+
+One native writer lock lives in this root. Its identity includes neither socket nor workspace. It replaces the per-socket and per-workspace native locks; do not nest them. Hold it for one bounded plan and effect/reply pass, then release it. This serializes writes to conversation-keyed evidence across owner moves and endpoints.
+
 Use a versioned, conversation-keyed evidence record carrying that lifetime's nonce, phase and resources. Normal operations use direct keyed reads and require the completed new format. They never read legacy keys, replay history or scan for evidence. If migration is required, fail clearly and name the migration command.
 
 ### Offline reset
 
-The alpha cutover resets native evidence instead of attributing old records. After backup, the coordinator stops Streams Pi children and their serve processes, then runs `streams native migrate-evidence` under the native lock. Card panes will restart; preserving their old nonce or lifetime through deploy is not required. Catalog identity migration can run in either order.
+The alpha cutover resets native evidence instead of attributing old records. After backup, the coordinator stops Streams Pi children and their serve processes, then runs `streams native migrate-evidence --legacy-state-dir <known-v1-root>` under the native lock.
+
+The old root is an explicit input to this offline command, not something normal operations discover. The reset deletes old evidence there and writes the completion marker in the new host-local root. Card panes will restart; preserving their old nonce or lifetime through deploy is not required. Catalog identity migration can run in either order.
 
 For this first deploy, the coordinator also stops every pre-rule card process by command line, including `~/code/streams/target/debug/streams native pane`. They inspect a snapshot for leftover card panes and close them by hand. Replacing the executable does not upgrade running readers. Late launch requests must use the deployed binary at their captured `STREAMS_RUST_BIN` path. These are deploy steps, not runtime attribution.
 
