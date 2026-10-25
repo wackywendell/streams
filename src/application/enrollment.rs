@@ -126,7 +126,7 @@ pub fn enroll_session(
         };
         Ok(RecordChange {
             record: Record::Session(session),
-            outcome: json!({"operation_id":operation,"outcome":outcome,"stream":stream})
+            outcome: json!({"operation_id":operation,"outcome":outcome,"stream_id":stream.id})
                 .as_object()
                 .unwrap()
                 .clone(),

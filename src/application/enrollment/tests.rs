@@ -78,7 +78,7 @@ fn existing_enrollment_does_not_edit_text_or_replace_membership() {
     store.initialize().unwrap();
     let initial = request("initial", None);
     enroll_stream(&store, "host", &initial).unwrap();
-    enroll_session(&store, "host", &initial).unwrap();
+    let original = enroll_session(&store, "host", &initial).unwrap();
     let id = read_session(&store).unwrap().id;
     put_stream(&store, Stream::new("b", "B", None, "host").unwrap());
     crate::application::move_session(
@@ -97,11 +97,45 @@ fn existing_enrollment_does_not_edit_text_or_replace_membership() {
     assert!(enroll_session(&store, "host", &request("other", Some("missing"))).is_err());
     let repeated = enroll_session(&store, "host", &initial).unwrap();
     assert!(repeated.repeated);
+    assert_eq!(repeated.outcome, original.outcome);
+    assert_eq!(
+        repeated.outcome["stream_id"],
+        effort_id_for("host", initial.harness(), "native")
+    );
     let Record::Session(current) = repeated.current.record else {
         unreachable!()
     };
     assert_eq!(current.stream_id, "b");
 }
+#[test]
+fn enrollment_receipt_size_is_independent_of_stream_prose() {
+    fn session_bytes(goal: &str) -> Vec<u8> {
+        let directory = tempfile::tempdir().unwrap();
+        let store = YamlRecordStore::new(directory.path(), "host").unwrap();
+        store.initialize().unwrap();
+        let mut stream = Stream::new("a", "A", None, "host").unwrap();
+        stream.goal = Some(goal.into());
+        put_stream(&store, stream);
+        let saved = enroll_session(&store, "host", &request("enroll", Some("a"))).unwrap();
+        assert_eq!(
+            saved.outcome,
+            json!({"operation_id":"enroll:session","outcome":"changes","stream_id":"a"})
+                .as_object()
+                .unwrap()
+                .clone()
+        );
+        let path = crate::yaml_store::records::relative_record_path(&RecordAddress::for_record(
+            &saved.current.record,
+        ))
+        .unwrap();
+        std::fs::read(directory.path().join(path)).unwrap()
+    }
+    assert_eq!(
+        session_bytes("Goal").len(),
+        session_bytes(&"x".repeat(64 * 1024)).len()
+    );
+}
+
 #[test]
 fn missing_stream_changed_intent_and_unrelated_existing_effort_refuse_without_implicit_moves() {
     let directory = tempfile::tempdir().unwrap();
