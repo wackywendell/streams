@@ -51,7 +51,7 @@ The catalog layer owns this function and persistence. Native reconciliation supp
 
 Local saves acknowledge durable record changes, not publication. They do not create or verify Git commits or run inline sync. They may emit a separate sync trigger; a due publication check cannot hide a catalog scan inside a report response. Sync failure cannot turn an accepted local save into a clean failure inviting a duplicate action.
 
-Stable operation IDs and exact-intent fingerprints prevent double application and changed-intent retries after lost acknowledgements. The retry key is `(record identity, operation ID)`. Keep its fingerprint and accepted outcome in the target record's envelope, written atomically with the record. There is no second receipt file, host-wide receipt map, separate journal or history lookup. Retain enough receipt identities to recognize earlier retries after later edits; a last-operation-only marker would lose that guarantee. Receipts are deduplication evidence, not replayable operations.
+Stable operation IDs and exact-intent fingerprints prevent double application and changed-intent retries after lost acknowledgements. The retry key is `(record identity, operation ID)`. Keep its fingerprint and accepted outcome in the target record's envelope, written atomically with the record. There is no second receipt file, host-wide receipt map, separate journal or history lookup. Retain enough receipt identities to recognize earlier retries after later edits; a last-operation-only marker would lose that guarantee. Receipts are deduplication evidence, not replayable operations. Store compact decisions and target IDs, never captured or historical record snapshots. Work text belongs only in the current record.
 
 Each save replaces and flushes one file. Storage reports post-replacement uncertainty honestly, but actions do not construct a recovery protocol around it. A subsequent explicit invocation can read the same record and its receipt. There is no multi-file transaction, pending-transaction scan or generic recovery fence.
 
@@ -64,6 +64,8 @@ Session identity remains `(host, harness, native session ID)`. Derive its determ
 Change legacy IDs at explicit cutover instead of keeping aliases or a native-ID index. Captured requests carry full identity and schema version. A missing Session means unenrolled only in the completed new format; invalid or incomplete migration means repair. No stale key or child startup falls back to discovery.
 
 Keep portable Stream/Session records, the host-wide checkout registry and host-local per-Session directory bindings separate. Read the registry once and pass its decoded value through directory and document resolution. Stream-only directory defaults remain separately Stream-keyed. Each Session checkout always carries its resolved portable repository URL, populated at attach or creation. A Stream-local alias is only a label, so repository edits cannot orphan unread Sessions and moves cannot reinterpret aliases through the destination.
+
+Normal Session construction will derive its ID from immutable native identity, and checkout construction will require the portable URL. These domain types will change with the atomic catalog switch: tightening them while the legacy backend remains active would reject its existing data. After the switch, only the offline decoder can represent legacy IDs or URL-less checkouts. There will be no parallel runtime domain models or public validated wrapper around a mutable record.
 
 Native workspace relationships also need direct addresses. Represent reservations and relationship phases at their enforcement keys: native workspace and host-local Stream association. Those few authoritative records must establish the existing exclusivity rules without enumerating every association, claim and attempt. Disagreement or unresolved reservation blocks the action; a pane address cannot repair it by inference.
 
@@ -107,5 +109,16 @@ Budgets include fixed configuration/producer/schema files, counted separately by
 | Workspace open / resume | Full catalog member selection, relationship/arrangement enumeration and repeated authority checks | Stream + saved arrangement + exactly the listed Sessions, skipping changed membership; or an explicitly requested Session. Exact native relationships and needed checkout/directory inputs; one frontend observation and ordered plan. No implicit member discovery. |
 | Stream show | Full catalog, title resolution, all members and optional refresh | Explicit user discovery may enumerate host-scoped Sessions and filter by stream_id. Human title discovery likewise precedes exact-key actions. Neither enumeration runs on events/reports. Refresh is separate sync. |
 | Sync | Operation history/replay, receipts, complete catalogs and domain candidate validation | Git commit/pull/push of partitioned files; path/schema/relationship validation. Same-file concurrent changes fail, never merge. No domain replay or generic recovery transaction. No host-local runtime state enters Git. |
+
+The record-adapter observer measures named reads, directory listings, returned content bytes and installed record bytes. The following budgets include its fixed schema marker; configuration, producer identity and native runtime inputs remain separate. Backend admission is not workspace open or resume.
+
+| Record-local operation | Content reads | Listings | Record replacements | Byte budget |
+| --- | --- | --- | --- | --- |
+| Backend admission | Schema marker | 0 | 0 | Marker bytes only |
+| Context | Marker + Session + current Stream | 0 | 0 | Exactly those current envelopes |
+| Fresh Session or automatic Stream report | Marker + target + named dependency | 0 | 1 target | Read those envelopes once; write only the resulting target envelope |
+| Accepted report retry | Marker + target | 0 | 0 | No dependency read or rewrite |
+
+These are adapter counters, not process-wide metrics. They exclude initialization/transport writes, failed partial I/O, filesystem metadata, configuration/native inputs, process starts and lock duration. Do not infer zero cost outside that boundary. Actual card and native open/resume budgets must exercise their real callers; a library context budget is not a card-read budget.
 
 Records, embedded receipts and saved arrangements can grow; the contract bounds addressed records, not constant byte size. Counting tests name files and directory listings, including setup and receipt access. Grow unrelated catalogs and history and require identical automatic-operation counts. Cover strict decoding, foreign-partition writes, changed-intent/lost-ack retries after later edits, same-host single-file moves, Pi branch fences, stale Stream membership captures and interrupted atomic replacement. Timing is not the acceptance test.
