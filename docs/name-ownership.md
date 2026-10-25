@@ -28,7 +28,7 @@ The existing mapping remains:
 | Card caption | Stream title | Current paired card |
 | Editor tab name | Exact document identity | Verified editor owns the actual first layout pane |
 
-Card captions remain part of the Streams-owned display. Tab synchronization continues to cover editor tabs. Disabling a switch leaves the current frontend name unchanged and permits independent frontend naming. Re-enabling it resumes projection without reclaiming or consulting old provenance.
+The card pane will display the saved Stream title, matching the workspace name when workspace naming is enabled. A static launch title such as `Streams work card` must not mask that projection. The native projection executor will own this pane-name update; Pi and the renderer will not add separate writers. Tab synchronization continues to cover editor tabs. Disabling a switch leaves the current frontend name unchanged and permits independent frontend naming. Re-enabling it resumes projection without reclaiming or consulting old provenance.
 
 ## Rename through the saved record
 
