@@ -75,14 +75,18 @@ test('report prompts name one write target and its exact automatic fields',()=>{
   if(manual)assert.ok(!allowed.includes('title'));
  }
 });
-test('report prompts prefer enduring responsibilities and project names, not task lists',()=>{
+test('report prompts prefer current tasks, enduring responsibilities and actionable next steps',()=>{
  const catalog=context(),before=structuredClone(catalog);
  const sessionPrompt=buildInferencePayload({type:'session',catalog,messages:[]}).systemPrompt;
+ assert.match(sessionPrompt,/newest task the session has accepted or started/);
+ assert.match(sessionPrompt,/late review notification about past work does not finish newer work/);
+ assert.match(sessionPrompt,/Do not confuse a request or a plan with work already completed/);
  assert.match(sessionPrompt,/continuing responsibility, not its latest task/);
  assert.match(sessionPrompt,/Keep recognizable titles that already fit/);
- assert.match(sessionPrompt,/Remaining names ONE unfinished outcome/);
- assert.match(sessionPrompt,/not a compressed checklist/);
+ assert.match(sessionPrompt,/Remaining names ONE concrete next action or decision/);
  assert.match(sessionPrompt,/roughly 12 words/);
+ assert.match(sessionPrompt,/Name the action and its target/);
+ assert.match(sessionPrompt,/done only when no newer accepted task remains/);
  assert.match(sessionPrompt,/Keep genuine uncertainty and blockers/);
  assert.ok(sessionPrompt.indexOf('Final editing rules')>sessionPrompt.indexOf('Update only the Session card'));
  const streamPrompt=buildInferencePayload({type:'stream',catalog,messages:[]}).systemPrompt;
@@ -91,6 +95,18 @@ test('report prompts prefer enduring responsibilities and project names, not tas
  assert.doesNotMatch(streamPrompt,/Final editing rules|Remaining names/);
  assert.deepEqual(catalog,before);
  assert.deepEqual(parseInferenceResponse({type:'session',catalog,messages:[]},response({changes:{}})),{changes:{}});
+});
+test('a done card retains later task evidence and can report resumed work',()=>{
+ const catalog=context();catalog.session.status='done';catalog.session.state='Proof wiring integrated';catalog.session.remaining='';
+ const request={type:'session',catalog,messages:[
+  {...response({}),stopReason:'stop',content:[{type:'text',text:'Proof wiring is finished.'}]},
+  {role:'user',content:'Resume the catalog switch-over and agree the move-handler API.',timestamp:2},
+ ]},before=structuredClone(request);
+ const payload=buildInferencePayload(request),sent=JSON.stringify(payload.messages);
+ assert.ok(sent.indexOf('Proof wiring is finished.')<sent.indexOf('Resume the catalog switch-over'));
+ const changes={status:'active',state:'Catalog activation boundary pending',remaining:'Agree the move-handler inputs before wiring catalog activation'};
+ assert.deepEqual(parseInferenceResponse(request,response({changes}),payload),{changes});
+ assert.deepEqual(request,before);
 });
 const targetConfusion=JSON.parse(readFileSync(new URL('./fixtures/reporting-target-confusion.json',import.meta.url),'utf8'));
 for(const fixture of targetConfusion) test(`captured failure remains rejected: ${fixture.name}`,()=>{
