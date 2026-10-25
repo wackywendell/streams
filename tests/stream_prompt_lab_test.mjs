@@ -75,6 +75,23 @@ test('report prompts name one write target and its exact automatic fields',()=>{
   if(manual)assert.ok(!allowed.includes('title'));
  }
 });
+test('report prompts prefer enduring responsibilities and project names, not task lists',()=>{
+ const catalog=context(),before=structuredClone(catalog);
+ const sessionPrompt=buildInferencePayload({type:'session',catalog,messages:[]}).systemPrompt;
+ assert.match(sessionPrompt,/continuing responsibility, not its latest task/);
+ assert.match(sessionPrompt,/Keep recognizable titles that already fit/);
+ assert.match(sessionPrompt,/Remaining names ONE unfinished outcome/);
+ assert.match(sessionPrompt,/not a compressed checklist/);
+ assert.match(sessionPrompt,/roughly 12 words/);
+ assert.match(sessionPrompt,/Keep genuine uncertainty and blockers/);
+ assert.ok(sessionPrompt.indexOf('Final editing rules')>sessionPrompt.indexOf('Update only the Session card'));
+ const streamPrompt=buildInferencePayload({type:'stream',catalog,messages:[]}).systemPrompt;
+ assert.match(streamPrompt,/Prefer the established project name/);
+ assert.match(streamPrompt,/Keep a fitting title when only progress or wording changes/);
+ assert.doesNotMatch(streamPrompt,/Final editing rules|Remaining names/);
+ assert.deepEqual(catalog,before);
+ assert.deepEqual(parseInferenceResponse({type:'session',catalog,messages:[]},response({changes:{}})),{changes:{}});
+});
 const targetConfusion=JSON.parse(readFileSync(new URL('./fixtures/reporting-target-confusion.json',import.meta.url),'utf8'));
 for(const fixture of targetConfusion) test(`captured failure remains rejected: ${fixture.name}`,()=>{
  const catalog=context();catalog.stream.title_mode='automatic';
