@@ -856,7 +856,7 @@ fn operation_request_budgets() {
                 ("session.snapshot", 6),
                 ("workspace.report_metadata", 1),
             ],
-            "close" => &[("plugin.pane.close", 1), ("session.snapshot", 3)],
+            "close" => &[("plugin.pane.close", 1), ("session.snapshot", 1)],
             "project" => &[
                 ("pane.report_metadata", 1),
                 ("ping", 1),
@@ -1333,6 +1333,72 @@ fn close_writes_closed_first_and_ambiguous_ack_preserves_markers_and_other_pane(
             w.snapshot["panes"][1]["tokens"],
             json!({"private":"leave untouched"})
         );
+    }
+}
+
+#[test]
+fn close_consumes_one_observation_and_retains_the_closed_lifetime() {
+    for card_caller in [false, true] {
+        let f = Fixture::new();
+        f.engine().open_display(OpenMode::Explicit).unwrap();
+        let ready = f.record();
+        let environment = if card_caller {
+            f.launched_environment()
+        } else {
+            f.environment.clone()
+        };
+        f.server.clear();
+        f.runner.world.lock().unwrap().observation_reads = 0;
+        f.engine_with(environment).close_display().unwrap();
+        assert_eq!(f.runner.world.lock().unwrap().observation_reads, 1);
+        assert_eq!(
+            f.server
+                .methods()
+                .iter()
+                .filter(|method| method.as_str() == "session.snapshot")
+                .count(),
+            1
+        );
+        let closed = f.record();
+        assert_eq!(closed.nonce(), ready.nonce());
+        assert_eq!(closed.resources(), ready.resources());
+        assert!(matches!(closed.phase(), NativePhase::Closed(_)));
+    }
+}
+
+#[test]
+fn absent_card_close_records_the_difference_then_becomes_a_read_only_noop() {
+    use super::super::native_state::accounting::{self, Io};
+    for markers_present in [false, true] {
+        let f = Fixture::new();
+        f.engine().open_display(OpenMode::Explicit).unwrap();
+        let effects = f.effects();
+        {
+            let mut world = f.runner.world.lock().unwrap();
+            remove_card(&mut world);
+            if !markers_present {
+                world.snapshot["panes"][0]["tokens"] = json!({});
+            }
+        }
+        f.engine().close_display().unwrap();
+        let closed = f.record();
+        assert!(matches!(closed.phase(), NativePhase::Closed(_)));
+        accounting::take();
+        f.server.clear();
+        f.runner.world.lock().unwrap().observation_reads = 0;
+        f.engine().close_display().unwrap();
+        let io = accounting::take();
+        let path = f.runner.state.path(&f.runner.key).unwrap();
+        assert_eq!(
+            io.iter()
+                .filter(|event| matches!(event, Io::Read(read) if read == &path))
+                .count(),
+            1
+        );
+        assert_eq!(f.record(), closed);
+        assert_eq!(f.effects(), effects);
+        assert_eq!(f.runner.world.lock().unwrap().observation_reads, 1);
+        assert_eq!(f.server.methods(), ["ping", "session.snapshot"]);
     }
 }
 

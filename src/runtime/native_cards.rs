@@ -4,6 +4,7 @@
 //! the separate Herdr resource lifetime and its host-local native writer lock.
 
 mod actions;
+mod closing;
 mod config;
 mod display;
 mod documents;
