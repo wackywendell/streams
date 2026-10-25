@@ -89,6 +89,7 @@ struct World {
     malformed_open: bool,
     ambiguous_close: bool,
     fail_after_open: bool,
+    malformed_metadata_ack: bool,
     deny_read: bool,
     inventory_reads: usize,
     observation_reads: usize,
@@ -369,7 +370,7 @@ impl FakeHerdr {
                         _ => panic!("unexpected metadata token: {p}"),
                     }
                 }
-                json!({"type":"ok"})
+                json!({"type":if w.malformed_metadata_ack { "metadata_reported" } else { "ok" }})
             }
             "pane.resize" => {
                 assert!(matches!(
@@ -458,6 +459,7 @@ impl Fixture {
             malformed_open: false,
             ambiguous_close: false,
             fail_after_open: false,
+            malformed_metadata_ack: false,
             deny_read: false,
             inventory_reads: 0,
             observation_reads: 0,
@@ -840,9 +842,9 @@ fn operation_request_budgets() {
             *counts.entry(method).or_insert(0_usize) += 1;
         }
         // One ping per process (close reuses the ready engine), then one socket
-        // request per observation or effect. Every effect invalidates the
-        // observation for its confirmation; taking the workspace lock also
-        // invalidates the pre-lock display snapshot.
+        // request per observation or effect. Linking consumes checked replies;
+        // the remaining effects still confirm by observing again. Taking the
+        // native writer lock also invalidates the pre-lock display snapshot.
         let expected: &[(&str, usize)] = match operation {
             "observe" | "check" => &[("ping", 1), ("session.snapshot", 1)],
             "open" => &[
@@ -851,7 +853,7 @@ fn operation_request_budgets() {
                 ("ping", 1),
                 ("plugin.list", 1),
                 ("plugin.pane.open", 1),
-                ("session.snapshot", 7),
+                ("session.snapshot", 6),
                 ("workspace.report_metadata", 1),
             ],
             "close" => &[("plugin.pane.close", 1), ("session.snapshot", 3)],
@@ -895,7 +897,7 @@ fn native_open_baseline_source_evidence_and_wait_counts() {
         .count();
     // The fake source counts context requests, not real catalog file reads.
     // The CLI/catalog integration budget must count those separately.
-    assert_eq!((source_reads, probes, reads, waits), (16, 38, 31, 0));
+    assert_eq!((source_reads, probes, reads, waits), (12, 24, 17, 0));
     let evidence = f
         .runner
         .state
@@ -906,13 +908,13 @@ fn native_open_baseline_source_evidence_and_wait_counts() {
         io.iter()
             .filter(|event| matches!(event, Io::Read(path) if path == &format))
             .count(),
-        19
+        12
     );
     assert_eq!(
         io.iter()
             .filter(|event| matches!(event, Io::Read(path) if path == &evidence))
             .count(),
-        12
+        5
     );
     for event in io {
         if let Io::Probe(path) | Io::Read(path) = event {
@@ -1216,6 +1218,66 @@ fn reserved_exact_tuple_and_partial_markers_recover_without_launch() {
         assert!(engine.verify_display().is_ok());
         assert_eq!(f.launches(), 0);
     }
+}
+
+#[test]
+fn receipt_linking_uses_one_observation_and_checked_metadata_replies() {
+    for published in 0..=2 {
+        for malformed in [false, true] {
+            let f = Fixture::new();
+            f.reserve(published > 0);
+            {
+                let mut world = f.runner.world.lock().unwrap();
+                world.malformed_metadata_ack = malformed;
+                if published == 2 {
+                    world.snapshot["panes"][0]["tokens"] =
+                        world.snapshot["panes"][1]["tokens"].clone();
+                    world.snapshot["panes"][0]["tokens"]["strm_role"] = json!("agent");
+                }
+            }
+            let mut engine = f.engine();
+            let state = Arc::clone(&f.runner.state);
+            let lock = state.lock(1.0, &engine.cancelled).unwrap();
+            let observed = engine.inspect(false).unwrap();
+            let attempt = f.record();
+            let result = engine.link_card(&lock, &observed, &attempt);
+            let failed = malformed && published < 2;
+            assert_eq!(result.is_err(), failed);
+            assert_eq!(f.runner.world.lock().unwrap().observation_reads, 1);
+            assert_eq!(
+                f.server
+                    .methods()
+                    .iter()
+                    .filter(|method| method.as_str() == "session.snapshot")
+                    .count(),
+                1
+            );
+            assert_eq!(f.launches(), 0);
+            if failed {
+                assert_eq!(f.record(), attempt);
+                assert_eq!(f.effects().len(), 1);
+            } else {
+                assert!(matches!(f.record().phase(), NativePhase::Ready(_)));
+                assert_eq!(f.effects().len(), 2 - published);
+            }
+        }
+    }
+}
+
+#[test]
+fn receipt_linking_rejects_conflicting_native_identity_before_effects() {
+    let f = Fixture::new();
+    f.reserve(true);
+    f.runner.world.lock().unwrap().snapshot["panes"][1]["tokens"]["strm_native"] =
+        json!("another-conversation");
+    let mut engine = f.engine();
+    let state = Arc::clone(&f.runner.state);
+    let lock = state.lock(1.0, &engine.cancelled).unwrap();
+    let observed = engine.inspect(false).unwrap();
+    let attempt = f.record();
+    assert!(engine.link_card(&lock, &observed, &attempt).is_err());
+    assert_eq!(f.record(), attempt);
+    assert!(f.effects().is_empty());
 }
 
 #[test]

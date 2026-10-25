@@ -12,6 +12,7 @@ use crate::fake_herdr;
 mod handover;
 mod inspection;
 mod launch_context;
+mod linking;
 mod projection;
 mod reset;
 #[cfg(test)]

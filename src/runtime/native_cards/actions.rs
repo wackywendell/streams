@@ -307,108 +307,6 @@ impl NativeCardEngine {
         Ok(true)
     }
 
-    fn reservation(
-        state: &NativeState,
-        v: &Verified,
-        expected: &NativeAttempt,
-    ) -> Result<NativeTuple> {
-        v.bound()?;
-        if v.caller != v.owner
-            || expected.key() != v.key
-            || !matches!(expected.phase(), NativePhase::Reserved(_))
-            || state.read(&v.key)?.as_ref() != Some(expected)
-        {
-            return Err(invalid("reserved identity or durable evidence changed"));
-        }
-        let r = expected.resources().expect("reserved resources");
-        let card = v
-            .snapshot
-            .topology()
-            .panes
-            .iter()
-            .find(|p| p.pane.id == r.pane_id())
-            .ok_or_else(|| invalid("reserved card missing; no relaunch permitted"))?;
-        let tuple = NativeTuple::from_pane(card);
-        if !tuple.matches_resources(r)
-            || tuple.workspace_id != v.owner.workspace_id
-            || tuple.tab_id != v.owner.tab_id
-        {
-            return Err(invalid("reserved card tuple moved or changed"));
-        }
-        match v.pair()? {
-            PairState::Empty => {
-                if PAIR_KEYS.iter().any(|k| {
-                    v.snapshot
-                        .pane_tokens(&tuple.pane_id)
-                        .is_some_and(|t| t.contains_key(*k))
-                }) {
-                    return Err(invalid("incomplete or conflicting reserved pair markers"));
-                }
-            }
-            PairState::CardOnly {
-                card: paired,
-                nonce,
-            }
-            | PairState::Paired {
-                card: paired,
-                nonce,
-                ..
-            } if nonce == expected.nonce() && NativeTuple::from_pane(paired) == tuple => {}
-            _ => return Err(invalid("conflicting reserved pair publisher")),
-        }
-        Ok(tuple)
-    }
-
-    fn complete_reservation(
-        &mut self,
-        lock: &NativeStateGuard<'_>,
-        mut v: Verified,
-        attempt: &NativeAttempt,
-        protocol: Option<Protocol>,
-    ) -> Result<Resources> {
-        let state = Arc::clone(&self.state);
-        let card = Self::reservation(&state, &v, attempt)?;
-        // Recovery reconstructs historical acknowledgement only after exact durable/native proof.
-        let protocol = match protocol {
-            Some(protocol) => protocol,
-            None => Protocol::new()?
-                .next(Action::Dispatch)?
-                .next(Action::Acknowledge)?,
-        };
-        let mut markers = BTreeMap::from([
-            ("strm_agent".into(), Some(v.identity.clone())),
-            ("strm_nonce".into(), Some(attempt.nonce().into())),
-            ("strm_pi".into(), Some(v.owner.terminal_id.clone())),
-            ("strm_card".into(), Some(card.terminal_id.clone())),
-            (
-                "strm_native".into(),
-                Some(v.saved.card.scope().native_session_id.clone()),
-            ),
-            ("strm_role".into(), Some("card".into())),
-        ]);
-        if matches!(v.pair()?, PairState::Empty) {
-            let target = MetadataTarget::pane(&v, &card.pane_id)?;
-            v = self.stamp(target, markers.clone(), |fresh| {
-                Self::reservation(&state, fresh, attempt).map(|_| ())
-            })?;
-        }
-        markers.insert("strm_role".into(), Some("agent".into()));
-        let target = MetadataTarget::pane(&v, &v.owner.pane_id)?;
-        v = self.stamp(target, markers, |fresh| {
-            Self::reservation(&state, fresh, attempt).map(|_| ())
-        })?;
-        Self::reservation(&state, &v, attempt)?;
-        if paired_tuple(&v)? != card {
-            return Err(self.refuse("reserved pair did not round-trip"));
-        }
-        let protocol = protocol.next(Action::Bind)?;
-        let mut ready = attempt.clone();
-        ready.mark_ready()?;
-        lock.write(Some(attempt), &ready)?;
-        protocol.next(Action::Complete)?;
-        card.resources()
-    }
-
     fn launch_proof(&mut self, expected: &Option<NativeAttempt>) -> Result<Verified> {
         let v = self.guard()?;
         if v.caller != v.owner
@@ -470,7 +368,7 @@ impl NativeCardEngine {
             .filter(|a| matches!(a.phase(), NativePhase::Reserved(_)))
             && matches!(v.pair()?, PairState::Empty | PairState::CardOnly { .. })
         {
-            let resources = self.complete_reservation(&lock, v, attempt, None)?;
+            let resources = self.link_card(&lock, &v, attempt)?;
             return Ok(DisplayOutcome::Existing(resources));
         }
         let attempt = self.evidence(&v)?;
@@ -570,7 +468,6 @@ impl NativeCardEngine {
         reserved.reserve(returned.resources()?)?;
         lock.write(Some(&pending), &reserved)?;
         let after = self.guard()?;
-        Self::reservation(&state, &after, &reserved)?;
         let live = after.snapshot.locate_terminal(&returned.terminal_id)?;
         if NativeTuple::from_pane(live) != returned
             || PAIR_KEYS.iter().any(|k| {
@@ -582,7 +479,8 @@ impl NativeCardEngine {
         {
             return Err(self.refuse("new card tuple or markers changed; pending evidence retained"));
         }
-        let resources = self.complete_reservation(&lock, after, &reserved, Some(protocol))?;
+        let resources = self.link_card(&lock, &after, &reserved)?;
+        protocol.next(Action::Bind)?.next(Action::Complete)?;
         self.resize_ready(&returned)?;
         Ok(DisplayOutcome::Opened(resources))
     }

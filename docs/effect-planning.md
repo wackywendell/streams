@@ -1,6 +1,6 @@
 # ADR: Plan effects as data, then execute them
 
-Status: accepted design. The pure planner/executor is not yet implemented. Native reconciliation will use it first, followed by `streams native project`; this record will be revised from what that implementation shows. It builds on the [bounded work ADR](bounded-work-and-card-events.md), which sets the cost budgets this structure is meant to make reachable.
+Status: accepted design, partially implemented. Card receipt linking uses pure difference planning and checked replies. The full lifetime planner and single-observation projection are not yet implemented. Native reconciliation will use them first, followed by `streams native project`; this record will be revised from what that implementation shows. It builds on the [bounded work ADR](bounded-work-and-card-events.md), which sets the cost budgets this structure is meant to make reachable.
 
 ## Problem
 
