@@ -1,6 +1,6 @@
 # ADR: Plan effects as data, then execute them
 
-Status: proposed. Nothing here is implemented. The first use will be native reconciliation and `streams native project`; this record will be revised from what that implementation shows. It builds on the [bounded work ADR](bounded-work-and-card-events.md), which sets the cost budgets this structure is meant to make reachable.
+Status: accepted design. The pure planner/executor is not yet implemented. Native reconciliation will use it first, followed by `streams native project`; this record will be revised from what that implementation shows. It builds on the [bounded work ADR](bounded-work-and-card-events.md), which sets the cost budgets this structure is meant to make reachable.
 
 ## Problem
 
@@ -39,7 +39,7 @@ Each system writes only fields the other does not decide from:
 - Herdr structure — which workspace and tab a pane is in — feeds the catalog. A move changes Session membership.
 - The catalog feeds Herdr display: names, metadata and the card caption.
 
-Display actions never move the owner. Reconciliation may move its owned card, following the [card-follow policy](native-context-reconciliation.md#decision), but card placement does not select Stream membership. A projection therefore cannot cause a catalog change that causes another projection. Names are the one place Streams reads display state: it compares the current Herdr name with the name it last wrote, to tell a manual rename from its own. That comparison only decides whether to write, and once the name matches there is nothing left to do.
+Display actions never move the owner. Reconciliation may move its owned card, following the [card-follow policy](native-context-reconciliation.md#decision), but card placement does not select Stream membership. A projection therefore cannot cause a catalog change that causes another projection. Display reads compare the current value with the saved catalog value, as defined by [name ownership](name-ownership.md). They do not track who last changed a name. Once the values match, there is nothing left to write.
 
 A process's own effects come back as events, such as `tab.renamed` after a rename. Those are triggers like any other and get their one pass, which finds nothing to do.
 
@@ -71,11 +71,17 @@ An executor should take its lock, read fresh state once, and plan from that stat
 
 ### Durable records are actions too
 
-Some effects must be preceded by a durable record, so a crash leaves evidence. These include card and editor launch evidence (the pending fence written before dispatch) and the record of which names Streams wrote. An action list should express the order directly: record the intent, act, record the outcome.
+Some effects must be preceded by a durable record, so a crash leaves evidence. These include card and editor launch evidence: the pending fence written before dispatch, followed by the acknowledged creation receipt. An action list should express the order directly: record the intent, act, record the outcome.
 
 These files describe Herdr state and are protected by the host-local native writer lock, so they are `HerdrAction`s written by the Herdr executor. That keeps the whole "record, act, record" sequence in one executor under one lock.
 
 A crash between those steps leaves a state layer 1 must recognise: the intent is recorded but the outcome is unknown. Uncertainty then becomes an explicit state rather than checks spread through the effect code. Pending launch and editor outcomes stay fenced; reappearance or reattestation alone cannot clear them.
+
+An acknowledged creation receipt is a fact available to the normal planner. If the current caller and resource proofs permit acting on that card, missing ownership fields are ordinary desired-versus-observed differences. There is no interruption-specific recovery branch. Reserved resources still require their exact receipt proof; conflicting or uncertain identity retains the fence.
+
+Actions later in the same list may use resource handles returned by an earlier action. Resolving those handles from a checked reply is execution, not another observation or planning pass. A creation acknowledgement must be saved before publishing ownership. A failed action ends the list without clearing the recorded uncertainty or launching a replacement.
+
+Neither partial linking nor a move authorizes replacing a missing or closed card. Placement is selected only by a verified owner-move event; startup and other triggers do not cause catch-up following.
 
 [Owner-event card follow](native-context-reconciliation.md#decision) is different: putting an existing owned card in its owner's tab is idempotent. It needs no pending intent. An uncertain reply ends the pass with a warning, without replanning; the next owner move is a new trigger.
 
@@ -85,8 +91,8 @@ This applies to native cards, the catalog and sync, `streams serve` reacting to 
 
 ## Order of work
 
-1. Apply this structure to the Pi child's native reconciliation and `native project`: one fresh snapshot per locked pass, and native actions confirmed by Herdr's replies. Revise this record from what it shows.
-2. Then extend it to the remaining card open and close, capture and card-display paths.
+1. Apply this structure to card lifetime planning and execution, membership on verified moves, owner-event following and closure cleanup. Use one fresh observation per pass and confirm native actions from their replies.
+2. Then move native name and metadata projection onto that executor, measuring before and after I/O. Extend the structure to the remaining editor, capture and card-display paths.
 
 The socket client and `streams serve` should land first, because they rewrite the same native card code.
 

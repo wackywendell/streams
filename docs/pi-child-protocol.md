@@ -186,7 +186,8 @@ must replace the CLI-vector transport and the scope-to-`--expect` loop together,
 including their fakes and tests. There should be no version-1 adapter.
 
 Ready evidence now stores an [immutable launch receipt](native-context-reconciliation.md),
-not the card's current placement. Whether a later explicit open finishes an
-acknowledged but incompletely published card remains undecided before the dependent
-planner changes. Neither choice can relax pending-launch uncertainty, caller origin
-or the rule against replacement during follow.
+not the card's current placement. Missing linking is handled by the normal
+[proof-and-difference planner](effect-planning.md#durable-records-are-actions-too),
+not a recovery branch for a particular interruption or move. An acknowledged
+receipt does not relax caller or resource ownership checks. Uncertain launches
+stay fenced, and follow never replaces a missing or closed card.
