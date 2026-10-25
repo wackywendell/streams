@@ -108,30 +108,17 @@ fn addressed_context_reads_only_this_session_and_stream_despite_unrelated_growth
             root.join(relative_record_path(&stream_address).unwrap()),
         ];
         assert_eq!(
-            trace
-                .iter()
-                .filter_map(|event| match event {
-                    RecordIoEvent::BytesRead(bytes) => Some(*bytes),
-                    _ => None,
-                })
-                .sum::<usize>(),
+            trace.iter().map(RecordIoEvent::bytes_read).sum::<usize>(),
             files
                 .iter()
                 .map(|path| fs::metadata(path).unwrap().len() as usize)
                 .sum::<usize>()
         );
-        assert!(
-            !trace
-                .iter()
-                .any(|event| matches!(event, RecordIoEvent::Written(_, _)))
-        );
+        assert!(!trace.iter().any(|event| event.written().is_some()));
         assert_eq!(
             trace
                 .iter()
-                .filter(|event| matches!(
-                    event,
-                    RecordIoEvent::Read(_) | RecordIoEvent::Lock(_) | RecordIoEvent::List(_)
-                ))
+                .filter(|event| event.is_access())
                 .cloned()
                 .collect::<Vec<_>>(),
             vec![

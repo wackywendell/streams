@@ -8,6 +8,7 @@ use serde_json::json;
 thread_local! {
     static READS: std::cell::RefCell<Vec<PathBuf>> = const { std::cell::RefCell::new(Vec::new()) };
     static LISTINGS: std::cell::RefCell<Vec<PathBuf>> = const { std::cell::RefCell::new(Vec::new()) };
+    static WRITES: std::cell::RefCell<Vec<(PathBuf, usize)>> = const { std::cell::RefCell::new(Vec::new()) };
 }
 
 fn setup() -> (tempfile::TempDir, YamlRecordStore) {
@@ -22,7 +23,10 @@ fn setup() -> (tempfile::TempDir, YamlRecordStore) {
                     .push(path.strip_prefix(&root).unwrap().to_path_buf())
             }),
             RecordIoEvent::List(path) => LISTINGS.with(|listings| listings.borrow_mut().push(path)),
-            RecordIoEvent::BytesRead(_) | RecordIoEvent::Written(_, _) => {}
+            RecordIoEvent::BytesRead(_) => {}
+            RecordIoEvent::Written(path, bytes) => {
+                WRITES.with(|writes| writes.borrow_mut().push((path, bytes)))
+            }
         });
     store.initialize().unwrap();
     (dir, store)
@@ -65,6 +69,32 @@ fn reads<T>(f: impl FnOnce() -> T) -> (T, Vec<PathBuf>) {
 
 fn read(store: &YamlRecordStore, key: &RecordAddress) -> Result<Option<RecordRead>, StorageError> {
     store.with_reader(|reader| reader.read(key))
+}
+
+#[test]
+fn replacement_observation_distinguishes_installed_bytes_from_definite_failure() {
+    let (_directory, store) = setup();
+    let path = store.root.join("target.yaml");
+    // The filesystem owner separately proves that after_write means persist succeeded.
+    for (result, installed) in [
+        (Ok(()), true),
+        (Err(StorageError::new("replacement refused")), false),
+        (
+            Err(StorageError::new("directory flush failed").after_write()),
+            true,
+        ),
+    ] {
+        WRITES.with(|writes| writes.borrow_mut().clear());
+        store.observe_replacement(path.clone(), 123, &result);
+        assert_eq!(
+            WRITES.with(|writes| writes.borrow().clone()),
+            if installed {
+                vec![(path.clone(), 123)]
+            } else {
+                Vec::new()
+            }
+        );
+    }
 }
 
 #[test]
@@ -413,6 +443,7 @@ fn failed_atomic_replacement_leaves_record_and_receipts_together() {
     let bytes = fs::read(&path).unwrap();
     fs::remove_dir(store.root.join(".catalog-staging")).unwrap();
     fs::write(store.root.join(".catalog-staging"), "blocked").unwrap();
+    WRITES.with(|writes| writes.borrow_mut().clear());
     let after = stream("work", "After");
     let request = RecordRequest::new(
         RecordAddress::for_record(&after),
@@ -428,6 +459,7 @@ fn failed_atomic_replacement_leaves_record_and_receipts_together() {
             }))
             .is_err()
     );
+    assert!(WRITES.with(|writes| writes.borrow().is_empty()));
     assert_eq!(fs::read(&path).unwrap(), bytes);
     let envelope: Envelope = decode(&bytes).unwrap();
     assert!(!envelope.receipts.contains_key("second"));

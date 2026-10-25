@@ -5,32 +5,19 @@ use streams_temper::yaml_store::records::RecordIoEvent;
 pub fn accesses(events: &[RecordIoEvent]) -> Vec<RecordIoEvent> {
     events
         .iter()
-        .filter(|event| {
-            matches!(
-                event,
-                RecordIoEvent::Read(_) | RecordIoEvent::Lock(_) | RecordIoEvent::List(_)
-            )
-        })
+        .filter(|event| event.is_access())
         .cloned()
         .collect()
 }
 
 pub fn bytes_read(events: &[RecordIoEvent]) -> usize {
-    events
-        .iter()
-        .filter_map(|event| match event {
-            RecordIoEvent::BytesRead(bytes) => Some(bytes),
-            _ => None,
-        })
-        .sum()
+    events.iter().map(RecordIoEvent::bytes_read).sum()
 }
 
 pub fn writes(events: &[RecordIoEvent]) -> Vec<(PathBuf, usize)> {
     events
         .iter()
-        .filter_map(|event| match event {
-            RecordIoEvent::Written(path, bytes) => Some((path.clone(), *bytes)),
-            _ => None,
-        })
+        .filter_map(RecordIoEvent::written)
+        .map(|(path, bytes)| (path.to_owned(), bytes))
         .collect()
 }

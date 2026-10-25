@@ -99,6 +99,26 @@ pub enum RecordIoEvent {
     Written(PathBuf, usize),
 }
 
+impl RecordIoEvent {
+    pub fn is_access(&self) -> bool {
+        matches!(self, Self::Read(_) | Self::Lock(_) | Self::List(_))
+    }
+
+    pub fn bytes_read(&self) -> usize {
+        match self {
+            Self::BytesRead(bytes) => *bytes,
+            _ => 0,
+        }
+    }
+
+    pub fn written(&self) -> Option<(&Path, usize)> {
+        match self {
+            Self::Written(path, bytes) => Some((path, *bytes)),
+            _ => None,
+        }
+    }
+}
+
 /// The producer is fixed on this handle and checked against its local format marker.
 pub struct YamlRecordStore {
     root: PathBuf,
@@ -132,6 +152,17 @@ impl YamlRecordStore {
     fn observe(&self, event: RecordIoEvent) {
         if let Some(observe) = &self.observer {
             observe(event);
+        }
+    }
+
+    fn observe_replacement(&self, path: PathBuf, bytes: usize, result: &Result<(), StorageError>) {
+        if result.is_ok()
+            || result
+                .as_ref()
+                .err()
+                .is_some_and(StorageError::is_uncertain)
+        {
+            self.observe(RecordIoEvent::Written(path, bytes));
         }
     }
 
@@ -346,9 +377,7 @@ impl RecordStore for YamlRecordStore {
         check_parents(&self.root, &relative)?;
         let path = self.root.join(relative);
         let saved = atomic_write(&path, &bytes, &self.root.join(".catalog-staging"));
-        if saved.is_ok() || saved.as_ref().err().is_some_and(StorageError::is_uncertain) {
-            self.observe(RecordIoEvent::Written(path, bytes.len()));
-        }
+        self.observe_replacement(path, bytes.len(), &saved);
         saved?;
         Ok(RecordSave {
             current: RecordRead {

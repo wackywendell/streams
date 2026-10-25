@@ -135,10 +135,10 @@ fn report_byte_and_directory_budgets_do_not_grow_with_unrelated_records() {
                 .iter()
                 .map(|path| std::fs::metadata(path).unwrap().len() as usize)
                 .sum();
-            let target = if kind == RecordKind::Session {
-                &session_path
+            let (target, dependency) = if kind == RecordKind::Session {
+                (&session_path, &stream_path)
             } else {
-                &stream_path
+                (&stream_path, &session_path)
             };
             let prose = "x".repeat(64 * 1024);
             let request = if kind == RecordKind::Session {
@@ -151,11 +151,14 @@ fn report_byte_and_directory_budgets_do_not_grow_with_unrelated_records() {
             let store = store.with_io_observer(move |event| observed.lock().unwrap().push(event));
             update(&store, &request);
             let trace = events.lock().unwrap().clone();
-            assert_eq!(record_io::accesses(&trace).len(), 4);
-            assert!(
-                !trace
-                    .iter()
-                    .any(|event| matches!(event, RecordIoEvent::List(_)))
+            assert_eq!(
+                record_io::accesses(&trace),
+                [
+                    RecordIoEvent::Lock(root.join(".catalog.lock")),
+                    RecordIoEvent::Read(marker.clone()),
+                    RecordIoEvent::Read(target.clone()),
+                    RecordIoEvent::Read(dependency.clone())
+                ]
             );
             assert_eq!(record_io::bytes_read(&trace), bytes_before);
             let written = std::fs::metadata(target).unwrap().len() as usize;
