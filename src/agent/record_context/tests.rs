@@ -101,8 +101,39 @@ fn addressed_context_reads_only_this_session_and_stream_despite_unrelated_growth
         )
         .unwrap();
         let stream_address = RecordAddress::new("host", RecordKind::Stream, "effort").unwrap();
+        let trace = events.lock().unwrap().clone();
+        let files = [
+            root.join(".catalog-local/records.json"),
+            root.join(relative_record_path(&session_address).unwrap()),
+            root.join(relative_record_path(&stream_address).unwrap()),
+        ];
         assert_eq!(
-            *events.lock().unwrap(),
+            trace
+                .iter()
+                .filter_map(|event| match event {
+                    RecordIoEvent::BytesRead(bytes) => Some(*bytes),
+                    _ => None,
+                })
+                .sum::<usize>(),
+            files
+                .iter()
+                .map(|path| fs::metadata(path).unwrap().len() as usize)
+                .sum::<usize>()
+        );
+        assert!(
+            !trace
+                .iter()
+                .any(|event| matches!(event, RecordIoEvent::Written(_, _)))
+        );
+        assert_eq!(
+            trace
+                .iter()
+                .filter(|event| matches!(
+                    event,
+                    RecordIoEvent::Read(_) | RecordIoEvent::Lock(_) | RecordIoEvent::List(_)
+                ))
+                .cloned()
+                .collect::<Vec<_>>(),
             vec![
                 RecordIoEvent::Lock(root.join(".catalog.lock")),
                 RecordIoEvent::Read(root.join(".catalog-local/records.json")),

@@ -1,3 +1,4 @@
+use crate::support::record_io;
 use serde_json::{Value, json};
 use std::sync::{Arc, Mutex};
 use streams_temper::{
@@ -93,7 +94,7 @@ fn session_report_reads_its_current_stream_after_a_valid_move() {
     let target = RecordAddress::new("host", RecordKind::Session, current.id).unwrap();
     let dependency = RecordAddress::new("host", RecordKind::Stream, "b").unwrap();
     assert_eq!(
-        *events.lock().unwrap(),
+        record_io::accesses(&events.lock().unwrap()),
         vec![
             RecordIoEvent::Lock(directory.path().join(".catalog.lock")),
             RecordIoEvent::Read(directory.path().join(".catalog-local/records.json")),
@@ -109,6 +110,75 @@ fn session_report_reads_its_current_stream_after_a_valid_move() {
             ),
         ]
     );
+}
+
+#[test]
+fn report_byte_and_directory_budgets_do_not_grow_with_unrelated_records() {
+    for size in [0, 64] {
+        for kind in [RecordKind::Session, RecordKind::Stream] {
+            let directory = tempfile::tempdir().unwrap();
+            let root = directory.path();
+            let store = setup(root);
+            for index in 0..size {
+                std::fs::write(
+                    root.join(format!("hosts/host/streams/unrelated-{index}.yaml")),
+                    "malformed unrelated record",
+                )
+                .unwrap();
+            }
+            let session_key = RecordAddress::for_record(&Record::Session(session()));
+            let stream_key = RecordAddress::for_record(&Record::Stream(stream("a")));
+            let session_path = root.join(relative_record_path(&session_key).unwrap());
+            let stream_path = root.join(relative_record_path(&stream_key).unwrap());
+            let marker = root.join(".catalog-local/records.json");
+            let bytes_before: usize = [&marker, &session_path, &stream_path]
+                .iter()
+                .map(|path| std::fs::metadata(path).unwrap().len() as usize)
+                .sum();
+            let target = if kind == RecordKind::Session {
+                &session_path
+            } else {
+                &stream_path
+            };
+            let prose = "x".repeat(64 * 1024);
+            let request = if kind == RecordKind::Session {
+                wire("report", &session(), "automatic", &prose)
+            } else {
+                json!({"version":2,"title_default":"automatic","catalog_source":"source","operation_id":"report","kind":"stream","actor":"automatic","before":stream("a"),"changes":{"goal":prose},"inputs":[{"kind":"session","record":session()}]})
+            };
+            let events = Arc::new(Mutex::new(Vec::new()));
+            let observed = events.clone();
+            let store = store.with_io_observer(move |event| observed.lock().unwrap().push(event));
+            update(&store, &request);
+            let trace = events.lock().unwrap().clone();
+            assert_eq!(record_io::accesses(&trace).len(), 4);
+            assert!(
+                !trace
+                    .iter()
+                    .any(|event| matches!(event, RecordIoEvent::List(_)))
+            );
+            assert_eq!(record_io::bytes_read(&trace), bytes_before);
+            let written = std::fs::metadata(target).unwrap().len() as usize;
+            assert_eq!(record_io::writes(&trace), [(target.clone(), written)]);
+
+            events.lock().unwrap().clear();
+            assert!(update(&store, &request).repeated);
+            let trace = events.lock().unwrap().clone();
+            assert_eq!(
+                record_io::accesses(&trace),
+                [
+                    RecordIoEvent::Lock(root.join(".catalog.lock")),
+                    RecordIoEvent::Read(marker.clone()),
+                    RecordIoEvent::Read(target.clone())
+                ]
+            );
+            assert_eq!(
+                record_io::bytes_read(&trace),
+                std::fs::metadata(&marker).unwrap().len() as usize + written
+            );
+            assert!(record_io::writes(&trace).is_empty());
+        }
+    }
 }
 
 #[test]
@@ -252,7 +322,7 @@ fn accepted_report_retry_after_later_edits_reads_only_target_and_retains_origina
     assert_eq!(current.state, "current work");
     assert_eq!(current.title, "Accepted generated name");
     assert_eq!(current.stream_id, "b");
-    assert_eq!(events.lock().unwrap().len(), 3);
+    assert_eq!(record_io::accesses(&events.lock().unwrap()).len(), 3);
     let mut changed_default = original.clone();
     changed_default["title_default"] = json!("manual");
     assert!(
@@ -335,7 +405,7 @@ fn accepted_stream_title_retry_after_default_drift_and_move_reads_only_target() 
     assert!(repeated.repeated);
     assert_eq!(repeated.outcome, first.outcome);
     assert_eq!(repeated.current.record, first.current.record);
-    assert_eq!(events.lock().unwrap().len(), 3);
+    assert_eq!(record_io::accesses(&events.lock().unwrap()).len(), 3);
 }
 
 #[test]
@@ -471,7 +541,7 @@ fn manual_stream_edit_has_no_session_dependency_even_after_membership_changes() 
     };
     assert_eq!(current.goal.as_deref(), Some("manual goal"));
     assert_eq!(
-        *events.lock().unwrap(),
+        record_io::accesses(&events.lock().unwrap()),
         vec![
             RecordIoEvent::Lock(directory.path().join(".catalog.lock")),
             RecordIoEvent::Read(directory.path().join(".catalog-local/records.json")),

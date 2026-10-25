@@ -1,3 +1,4 @@
+use crate::support::record_io;
 use std::{
     collections::BTreeMap,
     fs,
@@ -71,8 +72,16 @@ fn record_factory_opens_only_fixed_metadata_and_retains_source_identity() {
     .unwrap();
     assert_eq!(opened.root(), root);
     assert_eq!(opened.host().as_str(), HOST);
+    let trace = events.lock().unwrap().clone();
     assert_eq!(
-        *events.lock().unwrap(),
+        record_io::bytes_read(&trace),
+        fs::metadata(root.join(".catalog-local/records.json"))
+            .unwrap()
+            .len() as usize
+    );
+    assert!(record_io::writes(&trace).is_empty());
+    assert_eq!(
+        record_io::accesses(&trace),
         vec![
             RecordIoEvent::Lock(root.join(".catalog.lock")),
             RecordIoEvent::Read(root.join(".catalog-local/records.json")),

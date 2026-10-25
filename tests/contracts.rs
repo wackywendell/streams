@@ -7,6 +7,7 @@ mod support {
     pub mod memory;
     pub mod model;
     pub mod pty;
+    pub mod record_io;
 }
 
 mod agent_capture;

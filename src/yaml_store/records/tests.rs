@@ -22,6 +22,7 @@ fn setup() -> (tempfile::TempDir, YamlRecordStore) {
                     .push(path.strip_prefix(&root).unwrap().to_path_buf())
             }),
             RecordIoEvent::List(path) => LISTINGS.with(|listings| listings.borrow_mut().push(path)),
+            RecordIoEvent::BytesRead(_) | RecordIoEvent::Written(_, _) => {}
         });
     store.initialize().unwrap();
     (dir, store)

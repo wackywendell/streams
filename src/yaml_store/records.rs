@@ -88,11 +88,15 @@ fn invalid(error: impl std::fmt::Display) -> StorageError {
 
 /// Actual adapter I/O attempts, with absolute paths, for fixture read budgets.
 /// Lock opens are separate from content reads; metadata checks are not listings.
+/// Byte events count returned contents and installed record replacements, not initialization
+/// or transport writes. Failed partial I/O and filesystem metadata are not byte transfers here.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum RecordIoEvent {
     Read(PathBuf),
     Lock(PathBuf),
     List(PathBuf),
+    BytesRead(usize),
+    Written(PathBuf, usize),
 }
 
 /// The producer is fixed on this handle and checked against its local format marker.
@@ -186,7 +190,11 @@ impl YamlRecordStore {
         check_parents(&self.root, relative)?;
         let path = self.root.join(relative);
         self.observe(RecordIoEvent::Read(path.clone()));
-        read_bytes(&path)
+        let bytes = read_bytes(&path)?;
+        if let Some(bytes) = &bytes {
+            self.observe(RecordIoEvent::BytesRead(bytes.len()));
+        }
+        Ok(bytes)
     }
 }
 
@@ -337,7 +345,11 @@ impl RecordStore for YamlRecordStore {
         let relative = relative_record_path(&request.target)?;
         check_parents(&self.root, &relative)?;
         let path = self.root.join(relative);
-        atomic_write(&path, &bytes, &self.root.join(".catalog-staging"))?;
+        let saved = atomic_write(&path, &bytes, &self.root.join(".catalog-staging"));
+        if saved.is_ok() || saved.as_ref().err().is_some_and(StorageError::is_uncertain) {
+            self.observe(RecordIoEvent::Written(path, bytes.len()));
+        }
+        saved?;
         Ok(RecordSave {
             current: RecordRead {
                 record: change.record,

@@ -1,5 +1,6 @@
 //! Real YAML I/O observation is available to integration fixtures, not only unit tests.
 
+use crate::support::record_io;
 use std::sync::{Arc, Mutex};
 
 use serde_json::{Map, json};
@@ -24,6 +25,16 @@ fn public_observer_names_actual_session_stream_and_fixed_file_reads() {
         .unwrap()
         .with_io_observer(move |event| observed.lock().unwrap().push(event));
     store.initialize().unwrap();
+    assert_eq!(
+        events
+            .lock()
+            .unwrap()
+            .iter()
+            .filter(|event| matches!(event, RecordIoEvent::List(_)))
+            .cloned()
+            .collect::<Vec<_>>(),
+        [RecordIoEvent::List(root.into())]
+    );
     let stream = Record::Stream(Stream::new("stream", "Stream", None, "host").unwrap());
     let session = Record::Session(
         Session::new(
@@ -64,7 +75,7 @@ fn public_observer_names_actual_session_stream_and_fixed_file_reads() {
         })
         .unwrap();
     assert_eq!(
-        *events.lock().unwrap(),
+        record_io::accesses(&events.lock().unwrap()),
         vec![
             RecordIoEvent::Lock(root.join(".catalog.lock")),
             RecordIoEvent::Read(root.join(".catalog-local/records.json")),
@@ -127,7 +138,7 @@ fn membership_save_reads_only_three_records_and_retries_do_not_reapply_after_rev
     let first = move_session(&store, "move-b", &to_b).unwrap();
     assert!(!first.repeated);
     assert_eq!(
-        *events.lock().unwrap(),
+        record_io::accesses(&events.lock().unwrap()),
         vec![
             RecordIoEvent::Lock(root.join(".catalog.lock")),
             RecordIoEvent::Read(root.join(".catalog-local/records.json")),
@@ -145,7 +156,7 @@ fn membership_save_reads_only_three_records_and_retries_do_not_reapply_after_rev
     assert_eq!(retry.outcome, first.outcome);
     assert_eq!(retry.outcome["membership_period"], 1);
     assert_eq!(
-        *events.lock().unwrap(),
+        record_io::accesses(&events.lock().unwrap()),
         vec![
             RecordIoEvent::Lock(root.join(".catalog.lock")),
             RecordIoEvent::Read(root.join(".catalog-local/records.json")),
