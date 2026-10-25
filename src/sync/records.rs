@@ -432,16 +432,7 @@ impl RecordSync {
         {
             return Err(invalid("Git worktree is outside catalog root"));
         }
-        let head = self.git.head().map_err(git_error)?;
-        if self
-            .git
-            .text(&["symbolic-ref", "HEAD"], None, None, &[0])
-            .map_err(git_error)?
-            != format!("refs/heads/{}", self.branch().unwrap())
-        {
-            return Err(invalid("catalog transport branch changed"));
-        }
-        Ok(head)
+        self.git.head().map_err(git_error)
     }
 
     pub fn sync(&self) -> SyncResult {
@@ -510,19 +501,20 @@ impl RecordSync {
                         "catalog Git tip changed while sync awaited the remote",
                     ));
                 }
-                let local = self.checkpoint(&local, &self.working()?, &mut local_status)?;
+                let working = self.working()?;
+                let local = self.checkpoint(&local, &working, &mut local_status)?;
                 match &remote {
-                    Some(remote) => {
+                    Some(remote) if remote != &local => {
                         let (next, tree) = self.combine(&local, remote)?;
                         if next != local {
                             local_status = LocalStatus::RepairRequired;
-                            self.install(&Self::tree(&self.git, &local)?, &tree)?;
+                            self.install(&working, &tree)?;
                             self.advance(&next, &local)?;
                             local_status = LocalStatus::Committed;
                         }
                         next
                     }
-                    None => local,
+                    _ => local,
                 }
             };
             if remote.as_ref() == Some(&next) {

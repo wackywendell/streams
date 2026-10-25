@@ -50,7 +50,7 @@ fn pull_only_and_noop_sync_never_push_and_noop_does_not_fetch() {
             .lock()
             .unwrap()
             .iter()
-            .any(|call| call == "fetch" || call == "push")
+            .any(|call| call == "fetch" || call == "push" || call == "merge-base")
     );
     // Subsequent foreign changes are still fetched and installed without publication.
     let mut changed = stream(&b_records, "b-host");

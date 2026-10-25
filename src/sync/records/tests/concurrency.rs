@@ -76,6 +76,20 @@ fn network_calls_leave_catalog_writable_and_push_only_the_prepared_snapshot() {
             published.goal.as_deref(),
             (phase != "push").then_some(phase)
         );
+        if phase == "push" {
+            sync.git = Git::new(&root, 30.0);
+            assert_eq!(sync.sync().sharing, SharingStatus::Confirmed);
+            let published =
+                RecordSync::tree(&Git::new(&remote, 30.0), "refs/heads/records-v2").unwrap();
+            let Record::Stream(published) =
+                crate::yaml_store::records::decode_record(&address, &published[&path])
+                    .unwrap()
+                    .record
+            else {
+                unreachable!()
+            };
+            assert_eq!(published.goal.as_deref(), Some("push"));
+        }
     }
 }
 
