@@ -105,8 +105,14 @@ impl FakeHerdr {
                             Vec::new()
                         }
                     };
-                    if reader.get_mut().write_all(&bytes).is_ok() && subscribed {
-                        subscriptions.lock().unwrap().push(reader.into_inner());
+                    if subscribed {
+                        // Acknowledged clients may immediately emit or disconnect.
+                        let mut subscriptions = subscriptions.lock().unwrap();
+                        if reader.get_mut().write_all(&bytes).is_ok() {
+                            subscriptions.push(reader.into_inner());
+                        }
+                    } else {
+                        let _ = reader.get_mut().write_all(&bytes);
                     }
                 }
             }
