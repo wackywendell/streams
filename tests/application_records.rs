@@ -9,16 +9,132 @@ use serde_json::json;
 use streams_temper::{
     application,
     config::Config,
-    model::{Record, RecordKind, Stream},
+    model::{Record, RecordKind, Session, Stream, TitleDefaults},
     storage::{
         StorageError,
         records::{RecordAddress, RecordChange, RecordRequest, RecordStore},
     },
-    yaml_store::records::{RecordIoEvent, YamlRecordStore},
+    yaml_store::records::{RecordIoEvent, YamlRecordStore, relative_record_path},
 };
 
 const HOST: &str = "01234567-89ab-4def-8123-456789abcdef";
 const OTHER: &str = "11234567-89ab-4def-8123-456789abcdef";
+
+#[test]
+fn one_record_creation_reads_only_its_target_and_membership_then_retries_against_actual_current() {
+    for unrelated in [0, 64] {
+        let directory = tempfile::tempdir().unwrap();
+        let root = directory.path();
+        let events = Arc::new(Mutex::new(Vec::new()));
+        let observed = events.clone();
+        let store = YamlRecordStore::new(root, HOST)
+            .unwrap()
+            .with_io_observer(move |event| observed.lock().unwrap().push(event));
+        store.initialize().unwrap();
+        for index in 0..unrelated {
+            let path = root.join(format!("hosts/unrelated-{index}/conversations/bad.yaml"));
+            fs::create_dir_all(path.parent().unwrap()).unwrap();
+            fs::write(path, "not a record").unwrap();
+        }
+        let stream = Record::Stream(Stream::new("work", "Work", None, HOST).unwrap());
+        application::create_record(&store, "create-stream", &stream).unwrap();
+        let session = Record::Session(
+            Session::new(
+                Session::id_for(HOST, "pi", "native"),
+                HOST,
+                "work",
+                "pi",
+                "native",
+                "Lane",
+            )
+            .unwrap(),
+        );
+        let target = root.join(relative_record_path(&RecordAddress::for_record(&session)).unwrap());
+        let dependency =
+            root.join(relative_record_path(&RecordAddress::for_record(&stream)).unwrap());
+        let marker = root.join(".catalog-local/records.json");
+        events.lock().unwrap().clear();
+        let created = application::create_record(&store, "create-session", &session).unwrap();
+        let trace = events.lock().unwrap().clone();
+        assert_eq!(
+            record_io::accesses(&trace),
+            vec![
+                RecordIoEvent::Lock(root.join(".catalog.lock")),
+                RecordIoEvent::Read(marker.clone()),
+                RecordIoEvent::Read(target.clone()),
+                RecordIoEvent::Read(dependency.clone()),
+            ]
+        );
+        assert_eq!(
+            record_io::bytes_read(&trace),
+            (fs::metadata(&marker).unwrap().len() + fs::metadata(&dependency).unwrap().len())
+                as usize
+        );
+        assert_eq!(
+            record_io::writes(&trace),
+            vec![(
+                target.clone(),
+                fs::metadata(&target).unwrap().len() as usize
+            )]
+        );
+        let later = application::save_user_edit(
+            &store,
+            "later",
+            &created.current.record,
+            json!({"state":"Later progress"}).as_object().unwrap(),
+            TitleDefaults::default(),
+        )
+        .unwrap();
+        let bytes = fs::read(&target).unwrap();
+        events.lock().unwrap().clear();
+        let retry = application::create_record(&store, "create-session", &session).unwrap();
+        assert!(retry.repeated);
+        assert_eq!(retry.outcome, created.outcome);
+        assert_eq!(retry.current, later.current);
+        assert_eq!(fs::read(&target).unwrap(), bytes);
+        let trace = events.lock().unwrap().clone();
+        assert_eq!(
+            record_io::accesses(&trace),
+            vec![
+                RecordIoEvent::Lock(root.join(".catalog.lock")),
+                RecordIoEvent::Read(marker.clone()),
+                RecordIoEvent::Read(target.clone())
+            ]
+        );
+        assert_eq!(
+            record_io::bytes_read(&trace),
+            fs::metadata(marker).unwrap().len() as usize + bytes.len()
+        );
+        assert!(record_io::writes(&trace).is_empty());
+        assert!(application::create_record(&store, "duplicate", &session).is_err());
+        assert_eq!(fs::read(target).unwrap(), bytes);
+    }
+}
+
+#[test]
+fn session_creation_refuses_a_missing_same_host_stream_without_installing_a_target() {
+    let directory = tempfile::tempdir().unwrap();
+    let store = YamlRecordStore::new(directory.path(), HOST).unwrap();
+    store.initialize().unwrap();
+    let session = Record::Session(
+        Session::new(
+            Session::id_for(HOST, "pi", "native"),
+            HOST,
+            "missing",
+            "pi",
+            "native",
+            "Lane",
+        )
+        .unwrap(),
+    );
+    assert!(application::create_record(&store, "create-session", &session).is_err());
+    assert!(
+        !directory
+            .path()
+            .join(relative_record_path(&RecordAddress::for_record(&session)).unwrap())
+            .exists()
+    );
+}
 
 fn fixture_config(directory: &std::path::Path) -> Config {
     Config::new(
@@ -145,4 +261,56 @@ fn record_factory_rejects_missing_legacy_incomplete_and_foreign_producer_roots_w
     let marker = fs::read_to_string(second_root.join(".catalog-local/records.json")).unwrap();
     assert!(marker.contains(OTHER));
     assert!(!second_root.join(".catalog-sync").exists());
+}
+
+#[test]
+fn fresh_initialization_creates_the_saved_producer_and_selected_transport_without_domain_records() {
+    for strategy in [
+        streams_temper::config::Strategy::None,
+        streams_temper::config::Strategy::Git,
+    ] {
+        let directory = tempfile::tempdir().unwrap();
+        let config = fixture_config(directory.path());
+        let opened = application::initialize_records(&config, strategy, None, "main").unwrap();
+        assert_eq!(opened.host(), &config.host_identity().unwrap());
+        assert!(opened.inventory().unwrap().is_empty());
+        let sync = streams_temper::sync::records::RecordSync::open(
+            opened.root(),
+            opened.host().as_str(),
+            config.load().unwrap().sync,
+        )
+        .unwrap();
+        assert_eq!(sync.strategy(), strategy);
+        assert_eq!(
+            opened.root().join(".git").exists(),
+            strategy == streams_temper::config::Strategy::Git
+        );
+        assert_eq!(
+            application::open_records(&config).unwrap().source_id(),
+            opened.source_id()
+        );
+        assert!(!opened.root().join(".catalog-sync").exists());
+    }
+}
+
+#[test]
+fn fresh_initialization_does_not_create_a_producer_for_an_existing_nonempty_root() {
+    let directory = tempfile::tempdir().unwrap();
+    let config = fixture_config(directory.path());
+    let root = config.load().unwrap().catalog_root;
+    fs::create_dir_all(&root).unwrap();
+    let path = root.join("unrecognized-data");
+    fs::write(&path, "leave intact").unwrap();
+    assert!(
+        application::initialize_records(
+            &config,
+            streams_temper::config::Strategy::None,
+            None,
+            "main"
+        )
+        .is_err()
+    );
+    assert!(!config.host_path().exists());
+    assert!(!root.join(".catalog-local").exists());
+    assert_eq!(fs::read_to_string(path).unwrap(), "leave intact");
 }

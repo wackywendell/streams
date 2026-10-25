@@ -3,16 +3,14 @@
 //! These files are execution-host state, never shared catalog records. Callers must
 //! not publish their paths or use them to infer conversation membership.
 
-pub mod arrangements;
 pub mod checkouts;
 pub mod conversations;
 pub mod launch;
 pub mod locations;
 pub mod native;
 pub mod native_cards;
-pub mod native_state;
-pub mod open_protocol;
-pub mod placement;
+pub mod native_inventory;
+pub mod native_markers;
 pub mod revisions;
 pub mod state;
 pub mod workspace;
@@ -33,8 +31,6 @@ use crate::storage::StorageError;
 pub enum RuntimeError {
     #[error("invalid host-local state: {0}")]
     Invalid(String),
-    #[error("{0}")]
-    NativeContextChanged(String),
     #[error("not found: {0}")]
     NotFound(String),
     #[error("{message}; candidates: {candidates:?}")]

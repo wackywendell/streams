@@ -5,7 +5,7 @@ import { privateDirectory, privateRead, privateWrite } from "./private-storage.t
 export { privateDirectory, privateWrite } from "./private-storage.ts";
 import { CURRENT_SESSION_VERSION, SessionManager } from "@earendil-works/pi-coding-agent";
 import type { ExtensionContext } from "@earendil-works/pi-coding-agent";
-import { parseLocalContext } from "../../integrations/herdr-work-cards/src/streams-context.ts";
+import { isStream, parseLocalContext } from "../../integrations/herdr-work-cards/src/streams-context.ts";
 import type { LocalContext, StreamWire } from "./streams.ts";
 
 export type CaptureTarget = {kind: "stream" | "workspace"; id: string; title: string};
@@ -19,7 +19,7 @@ const identity = (value: any): value is string => typeof value === "string" && !
 export function parseCaptureInventory(value: any): CaptureInventory {
  if (!object(value) || value.version !== 1 || !identity(value.host_id) || !Array.isArray(value.streams) || !Array.isArray(value.workspaces) || !(value.topology_error === null || typeof value.topology_error === "string")) throw Error("Invalid capture inventory");
  // Use the normal wire parser, not a second definition of the card schema.
- for (const stream of value.streams) parseLocalContext({catalog_source: "inventory", host_id: value.host_id, stream, session: null, sessions: [], authority: null});
+ for (const stream of value.streams) if (!isStream(stream)) throw Error("Invalid capture Stream");
  for (const workspace of value.workspaces) if (!object(workspace) || !identity(workspace.id) || typeof workspace.label !== "string" || !(workspace.stream_id === null || identity(workspace.stream_id))) throw Error("Invalid capture workspace");
  if (value.target !== undefined && (!object(value.target) || !["stream", "workspace"].includes(value.target.kind) || !identity(value.target.id) || typeof value.target.title !== "string")) throw Error("Invalid capture target");
  if (value.unresolved !== undefined) {
@@ -73,8 +73,6 @@ export function captureSessions(inventory: CaptureInventory, root: string, curre
  for (const [index, source] of inventory.samples.entries()) {
   signal?.throwIfAborted();
   const sample: FrozenSample = {...structuredClone(source), captured_at: new Date().toISOString(), warnings: [], helper_logs: []};
-  // Permission presence matters to reset/reporting; a live ownership token does not.
-  if (sample.catalog.authority) sample.catalog.authority.token = "[redacted]";
   capture.samples.push(sample);
   const live = source.host_id === inventory.host_id && current?.getSessionId() === source.native_session_id ? current : undefined;
   if (source.unavailable && !live) continue;
@@ -144,7 +142,6 @@ export function loadCapture(root: string, id: string): Capture {
     transcript(privateRead(directory, log.file, root), log.session_id);
    }
   }
-  if (sample.catalog.authority && sample.catalog.authority.token !== "[redacted]") throw Error("Frozen captures must not contain live authority tokens");
  }
  return value as Capture;
 }

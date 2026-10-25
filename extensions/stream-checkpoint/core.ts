@@ -1,22 +1,22 @@
 import { randomUUID } from "node:crypto";
-import { receiptCanContinue, type ApplyRequest, type LocalContext, type Receipt, type SessionWire, type StreamWire } from "./streams.ts";
+import { receiptCanContinue, type ApplyRequest, type LocalContext, type Receipt, type SessionWire, type StreamWire, type Mode } from "./streams.ts";
 export const statuses = ["active", "waiting", "blocked", "parked", "done"];
 export const titleModes = ["automatic", "manual", "inherit"] as const;
 export const fields = {
  stream: ["title", "title_mode", "goal", "goal_short", "goal_mode", "status", "archived", "documents", "issues", "prs"],
  session: ["title", "title_mode", "status", "state", "state_short", "remaining"],
 };
-export function automaticFields(kind: "stream" | "session", before: StreamWire | SessionWire): string[] {
- const result = before.title_mode === "automatic" ? ["title"] : [];
+export function automaticFields(kind: "stream" | "session", before: StreamWire | SessionWire, defaultMode: Mode): string[] {
+ const result = (before.title_mode === "inherit" ? defaultMode : before.title_mode) === "automatic" ? ["title"] : [];
  if (kind === "stream") return [...result, ...((before as StreamWire).goal_mode === "automatic" ? ["goal", "goal_short"] : [])];
  return [...result, "status", "state", "state_short", "remaining"];
 }
 const nonempty = (value: unknown, field: string) => {if (typeof value !== "string" || !value.trim() || value.includes("\0")) throw Error(`${field} must be a nonempty string`);};
-export function validateChanges(kind: "stream" | "session", before: StreamWire | SessionWire, changes: Record<string, unknown>, actor: "automatic" | "user"): void {
+export function validateChanges(kind: "stream" | "session", before: StreamWire | SessionWire, changes: Record<string, unknown>, actor: "automatic" | "user", defaultMode: Mode): void {
  if (!changes || typeof changes !== "object" || Array.isArray(changes) || !Object.keys(changes).length) throw Error("An edit must contain at least one changed field");
  const goal = Object.hasOwn(changes, "goal") ? changes.goal : (before as StreamWire).goal;
  if (kind === "stream" && Object.hasOwn(changes, "goal_short") && changes.goal_short !== null && goal === null) throw Error("goal_short requires a non-null goal; set the goal first or clear the compact goal");
- const allowed = actor === "automatic" ? automaticFields(kind, before) : fields[kind];
+ const allowed = actor === "automatic" ? automaticFields(kind, before, defaultMode) : fields[kind];
  for (const [key, value] of Object.entries(changes)) {
   if (!allowed.includes(key)) throw Error(`${key} is not allowed for ${actor} ${kind} edits`);
   if (key === "title") nonempty(value, key);
@@ -53,22 +53,18 @@ export function validateReferences(field: string, rows: unknown, stream: StreamW
   if (seen.has(id)) throw Error("Duplicate reference row");seen.add(id);
  }
 }
-export function editRequest(context: LocalContext, kind: "stream" | "session", changes: Record<string, unknown>, actor: "automatic" | "user", operationId: string = randomUUID(), guardInputs = actor === "automatic"): ApplyRequest {
+export function editRequest(context: LocalContext, kind: "stream" | "session", changes: Record<string, unknown>, actor: "automatic" | "user", operationId: string = randomUUID()): ApplyRequest {
  const before = context[kind];if (!before) throw Error(`No attached ${kind}`);
- validateChanges(kind, before, changes, actor);
- if ((kind === "session" || actor === "automatic") && !context.authority) throw Error("No reporting authority; resume ownership with the CLI");
- const identity = (kind: "stream" | "session", record: StreamWire | SessionWire) => JSON.stringify([kind, kind === "session" ? (record as SessionWire).host_id : null, record.id]);
- const seen = new Set([identity(kind, before)]);
+ const host = kind === "session" ? (before as SessionWire).host_id : (before as StreamWire).owner.host_id;
+ if (host !== context.host_id) throw Error("Foreign-host records are read-only");
+ const title_default = context.title_defaults[kind];
+ validateChanges(kind, before, changes, actor, title_default);
  const inputs: ApplyRequest["inputs"] = [];
- if (guardInputs && kind === "stream") {
-  const add = (kind: "stream" | "session", record: StreamWire | SessionWire | null) => {
-   if (!record || seen.has(identity(kind, record))) return;
-   seen.add(identity(kind, record));inputs.push({kind, record});
-  };
-  add("session", context.session);
-  context.sessions.forEach((record) => add("session", record));
+ if (actor === "automatic" && kind === "stream") {
+  if (!context.session) throw Error("Automatic Stream edits require the current Session");
+  inputs.push({kind:"session", record:context.session});
  }
- return structuredClone({catalog_source: context.catalog_source, operation_id: operationId, kind, actor, before, changes, ownership_token: kind === "stream" && actor === "user" ? null : context.authority!.token, inputs});
+ return structuredClone({version:2, catalog_source:context.catalog_source, operation_id:operationId, kind, actor, before, changes, title_default, inputs});
 }
 export class FieldEdit {
  readonly base: LocalContext;
@@ -83,7 +79,7 @@ export class FieldEdit {
  async save(cli: {apply(request: ApplyRequest): Promise<Receipt>}, onReceipt?: (receipt: Receipt) => void): Promise<Receipt | undefined> {
   try {
    if (!this.dirty) return;
-   const result = await cli.apply(editRequest(this.base, this.kind, {[this.field]: this.value}, "user", undefined, false));
+   const result = await cli.apply(editRequest(this.base, this.kind, {[this.field]: this.value}, "user"));
    onReceipt?.(result);
    if (!result.save?.domain) throw Error("Save outcome is uncertain; receipt and input retained. Inspect catalog repair state before another write. Do not blindly retry.");
    if (result.save.domain.outcome === "conflict" || result.save.domain.outcome === "superseded") throw Error(`Edit ${result.save.domain.outcome}. Your input is retained. Compare the live field, then discard and reopen to use its new base.`);

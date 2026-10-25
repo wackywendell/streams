@@ -2,7 +2,7 @@
 use super::Result;
 use crate::{
     agent::{EnrollmentRequest, effort_id_for},
-    model::{Record, RecordKind, ValidationError},
+    model::{Record, RecordKind, Stream, ValidationError},
     operations::DomainOutcome,
     storage::records::{RecordAddress, RecordChange, RecordRequest, RecordSave, RecordStore},
 };
@@ -60,6 +60,20 @@ pub fn enroll_session(
     host: &str,
     request: &EnrollmentRequest,
 ) -> Result<RecordSave> {
+    Ok(enroll_session_observed(store, host, request)?.save)
+}
+
+/// The dependency belongs to this fresh decision, never to a historical receipt.
+pub struct EnrollmentSave {
+    pub save: RecordSave,
+    pub stream: Option<Stream>,
+}
+
+pub fn enroll_session_observed(
+    store: &impl RecordStore,
+    host: &str,
+    request: &EnrollmentRequest,
+) -> Result<EnrollmentSave> {
     let selected = request
         .stream_id()
         .map(str::to_owned)
@@ -71,7 +85,8 @@ pub fn enroll_session(
         &operation,
         &json!({"enrollment":request}),
     )?;
-    store.save(&save, |reader, before| {
+    let mut observed_stream = None;
+    let saved = store.save::<super::ApplicationError>(&save, |reader, before| {
         let session = match before {
             Some(current) => {
                 let Record::Session(current) = &current.record else {
@@ -124,6 +139,7 @@ pub fn enroll_session(
         } else {
             DomainOutcome::Changes
         };
+        observed_stream = Some(stream.clone());
         Ok(RecordChange {
             record: Record::Session(session),
             outcome: json!({"operation_id":operation,"outcome":outcome,"stream_id":stream.id})
@@ -131,6 +147,10 @@ pub fn enroll_session(
                 .unwrap()
                 .clone(),
         })
+    })?;
+    Ok(EnrollmentSave {
+        save: saved,
+        stream: observed_stream,
     })
 }
 

@@ -1,126 +1,131 @@
-use super::*;
+//! Real child/TUI runs against observed native resources, not saved placements.
+use super::subscriptions::NativeFixture;
 use crate::support::pty::Pty;
-use std::os::unix::fs::PermissionsExt;
+use serde_json::{Value, json};
+use std::{collections::BTreeMap, fs, path::PathBuf, process::Command, time::Duration};
 use streams_temper::{
+    application,
+    config::Config,
     model::Record,
-    runtime::{
-        native_cards::SOURCE_ENV_KEYS,
-        native_state::{NativeAttempt, NativePurpose, NativeState, Resources},
-    },
-    yaml_store::YamlStore,
+    runtime::native_cards::{LaunchedCardContext, PiOwner, SourceLaunch},
+    storage::records::RecordAddress,
+    tui::Scope,
+    yaml_store::records::relative_record_path,
 };
 
 struct CardFixture {
     native: NativeFixture,
-    state: NativeState,
-    evidence: NativeAttempt,
-    environment: BTreeMap<String, String>,
+    launch: LaunchedCardContext,
 }
 impl CardFixture {
     fn new() -> Self {
         let native = NativeFixture::new();
         let home = native.fixture.directory.path();
-        let state = NativeState::new(home.join("state/streams/native")).unwrap();
-        fs::create_dir_all(state.directory()).unwrap();
-        fs::set_permissions(state.directory(), fs::Permissions::from_mode(0o700)).unwrap();
-        let output = native
-            .command()
-            .args(["native", "check", "--session-id", &native.id, "--json"])
-            .output()
-            .unwrap();
-        assert!(
-            output.status.success(),
-            "{}",
-            String::from_utf8_lossy(&output.stderr)
-        );
-        let status: Value = serde_json::from_slice(&output.stdout).unwrap();
-        let key = status["native"]["key"].as_str().unwrap();
-        let base = native.command();
-        let read_environment: BTreeMap<String, String> = base
-            .get_envs()
-            .filter_map(|(key, value)| {
-                let key = key.to_str()?;
-                SOURCE_ENV_KEYS
-                    .contains(&key)
-                    .then(|| (key.to_owned(), value.unwrap().to_str().unwrap().to_owned()))
-            })
-            .collect();
-        let config = Config::new(&read_environment, home).unwrap();
-        let opened = application::open(&config).unwrap();
-        let scope = json!({"catalogSource":opened.source_id().unwrap(), "hostId":opened.host().as_str(),
-            "streamId":native.session["stream_id"], "sessionId":native.session["id"], "nativeSessionId":native.id});
-        let pending = NativeAttempt::new(
-            key,
-            "fixture-launch",
-            &native.server.socket,
-            NativePurpose::Card,
-        )
-        .unwrap();
-        let mut evidence = pending.clone();
-        evidence
-            .reserve(Resources::new("card", "card-terminal", "tab").unwrap())
-            .unwrap();
-        {
-            let lock = state.lock(1.0, &AtomicBool::new(false)).unwrap();
-            lock.write(None, &pending).unwrap();
-            lock.write(Some(&pending), &evidence).unwrap();
-        }
         {
             let mut snapshot = native.snapshot.lock().unwrap();
-            snapshot["panes"].as_array_mut().unwrap().push(json!({"pane_id":"card", "terminal_id":"card-terminal",
-                "workspace_id":"workspace","tab_id":"tab","cwd":home,"label":"Streams work card","tokens":{}}));
+            let mut card = snapshot["panes"][0].clone();
+            card["pane_id"] = json!("card");
+            card["terminal_id"] = json!("card-terminal");
+            card["agent"] = Value::Null;
+            card["agent_session"] = Value::Null;
+            card["tokens"] = json!({});
+            snapshot["panes"].as_array_mut().unwrap().push(card);
             snapshot["layouts"][0]["panes"]
                 .as_array_mut()
                 .unwrap()
                 .push(json!({"pane_id":"card"}));
         }
         let environment = BTreeMap::from([
-            ("HERDR_PANE_ID".into(), "card".into()),
-            ("TERM".into(), "xterm-256color".into()),
-            ("LC_ALL".into(), "C.UTF-8".into()),
-            ("STREAMS_CARDS_SCOPE".into(), scope.to_string()),
+            ("HOME".into(), home.to_str().unwrap().into()),
             (
-                "STREAMS_CARDS_OWNER".into(),
-                json!({"pane_id":"pane","tab_id":"tab","workspace_id":"workspace"}).to_string(),
-            ),
-            ("STREAMS_CARDS_NONCE".into(), evidence.nonce().into()),
-            ("STREAMS_CARDS_OWNER_TERMINAL".into(), "terminal".into()),
-            (
-                "STREAMS_CARDS_READ_ENV".into(),
-                serde_json::to_string(&read_environment).unwrap(),
+                "XDG_CONFIG_HOME".into(),
+                home.join("config").to_str().unwrap().into(),
             ),
             (
-                "STREAMS_CARDS_READ_CWD".into(),
-                home.to_str().unwrap().into(),
+                "XDG_DATA_HOME".into(),
+                home.join("data").to_str().unwrap().into(),
             ),
             (
-                "STREAMS_CARDS_STATE_DIR".into(),
-                state.directory().to_str().unwrap().into(),
+                "XDG_STATE_HOME".into(),
+                home.join("state").to_str().unwrap().into(),
             ),
             (
-                "STREAMS_CARDS_PLUGIN_ROOT".into(),
-                PathBuf::from(env!("CARGO_MANIFEST_DIR"))
-                    .join("integrations/herdr-work-cards")
-                    .to_str()
-                    .unwrap()
-                    .into(),
+                "HERDR_SOCKET_PATH".into(),
+                native.server.socket.to_str().unwrap().into(),
             ),
         ]);
-        Self {
-            native,
-            state,
-            evidence,
-            environment,
-        }
+        let opened = application::open_records(&Config::new(&environment, home).unwrap()).unwrap();
+        let launch = LaunchedCardContext {
+            scope: Scope {
+                catalog_source: opened.source_id().into(),
+                host_id: opened.host().as_str().into(),
+                stream_id: native.session["stream_id"].as_str().unwrap().into(),
+                session_id: native.session["id"].as_str().unwrap().into(),
+                harness: "pi".into(),
+                native_session_id: native.id.clone(),
+            },
+            owner: PiOwner {
+                terminal_id: "terminal".into(),
+                native_session_id: native.id.clone(),
+            },
+            reader: SourceLaunch {
+                environment,
+                cwd: home.into(),
+            },
+            lock_directory: home.join("card-locks"),
+            plugin_root: PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+                .join("integrations/herdr-work-cards"),
+        };
+        Self { native, launch }
     }
-    fn start(&self) -> Pty {
-        let mut command = self.native.command();
+    fn command(&self) -> Command {
+        let mut command = self.native.fixture.command();
+        command.args(["native", "pane"]);
+        for (key, value) in &self.launch.reader.environment {
+            command.env(key, value);
+        }
         command
-            .args(["native", "pane", "--session-id", &self.native.id])
-            .envs(&self.environment);
-        // Exactly one card process. Native reads cannot dispatch a Herdr CLI or
-        // another Streams process; the fake server accepts only socket reads.
-        Pty::spawn(command, false)
+            .env("HERDR_ENV", "1")
+            .env("HERDR_PANE_ID", "card")
+            .env(
+                "WORK_CARDS_CONFIG_PATH",
+                self.native.fixture.directory.path().join("work-cards.json"),
+            )
+            .env(
+                "STREAMS_CARDS_CONTEXT",
+                serde_json::to_string(&self.launch).unwrap(),
+            );
+        command
+    }
+    fn spawn(&self) -> CardProcess {
+        let paths = self
+            .native
+            .fixture
+            .directory
+            .path()
+            .join(format!("card-process-{}", uuid::Uuid::new_v4()));
+        fs::create_dir(&paths).unwrap();
+        let native = self.command();
+        let mut helper = Command::new(std::env::current_exe().unwrap());
+        helper.env_clear();
+        for (key, value) in native.get_envs() {
+            if let Some(value) = value {
+                helper.env(key, value);
+            }
+        }
+        helper
+            .current_dir(self.native.fixture.directory.path())
+            .args([
+                "--exact",
+                "serve::subscriptions::cards::real_card_process",
+                "--nocapture",
+            ])
+            .env("STREAMS_TEST_CARD_PROCESS", &paths)
+            .env("STREAMS_TEST_CARD_BINARY", native.get_program());
+        CardProcess {
+            pty: Pty::spawn(helper, false),
+            paths,
+        }
     }
     fn save_title(&self, title: &str) {
         let mut session: streams_temper::model::Session =
@@ -128,8 +133,11 @@ impl CardFixture {
         session.title = title.into();
         let value = serde_json::to_value(&session).unwrap();
         let record = Record::Session(session);
-        let store = YamlStore::new(self.native.fixture.root());
-        let path = self.native.fixture.root().join(store.record_path(&record));
+        let path = self
+            .native
+            .fixture
+            .root()
+            .join(relative_record_path(&RecordAddress::for_record(&record)).unwrap());
         let staging = path.with_extension("staging");
         let mut envelope: Value = serde_json::from_slice(&fs::read(&path).unwrap()).unwrap();
         envelope["record"] = value;
@@ -139,6 +147,7 @@ impl CardFixture {
     }
     fn move_owner(&self, pane: &str) {
         let mut snapshot = self.native.snapshot.lock().unwrap();
+        let previous = snapshot["panes"][0]["pane_id"].clone();
         for key in ["panes", "agents"] {
             snapshot[key][0]["pane_id"] = json!(pane);
             snapshot[key][0]["tab_id"] = json!("moved-tab");
@@ -151,289 +160,259 @@ impl CardFixture {
         snapshot["layouts"].as_array_mut().unwrap().push(
             json!({"workspace_id":"workspace","tab_id":"moved-tab","panes":[{"pane_id":pane}]}),
         );
+        drop(snapshot);
+        self.native.server.emit(json!({"event":"pane_moved","data":{"type":"pane_moved",
+            "previous_pane_id":previous,"previous_tab_id":"tab","previous_workspace_id":"workspace",
+            "pane":{"pane_id":pane,"terminal_id":"terminal","tab_id":"moved-tab","workspace_id":"workspace"}}}));
     }
-    fn assert_evidence_unchanged(&self) {
-        assert_eq!(
-            self.state.read(self.evidence.key()).unwrap(),
-            Some(self.evidence.clone())
+
+    fn assert_only_empty_locks(&self) {
+        assert!(
+            !self
+                .native
+                .fixture
+                .directory
+                .path()
+                .join("state/streams/native")
+                .exists()
         );
+        for entry in fs::read_dir(&self.launch.lock_directory).unwrap() {
+            let entry = entry.unwrap();
+            assert!(entry.file_type().unwrap().is_file());
+            assert!(fs::read(entry.path()).unwrap().is_empty());
+        }
     }
 }
-fn painted(pty: &mut Pty, title: &str) {
-    pty.until(|p| p.screen().contains(title) && p.screen().contains("[q] close"));
+struct CardProcess {
+    pty: Pty,
+    paths: PathBuf,
 }
-#[test]
-fn real_card_first_paint_and_file_update_use_one_process_three_startup_requests_and_zero_file_triggered_requests()
- {
-    let f = CardFixture::new();
-    f.native.server.clear();
-    let mut card = f.start();
-    painted(&mut card, "Before");
-    assert_eq!(
-        f.native.server.methods(),
-        ["ping", "events.subscribe", "session.snapshot"]
-    );
-    f.assert_evidence_unchanged();
-    f.native.server.clear();
-    f.save_title("After an atomic Session save");
-    painted(&mut card, "After an atomic Session save");
-    assert!(f.native.server.methods().is_empty());
-    card.send(b"q");
-    card.finish();
-    assert!(
-        f.native.server.methods().is_empty(),
-        "self-exit never calls Herdr"
-    );
-    f.assert_evidence_unchanged();
+impl std::ops::Deref for CardProcess {
+    type Target = Pty;
+    fn deref(&self) -> &Pty {
+        &self.pty
+    }
 }
-#[test]
-fn real_card_retargets_record_watches_after_a_catalog_session_id_change() {
-    let f = CardFixture::new();
-    let mut card = f.start();
-    painted(&mut card, "Before");
-    f.native.server.clear();
-    let session: streams_temper::model::Session =
-        serde_json::from_value(f.native.session.clone()).unwrap();
-    let store = YamlStore::new(f.native.fixture.root());
-    let old = f
-        .native
-        .fixture
-        .root()
-        .join(store.record_path(&Record::Session(session)));
-    let next_id = uuid::Uuid::new_v4().to_string();
-    let next = old.with_file_name(format!("{next_id}.yaml"));
-    let mut envelope: Value = serde_json::from_slice(&fs::read(&old).unwrap()).unwrap();
-    envelope["record"]["id"] = json!(next_id);
-    envelope["record"]["title"] = json!("After catalog id change");
-    envelope["revision"] = json!(uuid::Uuid::new_v4().to_string());
-    fs::write(&next, serde_json::to_vec(&envelope).unwrap()).unwrap();
-    fs::remove_file(old).unwrap();
-    painted(&mut card, "After catalog id change");
-    envelope["record"]["title"] = json!("The new id is watched");
-    envelope["revision"] = json!(uuid::Uuid::new_v4().to_string());
-    let staging = next.with_extension("staging");
-    fs::write(&staging, serde_json::to_vec(&envelope).unwrap()).unwrap();
-    fs::rename(staging, next).unwrap();
-    painted(&mut card, "The new id is watched");
-    card.send(b"q");
-    card.finish();
-    assert!(f.native.server.methods().is_empty());
-    f.assert_evidence_unchanged();
+impl std::ops::DerefMut for CardProcess {
+    fn deref_mut(&mut self) -> &mut Pty {
+        &mut self.pty
+    }
 }
-#[test]
-fn real_card_quit_cancels_initial_snapshot_without_waiting_for_server_or_native_lock() {
-    let f = CardFixture::new();
-    let gate = f.native.block_next_snapshot();
-    let _lock = f.state.lock(1.0, &AtomicBool::new(false)).unwrap();
-    f.native.server.clear();
-    let mut card = f.start();
-    card.until(|_| gate.entered.try_recv().is_ok());
-    card.send(b"aq");
-    card.finish();
-    assert_eq!(
-        f.native.server.methods(),
-        ["ping", "events.subscribe", "session.snapshot"]
-    );
-    f.assert_evidence_unchanged();
-    drop(gate); // Release the fake only AFTER the card has cancelled and exited.
+impl CardProcess {
+    fn finish(&mut self, used_tui: bool) {
+        self.pty.until(|_| self.paths.join("status").exists());
+        assert_eq!(
+            fs::read_to_string(self.paths.join("status")).unwrap(),
+            "0",
+            "{}",
+            self.pty.screen()
+        );
+        if used_tui {
+            self.pty.assert_cleanup();
+        }
+        fs::write(self.paths.join("release"), b"").unwrap();
+        self.pty.finish();
+    }
 }
+
 #[test]
-fn real_card_follows_a_moved_owner_and_keeps_reading_its_session_while_separated() {
-    let f = CardFixture::new();
-    let mut card = f.start();
-    painted(&mut card, "Before");
-    f.native.server.clear();
-    f.move_owner("moved-owner");
-    f.native.server.emit(
-        json!({"event":"pane_moved","data":{"type":"pane_moved","previous_pane_id":"pane",
-        "previous_tab_id":"tab","previous_workspace_id":"workspace",
-        "pane":{"pane_id":"moved-owner","tab_id":"moved-tab","workspace_id":"workspace","terminal_id":"terminal"}}}),
-    );
-    f.save_title("After owner moved");
-    painted(&mut card, "After owner moved");
-    assert_eq!(f.native.server.methods(), ["session.snapshot"]);
-    card.send(b"q");
-    card.finish();
-    assert_eq!(f.native.server.methods(), ["session.snapshot"]);
-    f.assert_evidence_unchanged();
-}
-#[test]
-fn real_card_recovers_once_and_follows_ids_observed_during_the_subscription_gap() {
-    let f = CardFixture::new();
-    let mut card = f.start();
-    painted(&mut card, "Before");
-    f.native.server.clear();
-    let recovery = f.native.block_next_snapshot();
-    f.native.server.disconnect_subscriptions();
-    card.until(|_| recovery.entered.try_recv().is_ok());
-    f.move_owner("gap-owner");
-    drop(recovery);
-    let followup = f.native.block_next_snapshot();
-    f.native
-        .server
-        .emit(json!({"event":"pane_updated","data":{"type":"pane_updated",
-        "pane":{"pane_id":"gap-owner","tab_id":"moved-tab","workspace_id":"workspace","terminal_id":"terminal"}}}));
-    card.until(|_| followup.entered.try_recv().is_ok());
-    card.send(b"q");
-    card.finish();
-    assert_eq!(
-        f.native.server.methods(),
-        ["events.subscribe", "session.snapshot", "session.snapshot"]
-    );
-    f.assert_evidence_unchanged();
-    drop(followup);
-}
-#[test]
-fn real_card_exits_when_its_evidence_is_removed_without_any_native_event() {
-    let f = CardFixture::new();
-    let mut card = f.start();
-    painted(&mut card, "Before");
-    f.native.server.clear();
-    fs::remove_file(f.state.path(f.evidence.key()).unwrap()).unwrap();
-    card.finish();
-    assert!(f.native.server.methods().is_empty());
-    assert!(f.state.read(f.evidence.key()).unwrap().is_none());
-    let mut orphan = f.start();
-    orphan.finish();
-    assert!(f.native.server.methods().is_empty());
-    assert!(f.state.read(f.evidence.key()).unwrap().is_none());
-}
-#[test]
-fn real_card_exits_on_replaced_evidence_and_does_not_touch_the_new_nonce() {
-    let f = CardFixture::new();
-    let mut card = f.start();
-    painted(&mut card, "Before");
-    f.native.server.clear();
-    let next = NativeAttempt::new(
-        f.evidence.key(),
-        "next-launch",
-        &f.native.server.socket,
-        NativePurpose::Card,
+fn real_card_process() {
+    let Some(paths) = std::env::var_os("STREAMS_TEST_CARD_PROCESS") else {
+        return;
+    };
+    let paths = PathBuf::from(paths);
+    let status = Command::new(std::env::var_os("STREAMS_TEST_CARD_BINARY").unwrap())
+        .args(["native", "pane"])
+        .status()
+        .unwrap();
+    // Keep the controlling session alive while the parent checks restored termios.
+    fs::write(
+        paths.join("status.tmp"),
+        status.code().unwrap_or(-1).to_string(),
     )
     .unwrap();
-    {
-        let lock = f.state.lock(1.0, &AtomicBool::new(false)).unwrap();
-        let mut ready = f.evidence.clone();
-        ready.mark_ready().unwrap();
-        lock.write(Some(&f.evidence), &ready).unwrap();
-        lock.write(Some(&ready), &next).unwrap();
+    fs::rename(paths.join("status.tmp"), paths.join("status")).unwrap();
+    let deadline = std::time::Instant::now() + Duration::from_secs(10);
+    while !paths.join("release").exists() {
+        assert!(
+            std::time::Instant::now() < deadline,
+            "card parent did not release the helper"
+        );
+        std::thread::sleep(Duration::from_millis(5));
     }
-    card.finish();
-    assert!(f.native.server.methods().is_empty());
-    assert_eq!(f.state.read(next.key()).unwrap(), Some(next));
+    assert!(status.success());
 }
+
+fn painted(pty: &mut Pty, title: &str) {
+    pty.until(|p| {
+        let text = p.screen();
+        text.contains("[q] close") && text.contains(title)
+    });
+}
+
 #[test]
-fn a_failed_first_catalog_read_does_not_pin_old_routing_or_prevent_repair() {
+fn real_card_observes_its_exact_session_after_a_pi_move_and_never_reopens() {
     let f = CardFixture::new();
-    f.move_owner("already-moved");
-    let session: streams_temper::model::Session =
-        serde_json::from_value(f.native.session.clone()).unwrap();
-    let store = YamlStore::new(f.native.fixture.root());
+    let mut pty = f.spawn();
+    painted(&mut pty, "Before");
+    f.move_owner("owner-moved");
+    f.save_title("After external save");
+    painted(&mut pty, "After external save");
+    pty.send(b"q");
+    pty.finish(true);
+    let snapshot = f.native.snapshot.lock().unwrap();
+    let pi = snapshot["panes"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|p| p["terminal_id"] == "terminal")
+        .unwrap();
+    assert_eq!(pi["pane_id"], "owner-moved");
+    assert_eq!(snapshot["panes"].as_array().unwrap().len(), 2);
+    assert!(
+        !f.native
+            .server
+            .methods()
+            .iter()
+            .any(|m| m == "plugin.open" || m == "pane.close")
+    );
+    drop(snapshot);
+    f.assert_only_empty_locks();
+}
+
+#[test]
+fn a_real_card_recovers_routing_from_a_new_observation_without_an_owner_baseline() {
+    let f = CardFixture::new();
+    let mut pty = f.spawn();
+    painted(&mut pty, "Before");
+    let gate = f.native.block_next_snapshot();
+    f.native.server.disconnect_subscriptions();
+    gate.entered.recv_timeout(Duration::from_secs(3)).unwrap();
+    f.move_owner("owner-moved-during-gap");
+    drop(gate);
+    f.save_title("After recovered observation");
+    painted(&mut pty, "After recovered observation");
+    for key in ["panes", "agents"] {
+        f.native.snapshot.lock().unwrap()[key][0]["agent"] = "other".into();
+    }
+    f.native.server.emit(json!({"event":"pane_updated","data":{"type":"pane_updated","pane":{
+        "pane_id":"owner-moved-during-gap","tab_id":"moved-tab","workspace_id":"workspace","terminal_id":"terminal"}}}));
+    pty.finish(true);
+    f.assert_only_empty_locks();
+}
+
+#[test]
+fn quit_cancels_an_unavailable_initial_snapshot_and_leaves_resources_untouched() {
+    let f = CardFixture::new();
+    let before = f.native.snapshot.lock().unwrap().clone();
+    let gate = f.native.block_next_snapshot();
+    let mut pty = f.spawn();
+    gate.entered.recv_timeout(Duration::from_secs(3)).unwrap();
+    pty.send(b"q");
+    pty.finish(true);
+    drop(gate);
+    assert_eq!(*f.native.snapshot.lock().unwrap(), before);
+    f.assert_only_empty_locks();
+}
+
+#[test]
+fn a_real_card_closes_only_after_its_pi_is_observed_absent() {
+    let f = CardFixture::new();
+    let mut pty = f.spawn();
+    painted(&mut pty, "Before");
+    {
+        let mut snapshot = f.native.snapshot.lock().unwrap();
+        snapshot["agents"] = json!([]);
+        snapshot["panes"]
+            .as_array_mut()
+            .unwrap()
+            .retain(|p| p["terminal_id"] != "terminal");
+        snapshot["layouts"][0]["panes"] = json!([{"pane_id":"card"}]);
+    }
+    f.native.server.emit(json!({"event":"pane_exited","data":{"type":"pane_exited","pane_id":"pane","workspace_id":"workspace"}}));
+    pty.finish(true);
+    let snapshot = f.native.snapshot.lock().unwrap();
+    assert_eq!(snapshot["panes"].as_array().unwrap().len(), 1);
+    assert_eq!(snapshot["panes"][0]["terminal_id"], "card-terminal");
+    assert!(
+        !f.native
+            .server
+            .methods()
+            .iter()
+            .any(|m| m == "plugin.open" || m == "pane.close")
+    );
+    drop(snapshot);
+    f.assert_only_empty_locks();
+}
+
+#[test]
+fn a_second_real_card_exits_before_host_io_and_leaves_the_active_card_alone() {
+    let f = CardFixture::new();
+    let mut active = f.spawn();
+    painted(&mut active, "Before");
+    f.native.server.clear();
+    let before = f.native.snapshot.lock().unwrap().clone();
+    let mut duplicate = f.spawn();
+    duplicate.finish(false);
+    assert!(f.native.server.methods().is_empty());
+    assert_eq!(*f.native.snapshot.lock().unwrap(), before);
+    f.save_title("Active card kept running");
+    painted(&mut active, "Active card kept running");
+    active.send(b"q");
+    active.finish(true);
+    f.assert_only_empty_locks();
+}
+
+#[test]
+fn a_real_card_can_refresh_after_its_initial_session_read_failed() {
+    let f = CardFixture::new();
     let path = f
         .native
         .fixture
         .root()
-        .join(store.record_path(&Record::Session(session)));
-    let saved = fs::read(&path).unwrap();
-    fs::write(&path, "broken: [").unwrap();
-    let mut card = f.start();
-    card.until(|p| p.screen().contains("Card unavailable"));
-    let staging = path.with_extension("repair");
-    fs::write(&staging, saved).unwrap();
+        .join("hosts")
+        .join(&f.launch.scope.host_id)
+        .join("conversations")
+        .join(format!("{}.yaml", f.native.session["id"].as_str().unwrap()));
+    let original = fs::read(&path).unwrap();
+    fs::write(&path, b"not a record").unwrap();
+    let mut pty = f.spawn();
+    pty.until(|p| p.screen().contains("Card unavailable"));
+    f.move_owner("owner-moved-before-initial-card");
+    let staging = path.with_extension("tmp");
+    fs::write(&staging, original).unwrap();
     fs::rename(staging, path).unwrap();
-    painted(&mut card, "Before");
-    f.native.server.clear();
-    f.native.server.emit(json!({"event":"pane_exited","data":{"type":"pane_exited","pane_id":"already-moved","workspace_id":"workspace"}}));
-    card.finish();
-    assert!(f.native.server.methods().is_empty());
-    f.assert_evidence_unchanged();
+    painted(&mut pty, "Before");
+    f.save_title("Recovered after initial failure");
+    painted(&mut pty, "Recovered after initial failure");
+    pty.send(b"q");
+    pty.finish(true);
+    f.assert_only_empty_locks();
 }
+
 #[test]
-fn real_card_observes_owner_workspace_metadata_but_ignores_foreign_workspace_metadata() {
+fn a_real_card_refuses_a_rekey_instead_of_discovering_a_neighbor_session() {
     let f = CardFixture::new();
-    let mut card = f.start();
-    painted(&mut card, "Before");
-    f.native.server.clear();
-    for _ in 0..32 {
-        f.native.server.emit(
-            json!({"event":"workspace_metadata_updated","data":{"type":"workspace_metadata_updated",
-            "workspace":{"workspace_id":"elsewhere"}}}),
-        );
-    }
-    let gate = f.native.block_next_snapshot();
-    f.native.server.emit(
-        json!({"event":"workspace_metadata_updated","data":{"type":"workspace_metadata_updated",
-        "workspace":{"workspace_id":"workspace"}}}),
-    );
-    card.until(|_| gate.entered.try_recv().is_ok());
-    card.send(b"q");
-    card.finish();
-    assert_eq!(f.native.server.methods(), ["session.snapshot"]);
-    f.assert_evidence_unchanged();
-    drop(gate);
-}
-#[test]
-fn real_card_follows_ids_discovered_at_start_and_owner_exit_cancels_a_later_read() {
-    let f = CardFixture::new();
-    f.move_owner("before-subscribe");
-    let mut card = f.start();
-    painted(&mut card, "Before");
-    f.native.server.clear();
-    let gate = f.native.block_next_snapshot();
-    f.native.server.emit(json!({"event":"pane_updated","data":{"type":"pane_updated",
-        "pane":{"pane_id":"before-subscribe","tab_id":"moved-tab","workspace_id":"workspace","terminal_id":"terminal"}}}));
-    card.until(|_| gate.entered.try_recv().is_ok());
-    f.native.server.emit(json!({"event":"pane_exited","data":{"type":"pane_exited","pane_id":"before-subscribe","workspace_id":"workspace"}}));
-    card.finish();
-    assert_eq!(f.native.server.methods(), ["session.snapshot"]);
-    f.assert_evidence_unchanged();
-    drop(gate);
-}
-#[test]
-fn real_card_explicit_refresh_requests_a_fresh_native_snapshot() {
-    let f = CardFixture::new();
-    let mut card = f.start();
-    painted(&mut card, "Before");
-    f.native.server.clear();
-    let gate = f.native.block_next_snapshot();
-    card.send(b"\x12");
-    card.until(|_| gate.entered.try_recv().is_ok());
-    card.send(b"q");
-    card.finish();
-    assert_eq!(f.native.server.methods(), ["session.snapshot"]);
-    f.assert_evidence_unchanged();
-    drop(gate);
-}
-#[test]
-fn real_card_owner_exit_cancels_the_initial_snapshot_before_the_server_replies() {
-    let f = CardFixture::new();
-    let gate = f.native.block_next_snapshot();
-    f.native.server.clear();
-    let mut card = f.start();
-    card.until(|_| gate.entered.try_recv().is_ok());
-    f.native.server.emit(json!({"event":"pane_exited","data":{"type":"pane_exited","pane_id":"pane","workspace_id":"workspace"}}));
-    card.finish();
-    assert_eq!(
-        f.native.server.methods(),
-        ["ping", "events.subscribe", "session.snapshot"]
-    );
-    f.assert_evidence_unchanged();
-    drop(gate);
-}
-#[test]
-fn real_card_owner_exit_does_no_read_or_write_and_orphaned_start_does_not_connect() {
-    let mut f = CardFixture::new();
-    let mut card = f.start();
-    painted(&mut card, "Before");
-    f.native.server.clear();
-    f.native.server.emit(json!({"event":"pane_exited","data":{"type":"pane_exited","pane_id":"pane","workspace_id":"workspace"}}));
-    card.finish();
-    assert!(f.native.server.methods().is_empty());
-    f.assert_evidence_unchanged();
-    f.environment
-        .insert("STREAMS_CARDS_NONCE".into(), "orphaned-launch".into());
-    let mut orphan = f.start();
-    orphan.finish();
-    assert!(f.native.server.methods().is_empty());
-    f.assert_evidence_unchanged();
+    let mut pty = f.spawn();
+    painted(&mut pty, "Before");
+    let old = f.native.session["id"].as_str().unwrap();
+    let directory = f
+        .native
+        .fixture
+        .root()
+        .join("hosts")
+        .join(&f.launch.scope.host_id)
+        .join("conversations");
+    let mut value: Value =
+        serde_json::from_slice(&fs::read(directory.join(format!("{old}.yaml"))).unwrap()).unwrap();
+    let new = "22222222-2222-4222-8222-222222222222";
+    value["record"]["id"] = new.into();
+    value["record"]["title"] = "Must not be discovered".into();
+    fs::write(directory.join(format!("{new}.yaml")), value.to_string()).unwrap();
+    fs::remove_file(directory.join(format!("{old}.yaml"))).unwrap();
+    pty.until(|p| p.screen().contains("Card unavailable"));
+    assert!(!pty.screen().contains("Must not be discovered"));
+    pty.send(b"q");
+    pty.finish(true);
+    f.assert_only_empty_locks();
 }

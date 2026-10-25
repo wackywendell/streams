@@ -15,10 +15,6 @@ name = "contracts"
 path = "tests/contracts.rs"
 
 [[test]]
-name = "git_catalog"
-path = "tests/git_catalog.rs"
-
-[[test]]
 name = "verification"
 path = "tests/verification.rs"
 

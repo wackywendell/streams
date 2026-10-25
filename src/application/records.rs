@@ -3,8 +3,9 @@
 use std::path::Path;
 
 use crate::{
-    config::{Config, HostIdentity, source_id},
+    config::{Config, HostIdentity, Strategy, source_id},
     storage::records::{RecordInventory, RecordRead, RecordStore},
+    sync::records::RecordSync,
     yaml_store::records::{RecordIoEvent, YamlRecordStore},
 };
 
@@ -34,6 +35,35 @@ impl OpenedRecords {
     pub fn inventory(&self) -> Result<Vec<RecordRead>> {
         Ok(self.records.inventory()?)
     }
+}
+
+/// Initialize only an empty catalog. Existing data is neither interpreted nor adopted.
+pub fn initialize_records(
+    config: &Config,
+    strategy: Strategy,
+    remote: Option<&str>,
+    branch: &str,
+) -> Result<OpenedRecords> {
+    let mut lock = config.lock()?;
+    let settings = lock.settings()?;
+    let host = lock.host_identity_for_new_catalog()?;
+    let records = YamlRecordStore::new(&settings.catalog_root, host.as_str())?;
+    records.initialize()?;
+    RecordSync::initialize(
+        records.root(),
+        host.as_str(),
+        strategy,
+        remote.map(str::to_owned),
+        branch,
+        settings.sync,
+    )?;
+    let source_id =
+        records.with_reader(|_| -> Result<String> { Ok(source_id(records.root(), &host)?) })?;
+    Ok(OpenedRecords {
+        records,
+        host,
+        source_id,
+    })
 }
 
 /// Legacy or incomplete roots refuse here; no operation probes or adopts their layout.

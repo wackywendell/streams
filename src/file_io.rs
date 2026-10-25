@@ -226,31 +226,6 @@ pub(crate) fn write_json(path: &Path, value: &impl Serialize) -> Result<(), Stor
     atomic_write(path, &bytes, path.parent().expect("file parent"))
 }
 
-pub(crate) fn check_catalog_root(root: &Path) -> Result<(), StorageError> {
-    ensure_directory(root, false)?;
-    for name in [".catalog-sync", ".catalog.lock", ".catalog-staging"] {
-        if root.join(name).is_symlink() {
-            return Err(StorageError::new("symlinked catalog machinery"));
-        }
-    }
-    ensure_directory(&root.join(".catalog-sync"), false)
-}
-
-/// Only top-level policy is shared: callers separately validate bookkeeping contents.
-pub(crate) fn check_empty_catalog_root(root: &Path) -> Result<(), StorageError> {
-    for entry in fs::read_dir(root).map_err(|e| StorageError::new(e.to_string()))? {
-        let name = entry
-            .map_err(|e| StorageError::new(e.to_string()))?
-            .file_name();
-        if name != ".catalog.lock" && name != ".catalog-sync" {
-            return Err(StorageError::new(
-                "initialization requires a new empty catalog directory",
-            ));
-        }
-    }
-    Ok(())
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;

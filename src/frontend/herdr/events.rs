@@ -2,6 +2,8 @@
 //! never authority to apply native or catalog effects.
 
 #[cfg(test)]
+mod liveness_tests;
+#[cfg(test)]
 mod tests;
 
 use super::socket::{SocketClient, read_frame};
@@ -12,7 +14,10 @@ use std::collections::BTreeSet;
 use std::io::BufReader;
 use std::net::Shutdown;
 use std::os::unix::net::UnixStream;
-use std::sync::{Arc, Mutex};
+use std::sync::{
+    Arc, Mutex,
+    atomic::{AtomicBool, Ordering},
+};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, strum::Display, strum::EnumString)]
 pub enum EventKind {
@@ -286,31 +291,101 @@ pub enum SubscriptionUpdate {
 
 pub struct HerdrSubscription {
     client: Arc<SocketClient>,
-    filter: EventFilter,
     reader: BufReader<UnixStream>,
     stopped: bool,
     resubscribed: bool,
     cancellation: Arc<Mutex<Cancellation>>,
 }
 
+impl Drop for HerdrSubscription {
+    fn drop(&mut self) {
+        let state = self
+            .cancellation
+            .lock()
+            .expect("subscription cancellation lock");
+        state.ended.store(true, Ordering::Release);
+        let _ = state.stream.shutdown(Shutdown::Both);
+    }
+}
+
 struct Cancellation {
     stream: UnixStream,
     cancelled: bool,
+    ended: Arc<AtomicBool>,
+    filter: EventFilter,
 }
 
 pub struct SubscriptionCancel {
     state: Arc<Mutex<Cancellation>>,
 }
 impl SubscriptionCancel {
+    /// Capture this connection's lifetime for one pass. Reconnecting does not
+    /// make a previously captured, ended connection live again.
+    pub fn ended(&self) -> Arc<AtomicBool> {
+        Arc::clone(
+            &self
+                .state
+                .lock()
+                .expect("subscription cancellation lock")
+                .ended,
+        )
+    }
+
+    pub fn set_watched_ids(
+        &self,
+        pane_ids: BTreeSet<String>,
+        tab_ids: BTreeSet<String>,
+        workspace_ids: BTreeSet<String>,
+    ) {
+        let mut state = self.state.lock().expect("subscription cancellation lock");
+        state.filter.pane_ids = pane_ids;
+        state.filter.tab_ids = tab_ids;
+        state.filter.workspace_ids = workspace_ids;
+    }
+
     pub fn cancel(&self) -> std::io::Result<()> {
         let mut state = self.state.lock().expect("subscription cancellation lock");
         if state.cancelled {
             return Ok(());
         }
         state.cancelled = true;
+        state.ended.store(true, Ordering::Release);
         match state.stream.shutdown(Shutdown::Both) {
             Err(error) if error.kind() == std::io::ErrorKind::NotConnected => Ok(()),
             result => result,
+        }
+    }
+}
+
+pub(crate) struct PassSubscription {
+    cancel: SubscriptionCancel,
+    thread: Option<std::thread::JoinHandle<()>>,
+}
+impl PassSubscription {
+    pub(crate) fn start(client: &Arc<SocketClient>) -> Result<Self, SubscriptionError> {
+        let mut subscription = client.subscribe(EventFilter {
+            kinds: [EventKind::PaneClosed].into(),
+            ..Default::default()
+        })?;
+        let cancel = subscription.cancellation_handle();
+        let thread = std::thread::Builder::new()
+            .name("streams-native-pass".into())
+            .spawn(move || while subscription.receive_inner(false).is_ok() {})
+            .map_err(|error| SubscriptionError::Establish(error.to_string()))?;
+        Ok(Self {
+            cancel,
+            thread: Some(thread),
+        })
+    }
+    pub(crate) fn ended(&self) -> Arc<AtomicBool> {
+        self.cancel.ended()
+    }
+}
+impl Drop for PassSubscription {
+    fn drop(&mut self) {
+        let _ = self.cancel.cancel();
+        if let Some(thread) = self.thread.take() {
+            let _ = thread.join();
         }
     }
 }
@@ -329,13 +404,14 @@ impl SocketClient {
             .map_err(|e| SubscriptionError::Establish(e.to_string()))?;
         Ok(HerdrSubscription {
             client: Arc::clone(self),
-            filter,
             reader,
             stopped: false,
             resubscribed: false,
             cancellation: Arc::new(Mutex::new(Cancellation {
                 stream,
                 cancelled: false,
+                ended: Arc::new(AtomicBool::new(false)),
+                filter,
             })),
         })
     }
@@ -375,9 +451,8 @@ impl HerdrSubscription {
         tab_ids: BTreeSet<String>,
         workspace_ids: BTreeSet<String>,
     ) {
-        self.filter.pane_ids = pane_ids;
-        self.filter.tab_ids = tab_ids;
-        self.filter.workspace_ids = workspace_ids;
+        self.cancellation_handle()
+            .set_watched_ids(pane_ids, tab_ids, workspace_ids);
     }
 
     fn cancelled(&self) -> bool {
@@ -387,26 +462,64 @@ impl HerdrSubscription {
             .cancelled
     }
 
+    fn mark_ended(&self) {
+        self.cancellation
+            .lock()
+            .expect("subscription cancellation lock")
+            .ended
+            .store(true, Ordering::Release);
+    }
+
     pub fn receive(&mut self) -> Result<SubscriptionUpdate, SubscriptionError> {
+        self.receive_inner(true)
+    }
+    fn receive_inner(&mut self, reconnect: bool) -> Result<SubscriptionUpdate, SubscriptionError> {
         if self.stopped || self.cancelled() {
             return Err(SubscriptionError::Stopped);
         }
         loop {
             match read_frame(&mut self.reader, None) {
-                Ok(frame) => match self.filter.decode(&frame) {
-                    Ok(Some(event)) => return Ok(SubscriptionUpdate::Event(event)),
-                    Ok(None) => continue,
-                    Err(error) => {
-                        self.stopped = true;
-                        return Err(error);
+                Ok(frame) => {
+                    let decoded = {
+                        let mut state = self
+                            .cancellation
+                            .lock()
+                            .expect("subscription cancellation lock");
+                        let decoded = state.filter.decode(&frame);
+                        if let Ok(Some(HerdrEvent::PaneMoved {
+                            previous_pane_id,
+                            pane,
+                            ..
+                        })) = &decoded
+                            && state.filter.pane_ids.remove(previous_pane_id)
+                        {
+                            state.filter.pane_ids.insert(pane.pane_id.clone());
+                            state.filter.tab_ids.insert(pane.tab_id.clone());
+                            state.filter.workspace_ids.insert(pane.workspace_id.clone());
+                        }
+                        decoded
+                    };
+                    match decoded {
+                        Ok(Some(event)) => return Ok(SubscriptionUpdate::Event(event)),
+                        Ok(None) => continue,
+                        Err(error) => {
+                            self.mark_ended();
+                            self.stopped = true;
+                            return Err(error);
+                        }
                     }
-                },
+                }
                 Err(error) => {
+                    self.mark_ended();
                     if error.kind() == std::io::ErrorKind::InvalidData {
                         self.stopped = true;
                         return Err(SubscriptionError::InvalidEvent(error.to_string()));
                     }
                     if self.cancelled() {
+                        self.stopped = true;
+                        return Err(SubscriptionError::Stopped);
+                    }
+                    if !reconnect {
                         self.stopped = true;
                         return Err(SubscriptionError::Stopped);
                     }
@@ -416,7 +529,13 @@ impl HerdrSubscription {
                     }
                     self.resubscribed = true;
                     let _ = self.reader.get_ref().shutdown(Shutdown::Both);
-                    let replacement = subscribe(&self.client, &self.filter).and_then(|reader| {
+                    let filter = self
+                        .cancellation
+                        .lock()
+                        .expect("subscription cancellation lock")
+                        .filter
+                        .clone();
+                    let replacement = subscribe(&self.client, &filter).and_then(|reader| {
                         let stream = reader.get_ref().try_clone().map_err(|e| e.to_string())?;
                         Ok((reader, stream))
                     });
@@ -434,6 +553,7 @@ impl HerdrSubscription {
                     match replacement {
                         Ok((reader, stream)) => {
                             state.stream = stream;
+                            state.ended = Arc::new(AtomicBool::new(false));
                             self.reader = reader;
                             return Ok(SubscriptionUpdate::Resubscribed);
                         }

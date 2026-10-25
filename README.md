@@ -44,26 +44,19 @@ The supported settings are `catalog.root`, `frontend.mode`, `sync.stream_seconds
 
 Configuration is host-local at `$XDG_CONFIG_HOME/streams/config.json`; each CLI process reads it anew. Unset XDG variables use `~/.local/share` and `~/.config`. Sync strategy, remote and branch belong to catalog setup, not these settings. Changing `catalog.root` selects another catalog; initialise it before use.
 
-Pre-catalog scratch formats require manual migration. Sessions now use stable
-`conversations/<host>/<id>.yaml` files and Session-keyed directory selections.
-Earlier Stream-partitioned records remain readable without rewriting them;
-membership moves relocate them without keeping duplicate copies. Repository URLs
-and local directory intent remain attached to the conversation across Stream
-moves. Ordinary reads do not perform migrations. These are library primitives;
-automatic native adoption and captured-context result admission remain inactive.
+Catalog records use host-partitioned addresses:
+`hosts/<host>/streams/<id>.yaml` and `hosts/<host>/conversations/<id>.yaml`.
+A Session owns its membership; moving it changes that Session alone. Checkout
+URLs and host-local Session directory selections remain with the conversation.
 
-This checkout remains Rust-only. Other clients must support the new paths before
-sharing newly written state. Ambiguous legacy YAML scalars such as `title: 1e3`
-require manual quoting. The temporary format bridges live in
-[`yaml_store.rs`](src/yaml_store.rs) and [`locations.rs`](src/runtime/locations.rs).
+Initialization requires an empty catalog. Select `none` or `git` transport when
+creating it; initialization does not adopt an existing repository or convert old
+records. The alpha switch uses the [manual shutdown and backup
+checklist](docs/record-local-operations.md), followed by fresh initialization and
+re-enrollment. There is no runtime legacy reader or built reset component.
 
-An existing `none` catalog can explicitly adopt local Git backing in place:
-
-```sh
-streams init --sync git --adopt --json
-```
-
-This preserves record bytes, identities, ownership evidence, retry protection and host-local bindings. It creates a snapshot baseline, not invented historical operations. It does not configure a remote. Ordinary initialization still refuses to convert an existing catalog. Coordinate a live adoption window first; see the [adoption contract](docs/catalog-local-git-adoption.md) and [acceptance guidance](docs/catalog-sync-usage.md#acceptance-before-activation).
+Saving a record is local. Publication is a separate transport operation, so a
+network failure cannot turn an accepted local save into a failed save.
 
 ## Create and find work
 

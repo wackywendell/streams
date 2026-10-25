@@ -7,7 +7,6 @@
 use std::collections::{BTreeMap, BTreeSet, VecDeque};
 use std::ffi::{CStr, CString};
 use std::fs;
-use std::os::unix::fs::MetadataExt;
 use std::path::{Component, Path, PathBuf};
 
 use serde::{Deserialize, Serialize};
@@ -17,12 +16,11 @@ use strum::{AsRefStr, Display, EnumIter, EnumString, VariantNames};
 use uuid::Uuid;
 
 use crate::codec::load_json;
-use crate::file_io::{self, check_catalog_root};
+use crate::file_io;
 use crate::frontend::{FrontendId, FrontendMode};
 use crate::model::{NamingMode, TitleDefaults};
-use crate::storage::{Journal, StorageError};
+use crate::storage::StorageError;
 use crate::sync::policy::Policy;
-use crate::sync::state::{RepairRequired, State};
 
 #[cfg(test)]
 mod tests;
@@ -378,9 +376,13 @@ impl ConfigLock<'_> {
             return Ok(identity);
         }
         let root = self.settings()?.catalog_root;
-        check_catalog_root(&root)?;
-        if Marker::exists(&root)? {
-            return Err(missing_host());
+        if root.exists() {
+            for entry in fs::read_dir(&root)? {
+                let entry = entry?;
+                if entry.file_name() != ".catalog.lock" || !entry.file_type()?.is_file() {
+                    return Err(missing_host());
+                }
+            }
         }
         let identity = HostIdentity(Uuid::new_v4().to_string());
         write_json(
@@ -427,68 +429,6 @@ pub enum Strategy {
 }
 
 crate::codec::deserialize_string_enum!(Strategy);
-
-/// Host-bound initialization evidence read under the caller's store transaction.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct Marker {
-    pub strategy: Strategy,
-    pub host: HostIdentity,
-}
-impl Marker {
-    /// Inspect before acquiring the catalog lock; malformed markers never permit host creation.
-    pub fn exists(root: &Path) -> Result<bool> {
-        match fs::symlink_metadata(root.join(".catalog-sync/cli.json")) {
-            Ok(metadata) if metadata.is_file() => Ok(true),
-            Ok(_) => Err(invalid(
-                "catalog initialization marker must be a regular file",
-            )),
-            Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(false),
-            Err(error) => Err(error.into()),
-        }
-    }
-
-    pub fn write(&self, state: &State<'_>) -> std::result::Result<(), RepairRequired> {
-        state.write(
-            "cli.json",
-            json!({"strategy": self.strategy, "host": self.host.as_str()})
-                .as_object()
-                .expect("object")
-                .clone(),
-        )
-    }
-
-    pub fn read(journal: &dyn Journal) -> Result<Option<Self>> {
-        #[derive(Deserialize)]
-        #[serde(deny_unknown_fields)]
-        struct Wire {
-            version: u64,
-            strategy: Strategy,
-            host: String,
-        }
-        journal
-            .read("cli.json")?
-            .map(|data| {
-                let wire: Wire = serde_json::from_value(Value::Object(data))
-                    .map_err(|e| invalid(format!("invalid catalog initialization marker: {e}")))?;
-                if wire.version != 1 {
-                    return Err(invalid("unsupported catalog initialization marker version"));
-                }
-                Ok(Self {
-                    strategy: wire.strategy,
-                    host: HostIdentity::parse(&wire.host)?,
-                })
-            })
-            .transpose()
-    }
-    pub fn check_host(&self, identity: &HostIdentity) -> Result<()> {
-        if &self.host != identity {
-            return Err(invalid(
-                "catalog belongs to a different host; restore the matching private host identity",
-            ));
-        }
-        Ok(())
-    }
-}
 
 fn missing_host() -> ConfigError {
     invalid(
@@ -618,8 +558,8 @@ pub fn resolve_path(path: &Path) -> Result<PathBuf> {
     Ok(resolved)
 }
 
-/// Bind host-local requests to the resolved directory, device, inode and producer ID.
-/// The preimage is Python json.dumps with ASCII escaping and comma-space separators.
+/// Bind requests to the configured producer and canonical catalog path.
+/// Replacing a directory's contents does not change this logical identity.
 pub fn source_id(root: &Path, host: &HostIdentity) -> Result<String> {
     let root = resolve_path(root)?;
     let stat = fs::metadata(&root)?;
@@ -627,10 +567,8 @@ pub fn source_id(root: &Path, host: &HostIdentity) -> Result<String> {
         return Err(invalid("catalog source must be a directory"));
     }
     let preimage = format!(
-        "[{}, {}, {}, {}]",
+        "[{}, {}]",
         crate::codec::ascii_json(path_text(&root)?),
-        stat.dev(),
-        stat.ino(),
         crate::codec::ascii_json(host.as_str())
     );
     Ok(format!("{:x}", Sha256::digest(preimage.as_bytes())))

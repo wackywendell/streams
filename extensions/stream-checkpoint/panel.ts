@@ -84,7 +84,7 @@ export async function openCard(ctx: ExtensionContext, cli: StreamCli, state: Car
  let activeTab: "actions" | "stream" | "session" = "actions";
  const selectedByTab: Record<"actions" | "stream" | "session", number> = {actions: 0, stream: 0, session: 0};
  for (;;) {
-  const catalog = await cli.context(ctx.sessionManager.getSessionId(), process.env.STREAMS_STREAM_ID);
+  const catalog = await cli.context(ctx.sessionManager.getSessionId());
   if (!catalog.stream) {ctx.ui.notify("No attached work card. Use select_stream or create_stream for initial attachment.", "info");return;}
   const stream = catalog.stream, session = catalog.session;
   const actionItems: SelectItem[] = [

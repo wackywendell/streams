@@ -43,6 +43,15 @@ pub struct HerdrInventoryPane {
     pub terminal_id: String,
 }
 
+impl HerdrInventoryPane {
+    pub fn parse(value: &Value) -> Result<Self, FrontendError> {
+        Ok(Self {
+            pane: HerdrPane::parse(value)?,
+            terminal_id: string(value, "terminal_id")?,
+        })
+    }
+}
+
 /// Native pane ordering only; not saved conversation restoration intent.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct HerdrLayout {

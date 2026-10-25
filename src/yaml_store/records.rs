@@ -1,4 +1,4 @@
-//! New-format host partitions. Legacy command wiring remains in `YamlStore` until cutover.
+//! Host-partitioned addressed records; no legacy locations or catalog-wide snapshots.
 //! Opening this store never imports, scans or falls back to that legacy layout.
 
 mod inventory;
@@ -29,7 +29,7 @@ use crate::{
     },
 };
 
-use super::{YamlStore, encode_component, yaml_to_json};
+use super::{encode_component, yaml_to_json};
 
 const FORMAT: &str = ".catalog-local/records.json";
 
@@ -131,7 +131,7 @@ impl YamlRecordStore {
         let host = host.into();
         check_text(&host, "record-store host", false).map_err(invalid)?;
         Ok(Self {
-            root: YamlStore::new(root).root,
+            root: std::path::absolute(root).map_err(invalid)?,
             host,
             observer: None,
         })

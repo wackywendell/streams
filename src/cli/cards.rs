@@ -1,20 +1,24 @@
-//! Explicit Rust native trial. This module never installs or selects a default CLI.
+//! Native commands use one observation; card lifetime uses only an OS lock.
 mod events;
 mod files;
 mod host;
 mod source;
 
-use std::sync::{Arc, atomic::AtomicBool};
-use streams_temper::frontend::herdr::HerdrClient;
-use streams_temper::process::{NativeProcessRunner, ProcessRequest, ProcessRunner};
-use streams_temper::runtime::native_cards::{
-    DisplayCondition, DisplayOutcome, LaunchedCardContext, NativeCardEngine, NativeCardsConfig,
-    SOURCE_ENV_KEYS,
+use super::{
+    App, BTreeMap, CliError, Config, Output, PathBuf, Result, application, args::NativeCommand,
+    json,
 };
-use streams_temper::runtime::native_state::NativeState;
-use streams_temper::tui::{CardSnapshot, Target as ViewTarget};
-
-use super::{App, BTreeMap, CliError, Config, Output, PathBuf, Result, args::NativeCommand, json};
+use std::sync::{Arc, atomic::AtomicBool};
+use streams_temper::{
+    agent::RecordContext,
+    frontend::herdr::{HerdrClient, HerdrNativeSnapshot},
+    process::{NativeProcessRunner, ProcessRequest, ProcessRunner},
+    runtime::native_cards::{
+        CardLock, DisplayCondition, DisplayOutcome, LaunchedCardContext, NativeCardEngine,
+        NativeCardsConfig, PiOwner, SOURCE_ENV_KEYS,
+    },
+    tui::{CardSnapshot, Target as ViewTarget},
+};
 
 #[derive(Clone)]
 pub(super) struct Options {
@@ -25,38 +29,23 @@ pub(super) struct Options {
 impl App {
     pub(super) fn native_cards(&self, options: Options, command: NativeCommand) -> Result<Output> {
         let launched = LaunchedCardContext::from_environment(&self.environment)?;
-        if let (Some(path), Some(context)) = (&options.plugin_root, &launched)
-            && std::fs::canonicalize(if path.is_absolute() {
-                path.clone()
-            } else {
-                self.cwd.join(path)
-            })? != std::fs::canonicalize(context.plugin_root())?
-        {
-            return Err(CliError::message(
-                "explicit plugin root differs from protected card context",
-            ));
-        }
         let plugin_root = options
             .plugin_root
             .clone()
-            .or_else(|| {
-                launched
-                    .as_ref()
-                    .map(|context| context.plugin_root().to_owned())
-            })
+            .or_else(|| launched.as_ref().map(|context| context.plugin_root.clone()))
             .unwrap_or_else(|| {
                 PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("integrations/herdr-work-cards")
             });
         let config = NativeCardsConfig::load(&self.environment, &self.cwd, &plugin_root)?;
         if matches!(command, NativeCommand::Pane) {
-            if !self.environment.contains_key("STREAMS_CARDS_SCOPE") {
-                return Err(CliError::message(
-                    "native pane requires a protected launched-card context",
-                ));
-            }
+            let context = launched
+                .ok_or_else(|| CliError::message("native pane requires card launch inputs"))?;
+            let Some(_active) = CardLock::acquire(&context.lock_directory, &context.scope)? else {
+                return Ok(Output::plain(json!(null), String::new()));
+            };
             let app = self.clone();
             streams_temper::tui::application::run(move |cancel, events| {
-                host::Host::new(app, options, config, cancel, events)
+                host::Host::new(app, options, config, context, cancel, events)
             })
             .map_err(CliError::message)?;
             return Ok(Output::plain(json!(null), String::new()));
@@ -68,49 +57,41 @@ impl App {
             options,
             config,
             Arc::new(AtomicBool::new(false)),
+            None,
+            None,
         )?;
         match command {
             NativeCommand::Observe => {
                 let observed = engine.observe_owner()?;
                 let scope = observed.card.scope();
-                Ok(Output::value(json!({"version":1,
-                    "scope":{"catalogSource":scope.catalog_source,"hostId":scope.host_id,"streamId":scope.stream_id,
-                        "sessionId":scope.session_id,"nativeSessionId":scope.native_session_id},
-                    "native":{"pane_id":observed.context.pane_id,"tab_id":observed.context.tab_id,"workspace_id":observed.context.workspace_id},
-                    "context":observed.context,
+                let owner = observed.card.owner();
+                Ok(Output::value(
+                    json!({"version":1,"scope":scope,"owner":observed.owner,
+                    "native":{"pane_id":owner.pane_id,"tab_id":owner.tab_id,"workspace_id":owner.workspace_id},
                     "session":{"title":observed.card.session().title,"title_mode":observed.card.session().title_mode},
-                    "config":{"automatic":automatic,"sessionNaming":session_naming}})))
+                    "config":{"automatic":automatic,"sessionNaming":session_naming}}),
+                ))
             }
-            NativeCommand::Capture => self.capture_native_owner(&mut engine),
             NativeCommand::Open { automatic } => {
-                let outcome = engine.open_display(if automatic {
+                engine.project()?;
+                let display = engine.open_display(if automatic {
                     streams_temper::runtime::native_cards::OpenMode::Automatic
                 } else {
                     streams_temper::runtime::native_cards::OpenMode::Explicit
                 })?;
-                let kind = match outcome {
-                    DisplayOutcome::Opened(_) => "opened",
-                    DisplayOutcome::Existing(_) => "existing",
-                    DisplayOutcome::Suppressed => "suppressed",
-                };
                 Ok(Output::value(
-                    json!({"display":kind,"native":engine.status()?}),
+                    json!({"display":display_name(display),"native":engine.status()?}),
                 ))
             }
             NativeCommand::Project => {
-                engine.project_summaries()?;
-                let names = engine.project_names()?;
-                engine.project_caption()?;
+                let names = engine.project()?;
                 Ok(Output::value(
                     json!({"names":names,"native":engine.status()?}),
                 ))
             }
             NativeCommand::Check => {
                 let status = engine.status()?;
-                let healthy = !matches!(
-                    status.condition,
-                    DisplayCondition::Pending | DisplayCondition::Separated
-                );
+                let healthy = status.condition != DisplayCondition::Separated;
                 Ok(Output::receipt(json!({"native":status}), healthy))
             }
             NativeCommand::Focus => {
@@ -121,189 +102,148 @@ impl App {
                 engine.close_display()?;
                 Ok(Output::value(json!({"closed":true})))
             }
-            NativeCommand::Pane => unreachable!("special branch handled above"),
+            NativeCommand::Pane => unreachable!("pane handled above"),
         }
     }
 }
 
-impl App {
-    pub(super) fn capture_native_owner(&self, engine: &mut NativeCardEngine) -> Result<Output> {
-        use streams_temper::runtime::{
-            conversations::ConversationRoots, workspace::WorkspaceRuntime,
-        };
-        let before = engine.observe_owner()?;
-        let scope = before.card.scope();
-        let mut app = self.clone();
-        app.environment.insert(
-            "HERDR_SOCKET_PATH".into(),
-            before.context.socket.to_string_lossy().into_owned(),
-        );
-        let opened = super::application::open(&app.config)?;
-        if opened.source_id()? != scope.catalog_source || opened.host().as_str() != scope.host_id {
-            return Err(CliError::NativeContextChanged(
-                "capture catalog source or host changed".into(),
-            ));
-        }
-        let catalog = opened.backend().snapshot()?.catalog;
-        let stream = catalog
-            .stream(&scope.stream_id)
-            .ok_or_else(|| CliError::message("captured Stream disappeared"))?;
-        let sessions: Vec<_> = catalog
-            .sessions()
-            .iter()
-            .filter(|session| session.stream_id == scope.stream_id)
-            .cloned()
-            .collect();
-        // Reuse the engine's pinned endpoint: one protocol check per process.
-        let frontend =
-            streams_temper::runtime::native::BuiltinFrontend::Herdr(engine.client().clone());
-        let state = app.state(&opened)?;
-        let locations = app.locations(&opened)?;
-        let roots = ConversationRoots::from_environment()?;
-        let arrangement = WorkspaceRuntime::new(
-            &state,
-            &locations,
-            Some(&frontend),
-            opened.backend(),
-            &roots,
-            &app.environment,
-        )
-        .capture_guarded(stream, &sessions, |binding| {
-            let fresh = engine.observe_owner()?;
-            if binding.workspace_id() != before.context.workspace_id
-                || fresh.card.scope() != scope
-                || fresh.context != before.context
-            {
-                return Err(streams_temper::runtime::RuntimeError::NativeContextChanged(
-                    "captured native owner changed during arrangement capture".into(),
-                ));
-            }
-            Ok(())
-        })?;
-        Ok(Output::value(
-            json!({"stream_id":stream.id,"arrangement":arrangement}),
-        ))
-    }
-}
 pub(super) fn build(
     app: App,
     options: Options,
     config: NativeCardsConfig,
     cancel: Arc<AtomicBool>,
+    records: Option<Arc<application::OpenedRecords>>,
+    context: Option<RecordContext>,
 ) -> Result<NativeCardEngine> {
-    let mut read_environment = app.environment.clone();
-    let mut read_cwd = app.cwd.clone();
     let launched = LaunchedCardContext::from_environment(&app.environment)?;
-    let (scope, owner) = if let Some(context) = &launched {
+    let mut read_environment = app.environment.clone();
+    let mut cwd = app.cwd.clone();
+    if let Some(context) = &launched {
         for key in SOURCE_ENV_KEYS {
             read_environment.remove(key);
         }
-        read_environment.extend(context.reader().environment.clone());
-        let owner = context.owner();
-        read_environment.insert("HERDR_ENV".into(), "1".into());
-        read_environment.insert("HERDR_PANE_ID".into(), owner.pane_id.clone());
-        read_environment.insert("HERDR_TAB_ID".into(), owner.tab_id.clone());
-        read_environment.insert("HERDR_WORKSPACE_ID".into(), owner.workspace_id.clone());
-        read_environment.insert(
-            "STREAMS_STREAM_ID".into(),
-            context.scope().stream_id.clone(),
-        );
-        read_cwd = context.reader().cwd.clone();
-        (Some(context.scope().clone()), Some(owner.clone()))
-    } else {
-        (None, None)
-    };
-    if !read_cwd.is_absolute() {
-        return Err(CliError::message("reader cwd must be absolute"));
+        read_environment.extend(context.reader.environment.clone());
+        read_environment.remove("STREAMS_STREAM_ID");
+        cwd = context.reader.cwd.clone();
     }
-    let session_id = match (&options.session_id, &scope) {
-        (Some(id), Some(scope)) if id != &scope.native_session_id => {
-            return Err(CliError::message(
-                "explicit Pi UUID differs from captured viewing scope",
-            ));
-        }
-        (Some(id), _) => id.clone(),
-        (None, Some(scope)) => scope.native_session_id.clone(),
-        _ => {
-            return Err(CliError::message(
-                "--session-id requires the exact native Pi UUID",
-            ));
-        }
-    };
-    uuid::Uuid::parse_str(&session_id)
+    let session_id = options
+        .session_id
+        .as_deref()
+        .or_else(|| {
+            launched
+                .as_ref()
+                .map(|context| context.scope.native_session_id.as_str())
+        })
+        .ok_or_else(|| CliError::message("--session-id requires the exact native Pi UUID"))?;
+    uuid::Uuid::parse_str(session_id)
         .map_err(|_| CliError::message("native Pi session ID must be a UUID"))?;
-    if let Some(read) = &app.herdr {
-        if let Some(reason) = &read.refusal {
-            return Err(CliError::NativeContextChanged(reason.clone()));
-        }
-        if read.terminal.is_none() {
-            return Err(CliError::NativeContextChanged(
-                "Caller origin was not attested at child startup".into(),
-            ));
-        }
+    if launched
+        .as_ref()
+        .is_some_and(|context| context.scope.native_session_id != session_id)
+    {
+        return Err(CliError::message(
+            "explicit Pi UUID differs from the card's conversation",
+        ));
     }
     let client = match &app.herdr {
         Some(read) => read.client.with_context(app.environment.clone()),
         None => HerdrClient::connect(app.environment.clone(), config.timeout_seconds()),
     }
-    .map_err(|e| CliError::message(e.to_string()))?;
-    let snapshot = app.herdr.as_ref().and_then(|read| read.snapshot.clone());
-    let directory = evidence_directory(options.state_dir, &app.environment)?;
-    let state = Arc::new(NativeState::new(directory)?);
-    let source_app = App {
-        config: Config::new(&read_environment, &read_cwd)?,
-        environment: read_environment,
-        cwd: read_cwd,
-        input: app.input.clone(),
-        herdr: app.herdr.clone(),
+    .and_then(|client| client.with_context(read_environment.clone()))
+    .and_then(|client| client.observing())
+    .map_err(streams_temper::runtime::RuntimeError::from)?;
+    let snapshot = match app.herdr.as_ref().and_then(|read| read.snapshot.clone()) {
+        Some(snapshot) => snapshot,
+        None => HerdrNativeSnapshot::parse(
+            &client
+                .session_snapshot()
+                .map_err(streams_temper::runtime::RuntimeError::from)?,
+        )
+        .map_err(streams_temper::runtime::RuntimeError::from)?,
     };
-    let source = source::ApplicationSource::new(source_app, session_id, scope, owner);
-    let mut engine = if let Some(snapshot) = snapshot {
-        NativeCardEngine::from_snapshot(
-            client,
-            Box::new(source),
-            state,
-            config,
-            app.environment,
-            cancel,
-            snapshot,
-        )
-    } else {
-        NativeCardEngine::new(
-            client,
-            Box::new(source),
-            state,
-            config,
-            app.environment,
-            cancel,
-        )
-    }?;
-    if let Some(terminal) = app.herdr.as_ref().and_then(|read| read.terminal.as_deref()) {
-        engine.require_caller_terminal(terminal)?;
+    let owner = match app
+        .herdr
+        .as_ref()
+        .and_then(|read| read.owner.clone())
+        .or_else(|| launched.as_ref().map(|context| context.owner.clone()))
+    {
+        Some(owner) => owner,
+        None => PiOwner::from_snapshot(
+            &snapshot,
+            &client
+                .current_pane_from(snapshot.raw())
+                .map_err(streams_temper::runtime::RuntimeError::from)?
+                .id,
+            session_id,
+        )?,
+    };
+    if app.herdr.is_none() && owner.observe(&snapshot)?.is_none() {
+        return Err(CliError::message("Pi exited or changed conversation"));
     }
-    Ok(engine)
+    let source_app = App {
+        config: Config::new(&read_environment, &cwd)?,
+        environment: read_environment,
+        cwd,
+        input: app.input.clone(),
+        herdr: None,
+    };
+    let records = match records {
+        Some(records) => records,
+        None => Arc::new(application::open_records(&source_app.config)?),
+    };
+    let source = source::ApplicationSource::new(
+        source_app,
+        records,
+        session_id.into(),
+        launched.as_ref().map(|context| context.scope.clone()),
+        context,
+    );
+    let directory = options
+        .state_dir
+        .or_else(|| {
+            launched
+                .as_ref()
+                .map(|context| context.lock_directory.clone())
+        })
+        .map(Ok)
+        .unwrap_or_else(|| lock_directory(&app.environment))?;
+    let mut environment = app.environment;
+    environment.insert(
+        "STREAMS_CARDS_LOCK_DIR".into(),
+        directory.to_string_lossy().into_owned(),
+    );
+    NativeCardEngine::new(
+        client,
+        Box::new(source),
+        snapshot,
+        owner,
+        config,
+        environment,
+        cancel,
+    )
+    .map_err(Into::into)
 }
-fn evidence_directory(
-    explicit: Option<PathBuf>,
-    environment: &BTreeMap<String, String>,
-) -> Result<PathBuf> {
-    if let Some(path) = explicit.or_else(|| {
-        environment
-            .get("STREAMS_CARDS_STATE_DIR")
-            .map(PathBuf::from)
-    }) {
-        return Ok(path);
+pub(super) fn lock_directory(environment: &BTreeMap<String, String>) -> Result<PathBuf> {
+    let root = match environment
+        .get("XDG_STATE_HOME")
+        .filter(|value| !value.is_empty())
+    {
+        Some(path) => PathBuf::from(path),
+        None => PathBuf::from(
+            environment
+                .get("HOME")
+                .ok_or_else(|| CliError::message("card locks require HOME or XDG_STATE_HOME"))?,
+        )
+        .join(".local/state"),
+    };
+    Ok(root.join("streams/cards"))
+}
+pub(super) fn display_name(display: DisplayOutcome) -> &'static str {
+    match display {
+        DisplayOutcome::Opened => "opened",
+        DisplayOutcome::Existing => "existing",
+        DisplayOutcome::Suppressed => "suppressed",
     }
-    let state_home =
-        if let Some(path) = environment.get("XDG_STATE_HOME").filter(|s| !s.is_empty()) {
-            PathBuf::from(path)
-        } else {
-            PathBuf::from(environment.get("HOME").ok_or_else(|| {
-                CliError::message("native evidence requires XDG_STATE_HOME or HOME")
-            })?)
-            .join(".local/state")
-        };
-    Ok(state_home.join("streams/native"))
 }
 
 fn activate(
@@ -319,6 +259,10 @@ fn activate(
     match target {
         ViewTarget::Document(document) => engine.open_document(document).map_err(|e| e.to_string()),
         ViewTarget::Link(url) => {
+            engine
+                .client()
+                .check_subscription()
+                .map_err(|error| error.to_string())?;
             if !snapshot.contains_link(url)
                 || !fresh.contains_link(url)
                 || !matches!(url.scheme(), "https" | "http")
@@ -360,34 +304,5 @@ fn activate(
                 .map(|_| ())
                 .map_err(|e| e.message)
         }
-    }
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-    #[test]
-    fn evidence_root_is_host_local_and_only_explicit_overrides_change_it() {
-        let mut environment = BTreeMap::from([("HOME".into(), "/home/user".into())]);
-        assert_eq!(
-            evidence_directory(None, &environment).unwrap(),
-            PathBuf::from("/home/user/.local/state/streams/native")
-        );
-        environment.insert("XDG_STATE_HOME".into(), "/state".into());
-        environment.insert("HERDR_SOCKET_PATH".into(), "/first/herdr.sock".into());
-        let first = evidence_directory(None, &environment).unwrap();
-        environment.insert("HERDR_SOCKET_PATH".into(), "/other/herdr.sock".into());
-        assert_eq!(first, PathBuf::from("/state/streams/native"));
-        assert_eq!(evidence_directory(None, &environment).unwrap(), first);
-        environment.insert("STREAMS_CARDS_STATE_DIR".into(), "/configured".into());
-        assert_eq!(
-            evidence_directory(None, &environment).unwrap(),
-            PathBuf::from("/configured")
-        );
-        assert_eq!(
-            evidence_directory(Some("/explicit".into()), &environment).unwrap(),
-            PathBuf::from("/explicit")
-        );
-        assert!(evidence_directory(None, &BTreeMap::new()).is_err());
     }
 }

@@ -61,10 +61,10 @@ export function changesSchema(kind: "stream" | "session", catalog: LocalContext,
  const before = catalog[kind];if (!before) return Type.Object({}, {additionalProperties: false});
  const link = Type.Object({url: Type.String(), description: Type.String()}, {additionalProperties: false});
  const document = Type.Object({repository: Type.String(), ref: Type.String(), path: Type.String(), description: Type.String(), commit: Type.Optional(Type.Union([Type.String(), Type.Null()])), source_session_id: Type.Optional(Type.Union([Type.String(), Type.Null()]))}, {additionalProperties: false});
- return Type.Object(Object.fromEntries((actor === "automatic" ? automaticFields(kind, before) : fields[kind]).map((field) => {
+ return Type.Object(Object.fromEntries((actor === "automatic" ? automaticFields(kind, before, catalog.title_defaults[kind]) : fields[kind]).map((field) => {
   let schema: any = Type.String();
   if (["goal", "goal_short", "state_short"].includes(field)) schema = Type.Union([Type.String(), Type.Null()]);
-  else if (field.endsWith("_mode")) schema = Type.Union([Type.Literal("automatic"), Type.Literal("manual")]);
+  else if (field.endsWith("_mode")) schema = Type.Union([Type.Literal("automatic"), Type.Literal("manual"), ...(field === "title_mode" ? [Type.Literal("inherit")] : [])]);
   else if (field === "status") schema = Type.Union(statuses.map((status) => Type.Literal(status)));
   else if (field === "archived") schema = Type.Boolean();
   else if (["issues", "prs"].includes(field)) schema = Type.Array(link);
@@ -93,7 +93,7 @@ For example: "Agree the account API before wiring sign-in", not "Finish account 
 Do not join a string of work items with commas, semicolons or "then". Leave subordinate steps and later tasks in the conversation. Use an empty Remaining only when this session has no unfinished work.
 - Status follows the current task: use active when it has started or resumed, waiting for an external dependency, blocked for an unresolved blocker, parked for an explicit pause, and done only when no newer accepted task remains. Never keep done solely because an earlier milestone is finished.
 These are editing criteria, not just criteria for new facts. Refresh a stale state, status or Remaining even when the prior card says done. Keep genuine uncertainty and blockers; do not claim unfinished work or a proposed interface is complete.`;
-const streamGoalPrompt = `Describe the whole effort using all catalog.sessions as contributions, not one reporting session's lane. The Stream goal is its relatively stable purpose: what the user wants to do, not current progress, next steps or a list of parts being built. Prefer the user's stated goal over implementation summaries; do not invent a motivation. Usually one short sentence is enough.
+const streamGoalPrompt = `Describe the whole effort using its saved goal and the addressed Session contribution, not just the reporting session's lane. The supplied Sessions are not a complete roster; preserve the effort's established purpose rather than treating this lane as the whole effort. The Stream goal is its relatively stable purpose: what the user wants to do, not current progress, next steps or a list of parts being built. Prefer the user's stated goal over implementation summaries; do not invent a motivation. Usually one short sentence is enough.
 Name the effort for its enduring subject, project or system. Prefer the established project name when the evidence supplies one. Use 1–3 words; do not expand a recognizable project name into a description of its features, architecture or current milestone. Keep a fitting title when only progress or wording changes; change it only if it misidentifies the effort or the effort itself has changed.
 This task does not update Session state, remaining, status or names, or Stream lifecycle or field modes.`;
 export type InferencePayload = {systemPrompt: string; messages: ReturnType<typeof convertToLlm>; tools: {name: string; description: string; parameters: any}[]};
@@ -106,11 +106,11 @@ export function buildInferencePayload(request: Inference, timestamp = 0): Infere
   schema = Type.Object({changes: changesSchema(request.type, request.catalog, "automatic")}, {additionalProperties: false});
  }
  const messages = request.type === "stream" ? [] : convertToLlm(request.messages);
- const {authority: _authority, catalog_source: _source, ...visibleCatalog} = structuredClone(request.catalog);
+ const {catalog_source: _source, ...visibleCatalog} = structuredClone(request.catalog);
  const resetting = "reset" in request && request.reset;
  if (resetting) {
   if (request.type === "stream" && visibleCatalog.stream) {
-   if (visibleCatalog.stream.title_mode === "automatic") visibleCatalog.stream.title = "";
+   if (automaticFields("stream", visibleCatalog.stream, visibleCatalog.title_defaults.stream).includes("title")) visibleCatalog.stream.title = "";
    if (visibleCatalog.stream.goal_mode === "automatic") {visibleCatalog.stream.goal = null;visibleCatalog.stream.goal_short = null;}
   }
  }
@@ -125,9 +125,7 @@ export function buildInferencePayload(request: Inference, timestamp = 0): Infere
    sessions: [],
   };
  } else if (request.type === "stream") {
-  const sessions = new Map(visibleCatalog.sessions.map(session => [JSON.stringify([session.host_id, session.id]), session]));
-  if (visibleCatalog.session) sessions.set(JSON.stringify([visibleCatalog.session.host_id, visibleCatalog.session.id]), visibleCatalog.session);
-  catalog = {stream: visibleCatalog.stream, sessions: [...sessions.values()]};
+  catalog = {stream: visibleCatalog.stream, sessions: visibleCatalog.session ? [visibleCatalog.session] : []};
  }
  messages.push({role: "user", content: JSON.stringify({task: request.type, catalog, instructions: request.instructions, reset, discussion: request.type === "discussion" ? request.discussion : undefined}), timestamp});
  let prompt = request.type === "session" ? `${reportPrompt}\n\n${sessionProgressPrompt}` : request.type === "stream" ? `${reportPrompt}\n\n${streamGoalPrompt}` : systemPrompt;
@@ -144,7 +142,7 @@ export function parseInferenceResponse<T extends Inference>(request: T, response
  if (calls.length !== 1 || calls[0].name !== "record_card") throw Error("Reporting model must return exactly one structured record_card call");
  const rawArgs = structuredClone(calls[0].arguments);
  if ((request.type === "session" || request.type === "stream") && rawArgs && typeof rawArgs === "object" && !Array.isArray(rawArgs) && rawArgs.changes && typeof rawArgs.changes === "object" && !Array.isArray(rawArgs.changes)) {
-  const before = request.catalog[request.type]!, allowed = automaticFields(request.type, before), changes = rawArgs.changes as Record<string, unknown>;
+  const before = request.catalog[request.type]!, allowed = automaticFields(request.type, before, request.catalog.title_defaults[request.type]), changes = rawArgs.changes as Record<string, unknown>;
   for (const [key, value] of Object.entries(changes)) {
    if (!allowed.includes(key) && !key.endsWith("_mode") && Object.hasOwn(before, key)) {delete changes[key];continue;}
    if ((key === "state" || key === "remaining") && value === null) changes[key] = "";
@@ -164,10 +162,10 @@ export function parseInferenceResponse<T extends Inference>(request: T, response
  }
  if (request.type === "discussion") {
   const result = rawArgs as DiscussionResult;
-  if (result.edit) validateChanges(result.edit.kind, request.catalog[result.edit.kind]!, result.edit.changes, result.edit.actor);
+  if (result.edit) validateChanges(result.edit.kind, request.catalog[result.edit.kind]!, result.edit.changes, result.edit.actor, request.catalog.title_defaults[result.edit.kind]);
  } else if (request.type === "session" || request.type === "stream") {
   const result = rawArgs as ReportResult;
-  if (Object.keys(result.changes).length) validateChanges(request.type, request.catalog[request.type]!, result.changes, "automatic");
+  if (Object.keys(result.changes).length) validateChanges(request.type, request.catalog[request.type]!, result.changes, "automatic", request.catalog.title_defaults[request.type]);
  }
  return rawArgs as InferenceResult<T>;
 }

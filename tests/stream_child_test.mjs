@@ -71,7 +71,7 @@ test('structured domain errors preserve kind and message without a process-style
 });
 test('abort and deadlines cancel only their request, discard late responses and preserve the child',async t=>{
  const f=fixture(t),child=await f.ready(),controller=new AbortController();
- const request=f.manager.run({kind:'capture_workspace',stream_id:'id'},{timeout:1000,signal:controller.signal});await tick();
+ const request=f.manager.run({kind:'open_card'},{timeout:1000,signal:controller.signal});await tick();
  const id=child.messages[0].id;controller.abort(Error('cancelled by caller'));await assert.rejects(request,/cancelled by caller/);
  assert.deepEqual(child.messages.at(-1),{type:'cancel',id});respond(child,id);assert.equal(child.killed,undefined);
  const timed=f.manager.run({kind:'sync',event:'shutdown'},{timeout:1});await assert.rejects(timed,/timed out.*uncertain/);
@@ -164,7 +164,7 @@ test('shutdown closes stdin, drains accepted responses and never restarts',async
 });
 test('Pi lifecycle shares one child, branch events do no native work and switching closes the old pipe',async t=>{
  const handlers=new Map(),tools=new Map(),instances=[];
- const catalog={catalog_source:'catalog',host_id:'host',stream:null,session:null,sessions:[],authority:null};
+ const catalog={catalog_source:'catalog',host_id:'host',title_defaults:{stream:'automatic',session:'automatic'},stream:null,session:null,sessions:[]};
  const ctx={cwd:'/tmp',hasUI:false,sessionManager:{getSessionId:()=> 'first'},ui:{setStatus:()=>{},notify:assert.fail}};
  register({on:(name,handler)=>handlers.set(name,handler),registerCommand:()=>{},registerTool:value=>tools.set(value.name,value),appendEntry:()=>{}},
   {settings:{...defaults,reporting:'manual',enrollment:'manual'},child:()=>{const f=fixture(t);instances.push(f);return f.manager;}});

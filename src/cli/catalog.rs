@@ -1,106 +1,101 @@
-//! Catalog command behavior independent of configuration, native frontends and text I/O.
+//! Catalog actions over admitted records; publication is a separate transport request.
 
 #[cfg(test)]
 mod tests;
 
-use std::path::Path;
-
-use serde_json::json;
+use super::args::StreamFields;
+use super::{CliError, Output, Result, fields, fold, printable, resolve, result_data};
+use serde_json::{Map, Value, json};
+use std::{collections::BTreeSet, path::Path};
 use streams_temper::{
     agent,
+    application::{self, OpenedRecords},
     codec::record_to_data,
-    model::{Catalog, Record, Status, Stream},
-    operations::{self, Actor},
-    sync::{CatalogBackend, policy::SyncEvent},
+    model::{Record, Status, Stream, TitleDefaults, ValidationError},
+    sync::{policy::Policy, records::RecordSync},
 };
 
-use super::args::StreamFields;
-use super::{
-    CliError, Output, Result, fields, finish, fold, printable, read_catalog, resolve, result_data,
-    save,
-};
-
-pub(super) fn list(
-    backend: &dyn CatalogBackend,
+pub(super) fn list_records(
+    opened: &streams_temper::application::OpenedRecords,
     query: Option<&str>,
     status: &[Status],
     archived: bool,
     all: bool,
-    refresh: bool,
+    publication: Option<serde_json::Value>,
 ) -> Result<Output> {
-    let (catalog, sharing) = read_catalog(backend, refresh)?;
     let query = query.map(fold);
-    let mut streams: Vec<_> = catalog
-        .streams()
-        .iter()
+    let mut streams: Vec<_> = opened
+        .inventory()?
+        .into_iter()
+        .filter_map(|read| match read.record {
+            Record::Stream(stream) => Some(stream),
+            _ => None,
+        })
         .filter(|stream| {
             (all || stream.archived == archived)
                 && (status.is_empty() || status.contains(&stream.status))
-                && query.as_ref().is_none_or(|q| {
-                    fold(&stream.title).contains(q)
-                        || fold(stream.goal.as_deref().unwrap_or("")).contains(q)
+                && query.as_ref().is_none_or(|query| {
+                    fold(&stream.title).contains(query)
+                        || fold(stream.goal.as_deref().unwrap_or("")).contains(query)
                 })
         })
         .collect();
-    streams.sort_by_cached_key(|s| (fold(&s.title), s.id.clone()));
-    let mut plain = String::from("ID  STATUS  TITLE");
+    streams.sort_by_cached_key(|stream| {
+        (
+            fold(&stream.title),
+            stream.owner_host_id.clone(),
+            stream.id.clone(),
+        )
+    });
+    let mut plain = String::from("HOST/ID  STATUS  TITLE");
     for stream in &streams {
         plain.push_str(&format!(
-            "\n{}  {}  {}",
+            "\n{}/{}  {}  {}",
+            stream.owner_host_id,
             stream.id,
             stream.status,
             printable(&stream.title)
         ));
     }
-    let data: Vec<_> = streams
-        .iter()
-        .map(|s| record_to_data(&Record::Stream((*s).clone())))
-        .collect();
-    let mut output = Output::plain(json!({"streams":data,"sharing":sharing}), plain);
-    let sharing = &output.value["sharing"];
-    if let Some(detail) = sharing["detail"]
-        .as_str()
-        .filter(|detail| !detail.is_empty())
-    {
-        output.notices.push(detail.to_owned());
-    }
-    if sharing["conflicts"]
-        .as_array()
-        .is_some_and(|conflicts| !conflicts.is_empty())
-    {
-        output.notices.push("catalog conflicts: showing local records; use list --json or show for confirmed alternatives".into());
+    let mut output = Output::plain(json!({"streams":streams}), plain);
+    if let Some(publication) = publication {
+        if let Some(detail) = publication["detail"]
+            .as_str()
+            .filter(|detail| !detail.is_empty())
+        {
+            output.notices.push(detail.into());
+        }
+        output.value["sharing"] = publication;
     }
     Ok(output)
 }
 
-pub(super) fn show(
-    backend: &dyn CatalogBackend,
-    refresh: bool,
-    select: impl for<'a> FnOnce(&'a Catalog) -> Result<&'a Stream>,
-) -> Result<Output> {
-    let (catalog, sharing) = read_catalog(backend, refresh)?;
-    let stream = select(&catalog)?;
-    let sessions: Vec<_> = catalog
-        .sessions()
+pub(super) fn select_stream<'a>(
+    records: &'a [streams_temper::storage::records::RecordRead],
+    reference: &str,
+) -> Result<&'a Stream> {
+    let streams: Vec<_> = records
         .iter()
-        .filter(|s| s.stream_id == stream.id)
+        .filter_map(|read| match &read.record {
+            Record::Stream(stream) => Some(stream),
+            _ => None,
+        })
         .collect();
-    Ok(Output::value(
-        json!({"stream":stream,"sessions":sessions,"sharing":sharing}),
-    ))
+    Ok(*resolve(&streams, reference, |stream| {
+        (&stream.id, &stream.title, Some(&stream.owner_host_id))
+    })?)
 }
 
-pub(super) fn update(
-    backend: &dyn CatalogBackend,
-    select: impl for<'a> FnOnce(&'a Catalog) -> Result<&'a Stream>,
+pub(super) fn update_record(
+    opened: &OpenedRecords,
+    stream: &Stream,
     title: Option<String>,
-    fields: &StreamFields,
+    intent: &StreamFields,
+    defaults: TitleDefaults,
     mut read: impl FnMut(&Path) -> Result<String>,
     operation_id: impl FnOnce() -> String,
 ) -> Result<Output> {
-    let snapshot = backend.snapshot()?;
-    let stream = select(&snapshot.catalog)?;
-    let mut changes = fields::stream(stream, fields, &mut read)?;
+    let mut changes = fields::stream(stream, intent, &mut read)?;
     if let Some(title) = title {
         changes.insert("title".into(), json!(title));
     }
@@ -109,67 +104,132 @@ pub(super) fn update(
             "update requires at least one field change",
         ));
     }
-    let operation = operations::update(
-        operation_id(),
-        &Record::Stream(stream.clone()),
-        &changes,
-        Actor::User,
-        None,
-        vec![],
-    )?;
-    let saved = save(backend, &operation)?;
-    finish(backend, &operation, saved, SyncEvent::Stream, None)
+    save_stream_edit(opened, stream, changes, defaults, &operation_id())
 }
 
-pub(super) fn archive(
-    backend: &dyn CatalogBackend,
-    select: impl for<'a> FnOnce(&'a Catalog) -> Result<&'a Stream>,
-    archived: bool,
-    operation_id: impl FnOnce() -> String,
+pub(super) fn save_stream_edit(
+    opened: &OpenedRecords,
+    stream: &Stream,
+    changes: Map<String, Value>,
+    defaults: TitleDefaults,
+    operation_id: &str,
 ) -> Result<Output> {
-    let catalog = backend.snapshot()?.catalog;
-    let stream = select(&catalog)?;
-    let operation = operations::update(
-        operation_id(),
-        &Record::Stream(stream.clone()),
-        json!({"archived":archived})
-            .as_object()
-            .expect("archive fields"),
-        Actor::User,
-        None,
-        vec![],
-    )?;
-    let saved = save(backend, &operation)?;
-    finish(backend, &operation, saved, SyncEvent::Stream, None)
+    finish_save(
+        operation_id,
+        application::save_user_edit(
+            opened.records(),
+            operation_id,
+            &Record::Stream(stream.clone()),
+            &changes,
+            defaults,
+        ),
+    )
 }
 
 pub(super) fn apply(
-    backend: &dyn CatalogBackend,
+    store: &impl streams_temper::storage::records::RecordStore,
     captured: &str,
     source_id: &str,
+    defaults: streams_temper::model::TitleDefaults,
 ) -> Result<Output> {
-    let operation = agent::parse_update(captured, source_id)?;
-    let saved = save(backend, &operation)?;
-    let event = if matches!(operation.after(), Record::Session(_)) {
-        SyncEvent::Session
-    } else {
-        SyncEvent::Stream
+    let update = agent::parse_record_update(captured, source_id, defaults)?;
+    finish_save(
+        update.operation_id(),
+        application::save_record_update(store, &update),
+    )
+}
+
+pub(super) fn finish_save(
+    operation_id: &str,
+    saved: application::Result<streams_temper::storage::records::RecordSave>,
+) -> Result<Output> {
+    match saved {
+        Ok(saved) => Ok(finish_record(operation_id, saved)),
+        Err(streams_temper::application::ApplicationError::Storage(error))
+            if error.is_uncertain() =>
+        {
+            Ok(Output::receipt(
+                json!({
+                    "operation_id":operation_id,
+                    "save":{"local":"uncertain","domain":null,"detail":error.to_string()},
+                }),
+                false,
+            ))
+        }
+        Err(error) => Err(error.into()),
+    }
+}
+
+pub(super) fn finish_record(
+    operation_id: &str,
+    saved: streams_temper::storage::records::RecordSave,
+) -> Output {
+    let ok = matches!(
+        saved
+            .outcome
+            .get("outcome")
+            .and_then(serde_json::Value::as_str),
+        Some("changes" | "no-change")
+    );
+    let kind = match &saved.current.record {
+        Record::Stream(_) => "stream",
+        Record::Session(_) => "session",
+        Record::Host(_) => "host",
     };
-    finish(backend, &operation, saved, event, None)
+    let mut output = Output::receipt(
+        json!({
+            "operation_id":operation_id,
+            "save":{"local":if saved.repeated {"unchanged"} else {"persisted"},"domain":saved.outcome},
+            (kind):record_to_data(&saved.current.record),
+        }),
+        ok,
+    );
+    output.accepted_save = ok;
+    output
 }
 
-pub(super) fn sync(backend: &dyn CatalogBackend, event: SyncEvent) -> Result<Output> {
-    let result = backend.sync(event);
-    let ok = !result.needs_attention();
-    Ok(Output::receipt(result_data(&result)?, ok))
+pub(super) fn sync(opened: &OpenedRecords, policy: Policy) -> Result<Output> {
+    let transport = RecordSync::open(opened.root(), opened.host().as_str(), policy)
+        .map_err(application::ApplicationError::from)?;
+    let result = transport.sync();
+    Ok(Output::receipt(
+        result_data(&result)?,
+        !result.needs_attention(),
+    ))
 }
 
-pub(super) fn check(backend: &dyn CatalogBackend, reference: Option<&str>) -> Result<Output> {
-    let catalog = backend.snapshot()?.catalog;
-    let stream = reference
-        .map(|reference| resolve(catalog.streams(), reference, |s| (&s.id, &s.title, None)))
+/// Explicit human validation/discovery, never a prerequisite for a local save.
+pub(super) fn check(opened: &OpenedRecords, reference: Option<&str>) -> Result<Output> {
+    let records = opened.inventory()?;
+    let selected = reference
+        .map(|reference| select_stream(&records, reference))
         .transpose()?;
+    let streams: BTreeSet<_> = records
+        .iter()
+        .filter_map(|read| match &read.record {
+            Record::Stream(stream) => Some((stream.owner_host_id.as_str(), stream.id.as_str())),
+            _ => None,
+        })
+        .collect();
+    let sessions: Vec<_> = records
+        .iter()
+        .filter_map(|read| match &read.record {
+            Record::Session(session)
+                if selected.is_none_or(|stream| {
+                    session.host_id == stream.owner_host_id && session.stream_id == stream.id
+                }) =>
+            {
+                Some(session)
+            }
+            _ => None,
+        })
+        .collect();
+    for session in &sessions {
+        if !streams.contains(&(session.host_id.as_str(), session.stream_id.as_str())) {
+            return Err(ValidationError::new("Session's same-host Stream is missing").into());
+        }
+    }
     Ok(Output::value(
-        json!({"valid":true,"streams":if stream.is_some(){1}else{catalog.streams().len()},"sessions":catalog.sessions().iter().filter(|session|stream.is_none_or(|stream|session.stream_id==stream.id)).count()}),
+        json!({"valid":true,"streams":if selected.is_some(){1}else{streams.len()},"sessions":sessions.len()}),
     ))
 }

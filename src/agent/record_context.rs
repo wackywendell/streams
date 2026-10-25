@@ -6,13 +6,27 @@ use serde::Serialize;
 
 use crate::{
     model::{Record, RecordKind, Session, Stream, TitleDefaults, ValidationError, check_text},
+    runtime::conversations::Harness,
     storage::{
         StorageError,
         records::{RecordAddress, RecordReader},
     },
 };
 
-use super::{ContextRequest, session_id_for};
+/// Exact selectors; ambient hints cannot replace a saved Session's membership.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct ContextRequest<'a> {
+    pub harness: Harness,
+    pub native_id: &'a str,
+    pub stream_id: Option<&'a str>,
+    pub environment_stream_id: Option<&'a str>,
+    pub workspace_stream_id: Option<&'a str>,
+}
+
+/// The same native key used by Session construction and canonical record paths.
+pub fn session_id_for(host_id: &str, harness: Harness, native_id: &str) -> String {
+    Session::id_for(host_id, harness.as_ref(), native_id)
+}
 
 #[derive(Debug, thiserror::Error)]
 pub enum RecordContextError {

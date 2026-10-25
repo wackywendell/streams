@@ -6,7 +6,6 @@ export type ChildRequest =
  | {kind: "capture_inputs"; target: {kind: "inventory"} | {kind: "stream"; stream_id: string} | {kind: "workspace"; workspace_id: string}}
  | {kind: "preview"; catalog: DomainObject; action: "apply" | "enroll"; request: DomainObject}
  | {kind: "enroll" | "apply"; request: DomainObject}
- | {kind: "capture_workspace"; stream_id: string}
  | {kind: "sync"; event: "start" | "shutdown"}
  | {kind: "set_title_default"; target: "stream" | "session"; mode: TitleDefault};
 export type ChildOutcome =

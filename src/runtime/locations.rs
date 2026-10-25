@@ -4,9 +4,6 @@ use std::path::{Path, PathBuf};
 
 use serde::{Deserialize, Serialize};
 
-mod cutover;
-pub(crate) use cutover::PreparedDirectoryCutover;
-
 #[cfg(test)]
 mod tests;
 
@@ -20,6 +17,7 @@ use super::{Result, digest, invalid, lock, read_json, text, write_json};
 pub struct DirectoryBinding {
     pub cwd: PathBuf,
     pub checkout: Option<BoundCheckout>,
+    pub transcript_file: Option<PathBuf>,
 }
 
 /// Checkout-relative intent is present as one unit, never as partial metadata.
@@ -54,6 +52,8 @@ struct Current {
     session_id: Option<String>,
     #[serde(deserialize_with = "object")]
     location: Location,
+    #[serde(deserialize_with = "required_nullable")]
+    transcript_file: Option<PathBuf>,
 }
 
 /// Saved cwd intent scoped by Session identity, or by Stream for Stream-only defaults.
@@ -102,17 +102,15 @@ impl DirectoryBindings {
             &selection.stream_id,
             &selection.session_id,
         ) {
-            (2, Some(stream), session) => {
-                text(stream)?;
-                if let Some(session) = session {
-                    text(session)?;
-                }
-            }
-            (3, None, Some(session)) => text(session)?,
+            (4, Some(stream), None) if selection.transcript_file.is_none() => text(stream)?,
+            (4, None, Some(session)) => text(session)?,
             _ => return Err(invalid("unsupported directory binding identity or version")),
         }
+        if let Some(path) = &selection.transcript_file {
+            absolute(path, "transcript file")?;
+        }
         match &selection.location {
-            Location::Directory { cwd } => absolute(cwd)?,
+            Location::Directory { cwd } => absolute(cwd, "cwd")?,
             Location::Checkout {
                 id,
                 within,
@@ -140,8 +138,8 @@ impl DirectoryBindings {
         Self::validate(&selection)?;
         if selection.session_id.as_deref() != session_id
             || match session_id {
-                Some(_) => selection.version != 3 || selection.stream_id.is_some(),
-                None => selection.version != 2 || selection.stream_id.as_deref() != Some(stream_id),
+                Some(_) => selection.stream_id.is_some(),
+                None => selection.stream_id.as_deref() != Some(stream_id),
             }
         {
             return Err(invalid(
@@ -152,10 +150,12 @@ impl DirectoryBindings {
     }
 
     fn resolve(&self, selection: Current) -> Result<DirectoryBinding> {
+        let transcript_file = selection.transcript_file;
         match selection.location {
             Location::Directory { cwd } => Ok(DirectoryBinding {
                 cwd: canonical_directory(&cwd)?,
                 checkout: None,
+                transcript_file,
             }),
             Location::Checkout {
                 id,
@@ -168,6 +168,7 @@ impl DirectoryBindings {
                     relative_cwd: within,
                     repository_url,
                 }),
+                transcript_file,
             }),
         }
     }
@@ -182,6 +183,13 @@ impl DirectoryBindings {
         self.selection(stream_id, session_id)?
             .map(|selection| self.resolve(selection))
             .transpose()
+    }
+
+    /// Read only the saved locator; checking a running Session needs no cwd or registry access.
+    pub fn transcript_file(&self, stream_id: &str, session_id: &str) -> Result<Option<PathBuf>> {
+        Ok(self
+            .selection(stream_id, Some(session_id))?
+            .and_then(|current| current.transcript_file))
     }
 
     /// Explicitly select a cwd. `if_missing` preserves and revalidates existing intent.
@@ -247,22 +255,52 @@ impl DirectoryBindings {
             Location::Directory { cwd: directory }
         };
         let current = Current {
-            version: if session_id.is_some() { 3 } else { 2 },
+            version: 4,
             stream_id: session_id.is_none().then(|| stream_id.to_owned()),
             session_id: session_id.map(str::to_owned),
             location,
+            transcript_file: previous.and_then(|previous| previous.transcript_file),
         };
         // Validate the selection before writing, retaining uncertainty only for the durable write itself.
         let binding = self.resolve(current.clone())?;
         write_json(&path, &current)?;
         Ok(binding)
     }
+
+    /// Save the caller's verified locator without changing directory intent or recording liveness.
+    pub fn remember_transcript(
+        &self,
+        stream_id: &str,
+        session_id: &str,
+        transcript_file: &Path,
+    ) -> Result<()> {
+        text(stream_id)?;
+        text(session_id)?;
+        absolute(transcript_file, "transcript file")?;
+        let path = self.path(stream_id, Some(session_id));
+        let _lock = lock(&path.with_extension("lock"))?;
+        let mut current = self
+            .selection(stream_id, Some(session_id))?
+            .ok_or_else(|| {
+                invalid("select the Session directory before saving its transcript locator")
+            })?;
+        if current.transcript_file.as_deref() == Some(transcript_file) {
+            return Ok(());
+        }
+        current.transcript_file = Some(transcript_file.to_owned());
+        write_json(&path, &current)
+    }
 }
 
-fn absolute(path: &Path) -> Result<()> {
-    text(path.to_str().ok_or_else(|| invalid("cwd must be UTF-8"))?)?;
+fn absolute(path: &Path, field: &str) -> Result<()> {
+    text(
+        path.to_str()
+            .ok_or_else(|| invalid(format!("{field} must be UTF-8")))?,
+    )?;
     if !path.is_absolute() {
-        return Err(invalid("directory binding cwd must be absolute"));
+        return Err(invalid(format!(
+            "directory binding {field} must be absolute"
+        )));
     }
     Ok(())
 }

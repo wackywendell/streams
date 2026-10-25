@@ -30,8 +30,7 @@ impl State {
         if self.version != 1 || self.host_id != host_id {
             return Err(invalid("unsupported registry schema or host"));
         }
-        let (mut ids, mut roots, mut identities) =
-            (BTreeSet::new(), BTreeSet::new(), BTreeSet::new());
+        let (mut ids, mut roots) = (BTreeSet::new(), BTreeSet::new());
         for checkout in &self.checkouts {
             text(&checkout.id)?;
             canonical_saved_path(&checkout.directory)?;
@@ -42,13 +41,8 @@ impl State {
                     return Err(invalid("duplicate repository binding"));
                 }
             }
-            if !ids.insert(&checkout.id)
-                || !roots.insert(&checkout.directory)
-                || !identities.insert((checkout.device, checkout.inode))
-            {
-                return Err(invalid(
-                    "duplicate checkout ID, root, or filesystem identity",
-                ));
+            if !ids.insert(&checkout.id) || !roots.insert(&checkout.directory) {
+                return Err(invalid("duplicate checkout ID or directory path"));
             }
         }
         for (url, id) in &self.defaults {

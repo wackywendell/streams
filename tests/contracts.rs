@@ -2,55 +2,35 @@
 //! Git publication traces and the catalog verification cascade remain separate gates.
 
 mod support {
-    pub mod git;
     pub mod herdr;
-    pub mod memory;
-    pub mod model;
     pub mod pty;
     pub mod record_io;
 }
 
 mod agent_capture;
-mod agent_context;
 mod agent_preview;
-mod agent_requests;
-mod application;
 mod application_records;
-mod catalog;
-mod catalog_conformance;
 mod cli;
 mod cli_debug;
 mod cli_revisions;
 mod codec;
 mod config;
 mod enum_values;
-mod envelopes;
 mod frontend;
 mod frontend_launch;
 mod git_process;
-mod inspection;
-mod local_faults;
-mod local_git_adoption;
-mod main_alignment;
-mod native_membership;
-mod native_open;
-mod native_reconciliation;
 mod process;
-mod reconciliation;
 mod record_local;
 mod record_updates;
-mod runtime_arrangements;
 mod runtime_conversations;
 mod runtime_inference;
+mod runtime_inventory;
 mod runtime_launch;
 mod runtime_native;
 mod runtime_registry;
 mod runtime_revisions;
 mod runtime_state;
 mod serve;
-mod state;
-mod storage_conformance;
-mod transaction;
 mod tui_pty;
 
 #[test]

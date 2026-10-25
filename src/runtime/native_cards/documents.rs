@@ -1,342 +1,109 @@
-use super::super::open_protocol::{Action, Protocol};
-use super::actions::MetadataTarget;
-use super::config::validate_title;
 use super::*;
 use crate::tui::ResolvedDocument;
 
 impl NativeCardEngine {
-    fn document_proof(
-        &mut self,
-        target: &DocumentTarget,
-    ) -> Result<(Verified, ResolvedEditor, String)> {
-        let v = self.marked()?;
-        if !matches!(v.pair()?, PairState::Paired { .. })
-            || v.saved.card.scope() != &target.scope
-            || v.saved
-                .card
-                .document_target(&target.document.repository, &target.document.path)
-                .as_ref()
-                != Some(target)
+    pub fn open_document(&mut self, target: &DocumentTarget) -> Result<()> {
+        if self
+            .card
+            .document_target(&target.document.repository, &target.document.path)
+            .as_ref()
+            != Some(target)
         {
-            return Err(
-                self.refuse("document viewing scope/reference changed; redraw before opening")
-            );
+            return Err(invalid(
+                "document viewing context changed; redraw before opening",
+            ));
         }
-        let resolved = self
-            .source
-            .resolve_document(&self.client, &v.snapshot, target)?;
+        let resolved = self.source.resolve_document(target)?;
         let expected = target
             .editor_identity()
-            .map_err(|e| invalid(e.to_string()))?;
+            .map_err(|error| invalid(error.to_string()))?;
         let ResolvedDocument::File { selection, .. } = &target.location else {
-            return Err(self.refuse("document is unavailable"));
+            return Err(invalid("document is unavailable"));
         };
         if resolved.identity != expected
             || resolved.root != selection.root
-            || !resolved.identity.file.is_absolute()
             || !resolved.identity.file.starts_with(&resolved.root)
             || resolved.identity.file == resolved.root
-            || std::fs::canonicalize(&resolved.root)? != resolved.root
-            || std::fs::canonicalize(&resolved.identity.file)? != resolved.identity.file
+            || resolved.root.canonicalize()? != resolved.root
+            || resolved.identity.file.canonicalize()? != resolved.identity.file
             || !std::fs::metadata(&resolved.identity.file)?.is_file()
         {
-            return Err(self.refuse("application document resolution changed"));
+            return Err(invalid("document or checkout changed during resolution"));
         }
         let key = json_digest(&(
-            "streams-native-editor",
-            2,
             &resolved.identity.catalog_source,
             &resolved.identity.host_id,
             &resolved.identity.checkout_id,
             &resolved.identity.file,
         ))?;
-        Ok((v, resolved, key))
-    }
-    pub fn open_document(&mut self, target: &DocumentTarget) -> Result<()> {
-        self.begin_observation();
-        let state = self.state.clone();
-        let _lock = state.lock(self.config.timeout_seconds, &self.cancelled)?;
-        self.fresh_under_lock();
-        let (mut v, resolved, key) = self.document_proof(target)?;
-        let evidence_key = json_digest(&(
-            &self.client.endpoint().socket,
-            &v.owner.workspace_id,
-            "editor",
-            &key,
-        ))?;
-        let old = self.read_attempt(&evidence_key, NativePurpose::Editor)?;
-        if let Some(editor) = editor_match(&v, &key)? {
-            let record = old
-                .as_ref()
-                .ok_or_else(|| self.refuse("editor lacks evidence"))?;
-            self.editor_proof(target, &key, &evidence_key, &editor, record)?;
-            let mut ready = record.clone();
-            if matches!(record.phase(), NativePhase::Reserved(_)) {
-                ready.mark_ready()?;
-                _lock.write(Some(record), &ready)?;
-            }
-            if self.config.tab_naming {
-                self.name_editor(target, &key, &evidence_key, &editor, &ready)?;
-            }
-            return self.focus_editor(target, &key, &evidence_key, &editor);
-        }
-        if old.as_ref().is_some_and(|record| {
-            matches!(
-                record.phase(),
-                NativePhase::Unlaunched | NativePhase::Reserved(_)
-            )
-        }) {
-            return Err(self.refuse("uncertain editor launch retained; no duplicate launched"));
-        }
-        if old
-            .as_ref()
-            .and_then(NativeAttempt::resources)
-            .is_some_and(|r| {
-                v.snapshot.topology().panes.iter().any(|p| {
-                    p.pane.id == r.pane_id()
-                        || p.terminal_id == r.terminal_id()
-                        || p.pane.tab_id == r.tab_id()
-                })
-            })
-        {
-            return Err(
-                self.refuse("recorded editor resource remains live without verified ownership")
-            );
-        }
-        self.ensure_plugin(|engine| engine.document_proof(target).map(|_| ()))?;
-        let command = self.config.document_command(&self.environment)?;
-        let root = std::fs::canonicalize(&self.config.plugin_root)?;
-        let (fresh, current, current_key) = self.document_proof(target)?;
-        if current != resolved || current_key != key || editor_match(&fresh, &key)?.is_some() {
-            return Err(self.refuse("document or editor changed during preparation"));
-        }
-        v = fresh;
-        let pending = NativeAttempt::new(
-            &evidence_key,
-            uuid::Uuid::new_v4().to_string(),
-            &self.client.endpoint().socket,
-            NativePurpose::Editor,
-        )?;
-        _lock.write(old.as_ref(), &pending)?;
-        let protocol = Protocol::new()?.next(Action::Dispatch)?;
-        let mut env = BTreeMap::from([
-            ("WORK_CARDS_DOCUMENT_COMMAND", command.to_string()),
-            ("WORK_CARDS_DOCUMENT_CWD", path_text(&resolved.root)?.into()),
-            (
-                "WORK_CARDS_DOCUMENT_PATH",
-                path_text(&resolved.identity.file)?.into(),
-            ),
-        ]);
-        if let Some(path) = self.environment.get("PATH") {
-            env.insert("PATH", path.clone());
-        }
-        let params = serde_json::json!({"plugin_id":PLUGIN_ID,"entrypoint":"document",
-            "placement":"tab","workspace_id":v.owner.workspace_id,"cwd":path_text(&root)?,
-            "focus":false,"env":env});
-        let opened = self.call("plugin.pane.open", params, Some("plugin_pane_opened"), true)?;
-        let info = &opened["plugin_pane"];
-        let returned = tuple_from_reply(&info["pane"])?;
-        if info["plugin_id"] != PLUGIN_ID
-            || info["entrypoint"] != "document"
-            || returned.workspace_id != v.owner.workspace_id
-            || v.snapshot.topology().panes.iter().any(|p| {
-                p.pane.id == returned.pane_id
-                    || p.terminal_id == returned.terminal_id
-                    || p.pane.tab_id == returned.tab_id
-            })
-        {
-            return Err(
-                self.refuse("unexpected or replayed editor tuple; pending evidence retained")
-            );
-        }
-        let protocol = protocol.next(Action::Acknowledge)?;
-        let mut reserved = pending.clone();
-        reserved.reserve(returned.resources()?)?;
-        _lock.write(Some(&pending), &reserved)?;
-        let (after, latest, latest_key) = self.document_proof(target)?;
-        let live = after.snapshot.locate_terminal(&returned.terminal_id)?;
-        if latest != resolved
-            || latest_key != key
-            || NativeTuple::from_pane(live) != returned
-            || !after.snapshot.first_pane(live)
-        {
-            return Err(self.refuse("launched editor tuple or document changed; evidence retained"));
-        }
-        let target_metadata = MetadataTarget::pane(&after, &returned.pane_id)?;
-        let values = BTreeMap::from([
-            ("strm_doc".into(), Some(key.clone())),
-            ("strm_editor".into(), Some(reserved.nonce().into())),
-            ("strm_doc_pane".into(), Some(returned.pane_id.clone())),
-            (
-                "strm_doc_terminal".into(),
-                Some(returned.terminal_id.clone()),
-            ),
-            ("strm_doc_tab".into(), Some(returned.tab_id.clone())),
-        ]);
-        let after = self.stamp(target_metadata, values, |fresh| {
-            if fresh
-                .saved
-                .card
-                .document_target(&target.document.repository, &target.document.path)
-                .as_ref()
-                != Some(target)
-                || state.read(&evidence_key)?.as_ref() != Some(&reserved)
-            {
-                return Err(invalid("editor reservation or viewing reference changed"));
-            }
-            Ok(())
-        })?;
-        if editor_match(&after, &key)?.as_ref() != Some(&returned) {
-            return Err(self.refuse("editor markers did not round-trip"));
-        }
-        let protocol = protocol.next(Action::Bind)?;
-        let mut ready = reserved.clone();
-        ready.mark_ready()?;
-        _lock.write(Some(&reserved), &ready)?;
-        protocol.next(Action::Complete)?;
-        if self.config.tab_naming {
-            self.name_editor(target, &key, &evidence_key, &returned, &ready)?;
-        }
-        self.focus_editor(target, &key, &evidence_key, &returned)
-    }
-    fn editor_proof(
-        &mut self,
-        target: &DocumentTarget,
-        key: &str,
-        evidence_key: &str,
-        expected: &NativeTuple,
-        record: &NativeAttempt,
-    ) -> Result<Verified> {
-        let (v, _, actual_key) = self.document_proof(target)?;
-        let tokens = v
+        let existing = self
             .snapshot
-            .pane_tokens(&expected.pane_id)
-            .ok_or_else(|| self.refuse("editor disappeared"))?;
-        if actual_key != key
-            || record.key() != evidence_key
-            || record.purpose() != NativePurpose::Editor
-            || !matches!(
-                record.phase(),
-                NativePhase::Reserved(_) | NativePhase::Ready(_)
-            )
-            || editor_match(&v, key)?.as_ref() != Some(expected)
-            || record
-                .resources()
-                .is_none_or(|r| !expected.matches_resources(r))
-            || tokens.get("strm_editor").map(String::as_str) != Some(record.nonce())
-            || self.state.read(evidence_key)?.as_ref() != Some(record)
-        {
-            return Err(self.refuse("editor has no exact native lifetime"));
-        }
-        Ok(v)
-    }
-    fn name_editor(
-        &mut self,
-        target: &DocumentTarget,
-        key: &str,
-        evidence_key: &str,
-        expected: &NativeTuple,
-        ready: &NativeAttempt,
-    ) -> Result<()> {
-        if !matches!(ready.phase(), NativePhase::Ready(_)) {
-            return Err(self.refuse("editor naming requires ready evidence"));
-        }
-        let before = self.editor_proof(target, key, evidence_key, expected, ready)?;
-        let label = editor_tab(&before, expected)?;
-        let desired = &target.document.path;
-        validate_title(desired)?;
-        if label.0 == *desired {
-            return Ok(());
-        }
-        let result = self.call(
-            "tab.rename",
-            serde_json::json!({"tab_id":expected.tab_id,"label":desired}),
-            Some("tab_info"),
-            true,
-        )?;
-        let ack = &result["tab"];
-        let after = self.editor_proof(target, key, evidence_key, expected, ready)?;
-        let actual = editor_tab(&after, expected)?;
-        if ack["tab_id"] != expected.tab_id
-            || ack["workspace_id"] != expected.workspace_id
-            || ack["number"].as_u64() != Some(label.1)
-            || ack["label"] != *desired
-            || actual != (desired.clone(), label.1)
-            || after.owner != before.owner
-            || after.bound()? != before.bound()?
-        {
-            return Err(self.refuse("editor name acknowledgement changed"));
-        }
-        Ok(())
-    }
-    fn focus_editor(
-        &mut self,
-        target: &DocumentTarget,
-        key: &str,
-        evidence_key: &str,
-        expected: &NativeTuple,
-    ) -> Result<()> {
-        let record = self
-            .read_attempt(evidence_key, NativePurpose::Editor)?
-            .ok_or_else(|| self.refuse("editor lacks durable launch proof"))?;
-        self.editor_proof(target, key, evidence_key, expected, &record)?;
-        if !matches!(record.phase(), NativePhase::Ready(_)) {
-            return Err(self.refuse("editor has no exact ready native lifetime"));
+            .topology()
+            .panes
+            .iter()
+            .find(|pane| {
+                self.snapshot
+                    .pane_tokens(&pane.pane.id)
+                    .is_some_and(|tokens| {
+                        tokens.get("strm_role").is_some_and(|role| role == "editor")
+                            && tokens.get("strm_doc") == Some(&key)
+                    })
+            })
+            .cloned();
+        let (editor, created) = if let Some(editor) = existing {
+            (editor, false)
+        } else {
+            let command = self.config.document_command(&self.environment)?;
+            let root = self.config.plugin_root.canonicalize()?;
+            self.ensure_plugin()?;
+            let mut env = BTreeMap::from([
+                ("WORK_CARDS_DOCUMENT_COMMAND", command),
+                (
+                    "WORK_CARDS_DOCUMENT_CWD",
+                    actions::path_text(&resolved.root)?.into(),
+                ),
+                (
+                    "WORK_CARDS_DOCUMENT_PATH",
+                    actions::path_text(&resolved.identity.file)?.into(),
+                ),
+            ]);
+            if let Some(path) = self.environment.get("PATH") {
+                env.insert("PATH", path.clone());
+            }
+            let opened = self.call("plugin.pane.open", json!({"plugin_id":PLUGIN_ID,"entrypoint":"document",
+                "placement":"tab","workspace_id":self.owner_pane.pane.workspace_id,"cwd":root,"focus":false,"env":env}), "plugin_pane_opened", true)?;
+            let editor = actions::plugin_pane(&opened, "document")?;
+            if editor.pane.workspace_id != self.owner_pane.pane.workspace_id {
+                return Err(self.refuse("editor opened in an unexpected workspace"));
+            }
+            self.call(
+                "pane.report_metadata",
+                json!({"pane_id":editor.pane.id,"source":"streams",
+                "tokens":{"strm_role":"editor","strm_doc":key}}),
+                "ok",
+                true,
+            )?;
+            (editor, true)
+        };
+        let first = created || self.snapshot.first_pane(&editor);
+        let title = &target.document.path;
+        let differs = self
+            .snapshot
+            .topology()
+            .tabs
+            .iter()
+            .find(|tab| tab.id == editor.pane.tab_id)
+            .and_then(|tab| tab.label.as_ref())
+            != Some(title);
+        if self.config.tab_naming && first && differs {
+            self.rename("tab", &editor.pane.tab_id, title.clone())?;
         }
         self.call(
             "tab.focus",
-            serde_json::json!({"tab_id":expected.tab_id}),
-            None,
+            json!({"tab_id":editor.pane.tab_id}),
+            "ok",
             true,
         )?;
-        self.editor_proof(target, key, evidence_key, expected, &record)?;
         Ok(())
     }
-}
-fn editor_tab(v: &Verified, expected: &NativeTuple) -> Result<(String, u64)> {
-    let tab = v
-        .snapshot
-        .topology()
-        .tabs
-        .iter()
-        .find(|tab| tab.workspace_id == expected.workspace_id && tab.id == expected.tab_id)
-        .ok_or_else(|| invalid("editor tab disappeared"))?;
-    Ok((
-        tab.label
-            .clone()
-            .ok_or_else(|| invalid("editor tab lacks label"))?,
-        v.snapshot
-            .tab_number(&tab.id)
-            .ok_or_else(|| invalid("editor tab lacks number"))?,
-    ))
-}
-fn editor_match(v: &Verified, key: &str) -> Result<Option<NativeTuple>> {
-    let mut found = None;
-    for pane in &v.snapshot.topology().panes {
-        let tokens = v
-            .snapshot
-            .pane_tokens(&pane.pane.id)
-            .expect("validated pane tokens");
-        if pane.pane.workspace_id != v.owner.workspace_id
-            || tokens.get("strm_doc").map(String::as_str) != Some(key)
-        {
-            continue;
-        }
-        let tuple = NativeTuple::from_pane(pane);
-        if tokens.get("strm_editor").is_none_or(String::is_empty)
-            || tokens.get("strm_doc_pane") != Some(&tuple.pane_id)
-            || tokens.get("strm_doc_terminal") != Some(&tuple.terminal_id)
-            || tokens.get("strm_doc_tab") != Some(&tuple.tab_id)
-            || !v.snapshot.first_pane(pane)
-            || found.is_some()
-        {
-            return Err(invalid("duplicate or changed owned editor tuple"));
-        }
-        found = Some(tuple);
-    }
-    Ok(found)
-}
-fn path_text(path: &Path) -> Result<&str> {
-    path.to_str()
-        .ok_or_else(|| invalid("native path must be UTF-8"))
 }

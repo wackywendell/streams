@@ -1,0 +1,87 @@
+use super::*;
+use crate::cli::Input;
+use serde_json::json;
+use std::{collections::BTreeMap, fs};
+use streams_temper::yaml_store::records::YamlRecordStore;
+
+const HOST: &str = "01234567-89ab-4def-8123-456789abcdef";
+
+#[test]
+fn watched_inputs_have_one_canonical_session_and_stream_address_and_both_directory_selections() {
+    let directory = tempfile::tempdir().unwrap();
+    let cwd = fs::canonicalize(directory.path()).unwrap();
+    let environment = BTreeMap::from([("HOME".into(), cwd.to_str().unwrap().into())]);
+    let app = App {
+        config: Config::new(&environment, &cwd).unwrap(),
+        environment,
+        cwd: cwd.clone(),
+        input: Input::Stdin,
+        herdr: None,
+    };
+    fs::create_dir_all(app.config.host_path().parent().unwrap()).unwrap();
+    fs::write(
+        app.config.host_path(),
+        json!({"version":1,"id":HOST}).to_string(),
+    )
+    .unwrap();
+    let settings = app.config.load().unwrap();
+    YamlRecordStore::new(&settings.catalog_root, HOST)
+        .unwrap()
+        .initialize()
+        .unwrap();
+    let records = application::open_records(&app.config).unwrap();
+    let native_id = "11234567-89ab-4def-8123-456789abcdef";
+    let scope = Scope {
+        catalog_source: records.source_id().into(),
+        host_id: HOST.into(),
+        stream_id: "project/name".into(),
+        session_id: streams_temper::model::Session::id_for(HOST, "pi", native_id),
+        harness: "pi".into(),
+        native_session_id: native_id.into(),
+    };
+    let inputs = Inputs::new(&app, &records, &scope).unwrap();
+    let bindings = app.locations(records.root(), HOST).unwrap();
+    let paths = inputs.paths(&scope.stream_id).unwrap();
+    assert_eq!(
+        paths,
+        BTreeSet::from([
+            records.root().join(format!(
+                "hosts/{HOST}/conversations/{}.yaml",
+                scope.session_id
+            )),
+            records
+                .root()
+                .join(format!("hosts/{HOST}/streams/project%2Fname.yaml")),
+            app.registry(HOST).unwrap().path().into(),
+            bindings.path(&scope.stream_id, Some(&scope.session_id)),
+            bindings.path(&scope.stream_id, None),
+        ])
+    );
+    let destination = inputs.paths("destination").unwrap();
+    assert!(
+        destination.contains(
+            &records
+                .root()
+                .join(format!("hosts/{HOST}/streams/destination.yaml"))
+        )
+    );
+    assert!(
+        !destination.contains(
+            &records
+                .root()
+                .join(format!("hosts/{HOST}/streams/project%2Fname.yaml"))
+        )
+    );
+    assert!(destination.contains(&inputs.session_path));
+    for field in ["source", "host", "session", "harness"] {
+        let mut invalid = scope.clone();
+        match field {
+            "source" => invalid.catalog_source = "other".into(),
+            "host" => invalid.host_id = "other".into(),
+            "session" => invalid.session_id = "legacy-native-alias".into(),
+            "harness" => invalid.harness = "codex".into(),
+            _ => unreachable!(),
+        };
+        assert!(Inputs::new(&app, &records, &invalid).is_err());
+    }
+}

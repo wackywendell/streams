@@ -10,7 +10,7 @@ import { createJiti } from 'jiti';
 import { childCli } from './helpers/stream-cli.mjs';
 const jiti = createJiti(import.meta.url);
 const load = (name) => jiti.import(new URL(`../extensions/stream-checkpoint/${name}.ts`, import.meta.url).pathname);
-const { StreamCli, StreamsCliError, receiptText } = await load('streams');
+const { StreamCli, StreamsCliError, receiptText, receiptCanContinue } = await load('streams');
 const { automaticFields, editRequest, FieldEdit } = await load('core');
 const { checkpointContext, infer, changesSchema } = await load('agent');
 const { chooseInitial } = await load('chooser');
@@ -24,7 +24,7 @@ const { Reporter } = await load('reporter');
 const { defaults, validateSettings, loadSettings, saveSettings, settingsDialog } = await load('settings');
 const stream = { id:'effort', title:'Work', title_mode:'manual', goal:'Goal', goal_mode:'automatic', goal_short:null, status:'active', archived:false, owner:{host_id:'host'}, repositories:{repo:{url:'https://example.com/repo'}}, issues:[], prs:[], documents:[] };
 const session = { id:'session', host_id:'host', stream_id:'effort', harness:'pi', harness_session_id:'native', title:'Session', title_mode:'automatic', status:'active', state:'', state_short:null, remaining:'', checkout:null };
-const context = () => structuredClone({catalog_source:'source-a',host_id:'host',stream,session,sessions:[session],authority:{host_id:'host',token:'owner'}});
+const context = () => structuredClone({catalog_source:'source-a',host_id:'host',stream,session,sessions:[session],title_defaults:{stream:'automatic',session:'automatic'}});
 const localSync = async () => ({local:'unchanged',sharing:'local-only',domain:null});
 
 test('typed catalog apply retains accepted warning receipts without retry or target rewriting', async () => {
@@ -34,7 +34,7 @@ test('typed catalog apply retains accepted warning receipts without retry or tar
  assert.equal(calls.length,1);assert.deepEqual(calls[0],{kind:'apply',request});assert.equal(calls[0].request,request);assert.match(receiptText({...receipt,warnings}),/Saved; projection deferred/);
 });
 test('idempotent enrollment with no new saves is a valid receipt, including publication',async()=>{
- const value={stream,session,authority:context().authority,saves:[],publication:{local:'unchanged',sharing:'local-only',domain:null}};
+ const value={stream,session,saves:[],publication:{local:'unchanged',sharing:'local-only',domain:null}};
  const cli=new StreamCli('/tmp',async()=>({status:'success',result:value}));
  assert.deepEqual(await cli.enroll({}),value);assert.match(receiptText(value),/Already enrolled; no new local saves/);
 });
@@ -64,12 +64,9 @@ test('StreamCli validates strict catalog fields and nullable document provenance
   const app=await read(value);
   assert.deepEqual(app.stream,value.stream);assert.deepEqual(app.session,value.session);
  }
- for(const repository_url of [undefined,null,'https://example.test/original.git']) {
-  const value=structuredClone(initial);
-  value.session.checkout={repository:'old-app',ref:'topic',directory_within_checkout:'services/api'};
-  if(repository_url!==undefined)value.session.checkout.repository_url=repository_url;
-  const app=await read(value);assert.deepEqual(app.session,value.session);
- }
+ const pinned=structuredClone(initial);
+ pinned.session.checkout={repository:'old-app',repository_url:'https://example.test/original.git',ref:'topic',directory_within_checkout:'services/api'};
+ assert.deepEqual((await read(pinned)).session,pinned.session);
  for(const previous_stream_ids of [[],['earlier'],['a','b','a']]) {
   const value=structuredClone(initial);value.session.previous_stream_ids=previous_stream_ids;
   const app=await read(value);assert.deepEqual(app.session,value.session);
@@ -78,6 +75,7 @@ test('StreamCli validates strict catalog fields and nullable document provenance
   value=>{value.session.title_mode='other';},
   ...[null,'earlier',[42],[''],[' '],['a','a']].map(history=>value=>{value.session.previous_stream_ids=history;}),
   value=>{value.session.previous_stream_ids=['earlier',value.session.stream_id];},
+  ...[undefined,null].map(repository_url=>value=>{value.session.checkout={repository:'app',ref:'topic',directory_within_checkout:'.'};if(repository_url!==undefined)value.session.checkout.repository_url=repository_url;}),
   value=>{value.session.checkout={repository:'app',repository_url:42,ref:'topic',directory_within_checkout:'.'};},
   value=>{value.session.checkout={repository:'app',repository_url:'',ref:'topic',directory_within_checkout:'.'};},
   value=>{value.stream.goal_mode='other';},
@@ -118,14 +116,14 @@ test('title defaults use typed config intent and validate the returned policy',a
  }
 });
 test('automatic fields omit protected names and all lifecycle and identity fields',()=>{
- assert.deepEqual(automaticFields('stream',stream),['goal','goal_short']);
- assert.deepEqual(automaticFields('session',session),['title','status','state','state_short','remaining']);
+ assert.deepEqual(automaticFields('stream',stream,'automatic'),['goal','goal_short']);
+ assert.deepEqual(automaticFields('session',session,'automatic'),['title','status','state','state_short','remaining']);
 });
 test('request freezes original target and stream dependencies; session progress does not guard siblings or stream',()=>{
  const captured=context(); const req=editRequest(captured,'session',{state:'Done'},'automatic');
  const streamReq=editRequest(captured,'stream',{goal:'Updated'},'automatic');
  captured.session.state='later';captured.stream.goal='later';
- assert.equal(req.before.state,''); assert.deepEqual(req.inputs,[]);assert.equal(req.ownership_token,'owner');
+ assert.equal(req.before.state,''); assert.deepEqual(req.inputs,[]);assert.equal(req.title_default,'automatic');assert.equal(req.version,2);assert.equal(Object.hasOwn(req,'ownership_token'),false);
  assert.equal(streamReq.inputs[0].kind,'session');assert.equal(streamReq.inputs[0].record.state,'');assert.equal(req.actor,'automatic');
  assert.throws(()=>editRequest(context(),'stream',{status:'done'},'automatic'),/allowed/);
 });
@@ -182,7 +180,7 @@ test('membership moves submit the original Session result to the CLI and never s
    f.cli.context=async(...args)=>{reads.push(args);return structuredClone(f.catalog);};
    f.cli.apply=async req=>{f.saves.push(req);return {operation_id:req.operation_id,save:{local:outcome==='changes'?'persisted':'unchanged',sharing:'local-only',domain:{outcome}}};};
    f.reporter.request(f.ctx);await until(()=>f.inferences.length===1);
-   f.catalog.stream.id='destination';f.catalog.session.stream_id='destination';f.catalog.session.previous_stream_ids=['effort'];f.catalog.authority.token='destination-owner';
+   f.catalog.stream.id='destination';f.catalog.session.stream_id='destination';f.catalog.session.previous_stream_ids=['effort'];
    f.release();await f.reporter.idle();
    assert.equal(f.saves.length,1);const request=f.saves[0];
    assert.deepEqual(request,editRequest(captured,'session',{state:'Reported'},'automatic',request.operation_id,true));
@@ -197,7 +195,7 @@ test('membership moves during shared inference retain the old Stream target and 
   const f=reporterFixture(),catalog=context(),captured=context(),requests=[],writes=[],receipts=[];
   const reporter=new Reporter({cli:()=>({context:async()=>structuredClone(catalog),apply:async req=>{writes.push(req);return {operation_id:req.operation_id,save:{local:'unchanged',sharing:'local-only',domain:{outcome}}};}}),settings:()=>defaults,infer:async(_ctx,req)=>{
    requests.push(req);if(req.type==='session')return {changes:{}};
-   catalog.stream.id=destination;catalog.session.stream_id=destination;catalog.session.previous_stream_ids=destination==='effort'?['effort','destination']:['effort'];catalog.authority.token='destination-owner';
+   catalog.stream.id=destination;catalog.session.stream_id=destination;catalog.session.previous_stream_ids=destination==='effort'?['effort','destination']:['effort'];
    return {changes:{goal:'Old effort result'}};
   },notice:assert.fail,receipt:value=>receipts.push(value)});
   reporter.request(f.ctx);await reporter.idle();
@@ -488,7 +486,7 @@ test('report prompts separate contribution state from whole-effort purpose witho
  }
  assert.match(prompts.session,/usually one short sentence/);assert.match(prompts.session,/empty string when none remains/);
  assert.match(prompts.session,/work inherited from or performed by other sessions/);
- assert.match(prompts.stream,/relatively stable purpose/);assert.match(prompts.stream,/using all catalog.sessions as contributions/);
+ assert.match(prompts.stream,/relatively stable purpose/);assert.match(prompts.stream,/saved goal and the addressed Session contribution/);assert.match(prompts.stream,/supplied Sessions are not a complete roster/);
  assert.doesNotMatch(prompts.stream,/actor user|update session.status|10–18 words/);
  assert.doesNotMatch(prompts.session,/actor user|In discussion answer/);
  assert.equal(prompts.enroll,prompts.discussion);assert.notEqual(prompts.stream,prompts.enroll);
@@ -517,7 +515,7 @@ test('session reset omits existing descriptions; stream reset retains contributi
    assert.equal(visible.session.id,before.session.id);assert.equal(visible.session.harness_session_id,before.session.harness_session_id);
    assert.deepEqual(visible.stream.repositories,before.stream.repositories);
   } else {
-   assert.equal(Object.hasOwn(visible,'session'),false);assert.deepEqual(visible.sessions,before.sessions);
+   assert.equal(Object.hasOwn(visible,'session'),false);assert.deepEqual(visible.sessions,[before.session]);
    assert.deepEqual(visible.stream,{...before.stream,...(titleMode==='automatic'?{title:''}:{}),...(goalMode==='automatic'?{goal:null,goal_short:null}:{})});
   }
   const properties=payload.tools[0].parameters.properties.changes.properties;
@@ -598,7 +596,7 @@ for(const intent of ['reply','automatic','user'])test(`card discussion ${intent}
  const ctx={mode:'tui',hasUI:true,cwd:'/repo',sessionManager:{getSessionId:()=> 'native',getLeafId:()=> 'leaf',getBranch:()=>[{id:'leaf'}],buildSessionProjection:()=>({messages:[]})},ui:{select:async()=>menu.shift(),confirm:()=>assert.fail('explicit direction needs no second confirmation'),notify:()=>{},setStatus:()=>{},custom:async factory=>new Promise(resolve=>{const component=factory({terminal:{rows:30},requestRender(){}},{fg:(_color,text)=>text,bold:text=>text},{},resolve);if(component.render(80).join("\n").includes("Whole effort")){const action=menu.shift();if(action==="Discuss live card"){for(let i=0;i<3;i++)component.handleInput("\x1b[B");component.handleInput("\r");}else component.handleInput("\x1b");return;}history.push(component.render(80).join('\n'));if(!submitted){submitted=true;component.handleInput('card question');component.handleInput('\r');}else component.handleInput('\x1b');})}};
  await handlers.get('session_start')({},ctx);await openPanel(ctx);
  assert.equal(writes.length,intent==='reply'?0:1);assert.match(history.at(-1),/Discussed without assuming extra intent/);
- if(intent!=='reply'){assert.equal(writes[0].actor,intent);assert.equal(writes[0].catalog_source,'source-a');assert.equal(writes[0].ownership_token,intent==='user'?null:'owner');assert.equal(receipts.length,1);assert.equal(writes[0].before.status,'active');assert.deepEqual(writes[0].inputs.map(input=>input.record.id),['session','sibling']);}
+ if(intent!=='reply'){assert.equal(writes[0].actor,intent);assert.equal(writes[0].catalog_source,'source-a');assert.equal(Object.hasOwn(writes[0],'ownership_token'),false);assert.equal(receipts.length,1);assert.equal(writes[0].before.status,'active');assert.deepEqual(writes[0].inputs.map(input=>input.record.id),intent==='automatic'?['session']:[]);}
 });
 for(const failure of ['throw','abort','invalid','branch','cwd','source','attachment','shutdown','conflict','superseded','repair','completion'])test(`discussion ${failure} retains composer/history and isolates replacement source`,async()=>{
  const handlers=new Map(),renders=[],notices=[],receipts=[];let openPanel,submitted=false,menuCount=0,leaf='leaf';const catalog=context();
@@ -868,25 +866,28 @@ for(const inside of [true,false])test(`real checkout CLI enroll/context/guarded 
   assert.equal((await run(['config','set','frontend.mode','none','--json'])).code,0);
   const cli=childCli(cwd,'native',env),sibling=childCli(cwd,'sibling-native',env),otherClient=childCli(cwd,'other-native',env);clients.push(cli,sibling,otherClient);const empty=await cli.context('native');assert.equal(empty.session,null);assert.equal(empty.stream,null);
   const enrolled=await cli.enroll({version:2,catalog_source:empty.catalog_source,operation_id:randomUUID(),harness:'pi',harness_session_id:'native',stream:{title:'Catalog port',goal:'Safe durable reports'},session:{title:'Implement reporting'},actor:'automatic',cwd});
-  assert.ok(enrolled.saves.length>=2);const captured=await cli.context('native');assert.equal(captured.stream.id,enrolled.stream.id);assert.equal(captured.session.harness_session_id,'native');assert.ok(captured.authority.token);assert.ok(captured.catalog_source);
-  const again=await cli.enroll({version:2,catalog_source:empty.catalog_source,operation_id:randomUUID(),harness:'pi',harness_session_id:'native',stream_id:captured.stream.id,session:{title:'Ignored existing'},actor:'automatic',cwd});assert.deepEqual(again.saves,[]);
+  assert.ok(enrolled.saves.length>=2);const captured=await cli.context('native');assert.equal(captured.stream.id,enrolled.stream.id);assert.equal(captured.session.harness_session_id,'native');assert.equal(Object.hasOwn(captured,'authority'),false);assert.ok(captured.catalog_source);
+  const again=await cli.enroll({version:2,catalog_source:empty.catalog_source,operation_id:randomUUID(),harness:'pi',harness_session_id:'native',stream_id:captured.stream.id,session:{title:'Ignored existing'},actor:'automatic',cwd});assert.equal(again.saves.length,1);assert.equal(again.saves[0].save.domain.outcome,'no-change');assert.equal(Object.hasOwn(again.saves[0].save,'sharing'),false);assert.deepEqual(again.session,captured.session);
   const wrongSource=editRequest(captured,'session',{state:'Never write cloned source'},'automatic');wrongSource.catalog_source='different-source';await assert.rejects(cli.apply(wrongSource),/source/i);
   const human=await cli.apply(editRequest(captured,'session',{state:'Human progress'},'user'));assert.equal(human.save.domain.outcome,'changes');
   const stale=await cli.apply(editRequest(captured,'session',{state:'Stale generated progress'},'automatic'));assert.equal(stale.save.domain.outcome,'superseded');assert.equal((await cli.context('native')).session.state,'Human progress');
   const protectedTitle=await cli.apply(editRequest(await cli.context('native'),'stream',{title:'Human title'},'user'));assert.equal(protectedTitle.stream.title_mode,'manual');
-  const fresh=await cli.context('native');assert.ok(!automaticFields('stream',fresh.stream).includes('title'));
+  const fresh=await cli.context('native');assert.ok(!automaticFields('stream',fresh.stream,fresh.title_defaults.stream).includes('title'));
   const goal=await cli.apply(editRequest(fresh,'stream',{goal:'New automatic goal'},'automatic'));assert.equal(goal.stream.title,'Human title');assert.equal(goal.stream.goal_mode,'automatic');
   await cli.enroll({version:2,catalog_source:empty.catalog_source,operation_id:randomUUID(),harness:'pi',harness_session_id:'sibling-native',stream_id:captured.stream.id,session:{title:'Sibling contribution'},actor:'user',cwd});
-  const withSibling=await cli.context('native');const guardedSession=editRequest(withSibling,'session',{state:'Own progress unaffected by sibling'},'automatic');
-  const guardedStream=editRequest(withSibling,'stream',{goal:'Based on all contributions'},'automatic');
-  const siblingContext=await sibling.context('sibling-native');await sibling.apply(editRequest(siblingContext,'session',{state:'Changed sibling evidence'},'user'));
+  const withSibling=await cli.context('native');assert.deepEqual(withSibling.sessions,[withSibling.session]);
+  const guardedSession=editRequest(withSibling,'session',{state:'Own progress unaffected by sibling'},'automatic');
+  const guardedStream=editRequest(withSibling,'stream',{goal:'Established purpose with addressed contribution'},'automatic');
+  const siblingContext=await sibling.context('sibling-native');await sibling.apply(editRequest(siblingContext,'session',{state:'Changed unrelated contribution'},'user'));
+  const unaffected=await cli.apply(guardedStream);assert.equal(unaffected.save.domain.outcome,'changes');
+  const ownGuard=editRequest(await cli.context('native'),'stream',{goal:'Before own contribution changed'},'automatic');
   const sessionSaved=await cli.apply(guardedSession);assert.equal(sessionSaved.save.domain.outcome,'changes');
-  const superseded=await cli.apply(guardedStream);assert.equal(superseded.save.domain.outcome,'superseded');
+  const superseded=await cli.apply(ownGuard);assert.equal(superseded.save.domain.outcome,'superseded');
   const independent=await cli.apply(editRequest(withSibling,'session',{title:'Independent manual edit'},'user'));assert.equal(independent.save.domain.outcome,'changes');
   const blocked=await cli.apply(editRequest(await cli.context('native'),'session',{status:'blocked'},'automatic'));assert.equal(blocked.session.status,'blocked');
   const invalid=await run(['agent','apply','--json'],'{"operation_id":"bad","kind":"stream","changes":{"repositories":{}}}');assert.equal(invalid.code,2);
   const other=await otherClient.enroll({version:2,catalog_source:empty.catalog_source,operation_id:randomUUID(),harness:'pi',harness_session_id:'other-native',stream:{title:'Other effort'},session:{title:'Other'},actor:'user',cwd});
-  await assert.rejects(cli.context('native',other.stream.id),/move|fork|different|mismatch/i);
+  await assert.rejects(cli.context('native',other.stream.id),/explicit Stream.*current membership/i);
  } finally {await Promise.all(clients.map(cli=>cli.stop()));rmSync(root,{recursive:true,force:true});}
 });
 
@@ -906,18 +907,17 @@ test('bare or whitespace checkpoint preserves queued explicit report instruction
  f.reporter.request(f.ctx,true,'  Keep the deployment caveat  ');f.reporter.request(f.ctx,true,'');f.reporter.request(f.ctx,true,'  ');
  f.release();await f.reporter.idle();assert.equal(f.inferences[2].req.instructions,'Keep the deployment caveat');
 });
-test('generated stream guards include every visible sibling while session guards only its own target',()=>{
- const catalog=context();const sibling={...session,id:'sibling',host_id:'other-host',state:'Original sibling'};
- catalog.sessions.push(structuredClone(session),sibling);
- const progress=editRequest(catalog,'session',{state:'Progress'},'automatic');
- assert.deepEqual(progress.inputs,[]);
- const metadata=editRequest(catalog,'stream',{goal:'Goal'},'user',randomUUID(),true);
- assert.deepEqual(metadata.inputs.map(input=>[input.kind,input.record.id]),[['session','session'],['session','sibling']]);
- sibling.state='Changed after capture';assert.equal(metadata.inputs[1].record.state,'Original sibling');
- assert.deepEqual(editRequest(catalog,'session',{title:'Human title'},'user',randomUUID(),false).inputs,[]);
+test('automatic Stream captures its addressed contribution; Session and manual Stream edits capture none',()=>{
+ const catalog=context();
+ assert.deepEqual(editRequest(catalog,'session',{state:'Progress'},'automatic').inputs,[]);
+ const metadata=editRequest(catalog,'stream',{goal:'Goal'},'automatic',randomUUID());
+ assert.deepEqual(metadata.inputs,[{kind:'session',record:catalog.session}]);
+ catalog.session.state='Changed after capture';assert.equal(metadata.inputs[0].record.state,session.state);
+ assert.deepEqual(editRequest(catalog,'stream',{goal:'Manual goal'},'user',randomUUID()).inputs,[]);
+ assert.deepEqual(editRequest(catalog,'session',{title:'Human title'},'user',randomUUID()).inputs,[]);
 });
 test('automatic Session status is reportable; automatic Stream lifecycle remains forbidden',()=>{
- assert.ok(automaticFields('session',session).includes('status'));
+ assert.ok(automaticFields('session',session,'automatic').includes('status'));
  assert.doesNotThrow(()=>editRequest(context(),'session',{status:'blocked'},'automatic'));
  for(const changes of [{status:'parked'},{status:'done'},{archived:true}])assert.throws(()=>editRequest(context(),'stream',changes,'automatic'),/allowed/);
 });
@@ -1076,4 +1076,56 @@ test('openCard renders 3-tab Pi TUI (Actions, Stream, Session) and edits fields 
  assert.equal(saved.length,2);
  assert.deepEqual(saved[0].changes,{title:'Work (edited)'});
  assert.deepEqual(saved[1].changes,{title:'Session (edited)'});
+});
+
+test('record-local v2 edits capture defaults and only the addressed automatic Stream dependency', () => {
+ const captured=context();
+ captured.sessions.push({...captured.session,id:'sibling',harness_session_id:'other'});
+ const progress=editRequest(captured,'session',{state:'Progress'},'automatic','progress');
+ const automatic=editRequest(captured,'stream',{goal:'Purpose'},'automatic','purpose');
+ const manual=editRequest(captured,'stream',{goal:'User purpose'},'user','manual');
+ assert.equal(progress.version,2);assert.equal(progress.title_default,'automatic');
+ assert.equal(Object.hasOwn(progress,'ownership_token'),false);
+ assert.deepEqual(progress.inputs,[]);assert.deepEqual(manual.inputs,[]);
+ assert.deepEqual(automatic.inputs,[{kind:'session',record:captured.session}]);
+ captured.title_defaults.stream='manual';assert.equal(automatic.title_default,'automatic');
+});
+
+test('record-local inherited title policy is pure and captured per request', () => {
+ const captured=context();captured.session.title_mode='inherit';captured.title_defaults.session='manual';
+ assert.equal(automaticFields('session',captured.session,captured.title_defaults.session).includes('title'),false);
+ assert.throws(()=>editRequest(captured,'session',{title:'Generated'},'automatic'),/not allowed/);
+ captured.title_defaults.session='automatic';
+ const request=editRequest(captured,'session',{title:'Generated'},'automatic');
+ assert.equal(request.title_default,'automatic');assert.equal(request.before.title_mode,'inherit');
+ assert.equal(changesSchema('session',captured,'automatic').properties.title.type,'string');
+});
+
+test('record-local automatic Stream input cannot be replaced by a roster or omitted Session', () => {
+ const captured=context();captured.session=null;captured.sessions=[];
+ assert.throws(()=>editRequest(captured,'stream',{goal:'No owner'},'automatic'),/current Session/);
+ assert.deepEqual(editRequest(captured,'stream',{goal:'User purpose'},'user').inputs,[]);
+});
+
+test('record-local foreign records stay readable but cannot produce writes', () => {
+ const captured=context();captured.stream.owner.host_id=captured.session.host_id='foreign';
+ for (const actor of ['user','automatic']) {
+  assert.throws(()=>editRequest(captured,'stream',{goal:'Foreign purpose'},actor),/read-only/);
+  assert.throws(()=>editRequest(captured,'session',{state:'Foreign work'},actor),/read-only/);
+ }
+});
+
+test('record-local save receipt does not claim publication and uncertain writes retain dirty input', async () => {
+ const accepted={operation_id:'saved',save:{local:'persisted',domain:{outcome:'changes'}},session};
+ const cli=new StreamCli('/tmp',async()=>({status:'success',result:accepted}));
+ assert.deepEqual(await cli.apply({}),accepted);assert.equal(receiptCanContinue(accepted),true);
+ const uncertain={operation_id:'unknown',save:{local:'uncertain',domain:null,detail:'replacement flush failed'}};
+ let calls=0,retained;
+ const unknown=new StreamCli('/tmp',async()=>{calls++;return {status:'success',result:uncertain};});
+ const edit=new FieldEdit('session',context(),'state');edit.value='Uncertain progress';
+ await assert.rejects(edit.save(unknown,value=>retained=value),/uncertain/);
+ assert.deepEqual(retained,uncertain);assert.equal(calls,1);assert.equal(edit.dirty,true);
+ assert.equal(receiptCanContinue(uncertain),false);
+ const publication=new StreamCli('/tmp',async()=>({status:'success',result:{local:'unchanged',domain:null}}));
+ await assert.rejects(publication.sync('start'),/Invalid catalog receipt/);
 });

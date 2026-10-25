@@ -66,7 +66,6 @@ pub(super) struct Files {
     paths: Arc<Mutex<BTreeSet<PathBuf>>>,
     parents: BTreeSet<PathBuf>,
     versions: BTreeMap<PathBuf, Version>,
-    evidence: PathBuf,
     generation: u8,
 }
 pub(super) struct FileChanges {
@@ -74,11 +73,7 @@ pub(super) struct FileChanges {
     pub recovered: bool,
 }
 impl Files {
-    pub fn new(
-        paths: BTreeSet<PathBuf>,
-        evidence: PathBuf,
-        events: Events,
-    ) -> Result<Self, String> {
+    pub fn new(paths: BTreeSet<PathBuf>, events: Events) -> Result<Self, String> {
         let shared = Arc::new(Mutex::new(BTreeSet::new()));
         let mut files = Self {
             watcher: watcher(events.clone(), shared.clone(), 0)?,
@@ -86,15 +81,13 @@ impl Files {
             paths: shared,
             parents: BTreeSet::new(),
             versions: BTreeMap::new(),
-            evidence,
             generation: 0,
         };
         files.set_paths(paths)?;
         Ok(files)
     }
-    pub fn set_paths(&mut self, mut paths: BTreeSet<PathBuf>) -> Result<(), String> {
+    pub fn set_paths(&mut self, paths: BTreeSet<PathBuf>) -> Result<(), String> {
         let observed = paths.clone();
-        paths.insert(self.evidence.clone());
         *self.paths.lock().expect("card watch paths") = paths.clone();
         self.watch_parents(&paths)?;
         self.versions.retain(|path, _| observed.contains(path));
@@ -178,10 +171,6 @@ impl Files {
         }
         let mut changed = recovered;
         for path in touched {
-            // Evidence is a wake-only dependency, read once by DisplayLifetime.
-            if path == self.evidence {
-                continue;
-            }
             let next = version(&path);
             if self.versions.get(&path) != Some(&next) {
                 changed = true;
@@ -210,13 +199,11 @@ mod tests {
         Events::new(PaneEvents::new(|_| {}))
     }
     #[test]
-    fn access_notifications_and_evidence_only_changes_do_not_invalidate_catalog_context() {
+    fn access_notifications_do_not_invalidate_catalog_context() {
         let root = tempfile::tempdir().unwrap();
         let own = root.path().join("own.yaml");
-        let evidence = root.path().join("evidence.json");
         fs::write(&own, "context").unwrap();
-        fs::write(&evidence, "reserved").unwrap();
-        let mut files = Files::new([own.clone()].into(), evidence.clone(), events()).unwrap();
+        let mut files = Files::new([own.clone()].into(), events()).unwrap();
         for kind in [
             notify::event::AccessKind::Open(notify::event::AccessMode::Read),
             notify::event::AccessKind::Close(notify::event::AccessMode::Read),
@@ -225,24 +212,13 @@ mod tests {
             assert!(!relevant(&[own.clone()].into(), &event));
             assert!(!files.consume(vec![(0, Ok(event))]).unwrap().changed);
         }
-        fs::write(&evidence, "ready").unwrap();
-        let event = Event::new(EventKind::Modify(notify::event::ModifyKind::Any))
-            .add_path(evidence.clone());
-        assert!(relevant(&[evidence.clone()].into(), &event));
-        assert!(!files.consume(vec![(0, Ok(event))]).unwrap().changed);
-        assert!(!files.versions.contains_key(&evidence));
     }
     #[test]
     fn exact_names_atomic_rename_and_duplicate_notifications_cost_one_logical_read() {
         let root = tempfile::tempdir().unwrap();
         let own = root.path().join("own.yaml");
         fs::write(&own, "before").unwrap();
-        let mut files = Files::new(
-            [own.clone()].into(),
-            root.path().join("evidence.json"),
-            events(),
-        )
-        .unwrap();
+        let mut files = Files::new([own.clone()].into(), events()).unwrap();
         let other = Event::new(EventKind::Modify(notify::event::ModifyKind::Any))
             .add_path(root.path().join("other.yaml"));
         assert!(!relevant(&[own.clone()].into(), &other));

@@ -12,12 +12,12 @@ mod fields;
 #[cfg(test)]
 mod native_tests;
 mod serve;
+mod sessions;
 mod settings;
 mod workspaces;
 
 use args::{
-    AgentCommand, CheckoutCommand, Command, ConfigCommand, FrontendCommand, NativeCommand,
-    SessionCommand, Target, WorkspaceCommand,
+    AgentCommand, CheckoutCommand, Command, ConfigCommand, FrontendCommand, NativeCommand, Target,
 };
 use clap::Parser;
 use icu_casemap::CaseMapper;
@@ -31,18 +31,15 @@ use std::{
 };
 use streams_temper::{
     agent::{self, ContextRequest},
-    application::{self, OpenedCatalog},
-    codec::record_to_data,
+    application,
     config::{Config, ConfigKey},
     frontend::{self, FrontendMode, FrontendRequest, FrontendSelection},
-    model::{Catalog, Checkout, Record, Session, Stream, TitleMode, ValidationError},
-    operations::{self, Actor, Operation},
+    model::{Record, Session, Stream, TitleMode, ValidationError},
+    operations::{self, Actor},
     runtime::{
-        self, CheckoutRegistry, DirectoryBindings,
-        native::{self, BuiltinFrontend},
-        state::RuntimeState,
+        self, CheckoutRegistry, DirectoryBindings, native::BuiltinFrontend, state::RuntimeState,
     },
-    sync::{CatalogBackend, ReadResult, envelope::Origin, outcomes, policy::SyncEvent},
+    sync::outcomes,
 };
 use uuid::Uuid;
 
@@ -54,10 +51,6 @@ pub(super) enum CliError {
     Message(String),
     #[error("{0}")]
     InvalidRef(String),
-    #[error("{0}")]
-    NativeContextChanged(String),
-    #[error("native projection requires an enrolled Stream and Session")]
-    NotEnrolled,
     #[error("{0}")]
     NotFound(String),
     #[error("{0}")]
@@ -77,9 +70,7 @@ impl CliError {
         let kind = match self {
             Self::Message(_) => "error",
             Self::InvalidRef(_) => "invalid-ref",
-            Self::NativeContextChanged(_) => "native-context-changed",
             Self::NotFound(_) => "not-found",
-            Self::NotEnrolled => "not-enrolled",
             Self::UnsupportedCommand(_) => "unsupported-command",
             Self::Ambiguous { .. } => "ambiguous",
         };
@@ -121,9 +112,6 @@ impl From<frontend::FrontendSelectionError> for CliError {
 impl From<runtime::RuntimeError> for CliError {
     fn from(error: runtime::RuntimeError) -> Self {
         match error {
-            runtime::RuntimeError::NativeContextChanged(message) => {
-                Self::NativeContextChanged(message)
-            }
             runtime::RuntimeError::NotFound(message) => Self::NotFound(message),
             runtime::RuntimeError::Ambiguous {
                 message,
@@ -288,13 +276,7 @@ pub(super) fn run() -> ExitCode {
 struct HerdrRead {
     client: frontend::herdr::HerdrClient,
     snapshot: Option<frontend::herdr::HerdrNativeSnapshot>,
-    terminal: Option<String>,
-    refusal: Option<String>,
-}
-
-enum NativeObservation<'a> {
-    Pi(&'a native::PiCallerObservation),
-    Workspace(native::CallingWorkspace),
+    owner: Option<runtime::native_cards::PiOwner>,
 }
 
 #[derive(Clone)]
@@ -331,14 +313,7 @@ impl App {
             "HERDR_WORKSPACE_ID",
             "WORK_CARDS_CONFIG_PATH",
             "EDITOR",
-            "STREAMS_CARDS_SCOPE",
-            "STREAMS_CARDS_OWNER",
-            "STREAMS_CARDS_NONCE",
-            "STREAMS_CARDS_OWNER_TERMINAL",
-            "STREAMS_CARDS_READ_ENV",
-            "STREAMS_CARDS_READ_CWD",
-            "STREAMS_CARDS_STATE_DIR",
-            "STREAMS_CARDS_PLUGIN_ROOT",
+            "STREAMS_CARDS_CONTEXT",
             "STREAMS_RUST_BIN",
             "DISPLAY",
             "WAYLAND_DISPLAY",
@@ -370,22 +345,22 @@ impl App {
             &self.environment,
         )?)
     }
-    fn registry(&self, opened: &OpenedCatalog) -> Result<CheckoutRegistry> {
+    fn registry(&self, host: &str) -> Result<CheckoutRegistry> {
         Ok(CheckoutRegistry::new(
             self.config.checkout_state_dir(),
-            opened.host().as_str(),
+            host,
         )?)
     }
-    fn state(&self, opened: &OpenedCatalog) -> Result<RuntimeState> {
+    fn state(&self, root: &Path, host: &str) -> Result<RuntimeState> {
         Ok(RuntimeState::new(
-            self.config.runtime_state_dir_for(opened.root())?,
-            opened.host().as_str(),
+            self.config.runtime_state_dir_for(root)?,
+            host,
         )?)
     }
-    fn locations(&self, opened: &OpenedCatalog) -> Result<DirectoryBindings> {
+    fn locations(&self, root: &Path, host: &str) -> Result<DirectoryBindings> {
         Ok(DirectoryBindings::new(
-            self.state(opened)?.root(),
-            self.registry(opened)?,
+            self.state(root, host)?.root(),
+            self.registry(host)?,
         ))
     }
     fn native_frontend(
@@ -418,26 +393,145 @@ impl App {
     }
     fn current_stream_id(
         &self,
-        opened: &OpenedCatalog,
+        host: &str,
+        catalog_source: &str,
         requested: Option<FrontendRequest>,
     ) -> Result<String> {
+        let configured = self.config.load()?.frontend;
         let explicit = self
             .environment
             .get("STREAMS_STREAM_ID")
             .map(String::as_str);
         if let Some(id) = explicit {
             streams_temper::model::check_text(id, "STREAMS_STREAM_ID", false)?;
+            return Ok(id.to_owned());
         }
-        let configured = self.config.load()?.frontend;
-        let selection = match frontend::resolve_frontend(configured, requested, &self.environment) {
-            Ok(selection) => selection,
-            // Only policy ambiguity/incompleteness permits this historical --current fallback.
-            Err(error) => return explicit.map(str::to_owned).ok_or_else(|| error.into()),
+        let selection = frontend::resolve_frontend(configured, requested, &self.environment)?;
+        let connection = self.native_frontend(&selection, 30.0)?;
+        let client = connection
+            .as_ref()
+            .and_then(BuiltinFrontend::herdr)
+            .ok_or_else(|| {
+                CliError::message(
+                    "--current requires an explicit Stream key or Herdr workspace metadata",
+                )
+            })?;
+        let snapshot = client
+            .session_snapshot()
+            .and_then(|snapshot| frontend::herdr::HerdrNativeSnapshot::parse(&snapshot))
+            .map_err(runtime::RuntimeError::from)?;
+        runtime::native_markers::selected_stream(
+            &snapshot,
+            &client
+                .current_pane_from(snapshot.raw())
+                .map_err(runtime::RuntimeError::from)?
+                .workspace_id,
+            catalog_source,
+            host,
+        )?
+        .ok_or_else(|| {
+            CliError::message(
+                "calling workspace has no Stream selector; pass an explicit reference",
+            )
+        })
+    }
+    fn record_target(
+        &self,
+        opened: &application::OpenedRecords,
+        target: &Target,
+    ) -> Result<Stream> {
+        use streams_temper::{
+            model::RecordKind,
+            storage::records::{RecordAddress, RecordStore},
         };
-        match self.native_frontend(&selection, 30.0)? {
-            Some(frontend) => Ok(frontend.caller()?.current_stream_id(&self.state(opened)?, explicit)?),
-            None => explicit.map(str::to_owned).ok_or_else(|| CliError::message("no native frontend selected; pass --frontend herdr or --frontend cmux (or use resume)")),
+        if target.current {
+            if target.reference.is_some() {
+                return Err(CliError::message(
+                    "--current cannot be combined with a reference",
+                ));
+            }
+            let id = self.current_stream_id(
+                opened.host().as_str(),
+                opened.source_id(),
+                target.frontend.clone(),
+            )?;
+            let address = RecordAddress::new(opened.host().as_str(), RecordKind::Stream, &id)
+                .map_err(application::ApplicationError::from)?;
+            return Ok(opened
+                .records()
+                .with_reader(|reader| -> application::Result<Stream> {
+                    let read = reader
+                        .read(&address)?
+                        .ok_or_else(|| ValidationError::new("current Stream is missing"))?;
+                    let Record::Stream(stream) = read.record else {
+                        unreachable!("addressed Stream codec")
+                    };
+                    Ok(stream)
+                })?);
         }
+        let reference = target
+            .reference
+            .as_deref()
+            .ok_or_else(|| CliError::InvalidRef("supply a reference or --current".into()))?;
+        Ok(catalog::select_stream(&opened.inventory()?, reference)?.clone())
+    }
+    fn sync_records(&self) -> Result<Output> {
+        let opened = application::open_records(&self.config)?;
+        catalog::sync(&opened, self.config.load()?.sync)
+    }
+    fn refresh_records(&self, opened: &application::OpenedRecords) -> Result<Value> {
+        let transport = streams_temper::sync::records::RecordSync::open(
+            opened.root(),
+            opened.host().as_str(),
+            self.config.load()?.sync,
+        )
+        .map_err(application::ApplicationError::from)?;
+        result_data(&transport.sync())
+    }
+    fn show_records(&self, target: &Target, refresh: bool) -> Result<Output> {
+        if target.current && target.reference.is_some() {
+            return Err(CliError::message(
+                "--current cannot be combined with a reference",
+            ));
+        }
+        if !target.current && target.reference.is_none() {
+            return Err(CliError::InvalidRef(
+                "supply a reference or --current".into(),
+            ));
+        }
+        let opened = application::open_records(&self.config)?;
+        let publication = if refresh {
+            Some(self.refresh_records(&opened)?)
+        } else {
+            None
+        };
+        let mut value = if target.current {
+            json!({"stream":self.record_target(&opened,target)?})
+        } else {
+            let reference = target
+                .reference
+                .as_deref()
+                .ok_or_else(|| CliError::InvalidRef("supply a reference or --current".into()))?;
+            let records = opened.inventory()?;
+            let stream = catalog::select_stream(&records, reference)?;
+            let sessions: Vec<_> = records
+                .iter()
+                .filter_map(|read| match &read.record {
+                    Record::Session(session)
+                        if session.stream_id == stream.id
+                            && session.host_id == stream.owner_host_id =>
+                    {
+                        Some(session)
+                    }
+                    _ => None,
+                })
+                .collect();
+            json!({"stream":stream,"sessions":sessions})
+        };
+        if let Some(publication) = publication {
+            value["sharing"] = publication;
+        }
+        Ok(Output::value(value))
     }
     fn path(&self, path: &Path) -> Result<PathBuf> {
         if path == Path::new("~") || path.starts_with("~/") {
@@ -459,29 +553,6 @@ impl App {
             Ok(fs::read_to_string(self.path(path)?)?)
         }
     }
-    fn target<'a>(
-        &self,
-        opened: &OpenedCatalog,
-        catalog: &'a Catalog,
-        target: &Target,
-    ) -> Result<&'a Stream> {
-        if target.current {
-            if target.reference.is_some() {
-                return Err(CliError::message(
-                    "--current cannot be combined with a reference",
-                ));
-            }
-            let id = self.current_stream_id(opened, target.frontend.clone())?;
-            return catalog.stream(&id).ok_or_else(|| {
-                CliError::NotFound(format!("current stream {id:?} is not in the local catalog"))
-            });
-        }
-        let reference = target
-            .reference
-            .as_deref()
-            .ok_or_else(|| CliError::InvalidRef("supply a reference or --current".into()))?;
-        resolve(catalog.streams(), reference, |s| (&s.id, &s.title, None))
-    }
     fn execute(&self, command: Command) -> Result<Output> {
         match command {
             Command::Serve { .. } => Err(CliError::UnsupportedCommand(
@@ -492,21 +563,16 @@ impl App {
                 sync,
                 remote,
                 branch,
-                adopt,
             } => {
-                let opened =
-                    application::initialize(&self.config, sync, remote.as_deref(), &branch, adopt)?;
-                let mut value =
-                    json!({"catalog":opened.root(),"host_id":opened.host().as_str(),"sync":sync});
-                if adopt {
-                    let git = streams_temper::sync::git_io::Git::new(opened.root(), 30.0);
-                    let tip = git
-                        .head()
-                        .map_err(|error| CliError::message(error.to_string()))?;
-                    let history = streams_temper::sync::history::read_history(&git, Some(&tip))?;
-                    value["baseline_revision"] = json!(history.root());
-                }
-                Ok(Output::value(value))
+                let opened = application::initialize_records(
+                    &self.config,
+                    sync,
+                    remote.as_deref(),
+                    &branch,
+                )?;
+                Ok(Output::value(
+                    json!({"catalog":opened.root(),"host_id":opened.host().as_str(),"sync":sync}),
+                ))
             }
             Command::Config { action } => self.configure(action),
             Command::Native {
@@ -539,22 +605,22 @@ impl App {
                 all,
                 refresh,
             } => {
-                let opened = application::open(&self.config)?;
-                catalog::list(
-                    opened.backend(),
+                let opened = application::open_records(&self.config)?;
+                let publication = if refresh {
+                    Some(self.refresh_records(&opened)?)
+                } else {
+                    None
+                };
+                catalog::list_records(
+                    &opened,
                     query.as_deref(),
                     &status,
                     archived,
                     all,
-                    refresh,
+                    publication,
                 )
             }
-            Command::Show { target, refresh } => {
-                let opened = application::open(&self.config)?;
-                catalog::show(opened.backend(), refresh, |catalog| {
-                    self.target(&opened, catalog, &target)
-                })
-            }
+            Command::Show { target, refresh } => self.show_records(&target, refresh),
             Command::Create { title, fields, cwd } => {
                 self.create_stream(title, fields, cwd, workspaces::Creation::Record)
             }
@@ -579,20 +645,25 @@ impl App {
                 session,
                 cwd,
             } => self.resume_session(target, session, cwd),
-            Command::Workspace {
-                command: WorkspaceCommand::Capture { target },
-            } => self.capture_workspace(target),
             Command::Update {
                 target,
                 title,
                 fields,
             } => {
-                let opened = application::open(&self.config)?;
-                catalog::update(
-                    opened.backend(),
-                    |catalog| self.target(&opened, catalog, &target),
+                let opened = application::open_records(&self.config)?;
+                let settings = self.config.load()?;
+                if settings.catalog_root != opened.root() {
+                    return Err(CliError::message(
+                        "catalog root setting changed during update",
+                    ));
+                }
+                let stream = self.record_target(&opened, &target)?;
+                catalog::update_record(
+                    &opened,
+                    &stream,
                     title,
                     &fields,
+                    settings.naming,
                     |path| self.read_text(path),
                     || Uuid::new_v4().to_string(),
                 )
@@ -600,25 +671,33 @@ impl App {
             Command::Archive { target } => self.archive(&target, true),
             Command::Restore { target } => self.archive(&target, false),
             Command::Check { reference } => {
-                let opened = application::open(&self.config)?;
-                catalog::check(opened.backend(), reference.as_deref())
+                let opened = application::open_records(&self.config)?;
+                catalog::check(&opened, reference.as_deref())
             }
-            Command::Sync { event } => {
-                let opened = application::open(&self.config)?;
-                catalog::sync(opened.backend(), event)
-            }
+            Command::Sync { event: _ } => self.sync_records(),
             Command::Session { command } => self.session(command),
             Command::Checkout { command } => self.checkout(command),
             Command::Agent { command } => self.agent(command),
         }
     }
     fn archive(&self, target: &Target, archived: bool) -> Result<Output> {
-        let opened = application::open(&self.config)?;
-        catalog::archive(
-            opened.backend(),
-            |catalog| self.target(&opened, catalog, target),
-            archived,
-            || Uuid::new_v4().to_string(),
+        let opened = application::open_records(&self.config)?;
+        let settings = self.config.load()?;
+        if settings.catalog_root != opened.root() {
+            return Err(CliError::message(
+                "catalog root setting changed during archive",
+            ));
+        }
+        let stream = self.record_target(&opened, target)?;
+        catalog::save_stream_edit(
+            &opened,
+            &stream,
+            json!({"archived":archived})
+                .as_object()
+                .expect("archive fields")
+                .clone(),
+            settings.naming,
+            &Uuid::new_v4().to_string(),
         )
     }
     fn configure(&self, action: Option<ConfigCommand>) -> Result<Output> {
@@ -672,246 +751,37 @@ impl App {
         }
         Ok(Output::plain(values, plain))
     }
-    fn session(&self, command: SessionCommand) -> Result<Output> {
-        let opened = application::open(&self.config)?;
-        let catalog = opened.backend().snapshot()?.catalog;
-        match command {
-            SessionCommand::List { stream } => {
-                let stream = stream
-                    .as_deref()
-                    .map(|reference| {
-                        resolve(catalog.streams(), reference, |s| (&s.id, &s.title, None))
-                    })
-                    .transpose()?;
-                let sessions: Vec<_> = catalog
-                    .sessions()
-                    .iter()
-                    .filter(|session| stream.is_none_or(|stream| session.stream_id == stream.id))
-                    .collect();
-                Ok(Output::value(json!({"sessions":sessions})))
-            }
-            SessionCommand::Show { reference } => Ok(Output::value(
-                json!({"session":resolve(catalog.sessions(),&reference,|s|(&s.id,&s.title,Some(&s.host_id)))?}),
-            )),
-            SessionCommand::Attach {
-                target,
-                harness,
-                session_id,
-                title,
-                cwd,
-                repository,
-                vcs_ref,
-                directory_within_checkout,
-            } => {
-                let stream = self.target(&opened, &catalog, &target)?;
-                let repository_url = repository
-                    .as_deref()
-                    .map(|alias| {
-                        stream
-                            .repositories
-                            .get(alias)
-                            .map(|r| r.url.as_str())
-                            .ok_or_else(|| {
-                                CliError::message(format!("unknown repository alias: {alias:?}"))
-                            })
-                    })
-                    .transpose()?;
-                let checkout = match (repository.as_deref(), vcs_ref) {
-                    (Some(alias), Some(reference)) => {
-                        Some(Checkout::new(alias, reference, directory_within_checkout)?)
-                    }
-                    (None, None) if directory_within_checkout == "." => None,
-                    (None, _) => {
-                        return Err(CliError::message(
-                            "checkout --ref/--directory-within-checkout requires --repository",
-                        ));
-                    }
-                    (Some(_), None) => {
-                        return Err(CliError::message("checkout --repository requires --ref"));
-                    }
-                };
-                let mut session = Session::new(
-                    agent::session_id_for(opened.host().as_str(), harness, &session_id),
-                    opened.host().as_str(),
-                    &stream.id,
-                    harness.to_string(),
-                    session_id,
-                    title,
-                )?;
-                session.title_mode = TitleMode::Manual;
-                session.checkout = checkout;
-                let authority = opened.backend().authority(&stream.id)?;
-                let operation = Operation::new(
-                    Uuid::new_v4().to_string(),
-                    None,
-                    Record::Session(session.clone()),
-                    Actor::User,
-                    authority.map(|a| a.token),
-                    vec![],
-                )?;
-                let saved = save(opened.backend(), &operation)?;
-                let extra = if saved.accepted() {
-                    let directory = cwd.unwrap_or_else(|| self.cwd.clone());
-                    self.locations(&opened).and_then(|locations|Ok(locations.remember(&stream.id,&self.path(&directory)?,Some(&session.id),false,repository_url,None)?)).err()
-                        .map(|error|json!({"runtime":{"error":error.to_string(),"detail":"session saved; pass --cwd when resuming"}}))
-                } else {
-                    None
-                };
-                finish(
-                    opened.backend(),
-                    &operation,
-                    saved,
-                    SyncEvent::Attach,
-                    extra,
-                )
-            }
-            SessionCommand::Update {
-                reference,
-                title,
-                fields,
-            } => {
-                let before = resolve(catalog.sessions(), &reference, |s| {
-                    (&s.id, &s.title, Some(&s.host_id))
-                })?;
-                let mut changes =
-                    fields::session(before, &fields, &mut |path| self.read_text(path))?;
-                if let Some(title) = title {
-                    changes.insert("title".into(), json!(title));
-                }
-                if changes.is_empty() {
-                    return Err(CliError::message(
-                        "session update requires at least one field change",
-                    ));
-                }
-                let authority = opened.backend().authority(&before.stream_id)?;
-                let operation = operations::update(
-                    Uuid::new_v4().to_string(),
-                    &Record::Session(before.clone()),
-                    &changes,
-                    Actor::User,
-                    authority.map(|a| a.token),
-                    vec![],
-                )?;
-                let saved = save(opened.backend(), &operation)?;
-                finish(
-                    opened.backend(),
-                    &operation,
-                    saved,
-                    SyncEvent::Session,
-                    None,
-                )
-            }
-            SessionCommand::Directory {
-                reference,
-                cwd,
-                checkout_id,
-                within,
-                repository,
-            } => {
-                let session = resolve(catalog.sessions(), &reference, |s| {
-                    (&s.id, &s.title, Some(&s.host_id))
-                })?;
-                if session.host_id != opened.host().as_str() {
-                    return Err(CliError::message(
-                        "directory selection requires a Session belonging to this host",
-                    ));
-                }
-                if within.is_some() && checkout_id.is_none() {
-                    return Err(CliError::message("--within requires --checkout"));
-                }
-                if repository.is_some() && cwd.is_none() && checkout_id.is_none() {
-                    return Err(CliError::message(
-                        "--repository requires --cwd or --checkout",
-                    ));
-                }
-                let locations = self.locations(&opened)?;
-                if cwd.is_some() || checkout_id.is_some() {
-                    let stream = catalog
-                        .stream(&session.stream_id)
-                        .ok_or_else(|| CliError::message("Session stream is missing"))?;
-                    let portable_url = session
-                        .checkout
-                        .as_ref()
-                        .and_then(|checkout| checkout.repository_url(stream));
-                    let url = match repository.as_deref() {
-                        Some(alias) => Some(
-                            stream
-                                .repositories
-                                .get(alias)
-                                .map(|repo| repo.url.as_str())
-                                .ok_or_else(|| {
-                                    CliError::message(format!(
-                                        "unknown repository alias: {alias:?}"
-                                    ))
-                                })?,
-                        ),
-                        None => portable_url,
-                    };
-                    if repository.is_some() && portable_url.is_some() && url != portable_url {
-                        return Err(CliError::message(
-                            "selected repository differs from the Session's portable checkout",
-                        ));
-                    }
-                    let directory = if let Some(id) = checkout_id.as_deref() {
-                        self.registry(&opened)?
-                            .directory(id, within.as_deref().unwrap_or("."))?
-                    } else {
-                        self.path(cwd.as_deref().expect("directory selection"))?
-                    };
-                    locations.remember(
-                        &stream.id,
-                        &directory,
-                        Some(&session.id),
-                        false,
-                        url,
-                        checkout_id.as_deref(),
-                    )?;
-                }
-                let directory = locations
-                    .read(&session.stream_id, Some(&session.id))?
-                    .map(|binding| binding_data(&binding));
-                Ok(Output::value(
-                    json!({"session_id":session.id,"host_id":session.host_id,"directory":directory}),
-                ))
-            }
-        }
-    }
     fn capture_inputs(&self, stream: Option<&str>, workspace: Option<&str>) -> Result<Output> {
         use agent::CaptureTarget;
-        use streams_temper::runtime::{
-            conversations::ConversationRoots,
-            state::{RuntimeState, herdr_scope},
-        };
-        let inspected = application::inspect(&self.config)?;
+        use streams_temper::runtime::{conversations::ConversationRoots, state::RuntimeState};
+        let opened = application::open_records(&self.config)?;
+        let settings = self.config.load()?;
+        if settings.catalog_root != opened.root() {
+            return Err(CliError::message(
+                "catalog root setting changed during capture inspection",
+            ));
+        }
         let state = RuntimeState::new(
-            self.config.runtime_state_dir_for(&inspected.root)?,
-            inspected.host.as_str(),
+            self.config.runtime_state_dir_for(opened.root())?,
+            opened.host().as_str(),
         )?;
         let native = (|| -> Result<_> {
-            let connection = self.native_frontend(
-                &self.selection(None)?,
-                self.config.load()?.sync.timeout_seconds(),
-            )?;
+            let connection =
+                self.native_frontend(&self.selection(None)?, settings.sync.timeout_seconds())?;
             let client = connection
                 .as_ref()
                 .and_then(BuiltinFrontend::herdr)
                 .ok_or_else(|| {
                     CliError::message("Herdr topology unavailable; open state unknown")
                 })?;
-            let endpoint = client.endpoint();
-            let scope = herdr_scope(&endpoint.socket, endpoint.session.as_deref());
-            Ok((
-                client
-                    .topology()
-                    .map_err(|error| CliError::message(error.to_string()))?,
-                scope,
-            ))
+            client
+                .session_snapshot()
+                .and_then(|snapshot| frontend::herdr::HerdrNativeSnapshot::parse(&snapshot))
+                .map_err(runtime::RuntimeError::from)
+                .map_err(CliError::from)
         })()
         .map_err(|error| error.to_string());
-        let native = native
-            .as_ref()
-            .map(|(topology, scope)| (topology, scope.as_str()))
-            .map_err(Clone::clone);
+        let native = native.as_ref().map_err(Clone::clone);
         let target = match (stream, workspace) {
             (Some(id), None) => CaptureTarget::Stream(id),
             (None, Some(id)) => CaptureTarget::Workspace(id),
@@ -919,12 +789,31 @@ impl App {
             _ => return Err(CliError::message("select a stream or workspace, not both")),
         };
         Ok(Output::value(agent::capture_inputs(
-            &inspected,
-            &state,
+            &opened,
             native,
             target,
+            settings.naming,
+            &DirectoryBindings::new(state.root(), self.registry(opened.host().as_str())?),
             &ConversationRoots::from_environment()?,
         )?))
+    }
+
+    fn context_from_records(
+        &self,
+        opened: &application::OpenedRecords,
+        request: ContextRequest<'_>,
+        title_defaults: streams_temper::model::TitleDefaults,
+    ) -> Result<agent::RecordContext> {
+        streams_temper::storage::records::RecordStore::with_reader(opened.records(), |reader| {
+            agent::record_context(
+                reader,
+                opened.host().as_str(),
+                opened.source_id(),
+                request,
+                title_defaults,
+            )
+        })
+        .map_err(|error| CliError::message(error.to_string()))
     }
 
     fn agent_observation(
@@ -932,84 +821,16 @@ impl App {
         harness: streams_temper::runtime::conversations::Harness,
         session_id: &str,
         stream_id: Option<&str>,
-        attest: bool,
-        include_inventory: bool,
-        native_timeout: f64,
     ) -> Result<AgentObservation> {
-        let connection = self.native_frontend(&self.selection(None)?, native_timeout)?;
-        let snapshot = connection
-            .as_ref()
-            .and_then(BuiltinFrontend::herdr)
-            .map(|client| client.session_snapshot())
-            .transpose()
-            .map_err(|e| CliError::message(e.to_string()))?;
-        let caller = connection
-            .as_ref()
-            .and_then(BuiltinFrontend::herdr)
-            .filter(|_| attest)
-            .map(|client| {
-                let snapshot = frontend::herdr::HerdrNativeSnapshot::parse(
-                    snapshot.as_ref().expect("observed Herdr snapshot"),
-                )
-                .map_err(runtime::RuntimeError::from)?;
-                native::PiCallerObservation::from_snapshot(client, snapshot, session_id)
-            })
-            .transpose()?;
-        let observed = match caller.as_ref() {
-            Some(caller) => Some(NativeObservation::Pi(caller)),
-            None => connection
-                .as_ref()
-                .map(|frontend| {
-                    match snapshot.as_ref() {
-                        Some(snapshot) => frontend.caller_from_snapshot(snapshot),
-                        None => frontend.caller(),
-                    }
-                    .map(NativeObservation::Workspace)
-                })
-                .transpose()?,
-        };
-        self.agent_observation_from_native(
-            harness,
-            session_id,
-            stream_id,
-            attest,
-            include_inventory,
-            observed,
-        )
-    }
-
-    fn agent_observation_from_native(
-        &self,
-        harness: streams_temper::runtime::conversations::Harness,
-        session_id: &str,
-        stream_id: Option<&str>,
-        attest: bool,
-        include_inventory: bool,
-        observed: Option<NativeObservation<'_>>,
-    ) -> Result<AgentObservation> {
-        let opened = application::open(&self.config)?;
-        let state = self.state(&opened)?;
-        let workspace_stream = observed
-            .as_ref()
-            .map(|observed| match observed {
-                NativeObservation::Pi(caller) => caller.calling_workspace(),
-                NativeObservation::Workspace(workspace) => workspace.clone(),
-            })
-            .map(|workspace| {
-                workspace.context_stream_id(
-                    &state,
-                    self.environment
-                        .get("STREAMS_STREAM_ID")
-                        .map(String::as_str),
-                )
-            })
-            .transpose()?
-            .flatten();
-        let source = opened.source_id()?;
-        let context = agent::context(
-            opened.backend(),
-            opened.host().as_str(),
-            &source,
+        let opened = application::open_records(&self.config)?;
+        let settings = self.config.load()?;
+        if settings.catalog_root != opened.root() {
+            return Err(CliError::message(
+                "catalog root setting changed during observation",
+            ));
+        }
+        let context = self.context_from_records(
+            &opened,
             ContextRequest {
                 harness,
                 native_id: session_id,
@@ -1018,57 +839,21 @@ impl App {
                     .environment
                     .get("STREAMS_STREAM_ID")
                     .map(String::as_str),
-                workspace_stream_id: workspace_stream.as_deref(),
+                workspace_stream_id: None,
             },
-        )
-        .map_err(|error| CliError::message(error.to_string()))?;
+            settings.naming,
+        )?;
         let documents = if let (Some(stream), Some(session)) = (&context.stream, &context.session) {
             documents::context(
-                &self.registry(&opened)?,
-                &self.locations(&opened)?,
+                &self.registry(opened.host().as_str())?,
+                &self.locations(opened.root(), opened.host().as_str())?,
                 stream,
                 session,
             )
         } else {
             json!({"checkouts":[],"document_locations":[]})
         };
-        let native = if attest {
-            let session = context.session.as_ref().ok_or(CliError::NotEnrolled)?;
-            let stream = context.stream.as_ref().ok_or_else(|| {
-                CliError::message("enrolled native Session has no current Stream")
-            })?;
-            let Some(NativeObservation::Pi(caller)) = observed.as_ref() else {
-                return Err(CliError::message(
-                    "native projection attestation requires an exact Herdr caller",
-                ));
-            };
-            Some(native::attest_context_from_caller(
-                caller,
-                &state,
-                stream,
-                session,
-                context.authority.as_ref(),
-            )?)
-        } else {
-            None
-        };
-        let native_inventory = if include_inventory {
-            if !attest {
-                return Err(CliError::message("native inventory requires --attest"));
-            }
-            let Some(NativeObservation::Pi(caller)) = observed.as_ref() else {
-                unreachable!("attestation requires a Pi caller observation");
-            };
-            Some(native::native_inventory_from_caller(caller)?)
-        } else {
-            None
-        };
-        Ok(AgentObservation {
-            context,
-            documents,
-            native,
-            native_inventory,
-        })
+        Ok(AgentObservation { context, documents })
     }
 
     fn agent(&self, command: AgentCommand) -> Result<Output> {
@@ -1084,50 +869,42 @@ impl App {
                 harness,
                 session_id,
                 stream_id,
-                attest,
-                native_inventory,
-            } => {
-                let observed = self.agent_observation(
-                    harness,
-                    &session_id,
-                    stream_id.as_deref(),
-                    attest,
-                    native_inventory,
-                    30.0,
-                )?;
-                observed.output(self.config.load()?.naming)
-            }
+            } => self
+                .agent_observation(harness, &session_id, stream_id.as_deref())?
+                .output(),
         }
     }
 
     fn apply_request(&self, source: &str) -> Result<Output> {
-        let opened = application::open(&self.config)?;
-        catalog::apply(opened.backend(), source, &opened.source_id()?)
+        let opened = application::open_records(&self.config)?;
+        let settings = self.config.load()?;
+        if settings.catalog_root != opened.root() {
+            return Err(CliError::message(
+                "catalog root setting changed during apply",
+            ));
+        }
+        catalog::apply(
+            opened.records(),
+            source,
+            opened.source_id(),
+            settings.naming,
+        )
     }
 }
 
 struct AgentObservation {
-    context: agent::AgentContext,
+    context: agent::RecordContext,
     documents: Value,
-    native: Option<native::NativeCaller>,
-    native_inventory: Option<native::NativeInventory>,
 }
 impl AgentObservation {
-    fn output(self, title_defaults: streams_temper::model::TitleDefaults) -> Result<Output> {
+    fn output(self) -> Result<Output> {
         let mut value = serde_json::to_value(&self.context)?;
-        value["title_defaults"] = serde_json::to_value(title_defaults)?;
         value.as_object_mut().expect("context object").extend(
             self.documents
                 .as_object()
                 .expect("document context object")
                 .clone(),
         );
-        if let Some(native) = self.native {
-            value["native"] = serde_json::to_value(native)?;
-        }
-        if let Some(inventory) = self.native_inventory {
-            value["native_inventory"] = serde_json::to_value(inventory)?;
-        }
         Ok(Output::value(value))
     }
 }
@@ -1206,94 +983,12 @@ fn resolve<'a, T>(
         }),
     }
 }
-fn catalog_data(catalog: &Catalog) -> Value {
-    json!({"streams":catalog.streams(),"sessions":catalog.sessions()})
-}
-fn read_catalog(backend: &dyn CatalogBackend, refresh: bool) -> Result<(Catalog, Value)> {
-    let ReadResult {
-        catalog,
-        local,
-        confirmed,
-        freshness,
-        fetched_at,
-        conflicts,
-        detail,
-    } = backend.read(refresh)?;
-    let mut sharing = json!({"freshness":freshness,"fetched_at":fetched_at,"view":if catalog==local.catalog{"local"}else{"projected"},"conflicts":conflicts,"detail":detail});
-    if !conflicts.is_empty()
-        && let Some(confirmed) = confirmed
-    {
-        sharing["confirmed"] = catalog_data(&confirmed.catalog);
-    }
-    Ok((catalog, sharing))
-}
 fn result_data(result: &outcomes::Result) -> Result<Value> {
     let mut value = serde_json::to_value(result)?;
     if let Some(domain) = value.get_mut("domain").and_then(Value::as_object_mut) {
         domain.remove("record");
     }
     Ok(value)
-}
-fn save(backend: &dyn CatalogBackend, operation: &Operation) -> Result<outcomes::Result> {
-    Ok(backend.save(
-        operation,
-        Some(&Origin::from([("command".into(), "streams".into())])),
-    )?)
-}
-fn finish(
-    backend: &dyn CatalogBackend,
-    operation: &Operation,
-    saved: outcomes::Result,
-    event: SyncEvent,
-    extra: Option<Value>,
-) -> Result<Output> {
-    let record = saved
-        .domain
-        .as_ref()
-        .and_then(|domain| match domain {
-            operations::Reconciliation::Changes { record, .. } => Some(record.as_ref()),
-            _ => None,
-        })
-        .unwrap_or_else(|| operation.after());
-    let key = record.kind().to_string();
-    let mut payload = json!({"operation_id":operation.id(),"save":result_data(&saved)?,key.clone():record_to_data(record)});
-    let mut ok = saved.accepted();
-    if ok {
-        let completion = (|| -> Result<()> {
-            let publication = backend.sync(event);
-            ok = !publication.requires_repair();
-            payload["publication"] = result_data(&publication)?;
-            if ok {
-                let current = backend
-                    .snapshot()?
-                    .catalog
-                    .get(&operation.target())
-                    .ok_or_else(|| {
-                        CliError::message(
-                            "saved record is missing; inspect catalog before retrying",
-                        )
-                    })?;
-                payload[&key] = record_to_data(&current);
-            }
-            Ok(())
-        })();
-        if let Err(error) = completion {
-            payload["completion_error"] = json!({"message":error.to_string(),"detail":"local save succeeded; inspect before retrying"});
-            ok = false;
-        }
-    }
-    let completed = extra
-        .as_ref()
-        .is_none_or(|extra| extra["runtime"].get("error").is_none());
-    if let Some(Value::Object(extra)) = extra {
-        payload
-            .as_object_mut()
-            .expect("receipt object")
-            .extend(extra);
-    }
-    let mut output = Output::receipt(payload, ok && completed);
-    output.accepted_save = saved.accepted();
-    Ok(output)
 }
 fn binding_data(binding: &runtime::DirectoryBinding) -> Value {
     json!({"cwd":binding.cwd,"checkout_id":binding.checkout.as_ref().map(|c|&c.id),"relative_cwd":binding.checkout.as_ref().map(|c|&c.relative_cwd),"repository_url":binding.checkout.as_ref().and_then(|c|c.repository_url.as_ref())})

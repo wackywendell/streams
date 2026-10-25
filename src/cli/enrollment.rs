@@ -1,68 +1,74 @@
-//! Ordered local enrollment. Receipts and native claims survive incomplete completion.
+//! Record-local enrollment and host-local directory selection. Native admission belongs to the driver.
 
-use super::*;
+use super::{App, CliError, Output, Result, application};
 use serde::Serialize;
 use streams_temper::{
-    agent::{EnrollmentRequest, effort_id_for},
-    operations::Authority,
-    runtime::{checkouts::canonical_directory, conversations::Harness, native::verify_pi_caller},
+    agent::{ContextRequest, EnrollmentRequest, RecordContext},
+    model::{Record, Session, Stream},
+    runtime::checkouts::canonical_directory,
+    storage::records::RecordSave,
 };
+
+#[cfg(test)]
+mod tests;
+
+pub(super) struct LocalEnrollment {
+    pub(super) output: Output,
+    pub(super) session: Option<Session>,
+    pub(super) stream: Option<Stream>,
+    pub(super) directory_selected: bool,
+}
 
 #[derive(Default, Serialize)]
 struct Receipt {
     catalog_source: String,
     saves: Vec<Saved>,
     #[serde(skip_serializing_if = "Option::is_none")]
-    publication: Option<Value>,
     stream: Option<Stream>,
+    #[serde(skip_serializing_if = "Option::is_none")]
     session: Option<Session>,
-    authority: Option<Authority>,
     #[serde(skip_serializing_if = "Option::is_none")]
     completion_error: Option<CompletionError>,
+    #[serde(skip)]
+    accepted: bool,
 }
 #[derive(Serialize)]
 struct Saved {
     operation_id: String,
-    #[serde(serialize_with = "serialize_save")]
-    save: outcomes::Result,
+    save: serde_json::Value,
 }
 #[derive(Serialize)]
 struct CompletionError {
     message: String,
     detail: &'static str,
 }
-
-fn serialize_save<S: serde::Serializer>(
-    saved: &outcomes::Result,
-    serializer: S,
-) -> std::result::Result<S::Ok, S::Error> {
-    let mut data = result_data(saved).map_err(serde::ser::Error::custom)?;
-    if let Some(domain) = &saved.domain {
-        data["domain"]["record"] = match domain {
-            operations::Reconciliation::Changes { record, .. } => record_to_data(record),
-            _ => Value::Null,
-        };
-    }
-    data.serialize(serializer)
-}
-
 impl Receipt {
-    fn persist(&mut self, backend: &dyn CatalogBackend, operation: Operation) -> Result<()> {
-        let saved = backend.save(
-            &operation,
-            Some(&Origin::from([("command".into(), "streams-agent".into())])),
-        )?;
-        let accepted = saved.accepted();
+    fn persist(
+        &mut self,
+        operation_id: String,
+        result: application::Result<RecordSave>,
+    ) -> Result<RecordSave> {
+        let saved = match result {
+            Ok(saved) => saved,
+            Err(application::ApplicationError::Storage(error)) if error.is_uncertain() => {
+                self.saves.push(Saved {
+                    operation_id,
+                    save: serde_json::json!({
+                        "local":"uncertain","domain":null,"detail":error.to_string(),
+                    }),
+                });
+                return Err(application::ApplicationError::Storage(error).into());
+            }
+            Err(error) => return Err(error.into()),
+        };
         self.saves.push(Saved {
-            operation_id: operation.id().into(),
-            save: saved,
+            operation_id,
+            save: serde_json::json!({
+                "local":if saved.repeated {"unchanged"} else {"persisted"},"domain":saved.outcome,
+            }),
         });
-        if !accepted {
-            return Err(CliError::message(
-                "enrollment operation was not accepted; inspect its save receipt",
-            ));
-        }
-        Ok(())
+        self.accepted = true;
+        Ok(saved)
     }
 }
 
@@ -72,212 +78,141 @@ impl App {
     }
 
     pub(super) fn enroll_request(&self, source: &str) -> Result<Output> {
-        let opened = application::open(&self.config)?;
-        let catalog_source = opened.source_id()?;
-        let request = EnrollmentRequest::parse(source, &catalog_source)?;
-        let directory = canonical_directory(&self.path(Path::new(request.cwd()))?)?;
-        let state = self.state(&opened)?;
-        let connection = self.native_frontend(&self.selection(None)?, 30.0)?;
-        let caller = connection
-            .as_ref()
-            .map(BuiltinFrontend::caller)
-            .transpose()?;
-        let explicit = self
-            .environment
-            .get("STREAMS_STREAM_ID")
-            .map(String::as_str);
-        let verify = || -> Result<()> {
-            if request.actor() == Actor::Automatic
-                && request.harness() == Harness::Pi
-                && let Some(client) = connection.as_ref().and_then(BuiltinFrontend::herdr)
-            {
-                let proof = verify_pi_caller(client, request.harness_session_id())?;
-                if caller
-                    .as_ref()
-                    .is_none_or(|caller| caller.workspace_id() != proof.workspace_id())
-                {
-                    return Err(CliError::message(
-                        "calling workspace changed during enrollment",
-                    ));
-                }
-            }
-            Ok(())
-        };
-        verify()?;
+        let opened = application::open_records(&self.config)?;
+        let request = EnrollmentRequest::parse(source, opened.source_id())?;
+        let settings = self.config.load()?;
+        if settings.catalog_root != opened.root() {
+            return Err(CliError::message(
+                "catalog root setting changed during enrollment",
+            ));
+        }
+        let observed = self.context_from_records(
+            &opened,
+            ContextRequest {
+                harness: request.harness(),
+                native_id: request.harness_session_id(),
+                stream_id: None,
+                environment_stream_id: None,
+                workspace_stream_id: None,
+            },
+            settings.naming,
+        )?;
+        Ok(self.enroll_records(&opened, &request, &observed)?.output)
+    }
+
+    pub(super) fn enroll_records(
+        &self,
+        opened: &application::OpenedRecords,
+        request: &EnrollmentRequest,
+        observed: &RecordContext,
+    ) -> Result<LocalEnrollment> {
+        if request.catalog_source() != opened.source_id()
+            || observed.catalog_source != opened.source_id()
+            || observed.host_id != opened.host().as_str()
+        {
+            return Err(CliError::message(
+                "enrollment context belongs to another catalog producer",
+            ));
+        }
         let mut receipt = Receipt {
-            catalog_source: catalog_source.clone(),
+            catalog_source: opened.source_id().into(),
             ..Receipt::default()
         };
+        let mut directory_selected = false;
         let completion = (|| -> Result<()> {
-            let _conversation = state
-                .conversation_lock(request.harness().as_ref(), request.harness_session_id())?;
-            let mut scope = state.enrollment(
-                caller
-                    .as_ref()
-                    .map(|caller| (caller.scope(), caller.workspace_id())),
-                explicit,
-            )?;
-            // Waiting for either lock must not turn an earlier observation into native authority.
-            verify()?;
-            let current = agent::context(
-                opened.backend(),
+            let directory = canonical_directory(&self.path(std::path::Path::new(request.cwd()))?)?;
+            if request.stream_proposal().is_some() {
+                let saved = receipt.persist(
+                    format!("{}:stream", request.operation_id()),
+                    application::enroll_stream(opened.records(), opened.host().as_str(), request),
+                )?;
+                let Record::Stream(stream) = saved.current.record else {
+                    return Err(CliError::message("enrollment returned a non-Stream effort"));
+                };
+                receipt.stream = Some(stream);
+            }
+            let saved = application::enroll_session_observed(
+                opened.records(),
                 opened.host().as_str(),
-                &catalog_source,
-                ContextRequest {
-                    harness: request.harness(),
-                    native_id: request.harness_session_id(),
-                    stream_id: request.stream_id(),
-                    environment_stream_id: explicit,
-                    workspace_stream_id: None,
-                },
-            )
-            .map_err(|error| CliError::message(error.to_string()))?;
-            if let (Some(stream), Some(scope_id)) = (&current.stream, scope.stream_id())
-                && stream.id != scope_id
-            {
+                request,
+            );
+            let (save, dependency) = match saved {
+                Ok(saved) => (Ok(saved.save), saved.stream),
+                Err(error) => (Err(error), None),
+            };
+            let saved = receipt.persist(format!("{}:session", request.operation_id()), save)?;
+            let Record::Session(session) = saved.current.record else {
                 return Err(CliError::message(
-                    "calling workspace has a different effort; moving requires an explicit move or fork operation",
+                    "enrollment returned a non-Session conversation",
+                ));
+            };
+            let matching = |stream: &Stream| {
+                stream.id == session.stream_id && stream.owner_host_id == session.host_id
+            };
+            receipt.stream = dependency
+                .filter(matching)
+                .or_else(|| receipt.stream.take().filter(matching))
+                .or_else(|| {
+                    observed
+                        .stream
+                        .as_ref()
+                        .filter(|stream| matching(stream))
+                        .cloned()
+                });
+            let changed_membership = saved
+                .outcome
+                .get("stream_id")
+                .and_then(serde_json::Value::as_str)
+                != Some(session.stream_id.as_str());
+            receipt.session = Some(session);
+            if changed_membership {
+                return Err(CliError::message(
+                    "retained enrollment predates the current membership; inspect current records before completing directory or native setup",
                 ));
             }
-            let selected_id = current
-                .stream
-                .as_ref()
-                .map(|stream| stream.id.clone())
-                .or_else(|| scope.stream_id().map(str::to_owned))
-                .unwrap_or_else(|| {
-                    effort_id_for(
-                        opened.host().as_str(),
-                        request.harness(),
-                        request.harness_session_id(),
-                    )
-                });
-            let mut stream = current.stream;
-            if stream.is_none() {
-                stream = opened
-                    .backend()
-                    .snapshot()?
-                    .catalog
-                    .stream(&selected_id)
-                    .cloned();
-            }
-            let mut session = current.session;
-            receipt.stream = stream.clone();
-            receipt.session = session.clone();
-            receipt.authority = current.authority;
-            if request.actor() == Actor::User
-                && request.stream_proposal().is_some()
-                && let Some(existing) = &stream
-            {
-                let authority = opened.backend().authority(&existing.id)?;
-                if authority.as_ref().is_none_or(|authority| {
-                    authority.host_id != opened.host().as_str()
-                        || authority.token != format!("{}:stream", request.operation_id())
-                }) {
-                    return Err(CliError::message(
-                        "effort already exists here; attach to it or create work in another workspace",
-                    ));
-                }
-                receipt.persist(
-                    opened.backend(),
-                    Operation::new(
-                        format!("{}:stream", request.operation_id()),
-                        None,
-                        Record::Stream(request.stream(opened.host().as_str(), &existing.id)?),
-                        Actor::User,
-                        None,
-                        vec![],
-                    )?,
-                )?;
-            }
-            let stream = match stream {
-                Some(stream) => stream,
-                None => {
-                    let stream = request.stream(opened.host().as_str(), &selected_id)?;
-                    scope.claim(&stream.id)?;
-                    receipt.persist(
-                        opened.backend(),
-                        Operation::new(
-                            format!("{}:stream", request.operation_id()),
-                            None,
-                            Record::Stream(stream.clone()),
-                            request.actor(),
-                            None,
-                            vec![],
-                        )?,
-                    )?;
-                    receipt.stream = Some(stream.clone());
-                    stream
-                }
-            };
-            let authority = opened
-                .backend()
-                .authority(&stream.id)?
-                .filter(|authority| authority.host_id == opened.host().as_str())
-                .ok_or_else(|| {
-                    CliError::message(
-                        "effective ownership on this host is required to attach a conversation",
-                    )
-                })?;
-            scope.claim(&stream.id)?;
-            if session.is_none() {
-                let proposed = request.session(opened.host().as_str(), &stream.id)?;
-                receipt.persist(
-                    opened.backend(),
-                    Operation::new(
-                        format!("{}:session", request.operation_id()),
-                        None,
-                        Record::Session(proposed.clone()),
-                        request.actor(),
-                        Some(authority.token.clone()),
-                        vec![],
-                    )?,
-                )?;
-                session = Some(proposed);
-            }
-            let session = session.expect("existing or accepted session");
-            receipt.stream = Some(stream.clone());
-            receipt.session = Some(session.clone());
-            receipt.authority = Some(authority.clone());
-            let checkouts = self.registry(&opened)?;
-            let locations = self.locations(&opened)?;
+            let session = receipt.session.as_ref().expect("accepted current Session");
+            let stream = receipt.stream.as_ref().ok_or_else(||CliError::message(
+                "accepted enrollment has no already-observed matching Stream; refresh before completing local or native setup"))?;
+            let locations = self.locations(opened.root(), opened.host().as_str())?;
             locations.remember(&stream.id, &directory, None, true, None, None)?;
             let binding =
                 locations.remember(&stream.id, &directory, Some(&session.id), true, None, None)?;
             if let Some(checkout) = binding.checkout {
-                checkouts.bind_inferred_repositories(
-                    &checkout.id,
-                    &streams_temper::process::NativeProcessRunner,
-                )?;
+                self.registry(opened.host().as_str())?
+                    .bind_inferred_repositories(
+                        &checkout.id,
+                        &streams_temper::process::NativeProcessRunner,
+                    )?;
             }
-            scope.bind(&stream.id, &authority)?;
+            directory_selected = true;
             Ok(())
         })();
-        let mut code = if let Err(error) = completion {
-            if receipt.saves.is_empty() && receipt.session.is_none() {
+        if let Err(error) = completion {
+            if receipt.saves.is_empty() {
                 return Err(error);
             }
             receipt.completion_error = Some(CompletionError {
                 message: error.to_string(),
-                detail: "enrollment incomplete; inspect saved records and receipts before retrying",
+                detail: "local enrollment needs attention; retain these receipts and inspect before retrying",
             });
-            2
-        } else {
-            0
-        };
-        if code == 0 || receipt.saves.iter().any(|saved| saved.save.accepted()) {
-            let publication = opened.backend().sync(SyncEvent::Attach);
-            if publication.requires_repair() {
-                code = 2;
-            }
-            receipt.publication = Some(result_data(&publication)?);
         }
-        let accepted_save = receipt.saves.iter().any(|saved| saved.save.accepted());
-        Ok(Output {
-            value: serde_json::to_value(receipt)?,
-            code,
+        let value = serde_json::to_value(&receipt)?;
+        let output = Output {
+            value,
             plain: None,
             notices: vec![],
-            accepted_save,
+            code: if receipt.completion_error.is_some() {
+                2
+            } else {
+                0
+            },
+            accepted_save: receipt.accepted,
+        };
+        Ok(LocalEnrollment {
+            output,
+            session: receipt.session,
+            stream: receipt.stream,
+            directory_selected,
         })
     }
 }

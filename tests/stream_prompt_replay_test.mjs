@@ -1,5 +1,6 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
+import {sessionId} from './helpers/session-id.mjs';
 import { appendFileSync, chmodSync, existsSync, mkdtempSync, readFileSync, readdirSync, realpathSync, rmSync, statSync, writeFileSync, mkdirSync, symlinkSync, unlinkSync } from 'node:fs';
 import { spawnSync } from 'node:child_process';
 import { tmpdir } from 'node:os';
@@ -18,10 +19,10 @@ const { defaults } = await load('settings');
 const { helperSessionLogger } = await load('helper-log');
 const model = {provider:'fake', id:'chosen', contextWindow:100000};
 const stream = {id:'effort', title:'Work', title_mode:'automatic', goal:'Old goal', goal_short:'Old', goal_mode:'automatic', status:'active', archived:false, owner:{host_id:'host'}, repositories:{}, issues:[], prs:[], documents:[]};
-const session = {id:'card',host_id:'host',stream_id:'effort',harness:'pi',harness_session_id:'native',title:'Lane',title_mode:'automatic',status:'active',state:'Old state',state_short:'Old',remaining:'Old remaining',checkout:null};
+const session = {id:sessionId('host','pi','native'),host_id:'host',stream_id:'effort',harness:'pi',harness_session_id:'native',title:'Lane',title_mode:'automatic',status:'active',state:'Old state',state_short:'Old',remaining:'Old remaining',checkout:null};
 const catalog = native => {
- const card = {...session,id:`card-${native}`,harness_session_id:native};
- return structuredClone({catalog_source:'frozen-source',host_id:'host',stream,session:card,sessions:[card],authority:{host_id:'host',token:'LIVE-SECRET'}});
+ const card = {...session,id:sessionId('host','pi',native),harness_session_id:native};
+ return structuredClone({catalog_source:'frozen-source',host_id:'host',stream,session:card,sessions:[card],title_defaults:{stream:'automatic',session:'automatic'}});
 };
 const response = args => ({role:'assistant',content:[{type:'toolCall',id:'call',name:'record_card',arguments:args}],api:'fake',provider:'fake',model:'chosen',stopReason:'toolUse',timestamp:0});
 const runtime = generate => ({model:{...model,id:'not-selected'}, modelRegistry:{find:(provider,id)=>provider===model.provider && id===model.id?model:undefined,complete:async(selected,payload,options)=>{assert.equal(selected.id,'chosen');return generate(payload,options);}}});
@@ -49,8 +50,7 @@ function previewFixture(onRequest=()=>{}) {
    if(request.kind==='session') next.sessions = next.sessions.map(card=>card.id===next.session.id?structuredClone(next.session):card);
   } else {
    next.stream ??= {...structuredClone(stream),...request.stream};
-   next.session = {...structuredClone(session),...request.session, harness_session_id:request.harness_session_id};next.sessions.push(structuredClone(next.session));
-   next.authority={host_id:'host',token:'[redacted]'};
+   next.session = {...structuredClone(session),...request.session,id:sessionId('host',request.harness,request.harness_session_id),harness_session_id:request.harness_session_id};next.sessions=[structuredClone(next.session)];
   }
   return {catalog:next,receipt:{operation_id:request.operation_id,save:{local:'persisted',sharing:'local-only',domain:{outcome:'changes'}},simulated:true}};
  };
@@ -65,10 +65,10 @@ function helperFixture(root, inventory) {
  return {helperRoot,file,raw};
 }
 
-test('saved setup freezes sources, redacts authority, and replays independent session-before-effort trials', async()=>temporary(async root=>{
+test('saved setup freezes addressed sources without authority and replays independent session-before-effort trials', async()=>temporary(async root=>{
  const {capture,directory,inventory}=setup(root,['one','two']);
  const original = JSON.stringify(capture), bytes=readFileSync(inventory.samples[0].transcript_file,'utf8');
- assert.equal(capture.samples[0].catalog.authority.token,'[redacted]');assert.equal(inventory.samples[0].catalog.authority.token,'LIVE-SECRET');
+ assert.equal(Object.hasOwn(capture.samples[0].catalog,'authority'),false);assert.deepEqual(capture.samples[0].catalog.title_defaults,{stream:'automatic',session:'automatic'});
  writeFileSync(inventory.samples[0].transcript_file,'source changed after capture');
  const frozen=loadCapture(join(root,'private'),capture.id);assert.deepEqual(frozen,capture);
  const seen=[], projected=[];
@@ -122,7 +122,7 @@ for(const auto of [false,true]) test(`reset respects manual fields unless explic
 
 test('unattached trials simulate enrollment before ordered reporting and keep unavailable samples listed',async()=>temporary(async root=>{
  const {inventory}=setup(root,['native','missing']);
- const base=inventory.samples[0].catalog;base.stream=null;base.session=null;base.sessions=[];base.authority=null;
+ const base=inventory.samples[0].catalog;base.stream=null;base.session=null;base.sessions=[];
  inventory.target={kind:'workspace',id:'workspace',title:'Workspace'};
  inventory.samples[1].unavailable='Transcript unavailable';inventory.samples[1].transcript_file=null;
  const {capture}=captureSessions(inventory,join(root,'enrollment'));const tasks=[],writes=[];
@@ -190,7 +190,7 @@ test('tampered capture paths, snapshot hashes, card identity, and live tokens ar
  const cases=[
   value=>{value.samples[0].snapshot_file='../../outside.jsonl';},
   value=>{value.samples[0].native_session_id='different';},
-  value=>{value.samples[0].catalog.authority.token='LIVE';},
+  value=>{value.samples[0].catalog.authority={host_id:'host',token:'LIVE'};},
   value=>{value.samples[0].snapshot_hash='tampered';},
   value=>{value.samples[0].evidence.messages=[];},
   value=>{value.target.id='different';},
@@ -222,7 +222,9 @@ test('opt-in helper logging saves a private Pi transcript with response and pars
 
 test('foreign samples use the local catalog host, round-trip, and stay unavailable without inference',async()=>temporary(async root=>{
  const {inventory}=setup(root);const foreign=inventory.samples[0];
- foreign.host_id='remote';foreign.catalog.session.host_id='remote';foreign.catalog.sessions[0].host_id='remote';
+ foreign.host_id='remote';foreign.catalog.stream.owner.host_id='remote';
+ Object.assign(foreign.catalog.session,{host_id:'remote',id:sessionId('remote','pi',foreign.native_session_id)});
+ foreign.catalog.sessions=[foreign.catalog.session];
  foreign.transcript_file=null;foreign.unavailable='Transcript belongs to another host';
  const validated=parseCaptureInventory(JSON.parse(JSON.stringify(inventory)));
  const {capture}=captureSessions(validated,join(root,'foreign'));
@@ -333,7 +335,7 @@ for(const kind of ['snapshot','helper']) test(`failed ${kind} writes leave no da
 
 test('unattached reset is skipped with its notice and zero inference or preview calls',async()=>temporary(async root=>{
  const {inventory}=setup(root);inventory.target={kind:'workspace',id:'workspace',title:'Workspace'};
- Object.assign(inventory.samples[0].catalog,{session:null,stream:null,sessions:[],authority:null});
+ Object.assign(inventory.samples[0].catalog,{session:null,stream:null,sessions:[]});
  const {capture}=captureSessions(inventory,join(root,'reset'));
  const {run}=await replayCapture(capture,join(root,'reset'),runtime(()=>assert.fail('reset inference')),model,{kind:'reset',target:'all',auto:true},()=>assert.fail('reset preview'),new AbortController().signal);
  assert.equal(run.samples[0].status,'skipped');assert.equal(run.samples[0].tasks.length,0);

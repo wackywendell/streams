@@ -2,7 +2,7 @@ use serde_json::{Value, json};
 use streams_temper::{
     agent::{EnrollmentRequest, effort_id_for, preview, session_id_for},
     codec::record_to_data,
-    model::{Record, Session, Stream},
+    model::{Record, Session, Stream, TitleDefaults},
     operations::Actor,
     runtime::conversations::Harness,
 };
@@ -10,69 +10,57 @@ use streams_temper::{
 fn context() -> Value {
     let mut stream = Stream::new("effort", "Effort", Some("Detailed goal".into()), "host").unwrap();
     stream.goal_short = Some("Goal".into());
-    let mut session =
-        Session::new("session", "host", "effort", "pi", "native", "Contribution").unwrap();
+    let mut session = Session::new(
+        Session::id_for("host", "pi", "native"),
+        "host",
+        "effort",
+        "pi",
+        "native",
+        "Contribution",
+    )
+    .unwrap();
     session.state = "Detailed state".into();
     session.state_short = Some("State".into());
-    let other = Session::new("other", "host", "effort", "pi", "other-native", "Other").unwrap();
     let stream = record_to_data(&Record::Stream(stream));
     let session = record_to_data(&Record::Session(session));
-    let other = record_to_data(&Record::Session(other));
-    json!({
-        "catalog_source": "physical-source", "host_id": "host", "stream": stream,
-        "session": session, "sessions": [other, session],
-        "authority": {"host_id": "host", "token": "captured-token"},
-        "checkouts": [], "native": {"opaque": "preserved, not attested"},
-    })
+    json!({"catalog_source":"physical-source","host_id":"host","title_defaults":TitleDefaults::default(),
+        "stream":stream,"session":session,"sessions":[session],"checkouts":[],
+        "document_locations":[],"native":{"opaque":"preserved, not attested"}})
 }
-
 fn empty() -> Value {
     let mut value = context();
     value["stream"] = Value::Null;
     value["session"] = Value::Null;
     value["sessions"] = json!([]);
-    value["authority"] = Value::Null;
     value
 }
-
 fn enrollment() -> Value {
-    json!({
-        "version": 2, "operation_id": "enroll", "catalog_source": "physical-source", "harness": "pi",
-        "harness_session_id": "native", "session": {"title": "Contribution"},
-        "actor": "automatic", "cwd": "/does/not/exist/and/is/not/read",
-    })
+    json!({"version":2,"operation_id":"enroll","catalog_source":"physical-source","harness":"pi","harness_session_id":"native",
+        "session":{"title":"Contribution"},"actor":"automatic","cwd":"/does/not/exist/and/is/not/read"})
 }
-
 fn update(context: &Value, kind: &str, changes: Value, actor: Actor) -> Value {
-    json!({
-        "operation_id": "update", "catalog_source": context["catalog_source"],
-        "kind": kind, "actor": actor, "before": context[kind], "changes": changes,
-        "ownership_token": if kind == "session" || actor == Actor::Automatic {
-            context["authority"]["token"].clone()
-        } else { Value::Null },
-        "inputs": if kind == "session" {
-            json!([{"kind": "stream", "record": context["stream"]}])
-        } else { json!([]) },
-    })
+    json!({"version":2,"operation_id":"update","catalog_source":context["catalog_source"],"kind":kind,"actor":actor,
+        "before":context[kind],"changes":changes,"title_default":context["title_defaults"][kind],
+        "inputs":if kind=="stream" && actor==Actor::Automatic {
+            json!([{"kind":"session","record":context["session"]}])
+        } else {json!([])}})
 }
-
 fn envelope(context: &Value, action: &str, request: &Value) -> Value {
-    json!({"catalog": context, "action": action, "request": request})
+    json!({"catalog":context,"action":action,"request":request})
 }
-
 fn project(context: &Value, action: &str, request: &Value) -> Value {
     preview(&envelope(context, action, request).to_string()).unwrap()
 }
-
 fn reject(context: &Value, action: &str, request: &Value) {
     let source = envelope(context, action, request).to_string();
     assert!(preview(&source).is_err(), "unexpectedly accepted {source}");
 }
-
 fn simulated(result: &Value) {
     assert_eq!(result["simulated"], true);
     assert_eq!(result["local"], "unchanged");
-    assert_eq!(result["sharing"], "local-only");
+    assert!(result.get("sharing").is_none());
+    assert!(result.get("authority").is_none());
+    assert!(result.get("publication").is_none());
 }
 
 #[test]
@@ -149,380 +137,6 @@ fn effort_and_preview_ids_use_python_ascii_json_and_separate_namespaces() {
 }
 
 #[test]
-fn deterministic_enrollment_supports_incremental_session_and_effort_replay() {
-    let capture = empty();
-    let original = capture.clone();
-    let mut request = enrollment();
-    request["stream"] = json!({"title": "New", "goal": "Goal", "goal_short": "Compact"});
-    let first = project(&capture, "enroll", &request);
-    assert_eq!(first, project(&capture, "enroll", &request));
-    assert_eq!(capture, original);
-    simulated(&first);
-    simulated(&first["receipt"]);
-    assert_eq!(first["receipt"]["saves"].as_array().unwrap().len(), 2);
-    for saved in first["receipt"]["saves"].as_array().unwrap() {
-        simulated(&saved["save"]);
-        assert_eq!(saved["save"]["domain"]["outcome"], "changes");
-    }
-    assert!(
-        first["catalog"]["authority"]["token"]
-            .as_str()
-            .unwrap()
-            .contains("redacted-preview")
-    );
-    let context = &first["catalog"];
-    let session_update = update(
-        context,
-        "session",
-        json!({"state": "Follow-on", "state_short": "Ready"}),
-        Actor::Automatic,
-    );
-    let second = project(context, "apply", &session_update);
-    assert_eq!(second["catalog"]["session"]["state_short"], "Ready");
-    simulated(&second["receipt"]["save"]);
-    let mut effort_update = update(
-        &second["catalog"],
-        "stream",
-        json!({"goal": "Refined goal"}),
-        Actor::Automatic,
-    );
-    effort_update["inputs"] = json!([{"kind": "session", "record": second["catalog"]["session"]}]);
-    let third = project(&second["catalog"], "apply", &effort_update);
-    assert_eq!(third["catalog"]["stream"]["goal"], "Refined goal");
-    assert_eq!(third["catalog"]["stream"]["goal_short"], Value::Null);
-    assert_eq!(third["catalog"]["session"], second["catalog"]["session"]);
-    assert_eq!(third["catalog"]["native"], capture["native"]);
-}
-
-#[test]
-fn apply_preserves_supplied_order_and_does_not_modify_its_source() {
-    let capture = context();
-    let request = update(
-        &capture,
-        "session",
-        json!({"remaining": "Next"}),
-        Actor::Automatic,
-    );
-    let source = envelope(&capture, "apply", &request).to_string();
-    let original = source.clone();
-    let result = preview(&source).unwrap();
-    assert_eq!(source, original);
-    assert_eq!(capture, context());
-    assert_eq!(result["catalog"]["session"]["state_short"], Value::Null);
-    assert_eq!(result["catalog"]["sessions"][0], capture["sessions"][0]);
-    assert_eq!(
-        result["catalog"]["sessions"][1],
-        result["catalog"]["session"]
-    );
-    assert_eq!(result["catalog"]["checkouts"], capture["checkouts"]);
-    assert_eq!(result["catalog"]["native"], capture["native"]);
-}
-
-#[test]
-fn moved_primary_and_sibling_sessions_preview_without_loading_past_streams() {
-    let mut capture = context();
-    capture["session"]["previous_stream_ids"] = json!(["old-primary"]);
-    capture["sessions"][1] = capture["session"].clone();
-    capture["sessions"][0]["previous_stream_ids"] = json!(["old-sibling"]);
-    let request = update(
-        &capture,
-        "session",
-        json!({"remaining": "Next"}),
-        Actor::Automatic,
-    );
-    let projected = project(&capture, "apply", &request);
-    assert_eq!(projected["catalog"]["session"]["remaining"], "Next");
-    assert_eq!(
-        projected["catalog"]["session"]["previous_stream_ids"],
-        json!(["old-primary"])
-    );
-    assert_eq!(projected["catalog"]["sessions"][0], capture["sessions"][0]);
-    let request = update(
-        &projected["catalog"],
-        "stream",
-        json!({"goal": "Refined"}),
-        Actor::Automatic,
-    );
-    let projected = project(&projected["catalog"], "apply", &request);
-    assert_eq!(projected["catalog"]["stream"]["goal"], "Refined");
-    assert_eq!(projected["catalog"]["sessions"][0], capture["sessions"][0]);
-}
-
-#[test]
-fn manual_protection_and_derivative_clearing_are_domain_owned() {
-    let mut capture = context();
-    capture["stream"]["title_mode"] = json!("manual");
-    let request = update(
-        &capture,
-        "stream",
-        json!({"title": "Ignored"}),
-        Actor::Automatic,
-    );
-    let result = project(&capture, "apply", &request);
-    assert_eq!(result["catalog"]["stream"]["title"], "Effort");
-    assert_eq!(result["receipt"]["save"]["domain"]["outcome"], "no-change");
-    let request = update(&capture, "stream", json!({"goal": null}), Actor::User);
-    let result = project(&capture, "apply", &request);
-    assert_eq!(result["catalog"]["stream"]["goal_short"], Value::Null);
-    assert_eq!(result["catalog"]["stream"]["goal_mode"], "manual");
-    let request = update(
-        &capture,
-        "session",
-        json!({"status": "done", "state_short": "Finished"}),
-        Actor::Automatic,
-    );
-    let result = project(&capture, "apply", &request);
-    assert_eq!(result["catalog"]["session"]["state_short"], "Finished");
-    let request = update(&capture, "session", json!({"title": "Chosen"}), Actor::User);
-    let result = project(&capture, "apply", &request);
-    assert_eq!(result["catalog"]["session"]["title_mode"], "manual");
-}
-
-#[test]
-fn exact_before_inputs_source_and_authority_are_required() {
-    let capture = context();
-    let base = update(
-        &capture,
-        "session",
-        json!({"title": "User intent"}),
-        Actor::User,
-    );
-    let mut invalid = Vec::new();
-    let mut request = base.clone();
-    request["catalog_source"] = json!("elsewhere");
-    invalid.push(request);
-    let mut request = base.clone();
-    request["before"]["state"] = json!("Stale independent field");
-    invalid.push(request);
-    let mut request = base.clone();
-    request["before"]["id"] = json!("other");
-    invalid.push(request);
-    let mut request = base.clone();
-    request["inputs"][0]["record"]["goal"] = json!("Stale goal");
-    invalid.push(request);
-    for token in [json!("other-period"), Value::Null] {
-        let mut request = base.clone();
-        request["ownership_token"] = token;
-        invalid.push(request);
-    }
-    let mut request = base.clone();
-    request["inputs"] = json!([base["inputs"][0], base["inputs"][0]]);
-    invalid.push(request);
-    for request in invalid {
-        reject(&capture, "apply", &request);
-    }
-    assert_eq!(capture, context());
-}
-
-#[test]
-fn foreign_producer_and_foreign_effective_authority_fail_closed() {
-    let mut capture = context();
-    capture["stream"]["owner"]["host_id"] = json!("foreign");
-    let request = update(
-        &capture,
-        "stream",
-        json!({"goal": "Inference"}),
-        Actor::Automatic,
-    );
-    reject(&capture, "apply", &request);
-    let mut capture = context();
-    capture["authority"]["host_id"] = json!("foreign");
-    let request = update(
-        &capture,
-        "session",
-        json!({"state": "Next"}),
-        Actor::Automatic,
-    );
-    reject(&capture, "apply", &request);
-    capture["session"] = Value::Null;
-    let mut request = enrollment();
-    request["harness_session_id"] = json!("third-native");
-    reject(&capture, "enroll", &request);
-}
-
-#[test]
-fn retry_keeps_existing_identity_and_no_save_receipt_matches_stream_cli_grammar() {
-    let mut capture = context();
-    capture["session"] = Value::Null;
-    let mut request = enrollment();
-    request["harness_session_id"] = json!("third-native");
-    request["stream_id"] = json!("effort");
-    let first = project(&capture, "enroll", &request);
-    assert_eq!(
-        &first["catalog"]["sessions"].as_array().unwrap()[..2],
-        capture["sessions"].as_array().unwrap()
-    );
-    assert_eq!(first["catalog"]["sessions"].as_array().unwrap().len(), 3);
-    request["operation_id"] = json!("retry-is-not-a-new-identity");
-    let repeated = project(&first["catalog"], "enroll", &request);
-    assert_eq!(repeated["catalog"], first["catalog"]);
-    let receipt = &repeated["receipt"];
-    assert_eq!(receipt["saves"], json!([]));
-    assert!(receipt.get("operation_id").is_none());
-    assert!(receipt.get("save").is_none());
-    assert!(receipt["stream"].is_object());
-    assert!(receipt["session"].is_object());
-    assert!(receipt["authority"].is_object());
-    simulated(&receipt["publication"]);
-    assert_eq!(receipt["publication"]["domain"], Value::Null);
-    request["harness_session_id"] = json!("different-native");
-    reject(&first["catalog"], "enroll", &request);
-}
-
-#[test]
-fn new_automatic_enrollment_retry_never_mints_another_effort() {
-    let mut request = enrollment();
-    request["stream"] = json!({"title": "New"});
-    let first = project(&empty(), "enroll", &request);
-    request["operation_id"] = json!("retry");
-    let repeated = project(&first["catalog"], "enroll", &request);
-    assert_eq!(repeated["catalog"], first["catalog"]);
-    assert_eq!(repeated["receipt"]["saves"], json!([]));
-    // Preview authority is not live own-creation evidence for a user proposal replay.
-    request["actor"] = json!("user");
-    reject(&first["catalog"], "enroll", &request);
-}
-
-#[test]
-fn preview_does_not_invent_creation_retry_evidence_from_a_token() {
-    let mut request = enrollment();
-    request["actor"] = json!("user");
-    request["stream"] = json!({"title": "Existing"});
-    let parsed = EnrollmentRequest::parse(&request.to_string(), "physical-source").unwrap();
-    let mut capture = empty();
-    capture["stream"] = record_to_data(&Record::Stream(parsed.stream("host", "effort").unwrap()));
-    capture["authority"] = json!({"host_id": "host", "token": "enroll:stream"});
-    let error = preview(&envelope(&capture, "enroll", &request).to_string()).unwrap_err();
-    assert!(error.to_string().contains("effort already exists"));
-}
-
-#[test]
-fn enrollment_never_moves_or_impersonates_supplied_membership() {
-    let capture = context();
-    for (field, value) in [
-        ("stream_id", json!("other")),
-        ("harness_session_id", json!("other-native")),
-        ("harness", json!("codex")),
-    ] {
-        let mut request = enrollment();
-        request[field] = value;
-        reject(&capture, "enroll", &request);
-    }
-    let mut omitted_primary = capture.clone();
-    omitted_primary["session"] = Value::Null;
-    reject(&omitted_primary, "enroll", &enrollment());
-    reject(&empty(), "enroll", &enrollment());
-    let mut request = enrollment();
-    request["stream_id"] = json!("unknown");
-    request["stream"] = json!({"title": "New"});
-    reject(&empty(), "enroll", &request);
-}
-
-#[test]
-fn context_fields_and_identity_relationships_are_strict() {
-    let capture = context();
-    let request = update(&capture, "session", json!({}), Actor::Automatic);
-    for field in [
-        "catalog_source",
-        "host_id",
-        "stream",
-        "session",
-        "sessions",
-        "authority",
-    ] {
-        let mut broken = capture.clone();
-        broken.as_object_mut().unwrap().remove(field);
-        reject(&broken, "apply", &request);
-    }
-    let mut invalid = Vec::new();
-    let mut broken = capture.clone();
-    broken["session"]["host_id"] = json!("foreign");
-    invalid.push(broken);
-    let mut broken = capture.clone();
-    broken["sessions"] = json!([capture["sessions"][0]]);
-    invalid.push(broken);
-    let mut broken = capture.clone();
-    broken["sessions"][0]["stream_id"] = json!("elsewhere");
-    invalid.push(broken);
-    let mut broken = capture.clone();
-    broken["sessions"] = json!([capture["session"], capture["session"]]);
-    invalid.push(broken);
-    let mut broken = capture.clone();
-    broken["sessions"][0]["harness_session_id"] = json!("native");
-    invalid.push(broken);
-    let mut broken = capture.clone();
-    broken["session"]["state"] = json!("Not the exact supplied member");
-    invalid.push(broken);
-    let mut broken = empty();
-    broken["authority"] = capture["authority"].clone();
-    invalid.push(broken);
-    for broken in invalid {
-        reject(&broken, "apply", &request);
-    }
-}
-
-#[test]
-fn unknown_fields_positional_arrays_and_map_shaped_enums_are_rejected() {
-    let capture = context();
-    let request = update(&capture, "session", json!({}), Actor::Automatic);
-    let base = envelope(&capture, "apply", &request);
-    let paths = [
-        "/unexpected",
-        "/catalog/unexpected",
-        "/catalog/session/unexpected",
-        "/catalog/stream/unexpected",
-        "/catalog/authority/unexpected",
-        "/request/unexpected",
-    ];
-    for path in paths {
-        let mut wire = base.clone();
-        let (parent, key) = path.rsplit_once('/').unwrap();
-        wire.pointer_mut(parent)
-            .unwrap()
-            .as_object_mut()
-            .unwrap()
-            .insert(key.into(), json!(true));
-        assert!(preview(&wire.to_string()).is_err(), "{path}");
-    }
-    for path in [
-        "/catalog",
-        "/catalog/session",
-        "/catalog/stream",
-        "/catalog/authority",
-        "/catalog/sessions/0",
-        "/request",
-        "/request/before",
-        "/request/inputs/0",
-    ] {
-        let mut wire = base.clone();
-        *wire.pointer_mut(path).unwrap() = json!([]);
-        assert!(preview(&wire.to_string()).is_err(), "{path}");
-    }
-    for (path, value) in [
-        ("/action", json!({"apply": null})),
-        ("/request/actor", json!({"automatic": null})),
-        ("/request/kind", json!({"session": null})),
-        ("/catalog/stream/status", json!({"active": null})),
-        ("/catalog/stream/title_mode", json!({"automatic": null})),
-    ] {
-        let mut wire = base.clone();
-        *wire.pointer_mut(path).unwrap() = value;
-        assert!(preview(&wire.to_string()).is_err(), "{path}");
-    }
-    for source in ["null", "[]", "{}", r#"{"catalog":{},"catalog":{}}"#] {
-        assert!(preview(source).is_err());
-    }
-    let source = base.to_string();
-    let duplicated = source.replacen(
-        "\"state\":\"Detailed state\"",
-        "\"state\":\"Detailed state\",\"state\":\"duplicate\"",
-        1,
-    );
-    assert_ne!(source, duplicated);
-    assert!(preview(&duplicated).is_err());
-}
-
-#[test]
 fn enrollment_request_shape_and_text_validation_match_the_live_boundary() {
     let base = enrollment();
     for field in [
@@ -585,4 +199,319 @@ fn enrollment_request_shape_and_text_validation_match_the_live_boundary() {
         1,
     );
     assert!(EnrollmentRequest::parse(&duplicate, "physical-source").is_err());
+}
+
+#[test]
+fn v2_enrollment_and_follow_on_edits_use_addressed_records_without_storage_or_authority() {
+    let capture = empty();
+    let original = capture.clone();
+    let mut request = enrollment();
+    request["stream"] = json!({"title":"New","goal":"Goal","goal_short":"Compact"});
+    let first = project(&capture, "enroll", &request);
+    assert_eq!(first, project(&capture, "enroll", &request));
+    assert_eq!(capture, original);
+    simulated(&first);
+    simulated(&first["receipt"]);
+    assert_eq!(first["receipt"]["saves"].as_array().unwrap().len(), 2);
+    for save in first["receipt"]["saves"].as_array().unwrap() {
+        simulated(&save["save"]);
+    }
+    assert!(first["catalog"].get("authority").is_none());
+    let request = update(
+        &first["catalog"],
+        "session",
+        json!({"state":"Follow-on","state_short":"Ready"}),
+        Actor::Automatic,
+    );
+    let second = project(&first["catalog"], "apply", &request);
+    assert_eq!(second["catalog"]["session"]["state_short"], "Ready");
+    assert_eq!(
+        second["catalog"]["sessions"],
+        json!([second["catalog"]["session"]])
+    );
+    let request = update(
+        &second["catalog"],
+        "stream",
+        json!({"goal":"Refined goal"}),
+        Actor::Automatic,
+    );
+    let third = project(&second["catalog"], "apply", &request);
+    assert_eq!(third["catalog"]["stream"]["goal"], "Refined goal");
+    assert!(third["catalog"]["stream"]["goal_short"].is_null());
+    assert_eq!(third["catalog"]["native"], capture["native"]);
+    assert_eq!(
+        third["catalog"]["document_locations"],
+        capture["document_locations"]
+    );
+}
+
+#[test]
+fn current_membership_history_is_preserved_without_loading_past_streams() {
+    let mut capture = context();
+    capture["session"]["previous_stream_ids"] = json!(["old-primary"]);
+    capture["sessions"] = json!([capture["session"]]);
+    let source = envelope(
+        &capture,
+        "apply",
+        &update(
+            &capture,
+            "session",
+            json!({"remaining":"Next"}),
+            Actor::Automatic,
+        ),
+    )
+    .to_string();
+    let original = source.clone();
+    let result = preview(&source).unwrap();
+    assert_eq!(source, original);
+    assert_eq!(result["catalog"]["session"]["remaining"], "Next");
+    assert_eq!(
+        result["catalog"]["session"]["previous_stream_ids"],
+        json!(["old-primary"])
+    );
+    assert_eq!(
+        result["catalog"]["sessions"],
+        json!([result["catalog"]["session"]])
+    );
+    assert_eq!(result["catalog"]["checkouts"], capture["checkouts"]);
+}
+
+#[test]
+fn manual_protection_derivative_clearing_and_inherited_defaults_are_domain_owned() {
+    let mut capture = context();
+    capture["title_defaults"]["stream"] = json!("manual");
+    let result = project(
+        &capture,
+        "apply",
+        &update(
+            &capture,
+            "stream",
+            json!({"title":"Ignored"}),
+            Actor::Automatic,
+        ),
+    );
+    assert_eq!(result["catalog"]["stream"]["title"], "Effort");
+    assert_eq!(result["receipt"]["save"]["domain"]["outcome"], "no-change");
+    let result = project(
+        &capture,
+        "apply",
+        &update(&capture, "stream", json!({"goal":null}), Actor::User),
+    );
+    assert!(result["catalog"]["stream"]["goal_short"].is_null());
+    assert_eq!(result["catalog"]["stream"]["goal_mode"], "manual");
+    let result = project(
+        &capture,
+        "apply",
+        &update(
+            &capture,
+            "session",
+            json!({"status":"done","state_short":"Finished"}),
+            Actor::Automatic,
+        ),
+    );
+    assert_eq!(result["catalog"]["session"]["state_short"], "Finished");
+    let result = project(
+        &capture,
+        "apply",
+        &update(&capture, "session", json!({"title":"Chosen"}), Actor::User),
+    );
+    assert_eq!(result["catalog"]["session"]["title_mode"], "manual");
+}
+
+#[test]
+fn exact_before_source_and_automatic_stream_input_are_required_without_ownership_tokens() {
+    let capture = context();
+    let base = update(&capture, "session", json!({"state":"Next"}), Actor::User);
+    for (field, value) in [
+        ("catalog_source", json!("wrong")),
+        ("ownership_token", json!("old")),
+        ("version", json!(1)),
+        ("title_default", Value::Null),
+    ] {
+        let mut request = base.clone();
+        request[field] = value;
+        reject(&capture, "apply", &request);
+    }
+    let mut request = base;
+    request["before"]["state"] = json!("Stale");
+    reject(&capture, "apply", &request);
+    let mut request = update(&capture, "stream", json!({"goal":"Next"}), Actor::Automatic);
+    request["inputs"][0]["record"]["state"] = json!("Stale");
+    reject(&capture, "apply", &request);
+    let mut request = update(
+        &capture,
+        "session",
+        json!({"state":"Next"}),
+        Actor::Automatic,
+    );
+    request["inputs"] = json!([{"kind":"stream","record":capture["stream"]}]);
+    reject(&capture, "apply", &request);
+    let mut request = update(&capture, "stream", json!({"goal":"Next"}), Actor::Automatic);
+    request["inputs"] = json!([]);
+    reject(&capture, "apply", &request);
+    assert_eq!(capture, context());
+}
+
+#[test]
+fn preview_does_not_invent_creation_retry_evidence_or_publication() {
+    let mut request = enrollment();
+    request["stream"] = json!({"title":"New"});
+    let first = project(&empty(), "enroll", &request);
+    reject(&first["catalog"], "enroll", &request);
+    request.as_object_mut().unwrap().remove("stream");
+    request["stream_id"] = first["catalog"]["stream"]["id"].clone();
+    let repeated = project(&first["catalog"], "enroll", &request);
+    assert_eq!(repeated["catalog"], first["catalog"]);
+    assert_eq!(repeated["receipt"]["saves"].as_array().unwrap().len(), 1);
+    assert_eq!(
+        repeated["receipt"]["saves"][0]["save"]["domain"]["outcome"],
+        "no-change"
+    );
+    simulated(&repeated["receipt"]);
+    let mut request = enrollment();
+    let mut uncarded = context();
+    uncarded["session"] = Value::Null;
+    uncarded["sessions"] = json!([]);
+    reject(&uncarded, "enroll", &request);
+    request["stream_id"] = json!("effort");
+    assert_eq!(
+        project(&uncarded, "enroll", &request)["catalog"]["sessions"]
+            .as_array()
+            .unwrap()
+            .len(),
+        1
+    );
+}
+
+#[test]
+fn foreign_records_are_not_preview_write_authority_and_enrollment_never_impersonates_a_session() {
+    let mut capture = context();
+    capture["stream"]["owner"]["host_id"] = json!("foreign");
+    capture["session"]["host_id"] = json!("foreign");
+    capture["session"]["id"] = json!(Session::id_for("foreign", "pi", "native"));
+    capture["sessions"] = json!([capture["session"]]);
+    let error = preview(
+        &envelope(
+            &capture,
+            "apply",
+            &update(&capture, "session", json!({"state":"Next"}), Actor::User),
+        )
+        .to_string(),
+    )
+    .unwrap_err();
+    assert!(error.to_string().contains("read-only"));
+    for (field, value) in [
+        ("stream_id", json!("other")),
+        ("harness_session_id", json!("other-native")),
+        ("harness", json!("codex")),
+    ] {
+        let mut request = enrollment();
+        request[field] = value;
+        reject(&context(), "enroll", &request);
+    }
+}
+
+#[test]
+fn context_fields_relationships_and_addressed_session_shape_are_strict() {
+    let capture = context();
+    let request = update(&capture, "session", json!({}), Actor::Automatic);
+    for field in [
+        "catalog_source",
+        "host_id",
+        "stream",
+        "session",
+        "sessions",
+        "title_defaults",
+    ] {
+        let mut broken = capture.clone();
+        broken.as_object_mut().unwrap().remove(field);
+        reject(&broken, "apply", &request);
+    }
+    let mut invalid = Vec::new();
+    let mut broken = capture.clone();
+    broken["authority"] = Value::Null;
+    invalid.push(broken);
+    let mut broken = capture.clone();
+    broken["sessions"] = json!([]);
+    invalid.push(broken);
+    let mut broken = capture.clone();
+    broken["sessions"] = json!([capture["session"], capture["session"]]);
+    invalid.push(broken);
+    let mut broken = capture.clone();
+    broken["sessions"][0]["state"] = json!("Not exact");
+    invalid.push(broken);
+    let mut broken = capture.clone();
+    broken["session"]["stream_id"] = json!("elsewhere");
+    broken["sessions"] = json!([broken["session"]]);
+    invalid.push(broken);
+    let mut broken = capture.clone();
+    broken["session"]["id"] = json!("legacy-native-alias");
+    broken["sessions"] = json!([broken["session"]]);
+    invalid.push(broken);
+    let mut broken = capture.clone();
+    broken["session"]["checkout"] =
+        json!({"repository":"repo","ref":"main","directory_within_checkout":"."});
+    broken["sessions"] = json!([broken["session"]]);
+    invalid.push(broken);
+    for broken in invalid {
+        reject(&broken, "apply", &request);
+    }
+}
+
+#[test]
+fn malformed_objects_unknown_fields_enum_maps_and_duplicate_json_are_rejected() {
+    let capture = context();
+    let request = update(&capture, "stream", json!({"goal":"Next"}), Actor::Automatic);
+    let base = envelope(&capture, "apply", &request);
+    for path in [
+        "/unexpected",
+        "/catalog/unexpected",
+        "/catalog/session/unexpected",
+        "/catalog/stream/unexpected",
+        "/request/unexpected",
+    ] {
+        let mut wire = base.clone();
+        let (parent, key) = path.rsplit_once('/').unwrap();
+        wire.pointer_mut(parent)
+            .unwrap()
+            .as_object_mut()
+            .unwrap()
+            .insert(key.into(), json!(true));
+        assert!(preview(&wire.to_string()).is_err(), "{path}");
+    }
+    for path in [
+        "/catalog",
+        "/catalog/session",
+        "/catalog/stream",
+        "/catalog/sessions/0",
+        "/request",
+        "/request/before",
+        "/request/inputs/0",
+    ] {
+        let mut wire = base.clone();
+        *wire.pointer_mut(path).unwrap() = json!([]);
+        assert!(preview(&wire.to_string()).is_err(), "{path}");
+    }
+    for (path, value) in [
+        ("/action", json!({"apply":null})),
+        ("/request/actor", json!({"automatic":null})),
+        ("/request/kind", json!({"stream":null})),
+        ("/catalog/stream/status", json!({"active":null})),
+        ("/catalog/stream/title_mode", json!({"inherit":null})),
+    ] {
+        let mut wire = base.clone();
+        *wire.pointer_mut(path).unwrap() = value;
+        assert!(preview(&wire.to_string()).is_err(), "{path}");
+    }
+    for source in ["null", "[]", "{}", r#"{"catalog":{},"catalog":{}}"#] {
+        assert!(preview(source).is_err());
+    }
+    let source = base.to_string();
+    let duplicate = source.replacen(
+        "\"state\":\"Detailed state\"",
+        "\"state\":\"Detailed state\",\"state\":\"duplicate\"",
+        1,
+    );
+    assert_ne!(source, duplicate);
+    assert!(preview(&duplicate).is_err());
 }

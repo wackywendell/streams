@@ -135,9 +135,6 @@ pub enum Request {
         target: TitleTarget,
         mode: NamingMode,
     },
-    CaptureWorkspace {
-        stream_id: String,
-    },
     Sync {
         event: SyncEvent,
     },

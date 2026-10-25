@@ -33,7 +33,7 @@ export async function runReport(action: ReportAction, environment: ReportEnviron
   if (kind === "session" && reset && capture.catalog.session!.state_short !== null && !Object.hasOwn(inferred.changes, "state_short")) inferred.changes.state_short = null;
   if (kind === "stream" && reset && capture.catalog.stream!.goal_mode === "automatic" && capture.catalog.stream!.goal_short !== null && !Object.hasOwn(inferred.changes, "goal_short")) inferred.changes.goal_short = null;
   if (!Object.keys(inferred.changes).length) return true;
-  const receipt = await environment.apply(editRequest(capture.catalog, kind, inferred.changes, "automatic", environment.operationId(), true));
+  const receipt = await environment.apply(editRequest(capture.catalog, kind, inferred.changes, "automatic", environment.operationId()));
   environment.receipt(receipt);
   if (receiptCanContinue(receipt)) {savedAny = true;return true;}
   return false;
@@ -59,13 +59,13 @@ export async function runReport(action: ReportAction, environment: ReportEnviron
   const source = capture.catalog.catalog_source, sessionId = capture.catalog.session.id, streamId = capture.catalog.stream?.id;
   for (const kind of resetTargets) {
    const record = capture.catalog[kind];
-   if (!record || kind === "stream" && !capture.catalog.authority) continue;
+   if (!record) continue;
    const changes: Record<string, unknown> = {};
-   if (record.title_mode === "manual") changes.title_mode = "automatic";
+   if (record.title_mode === "manual" || record.title_mode === "inherit" && capture.catalog.title_defaults[kind] === "manual") changes.title_mode = "automatic";
    if (kind === "stream" && capture.catalog.stream!.goal_mode === "manual") changes.goal_mode = "automatic";
    if (!Object.keys(changes).length) continue;
    if (signal.aborted || !await capture.attached()) return false;
-   const receipt = await environment.apply(editRequest(capture.catalog, kind, changes, "user", environment.operationId(), false));
+   const receipt = await environment.apply(editRequest(capture.catalog, kind, changes, "user", environment.operationId()));
    environment.receipt(receipt);
    if (receiptCanContinue(receipt)) savedAny = true;
    if (!capture.valid() || !receiptCanContinue(receipt)) return false;
@@ -84,7 +84,7 @@ export async function runReport(action: ReportAction, environment: ReportEnviron
   if (capture.catalog.catalog_source !== sessionBase.catalog_source || capture.catalog.stream?.id !== sessionBase.stream?.id || capture.catalog.session?.id !== sessionBase.session?.id) throw Error("Catalog source or attachment changed; metadata report cancelled");
   if (!capture.valid() || signal.aborted) return false;
  }
- if (!capture.catalog.stream || !automaticFields("stream", capture.catalog.stream).length) return savedAny;
+ if (!capture.catalog.stream || !automaticFields("stream", capture.catalog.stream, capture.catalog.title_defaults.stream).length) return savedAny;
  if (!await inferAndApply("stream")) return false;
  return savedAny;
 }

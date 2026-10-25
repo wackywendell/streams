@@ -2,7 +2,7 @@ import assert from 'node:assert/strict';
 import test from 'node:test';
 import { spawn, spawnSync } from 'node:child_process';
 import { createHash, randomUUID } from 'node:crypto';
-import { existsSync, mkdtempSync, mkdirSync, readFileSync, readdirSync, realpathSync, renameSync, rmSync, symlinkSync, writeFileSync } from 'node:fs';
+import { existsSync, mkdtempSync, mkdirSync, readFileSync, realpathSync, renameSync, rmSync, symlinkSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { dirname, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -101,19 +101,18 @@ test('native accepts canonical matching selectors and the binary alias',async t=
  await (await f.load()).start(new AbortController().signal);process.env.STREAMS_BIN_PATH=f.executable;await (await f.load()).start(new AbortController().signal);
  assert.deepEqual(f.commands(),[{kind:'session_started'},{kind:'session_started'}]);
 });
-test('Rust launch manifest and packaged launcher match the coordinator and require the protected envelope',t=>{
+test('Rust launch manifest and packaged launcher require the binary and plain launch inputs',t=>{
  const directory=temporary(t),script=join(plugin,'bin/open-rust-streams-pane.sh'),log=join(directory,'launch.json');
  const executable=join(directory,'explicit rust');
- writeFileSync(executable,`#!${process.execPath}\nrequire('node:fs').writeFileSync(${JSON.stringify(log)},JSON.stringify({args:process.argv.slice(2),scope:process.env.STREAMS_CARDS_SCOPE}));\n`,{mode:0o700});
- const fields=['SCOPE','OWNER','NONCE','OWNER_TERMINAL','READ_ENV','READ_CWD','STATE_DIR','PLUGIN_ROOT'];
- const env={PATH:process.env.PATH,STREAMS_RUST_BIN:executable,...Object.fromEntries(fields.map(field=>['STREAMS_CARDS_'+field,'protected']))};
+ writeFileSync(executable,`#!${process.execPath}\nrequire('node:fs').writeFileSync(${JSON.stringify(log)},JSON.stringify({args:process.argv.slice(2),context:process.env.STREAMS_CARDS_CONTEXT}));\n`,{mode:0o700});
+ const env={PATH:process.env.PATH,STREAMS_RUST_BIN:executable,STREAMS_CARDS_CONTEXT:'plain launch inputs'};
  const run=environment=>spawnSync('/bin/sh',[script],{env:environment,encoding:'utf8',timeout:5000});
  const syntax=spawnSync('/bin/sh',['-n',script]);assert.equal(syntax.status,0);
- for(const key of ['STREAMS_RUST_BIN',...fields.map(field=>'STREAMS_CARDS_'+field)]) {
+ for(const key of ['STREAMS_RUST_BIN','STREAMS_CARDS_CONTEXT']) {
   const invalid={...env};delete invalid[key];assert.notEqual(run(invalid).status,0);assert.equal(existsSync(log),false);
  }
  assert.equal(run({...env,STREAMS_RUST_BIN:'relative'}).status,1);
- const result=run(env);assert.equal(result.status,0,result.stderr);assert.deepEqual(JSON.parse(readFileSync(log,'utf8')),{args:['native','pane'],scope:'protected'});
+ const result=run(env);assert.equal(result.status,0,result.stderr);assert.deepEqual(JSON.parse(readFileSync(log,'utf8')),{args:['native','pane'],context:'plain launch inputs'});
  const manifest=readFileSync(join(plugin,'streams-rust-herdr-plugin.toml'),'utf8');
  assert.match(manifest,/id = "streams-rust-work-cards"/);assert.match(manifest,/command = \["\/bin\/sh", "bin\/open-rust-streams-pane.sh"\]/);
  for(const file of ['package.json','integrations/herdr-work-cards/package.json']) {
@@ -128,7 +127,7 @@ test('Rust launch manifest and packaged launcher match the coordinator and requi
 const herdrServerSource=`const {workerData}=require('node:worker_threads'),fs=require('node:fs'),net=require('node:net');
 const {socket,file,log,ready}=workerData,flag=new Int32Array(ready);
 function handle(method,params){
- const value=JSON.parse(fs.readFileSync(file,'utf8')),save=()=>fs.writeFileSync(file,JSON.stringify(value));
+ const value=JSON.parse(fs.readFileSync(file,'utf8')),save=()=>{fs.writeFileSync(file+'.server',JSON.stringify(value));fs.renameSync(file+'.server',file);};
  fs.appendFileSync(log,JSON.stringify([method,params])+'\\n');
  if(method==='ping') return {type:'pong',version:'0.9.5',protocol:22};
  if(method==='events.subscribe') return {type:'subscription_started'};
@@ -144,7 +143,7 @@ function handle(method,params){
   save();return {type:'ok'};
  }
 }
-net.createServer(connection=>{let buffer='';connection.on('data',chunk=>{buffer+=chunk;const end=buffer.indexOf('\\n');if(end<0)return;
+net.createServer(connection=>{let buffer='';connection.on('error',error=>{if(!['EPIPE','ECONNRESET'].includes(error.code)) throw error;});connection.on('data',chunk=>{buffer+=chunk;const end=buffer.indexOf('\\n');if(end<0)return;
  const request=JSON.parse(buffer.slice(0,end)),result=handle(request.method,request.params);
  const reply=JSON.stringify(result?{id:request.id,result}:{id:request.id,error:{code:'forbidden',message:'FORBIDDEN '+request.method}})+'\\n';
  if(request.method==='events.subscribe') connection.write(reply);else connection.end(reply);});})
@@ -165,7 +164,7 @@ function real(t,{enrolled=true}={}) {
  const child=(options={})=>{const value=new StreamsChild({sessionId:id,cwd:directory,env:{...process.env},...options});children.push(value);return value;};
  const pane={pane_id:'pane',terminal_id:'terminal',workspace_id:'workspace',tab_id:'tab',cwd:directory,agent:'pi',agent_session:{agent:'pi',kind:'id',value:id},tokens:{}};
  const native={pane,socket,snapshot:{workspaces:[{workspace_id:'workspace',label:'Fixture',number:1,tokens:{}}],tabs:[{workspace_id:'workspace',tab_id:'tab',label:'1',number:1}],panes:[pane],layouts:[{workspace_id:'workspace',tab_id:'tab',panes:[{pane_id:'pane'}]}],agents:[pane]}};
- const put=()=>writeFileSync(fixture,JSON.stringify(native));put();
+ const put=()=>{writeFileSync(fixture+'.parent',JSON.stringify(native));renameSync(fixture+'.parent',fixture);};put();
  // The CLI must never start Herdr; the tripwire records any attempt.
  writeFileSync(executable,`#!${process.execPath}\nrequire('node:fs').appendFileSync(${JSON.stringify(spawned)},JSON.stringify(process.argv.slice(2))+'\\n');process.exit(91);\n`,{mode:0o700});
  herdrServer(t,{socket,file:fixture,log});
@@ -182,20 +181,20 @@ function real(t,{enrolled=true}={}) {
  const catalog=cli('config','get','catalog.root'),hash=value=>createHash('sha256').update(value).digest('hex'),key=(...parts)=>hash('['+parts.map(JSON.stringify).join(', ')+']');
  const host=session?.host_id??JSON.parse(readFileSync(join(directory,'config/streams/host.json'),'utf8')).id;
  const state=join(directory,'state/streams/catalogs',hash(realpathSync(catalog)),key(host));
- const association=join(state,'associations',key('herdr',socket,'fixture'),key('workspace')+'.json');
- mkdirSync(dirname(association),{recursive:true,mode:0o700});writeFileSync(association,JSON.stringify({version:1,workspace_id:'workspace',stream_id:stream.id,session_id:null,command:null,ready:true}),{mode:0o600});
+ const context=cli('agent','context','--harness','pi','--session-id',id);
+ native.snapshot.workspaces[0].tokens={strm_catalog:hash(JSON.stringify(context.catalog_source)),strm_host:host,strm_stream:stream.id};put();
  const transcript=join(directory,'pi/sessions',id+'.jsonl');mkdirSync(dirname(transcript),{recursive:true});
  writeFileSync(transcript,JSON.stringify({type:'session',version:3,id,cwd:directory,timestamp:new Date(0).toISOString()})+'\n');
  const commands=()=>{assert.equal(existsSync(spawned),false,'the Rust CLI started a Herdr process');return existsSync(log)?readFileSync(log,'utf8').trim().split('\n').filter(Boolean).map(JSON.parse):[];};
  return {...f,directory,id,stream,state,native,put,invoke,cli,load,child,commands};
 }
-test('one-shot native operations keep explicit interim snapshot budgets without a scope round trip',t=>{
+test('one-shot native operations subscribe before their single snapshot without a scope round trip',t=>{
  const f=real(t);writeFileSync(join(f.directory,'native-commands.jsonl'),'');
- // Project and capture still reread; the one-observation rewrite is separate.
- for(const [operation,snapshots] of [['observe',1],['check',1],['project',7],['capture',4]]) {
+ for(const operation of ['observe','check','project']) {
   const start=f.commands().length;f.cli('native','--session-id',f.id,operation);const counts={};
   for(const [method] of f.commands().slice(start))counts[method]=(counts[method]??0)+1;
-  assert.equal(counts.ping,1,operation);assert.equal(counts['session.snapshot'],snapshots,operation);
+  assert.equal(counts.ping,1,operation);assert.equal(counts['events.subscribe'],1,operation);assert.equal(counts['session.snapshot'],1,operation);
+  const methods=f.commands().slice(start).map(([method])=>method);assert.ok(methods.indexOf('events.subscribe')<methods.indexOf('session.snapshot'));
  }
 });
 test('Pi reuses one real v2 child; catalog UI facts never trigger a TypeScript native control loop',async t=>{
@@ -206,7 +205,7 @@ test('Pi reuses one real v2 child; catalog UI facts never trigger a TypeScript n
  t.after(async()=>{controller.stop();await controller.idle();});
  await controller.start();await until(()=>f.name()==='Real Rust lane');assert.deepEqual(requests,[{kind:'session_started'}]);
  const outcome=await child.run({kind:'context'});assert.equal(outcome.status,'success');const catalog=outcome.result;
- const intent={operation_id:'child-title',catalog_source:catalog.catalog_source,actor:'user',kind:'session',before:catalog.session,changes:{title:'Child title'},ownership_token:catalog.authority.token,inputs:[]};
+ const intent={version:2,operation_id:'child-title',catalog_source:catalog.catalog_source,actor:'user',kind:'session',before:catalog.session,changes:{title:'Child title'},title_default:catalog.title_defaults.session,inputs:[]};
  const saved=await child.run({kind:'apply',request:intent});assert.notEqual(saved.status,'error',JSON.stringify(saved));
  await until(()=>f.name()==='Child title');assert.deepEqual(requests.map(request=>request.kind),['session_started','context','apply']);assert.equal(spawns,1);
  assert.ok(f.commands().some(([method])=>method.endsWith('report_metadata')));assert.deepEqual(notices,[]);
@@ -220,9 +219,9 @@ test('real Rust owner observation is read-only and wrong session/caller refuses 
  const f=real(t),before=readFileSync(join(f.directory,'native.json'),'utf8');
  f.cli('native','--session-id',f.id,'observe');
  assert.equal(readFileSync(join(f.directory,'native.json'),'utf8'),before);assert.equal(existsSync(join(f.state,'native-cards')),false);
- const wrongSession=f.invoke('native','--session-id',randomUUID(),'project');assert.notEqual(wrongSession.code,0);assert.match(wrongSession.data.error.message,/session|caller|origin/i);
+ const wrongSession=f.invoke('native','--session-id',randomUUID(),'project');assert.notEqual(wrongSession.code,0);assert.match(wrongSession.data.error.message,/session|conversation|caller|origin/i);
  f.native.pane.agent_session={agent:'pi',kind:'id',value:randomUUID()};f.put();
- const wrongCaller=f.invoke('native','--session-id',f.id,'project');assert.notEqual(wrongCaller.code,0);assert.match(wrongCaller.data.error.message,/session|caller|origin/i);
+ const wrongCaller=f.invoke('native','--session-id',f.id,'project');assert.notEqual(wrongCaller.code,0);assert.match(wrongCaller.data.error.message,/session|conversation|caller|origin/i);
  assert.ok(f.commands().every(([method])=>!method.endsWith('report_metadata')));
 });
 test('launched-card readers reject a socket or namespace that contradicts the pinned endpoint',t=>{
@@ -231,38 +230,23 @@ test('launched-card readers reject a socket or namespace that contradicts the pi
  const reader=Object.fromEntries(keys.filter(key=>process.env[key]!==undefined).map(key=>[key,process.env[key]]));
  const card={...f.native.pane,pane_id:'card',terminal_id:'card-terminal',agent:null,agent_session:null};
  f.native.snapshot.panes.push(card);f.native.snapshot.layouts[0].panes.push({pane_id:'card'});f.put();
- Object.assign(process.env,{HERDR_PANE_ID:'card',STREAMS_CARDS_SCOPE:JSON.stringify(observed.scope),
-  STREAMS_CARDS_OWNER:JSON.stringify({pane_id:'pane',tab_id:'tab',workspace_id:'workspace'}),
-  STREAMS_CARDS_NONCE:'nonce',STREAMS_CARDS_OWNER_TERMINAL:'terminal',STREAMS_CARDS_READ_CWD:f.directory,
-  STREAMS_CARDS_STATE_DIR:join(f.directory,'native-state'),STREAMS_CARDS_PLUGIN_ROOT:plugin});
+ process.env.HERDR_PANE_ID='card';
  for(const change of [{HERDR_SOCKET_PATH:join(f.directory,'different.sock')},{HERDR_SESSION:'different'}]) {
-  process.env.STREAMS_CARDS_READ_ENV=JSON.stringify({...reader,...change});
+  process.env.STREAMS_CARDS_CONTEXT=JSON.stringify({scope:observed.scope,owner:observed.owner,
+   reader:{environment:{...reader,...change},cwd:f.directory},lock_directory:join(f.directory,'card-locks'),plugin_root:plugin});
   const result=f.invoke('native','--session-id',f.id,'check');
   assert.notEqual(result.code,0);assert.match(result.data.error.message,/reader endpoint changed/);
  }
- assert.ok(f.commands().every(([method])=>['ping','session.snapshot'].includes(method)));
+ assert.ok(f.commands().every(([method])=>['ping','events.subscribe','session.snapshot'].includes(method)));
 });
-test('an unresolved sibling pane blocks capture with its identity and preserves the saved layout',t=>{
- const f=real(t);
- f.cli('native','--session-id',f.id,'capture');
- const arrangements=readdirSync(join(f.state,'arrangements'),{recursive:true}).filter(path=>path.endsWith('.json'));
- assert.equal(arrangements.length,1);
- const path=join(f.state,'arrangements',arrangements[0]),before=readFileSync(path,'utf8');
- const sibling={...f.native.pane,pane_id:'unresolved-sibling',terminal_id:'sibling-terminal',agent_session:null};
- f.native.snapshot.panes.push(sibling);f.native.snapshot.agents.push(sibling);
- f.native.snapshot.layouts[0].panes.push({pane_id:sibling.pane_id});
- for(const metadata of [null,undefined,{agent:'codex',kind:'id',value:'wrong-harness'}]) {
-  sibling.agent_session=metadata;f.put();
-  const refused=f.invoke('native','--session-id',f.id,'capture');
-  assert.notEqual(refused.code,0);
-  assert.match(refused.data.error.message,/pane unresolved-sibling/);
-  assert.match(refused.data.error.message,/workspace workspace/);
-  assert.match(refused.data.error.message,/tab tab/);
-  assert.equal(readFileSync(path,'utf8'),before);
- }
- assert.ok(f.commands().every(([method])=>['ping','session.snapshot'].includes(method)));
+test('retired layout capture refuses without inspecting or mutating native resources',t=>{
+ const f=real(t),before=readFileSync(join(f.directory,'native.json'),'utf8');
+ const refused=f.invoke('native','--session-id',f.id,'capture');
+ assert.notEqual(refused.code,0);assert.match(refused.data.error.message,/unrecognized subcommand 'capture'/);
+ assert.equal(readFileSync(join(f.directory,'native.json'),'utf8'),before);assert.deepEqual(f.commands(),[]);
+ for(const name of ['arrangements','associations','placements']) assert.equal(existsSync(join(f.state,name)),false);
 });
-test('Pi lifecycle preserves the named Herdr namespace through Rust source rereads, projection and capture',async t=>{
+test('Pi lifecycle preserves its named Herdr endpoint without saved native resources',async t=>{
  const f=real(t);
  assert.equal(process.env.HERDR_SESSION,'fixture');
  const notices=[],controller=new NativeController({pi:f.pi,ctx:f.ctx,factory:f.load,warning:text=>notices.push(text)});t.after(async()=>{controller.stop();await controller.idle();});
@@ -271,22 +255,19 @@ test('Pi lifecycle preserves the named Herdr namespace through Rust source rerea
  const allowed=['ping','events.subscribe','pane.current','workspace.get','session.snapshot','workspace.report_metadata','pane.report_metadata'];
  assert.ok(f.commands().every(([method])=>allowed.includes(method)));
  const snapshot=JSON.parse(readFileSync(join(f.directory,'native.json'),'utf8')).snapshot;
- assert.ok(snapshot.workspaces[0].tokens.strm_binding);
- const arrangements=readdirSync(join(f.state,'arrangements'),{recursive:true}).filter(path=>path.endsWith('.json'));
- assert.equal(arrangements.length,1);assert.ok(JSON.parse(readFileSync(join(f.state,'arrangements',arrangements[0]),'utf8')).tabs.length);
+ assert.equal(snapshot.workspaces[0].tokens.strm_stream,f.stream.id);
+ assert.equal(snapshot.workspaces[0].tokens.strm_binding,undefined);
+ for(const name of ['arrangements','associations','placements']) assert.equal(existsSync(join(f.state,name)),false);
  controller.stop();await controller.idle();delete process.env.HERDR_SOCKET_PATH;
  const observed=f.cli('native','--session-id',f.id,'observe');
  // Without an explicit socket, the named session resolves to the same endpoint.
- assert.equal(observed.context.socket,f.native.socket);
- const captured=f.cli('native','--session-id',f.id,'capture');
- assert.equal(captured.stream_id,observed.scope.streamId);
+ assert.equal(observed.owner.terminal_id,'terminal');assert.equal(observed.scope.streamId,f.stream.id);
  const file=join(f.directory,'native.json'),live=JSON.parse(readFileSync(file,'utf8')),wrongSession=randomUUID();
  for(const row of [live.pane,...live.snapshot.panes,...live.snapshot.agents])row.agent_session={agent:'pi',kind:'id',value:wrongSession};
  writeFileSync(file,JSON.stringify(live));
- const arrangementFile=join(f.state,'arrangements',arrangements[0]),before=readFileSync(arrangementFile,'utf8');
- // A caller mismatch refuses before replacing the saved arrangement.
- const refused=f.invoke('native','--session-id',f.id,'capture');
- assert.notEqual(refused.code,0);assert.match(refused.data.error.message,/session|caller|origin/i);
- assert.equal(readFileSync(arrangementFile,'utf8'),before);
+ const before=readFileSync(file,'utf8');
+ const refused=f.invoke('native','--session-id',f.id,'project');
+ assert.notEqual(refused.code,0);assert.match(refused.data.error.message,/session|conversation|caller|origin/i);
+ assert.equal(readFileSync(file,'utf8'),before);
  f.commands(); // Assert zero Herdr CLI spawns throughout the lifecycle.
 });

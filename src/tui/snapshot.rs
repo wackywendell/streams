@@ -4,7 +4,8 @@ use std::path::{Component, Path, PathBuf};
 use crate::model::{Document, Session, Stream, ValidationError, check_text};
 
 /// Exact viewing contribution and catalog identity, not a native ownership witness.
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[serde(deny_unknown_fields, rename_all = "camelCase")]
 pub struct Scope {
     pub catalog_source: String,
     pub host_id: String,

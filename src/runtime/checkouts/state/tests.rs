@@ -1,22 +1,20 @@
 use super::*;
 use serde_json::json;
 
-fn checkout(id: &str, url: Option<&str>, inode: u64) -> CheckoutLocation {
+fn checkout(id: &str, url: Option<&str>) -> CheckoutLocation {
     CheckoutLocation {
         id: id.into(),
         directory: format!("/{id}").into(),
         repository_urls: url.into_iter().map(str::to_owned).collect(),
-        device: 1,
-        inode,
     }
 }
 
 #[test]
 fn selected_precedence_explicit_defaults_and_ambiguity() {
     let mut state = State::new("host-identity");
-    let selected = checkout("selected", Some("repo"), 1);
-    let fallback = checkout("fallback", Some("repo"), 2);
-    let external = checkout("external", Some("external"), 3);
+    let selected = checkout("selected", Some("repo"));
+    let fallback = checkout("fallback", Some("repo"));
+    let external = checkout("external", Some("external"));
     state.checkouts = vec![selected.clone(), fallback.clone(), external.clone()];
     assert!(matches!(
         state.resolve("external", None, None),
@@ -52,7 +50,7 @@ fn selected_precedence_explicit_defaults_and_ambiguity() {
             .is_err()
     );
     assert!(state.resolve("repo", None, Some("repo")).is_err());
-    let unbound = checkout("unbound", None, 4);
+    let unbound = checkout("unbound", None);
     state.checkouts.push(unbound.clone());
     assert!(state.resolve("repo", Some(&unbound.id), None).is_err());
     let before = serde_json::to_value(&state).unwrap();
@@ -63,7 +61,7 @@ fn selected_precedence_explicit_defaults_and_ambiguity() {
 #[test]
 fn malformed_registry_schema_and_bindings_are_rejected_without_io() {
     let mut state = State::new("host-identity");
-    state.checkouts.push(checkout("checkout", Some("repo"), 1));
+    state.checkouts.push(checkout("checkout", Some("repo")));
     let good = serde_json::to_value(&state).unwrap();
     let mut cases: Vec<Vec<u8>> = [
         "not JSON",
@@ -99,7 +97,9 @@ fn malformed_registry_schema_and_bindings_are_rejected_without_io() {
         ("directory", json!("/x//y")),
         ("directory", json!("/x/y/")),
         ("device", json!(true)),
+        ("device", json!(10)),
         ("inode", json!(-1)),
+        ("inode", json!(20)),
         ("repository_urls", json!(["repo", "repo"])),
         ("repository_urls", json!([""])),
         ("repository_urls", json!("repo")),

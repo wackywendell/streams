@@ -224,7 +224,7 @@ fn explicit_move_preserves_identity_bindings_default_and_revalidates_selection()
         .unwrap();
     let moved = f.root.join("moved");
     fs::rename(&root, &moved).unwrap();
-    assert!(f.registry.register(&moved, None).is_err());
+    assert!(f.registry.find(&moved).unwrap().is_none());
     assert!(bindings.read("stream", Some("session")).is_err());
     let updated = f.registry.move_checkout(&checkout.id, &moved).unwrap();
     assert_eq!(updated.id, checkout.id);
@@ -251,7 +251,55 @@ fn explicit_move_preserves_identity_bindings_default_and_revalidates_selection()
 }
 
 #[test]
-fn replaced_or_missing_selected_roots_never_use_healthy_default() {
+fn registering_a_renamed_path_does_not_infer_the_old_checkout_id() {
+    let f = Fixture::new();
+    let root = f.repo("first");
+    let original = f.registry.register(&root, Some("repo")).unwrap();
+    let moved = f.root.join("moved");
+    fs::rename(&root, &moved).unwrap();
+    let new = f.registry.register(&moved, Some("repo")).unwrap();
+    assert_ne!(new.id, original.id);
+    assert!(f.registry.get(&original.id).is_err());
+    assert_eq!(f.registry.get(&new.id).unwrap(), new);
+    assert!(f.registry.move_checkout(&original.id, &moved).is_err());
+}
+
+#[test]
+fn legacy_physical_stamps_are_not_repaired_by_normal_registry_operations() {
+    let f = Fixture::new();
+    let root = f.repo("checkout");
+    fs::create_dir_all(f.registry.path().parent().unwrap()).unwrap();
+    f.registry.register(&root, Some("repo")).unwrap();
+    let mut legacy = f.state();
+    legacy["checkouts"][0]["device"] = json!(16777234);
+    legacy["checkouts"][0]["inode"] = json!(20);
+    let before = serde_json::to_vec(&legacy).unwrap();
+    fs::write(f.registry.path(), &before).unwrap();
+    assert!(f.registry.list().is_err());
+    assert!(f.registry.find(&root).is_err());
+    assert!(f.registry.register(&root, Some("repo")).is_err());
+    assert_eq!(fs::read(f.registry.path()).unwrap(), before);
+}
+
+#[test]
+fn an_unrelated_unusable_root_does_not_block_a_registered_checkout() {
+    let f = Fixture::new();
+    let healthy = f
+        .registry
+        .register(&f.repo("healthy"), Some("repo"))
+        .unwrap();
+    let other = f.repo("other");
+    let broken = f.registry.register(&other, None).unwrap();
+    fs::rename(&other, f.root.join("retired")).unwrap();
+    symlink(&other, &other).unwrap();
+    assert_eq!(f.registry.get(&healthy.id).unwrap(), healthy);
+    assert_eq!(f.registry.find(&healthy.directory).unwrap(), Some(healthy));
+    assert_eq!(f.registry.list().unwrap().len(), 2);
+    assert!(f.registry.get(&broken.id).is_err());
+}
+
+#[test]
+fn missing_selected_root_never_falls_back_and_same_path_recreation_keeps_its_id() {
     let f = Fixture::new();
     let root = f.repo("first");
     let selected = f.registry.register(&root, Some("repo")).unwrap();
@@ -267,15 +315,19 @@ fn replaced_or_missing_selected_roots_never_use_healthy_default() {
             .is_err()
     );
     f.repo("first");
-    for error in [
-        f.registry.get(&selected.id).unwrap_err(),
-        f.registry.find(&root).unwrap_err(),
-        f.registry.register(&root, None).unwrap_err(),
-        f.registry.set_default("repo", &selected.id).unwrap_err(),
-    ] {
-        assert!(error.to_string().contains("replaced"), "{error}");
-    }
+    assert_eq!(f.registry.get(&selected.id).unwrap(), selected);
+    assert_eq!(f.registry.find(&root).unwrap(), Some(selected.clone()));
+    assert_eq!(f.registry.register(&root, None).unwrap(), selected);
     assert_eq!(f.registry.resolve("repo", None, None).unwrap(), fallback);
+    f.registry.set_default("repo", &selected.id).unwrap();
+    assert_eq!(f.registry.resolve("repo", None, None).unwrap(), selected);
+    let state = f.state();
+    assert_eq!(state["version"], 1);
+    assert_eq!(state["checkouts"].as_array().unwrap().len(), 2);
+    for saved in state["checkouts"].as_array().unwrap() {
+        assert!(saved.get("device").is_none());
+        assert!(saved.get("inode").is_none());
+    }
 }
 
 #[test]
@@ -362,8 +414,11 @@ fn resolved_documents_keep_one_snapshot_without_reinspecting_or_rereading_regist
     fs::rename(&root, f.root.join("old-checkout")).unwrap();
     let replacement = f.repo("checkout");
     fs::write(replacement.join("doc.md"), "replacement").unwrap();
-    let error = resolved.document("doc.md").unwrap_err();
-    assert!(error.to_string().contains("replaced"), "{error}");
+    assert_eq!(resolved.document("doc.md").unwrap(), root.join("doc.md"));
+    assert_eq!(
+        fs::read_to_string(resolved.document("doc.md").unwrap()).unwrap(),
+        "replacement"
+    );
 }
 
 #[test]
@@ -419,17 +474,16 @@ fn malformed_registry_is_never_absence_or_overwritten() {
 }
 
 #[test]
-fn duplicate_live_physical_aliases_are_rejected_even_with_different_recorded_inodes() {
+fn canonical_aliases_reuse_the_id_and_duplicate_saved_paths_are_rejected() {
     let f = Fixture::new();
     let root = f.repo("root");
-    f.registry.register(&root, None).unwrap();
+    let checkout = f.registry.register(&root, None).unwrap();
     let alias = f.root.join("alias");
-    symlink(root, &alias).unwrap();
+    symlink(&root, &alias).unwrap();
+    assert_eq!(f.registry.register(&alias, None).unwrap(), checkout);
     let mut state = f.state();
     let mut other = state["checkouts"][0].clone();
     other["id"] = json!(uuid::Uuid::new_v4().to_string());
-    other["directory"] = json!(alias);
-    other["inode"] = json!(1);
     state["checkouts"].as_array_mut().unwrap().push(other);
     f.overwrite(&state);
     assert!(f.registry.list().is_err());
@@ -701,8 +755,8 @@ fn directory_selections_never_infer_checkout_identity_or_rewrite_on_read() {
     let bindings = f.bindings();
     let path = bindings.path("stream", Some("session"));
     fs::create_dir_all(path.parent().unwrap()).unwrap();
-    let current = json!({"version":3,"session_id":"session",
-        "location":{"kind":"directory","cwd":root}});
+    let current = json!({"version":4,"session_id":"session",
+        "location":{"kind":"directory","cwd":root},"transcript_file":null});
     fs::write(&path, serde_json::to_vec(&current).unwrap()).unwrap();
     let before = fs::read(&path).unwrap();
     assert!(
@@ -738,7 +792,7 @@ fn malformed_bindings_cannot_be_read_or_overwritten() {
     let mut escaping = good;
     escaping["location"]["within"] = json!("../escape");
     let duplicate = format!(
-        r#"{{"version":3,"version":3,"session_id":"session","location":{{"kind":"directory","cwd":{}}}}}"#,
+        r#"{{"version":4,"version":4,"session_id":"session","location":{{"kind":"directory","cwd":{}}},"transcript_file":null}}"#,
         serde_json::to_string(&f.root).unwrap()
     );
     for bytes in [
@@ -763,7 +817,7 @@ fn malformed_current_binding_reports_the_missing_location_field() {
     let bindings = f.bindings();
     let path = bindings.path("stream", None);
     fs::create_dir_all(path.parent().unwrap()).unwrap();
-    fs::write(&path, br#"{"version":2,"stream_id":"stream","session_id":null,"location":{"kind":"checkout","id":"saved-id","repository_url":null}}"#).unwrap();
+    fs::write(&path, br#"{"version":4,"stream_id":"stream","session_id":null,"location":{"kind":"checkout","id":"saved-id","repository_url":null},"transcript_file":null}"#).unwrap();
     let error = bindings.read("stream", None).unwrap_err().to_string();
     assert!(error.contains("within"), "{error}");
     assert!(!error.contains("untagged"), "{error}");
@@ -829,7 +883,7 @@ fn explicit_checkout_must_contain_cwd_and_have_requested_binding() {
 }
 
 #[test]
-fn python_registry_and_current_binding_fixtures_read_without_rewriting_or_registering() {
+fn current_registry_and_binding_fixtures_read_without_rewriting_or_registering() {
     let f = Fixture::new();
     fs::create_dir_all(f.registry.path().parent().unwrap()).unwrap();
     let registry_fixture = include_bytes!("fixtures/runtime/registry-v1.json");
@@ -842,13 +896,10 @@ fn python_registry_and_current_binding_fixtures_read_without_rewriting_or_regist
     let path = bindings.path("stream", Some("session"));
     fs::create_dir_all(path.parent().unwrap()).unwrap();
     let root = f.repo("checkout");
-    let metadata = fs::metadata(&root).unwrap();
     let mut state = f.state();
     state["checkouts"][0]["directory"] = json!(root);
-    state["checkouts"][0]["device"] = json!(metadata.dev());
-    state["checkouts"][0]["inode"] = json!(metadata.ino());
     f.overwrite(&state);
-    fs::write(&path, include_bytes!("fixtures/runtime/directory-v3.json")).unwrap();
+    fs::write(&path, include_bytes!("fixtures/runtime/directory-v4.json")).unwrap();
     assert_eq!(
         bindings
             .read("stream", Some("session"))
@@ -859,7 +910,7 @@ fn python_registry_and_current_binding_fixtures_read_without_rewriting_or_regist
     );
     assert_eq!(
         fs::read(&path).unwrap(),
-        include_bytes!("fixtures/runtime/directory-v3.json")
+        include_bytes!("fixtures/runtime/directory-v4.json")
     );
 }
 
@@ -867,13 +918,10 @@ fn python_registry_and_current_binding_fixtures_read_without_rewriting_or_regist
 fn non_uuid_registry_ids_load_in_current_directory_bindings() {
     let f = Fixture::new();
     let root = f.repo("imported");
-    let metadata = fs::metadata(&root).unwrap();
     let fixture = include_str!("fixtures/runtime/registry-v1.json")
         .replace("b9345696-ffbf-42d1-8255-6fdc9d2ab7d2", "legacy-checkout-1");
     let mut registry: Value = serde_json::from_str(&fixture).unwrap();
     registry["checkouts"][0]["directory"] = json!(root);
-    registry["checkouts"][0]["device"] = json!(metadata.dev());
-    registry["checkouts"][0]["inode"] = json!(metadata.ino());
     fs::create_dir_all(f.registry.path().parent().unwrap()).unwrap();
     f.overwrite(&registry);
     let before = fs::read(f.registry.path()).unwrap();
@@ -896,7 +944,7 @@ fn non_uuid_registry_ids_load_in_current_directory_bindings() {
     let bindings = f.bindings();
     let path = bindings.path("stream", Some("session"));
     fs::create_dir_all(path.parent().unwrap()).unwrap();
-    let current = include_str!("fixtures/runtime/directory-v3.json")
+    let current = include_str!("fixtures/runtime/directory-v4.json")
         .replace("b9345696-ffbf-42d1-8255-6fdc9d2ab7d2", "legacy-checkout-1");
     fs::write(&path, &current).unwrap();
     let binding = bindings.read("stream", Some("session")).unwrap().unwrap();
@@ -958,6 +1006,88 @@ fn directory_hash_keeps_stream_tuple_compatibility_and_uses_session_identity() {
 }
 
 #[test]
+fn retained_transcript_is_exact_inert_and_survives_membership_and_directory_changes() {
+    let f = Fixture::new();
+    let bindings = f.bindings();
+    let initial = bindings
+        .remember("stream", &f.root, Some("session"), false, None, None)
+        .unwrap();
+    assert!(initial.transcript_file.is_none());
+    let transcript = f.root.join("no-discovery").join("exact.jsonl");
+    bindings
+        .remember_transcript("stream", "session", &transcript)
+        .unwrap();
+    assert!(!transcript.exists());
+    let path = bindings.path("stream", Some("session"));
+    let before = fs::read(&path).unwrap();
+    let stamp = fs::metadata(&path).unwrap().modified().unwrap();
+    bindings
+        .remember_transcript("destination", "session", &transcript)
+        .unwrap();
+    assert_eq!(fs::read(&path).unwrap(), before);
+    assert_eq!(fs::metadata(&path).unwrap().modified().unwrap(), stamp);
+    let selected = bindings
+        .read("destination", Some("session"))
+        .unwrap()
+        .unwrap();
+    assert_eq!(selected.cwd, initial.cwd);
+    assert_eq!(
+        selected.transcript_file.as_deref(),
+        Some(transcript.as_path())
+    );
+    let next = f.root.join("next");
+    fs::create_dir(&next).unwrap();
+    let selected = bindings
+        .remember("destination", &next, Some("session"), false, None, None)
+        .unwrap();
+    assert_eq!(
+        selected.transcript_file.as_deref(),
+        Some(transcript.as_path())
+    );
+    assert_eq!(selected.cwd, next);
+    let default = bindings
+        .remember("stream", &f.root, None, false, None, None)
+        .unwrap();
+    assert!(default.transcript_file.is_none());
+}
+
+#[test]
+fn transcript_save_does_not_create_or_repair_missing_or_invalid_session_bindings() {
+    let f = Fixture::new();
+    let bindings = f.bindings();
+    let transcript = f.root.join("exact.jsonl");
+    let path = bindings.path("stream", Some("session"));
+    assert!(
+        bindings
+            .remember_transcript("stream", "session", &transcript)
+            .is_err()
+    );
+    assert!(!path.exists());
+    bindings
+        .remember("stream", &f.root, Some("session"), false, None, None)
+        .unwrap();
+    let before = fs::read(&path).unwrap();
+    assert!(
+        bindings
+            .remember_transcript("stream", "session", Path::new("relative"))
+            .is_err()
+    );
+    assert_eq!(fs::read(&path).unwrap(), before);
+    let mut old: Value = serde_json::from_slice(&before).unwrap();
+    old["version"] = json!(3);
+    old.as_object_mut().unwrap().remove("transcript_file");
+    let old = serde_json::to_vec(&old).unwrap();
+    fs::write(&path, &old).unwrap();
+    assert!(
+        bindings
+            .remember_transcript("stream", "session", &transcript)
+            .is_err()
+    );
+    assert!(bindings.read("stream", Some("session")).is_err());
+    assert_eq!(fs::read(&path).unwrap(), old);
+}
+
+#[test]
 fn current_session_selection_survives_membership_move_without_rewrite() {
     let f = Fixture::new();
     let bindings = f.bindings();
@@ -986,7 +1116,7 @@ fn current_session_selection_survives_membership_move_without_rewrite() {
         updated
     );
     let saved: Value = serde_json::from_slice(&fs::read(&canonical).unwrap()).unwrap();
-    assert_eq!(saved["version"], 3);
+    assert_eq!(saved["version"], 4);
     assert!(saved.get("stream_id").is_none());
     fs::write(&canonical, serde_json::to_vec(&json!({"version":2,"stream_id":"old-stream","session_id":"session","location":{"kind":"directory","cwd":f.root}})).unwrap()).unwrap();
     assert!(bindings.read("new-stream", Some("session")).is_err());
@@ -1055,7 +1185,7 @@ fn current_session_filename_must_match_its_stored_identity() {
     let bindings = f.bindings();
     let path = bindings.path("stream", Some("session"));
     fs::create_dir_all(path.parent().unwrap()).unwrap();
-    fs::write(&path, serde_json::to_vec(&json!({"version":3,"session_id":"wrong-session","location":{"kind":"directory","cwd":f.root}})).unwrap()).unwrap();
+    fs::write(&path, serde_json::to_vec(&json!({"version":4,"session_id":"wrong-session","location":{"kind":"directory","cwd":f.root},"transcript_file":null})).unwrap()).unwrap();
     assert!(bindings.read("destination", Some("session")).is_err());
     assert!(
         bindings

@@ -1,15 +1,15 @@
 //! Herdr endpoint discovery, exact native identities and workspace effects.
 //!
-//! Topology and pane observations are structural native evidence only, not
-//! catalog/session attestation. Runtime ownership proofs must remain separate.
+//! Observations select pass-local targets. The subscription-ended check is not
+//! an atomic frontend precondition.
 
 pub mod events;
 mod launch;
-mod ownership;
+mod snapshot;
 pub mod socket;
 mod topology;
 pub use launch::HerdrStartedAgent;
-pub use ownership::{HerdrNativeSnapshot, PairState};
+pub use snapshot::HerdrNativeSnapshot;
 pub use topology::{HerdrAgent, HerdrInventoryPane, HerdrLayout, HerdrTab, HerdrTopology};
 
 use super::transport::{NativeRequest, Operation, launch_args, string};
@@ -18,7 +18,10 @@ use serde_json::{Value, json};
 use socket::SocketClient;
 use std::collections::BTreeMap;
 use std::path::PathBuf;
-use std::sync::Arc;
+use std::sync::{
+    Arc,
+    atomic::{AtomicBool, Ordering},
+};
 
 /// The server's reported socket and optional native session namespace.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -149,6 +152,8 @@ pub struct HerdrClient {
     socket: Arc<SocketClient>,
     endpoint: HerdrEndpoint,
     context: BTreeMap<String, String>,
+    subscription_ended: Option<Arc<AtomicBool>>,
+    _pass_subscription: Option<Arc<events::PassSubscription>>,
 }
 
 impl HerdrClient {
@@ -182,7 +187,50 @@ impl HerdrClient {
             socket,
             endpoint,
             context,
+            subscription_ended: None,
+            _pass_subscription: None,
         })
+    }
+
+    /// Start a bounded foreground observation without an event controller.
+    /// Register before taking its snapshot; an ended pass is never revived here.
+    pub fn observing(&self) -> Result<Self, FrontendError> {
+        if self.subscription_ended.is_some() {
+            return Ok(self.clone());
+        }
+        let subscription = Arc::new(
+            events::PassSubscription::start(&self.socket)
+                .map_err(|error| FrontendError::invalid(error.to_string()))?,
+        );
+        Ok(Self {
+            subscription_ended: Some(subscription.ended()),
+            _pass_subscription: Some(subscription),
+            ..self.clone()
+        })
+    }
+
+    /// Bind this pass to the current subscription. This cheap disconnect check
+    /// does not atomically protect against a restart after the check.
+    pub fn with_subscription(&self, subscription: &events::SubscriptionCancel) -> Self {
+        Self {
+            subscription_ended: Some(subscription.ended()),
+            ..self.clone()
+        }
+    }
+
+    /// A delivered disconnect ends this observation, including native-derived catalog actions.
+    pub fn check_subscription(&self) -> Result<(), FrontendError> {
+        if self
+            .subscription_ended
+            .as_ref()
+            .is_some_and(|ended| ended.load(Ordering::Acquire))
+        {
+            Err(FrontendError::invalid(
+                "Herdr subscription ended; native pass abandoned",
+            ))
+        } else {
+            Ok(())
+        }
     }
 
     /// Persistent event subscriptions share the pinned endpoint.
@@ -190,8 +238,8 @@ impl HerdrClient {
         &self.socket
     }
 
-    /// Bounded coordinator transport. Effect authority and round-trip validation
-    /// stay in the native-card engine; this adapter never retries an operation.
+    /// Bounded native transport. Selection and checked replies stay in the
+    /// native-card engine; this adapter never retries an operation.
     pub(crate) fn card_request(
         &self,
         method: &str,
@@ -216,7 +264,7 @@ impl HerdrClient {
         &self.endpoint
     }
 
-    /// Select a protected card's owner without changing its pinned endpoint.
+    /// Select Pi's observation context without changing the endpoint.
     pub fn with_context(&self, context: BTreeMap<String, String>) -> Result<Self, FrontendError> {
         if HerdrEndpoint::resolve(&context)? != self.endpoint {
             return Err(FrontendError::invalid("Herdr reader endpoint changed"));
@@ -297,6 +345,10 @@ impl HerdrClient {
         params: Value,
         effect: bool,
     ) -> Result<Value, FrontendError> {
+        if effect {
+            self.check_subscription()
+                .map_err(|error| op.error(error.message))?;
+        }
         let (response, result) = self.socket.exchange(method, params.clone());
         op.commands.push(CommandEvidence {
             request: NativeRequest::Socket {

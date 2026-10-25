@@ -34,7 +34,6 @@ export function prepare(recording: Capture, task: Task, prompt?: string, trim = 
 export function prepareInput<T extends Input>(input: T, source: PreparedRequest["source"], prompt?: string, trim = true): PreparedRequest<T> {
  if (prompt !== undefined && (typeof prompt !== "string" || !prompt.trim())) throw Error("A prompt override must contain text");
  const frozen = structuredClone(input);
- if (frozen.catalog.authority) frozen.catalog.authority.token = "[redacted]";
  frozen.messages = projectMessages(frozen.messages, trim ? "trimmed" : "full");
  const model_request = buildInferencePayload(frozen);
  if (prompt !== undefined) model_request.systemPrompt = prompt;

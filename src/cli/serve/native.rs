@@ -1,403 +1,530 @@
-use std::sync::{Arc, atomic::AtomicBool, mpsc};
-use std::thread;
-
+//! One observation and direct effects. Subscription loss abandons its captured pass.
+use super::files::Files;
+use super::{Result, SharedOutput, Wake, send};
+use crate::cli::{App, HerdrRead, Output, application, cards};
+use serde_json::{Value, json};
+use std::{
+    sync::{
+        Arc,
+        atomic::{AtomicBool, Ordering},
+        mpsc,
+    },
+    thread::{self, JoinHandle},
+};
 use streams_temper::{
+    agent::{ContextRequest, EnrollmentRequest, RecordContext},
+    cancellation::Cancellation,
     child_protocol::{Request, ServerFrame, UiFacts},
     frontend::herdr::{
         HerdrClient, HerdrNativeSnapshot,
-        events::{HerdrEvent, SubscriptionCancel, SubscriptionUpdate},
+        events::{EventFilter, EventKind, SubscriptionCancel, SubscriptionUpdate},
     },
+    model::{Record, Stream},
+    operations::membership::MoveIntent,
     runtime::{
-        native::PiCallerObservation,
-        native_cards::{DisplayOutcome, NativeCardsConfig, OpenMode},
+        conversations::Harness,
+        native_cards::{NativeCardEngine, NativeCardsConfig, OpenMode, PiOwner},
+        native_markers,
     },
 };
 
-use super::super::{
-    App, CliError, HerdrRead, NativeObservation, Output, PathBuf, Result, cards, json,
-};
-use super::{
-    Wake, files,
-    scope::{Owner, Sample},
-};
-
-pub(super) enum Trigger<'a> {
-    Refresh,
-    Native(&'a HerdrEvent),
-    Resubscribed,
+struct Pass {
+    context: RecordContext,
+    config: NativeCardsConfig,
+    workspace_stream: Option<String>,
+    transcript: Option<std::path::PathBuf>,
 }
-
 pub(super) struct Controller {
-    pub enabled: bool,
+    pub(super) app: App,
+    plugin_root: std::path::PathBuf,
+    output: SharedOutput,
     session_id: String,
-    plugin_root: PathBuf,
-    owner: Option<Owner>,
-    pub app: Option<App>,
-    files: Option<files::Files>,
     sender: mpsc::Sender<Wake>,
-    output: super::SharedOutput,
-    subscription: Option<(SubscriptionCancel, thread::JoinHandle<()>)>,
+    stopping: Cancellation,
+    client: Option<HerdrClient>,
+    owner: Option<PiOwner>,
+    subscription: Option<SubscriptionCancel>,
+    thread: Option<JoinHandle<()>>,
+    files: Option<Files>,
+    records: Option<Arc<application::OpenedRecords>>,
+    enabled: bool,
+    view: UiFacts,
 }
-
 impl Controller {
     pub fn new(
+        app: App,
         session_id: String,
-        plugin_root: PathBuf,
+        plugin_root: std::path::PathBuf,
         sender: mpsc::Sender<Wake>,
-        output: super::SharedOutput,
+        output: SharedOutput,
+        stopping: Cancellation,
     ) -> Self {
         Self {
-            enabled: false,
+            app,
             session_id,
             plugin_root,
-            owner: None,
-            app: None,
-            files: None,
-            sender,
             output,
+            sender,
+            stopping,
+            client: None,
+            owner: None,
             subscription: None,
+            thread: None,
+            files: None,
+            records: None,
+            enabled: false,
+            view: UiFacts {
+                desired_pi_name: None,
+            },
         }
     }
-
-    fn ensure(&mut self, app: App) -> Result<()> {
-        if self.app.is_none() {
-            self.owner = Some(Owner::inherited(&app.environment));
-            self.app = Some(app);
-        }
-        if self.subscription.is_some() {
+    fn publish_view(&mut self) -> Result<()> {
+        send(
+            &self.output,
+            &ServerFrame::View {
+                view: self.view.clone(),
+            },
+        )
+    }
+    fn config(&self) -> Result<NativeCardsConfig> {
+        NativeCardsConfig::load(&self.app.environment, &self.app.cwd, &self.plugin_root)
+            .map_err(Into::into)
+    }
+    fn ensure(&mut self, config: &NativeCardsConfig) -> Result<()> {
+        if self.client.is_some() {
             return Ok(());
         }
-        let app = self.app.as_mut().expect("native application");
-        let config = NativeCardsConfig::load(&app.environment, &app.cwd, &self.plugin_root)?;
-        let client = HerdrClient::connect(app.environment.clone(), config.timeout_seconds())
-            .map_err(|error| CliError::message(error.to_string()))?;
-        let owner = self.owner.as_ref().expect("native owner");
+        let client = HerdrClient::connect_cancellable(
+            self.app.environment.clone(),
+            config.timeout_seconds(),
+            self.stopping.clone(),
+        )
+        .map_err(streams_temper::runtime::RuntimeError::from)?;
+        if self.records.is_none() {
+            let records = Arc::new(application::open_records(&self.app.config)?);
+            self.files = Some(Files::new(&records, &self.session_id, self.sender.clone())?);
+            self.records = Some(records);
+        }
+        let filter = EventFilter {
+            kinds: [
+                EventKind::PaneMoved,
+                EventKind::PaneAgentDetected,
+                EventKind::PaneUpdated,
+                EventKind::TabMoved,
+                EventKind::PaneExited,
+                EventKind::PaneClosed,
+                EventKind::TabClosed,
+                EventKind::WorkspaceClosed,
+                EventKind::WorkspaceMetadataUpdated,
+            ]
+            .into(),
+            pane_ids: self
+                .app
+                .environment
+                .get("HERDR_PANE_ID")
+                .cloned()
+                .into_iter()
+                .collect(),
+            terminal_ids: self
+                .owner
+                .as_ref()
+                .map(|owner| owner.terminal_id.clone())
+                .into_iter()
+                .collect(),
+            ..EventFilter::default()
+        };
         let mut subscription = client
             .socket()
-            .subscribe(owner.filter())
-            .map_err(|error| CliError::message(error.to_string()))?;
-        let cancellation = subscription.cancellation_handle();
+            .subscribe(filter)
+            .map_err(|error| crate::cli::CliError::message(error.to_string()))?;
+        self.subscription = Some(subscription.cancellation_handle());
         let sender = self.sender.clone();
-        let handle = thread::spawn(move || {
-            loop {
-                let update = subscription.receive().map_err(|error| error.to_string());
-                let failed = update.is_err();
-                let (reply, receiver) = mpsc::sync_channel(0);
-                if sender.send(Wake::Native(update, reply)).is_err() || failed {
-                    break;
-                }
-                let Ok(owner) = receiver.recv() else {
-                    break;
-                };
-                let filter = owner.filter();
-                subscription.set_watched_ids(filter.pane_ids, filter.tab_ids, filter.workspace_ids);
-            }
-        });
-        app.herdr = Some(HerdrRead {
-            client,
-            snapshot: None,
-            terminal: None,
-            refusal: None,
-        });
-        self.subscription = Some((cancellation, handle));
+        self.thread = Some(
+            thread::Builder::new()
+                .name("streams-native-events".into())
+                .spawn(move || {
+                    loop {
+                        let update = subscription.receive().map_err(|error| error.to_string());
+                        let failed = update.is_err();
+                        if sender.send(Wake::Native(update)).is_err() || failed {
+                            break;
+                        }
+                    }
+                })?,
+        );
+        self.client = Some(client);
         Ok(())
     }
-
-    fn observe(&mut self, trigger: Trigger<'_>) -> Result<bool> {
-        let app = self.app.as_mut().expect("enabled native application");
-        let previous = self.owner.as_ref().expect("native owner");
-        if let Some(reason) = &previous.refusal {
-            return Err(CliError::NativeContextChanged(reason.clone()));
+    fn observe(&mut self, cancelled: &AtomicBool, reconcile: bool) -> Result<Pass> {
+        let config = self.config()?;
+        self.ensure(&config)?;
+        if cancelled.load(Ordering::Acquire) {
+            return Err(crate::cli::CliError::message("native request cancelled"));
         }
-        let mut target = match trigger {
-            Trigger::Native(event) => match previous.event_target(event) {
-                Some(target) => target,
-                None => return Ok(true),
-            },
-            _ => previous.clone(),
-        };
-        let read = app.herdr.as_ref().expect("native connection");
-        let snapshot = HerdrNativeSnapshot::parse(
-            &read
-                .client
-                .session_snapshot()
-                .map_err(|error| CliError::message(error.to_string()))?,
-        )
-        .map_err(|error| CliError::message(error.to_string()))?;
-        let pane = if matches!(trigger, Trigger::Resubscribed)
-            && let Some(terminal) = &previous.terminal
-        {
-            snapshot
-                .topology()
-                .panes
-                .iter()
-                .find(|pane| &pane.terminal_id == terminal)
-        } else {
-            snapshot
-                .topology()
-                .panes
-                .iter()
-                .find(|pane| pane.pane.id == target.pane)
-        };
-        let mut sample = pane.map(|pane| Sample {
-            pane: pane.pane.id.clone(),
-            tab: pane.pane.tab_id.clone(),
-            workspace: pane.pane.workspace_id.clone(),
-            terminal: pane.terminal_id.clone(),
-            session: None,
-        });
-        if matches!(trigger, Trigger::Resubscribed)
-            && previous.terminal.is_some()
-            && let Some(sample) = &sample
-        {
-            target.pane = sample.pane.clone();
-            target.tab = sample.tab.clone();
-            target.workspace = sample.workspace.clone();
-        }
-        if let Err(reason) = previous.confirm_terminal(&target, sample.as_ref()) {
-            self.owner.as_mut().expect("native owner").refusal = Some(reason.clone());
-            return Err(CliError::NativeContextChanged(reason));
-        }
-        let mut environment = app.environment.clone();
-        target.apply(&mut environment);
-        let client = read
+        self.files.as_mut().unwrap().prepare()?;
+        let client = self
             .client
-            .with_context(environment)
-            .map_err(|error| CliError::message(error.to_string()))?;
-        let proof = match PiCallerObservation::from_snapshot(&client, snapshot, &self.session_id) {
-            Ok(proof) => proof,
-            Err(error) => {
-                let reason = error.to_string();
-                self.owner.as_mut().expect("native owner").refusal = Some(reason.clone());
-                return Err(CliError::NativeContextChanged(reason));
+            .as_ref()
+            .unwrap()
+            .with_subscription(self.subscription.as_ref().unwrap());
+        let mut snapshot = HerdrNativeSnapshot::parse(
+            &client
+                .session_snapshot()
+                .map_err(streams_temper::runtime::RuntimeError::from)?,
+        )
+        .map_err(streams_temper::runtime::RuntimeError::from)?;
+        let settings = self.app.config.load()?;
+        let records = self.records.as_ref().unwrap();
+        if settings.catalog_root != records.root() {
+            return Err(crate::cli::CliError::message(
+                "catalog root setting changed during native pass",
+            ));
+        }
+        let mut context = self.app.context_from_records(
+            records,
+            ContextRequest {
+                harness: Harness::Pi,
+                native_id: &self.session_id,
+                stream_id: None,
+                environment_stream_id: None,
+                workspace_stream_id: None,
+            },
+            settings.naming,
+        )?;
+        let owner = match &self.owner {
+            Some(owner) => owner.clone(),
+            None => {
+                let locator = if let Some(session) = &context.session {
+                    self.app
+                        .locations(records.root(), records.host().as_str())?
+                        .transcript_file(&session.stream_id, &session.id)?
+                } else {
+                    None
+                };
+                PiOwner::select_initial(
+                    &snapshot,
+                    self.app
+                        .environment
+                        .get("HERDR_PANE_ID")
+                        .map(String::as_str),
+                    &self.session_id,
+                    locator.as_deref(),
+                )?
             }
         };
-        // The constructor has now resolved and verified exactly this Pi identity.
-        sample.as_mut().expect("confirmed owner").session = Some(self.session_id.clone());
-        let owner = previous
-            .confirm(&target, sample.as_ref(), &self.session_id)
-            .map_err(CliError::NativeContextChanged)?;
-        owner.apply(&mut app.environment);
-        app.herdr = Some(HerdrRead {
-            client: client
-                .with_context(app.environment.clone())
-                .map_err(|error| CliError::message(error.to_string()))?,
-            snapshot: None,
-            terminal: owner.terminal.clone(),
-            refusal: None,
-        });
-        self.owner = Some(owner);
-        if self.files.is_none() {
-            let mut files = files::Files::new(app, &self.session_id, self.sender.clone())?;
-            files.discover(app, &self.session_id)?;
-            self.files = Some(files);
+        let (pane, transcript) = owner
+            .observe(&snapshot)?
+            .ok_or_else(|| crate::cli::CliError::message("Pi exited or changed conversation"))?;
+        let workspace = pane.pane.workspace_id.clone();
+        self.owner = Some(owner.clone());
+        self.subscription.as_ref().unwrap().set_watched_ids(
+            [pane.pane.id.clone()].into(),
+            [pane.pane.tab_id.clone()].into(),
+            [workspace.clone()].into(),
+        );
+        let selected = native_markers::selected_stream(
+            &snapshot,
+            &workspace,
+            records.source_id(),
+            records.host().as_str(),
+        )?;
+        if cancelled.load(Ordering::Acquire) {
+            return Err(crate::cli::CliError::message("native request cancelled"));
+        }
+        client
+            .check_subscription()
+            .map_err(streams_temper::runtime::RuntimeError::from)?;
+        if reconcile && let Some(session) = &context.session {
+            let destination = match &selected {
+                Some(id) => id.clone(),
+                None => {
+                    let id = uuid::Uuid::new_v4().to_string();
+                    let stream =
+                        Stream::new(&id, "Untitled effort", None, records.host().as_str())?;
+                    application::create_record(
+                        records.records(),
+                        &uuid::Uuid::new_v4().to_string(),
+                        &Record::Stream(stream),
+                    )?;
+                    native_markers::associate_workspace(
+                        &client,
+                        &workspace,
+                        records.source_id(),
+                        records.host().as_str(),
+                        &id,
+                        cancelled,
+                    )?;
+                    snapshot
+                        .apply_workspace_tokens(
+                            &workspace,
+                            native_markers::stream_tokens(
+                                records.source_id(),
+                                records.host().as_str(),
+                                &id,
+                            ),
+                        )
+                        .map_err(streams_temper::runtime::RuntimeError::from)?;
+                    id
+                }
+            };
+            if destination != session.stream_id {
+                if cancelled.load(Ordering::Acquire) {
+                    return Err(crate::cli::CliError::message("native request cancelled"));
+                }
+                client
+                    .check_subscription()
+                    .map_err(streams_temper::runtime::RuntimeError::from)?;
+                let intent = MoveIntent::new(
+                    records.host().as_str(),
+                    "pi",
+                    &self.session_id,
+                    &destination,
+                )?;
+                let moved = application::move_session_observed(
+                    records.records(),
+                    &uuid::Uuid::new_v4().to_string(),
+                    &intent,
+                )?;
+                let Record::Session(session) = moved.save.current.record else {
+                    unreachable!("move saves Session")
+                };
+                let stream = moved.stream.ok_or_else(|| {
+                    crate::cli::CliError::message("native move has no current Stream dependency")
+                })?;
+                context.session = Some(session.clone());
+                context.sessions = vec![session];
+                context.stream = Some(stream);
+            }
         }
         self.files
             .as_mut()
-            .expect("native record watches")
-            .prepare(Some(proof.caller().workspace_id()))?;
-        let observed = match app.agent_observation_from_native(
-            streams_temper::runtime::conversations::Harness::Pi,
-            &self.session_id,
-            None,
-            true,
-            false,
-            Some(NativeObservation::Pi(&proof)),
-        ) {
-            Ok(observed) => observed,
-            Err(CliError::NotEnrolled) => {
-                super::send(
-                    &self.output,
-                    &ServerFrame::View {
-                        view: UiFacts {
-                            desired_pi_name: None,
-                        },
-                    },
-                )?;
-                return Ok(false);
-            }
-            Err(error) => return Err(error),
-        };
-        let config = NativeCardsConfig::load(&app.environment, &app.cwd, &self.plugin_root)?;
-        let desired_pi_name = config.session_naming().then(|| {
-            observed
-                .context
-                .session
-                .as_ref()
-                .expect("attested Session")
-                .title
-                .clone()
+            .unwrap()
+            .set_stream(context.stream.as_ref().map(|stream| stream.id.as_str()))?;
+        self.app.herdr = Some(HerdrRead {
+            client,
+            snapshot: Some(snapshot),
+            owner: Some(owner),
         });
-        super::send(
-            &self.output,
-            &ServerFrame::View {
-                view: UiFacts { desired_pi_name },
-            },
-        )?;
-        Ok(true)
+        self.view = UiFacts {
+            desired_pi_name: config
+                .session_naming()
+                .then(|| {
+                    context
+                        .session
+                        .as_ref()
+                        .map(|session| session.title.clone())
+                })
+                .flatten(),
+        };
+        self.publish_view()?;
+        Ok(Pass {
+            context,
+            config,
+            workspace_stream: selected,
+            transcript,
+        })
     }
-
-    fn engine(
-        &self,
-        cancelled: Arc<AtomicBool>,
-    ) -> Result<streams_temper::runtime::native_cards::NativeCardEngine> {
-        let app = self.app.as_ref().expect("native application");
-        let config = NativeCardsConfig::load(&app.environment, &app.cwd, &self.plugin_root)?;
+    fn engine(&self, pass: Pass, cancelled: Arc<AtomicBool>) -> Result<NativeCardEngine> {
         cards::build(
-            app.clone(),
+            self.app.clone(),
             cards::Options {
                 session_id: Some(self.session_id.clone()),
-                plugin_root: Some(self.plugin_root.clone()),
+                plugin_root: None,
                 state_dir: None,
             },
-            config,
+            pass.config,
             cancelled,
+            self.records.clone(),
+            Some(pass.context),
         )
     }
-
-    fn project(&self, cancelled: Arc<AtomicBool>, capture: bool) -> Result<()> {
-        let mut engine = self.engine(cancelled)?;
-        engine.project_summaries()?;
-        engine.project_names()?;
-        engine.project_caption()?;
-        if capture {
-            self.app
-                .as_ref()
-                .expect("native application")
-                .capture_native_owner(&mut engine)?;
+    fn watch_engine(&self, engine: &NativeCardEngine) {
+        if let Some(subscription) = &self.subscription {
+            let (panes, tabs, workspaces) = engine.watched_ids();
+            subscription.set_watched_ids(panes, tabs, workspaces);
         }
-        Ok(())
     }
-
-    pub fn request(
-        &mut self,
-        app: App,
-        request: Request,
-        cancelled: Arc<AtomicBool>,
-    ) -> Result<Output> {
-        let lifecycle = matches!(request, Request::SessionStarted {} | Request::Attach {});
-        if matches!(request, Request::SessionStarted {}) && self.enabled {
-            return Err(CliError::message(
-                "native lifecycle already started; use attach",
+    pub fn request(&mut self, request: &Request, cancelled: Arc<AtomicBool>) -> Result<Output> {
+        self.enabled = true;
+        if self.app.environment.get("HERDR_ENV").map(String::as_str) != Some("1") {
+            if matches!(request, Request::OpenCard {} | Request::CloseCard {}) {
+                return Err(crate::cli::CliError::message(
+                    "native card effects require Herdr",
+                ));
+            }
+            self.view = UiFacts {
+                desired_pi_name: None,
+            };
+            self.publish_view()?;
+            return Ok(Output::value(
+                json!({"native":"inactive","reason":"outside_herdr"}),
             ));
         }
-        if lifecycle {
-            self.enabled = true;
-        }
-        if !self.enabled {
-            return Err(CliError::message("native lifecycle is not enabled"));
-        }
-        if app.environment.get("HERDR_ENV").map(String::as_str) != Some("1") {
-            return if lifecycle {
-                Ok(Output::value(
-                    json!({"native":"inactive","reason":"outside_herdr"}),
-                ))
-            } else {
-                Err(CliError::message("native action is inactive outside Herdr"))
-            };
-        }
-        self.ensure(app)?;
-        if !self.observe(Trigger::Refresh)? {
-            return if lifecycle {
-                Ok(Output::value(
-                    json!({"native":"inactive","reason":"not_enrolled"}),
-                ))
-            } else {
-                Err(CliError::NotEnrolled)
-            };
-        }
-        match request {
-            Request::Attach {} => {
-                self.project(cancelled, false)?;
-                Ok(Output::value(json!({"native":"active"})))
+        let pass = self.observe(&cancelled, true)?;
+        if pass.context.session.is_none() {
+            if matches!(request, Request::OpenCard {} | Request::CloseCard {}) {
+                return Err(crate::cli::CliError::message(
+                    "native card effects require an enrolled Session",
+                ));
             }
-            Request::SessionStarted {} => {
-                self.project(cancelled.clone(), true)?;
-                let display = self.engine(cancelled)?.open_display(OpenMode::Automatic)?;
-                Ok(Output::value(
-                    json!({"native":"active","display":display_name(display)}),
-                ))
+            return Ok(Output::value(
+                json!({"native":"inactive","reason":"not_enrolled"}),
+            ));
+        }
+        let mut engine = self.engine(pass, cancelled)?;
+        let result = match request {
+            Request::CloseCard {} => {
+                engine.close_display()?;
+                json!({"closed":true})
             }
             Request::OpenCard {} => {
-                let display = self.engine(cancelled)?.open_display(OpenMode::Explicit)?;
-                Ok(Output::value(json!({"display":display_name(display)})))
+                engine.project()?;
+                json!({"display":cards::display_name(engine.open_display(OpenMode::Explicit)?)})
             }
-            Request::CloseCard {} => {
-                self.engine(cancelled)?.close_display()?;
-                Ok(Output::value(json!({"closed":true})))
+            Request::SessionStarted {} => {
+                engine.project()?;
+                json!({"native":"active","display":cards::display_name(engine.open_display(OpenMode::Automatic)?)})
             }
-            _ => unreachable!("only lifecycle requests enter the native handler"),
-        }
+            Request::Attach {} => {
+                engine.project()?;
+                json!({"native":"active"})
+            }
+            _ => unreachable!("native lifecycle request"),
+        };
+        self.watch_engine(&engine);
+        Ok(Output::value(result))
     }
-
-    pub fn saved(&mut self, app: App, cancelled: Arc<AtomicBool>) -> Result<()> {
-        if !self.enabled || app.environment.get("HERDR_ENV").map(String::as_str) != Some("1") {
+    fn project(&mut self, cancelled: Arc<AtomicBool>) -> Result<()> {
+        if !self.enabled || self.app.environment.get("HERDR_ENV").map(String::as_str) != Some("1") {
             return Ok(());
         }
-        self.ensure(app)?;
-        if self.observe(Trigger::Refresh)? {
-            self.project(cancelled, false)?;
+        let pass = self.observe(&cancelled, true)?;
+        if pass.context.session.is_some() {
+            let mut engine = self.engine(pass, cancelled)?;
+            engine.project()?;
+            self.watch_engine(&engine);
         }
         Ok(())
     }
-
     pub fn update(
         &mut self,
         update: std::result::Result<SubscriptionUpdate, String>,
+        cancelled: Arc<AtomicBool>,
     ) -> Result<()> {
-        match update.map_err(CliError::message)? {
-            SubscriptionUpdate::Event(event) => {
-                self.observe(Trigger::Native(&event))?;
-            }
-            SubscriptionUpdate::Resubscribed => {
-                self.observe(Trigger::Resubscribed)?;
-            }
+        if let Err(error) = update {
+            self.stop();
+            return Err(crate::cli::CliError::message(error));
         }
-        Ok(())
+        self.project(cancelled)
     }
-
-    pub fn owner(&self) -> Owner {
-        self.owner.as_ref().expect("subscribed owner").clone()
-    }
-
     pub fn file_event(
         &mut self,
         generation: u8,
         event: notify::Result<notify::Event>,
+        cancelled: Arc<AtomicBool>,
     ) -> Result<()> {
-        let Some(files) = &mut self.files else {
+        let Some(files) = self.files.as_mut() else {
             return Ok(());
         };
         if !files.current(generation) {
             return Ok(());
         }
-        let recovered = event.as_ref().map_or(true, |event| event.need_rescan());
-        if !recovered && !event.as_ref().is_ok_and(|event| files.relevant(event)) {
+        match event {
+            Ok(event) if !files.relevant(&event) => return Ok(()),
+            Ok(_) => {}
+            Err(_) => files.recover()?,
+        }
+        if !files.prepare()? {
             return Ok(());
         }
-        if recovered {
-            files.recover()?;
-        }
-        let workspace = self.owner.as_ref().expect("native owner").workspace.clone();
-        let changed = files.prepare(Some(&workspace))?;
-        if (recovered || changed) && self.observe(Trigger::Refresh)? {
-            self.project(Arc::new(AtomicBool::new(false)), false)?;
-        }
-        Ok(())
+        self.project(cancelled)
     }
-
-    pub fn shutdown(&mut self) {
-        if let Some((cancellation, handle)) = self.subscription.take() {
-            let _ = cancellation.cancel();
-            let _ = handle.join();
+    pub fn saved(&mut self, cancelled: Arc<AtomicBool>) -> Result<()> {
+        self.project(cancelled)
+    }
+    pub fn enroll(
+        &mut self,
+        fallback: &App,
+        request: &Value,
+        cancelled: Arc<AtomicBool>,
+    ) -> Result<Output> {
+        if !self.enabled || self.app.environment.get("HERDR_ENV").map(String::as_str) != Some("1") {
+            return fallback.enroll_request(&request.to_string());
         }
+        let mut pass = self.observe(&cancelled, false)?;
+        let records = self.records.as_ref().unwrap().clone();
+        let request = EnrollmentRequest::parse(&request.to_string(), records.source_id())?;
+        let target = request
+            .stream_id()
+            .map(str::to_owned)
+            .or_else(|| {
+                request.stream_proposal().map(|_| {
+                    streams_temper::agent::effort_id_for(
+                        records.host().as_str(),
+                        request.harness(),
+                        request.harness_session_id(),
+                    )
+                })
+            })
+            .or_else(|| {
+                pass.context
+                    .session
+                    .as_ref()
+                    .map(|session| session.stream_id.clone())
+            });
+        if pass
+            .workspace_stream
+            .as_ref()
+            .is_some_and(|selected| target.as_ref() != Some(selected))
+        {
+            return Err(crate::cli::CliError::message(
+                "workspace names a different Stream; captured enrollment target was not changed",
+            ));
+        }
+        let saved = self.app.enroll_records(&records, &request, &pass.context)?;
+        let mut output = saved.output;
+        if saved.directory_selected
+            && let (Some(session), Some(stream)) = (saved.session, saved.stream)
+        {
+            let completion = (|| -> Result<()> {
+                if let Some(path) = &pass.transcript {
+                    self.app
+                        .locations(records.root(), records.host().as_str())?
+                        .remember_transcript(&stream.id, &session.id, path)?;
+                }
+                pass.context.session = Some(session.clone());
+                pass.context.sessions = vec![session];
+                pass.context.stream = Some(stream);
+                self.view.desired_pi_name = pass
+                    .config
+                    .session_naming()
+                    .then(|| pass.context.session.as_ref().unwrap().title.clone());
+                self.publish_view()?;
+                let mut engine = self.engine(pass, cancelled)?;
+                engine.project()?;
+                self.watch_engine(&engine);
+                Ok(())
+            })();
+            if let Err(error) = completion {
+                output.notices.push(format!("native completion: {error}"));
+            }
+        }
+        Ok(output)
+    }
+    pub fn stop(&mut self) {
+        if let Some(subscription) = &self.subscription {
+            let _ = subscription.cancel();
+        }
+        if let Some(thread) = self.thread.take() {
+            let _ = thread.join();
+        }
+        self.subscription = None;
+        self.client = None;
+        self.app.herdr = None;
     }
 }
-
-fn display_name(outcome: DisplayOutcome) -> &'static str {
-    match outcome {
-        DisplayOutcome::Opened(_) => "opened",
-        DisplayOutcome::Existing(_) => "existing",
-        DisplayOutcome::Suppressed => "suppressed",
+impl Drop for Controller {
+    fn drop(&mut self) {
+        self.stop();
     }
 }

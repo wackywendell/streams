@@ -11,7 +11,6 @@ use streams_temper::{
     operations::{Actor, DomainOutcome},
     runtime::conversations::{Harness, NativeIdentityKind},
     sync::{
-        Freshness,
         outcomes::{LocalStatus, SharingStatus},
         policy::{Policy, SyncEvent, Timing},
     },
@@ -112,12 +111,6 @@ fn sync_enums_preserve_hyphenated_wire_values() {
         (SharingStatus::Blocked, "blocked"),
         (SharingStatus::Failed, "failed"),
         (SharingStatus::Uncertain, "uncertain"),
-    ]);
-    roundtrip(&[
-        (Freshness::LocalOnly, "local-only"),
-        (Freshness::Cached, "cached"),
-        (Freshness::Refreshed, "refreshed"),
-        (Freshness::Failed, "failed"),
     ]);
     roundtrip(&[
         (SyncEvent::Session, "session"),

@@ -5,14 +5,14 @@ import { receiptCanContinue, type Receipt, type StreamCli } from "./streams.ts";
 /** Only initial enrollment offers membership selection. No native focus or workspace calls. */
 export async function chooseInitial(ctx: ExtensionContext, cli: StreamCli, options: {streamId?: string; title?: string; reason?: string}, receipt: (value: Receipt) => void, signal?: AbortSignal): Promise<{status: string; stream_id?: string}> {
  const native = ctx.sessionManager.getSessionId();
- const before = await cli.context(native, process.env.STREAMS_STREAM_ID);
+ const before = await cli.context(native);
  if (before.session) return {status: "already-bound; membership moves/forks are not implemented", stream_id: before.session.stream_id};
  if (before.stream && (options.title || options.streamId && options.streamId !== before.stream.id)) throw Error("Caller workspace is already associated with an effort. Membership moves/forks are not implemented; initial enrollment cannot switch it.");
  if (!ctx.hasUI) throw Error("Initial enrollment needs an interactive UI");
  let streamId = before.stream?.id ?? options.streamId;
  let title = options.title;
  if (!before.stream) {
-  const streams = await cli.list();
+  const streams = (await cli.list()).filter(stream => stream.owner.host_id === before.host_id);
   if (streamId && !streams.some((stream) => stream.id === streamId)) throw Error("Pass an exact catalog stream ID from streams list --json");
   const rows = streams.map((stream) => `${stream.id} · ${stream.title}`);
   const chosen = title ? "Create effort" : await ctx.ui.select(`Initial work card attachment${options.reason ? `\n${options.reason}` : ""}`, [...(streamId ? rows.filter((row) => row.startsWith(`${streamId} ·`)) : rows), "Create effort", "Cancel"]);

@@ -87,61 +87,9 @@ impl Fixture {
 }
 
 #[test]
-fn accepted_offline_create_retains_publication_warning_and_durable_record() {
+fn record_local_offline_create_saves_without_publication_or_transport_admission() {
     let f = Fixture::new();
-    use streams_temper::{
-        config::{Marker, Strategy},
-        model::Record,
-        storage::{StorageError, Transaction},
-        sync::{
-            git::GitCatalog,
-            policy::Policy,
-            state::{GitConfig, State},
-        },
-        yaml_store::{YamlStore, relative_record_path},
-    };
-    // Seed an existing managed catalog; this test needs an offline save, not a fresh clone.
-    f.init();
-    let store = YamlStore::new(f.root());
-    let marker = store
-        .with_inspection::<_, StorageError>(|tx| Ok(Marker::read(tx.journal()).unwrap().unwrap()))
-        .unwrap();
-    let mut backend = GitCatalog::new(f.root(), marker.host.as_str(), Policy::default()).unwrap();
-    crate::support::git::install_hook(&mut backend, |_, _, _, _| None);
-    crate::support::git::seed_bootstrap(&backend);
-    let remote = f.home.join("offline.git");
-    backend
-        .git()
-        .run(
-            &["remote", "add", "origin", remote.to_str().unwrap()],
-            None,
-            None,
-            &[0],
-        )
-        .unwrap();
-    store
-        .with_transaction::<_, StorageError>(|tx| {
-            let state = State::from_journal(tx.journal());
-            state
-                .write_config(
-                    &GitConfig::new(
-                        Some(remote.to_str().unwrap().into()),
-                        "main",
-                        marker.host.as_str(),
-                    )
-                    .unwrap(),
-                )
-                .unwrap();
-            Marker {
-                strategy: Strategy::Git,
-                ..marker
-            }
-            .write(&state)
-            .unwrap();
-            Ok(())
-        })
-        .unwrap();
-    // Still cross the real CLI's Git/remote dispatch; the configured remote is already offline.
+    let remote = f.home.join("unavailable.git");
     f.ok(&[
         "init",
         "--sync",
@@ -149,29 +97,38 @@ fn accepted_offline_create_retains_publication_warning_and_durable_record() {
         "--remote",
         remote.to_str().unwrap(),
     ]);
-    let result = f.ok(&["create", "Saved offline"]);
-    assert_eq!(result["save"]["local"], "committed");
-    assert_eq!(result["save"]["domain"]["outcome"], "changes");
-    assert_eq!(result["publication"]["sharing"], "failed");
-    assert_eq!(result["publication"]["local"], "unchanged");
-    // Read persisted state directly: show/sync behavior has backend-level tests.
-    let snapshot = YamlStore::new(f.root())
-        .with_inspection::<_, StorageError>(|tx| tx.read())
-        .unwrap();
-    assert_eq!(snapshot.catalog.streams().len(), 1);
-    let stream = &snapshot.catalog.streams()[0];
-    assert_eq!(serde_json::to_value(stream).unwrap(), result["stream"]);
-    let path = relative_record_path(&Record::Stream(stream.clone()));
-    let committed = backend
-        .git()
-        .run(
-            &["show", &format!("HEAD:{}", path.display())],
-            None,
-            None,
-            &[0],
-        )
-        .unwrap();
-    assert_eq!(committed, fs::read(f.root().join(path)).unwrap());
+    let transport = f.root().join(".catalog-local/transport.json");
+    let before = fs::read(&transport).unwrap();
+    let saved = f.ok(&[
+        "create",
+        "Saved offline",
+        "--goal",
+        "Keep local",
+        "--status",
+        "blocked",
+    ]);
+    assert_eq!(saved["save"]["local"], "persisted");
+    assert_eq!(saved["save"]["domain"]["outcome"], "changes");
+    assert!(saved.get("publication").is_none());
+    assert!(saved["save"].get("sharing").is_none());
+    assert_eq!(saved["stream"]["goal"], "Keep local");
+    assert_eq!(saved["stream"]["status"], "blocked");
+    assert_eq!(saved["stream"]["title_mode"], "manual");
+    assert_eq!(saved["stream"]["goal_mode"], "manual");
+    assert_eq!(
+        f.ok(&["show", saved["stream"]["id"].as_str().unwrap()])["stream"],
+        saved["stream"]
+    );
+    assert_eq!(fs::read(&transport).unwrap(), before);
+    fs::write(&transport, "unreadable transport configuration").unwrap();
+    let another = f.ok(&["create", "Still local"]);
+    assert_eq!(another["save"]["local"], "persisted");
+    assert!(another.get("publication").is_none());
+    assert_eq!(
+        fs::read(transport).unwrap(),
+        b"unreadable transport configuration"
+    );
+    assert_eq!(f.ok(&["list"])["streams"].as_array().unwrap().len(), 2);
 }
 
 #[test]
@@ -199,7 +156,7 @@ fn rejected_reads_adoption_and_missing_sync_leave_uninitialized_catalog_untouche
 }
 
 #[test]
-fn current_target_requires_supported_policy_even_with_an_explicit_environment_identity() {
+fn explicit_current_reads_need_no_supported_or_available_frontend() {
     let f = Fixture::new();
     f.init();
     let stream = f.create("Current");
@@ -208,25 +165,16 @@ fn current_target_requires_supported_policy_even_with_an_explicit_environment_id
         f.ok(&["show", id, "--frontend", "third-party"])["stream"],
         stream
     );
-    for (frontend, code) in [("auto", 0), ("third-party", 2)] {
+    for frontend in ["auto", "third-party"] {
         let output = f
             .command()
             .env("STREAMS_STREAM_ID", id)
             .args(["show", "--current", "--frontend", frontend, "--json"])
             .output()
             .unwrap();
-        assert_eq!(output.status.code(), Some(code), "{output:?}");
+        assert_eq!(output.status.code(), Some(0), "{output:?}");
         let value: Value = serde_json::from_slice(&output.stdout).unwrap();
-        if code == 0 {
-            assert_eq!(value["stream"], stream);
-        } else {
-            assert!(
-                value["error"]["message"]
-                    .as_str()
-                    .unwrap()
-                    .contains("unsupported")
-            );
-        }
+        assert_eq!(value["stream"], stream);
     }
 }
 
@@ -289,7 +237,9 @@ fn session_attach_captures_explicit_native_id_and_keeps_local_directory_state_pr
 
 #[test]
 fn membership_move_keeps_checkout_selection_and_never_uses_destination_alias_url() {
-    use streams_temper::{operations::Operation, sync::local::LocalCatalog, yaml_store::YamlStore};
+    use streams_temper::{
+        application, operations::membership::MoveIntent, yaml_store::records::YamlRecordStore,
+    };
     let f = Fixture::new();
     f.init();
     let initialized = Command::new("git")
@@ -333,20 +283,10 @@ fn membership_move_keeps_checkout_selection_and_never_uses_destination_alias_url
     let session_id = session["id"].as_str().unwrap();
     let selected = f.ok(&["session", "directory", session_id])["directory"].clone();
     let checkout_id = selected["checkout_id"].as_str().unwrap();
-    let backend = LocalCatalog::new(
-        YamlStore::new(f.root()),
-        session["host_id"].as_str().unwrap(),
-    )
-    .unwrap();
-    let snapshot = backend.snapshot().unwrap();
-    let before = snapshot
-        .catalog
-        .session(session["host_id"].as_str().unwrap(), session_id)
-        .unwrap();
-    let source = snapshot.catalog.stream(source_id).unwrap();
-    let token = backend.authority(source_id).unwrap().unwrap().token;
-    let operation = Operation::reassociate("move", before, source, destination_id, token).unwrap();
-    assert!(backend.save(&operation, None).unwrap().accepted());
+    let host = session["host_id"].as_str().unwrap();
+    let store = YamlRecordStore::new(f.root(), host).unwrap();
+    let intent = MoveIntent::new(host, "pi", "native", destination_id).unwrap();
+    application::move_session(&store, "move", &intent).unwrap();
     assert_eq!(
         f.ok(&["session", "directory", session_id])["directory"],
         selected
@@ -382,41 +322,447 @@ fn membership_move_keeps_checkout_selection_and_never_uses_destination_alias_url
 }
 
 #[test]
-fn captured_apply_persists_stdin_and_rejects_wrong_source_without_enrollment() {
+fn record_local_cli_initializes_enrolls_reports_and_retries_without_scans_or_publication() {
+    use streams_temper::{
+        model::RecordKind, storage::records::RecordAddress,
+        yaml_store::records::relative_record_path,
+    };
     let f = Fixture::new();
     f.init();
-    let stream = f.create("Work");
-    let id = stream["id"].as_str().unwrap();
-    let context = f.ok(&[
+    let args = [
         "agent",
         "context",
         "--harness",
         "pi",
         "--session-id",
-        "not-enrolled",
-        "--stream-id",
-        id,
-    ]);
-    assert_eq!(context["session"], Value::Null);
-    assert_eq!(context["stream"], stream);
-    let request = json!({"operation_id":"captured-update","catalog_source":context["catalog_source"],"actor":"user","kind":"stream","before":stream,"changes":{"goal":"Captured"},"inputs":[]});
+        "11234567-89ab-4def-8123-456789abcdef",
+    ];
+    let initial = f.ok(&args);
+    assert!(initial["session"].is_null());
+    assert!(initial["stream"].is_null());
+    let enrollment = json!({"version":2,"operation_id":"enroll","catalog_source":initial["catalog_source"],
+        "actor":"user","harness":"pi","harness_session_id":args[5],
+        "stream":{"title":"Work","goal":"Original"},"session":{"title":"Contribution"},"cwd":f.cwd});
+    let (code, enrolled) = f.run(&["agent", "enroll"], Some(&enrollment.to_string()));
+    assert_eq!(code, 0, "{enrolled}");
+    assert!(enrolled.get("authority").is_none());
+    assert!(enrolled.get("publication").is_none());
+    let context = f.ok(&args);
+    let listed = f.ok(&["list"]);
+    assert_eq!(listed["streams"], json!([context["stream"]]));
+    let shown = f.ok(&["show", context["stream"]["id"].as_str().unwrap()]);
+    assert_eq!(shown["stream"], context["stream"]);
+    assert_eq!(shown["sessions"], json!([context["session"]]));
+    assert_eq!(
+        f.ok(&["check", context["stream"]["id"].as_str().unwrap()]),
+        json!({"valid":true,"streams":1,"sessions":1})
+    );
+    let publication = f.ok(&["sync"]);
+    assert_eq!(publication["sharing"], "local-only");
+    assert!(publication["domain"].is_null());
+    let address = RecordAddress::new(
+        context["host_id"].as_str().unwrap(),
+        RecordKind::Stream,
+        context["stream"]["id"].as_str().unwrap(),
+    )
+    .unwrap();
+    let path = f.root().join(relative_record_path(&address).unwrap());
+    let malformed = f.root().join("hosts/unrelated/streams");
+    fs::create_dir_all(&malformed).unwrap();
+    for index in 0..64 {
+        fs::write(malformed.join(format!("bad-{index}.yaml")), "malformed").unwrap();
+    }
+    fs::write(
+        f.root().join(".catalog-local/transport.json"),
+        "malformed transport",
+    )
+    .unwrap();
+    let request = json!({"version":2,"operation_id":"captured-update","catalog_source":context["catalog_source"],
+        "actor":"user","kind":"stream","before":context["stream"],"changes":{"goal":"Captured"},"inputs":[],
+        "title_default":context["title_defaults"]["stream"]});
     let (code, first) = f.run(&["agent", "apply"], Some(&request.to_string()));
     assert_eq!(code, 0, "{first}");
-    assert_eq!(first["operation_id"], "captured-update");
     assert_eq!(first["save"]["domain"]["outcome"], "changes");
-    let before = catalog_files(&f.root());
-    let mut bad = request.clone();
-    bad["catalog_source"] = json!("wrong");
-    let (code, error) = f.run(&["agent", "apply"], Some(&bad.to_string()));
-    assert_eq!(code, 2);
-    assert!(error.get("error").is_some());
-    assert_eq!(catalog_files(&f.root()), before);
-    assert_eq!(f.ok(&["show", id])["stream"]["goal"], "Captured");
+    assert_eq!(first["stream"]["goal"], "Captured");
+    assert!(first["save"].get("sharing").is_none());
+    assert!(first.get("publication").is_none());
+    let accepted = fs::read(&path).unwrap();
+    let (code, retry) = f.run(&["agent", "apply"], Some(&request.to_string()));
+    assert_eq!(code, 0, "{retry}");
+    assert_eq!(retry["save"]["domain"], first["save"]["domain"]);
+    assert_eq!(retry["save"]["local"], "unchanged");
+    assert_eq!(fs::read(&path).unwrap(), accepted);
+    let mut wrong_source = request;
+    wrong_source["catalog_source"] = json!("wrong");
+    let (code, error) = f.run(&["agent", "apply"], Some(&wrong_source.to_string()));
+    assert_eq!(code, 2, "{error}");
+    assert_eq!(fs::read(&path).unwrap(), accepted);
+    let current = f.ok(&args);
+    assert_eq!(current["stream"], first["stream"]);
+    let shown = f
+        .command()
+        .env(
+            "STREAMS_STREAM_ID",
+            current["stream"]["id"].as_str().unwrap(),
+        )
+        .args(["show", "--current", "--json"])
+        .output()
+        .unwrap();
+    assert!(
+        shown.status.success(),
+        "{}",
+        String::from_utf8_lossy(&shown.stderr)
+    );
+    let shown: Value = serde_json::from_slice(&shown.stdout).unwrap();
+    assert_eq!(shown["stream"], current["stream"]);
+    assert!(shown.get("sessions").is_none());
+    let id = current["stream"]["id"].as_str().unwrap();
+    assert!(uuid::Uuid::parse_str(id).is_ok());
+    let (code, _) = f.run(&["show", id], None);
+    assert_eq!(
+        code, 2,
+        "a positional UUID is discovery and must not bypass malformed unrelated records"
+    );
+    let session_request = json!({"version":2,"operation_id":"progress","catalog_source":current["catalog_source"],
+        "actor":"automatic","kind":"session","before":current["session"],"changes":{"state":"Complete"},"inputs":[],
+        "title_default":current["title_defaults"]["session"]});
+    let (code, saved) = f.run(&["agent", "apply"], Some(&session_request.to_string()));
+    assert_eq!(code, 0, "{saved}");
+    assert_eq!(saved["session"]["state"], "Complete");
+    assert_eq!(f.ok(&args)["session"], saved["session"]);
+    for (intent, archived) in [
+        (
+            vec![
+                "update",
+                "--current",
+                "--title",
+                "Human title",
+                "--status",
+                "waiting",
+                "--add-repository",
+                "app",
+                "https://example.test/app.git",
+            ],
+            None,
+        ),
+        (vec!["archive", "--current"], Some(true)),
+        (vec!["restore", "--current"], Some(false)),
+    ] {
+        let edited = f
+            .command()
+            .env("STREAMS_STREAM_ID", id)
+            .args(intent)
+            .arg("--json")
+            .output()
+            .unwrap();
+        assert!(
+            edited.status.success(),
+            "{}",
+            String::from_utf8_lossy(&edited.stdout)
+        );
+        let edited: Value = serde_json::from_slice(&edited.stdout).unwrap();
+        assert_eq!(edited["save"]["local"], "persisted");
+        assert!(edited["save"].get("sharing").is_none());
+        assert!(edited.get("publication").is_none());
+        assert_eq!(edited["stream"]["title"], "Human title");
+        assert_eq!(edited["stream"]["title_mode"], "manual");
+        assert_eq!(edited["stream"]["status"], "waiting");
+        if let Some(archived) = archived {
+            assert_eq!(edited["stream"]["archived"], archived);
+        }
+    }
+    assert_eq!(
+        f.ok(&args)["stream"]["repositories"]["app"]["url"],
+        "https://example.test/app.git"
+    );
+    let attached = f
+        .command()
+        .env("STREAMS_STREAM_ID", id)
+        .args([
+            "session",
+            "attach",
+            "--current",
+            "--harness",
+            "pi",
+            "--session-id",
+            "point-human",
+            "--title",
+            "Point attachment",
+            "--json",
+        ])
+        .output()
+        .unwrap();
+    assert!(
+        attached.status.success(),
+        "{}",
+        String::from_utf8_lossy(&attached.stdout)
+    );
+    let attached: Value = serde_json::from_slice(&attached.stdout).unwrap();
+    assert_eq!(attached["session"]["stream_id"], id);
+    assert_eq!(attached["save"]["local"], "persisted");
+    assert!(attached["save"].get("sharing").is_none());
+    assert!(f.ok(&["checkout", "list"])["checkouts"].is_array());
 }
 
 #[test]
-fn accepted_save_keeps_receipt_when_directory_completion_fails() {
-    use streams_temper::{storage::StorageError, yaml_store::YamlStore};
+fn record_local_session_commands_pin_checkout_identity_and_preserve_host_qualified_discovery() {
+    use streams_temper::{
+        application,
+        model::{Record, Session, Stream},
+        storage::records::RecordAddress,
+        yaml_store::records::{YamlRecordStore, relative_record_path},
+    };
+    let f = Fixture::new();
+    let initialized = Command::new("git")
+        .env_clear()
+        .env("PATH", std::env::var_os("PATH").unwrap_or_default())
+        .env("HOME", &f.home)
+        .env("GIT_CONFIG_GLOBAL", f.home.join("gitconfig"))
+        .env("GIT_CONFIG_NOSYSTEM", "1")
+        .current_dir(&f.cwd)
+        .args(["init", "--quiet"])
+        .output()
+        .unwrap();
+    assert!(
+        initialized.status.success(),
+        "{}",
+        String::from_utf8_lossy(&initialized.stderr)
+    );
+    f.init();
+    let source = f.ok(&[
+        "agent",
+        "context",
+        "--harness",
+        "pi",
+        "--session-id",
+        "primary",
+    ]);
+    let proposal = json!({"version":2,"catalog_source":source["catalog_source"],"operation_id":"initial",
+        "harness":"pi","harness_session_id":"primary","stream":{"title":"Effort"},"session":{"title":"Primary"},"actor":"user","cwd":f.cwd});
+    let (code, enrolled) = f.run(&["agent", "enroll"], Some(&proposal.to_string()));
+    assert_eq!(code, 0, "{enrolled}");
+    let id = enrolled["stream"]["id"].as_str().unwrap();
+    let host = enrolled["session"]["host_id"].as_str().unwrap();
+    let original = "https://example.test/original.git";
+    f.ok(&["update", id, "--add-repository", "app", original]);
+    let attached = f.ok(&[
+        "session",
+        "attach",
+        id,
+        "--harness",
+        "pi",
+        "--session-id",
+        "manual",
+        "--title",
+        "Human lane",
+        "--repository",
+        "app",
+        "--ref",
+        "main",
+    ]);
+    let session_id = attached["session"]["id"].as_str().unwrap();
+    assert_eq!(session_id, Session::id_for(host, "pi", "manual"));
+    assert_eq!(attached["session"]["checkout"]["repository_url"], original);
+    assert_eq!(attached["session"]["title_mode"], "manual");
+    let checkouts = f.ok(&["checkout", "list"]);
+    assert_eq!(checkouts["checkouts"].as_array().unwrap().len(), 1);
+    let checkout_id = checkouts["checkouts"][0]["id"].as_str().unwrap();
+    assert_eq!(
+        f.ok(&["checkout", "show", checkout_id])["checkout"],
+        checkouts["checkouts"][0]
+    );
+    assert!(attached.get("publication").is_none());
+    assert!(attached["save"].get("sharing").is_none());
+    let qualified = format!("{host}/{session_id}");
+    assert_eq!(
+        f.ok(&["session", "show", &qualified])["session"],
+        attached["session"]
+    );
+    let updated = f.ok(&[
+        "session", "update", &qualified, "--state", "Progress", "--status", "blocked",
+    ]);
+    assert_eq!(updated["session"]["state"], "Progress");
+    assert_eq!(updated["session"]["stream_id"], id);
+    assert_eq!(
+        updated["session"]["checkout"],
+        attached["session"]["checkout"]
+    );
+    assert_eq!(updated["save"]["domain"]["outcome"], "changes");
+    assert_eq!(
+        f.ok(&["session", "directory", &qualified])["directory"]["cwd"],
+        f.cwd.to_str().unwrap()
+    );
+    let selected = f.cwd.join("chosen");
+    fs::create_dir(&selected).unwrap();
+    assert_eq!(
+        f.ok(&[
+            "session",
+            "directory",
+            &qualified,
+            "--cwd",
+            selected.to_str().unwrap()
+        ])["directory"]["cwd"],
+        selected.to_str().unwrap()
+    );
+    f.ok(&[
+        "update",
+        id,
+        "--remove-repository",
+        "app",
+        "--add-repository",
+        "app",
+        "https://example.test/replacement.git",
+    ]);
+    let (code, _) = f.run(
+        &[
+            "session",
+            "directory",
+            &qualified,
+            "--cwd",
+            f.cwd.to_str().unwrap(),
+            "--repository",
+            "app",
+        ],
+        None,
+    );
+    assert_eq!(
+        code, 2,
+        "a renamed repository alias cannot replace the independent checkout URL"
+    );
+    assert_eq!(
+        f.ok(&["session", "show", &qualified])["session"]["checkout"]["repository_url"],
+        original
+    );
+
+    let mut other = proposal.clone();
+    other["operation_id"] = json!("other");
+    other["harness_session_id"] = json!("other");
+    let (code, other) = f.run(&["agent", "enroll"], Some(&other.to_string()));
+    assert_eq!(code, 0, "{other}");
+    let (code, _) = f.run(
+        &[
+            "session",
+            "attach",
+            other["stream"]["id"].as_str().unwrap(),
+            "--harness",
+            "pi",
+            "--session-id",
+            "manual",
+            "--title",
+            "Do not move",
+        ],
+        None,
+    );
+    assert_eq!(code, 2);
+    assert_eq!(
+        f.ok(&["session", "show", &qualified])["session"],
+        updated["session"]
+    );
+
+    let remote_directory = tempfile::tempdir().unwrap();
+    let remote = YamlRecordStore::new(remote_directory.path(), "replica-host").unwrap();
+    remote.initialize().unwrap();
+    let remote_stream =
+        Record::Stream(Stream::new(id, "Replica effort", None, "replica-host").unwrap());
+    let remote_session = Record::Session(
+        Session::new(
+            Session::id_for("replica-host", "pi", "manual"),
+            "replica-host",
+            id,
+            "pi",
+            "manual",
+            "Human lane",
+        )
+        .unwrap(),
+    );
+    for (operation, record) in [
+        ("remote-stream", &remote_stream),
+        ("remote-session", &remote_session),
+    ] {
+        application::create_record(&remote, operation, record).unwrap();
+        let relative = relative_record_path(&RecordAddress::for_record(record)).unwrap();
+        let target = f.root().join(&relative);
+        fs::create_dir_all(target.parent().unwrap()).unwrap();
+        fs::copy(remote_directory.path().join(&relative), target).unwrap();
+    }
+    let Record::Session(remote_session) = remote_session else {
+        unreachable!()
+    };
+    let remote_ref = format!("replica-host/{}", remote_session.id);
+    assert_eq!(
+        f.ok(&["session", "show", &remote_ref])["session"]["host_id"],
+        "replica-host"
+    );
+    let (code, ambiguity) = f.run(&["session", "show", "Human lane"], None);
+    assert_eq!(code, 2);
+    assert_eq!(ambiguity["error"]["kind"], "ambiguous");
+    let mut candidates: Vec<_> = ambiguity["error"]["candidates"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|value| value.as_str().unwrap().to_owned())
+        .collect();
+    candidates.sort();
+    let mut expected = vec![qualified.clone(), remote_ref.clone()];
+    expected.sort();
+    assert_eq!(candidates, expected);
+    let local_stream = format!("{host}/{id}");
+    assert_eq!(
+        f.ok(&["session", "list", "--stream", &local_stream])["sessions"]
+            .as_array()
+            .unwrap()
+            .len(),
+        2
+    );
+    for intent in [
+        vec!["session", "update", &remote_ref, "--state", "Never"],
+        vec![
+            "session",
+            "directory",
+            &remote_ref,
+            "--cwd",
+            f.cwd.to_str().unwrap(),
+        ],
+    ] {
+        assert_eq!(
+            f.run(&intent, None).0,
+            2,
+            "foreign Sessions are readable, not writable"
+        );
+    }
+    let missing = f.cwd.join("missing");
+    let (code, partial) = f.run(
+        &[
+            "session",
+            "attach",
+            &local_stream,
+            "--harness",
+            "pi",
+            "--session-id",
+            "partial",
+            "--title",
+            "Partial lane",
+            "--cwd",
+            missing.to_str().unwrap(),
+        ],
+        None,
+    );
+    assert_eq!(code, 2);
+    assert_eq!(partial["save"]["local"], "persisted");
+    assert_eq!(partial["save"]["domain"]["outcome"], "changes");
+    assert!(partial["completion_error"]["message"].is_string());
+    assert_eq!(
+        f.ok(&[
+            "session",
+            "show",
+            partial["session"]["id"].as_str().unwrap()
+        ])["session"],
+        partial["session"]
+    );
+}
+
+#[test]
+fn record_local_create_and_attachment_keep_their_receipts_when_directory_completion_fails() {
     let f = Fixture::new();
     f.init();
     let missing = f.home.join("missing-cwd");
@@ -426,21 +772,15 @@ fn accepted_save_keeps_receipt_when_directory_completion_fails() {
     );
     assert_eq!(code, 2, "{value}");
     assert_eq!(value["save"]["local"], "persisted");
-    assert!(value["runtime"]["error"]["message"].is_string());
-    let snapshot = YamlStore::new(f.root())
-        .with_inspection::<_, StorageError>(|tx| tx.read())
-        .unwrap();
-    assert_eq!(snapshot.catalog.streams().len(), 1);
-    assert_eq!(
-        serde_json::to_value(&snapshot.catalog.streams()[0]).unwrap(),
-        value["stream"]
-    );
-    let stream_id = value["stream"]["id"].as_str().unwrap();
+    assert!(value["completion_error"]["message"].is_string());
+    assert!(value.get("publication").is_none());
+    let stream = value["stream"]["id"].as_str().unwrap();
+    assert_eq!(f.ok(&["show", stream])["stream"], value["stream"]);
     let (code, attached) = f.run(
         &[
             "session",
             "attach",
-            stream_id,
+            stream,
             "--harness",
             "pi",
             "--session-id",
@@ -454,46 +794,33 @@ fn accepted_save_keeps_receipt_when_directory_completion_fails() {
     );
     assert_eq!(code, 2, "{attached}");
     assert_eq!(attached["save"]["local"], "persisted");
-    assert!(attached["runtime"]["error"].is_string());
-    let snapshot = YamlStore::new(f.root())
-        .with_inspection::<_, StorageError>(|tx| tx.read())
-        .unwrap();
-    assert_eq!(snapshot.catalog.sessions().len(), 1);
+    assert!(attached["completion_error"]["message"].is_string());
+    assert!(attached.get("publication").is_none());
     assert_eq!(
-        serde_json::to_value(&snapshot.catalog.sessions()[0]).unwrap(),
+        f.ok(&[
+            "session",
+            "show",
+            attached["session"]["id"].as_str().unwrap()
+        ])["session"],
         attached["session"]
     );
 }
 
 #[test]
-fn git_import_requires_explicit_adoption_and_returns_baseline_receipt() {
+fn initialized_catalog_cannot_be_adopted_or_converted_in_place() {
     let f = Fixture::new();
     f.init();
-    let marker_path = f.root().join(".catalog-sync/cli.json");
-    let before = fs::read(&marker_path).unwrap();
-    let (code, rejected) = f.run(&["init", "--sync", "git"], None);
-    assert_eq!(code, 2, "{rejected}");
-    assert!(
-        rejected["error"]["message"]
-            .as_str()
-            .unwrap()
-            .contains("explicit adoption")
-    );
-    assert_eq!(fs::read(&marker_path).unwrap(), before);
-    assert!(!f.root().join(".git").exists());
-    assert!(!f.root().join(".catalog-sync/save.json").exists());
-
-    let imported = f.ok(&["init", "--sync", "git", "--adopt"]);
-    imported["baseline_revision"]
-        .as_str()
-        .unwrap()
-        .parse::<streams_temper::sync::Oid>()
-        .unwrap();
-    assert!(f.root().join(".git").is_dir());
-    let marker: Value = serde_json::from_slice(&fs::read(&marker_path).unwrap()).unwrap();
-    let original: Value = serde_json::from_slice(&before).unwrap();
-    assert_eq!(marker["strategy"], "git");
-    assert_eq!(marker["host"], original["host"]);
+    f.create("Existing");
+    let before = catalog_files(&f.root());
+    for args in [
+        vec!["init", "--sync", "git"],
+        vec!["init", "--sync", "git", "--adopt"],
+    ] {
+        let (code, rejected) = f.run(&args, None);
+        assert_eq!(code, 2, "{rejected}");
+        assert_eq!(catalog_files(&f.root()), before);
+        assert!(!f.root().join(".git").exists());
+    }
 }
 
 #[test]
@@ -586,21 +913,39 @@ fn session_references_and_candidates_keep_the_host_qualified_identity() {
     let mut foreign = local.clone();
     foreign["host_id"] = json!(foreign_host);
     foreign["harness_session_id"] = json!("foreign-native");
-    let directory = f
-        .root()
-        .join("sessions")
-        .join(stream["id"].as_str().unwrap())
-        .join(foreign_host);
-    fs::create_dir_all(&directory).unwrap();
-    fs::write(
-        directory.join(format!("{id}.yaml")),
-        serde_json::to_vec_pretty(
-            &json!({"version":1,"revision":"foreign-revision","kind":"session","record":foreign}),
-        )
-        .unwrap(),
+    let foreign_id = streams_temper::model::Session::id_for(foreign_host, "pi", "foreign-native");
+    foreign["id"] = json!(foreign_id);
+    let mut foreign_stream = stream.clone();
+    foreign_stream["owner"]["host_id"] = json!(foreign_host);
+    let stream_address = streams_temper::storage::records::RecordAddress::new(
+        foreign_host,
+        streams_temper::model::RecordKind::Stream,
+        stream["id"].as_str().unwrap(),
     )
     .unwrap();
-    let (code, error) = f.run(&["session", "show", id], None);
+    let stream_path = f
+        .root()
+        .join(streams_temper::yaml_store::records::relative_record_path(&stream_address).unwrap());
+    fs::create_dir_all(stream_path.parent().unwrap()).unwrap();
+    fs::write(stream_path, serde_json::to_vec_pretty(&json!({"version":2,"revision":"foreign-stream","kind":"stream","record":foreign_stream,"receipts":{}})).unwrap()).unwrap();
+    let address = streams_temper::storage::records::RecordAddress::new(
+        foreign_host,
+        streams_temper::model::RecordKind::Session,
+        &foreign_id,
+    )
+    .unwrap();
+    let path = f
+        .root()
+        .join(streams_temper::yaml_store::records::relative_record_path(&address).unwrap());
+    fs::create_dir_all(path.parent().unwrap()).unwrap();
+    fs::write(
+        path,
+        serde_json::to_vec_pretty(
+            &json!({"version":2,"revision":"foreign-revision","kind":"session","record":foreign,"receipts":{}}),
+        ).unwrap(),
+    ).unwrap();
+    assert_eq!(f.ok(&["session", "show", id])["session"], local);
+    let (code, error) = f.run(&["session", "show", "Contribution"], None);
     assert_eq!(code, 2, "{error}");
     assert_eq!(error["error"]["kind"], "ambiguous", "{error}");
     let mut candidates: Vec<_> = error["error"]["candidates"]
@@ -611,7 +956,7 @@ fn session_references_and_candidates_keep_the_host_qualified_identity() {
         .collect();
     candidates.sort();
     let qualified = format!("{host}/{id}");
-    let foreign_qualified = format!("{foreign_host}/{id}");
+    let foreign_qualified = format!("{foreign_host}/{foreign_id}");
     let mut expected = vec![qualified.clone(), foreign_qualified.clone()];
     expected.sort();
     assert_eq!(candidates, expected);

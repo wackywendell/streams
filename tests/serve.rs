@@ -103,8 +103,9 @@ impl Fixture {
             .as_object_mut()
             .unwrap()
             .remove("document_locations");
-        let request = json!({"operation_id":"update", "catalog_source":context["catalog_source"],
-            "actor":"user", "kind":"stream", "before":stream, "changes":{"goal":"Captured"}, "inputs":[]});
+        let request = json!({"version":2,"operation_id":"update", "catalog_source":context["catalog_source"],
+            "actor":"user", "kind":"stream", "before":stream, "changes":{"goal":"Captured"}, "inputs":[],
+            "title_default":context["title_defaults"]["stream"]});
         (context, request)
     }
 }
@@ -308,7 +309,7 @@ fn title_default_requests_are_narrow_and_context_reads_them_fresh() {
 }
 
 #[test]
-fn sync_capture_inputs_and_exact_workspace_capture_use_application_operations() {
+fn sync_and_diagnostic_capture_use_application_operations_without_saved_layouts() {
     let f = Fixture::new();
     let (context, _) = f.capture();
     let id = context["stream"]["id"].as_str().unwrap();
@@ -321,11 +322,6 @@ fn sync_capture_inputs_and_exact_workspace_capture_use_application_operations() 
     assert_eq!(child.response(1)["outcome"]["result"], expected);
     child.request(2, json!({"kind":"sync","event":"start"}));
     assert_eq!(child.response(2)["outcome"]["status"], "success");
-    child.request(3, json!({"kind":"capture_workspace","stream_id":id}));
-    let response = child.response(3);
-    assert_eq!(response["outcome"]["status"], "error", "{response}");
-    child.request(4, json!({"kind":"capture_workspace","stream_id":"Work"}));
-    assert_eq!(child.response(4)["outcome"]["error"]["kind"], "not-found");
     assert_eq!(child.finish(), (0, String::new()));
 }
 

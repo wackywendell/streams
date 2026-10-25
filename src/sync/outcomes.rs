@@ -1,6 +1,5 @@
 //! Independent domain, local-save, and publication facts for every caller.
 
-use super::replay::ReplayConflict;
 use serde::Serialize;
 use strum::{AsRefStr, Display, EnumString, VariantNames};
 
@@ -45,7 +44,7 @@ pub struct Result {
     pub local_revision: Option<String>,
     pub remote_revision: Option<String>,
     pub detail: String,
-    pub conflicts: Vec<ReplayConflict>,
+    pub conflicts: Vec<String>,
 }
 
 impl Result {
@@ -81,7 +80,7 @@ impl Result {
         self
     }
 
-    pub fn with_conflicts(mut self, conflicts: Vec<ReplayConflict>) -> Self {
+    pub fn with_conflicts(mut self, conflicts: Vec<String>) -> Self {
         self.conflicts = conflicts;
         self
     }

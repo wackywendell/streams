@@ -1,5 +1,6 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
+import {sessionId} from './helpers/session-id.mjs';
 import { spawnSync } from 'node:child_process';
 import { createHash } from 'node:crypto';
 import { mkdtempSync, mkdirSync, readFileSync, readdirSync, realpathSync, rmSync, statSync, writeFileSync } from 'node:fs';
@@ -52,8 +53,8 @@ function transcript(root,id) {
 test('production replay invokes real Rust preview for ordered reports without opening poisoned configuration',async()=>isolated(async(root,clientFor)=>{
  const id='00000000-0000-4000-8000-000000000001';
  const stream={id:'effort',title:'Work',title_mode:'automatic',goal:'Old goal',goal_short:null,goal_mode:'automatic',status:'active',archived:false,owner:{host_id:'host'},repositories:{},issues:[],prs:[],documents:[]};
- const session={id:'card',host_id:'host',stream_id:stream.id,harness:'pi',harness_session_id:id,title:'Lane',title_mode:'automatic',status:'active',state:'Old state',state_short:null,remaining:'Old remaining',checkout:null};
- const catalog={catalog_source:'frozen-source',host_id:'host',stream,session,sessions:[session],authority:{host_id:'host',token:'[redacted]'}};
+ const session={id:sessionId('host','pi',id),host_id:'host',stream_id:stream.id,harness:'pi',harness_session_id:id,title:'Lane',title_mode:'automatic',status:'active',state:'Old state',state_short:null,remaining:'Old remaining',checkout:null};
+ const catalog={catalog_source:'frozen-source',host_id:'host',stream,session,sessions:[session],title_defaults:{stream:'automatic',session:'automatic'}};
  const file=transcript(root,id);
  const {capture}=captureSessions({version:1,host_id:'host',streams:[stream],workspaces:[],topology_error:null,target:{kind:'stream',id:stream.id,title:stream.title},samples:[{host_id:'host',harness:'pi',native_session_id:id,open:false,locations:[],catalog,transcript_file:file,unavailable:null}],unsupported:[]},join(root,'private'));
  mkdirSync(join(root,'config','streams'),{recursive:true});writeFileSync(join(root,'config','streams','settings.json'),'INVALID CONFIGURATION');
@@ -75,7 +76,7 @@ test('production replay invokes real Rust preview for ordered reports without op
 
 test('unattached setup uses real Rust enrollment preview before reporting',async()=>isolated(async(root,clientFor)=>{
  const id='00000000-0000-4000-8000-000000000002', file=transcript(root,id);
- const catalog={catalog_source:'frozen-source',host_id:'host',stream:null,session:null,sessions:[],authority:null};
+ const catalog={catalog_source:'frozen-source',host_id:'host',stream:null,session:null,sessions:[],title_defaults:{stream:'automatic',session:'automatic'}};
  const {capture}=captureSessions({version:1,host_id:'host',streams:[],workspaces:[],topology_error:null,target:{kind:'workspace',id:'workspace',title:'Workspace'},samples:[{host_id:'host',harness:'pi',native_session_id:id,open:null,locations:[],catalog,transcript_file:file,unavailable:null}],unsupported:[]},join(root,'private'));
  const tasks=[], client=clientFor(id);
  const {run}=await replayCapture(capture,join(root,'private'),runtime(input=>{
@@ -86,14 +87,14 @@ test('unattached setup uses real Rust enrollment preview before reporting',async
  assert.equal(readdirSync(root).includes('data'),false);assert.equal(readdirSync(root).includes('state'),false);
 }));
 
-test('real Rust capture inspects durable records without updating catalog bytes, times or runtime state',async()=>isolated(async(root,clientFor)=>{
+test('exact Rust Stream capture does not discover Sessions or transcripts without saved native inputs',async()=>isolated(async(root,clientFor)=>{
  cli(root,'init','--sync','none');const created=cli(root,'create','Captured effort');
  const id='00000000-0000-4000-8000-000000000003';transcript(root,id);
  cli(root,'session','attach',created.stream.id,'--harness','pi','--session-id',id,'--title','Captured lane');
  const before=files(join(root,'data')), stateBefore=readdirSync(root).includes('state')?files(join(root,'state')):null, client=clientFor(id);
  const inventory=await client.captureInputs({kind:'stream',id:created.stream.id});
- assert.equal(inventory.samples.length,1);assert.equal(inventory.samples[0].catalog.session.harness_session_id,id);
- assert.equal(inventory.samples[0].catalog.authority.token,'[redacted]');assert.equal(inventory.samples[0].open,null);
- assert.ok(inventory.topology_error);assert.equal(inventory.samples[0].unavailable,null);
+ assert.equal(inventory.streams.length,1);assert.equal(inventory.streams[0].id,created.stream.id);
+ assert.deepEqual(inventory.samples,[],'an exact Stream key is not a contributor roster or transcript locator');
+ assert.ok(inventory.topology_error);
  assert.deepEqual(files(join(root,'data')),before);assert.deepEqual(readdirSync(root).includes('state')?files(join(root,'state')):null,stateBefore);
 }));

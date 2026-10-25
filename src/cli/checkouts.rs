@@ -3,8 +3,8 @@ use streams_temper::process::NativeProcessRunner;
 
 impl App {
     pub(super) fn checkout(&self, command: CheckoutCommand) -> Result<Output> {
-        let opened = application::open(&self.config)?;
-        let registry = self.registry(&opened)?;
+        let opened = application::open_records(&self.config)?;
+        let registry = self.registry(opened.host().as_str())?;
         let value = match command {
             CheckoutCommand::List => json!({"checkouts":registry.list()?}),
             CheckoutCommand::Register {
@@ -21,7 +21,10 @@ impl App {
                 path,
                 revision,
             } => {
-                let cache_root = self.state(&opened)?.root().join("revisions");
+                let cache_root = self
+                    .state(opened.root(), opened.host().as_str())?
+                    .root()
+                    .join("revisions");
                 serde_json::to_value(registry.revision_document(
                     &checkout_id,
                     &path,

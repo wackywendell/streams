@@ -2,6 +2,30 @@ use super::*;
 use std::sync::{Arc, Mutex};
 
 #[test]
+fn a_fresh_empty_catalog_can_import_before_its_first_record_save() {
+    let directory = tempfile::tempdir().unwrap();
+    let remote = directory.path().join("remote");
+    bare(&remote);
+    let a = directory.path().join("a");
+    let b = directory.path().join("b");
+    let a_records = setup(&a, "a-host");
+    assert_eq!(
+        transport(&a, "a-host", Some(&remote)).sync().sharing,
+        SharingStatus::Confirmed
+    );
+    let b_records = YamlRecordStore::new(&b, "b-host").unwrap();
+    b_records.initialize().unwrap();
+    assert!(!b.join(".catalog-staging").exists());
+    let result = transport(&b, "b-host", Some(&remote)).sync();
+    assert_eq!(result.sharing, SharingStatus::Confirmed, "{result:?}");
+    assert_eq!(stream(&b_records, "a-host"), stream(&a_records, "a-host"));
+    assert_eq!(
+        b_records.inventory().unwrap(),
+        a_records.inventory().unwrap()
+    );
+}
+
+#[test]
 fn pull_only_and_noop_sync_never_push_and_noop_does_not_fetch() {
     let directory = tempfile::tempdir().unwrap();
     let remote = directory.path().join("remote");

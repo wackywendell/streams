@@ -125,7 +125,7 @@ Today, `q` first restores the terminal, which leaves the blank pane with a curso
 
 Automatic opening should depend only on the auto-open setting, not on why a card last closed. A card opens automatically when Pi starts or resumes the conversation and the setting is on. Within a running Pi session, a closed card stays closed until the user opens it. Today, any existing evidence record for the owner suppresses automatic opening in every later session; that should stop. The trigger is Pi's session start event, not the Rust child starting, so restarting a crashed child does not reopen a card the user closed. Opening reuses an observed card; duplicates exit through the per-Session process lock. It does not require a durable absence proof.
 
-Closing a card from outside — the CLI, or Pi on the user's request — remains an effect. It takes one snapshot and targets the observed Session card through the frontend's safe identity contract. The reply completes the pass. A lost reply warns and stops; it creates no closure record and triggers no confirmation snapshot.
+Closing a card from outside — the CLI, or Pi on the user's request — remains an effect. It takes one snapshot, selects the card by its Session marker and checks whether the Herdr subscription has ended before acting. The [targeting decision](native-observe-and-act.md#bound-targeting-to-the-current-pass) records the accepted residual restart risk. The reply completes the pass. A lost reply warns and stops; it creates no closure record and triggers no confirmation snapshot.
 
 ### One Streams process per Pi session
 
@@ -133,7 +133,7 @@ The Pi extension should start one long-lived Rust child per Pi session and talk 
 
 The child should also reconcile moves of its own conversation. It should subscribe to `pane.moved` and `tab.moved` for its owner pane, and to `workspace.metadata_updated` for the owner's workspace. When the owner lands in a workspace associated with another Stream, the child should apply the membership change from the native reconciliation ADR. The card then sees the Session file change. This replaces "on the next Streams interaction" for moves while Pi is running. The owner pane is the Pi process, so a move cannot happen without a running child, except after a child crash.
 
-If the child exits unexpectedly, the extension should warn the user and restart it once. The new child observes current topology to establish its baseline. It does not catch up a missed card-follow move or reopen a closed card. If the restarted child also exits, the extension should warn again and stop Streams for that Pi session until reload.
+If the child exits unexpectedly, the extension should warn the user and restart it once. The new child observes current topology and moves an existing separated card into Pi's tab. It keeps no owner-move baseline and does not reopen a closed card. If the restarted child also exits, the extension should warn again and stop Streams for that Pi session until reload.
 
 The stdio protocol becomes a long-lived interface between TypeScript and Rust, so it needs a version number checked at startup.
 

@@ -59,13 +59,19 @@ fn interrupted_enrollment_leaves_only_its_effort_and_retries_each_record_indepen
     assert!(!stream.repeated);
     assert!(read_session(&store).is_none());
     assert!(enroll_stream(&store, "host", &request).unwrap().repeated);
-    let session = enroll_session(&store, "host", &request).unwrap();
-    assert!(!session.repeated);
+    let session = enroll_session_observed(&store, "host", &request).unwrap();
+    assert!(!session.save.repeated);
+    assert_eq!(
+        session.stream.as_ref().unwrap().id,
+        effort_id_for("host", request.harness(), "native")
+    );
     assert_eq!(
         read_session(&store).unwrap().stream_id,
         effort_id_for("host", request.harness(), "native")
     );
-    assert!(enroll_session(&store, "host", &request).unwrap().repeated);
+    let repeated = enroll_session_observed(&store, "host", &request).unwrap();
+    assert!(repeated.save.repeated);
+    assert!(repeated.stream.is_none());
     assert_eq!(
         enroll_stream(&store, "host", &request).unwrap().outcome,
         stream.outcome
@@ -95,7 +101,9 @@ fn existing_enrollment_does_not_edit_text_or_replace_membership() {
     assert_eq!(current.stream_id, "b");
     assert_eq!(current.title, "Conversation");
     assert!(enroll_session(&store, "host", &request("other", Some("missing"))).is_err());
-    let repeated = enroll_session(&store, "host", &initial).unwrap();
+    let observed = enroll_session_observed(&store, "host", &initial).unwrap();
+    assert!(observed.stream.is_none());
+    let repeated = observed.save;
     assert!(repeated.repeated);
     assert_eq!(repeated.outcome, original.outcome);
     assert_eq!(
@@ -116,7 +124,13 @@ fn enrollment_receipt_size_is_independent_of_stream_prose() {
         let mut stream = Stream::new("a", "A", None, "host").unwrap();
         stream.goal = Some(goal.into());
         put_stream(&store, stream);
-        let saved = enroll_session(&store, "host", &request("enroll", Some("a"))).unwrap();
+        let observed =
+            enroll_session_observed(&store, "host", &request("enroll", Some("a"))).unwrap();
+        assert_eq!(
+            observed.stream.as_ref().unwrap().goal.as_deref(),
+            Some(goal)
+        );
+        let saved = observed.save;
         assert_eq!(
             saved.outcome,
             json!({"operation_id":"enroll:session","outcome":"changes","stream_id":"a"})

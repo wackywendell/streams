@@ -2,17 +2,12 @@ use super::*;
 use crate::support::herdr::{FakeHerdr, Reply};
 use std::{
     collections::BTreeMap,
-    os::unix::fs::PermissionsExt,
     sync::{
         Arc, Mutex,
         atomic::{AtomicBool, Ordering},
     },
 };
-use streams_temper::{
-    application,
-    config::Config,
-    runtime::state::{RuntimeState, herdr_scope},
-};
+use streams_temper::{application, config::Config, runtime::native_markers::stream_tokens};
 
 #[path = "cards.rs"]
 mod cards;
@@ -36,10 +31,10 @@ struct NativeFixture {
     fixture: Fixture,
     snapshot: Arc<Mutex<Value>>,
     rejected: Arc<AtomicBool>,
+    fail_next_snapshot: Arc<AtomicBool>,
     snapshot_gate: Arc<Mutex<Option<PendingSnapshot>>>,
     session: Value,
     id: String,
-    association: PathBuf,
     _socket_directory: tempfile::TempDir,
 }
 impl NativeFixture {
@@ -72,10 +67,12 @@ impl NativeFixture {
             "panes":[pane], "agents":[pane], "layouts":[{"workspace_id":"workspace","tab_id":"tab","panes":[{"pane_id":"pane"}]}]
         })));
         let rejected = Arc::new(AtomicBool::new(false));
+        let fail_next_snapshot = Arc::new(AtomicBool::new(false));
         let snapshot_gate = Arc::new(Mutex::new(None::<PendingSnapshot>));
         let server = FakeHerdr::start(&socket, {
             let snapshot = snapshot.clone();
             let rejected = rejected.clone();
+            let fail_next_snapshot = fail_next_snapshot.clone();
             let snapshot_gate = snapshot_gate.clone();
             move |method, params| match method {
                 "events.subscribe" if rejected.load(Ordering::Acquire) => {
@@ -83,6 +80,11 @@ impl NativeFixture {
                 }
                 "events.subscribe" => Reply::Result(json!({"type":"subscription_started"})),
                 "session.snapshot" => {
+                    if fail_next_snapshot.swap(false, Ordering::AcqRel) {
+                        return Reply::Error(
+                            json!({"code":"unavailable","message":"fixture native observation failed"}),
+                        );
+                    }
                     if let Some((entered, release)) = snapshot_gate.lock().unwrap().take() {
                         entered.send(()).unwrap();
                         release.recv().unwrap();
@@ -137,27 +139,13 @@ impl NativeFixture {
             ),
         ]);
         let config = Config::new(&environment, home).unwrap();
-        let opened = application::open(&config).unwrap();
-        let state = RuntimeState::new(
-            config.runtime_state_dir_for(opened.root()).unwrap(),
+        let opened = application::open_records(&config).unwrap();
+        snapshot.lock().unwrap()["workspaces"][0]["tokens"] = json!(stream_tokens(
+            opened.source_id(),
             opened.host().as_str(),
-        )
-        .unwrap();
-        let [association, _] = state
-            .workspace_binding_paths(&herdr_scope(&socket, None), "workspace")
-            .unwrap();
-        fs::create_dir_all(association.parent().unwrap()).unwrap();
-        fs::write(
-            &association,
-            json!({"version":1,"workspace_id":"workspace","stream_id":stream["id"],
-            "session_id":null,"command":null,"ready":true})
-            .to_string(),
-        )
-        .unwrap();
+            stream["id"].as_str().unwrap()
+        ));
         fixture.ok(&["config", "set", "frontend.mode", "herdr"], None);
-        let native = home.join("state/streams/native");
-        fs::create_dir_all(&native).unwrap();
-        fs::set_permissions(&native, fs::Permissions::from_mode(0o700)).unwrap();
         fs::write(home.join("work-cards.json"), json!({
             "workspace_startup":"manual","workspace_naming":false,"tab_naming":false,"session_naming":true
         }).to_string()).unwrap();
@@ -166,10 +154,10 @@ impl NativeFixture {
             fixture,
             snapshot,
             rejected,
+            fail_next_snapshot,
             snapshot_gate,
             session,
             id,
-            association,
             _socket_directory: directory,
         }
     }
@@ -303,7 +291,10 @@ fn native_refresh_does_not_resolve_unrelated_pi_paths_and_rereads_the_owner_next
     let warning = child.next();
     assert_eq!(warning["type"], "warning", "{warning}");
     assert!(
-        warning["message"].as_str().unwrap().contains("session"),
+        warning["message"]
+            .as_str()
+            .unwrap()
+            .contains("Pi exited or changed conversation"),
         "{warning}"
     );
     assert_eq!(child.finish(), (0, String::new()));
@@ -333,63 +324,59 @@ fn slow_native_observation_never_gates_catalog_responses() {
 }
 
 #[test]
-fn restarted_child_cannot_bootstrap_moved_origin_or_recover_by_returning_to_stale_id() {
+fn restarted_child_locates_its_bound_conversation_without_an_inherited_pane_baseline() {
     let f = NativeFixture::new();
     f.set_location("already-moved", "next-tab");
-    let mut child = f.begin();
-    child.request(1, json!({"kind":"attach"}));
-    let refused = child.response(1);
-    assert_eq!(refused["outcome"]["status"], "error");
-    assert!(
-        refused["outcome"]["error"]["message"]
-            .as_str()
-            .unwrap()
-            .contains("origin")
-    );
+    let (mut child, view) = f.start();
+    assert_eq!(view["view"]["desired_pi_name"], "Before");
     f.server.clear();
-    f.set_location("pane", "tab");
-    child.request(2, json!({"kind":"open_card"}));
+    f.move_to("already-moved", "moved-again", "last-tab");
+    assert_eq!(child.next(), view);
+    child.request(1, json!({"kind":"attach"}));
     assert_eq!(
-        child.response(2)["outcome"]["error"]["kind"],
-        "native-context-changed"
+        child.response(1)["outcome"]["result"],
+        json!({"native":"active"})
     );
-    child.request(3, json!({"kind":"list_streams"}));
-    assert_eq!(child.response(3)["outcome"]["status"], "success");
     assert_eq!(child.finish(), (0, String::new()));
-    assert!(f.server.methods().is_empty());
+    assert_eq!(f.server.methods(), ["session.snapshot", "session.snapshot"]);
 }
 
 #[test]
-fn moved_id_cannot_adopt_a_reused_terminal_or_bypass_its_refusal() {
+fn terminal_replacement_stops_only_the_affected_pass_and_never_mutates_its_replacement() {
     let f = NativeFixture::new();
     let (mut child, _) = f.start();
     f.server.clear();
     for key in ["panes", "agents"] {
-        f.snapshot.lock().unwrap()[key][0]["terminal_id"] = json!("reused");
+        f.snapshot.lock().unwrap()[key][0]["terminal_id"] = json!("unrelated-terminal");
     }
     f.move_to("pane", "moved", "next-tab");
+    let before = f.snapshot.lock().unwrap().clone();
     let warning = child.next();
     assert_eq!(warning["type"], "warning");
     assert!(
         warning["message"]
             .as_str()
             .unwrap()
-            .contains("terminal identity")
+            .contains("Pi exited or changed conversation")
     );
-    assert_eq!(f.server.methods(), ["session.snapshot"]);
-    f.server.clear();
-    child.request(1, json!({"kind":"open_card"}));
+    for (id, kind) in [(1, "open_card"), (2, "close_card")] {
+        child.request(id, json!({"kind":kind}));
+        assert_eq!(child.response(id)["outcome"]["status"], "error");
+    }
+    assert_eq!(*f.snapshot.lock().unwrap(), before);
     assert_eq!(
-        child.response(1)["outcome"]["error"]["kind"],
-        "native-context-changed"
+        f.server.methods(),
+        ["session.snapshot", "session.snapshot", "session.snapshot"]
     );
-    child.request(2, json!({"kind":"close_card"}));
+    for key in ["panes", "agents"] {
+        f.snapshot.lock().unwrap()[key][0]["terminal_id"] = json!("terminal");
+    }
+    child.request(3, json!({"kind":"attach"}));
     assert_eq!(
-        child.response(2)["outcome"]["error"]["kind"],
-        "native-context-changed"
+        child.response(3)["outcome"]["result"],
+        json!({"native":"active"})
     );
     assert_eq!(child.finish(), (0, String::new()));
-    assert!(f.server.methods().is_empty());
 }
 
 #[test]
@@ -430,19 +417,32 @@ fn external_session_save_updates_ui_and_unrelated_records_do_not_observe() {
 }
 
 #[test]
-fn a_catalog_association_error_is_not_inactive_and_ready_change_can_select_a_new_read() {
+fn workspace_metadata_selects_the_exact_destination_and_moves_only_its_session() {
     let f = NativeFixture::new();
-    let mut binding: Value = serde_json::from_slice(&fs::read(&f.association).unwrap()).unwrap();
-    binding["ready"] = json!(false);
-    fs::write(&f.association, binding.to_string()).unwrap();
-    let mut child = f.begin();
-    child.request(1, json!({"kind":"attach"}));
-    assert_eq!(child.response(1)["outcome"]["status"], "error");
-    binding["ready"] = json!(true);
-    let staging = f.association.with_extension("tmp");
-    fs::write(&staging, binding.to_string()).unwrap();
-    fs::rename(staging, &f.association).unwrap();
+    let original = f.session["stream_id"].as_str().unwrap();
+    let before = f.fixture.ok(&["show", original], None)["stream"].clone();
+    let destination = f.fixture.ok(&["create", "Destination"], None)["stream"].clone();
+    let (mut child, _) = f.start();
+    f.snapshot.lock().unwrap()["workspaces"][0]["tokens"]["strm_stream"] =
+        destination["id"].clone();
+    f.server.emit(
+        json!({"event":"workspace_metadata_updated","data":{"type":"workspace_metadata_updated",
+        "workspace":{"workspace_id":"workspace"}}}),
+    );
     assert_eq!(child.next()["view"]["desired_pi_name"], "Before");
+    child.request(1, json!({"kind":"context"}));
+    assert_eq!(
+        child.response(1)["outcome"]["result"]["session"]["stream_id"],
+        destination["id"]
+    );
+    assert_eq!(f.fixture.ok(&["show", original], None)["stream"], before);
+    assert!(
+        !f.fixture
+            .directory
+            .path()
+            .join("state/streams/native")
+            .exists()
+    );
     assert_eq!(child.finish(), (0, String::new()));
 }
 
@@ -570,14 +570,10 @@ fn accepted_save_with_native_completion_failure_retains_the_result_and_warns_onc
     let context = child.response(2);
     assert_eq!(context["outcome"]["status"], "success", "{context}");
     let context = &context["outcome"]["result"];
-    let request = json!({"operation_id":"native-warning","catalog_source":context["catalog_source"],"actor":"user",
+    let request = json!({"version":2,"operation_id":"native-warning","catalog_source":context["catalog_source"],"actor":"user",
         "kind":"session","before":context["session"],"changes":{"title":"Saved despite native failure"},
-        "ownership_token":context["authority"]["token"],"inputs":[]});
-    fs::set_permissions(
-        f.fixture.directory.path().join("state/streams/native"),
-        fs::Permissions::from_mode(0o755),
-    )
-    .unwrap();
+        "title_default":context["title_defaults"]["session"],"inputs":[]});
+    f.fail_next_snapshot.store(true, Ordering::Release);
     child.request(1, json!({"kind":"apply","request":request}));
     let response = child.response(1);
     assert_eq!(

@@ -64,83 +64,7 @@ fn ancestry_compares_merge_base_and_preserves_failures() {
 }
 
 #[test]
-fn push_uses_exact_candidate_and_branch_without_force() {
-    let candidate: Oid = "a".repeat(40).parse().unwrap();
-    let refspec = format!("{}:refs/heads/work/cards", candidate.as_str());
-    let (git, pending) = scripted(vec![reply(&["push", "origin", &refspec], b"")]);
-    git.push_candidate(&candidate, "work/cards").unwrap();
-    assert!(pending.lock().unwrap().is_empty());
-}
-
-#[test]
-fn push_failure_preserves_unknown_outcome_and_does_not_retry() {
-    for code in [None, Some(1)] {
-        let candidate: Oid = "a".repeat(40).parse().unwrap();
-        let refspec = format!("{}:refs/heads/main", candidate.as_str());
-        let expected = GitError::new("transport failed", code);
-        let (git, pending) = scripted(vec![Expected {
-            result: Err(expected.clone()),
-            ..reply(&["push", "origin", &refspec], b"")
-        }]);
-        assert_eq!(
-            git.push_candidate(&candidate, "main").unwrap_err(),
-            expected
-        );
-        assert!(pending.lock().unwrap().is_empty());
-    }
-}
-
-#[test]
-fn absent_remote_branch_does_not_fetch_or_resolve_stale_fetch_head() {
-    let (git, pending) = scripted(vec![reply(
-        &["ls-remote", "--heads", "origin", "refs/heads/main"],
-        b"",
-    )]);
-    assert_eq!(git.fetch_tip("main").unwrap(), None);
-    assert!(pending.lock().unwrap().is_empty());
-}
-
-#[test]
-fn fetch_uses_requested_branch_without_tags_and_reads_actual_fetch_head() {
-    let fetched = "b".repeat(40);
-    let (git, pending) = scripted(vec![
-        reply(
-            &["ls-remote", "--heads", "origin", "refs/heads/work/cards"],
-            b"advertised-tip\trefs/heads/work/cards\n",
-        ),
-        reply(
-            &["fetch", "--no-tags", "origin", "refs/heads/work/cards"],
-            b"",
-        ),
-        reply(
-            &["rev-parse", "--verify", "FETCH_HEAD"],
-            format!("{fetched}\n").as_bytes(),
-        ),
-    ]);
-    assert_eq!(git.fetch_tip("work/cards").unwrap(), Some(fetched));
-    assert!(pending.lock().unwrap().is_empty());
-}
-
-#[test]
-fn fetch_failure_does_not_resolve_old_fetch_head() {
-    let error = GitError::new("fetch failed", Some(1));
-    let (git, pending) = scripted(vec![
-        reply(
-            &["ls-remote", "--heads", "origin", "refs/heads/main"],
-            b"found\n",
-        ),
-        Expected {
-            result: Err(error.clone()),
-            ..reply(&["fetch", "--no-tags", "origin", "refs/heads/main"], b"")
-        },
-    ]);
-    assert_eq!(git.fetch_tip("main").unwrap_err(), error);
-    assert!(pending.lock().unwrap().is_empty());
-}
-
-#[test]
 fn target_checks_both_urls_and_rejects_mirror_pushes() {
-    let config = GitConfig::new(Some("expected".into()), "main", "host").unwrap();
     for (fetch, push, mirror, valid) in [
         ("expected", "expected", "", true),
         ("expected", "expected", "false", true),
@@ -161,20 +85,19 @@ fn target_checks_both_urls_and_rejects_mirror_pushes() {
                 mirror.as_bytes(),
             ),
         ]);
-        assert_eq!(git.check_target(&config).is_ok(), valid);
+        assert_eq!(git.check_target(Some("expected"), "main").is_ok(), valid);
         assert!(pending.lock().unwrap().is_empty());
     }
 }
 
 #[test]
 fn target_rejects_changed_branch_and_unexpected_local_remote() {
-    let local = GitConfig::new(None, "main", "host").unwrap();
     let (git, pending) = scripted(vec![reply(
         &["symbolic-ref", "--quiet", "HEAD"],
         b"refs/heads/other\n",
     )]);
     assert!(
-        git.check_target(&local)
+        git.check_target(None, "main")
             .unwrap_err()
             .to_string()
             .contains("branch was changed")
@@ -185,7 +108,7 @@ fn target_rejects_changed_branch_and_unexpected_local_remote() {
             reply(&["symbolic-ref", "--quiet", "HEAD"], b"refs/heads/main\n"),
             reply(&["remote"], remote.as_bytes()),
         ]);
-        assert_eq!(git.check_target(&local).is_ok(), valid);
+        assert_eq!(git.check_target(None, "main").is_ok(), valid);
         assert!(pending.lock().unwrap().is_empty());
     }
 }

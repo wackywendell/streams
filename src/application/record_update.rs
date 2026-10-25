@@ -3,9 +3,13 @@
 use super::Result;
 use crate::{
     agent::{RecordUpdate, record_update::CapturedEdit},
-    model::{Record, RecordKind, ValidationError},
-    operations::Reconciliation,
-    storage::records::{RecordAddress, RecordChange, RecordSave, RecordStore},
+    codec::record_to_data,
+    model::{Record, RecordKind, TitleDefaults, ValidationError},
+    operations::{
+        Actor, Reconciliation,
+        edits::{SessionEdit, StreamEdit},
+    },
+    storage::records::{RecordAddress, RecordChange, RecordRequest, RecordSave, RecordStore},
 };
 
 pub fn save_record_update(store: &impl RecordStore, update: &RecordUpdate) -> Result<RecordSave> {
@@ -48,18 +52,65 @@ pub fn save_record_update(store: &impl RecordStore, update: &RecordUpdate) -> Re
             }
             _ => return Err(ValidationError::new("captured edit target kind changed").into()),
         };
-        let record = match &decision {
-            Reconciliation::Changes { record, .. } => record.as_ref().clone(),
-            _ => target.record.clone(),
-        };
-        let outcome = serde_json::json!({
-            "outcome": decision.outcome(),
-            "conflicts": decision.conflicts(),
-            "reason": decision.reason(),
-        })
-        .as_object()
-        .expect("decision outcome is an object")
-        .clone();
-        Ok(RecordChange { record, outcome })
+        Ok(change(&target.record, decision))
     })
+}
+
+/// Human edits include repository configuration, outside the narrower agent wire.
+pub fn save_user_edit(
+    store: &impl RecordStore,
+    operation_id: &str,
+    before: &Record,
+    changes: &serde_json::Map<String, serde_json::Value>,
+    defaults: TitleDefaults,
+) -> Result<RecordSave> {
+    let edit = match before {
+        Record::Stream(stream) => CapturedEdit::Stream(StreamEdit::new(
+            operation_id,
+            stream,
+            changes,
+            Actor::User,
+            None,
+            defaults.stream,
+        )?),
+        Record::Session(session) => CapturedEdit::Session(SessionEdit::new(
+            operation_id,
+            session,
+            changes,
+            Actor::User,
+            defaults.session,
+        )?),
+        Record::Host(_) => {
+            return Err(ValidationError::new("user edits require a Stream or Session").into());
+        }
+    };
+    let title_default = match before {
+        Record::Stream(_) => defaults.stream,
+        _ => defaults.session,
+    };
+    let request = RecordRequest::new(
+        RecordAddress::for_record(before),
+        operation_id,
+        &serde_json::json!({
+            "command":"user-edit","before":record_to_data(before),"changes":changes,"title_default":title_default,
+        }),
+    )?;
+    save_record_update(
+        store,
+        &RecordUpdate {
+            request,
+            edit,
+            title_defaults: defaults,
+        },
+    )
+}
+
+fn change(target: &Record, decision: Reconciliation) -> RecordChange {
+    let outcome=serde_json::json!({"outcome":decision.outcome(),"conflicts":decision.conflicts(),"reason":decision.reason()})
+        .as_object().expect("decision outcome is an object").clone();
+    let record = match decision {
+        Reconciliation::Changes { record, .. } => *record,
+        _ => target.clone(),
+    };
+    RecordChange { record, outcome }
 }

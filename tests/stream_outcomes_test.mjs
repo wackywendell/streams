@@ -45,7 +45,7 @@ test('wire parsing rejects unknown outcomes and ambiguous receipt shapes', async
 
 test('field editing retains input and its receipt when publication needs repair', async () => {
  const session = {id:'session',host_id:'laptop',stream_id:'effort',title:'Before'};
- const context = {catalog_source:'source',host_id:'laptop',stream:null,session,sessions:[session],authority:{host_id:'laptop',token:'creation'}};
+ const context = {catalog_source:'source',host_id:'laptop',stream:null,session,sessions:[session],title_defaults:{stream:'automatic',session:'automatic'}};
  const edit = new FieldEdit('session',context,'title');edit.value='After';
  const value = {...receipt,publication:{...publication,local:'repair-required'}};
  const receipts=[];

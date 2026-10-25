@@ -5,7 +5,7 @@ use std::sync::{Arc, Mutex};
 
 use serde_json::{Map, json};
 use streams_temper::{
-    application::move_session,
+    application::{move_session, move_session_observed},
     model::{Record, RecordKind, Session, Stream},
     operations::membership::MoveIntent,
     storage::{
@@ -135,7 +135,9 @@ fn membership_save_reads_only_three_records_and_retries_do_not_reapply_after_rev
     let b_bytes = std::fs::read(&b_path).unwrap();
     events.lock().unwrap().clear();
     let to_b = MoveIntent::new("host", "pi", "native", "b").unwrap();
-    let first = move_session(&store, "move-b", &to_b).unwrap();
+    let observed = move_session_observed(&store, "move-b", &to_b).unwrap();
+    assert_eq!(observed.stream.unwrap().id, "b");
+    let first = observed.save;
     assert!(!first.repeated);
     assert_eq!(
         record_io::accesses(&events.lock().unwrap()),
@@ -150,7 +152,9 @@ fn membership_save_reads_only_three_records_and_retries_do_not_reapply_after_rev
     let to_a = MoveIntent::new("host", "pi", "native", "a").unwrap();
     let returned = move_session(&store, "move-a", &to_a).unwrap();
     events.lock().unwrap().clear();
-    let retry = move_session(&store, "move-b", &to_b).unwrap();
+    let observed = move_session_observed(&store, "move-b", &to_b).unwrap();
+    assert!(observed.stream.is_none());
+    let retry = observed.save;
     assert!(retry.repeated);
     assert_eq!(retry.current, returned.current);
     assert_eq!(retry.outcome, first.outcome);

@@ -4,7 +4,7 @@ Status: membership and report-admission proposal, not fully implemented. [Observ
 
 ## Context
 
-Streams and work cards should remain consistent and usable during ordinary Pi and Herdr use. The Streams library reconciles native changes into its Session, Stream and card state. Temper verifies these transitions, including changes during model work. Native actions are supported inputs, not protocol violations. Verification must address continued operation when evidence is sufficient, not just safety through refusing changes.
+Streams and work cards should remain consistent and usable during ordinary Pi and Herdr use. The Streams library reconciles native changes into its Session, Stream and card state. Native actions are supported inputs, not protocol violations. Tests must show continued operation when observations are usable, not just safety through refusing changes.
 
 ## Decision
 
@@ -12,9 +12,9 @@ Separate the conversation, its current Stream membership and its native location
 
 The conversation follows the workspace. When it moves into a workspace associated with Stream B, the CLI changes its membership to B. Other conversations remain where they are; the Streams are not merged or relocated. If the destination has no associated Stream, create one. The conversation need not wait for the rest of its old working arrangement to move.
 
-Every verified owner move brings its existing owned card into the owner's tab, even if the user previously moved the card independently. The Pi child performs this reconciliation; the card only observes. This does not reopen a closed card or replace a missing one automatically.
+Each pass compares the existing card's tab with Pi's current tab. If they differ, the Pi child moves the card below Pi with `split: "down"`. A user-moved card comes back on the next pass; no previous location or owner-move baseline is needed. The card only observes. Following never reopens a closed card or replaces a missing one.
 
-Owner movement selects one fresh observation and one move of the existing card, targeting Pi with `split: "down"`. A card-only move does not select follow. A restarted child establishes its current baseline without catching up a missed follow. A failed or uncertain move warns and ends the pass; the next owner move is a new trigger. There is no stored follow intent, relaunch or layout reconstruction. The [observe-and-act contract](native-observe-and-act.md) owns safe target identity and duplicate handling.
+A failed or uncertain move warns and ends the pass; a later event or request makes a new comparison. A restarted child follows the same rule. There is no stored follow intent, relaunch or layout reconstruction. The [observe-and-act contract](native-observe-and-act.md) owns targeting's accepted restart risk and duplicate handling.
 
 Retain previous membership relationships as participation history, with one current membership. This records that a conversation participated in a Stream, not what its work card said then. Do not duplicate or freeze work cards. A historical relationship grants no authority to update that Stream.
 
@@ -48,7 +48,7 @@ Pi carries request context without interpreting membership or orchestrating reco
 | --- | --- |
 | Rename a native surface | Apply the saved Streams title when that surface's synchronization is enabled; see [name ownership](name-ownership.md). |
 | Reorder panes or change pane IDs | Follow verified live conversation and terminal identity, not inherited addresses. Membership changes only if the workspace changes. |
-| Move a card independently | Retain its conversation association. The next owner move brings it into the owner's tab, unless it is already there. Do not close it or launch a replacement. |
+| Move a card independently | Retain its conversation association. On the next pass, bring it into Pi's tab if it is elsewhere. Do not close it or launch a replacement. |
 | Move an editor independently | Retain its conversation association. Do not automatically move it back, close it or launch a replacement. |
 | Close a display | Reporting continues. No background respawn; explicit reopen uses observed reuse and self-exiting duplicates. |
 | Lose observations or restore a workspace | Stop affected effects until usable observations are available. Missing observations do not prove closure. Abort a pass when its subscription ends; the within-pass restart race remains an accepted risk. |
@@ -68,6 +68,6 @@ Give the model native context alongside conversation evidence and the cards. It 
 
 Workspace moves intentionally change membership, but cannot change which conversation a captured result belongs to. The [record-local operations ADR](record-local-operations.md#membership-move-contract) owns the single-Session save and membership-period checks.
 
-The existing [resource model](../specs/native_reconciliation.ioa.toml) covers the older runtime proof protocol, not the new observe-and-act design. Replace that coverage with tests of the real controller under injected outside changes. The [membership/admission model](../specs/native_membership.ioa.toml) and [tests](../tests/native_membership.rs) retain their separate purpose: moves, membership revisits and captured-result admission. Neither establishes concrete crash-safe report receipts.
+The old native resource and membership models are retired with their caller-proof and pending-attempt state. Scripted tests exercise the [native controller](../tests/serve/subscriptions.rs) and [card effects](../src/runtime/native_cards/tests.rs) against actual fake resources. The separate [membership tests](../src/operations/membership/tests.rs), [record-update tests](../tests/record_updates.rs) and Pi branch-admission tests keep moves, membership revisits, captured targets and accepted-save receipts covered without a native proof protocol.
 
 A retried report must retain its original target across a move and a lost acknowledgement. Removing native launch fences does not permit retargeting an accepted or captured catalog operation.

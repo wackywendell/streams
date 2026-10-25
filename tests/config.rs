@@ -1,19 +1,14 @@
 use std::collections::BTreeMap;
 use std::fs;
-use std::os::unix::fs::{MetadataExt, PermissionsExt, symlink};
+use std::os::unix::fs::{PermissionsExt, symlink};
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Barrier};
-use streams_temper::storage::StorageError;
 
 use serde_json::json;
 use sha2::{Digest, Sha256};
-use streams_temper::config::{
-    Config, ConfigKey, HostIdentity, Marker, Strategy, resolve_path, source_id,
-};
+use streams_temper::config::{Config, ConfigKey, HostIdentity, resolve_path, source_id};
 use streams_temper::frontend::{FrontendId, FrontendMode};
 use streams_temper::model::{NamingMode, TitleDefaults};
-use streams_temper::storage::Transaction;
-use streams_temper::yaml_store::YamlStore;
 
 const HOST: &str = "01234567-89ab-4def-8123-456789abcdef";
 
@@ -582,21 +577,20 @@ fn resolve_missing_paths_symlinks_and_runtime_identity() {
 }
 
 #[test]
-fn fingerprint_uses_python_ascii_json_and_physical_directory_identity() {
+fn source_uses_host_and_canonical_path_not_directory_object_identity() {
     let f = Fixture::new();
     let directory = f.home.join("café-\u{1f680}-\u{7f}");
     fs::create_dir(&directory).unwrap();
     symlink(&directory, f.home.join("alias")).unwrap();
     let host = HostIdentity::parse(HOST).unwrap();
     let canonical = fs::canonicalize(&directory).unwrap();
-    let stat = fs::metadata(&canonical).unwrap();
     let path = canonical
         .to_str()
         .unwrap()
         .replace('é', "\\u00e9")
         .replace('\u{1f680}', "\\ud83d\\ude80")
         .replace('\u{7f}', "\\u007f");
-    let preimage = format!("[\"{path}\", {}, {}, \"{HOST}\"]", stat.dev(), stat.ino());
+    let preimage = format!("[\"{path}\", \"{HOST}\"]");
     let expected = format!("{:x}", Sha256::digest(preimage.as_bytes()));
     assert_eq!(source_id(&directory, &host).unwrap(), expected);
     assert_eq!(
@@ -611,42 +605,18 @@ fn fingerprint_uses_python_ascii_json_and_physical_directory_identity() {
         .unwrap(),
         expected
     );
+    let retired = f.home.join("retired-catalog");
+    fs::rename(&directory, &retired).unwrap();
+    fs::create_dir(&directory).unwrap();
+    assert_eq!(source_id(&directory, &host).unwrap(), expected);
+    assert_ne!(source_id(&retired, &host).unwrap(), expected);
+    fs::write(f.home.join("file"), "not a catalog").unwrap();
+    assert!(source_id(&f.home.join("file"), &host).is_err());
     assert!(source_id(&f.home.join("missing"), &host).is_err());
 }
 
 #[test]
-fn marker_write_uses_exact_versioned_state_schema() {
-    let f = Fixture::new();
-    let root = f.home.join("catalog");
-    assert!(!Marker::exists(&root).unwrap());
-    assert!(!root.exists());
-    let store = YamlStore::new(&root);
-    for strategy in [Strategy::None, Strategy::Git] {
-        let marker = Marker {
-            strategy,
-            host: HostIdentity::parse(HOST).unwrap(),
-        };
-        store
-            .with_transaction::<_, StorageError>(|tx| {
-                marker
-                    .write(&streams_temper::sync::state::State::from_journal(
-                        tx.journal(),
-                    ))
-                    .unwrap();
-                assert_eq!(Marker::read(tx.journal()).unwrap(), Some(marker.clone()));
-                Ok(())
-            })
-            .unwrap();
-        assert!(Marker::exists(&root).unwrap());
-        let data: serde_json::Value =
-            serde_json::from_slice(&fs::read(root.join(".catalog-sync/cli.json")).unwrap())
-                .unwrap();
-        assert_eq!(data, json!({"version":1,"strategy":strategy,"host":HOST}));
-    }
-}
-
-#[test]
-fn nonregular_markers_never_generate_host_identity() {
+fn obsolete_bookkeeping_never_generates_a_host_identity() {
     for directory in [false, true] {
         let f = Fixture::new();
         let root = f.config.load().unwrap().catalog_root;
@@ -658,7 +628,6 @@ fn nonregular_markers_never_generate_host_identity() {
             let path = std::ffi::CString::new(marker.as_os_str().as_encoded_bytes()).unwrap();
             assert_eq!(unsafe { libc::mkfifo(path.as_ptr(), 0o600) }, 0);
         }
-        assert!(Marker::exists(&root).is_err());
         assert!(
             f.config
                 .with_lock(|guard| guard.host_identity_for_new_catalog())
@@ -666,62 +635,5 @@ fn nonregular_markers_never_generate_host_identity() {
         );
         assert!(!f.config.host_path().exists());
         assert!(!root.join(".catalog.lock").exists());
-    }
-}
-
-#[test]
-fn generic_marker_schema_and_host_matching() {
-    let f = Fixture::new();
-    let store = YamlStore::new(f.home.join("catalog"));
-    store
-        .with_transaction::<_, StorageError>(|tx| {
-            assert_eq!(Marker::read(tx.journal()).unwrap(), None);
-            Ok(())
-        })
-        .unwrap();
-    let path = store.root.join(".catalog-sync/cli.json");
-    for strategy in ["none", "git"] {
-        fs::write(
-            &path,
-            json!({"version":1,"strategy":strategy,"host":HOST}).to_string(),
-        )
-        .unwrap();
-        let marker = store
-            .with_transaction::<_, StorageError>(|tx| {
-                Ok(Marker::read(tx.journal()).unwrap().unwrap())
-            })
-            .unwrap();
-        assert_eq!(
-            marker.strategy,
-            if strategy == "none" {
-                Strategy::None
-            } else {
-                Strategy::Git
-            }
-        );
-        marker
-            .check_host(&HostIdentity::parse(HOST).unwrap())
-            .unwrap();
-        assert!(
-            marker
-                .check_host(&HostIdentity::parse("11234567-89ab-4def-8123-456789abcdef").unwrap())
-                .is_err()
-        );
-    }
-    for data in [
-        json!({"version":2,"strategy":"none","host":HOST}),
-        json!({"version":true,"strategy":"none","host":HOST}),
-        json!({"version":1,"strategy":"cloud","host":HOST}),
-        json!({"version":1,"strategy":"none","host":"bad"}),
-        json!({"version":1,"strategy":"none"}),
-        json!({"version":1,"strategy":"none","host":HOST,"extra":null}),
-    ] {
-        fs::write(&path, data.to_string()).unwrap();
-        store
-            .with_transaction::<_, StorageError>(|tx| {
-                assert!(Marker::read(tx.journal()).is_err());
-                Ok(())
-            })
-            .unwrap();
     }
 }

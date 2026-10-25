@@ -137,6 +137,7 @@ impl RecordSync {
                     &[0],
                 )
                 .map_err(git_error)?;
+                ensure_directory(&root.join(".catalog-staging"), true)?;
                 git.run(
                     &["init", "--quiet", "--initial-branch", branch],
                     None,
@@ -416,13 +417,9 @@ impl RecordSync {
         if self.root.join(".git/commondir").exists() {
             return Err(invalid("record transport requires its own repository"));
         }
-        let configured = super::state::GitConfig::new(
-            self.remote().map(str::to_owned),
-            self.branch().unwrap(),
-            &self.host,
-        )
-        .map_err(invalid)?;
-        self.git.check_target(&configured).map_err(invalid)?;
+        self.git
+            .check_target(self.remote(), self.branch().unwrap())
+            .map_err(invalid)?;
         let actual = self
             .git
             .text(&["rev-parse", "--show-toplevel"], None, None, &[0])

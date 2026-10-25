@@ -3,7 +3,7 @@ use super::*;
 use serde_json::{Value, json};
 
 fn current() -> Value {
-    json!({"version":3,"session_id":"session","location":{"kind":"checkout","id":"saved-id","within":".","repository_url":null}})
+    json!({"version":4,"session_id":"session","location":{"kind":"checkout","id":"saved-id","within":".","repository_url":null},"transcript_file":null})
 }
 
 fn validate(value: &Value) -> Result<()> {
@@ -17,10 +17,13 @@ fn supported_identity_versions_and_locations_validate_without_files() {
     assert!(validate(&value).is_ok());
     value["location"] = json!({"kind":"directory","cwd":"/not-created/binding-target"});
     assert!(validate(&value).is_ok());
-    value["version"] = json!(2);
-    value["stream_id"] = json!("stream");
+    value["transcript_file"] = json!("/not-created/exact.jsonl");
     assert!(validate(&value).is_ok());
+    value["stream_id"] = json!("stream");
+    assert!(validate(&value).is_err());
     value["session_id"] = Value::Null;
+    assert!(validate(&value).is_err());
+    value["transcript_file"] = Value::Null;
     assert!(validate(&value).is_ok());
     value.as_object_mut().unwrap().remove("stream_id");
     assert!(validate(&value).is_err());
@@ -38,18 +41,23 @@ fn malformed_binding_wire_shapes_and_identity_versions_are_rejected() {
     for (key, value) in [
         ("version", json!(true)),
         ("version", json!(1)),
-        ("version", json!(3.0)),
-        ("version", json!(4)),
+        ("version", json!(4.0)),
+        ("version", json!(2)),
+        ("version", json!(3)),
         ("stream_id", json!("wrong")),
         ("session_id", Value::Null),
         ("session_id", json!(" ")),
+        ("transcript_file", json!("relative.jsonl")),
+        ("transcript_file", json!("~/session.jsonl")),
+        ("transcript_file", json!("/bad\u{7f}")),
+        ("transcript_file", json!([])),
         ("extra", json!(1)),
     ] {
         let mut state = good.clone();
         state[key] = value;
         cases.push(state);
     }
-    for key in ["version", "session_id", "location"] {
+    for key in ["version", "session_id", "location", "transcript_file"] {
         let mut state = good.clone();
         state.as_object_mut().unwrap().remove(key);
         cases.push(state);

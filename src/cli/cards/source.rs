@@ -1,88 +1,84 @@
-use std::os::unix::fs::MetadataExt;
-use std::path::PathBuf;
+use std::{path::PathBuf, sync::Arc};
 
 use serde::Deserialize;
 use streams_temper::runtime::RuntimeError;
 use streams_temper::runtime::conversations::Harness;
-use streams_temper::runtime::native_cards::{
-    CardObservation, HandoverInventory, NativeCardSource, ResolvedEditor, SourceLaunch,
-};
+use streams_temper::runtime::native_cards::{NativeCardSource, ResolvedEditor, SourceLaunch};
 use streams_temper::tui::{
     CardSnapshot, CheckoutBinding, CheckoutSelection, DisplayContext, DocumentLocation,
     DocumentProblem, DocumentTarget, NativeOwnerObservation, ResolvedDocument, Scope,
 };
 
-use super::super::{App, CliError, NativeObservation, Result, application};
+use super::super::{App, CliError, Result, application, documents};
 
 #[cfg(test)]
 mod tests;
 
 pub(super) struct ApplicationSource {
     app: App,
+    records: Arc<application::OpenedRecords>,
     native_session_id: String,
     expected_scope: Option<Scope>,
-    expected_owner: Option<NativeOwnerObservation>,
+    context: Option<streams_temper::agent::RecordContext>,
 }
 impl ApplicationSource {
     pub(super) fn new(
         app: App,
+        records: Arc<application::OpenedRecords>,
         native_session_id: String,
         scope: Option<Scope>,
-        owner: Option<NativeOwnerObservation>,
+        context: Option<streams_temper::agent::RecordContext>,
     ) -> Self {
         Self {
             app,
+            records,
             native_session_id,
             expected_scope: scope,
-            expected_owner: owner,
+            context,
         }
     }
     fn observe(
-        &self,
-        client: &streams_temper::frontend::herdr::HerdrClient,
-        snapshot: &streams_temper::frontend::herdr::HerdrNativeSnapshot,
-        inventory: bool,
-    ) -> Result<CardObservation> {
-        let client = client
-            .with_context(self.app.environment.clone())
-            .map_err(RuntimeError::from)?;
-        let caller = streams_temper::runtime::native::PiCallerObservation::from_snapshot(
-            &client,
-            snapshot.clone(),
-            &self.native_session_id,
-        )?;
-        let observed = self.app.agent_observation_from_native(
-            Harness::Pi,
-            &self.native_session_id,
-            self.expected_scope
-                .as_ref()
-                .map(|scope| scope.stream_id.as_str()),
-            true,
-            inventory,
-            Some(NativeObservation::Pi(&caller)),
-        )?;
-        let context = observed.context;
+        &mut self,
+        owner: &streams_temper::frontend::herdr::HerdrInventoryPane,
+    ) -> Result<CardSnapshot> {
+        let context = match self.context.take() {
+            Some(context) => context,
+            None => {
+                let settings = self.app.config.load()?;
+                if settings.catalog_root != self.records.root() {
+                    return Err(CliError::message(
+                        "catalog root setting changed during card read",
+                    ));
+                }
+                self.app.context_from_records(
+                    &self.records,
+                    streams_temper::agent::ContextRequest {
+                        harness: Harness::Pi,
+                        native_id: &self.native_session_id,
+                        stream_id: None,
+                        environment_stream_id: None,
+                        workspace_stream_id: None,
+                    },
+                    settings.naming,
+                )?
+            }
+        };
         let (stream, session) = context.stream.zip(context.session).ok_or_else(|| {
             CliError::message("native card requires an enrolled exact Pi Session")
         })?;
-        let native = observed
-            .native
-            .ok_or_else(|| CliError::message("native card requires fresh Herdr attestation"))?;
         let owner = NativeOwnerObservation {
-            pane_id: native.pane_id().into(),
-            tab_id: native.tab_id().into(),
-            workspace_id: native.workspace_id().into(),
+            pane_id: owner.pane.id.clone(),
+            tab_id: owner.pane.tab_id.clone(),
+            workspace_id: owner.pane.workspace_id.clone(),
         };
-        if self
-            .expected_owner
-            .as_ref()
-            .is_some_and(|expected| expected != &owner)
-        {
-            return Err(CliError::message(
-                "attestation does not match the captured owner tuple",
-            ));
-        }
-        let documents: Documents = serde_json::from_value(observed.documents)?;
+        let documents: Documents = serde_json::from_value(documents::context(
+            &self.app.registry(self.records.host().as_str())?,
+            &self
+                .app
+                .locations(self.records.root(), self.records.host().as_str())?,
+            &stream,
+            &session,
+        ))?;
         let checkouts = documents
             .checkouts
             .into_iter()
@@ -143,61 +139,15 @@ impl ApplicationSource {
         if self
             .expected_scope
             .as_ref()
-            .is_some_and(|expected| expected != frame.scope())
+            .is_some_and(|expected| !expected.same_conversation(frame.scope()))
         {
             return Err(CliError::message(
                 "captured viewing scope changed; recreate the card",
             ));
         }
-        let handover = if inventory {
-            let native = observed
-                .native_inventory
-                .ok_or_else(|| CliError::message("native handover inventory missing"))?;
-            Some(HandoverInventory {
-                scopes: context
-                    .sessions
-                    .into_iter()
-                    .filter(|session| {
-                        session.host_id == frame.scope().host_id
-                            && session.stream_id == frame.scope().stream_id
-                            && session.harness == "pi"
-                    })
-                    .map(|session| Scope {
-                        catalog_source: context.catalog_source.clone(),
-                        host_id: session.host_id,
-                        stream_id: session.stream_id,
-                        session_id: session.id,
-                        harness: session.harness,
-                        native_session_id: session.harness_session_id,
-                    })
-                    .collect(),
-                native,
-            })
-        } else {
-            None
-        };
-        Ok(CardObservation {
-            card: frame,
-            handover,
-        })
+        Ok(frame)
     }
-    fn resolve(
-        &self,
-        client: &streams_temper::frontend::herdr::HerdrClient,
-        snapshot: &streams_temper::frontend::herdr::HerdrNativeSnapshot,
-        target: &DocumentTarget,
-    ) -> Result<ResolvedEditor> {
-        let current = self.observe(client, snapshot, false)?;
-        if current
-            .card
-            .document_target(&target.document.repository, &target.document.path)
-            .as_ref()
-            != Some(target)
-        {
-            return Err(CliError::message(
-                "painted document or viewing checkout changed",
-            ));
-        }
+    fn resolve(&self, target: &DocumentTarget) -> Result<ResolvedEditor> {
         let ResolvedDocument::File {
             selection,
             file: expected,
@@ -207,8 +157,10 @@ impl ApplicationSource {
                 "document is not available in the selected checkout",
             ));
         };
-        let opened = application::open(&self.app.config)?;
-        let checkout = self.app.registry(&opened)?.get(&selection.checkout_id)?;
+        let checkout = self
+            .app
+            .registry(self.records.host().as_str())?
+            .get(&selection.checkout_id)?;
         if checkout.directory != selection.root
             || !checkout.repository_urls.contains(&target.repository_url)
             || std::fs::canonicalize(&selection.root)? != selection.root
@@ -217,18 +169,11 @@ impl ApplicationSource {
                 "selected checkout root or repository binding changed",
             ));
         }
-        let before = std::fs::metadata(&selection.root)?;
-        if !before.is_dir() {
-            return Err(CliError::message("checkout root is not a directory"));
-        }
         let file = checkout.document(&target.document.path)?;
-        let after = std::fs::metadata(&selection.root)?;
         if &file != expected
             || !std::fs::metadata(&file)?.is_file()
             || std::fs::canonicalize(&file)? != file
             || std::fs::canonicalize(&selection.root)? != selection.root
-            || before.dev() != after.dev()
-            || before.ino() != after.ino()
         {
             return Err(CliError::message(
                 "app-resolved document or checkout changed during resolution",
@@ -246,21 +191,17 @@ impl ApplicationSource {
 impl NativeCardSource for ApplicationSource {
     fn read(
         &mut self,
-        client: &streams_temper::frontend::herdr::HerdrClient,
-        snapshot: &streams_temper::frontend::herdr::HerdrNativeSnapshot,
-        inventory: bool,
-    ) -> std::result::Result<CardObservation, RuntimeError> {
-        self.observe(client, snapshot, inventory)
-            .map_err(|e| RuntimeError::Invalid(e.to_string()))
+        owner: &streams_temper::frontend::herdr::HerdrInventoryPane,
+    ) -> std::result::Result<CardSnapshot, RuntimeError> {
+        self.observe(owner)
+            .map_err(|error| RuntimeError::Invalid(error.to_string()))
     }
     fn resolve_document(
         &mut self,
-        client: &streams_temper::frontend::herdr::HerdrClient,
-        snapshot: &streams_temper::frontend::herdr::HerdrNativeSnapshot,
         target: &DocumentTarget,
     ) -> std::result::Result<ResolvedEditor, RuntimeError> {
-        self.resolve(client, snapshot, target)
-            .map_err(|e| RuntimeError::Invalid(e.to_string()))
+        self.resolve(target)
+            .map_err(|error| RuntimeError::Invalid(error.to_string()))
     }
     fn launch_context(&self) -> SourceLaunch {
         SourceLaunch {

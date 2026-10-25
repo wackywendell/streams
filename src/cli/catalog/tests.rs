@@ -1,91 +1,144 @@
-use std::cell::Cell;
-
-use serde_json::{Value, json};
-use streams_temper::{model::Status, operations::Operation, sync::local::LocalCatalog};
-
 use super::*;
-
-#[path = "../../../tests/support/memory.rs"]
-mod memory;
-
+use serde_json::{Value, json};
+use std::{cell::Cell, collections::BTreeMap};
+use streams_temper::{
+    config::{Config, Strategy},
+    model::TitleDefaults,
+    storage::records::{RecordAddress, RecordChange, RecordRequest, RecordStore},
+};
 mod apply;
 mod publication;
 
-struct Fixture {
-    backend: LocalCatalog<memory::MemoryStore>,
-    store: memory::MemoryStore,
-    sequence: Cell<usize>,
+#[test]
+fn record_selector_discovers_host_qualified_identity_and_refuses_duplicate_uuid_ambiguity() {
+    let id = "11234567-89ab-4def-8123-456789abcdef";
+    let records: Vec<_> = ["a", "b"]
+        .into_iter()
+        .map(|host| streams_temper::storage::records::RecordRead {
+            record: Record::Stream(Stream::new(id, "Shared", None, host).unwrap()),
+            revision: "observed".into(),
+        })
+        .collect();
+    assert!(select_stream(&records, id).is_err());
+    assert!(select_stream(&records, "Shared").is_err());
+    assert_eq!(
+        select_stream(&records, &format!("a/{id}"))
+            .unwrap()
+            .owner_host_id,
+        "a"
+    );
+    assert_eq!(
+        select_stream(&records, &format!("b/{id}"))
+            .unwrap()
+            .owner_host_id,
+        "b"
+    );
 }
 
+struct Fixture {
+    _directory: tempfile::TempDir,
+    opened: OpenedRecords,
+    sequence: Cell<usize>,
+}
 impl Fixture {
     fn new() -> Self {
-        let store = memory::MemoryStore::default();
+        let directory = tempfile::tempdir().unwrap();
+        let root = directory.path().canonicalize().unwrap();
+        let env = BTreeMap::from([("HOME".into(), root.to_str().unwrap().to_owned())]);
+        let config = Config::new(&env, &root).unwrap();
+        let opened =
+            application::initialize_records(&config, Strategy::None, None, "main").unwrap();
         Self {
-            backend: LocalCatalog::new(store.clone(), "test-host").unwrap(),
-            store,
+            _directory: directory,
+            opened,
             sequence: Cell::new(0),
         }
     }
-
     fn operation_id(&self) -> String {
-        let sequence = self.sequence.get() + 1;
-        self.sequence.set(sequence);
-        format!("operation-{sequence}")
+        let next = self.sequence.get() + 1;
+        self.sequence.set(next);
+        format!("operation-{next}")
     }
-
     fn create(&self, title: &str, goal: Option<&str>, status: Status) -> Value {
         let mut stream = Stream::new(
             format!("stream-{}", self.sequence.get()),
             title,
             goal.map(str::to_owned),
-            "test-host",
+            self.opened.host().as_str(),
         )
         .unwrap();
         stream.status = status;
-        let operation = Operation::new(
+        let record = Record::Stream(stream);
+        let request = RecordRequest::new(
+            RecordAddress::for_record(&record),
             self.operation_id(),
-            None,
-            Record::Stream(stream),
-            Actor::User,
-            None,
-            vec![],
+            &json!({"create":record_to_data(&record)}),
         )
         .unwrap();
-        assert!(self.backend.save(&operation, None).unwrap().accepted());
-        record_to_data(operation.after())
+        let saved = self
+            .opened
+            .records()
+            .save::<application::ApplicationError>(&request, |_, current| {
+                assert!(current.is_none());
+                Ok(RecordChange {
+                    record: record.clone(),
+                    outcome: json!({"outcome":"changes"}).as_object().unwrap().clone(),
+                })
+            })
+            .unwrap();
+        record_to_data(&saved.current.record)
     }
-
-    fn select<'a>(&self, catalog: &'a Catalog, reference: &str) -> Result<&'a Stream> {
-        resolve(catalog.streams(), reference, |s| (&s.id, &s.title, None))
+    fn select(&self, reference: &str) -> Stream {
+        select_stream(&self.opened.inventory().unwrap(), reference)
+            .unwrap()
+            .clone()
     }
-
     fn show(&self, reference: &str) -> Result<Output> {
-        show(&self.backend, false, |catalog| {
-            self.select(catalog, reference)
-        })
+        let records = self.opened.inventory()?;
+        Ok(Output::value(
+            json!({"stream":select_stream(&records,reference)?}),
+        ))
     }
-
-    fn update(&self, reference: &str, fields: StreamFields) -> Result<Output> {
-        update(
-            &self.backend,
-            |catalog| self.select(catalog, reference),
+    fn list(
+        &self,
+        query: Option<&str>,
+        status: &[Status],
+        archived: bool,
+        all: bool,
+    ) -> Result<Output> {
+        list_records(&self.opened, query, status, archived, all, None)
+    }
+    fn update(&self, reference: &str, intent: StreamFields) -> Result<Output> {
+        update_record(
+            &self.opened,
+            &self.select(reference),
             None,
-            &fields,
+            &intent,
+            TitleDefaults::default(),
             |_| panic!("unexpected text read"),
             || self.operation_id(),
         )
     }
-
     fn archive(&self, reference: &str, archived: bool) -> Result<Output> {
-        archive(
-            &self.backend,
-            |catalog| self.select(catalog, reference),
-            archived,
-            || self.operation_id(),
+        save_stream_edit(
+            &self.opened,
+            &self.select(reference),
+            json!({"archived":archived}).as_object().unwrap().clone(),
+            TitleDefaults::default(),
+            &self.operation_id(),
+        )
+    }
+    fn snapshot(&self) -> Value {
+        json!(
+            self.opened
+                .inventory()
+                .unwrap()
+                .into_iter()
+                .map(|read| (read.revision, record_to_data(&read.record)))
+                .collect::<Vec<_>>()
         )
     }
 }
-
 fn ok(result: Result<Output>) -> Value {
     let output = result.unwrap();
     assert_eq!(output.code, 0, "{}", output.value);
@@ -101,14 +154,7 @@ fn local_catalog_manages_fields_visibility_and_full_unicode_literal_selection() 
     let continuation = f.create("STRASSE continuation", None, Status::Waiting);
     assert_eq!(ok(f.show("STRASSE"))["stream"]["id"], id);
     assert_eq!(
-        ok(list(
-            &f.backend,
-            Some("literal ["),
-            &[],
-            false,
-            false,
-            false
-        ))["streams"]
+        ok(f.list(Some("literal ["), &[], false, false))["streams"]
             .as_array()
             .unwrap()
             .len(),
@@ -121,11 +167,12 @@ fn local_catalog_manages_fields_visibility_and_full_unicode_literal_selection() 
             goal_file: Some(path.into()),
             ..Default::default()
         };
-        let value = ok(update(
-            &f.backend,
-            |catalog| f.select(catalog, id),
+        let value = ok(update_record(
+            &f.opened,
+            &f.select(id),
             None,
             &fields,
+            TitleDefaults::default(),
             |path| {
                 reads.push(path.to_path_buf());
                 Ok("line one\nline two\n".into())
@@ -140,18 +187,15 @@ fn local_catalog_manages_fields_visibility_and_full_unicode_literal_selection() 
     assert_eq!(archived["stream"]["archived"], true);
     assert_eq!(archived["stream"]["status"], "waiting");
     assert_eq!(
-        ok(list(&f.backend, None, &[], false, false, false))["streams"]
+        ok(f.list(None, &[], false, false))["streams"]
             .as_array()
             .unwrap()
             .len(),
         1
     );
+    assert_eq!(ok(f.list(None, &[], true, false))["streams"][0]["id"], id);
     assert_eq!(
-        ok(list(&f.backend, None, &[], true, false, false))["streams"][0]["id"],
-        id
-    );
-    assert_eq!(
-        ok(list(&f.backend, None, &[], false, true, false))["streams"]
+        ok(f.list(None, &[], false, true))["streams"]
             .as_array()
             .unwrap()
             .len(),
@@ -161,11 +205,11 @@ fn local_catalog_manages_fields_visibility_and_full_unicode_literal_selection() 
     assert_eq!(restored["stream"]["archived"], false);
     assert_eq!(restored["stream"]["status"], "waiting");
     assert_eq!(
-        ok(check(&f.backend, Some(id))),
+        ok(check(&f.opened, Some(id))),
         json!({"valid":true,"streams":1,"sessions":0})
     );
     assert_eq!(
-        ok(check(&f.backend, None)),
+        ok(check(&f.opened, None)),
         json!({"valid":true,"streams":2,"sessions":0})
     );
     assert_eq!(ok(f.show("continu"))["stream"], continuation);
@@ -175,10 +219,14 @@ fn local_catalog_manages_fields_visibility_and_full_unicode_literal_selection() 
         .as_array()
         .unwrap()
         .iter()
-        .map(|value| value.as_str().unwrap())
+        .map(|value| value.as_str().unwrap().to_owned())
         .collect();
     candidates.sort();
-    let mut expected = vec![id, continuation["id"].as_str().unwrap()];
+    let host = f.opened.host().as_str();
+    let mut expected = vec![
+        format!("{host}/{id}"),
+        format!("{host}/{}", continuation["id"].as_str().unwrap()),
+    ];
     expected.sort();
     assert_eq!(candidates, expected);
 }
@@ -204,7 +252,7 @@ fn collections_keep_identity_and_reject_invalid_intent_before_save() {
         },
     ));
     assert_eq!(changed["stream"]["documents"][0]["commit"], "abc123");
-    let before = f.backend.snapshot().unwrap();
+    let before = f.snapshot();
     let sequence = f.sequence.get();
     let error = f
         .update(
@@ -223,9 +271,7 @@ fn collections_keep_identity_and_reject_invalid_intent_before_save() {
         sequence,
         "validation precedes operation ID generation"
     );
-    let after = f.backend.snapshot().unwrap();
-    assert_eq!(after.catalog, before.catalog);
-    assert_eq!(after.revisions, before.revisions);
+    assert_eq!(f.snapshot(), before);
     assert_eq!(ok(f.show(id))["stream"], changed["stream"]);
     let removed = ok(f.update(
         id,

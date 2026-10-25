@@ -1,8 +1,6 @@
 //! Stable host-local checkout IDs and exact, explicit repository URL bindings.
 
-use std::collections::BTreeSet;
 use std::fs;
-use std::os::unix::fs::MetadataExt;
 use std::path::{Path, PathBuf};
 
 use serde::{Deserialize, Serialize};
@@ -14,7 +12,7 @@ use state::State;
 
 use super::{Result, RuntimeError, digest, invalid, lock, read_json, text, write_json};
 
-/// A registered physical root. Repository URLs are exact locators, not inferred remotes.
+/// A saved checkout ID and canonical path. Repository URLs are explicit locators.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct CheckoutLocation {
@@ -22,8 +20,6 @@ pub struct CheckoutLocation {
     pub id: String,
     pub directory: PathBuf,
     pub repository_urls: Vec<String>,
-    pub device: u64,
-    pub inode: u64,
 }
 
 /// A discovered checkout root and the inspected directory's portable path within it.
@@ -57,10 +53,6 @@ pub fn canonical_directory(path: &Path) -> Result<PathBuf> {
             .ok_or_else(|| invalid("directory must be UTF-8"))?,
     )?;
     Ok(canonical)
-}
-
-fn physical(metadata: &fs::Metadata) -> (u64, u64) {
-    (metadata.dev(), metadata.ino())
 }
 
 /// Reject nonportable paths before joining them to a checkout root.
@@ -131,18 +123,6 @@ impl CheckoutRegistry {
     fn read(&self) -> Result<State> {
         let state: State = read_json(&self.path)?.unwrap_or_else(|| State::new(&self.host_id));
         state.check(&self.host_id)?;
-        let mut live = BTreeSet::new();
-        for checkout in &state.checkouts {
-            match fs::metadata(&checkout.directory) {
-                Ok(metadata) => {
-                    if !live.insert(physical(&metadata)) {
-                        return Err(invalid("duplicate physical checkout roots"));
-                    }
-                }
-                Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
-                Err(error) => return Err(error.into()),
-            }
-        }
         Ok(state)
     }
 
@@ -169,19 +149,12 @@ impl CheckoutRegistry {
         Ok(checkout.clone())
     }
 
-    fn find_in(&self, state: &State, root: &Path) -> Result<Option<CheckoutLocation>> {
-        let identity = physical(&fs::metadata(root)?);
-        for checkout in &state.checkouts {
-            let same = match fs::metadata(&checkout.directory) {
-                Ok(metadata) => physical(&metadata) == identity,
-                Err(error) if error.kind() == std::io::ErrorKind::NotFound => false,
-                Err(error) => return Err(error.into()),
-            };
-            if checkout.directory == root || (checkout.device, checkout.inode) == identity || same {
-                return self.validate(checkout).map(Some);
-            }
-        }
-        Ok(None)
+    fn find_in(state: &State, root: &Path) -> Option<CheckoutLocation> {
+        state
+            .checkouts
+            .iter()
+            .find(|checkout| checkout.directory == root)
+            .cloned()
     }
 
     /// List saved intent without requiring old roots to remain available.
@@ -189,14 +162,14 @@ impl CheckoutRegistry {
         Ok(self.read()?.checkouts)
     }
 
-    /// Revalidate the exact canonical root and its recorded device/inode.
+    /// Revalidate the saved canonical path as an existing checkout root.
     pub fn get(&self, id: &str) -> Result<CheckoutLocation> {
         self.validate(self.read()?.lookup(id)?)
     }
 
     /// Find an already registered exact root; aliases never create a second identity.
     pub fn find(&self, directory: &Path) -> Result<Option<CheckoutLocation>> {
-        self.find_in(&self.read()?, &self.exact_root(directory)?)
+        Ok(Self::find_in(&self.read()?, &self.exact_root(directory)?))
     }
 
     /// Explicitly register a root or add an exact repository URL binding; never set a default.
@@ -210,19 +183,11 @@ impl CheckoutRegistry {
         }
         self.update(|state| {
             let root = self.exact_root(directory)?;
-            let mut checkout = match self.find_in(state, &root)? {
-                Some(checkout) => checkout,
-                None => {
-                    let metadata = fs::metadata(&root)?;
-                    CheckoutLocation {
-                        id: Uuid::new_v4().to_string(),
-                        directory: root,
-                        repository_urls: Vec::new(),
-                        device: metadata.dev(),
-                        inode: metadata.ino(),
-                    }
-                }
-            };
+            let mut checkout = Self::find_in(state, &root).unwrap_or_else(|| CheckoutLocation {
+                id: Uuid::new_v4().to_string(),
+                directory: root,
+                repository_urls: Vec::new(),
+            });
             if let Some(url) = repository_url
                 && !checkout.repository_urls.iter().any(|bound| bound == url)
             {
@@ -322,23 +287,14 @@ impl CheckoutRegistry {
         self.update(|state| {
             let mut checkout = state.lookup(id)?.clone();
             let root = self.exact_root(directory)?;
-            let metadata = fs::metadata(&root)?;
-            for other in state.checkouts.iter().filter(|other| other.id != id) {
-                let same = match fs::metadata(&other.directory) {
-                    Ok(other_metadata) => physical(&other_metadata) == physical(&metadata),
-                    Err(error) if error.kind() == std::io::ErrorKind::NotFound => false,
-                    Err(error) => return Err(error.into()),
-                };
-                if other.directory == root
-                    || (other.device, other.inode) == physical(&metadata)
-                    || same
-                {
-                    return Err(invalid("destination is already registered"));
-                }
+            if state
+                .checkouts
+                .iter()
+                .any(|other| other.id != id && other.directory == root)
+            {
+                return Err(invalid("destination is already registered"));
             }
             checkout.directory = root;
-            checkout.device = metadata.dev();
-            checkout.inode = metadata.ino();
             let index = state
                 .checkouts
                 .iter()
@@ -409,9 +365,9 @@ impl CheckoutRegistry {
 impl CheckoutLocation {
     fn current_root(&self) -> Result<PathBuf> {
         let root = canonical_directory(&self.directory)?;
-        if root != self.directory || physical(&fs::metadata(&root)?) != (self.device, self.inode) {
+        if root != self.directory {
             return Err(invalid(
-                "checkout root was replaced; explicitly move the registration",
+                "registered checkout path is no longer canonical; explicitly move the registration",
             ));
         }
         Ok(root)

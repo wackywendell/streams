@@ -122,7 +122,7 @@ export default function registerWorkCard(pi: ExtensionAPI, options: Options = {}
      if (!capture.valid()) return;
      if (typeof response.reply !== "string") throw Error("Discussion model did not return a typed reply");
      const edit = response.edit;
-     const request = edit ? editRequest(catalog, edit.kind, edit.changes, edit.actor, operation, true) : undefined;
+     const request = edit ? editRequest(catalog, edit.kind, edit.changes, edit.actor, operation) : undefined;
      if (!await capture.attached()) return;
      if (request) {
       const value = await client.apply(request);
@@ -144,7 +144,7 @@ export default function registerWorkCard(pi: ExtensionAPI, options: Options = {}
   if (panelOpen) return;
   panelOpen = true;
   try {
-   const catalog = await cli(ctx).context(ctx.sessionManager.getSessionId(), process.env.STREAMS_STREAM_ID);
+   const catalog = await cli(ctx).context(ctx.sessionManager.getSessionId());
    if (!catalog.stream) {ctx.ui.notify("Streams — No work card attached. Use /streams attach to choose or create an effort, or start meaningful work for automatic enrollment.", "info");return;}
    const key = JSON.stringify([ctx.sessionManager.getSessionId(), catalog.catalog_source, catalog.stream.id]);
    let state = states.get(key);if (!state) {state = {discussion: {input: "", messages: []}, edits: new Map()};states.set(key, state);}
@@ -153,7 +153,7 @@ export default function registerWorkCard(pi: ExtensionAPI, options: Options = {}
  }
  async function attach(ctx: ExtensionContext, args: {streamId?: string; title?: string; reason?: string}) {
   scope.use(ctx);
-  const before = await cli(ctx).context(ctx.sessionManager.getSessionId(), process.env.STREAMS_STREAM_ID);
+  const before = await cli(ctx).context(ctx.sessionManager.getSessionId());
   if (before.session) {return {status: "already-bound; membership moves/forks are not implemented", stream_id: before.session.stream_id};}
   return reporter.exclusive((signal) => chooseInitial(ctx, cli(ctx), args, receipt, signal));
  }
@@ -265,7 +265,7 @@ export default function registerWorkCard(pi: ExtensionAPI, options: Options = {}
   scope.use(ctx);
   return reporter.exclusive(lifecycle => executeLab(operation, {root: join(agentDir, "stream-debug"), client: cli(ctx), runtime: ctx, current: ctx.sessionManager, helperRoot: join(agentDir, "stream-reporting-sessions")}, AbortSignal.any([signal, lifecycle])));
  }});
- pi.registerTool({name: "stream_read", label: "Read work card", description: "Read typed durable catalog state and recorded contributions from persisted local records. No fetch, scratch notes or pending drafts.", parameters: Type.Object({}), async execute(_id, _args, _signal, _update, ctx) {scope.use(ctx);const {authority, ...catalog} = await cli(ctx).context(ctx.sessionManager.getSessionId(), process.env.STREAMS_STREAM_ID);return result({...catalog, reporting_authority: !!authority});}});
+ pi.registerTool({name: "stream_read", label: "Read work card", description: "Read typed durable catalog state and recorded contributions from persisted local records. No fetch, scratch notes or pending drafts.", parameters: Type.Object({}), async execute(_id, _args, _signal, _update, ctx) {scope.use(ctx);const catalog = await cli(ctx).context(ctx.sessionManager.getSessionId());return result(catalog);}});
  pi.registerTool({name: "checkpoint", label: "Report work card", description: "Request an immediate durable progress report. Local saves and publication are separate; this is not an approval draft.", parameters: Type.Object({instructions: Type.Optional(Type.String())}), async execute(_id, args, _signal, _update, ctx) {scope.use(ctx);settings();reporter.request(ctx, true, args.instructions);return result({status: "report-requested"});}});
  pi.registerTool({name: "select_stream", label: "Attach initial effort", description: "Ask the user to attach this unbound Pi conversation to an exact catalog stream ID. An enrolled conversation cannot switch; membership moves/forks are not implemented.", parameters: Type.Object({stream_id: Type.Optional(Type.String()), reason: Type.String()}), async execute(_id, args, _signal, _update, ctx) {return result(await attach(ctx, {streamId: args.stream_id, reason: args.reason}));}});
  pi.registerTool({name: "create_stream", label: "Create initial effort", description: "Ask the user to create an initial durable effort and enroll this conversation. Never switches existing membership or launches workspaces.", parameters: Type.Object({title: Type.String(), reason: Type.String()}), async execute(_id, args, _signal, _update, ctx) {return result(await attach(ctx, args));}});

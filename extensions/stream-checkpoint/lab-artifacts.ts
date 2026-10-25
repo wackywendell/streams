@@ -52,7 +52,6 @@ export function loadPrepared(root: string, id: string): PreparedRequest {
 export function validatePrepared(value: any): asserts value is PreparedRequest {
  if (!object(value) || value.version !== 1 || typeof value.trim !== "boolean" || !object(value.input) || !["enroll", "session", "stream"].includes(value.input.type) || !Array.isArray(value.input.messages) || value.input.reset !== undefined && typeof value.input.reset !== "boolean") throw Error("Invalid prepared task input");
  const input = value.input, catalog = parseLocalContext(input.catalog);
- if (catalog.authority && catalog.authority.token !== "[redacted]") throw Error("Prepared requests must not contain live authority tokens");
  if (input.type === "enroll" ? input.reset || catalog.session : !catalog[input.type as "session" | "stream"]) throw Error("Prepared task does not match its captured cards");
  const source = value.source;
  if (!object(source) || !uuid.test(source.capture_id) || !Number.isInteger(source.sample) || source.sample < 0 || !identity(source.host_id) || !identity(source.native_session_id) || !identity(source.cwd) || !isAbsolute(source.cwd) || !(source.leafId === null || identity(source.leafId)) || catalog.session && (catalog.session.host_id !== source.host_id || catalog.session.harness_session_id !== source.native_session_id)) throw Error("Invalid prepared source identity");

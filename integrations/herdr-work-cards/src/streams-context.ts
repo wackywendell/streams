@@ -16,11 +16,11 @@ export type SessionWire = {
   id: string; host_id: string; stream_id: string; harness: string; harness_session_id: string;
   previous_stream_ids?: string[];
   title: string; title_mode: TitleMode; status: Status; state: string; state_short: string | null; remaining: string;
-  checkout: { repository: string; repository_url?: string | null; ref: string; directory_within_checkout: string } | null;
+  checkout: { repository: string; repository_url: string; ref: string; directory_within_checkout: string } | null;
 };
 export type LocalContext = {
   catalog_source: string; host_id: string; stream: StreamWire | null; session: SessionWire | null;
-  sessions: SessionWire[]; authority: { host_id: string; token: string } | null;
+  sessions: SessionWire[]; title_defaults: TitleDefaults;
 };
 
 const object = (value: unknown): value is Record<string, unknown> => !!value && typeof value === 'object' && !Array.isArray(value);
@@ -55,15 +55,24 @@ export function isSession(value: unknown): value is SessionWire {
       && value.previous_stream_ids.every((id, i, ids) => id !== (i + 1 < ids.length ? ids[i + 1] : value.stream_id)))
     && (value.checkout === null || object(value.checkout)
       && identity(value.checkout.repository) && identity(value.checkout.ref) && text(value.checkout.directory_within_checkout)
-      && provenance(value.checkout.repository_url));
+      && identity(value.checkout.repository_url));
 }
 
 export function parseLocalContext(value: unknown): LocalContext & Record<string, unknown> {
-  if (!object(value) || Object.hasOwn(value, 'error') || !identity(value.catalog_source) || !identity(value.host_id)
+  if (!object(value) || Object.hasOwn(value, 'error') || Object.hasOwn(value, 'authority')
+    || !identity(value.catalog_source) || !identity(value.host_id)
     || !(value.stream === null || isStream(value.stream)) || !(value.session === null || isSession(value.session))
     || !Array.isArray(value.sessions) || !value.sessions.every(isSession)
-    || !(value.authority === null || object(value.authority) && identity(value.authority.host_id) && identity(value.authority.token))) {
+    || !object(value.title_defaults) || !mode(value.title_defaults.stream) || !mode(value.title_defaults.session)) {
     throw new Error('Invalid local catalog context');
+  }
+  const session = value.session;
+  if (session && (!value.stream || session.host_id !== value.stream.owner.host_id || session.stream_id !== value.stream.id)
+    || value.sessions.length !== (session ? 1 : 0)
+    || value.sessions.some(row => row.id !== session?.id || row.host_id !== session?.host_id
+      || row.harness !== session?.harness || row.harness_session_id !== session?.harness_session_id
+      || row.stream_id !== session?.stream_id)) {
+    throw new Error('Inconsistent addressed catalog context');
   }
   return value as LocalContext & Record<string, unknown>;
 }

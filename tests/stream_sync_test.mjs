@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
 import { spawn, execFileSync } from 'node:child_process';
-import { mkdtempSync, mkdirSync, writeFileSync, readFileSync, renameSync, rmSync } from 'node:fs';
+import { existsSync, mkdtempSync, mkdirSync, writeFileSync, readFileSync, renameSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -14,6 +14,11 @@ const { default: registerWorkCard } = await load('index');
 const { editRequest } = await load('core');
 const { defaults } = await load('settings');
 const local = {local:'unchanged',sharing:'local-only',domain:null};
+function context() {
+ const stream={id:'effort',title:'Manual',title_mode:'manual',goal:'Manual goal',goal_short:null,goal_mode:'manual',status:'active',archived:false,owner:{host_id:'host'},repositories:{},documents:[],issues:[],prs:[]};
+ const session={id:'session',host_id:'host',stream_id:'effort',harness:'pi',harness_session_id:'native',title:'Session',title_mode:'automatic',status:'active',state:'',state_short:null,remaining:'',checkout:null};
+ return {catalog_source:'source',host_id:'host',stream,session,sessions:[session],title_defaults:{stream:'automatic',session:'automatic'}};
+}
 function hooks(cli, infer = () => assert.fail('lifecycle sync must not invoke a model'), settings = defaults) {
  const handlers=new Map(), warnings=[], entries=[];
  registerWorkCard({on:(name,fn)=>handlers.set(name,fn),registerCommand:()=>{},registerTool:()=>{},registerShortcut:()=>{},appendEntry:(type,value)=>entries.push({type,value})}, {cli,infer,settings});
@@ -62,7 +67,7 @@ test('a late lifecycle failure cannot notify or append into a replacement conver
 test('shutdown cancels in-flight inference, never adds a summary, and retains sync errors',async()=>{
  let entered, signal, models=0;
  const started=new Promise(resolve=>entered=resolve);
- const f=hooks({context:async()=>({catalog_source:'source',host_id:'host',stream:null,session:null,sessions:[],authority:null}),sync:async event=>{if(event==='shutdown')throw Error('offline or timed out');return local;}},async(_ctx,_request,abort)=>{models++;signal=abort;entered();return new Promise(resolve=>abort.addEventListener('abort',()=>resolve({meaningful:false}),{once:true}));});
+ const f=hooks({context:async()=>({...context(),stream:null,session:null,sessions:[]}),sync:async event=>{if(event==='shutdown')throw Error('offline or timed out');return local;}},async(_ctx,_request,abort)=>{models++;signal=abort;entered();return new Promise(resolve=>abort.addEventListener('abort',()=>resolve({meaningful:false}),{once:true}));});
  await f.handlers.get('session_start')({},f.ctx);
  f.handlers.get('agent_end')({messages:[{role:'assistant',stopReason:'stop'}]},f.ctx);await started;
  await f.handlers.get('session_shutdown')({reason:'reload'},{...f.ctx});
@@ -101,7 +106,7 @@ test('a replacement startup retires an old shutdown completion but tree changes 
 test('distinct event contexts share the live inference scope and route receipt warnings to the latest UI',async()=>{
  for(const [sharing,level] of [['local-only',null],['failed','warning'],['blocked','warning'],['uncertain','warning']]) {
  let release,entered;const started=new Promise(resolve=>entered=resolve), writes=[];
- const catalog={catalog_source:'source',host_id:'host',stream:{id:'effort',title:'Manual',title_mode:'manual',goal:'Manual goal',goal_mode:'manual'},session:{id:'session',harness_session_id:'native',stream_id:'effort',title:'Session',state:''},sessions:[],authority:{token:'owner'}};
+ const catalog=context();
  const f=hooks({sync:async()=>local,context:async()=>structuredClone(catalog),apply:async request=>{writes.push(request);return {save:{local:'persisted',sharing:'local-only',domain:{outcome:'changes'}},publication:{local:'unchanged',sharing,domain:null}};}},async()=>{entered();await new Promise(resolve=>release=resolve);return {changes:{state:'Reported'}};});
  await f.handlers.get('session_start')({}, {...f.ctx});
  f.handlers.get('agent_end')({messages:[{role:'assistant',stopReason:'stop'}]}, {...f.ctx});await started;
@@ -116,7 +121,7 @@ test('distinct event contexts share the live inference scope and route receipt w
 
 test('shutdown suppresses late accepted report receipts without another inference',async()=>{
  let complete,entered,models=0;const applying=new Promise(resolve=>entered=resolve);
- const catalog={catalog_source:'source',host_id:'host',stream:null,session:{id:'session',host_id:'host',harness_session_id:'native',stream_id:'effort',title:'Session',state:''},sessions:[],authority:{token:'owner'}};
+ const catalog=context();
  const f=hooks({sync:async()=>local,context:async()=>structuredClone(catalog),apply:()=>{entered();return new Promise(resolve=>complete=resolve);}},async()=>{models++;return {changes:{state:'Accepted locally'}};});
  await f.handlers.get('session_start')({},f.ctx);
  f.handlers.get('agent_end')({messages:[{role:'assistant',stopReason:'stop'}]}, {...f.ctx});await applying;
@@ -155,46 +160,46 @@ test('Pi/CLI reports publish across two isolated Git catalogs, remain saved offl
  const a=runner('a'), b=runner('b');
  const command=async(run,...args)=>{const value=await run([...args,'--json']);assert.equal(value.code,0,value.stderr||value.stdout);return JSON.parse(value.stdout);};
  for(const run of [a,b])await command(run,'config','set','frontend.mode','none');
- await command(a,'config','set','sync.stream_seconds','0');await command(a,'config','set','sync.session_seconds','999999');
  const initialized=await command(a,'init','--sync','git','--remote',remote);
  let cli=childCli(checkout,'native',a.env);clients.push(cli);const empty=await cli.context('native');
  const enrollment=await cli.enroll({version:2,catalog_source:empty.catalog_source,operation_id:'enrollment',harness:'pi',harness_session_id:'native',stream:{title:'Shared effort'},session:{title:'Implement sharing'},actor:'automatic',cwd:checkout});
- assert.equal(enrollment.publication.sharing,'confirmed');
+ assert.equal(enrollment.publication,undefined);assert.ok(enrollment.saves.every(item=>item.save.local==='persisted'));
+ assert.equal((await cli.sync('start')).sharing,'confirmed');
  await command(b,'init','--sync','git','--remote',remote);
+ const imported=await command(b,'sync');assert.equal(imported.sharing,'confirmed',JSON.stringify(imported));
  const shown=await command(b,'show',enrollment.stream.id,'--refresh');assert.equal(shown.sessions.length,1);
- await command(a,'config','set','sync.stream_seconds','999999');
  let captured=await cli.context('native');
  const saved=await cli.apply(editRequest(captured,'session',{state:'First report'},'automatic'));
- assert.equal(saved.save.local,'committed');assert.equal(saved.publication.sharing,'pending');
+ assert.equal(saved.save.local,'persisted');assert.equal(saved.publication,undefined);
  const before=git(remote,'rev-parse','main');
- let f=hooks(cli);await f.handlers.get('session_start')({},f.ctx);assert.equal(git(remote,'rev-parse','main'),before);
- await command(a,'config','set','sync.stream_seconds','0');
- f=hooks(cli);await f.handlers.get('session_start')({},f.ctx);assert.notEqual(git(remote,'rev-parse','main'),before);
+ let f=hooks(cli);await f.handlers.get('session_start')({},f.ctx);assert.notEqual(git(remote,'rev-parse','main'),before);
  assert.equal((await command(b,'show',enrollment.stream.id,'--refresh')).sessions[0].state,'First report');
  captured=await cli.context('native');
- const final=await cli.apply(editRequest(captured,'session',{state:'Final saved report'},'automatic'));assert.equal(final.publication.sharing,'pending');
+ const final=await cli.apply(editRequest(captured,'session',{state:'Final saved report'},'automatic'));assert.equal(final.save.local,'persisted');assert.equal(final.publication,undefined);
  await f.handlers.get('session_shutdown')({reason:'quit'},f.ctx);assert.equal(f.warnings.length,0);
  const published=git(remote,'rev-parse','main');
  const second=await command(b,'show',enrollment.stream.id,'--refresh');assert.equal(second.sessions[0].state,'Final saved report');assert.equal(git(remote,'rev-parse','main'),published);
  f=hooks(cli);await f.handlers.get('session_start')({},f.ctx);
  renameSync(remote,unavailable);
  captured=await cli.context('native');
- const offline=await cli.apply(editRequest(captured,'session',{state:'Saved while offline'},'automatic'));
- assert.equal(offline.save.local,'committed');assert.equal(offline.publication.sharing,'pending');
- const localTip=git(initialized.catalog,'rev-parse','HEAD');
+ const localTip=git(initialized.catalog,'rev-parse','HEAD'),offlineIntent=editRequest(captured,'session',{state:'Saved while offline'},'automatic');
+ const offline=await cli.apply(offlineIntent);
+ assert.equal(offline.save.local,'persisted');assert.equal(offline.publication,undefined);
+ assert.equal(git(initialized.catalog,'rev-parse','HEAD'),localTip,'saving does not start Git');
  await f.handlers.get('session_shutdown')({reason:'quit'},f.ctx);
- assert.equal(f.warnings.length,1);assert.equal(f.entries[0].value.result.sharing,'failed');assert.equal(git(initialized.catalog,'rev-parse','HEAD'),localTip);
+ assert.equal(f.warnings.length,1);assert.equal(f.entries[0].value.result.sharing,'failed');assert.notEqual(git(initialized.catalog,'rev-parse','HEAD'),localTip,'explicit sync checkpoints locally before contacting the remote');
  assert.equal((await cli.context('native')).session.state,'Saved while offline');
  renameSync(unavailable,remote);
  // A new session child loses all in-memory state.
- await cli.stop();cli=childCli(checkout,'native',a.env);clients.push(cli);f=hooks(cli);await f.handlers.get('session_start')({},f.ctx);
- assert.equal(git(remote,'rev-parse','main'),published); // persisted failure cooldown, not discarded intent
- assert.equal((await command(a,'sync')).sharing,'confirmed');
+ await cli.stop();cli=childCli(checkout,'native',a.env);clients.push(cli);
+ const retained=await cli.apply(offlineIntent);assert.equal(retained.save.local,'unchanged');assert.deepEqual(retained.save.domain,offline.save.domain);
+ assert.equal(git(remote,'rev-parse','main'),published,'retained catalog retries do not publish');
+ f=hooks(cli);await f.handlers.get('session_start')({},f.ctx);assert.deepEqual(f.warnings,[]);
  assert.equal((await command(b,'show',enrollment.stream.id,'--refresh')).sessions[0].state,'Saved while offline');
  assert.notEqual(git(remote,'rev-parse','main'),published);
 });
 
-test('Pi/CLI adopts populated local state and keeps captured membership valid without a remote', {timeout:120000}, async t=>{
+test('Pi/CLI refuses adoption and keeps captured membership and receipts valid without a remote', {timeout:120000}, async t=>{
  const root=mkdtempSync(join(tmpdir(),'streams-local-git-acceptance-')),clients=[];t.after(async()=>{await Promise.all(clients.map(cli=>cli.stop()));rmSync(root,{recursive:true,force:true});});
  const checkout=fileURLToPath(new URL('..',import.meta.url)), home=join(root,'home');mkdirSync(home);
  const binary=resolve(checkout,process.env.CARGO_TARGET_DIR??'target','debug','streams');
@@ -210,19 +215,21 @@ test('Pi/CLI adopts populated local state and keeps captured membership valid wi
  const initialized=await command('init','--sync','none');
  let cli=childCli(checkout,'native',env);clients.push(cli);const empty=await cli.context('native');
  const enrollment=await cli.enroll({version:2,catalog_source:empty.catalog_source,operation_id:'local-enrollment',harness:'pi',harness_session_id:'native',stream:{title:'Existing effort'},session:{title:'Continue work'},actor:'automatic',cwd:checkout});
- assert.equal(enrollment.publication.sharing,'local-only');assert.ok(enrollment.saves.every(item=>item.save.local==='persisted'));
+ assert.equal(enrollment.publication,undefined);assert.ok(enrollment.saves.every(item=>item.save.local==='persisted'));
  const captured=await cli.context('native');
- const adopted=await command('init','--sync','git','--adopt');
- assert.equal(adopted.host_id,initialized.host_id);assert.equal(adopted.catalog,initialized.catalog);
- const after=await cli.context('native');assert.equal(after.catalog_source,captured.catalog_source);assert.deepEqual(after.session,captured.session);assert.deepEqual(after.authority,captured.authority);
- const report=await cli.apply(editRequest(captured,'session',{state:'Reported after adoption'},'automatic'));
- assert.equal(report.save.local,'committed');assert.equal(report.save.sharing,'local-only');assert.equal(report.publication.sharing,'local-only');
- const git=(...args)=>execFileSync('git',['-C',adopted.catalog,...args],{env,encoding:'utf8',stdio:['ignore','pipe','pipe']}).trim();
- assert.equal(git('rev-parse','HEAD^'),adopted.baseline_revision);assert.equal(git('remote'),'');
- assert.equal(JSON.parse(readFileSync(join(adopted.catalog,'.catalog-sync/config.json'),'utf8')).remote,null);
+ const transport=join(initialized.catalog,'.catalog-local/transport.json'),before=readFileSync(transport,'utf8');
+ for(const args of [['init','--sync','git','--adopt'],['init','--sync','git']]) {
+  const refused=await run([...args,'--json']);assert.notEqual(refused.code,0);assert.ok(JSON.parse(refused.stdout).error);
+  assert.equal(readFileSync(transport,'utf8'),before);assert.equal(existsSync(join(initialized.catalog,'.git')),false);
+ }
+ const after=await cli.context('native');assert.equal(after.catalog_source,captured.catalog_source);assert.deepEqual(after.session,captured.session);
+ const intent=editRequest(captured,'session',{state:'Reported after refused adoption'},'automatic'),report=await cli.apply(intent);
+ assert.equal(report.save.local,'persisted');assert.equal(report.publication,undefined);
+ assert.deepEqual(JSON.parse(readFileSync(transport,'utf8')),{version:2,mode:{strategy:'none'}});
  await cli.stop();cli=childCli(checkout,'native',env);clients.push(cli);const f=hooks(cli);await f.handlers.get('session_start')({},f.ctx);await f.handlers.get('session_shutdown')({reason:'quit'},f.ctx);
  assert.deepEqual(f.warnings,[]);assert.deepEqual(f.entries,[]);
- const shown=await command('show',enrollment.stream.id,'--refresh');assert.equal(shown.sessions[0].id,enrollment.session.id);assert.equal(shown.sessions[0].state,'Reported after adoption');
- assert.equal((await command('sync')).sharing,'local-only');assert.equal((await command('init','--sync','git','--adopt')).baseline_revision,adopted.baseline_revision);
- for(const name of ['sync.json','publication.json'])assert.throws(()=>readFileSync(join(adopted.catalog,'.catalog-sync',name)),{code:'ENOENT'});
+ const retained=await cli.apply(intent);assert.equal(retained.save.local,'unchanged');assert.deepEqual(retained.save.domain,report.save.domain);
+ const shown=await command('show',enrollment.stream.id,'--refresh');assert.equal(shown.sessions[0].id,enrollment.session.id);assert.equal(shown.sessions[0].state,'Reported after refused adoption');
+ assert.equal((await command('sync')).sharing,'local-only');assert.equal(readFileSync(transport,'utf8'),before);
+ assert.equal(existsSync(join(initialized.catalog,'.git')),false);assert.equal(existsSync(join(initialized.catalog,'.catalog-sync')),false);
 });

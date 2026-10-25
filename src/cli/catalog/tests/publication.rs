@@ -1,73 +1,66 @@
 use super::*;
-use streams_temper::{
-    model::ValidationError,
-    operations::Authority,
-    storage::Snapshot,
-    sync::{
-        ReadResult,
-        envelope::Origin,
-        outcomes::{self, LocalStatus, SharingStatus},
-        state::RepairRequired,
-    },
-};
 
-/// Keep real local save/read behavior; script only the transport's reported outcome.
-struct Offline<'a>(&'a LocalCatalog<memory::MemoryStore>);
-
-impl CatalogBackend for Offline<'_> {
-    fn snapshot(&self) -> std::result::Result<Snapshot, RepairRequired> {
-        self.0.snapshot()
-    }
-    fn authority(&self, id: &str) -> std::result::Result<Option<Authority>, RepairRequired> {
-        self.0.authority(id)
-    }
-    fn save(
-        &self,
-        operation: &Operation,
-        origin: Option<&Origin>,
-    ) -> std::result::Result<outcomes::Result, ValidationError> {
-        let mut saved = self.0.save(operation, origin)?;
-        assert!(saved.accepted(), "fixture expects an accepted local save");
-        saved.local = LocalStatus::Committed;
-        saved.sharing = SharingStatus::Pending;
-        Ok(saved)
-    }
-    fn read(&self, refresh: bool) -> std::result::Result<ReadResult, RepairRequired> {
-        self.0.read(refresh)
-    }
-    fn sync(&self, _: SyncEvent) -> outcomes::Result {
-        outcomes::Result::new(SharingStatus::Failed, LocalStatus::Unchanged)
-            .with_detail("transport unavailable")
-    }
+#[test]
+fn direct_human_edit_retry_keeps_its_original_decision_and_actual_current_record() {
+    let f = Fixture::new();
+    let created = f.create("Work", None, Status::Active);
+    let id = created["id"].as_str().unwrap();
+    let before = f.select(id);
+    let changes = json!({"goal":"First"}).as_object().unwrap().clone();
+    let first = application::save_user_edit(
+        f.opened.records(),
+        "human-edit",
+        &Record::Stream(before.clone()),
+        &changes,
+        TitleDefaults::default(),
+    )
+    .unwrap();
+    let later = ok(f.update(
+        id,
+        StreamFields {
+            goal: Some("Later".into()),
+            ..Default::default()
+        },
+    ));
+    let bytes = f.snapshot();
+    let retry = application::save_user_edit(
+        f.opened.records(),
+        "human-edit",
+        &Record::Stream(before.clone()),
+        &changes,
+        TitleDefaults::default(),
+    )
+    .unwrap();
+    assert!(retry.repeated);
+    assert_eq!(retry.outcome, first.outcome);
+    assert_eq!(record_to_data(&retry.current.record), later["stream"]);
+    assert_eq!(f.snapshot(), bytes);
 }
 
 #[test]
-fn accepted_local_write_retains_publication_warning_without_requiring_repair() {
+fn ordinary_human_edits_save_locally_without_opening_transport_or_publishing() {
     let f = Fixture::new();
     let stream = f.create("Work", None, Status::Active);
     let id = stream["id"].as_str().unwrap();
-    let offline = Offline(&f.backend);
-    let output = update(
-        &offline,
-        |catalog| f.select(catalog, id),
-        Some("Saved offline".into()),
-        &StreamFields::default(),
-        |_| panic!("unexpected text read"),
-        || f.operation_id(),
+    std::fs::write(
+        f.opened.root().join(".catalog-local/transport.json"),
+        "invalid transport config",
     )
     .unwrap();
-    assert_eq!(output.code, 0, "{}", output.value);
-    let result = output.value;
-    assert_eq!(result["save"]["local"], "committed");
-    assert_eq!(result["save"]["domain"]["outcome"], "changes");
-    assert_eq!(result["publication"]["sharing"], "failed");
-    assert_eq!(result["publication"]["local"], "unchanged");
-    assert_eq!(result["publication"]["detail"], "transport unavailable");
-    assert_eq!(
-        ok(show(&offline, false, |catalog| f.select(catalog, id)))["stream"],
-        result["stream"]
+    let saved = ok(f.update(
+        id,
+        StreamFields {
+            goal: Some("Saved locally".into()),
+            ..Default::default()
+        },
+    ));
+    assert_eq!(saved["save"]["local"], "persisted");
+    assert_eq!(saved["save"]["domain"]["outcome"], "changes");
+    assert!(saved["save"].get("sharing").is_none());
+    assert!(saved.get("publication").is_none());
+    assert_eq!(ok(f.show(id))["stream"], saved["stream"]);
+    assert!(
+        sync(&f.opened, Policy::default()).is_err(),
+        "explicit sync alone admits transport settings"
     );
-    let synced = sync(&offline, SyncEvent::Explicit).unwrap();
-    assert_eq!(synced.code, 2, "{}", synced.value);
-    assert_eq!(synced.value["sharing"], "failed");
 }

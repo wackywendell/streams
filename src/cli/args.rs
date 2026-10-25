@@ -20,8 +20,6 @@ pub(super) struct Cli {
 pub(super) enum NativeCommand {
     /// Read the attested owner and lifecycle configuration without native effects.
     Observe,
-    /// Capture the current attested owner's arrangement through the Rust runtime.
-    Capture,
     /// Open an explicitly requested display, or a single automatic display.
     Open {
         #[arg(long)]
@@ -58,8 +56,6 @@ pub(super) enum Command {
         remote: Option<String>,
         #[arg(long, default_value = "main")]
         branch: String,
-        #[arg(long)]
-        adopt: bool,
     },
     Config {
         #[command(subcommand)]
@@ -129,10 +125,6 @@ pub(super) enum Command {
         #[arg(long)]
         cwd: Option<PathBuf>,
     },
-    Workspace {
-        #[command(subcommand)]
-        command: WorkspaceCommand,
-    },
     Update {
         #[command(flatten)]
         target: Target,
@@ -179,14 +171,6 @@ pub(super) struct Target {
     pub(super) current: bool,
     #[arg(short = 'f', long)]
     pub(super) frontend: Option<FrontendRequest>,
-}
-
-#[derive(Debug, Subcommand)]
-pub(super) enum WorkspaceCommand {
-    Capture {
-        #[command(flatten)]
-        target: Target,
-    },
 }
 
 #[derive(Debug, Subcommand)]
@@ -292,10 +276,6 @@ pub(super) enum AgentCommand {
         session_id: String,
         #[arg(long)]
         stream_id: Option<String>,
-        #[arg(long)]
-        attest: bool,
-        #[arg(long)]
-        native_inventory: bool,
     },
     Apply,
     /// Enroll the exact conversation without launching native resources.

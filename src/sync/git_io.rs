@@ -14,9 +14,7 @@ use crate::process;
 
 use crate::storage::StorageError;
 
-use super::Oid;
-use super::history::History;
-use super::state::{GitConfig, RepairRequired};
+use super::state::RepairRequired;
 
 #[cfg(test)]
 mod tests;
@@ -59,9 +57,7 @@ pub type GitHook = Arc<
     >,
 >;
 
-type HistoryCache = Vec<(Option<String>, History)>;
-
-/// A repository handle whose clones share blob and validated-history caches.
+/// A repository handle whose clones share immutable blob reads.
 ///
 /// The root cannot be changed through this handle: caches belong to that repository.
 /// Callers must not repoint the root path at a different repository while reusing it.
@@ -70,7 +66,6 @@ pub struct Git {
     root: PathBuf,
     /// Per-subprocess timeout in seconds; commands reject nonpositive or invalid values.
     pub timeout: f64,
-    pub(crate) histories: Arc<Mutex<HistoryCache>>,
     blobs: Arc<Mutex<BTreeMap<String, Vec<u8>>>>,
     hook: Option<GitHook>,
 }
@@ -94,17 +89,9 @@ impl Git {
         Self {
             root: root.as_ref().to_path_buf(),
             timeout,
-            histories: Arc::new(Mutex::new(Vec::new())),
             blobs: Arc::new(Mutex::new(BTreeMap::new())),
             hook: None,
         }
-    }
-
-    /// Copy only command interception to a new root; object/history caches stay fresh.
-    pub(crate) fn fresh_root(&self, root: &Path) -> Self {
-        let mut fresh = Self::new(root, self.timeout);
-        fresh.hook = self.hook.clone();
-        fresh
     }
 
     /// Returns the configured root, without resolving or validating the path.
@@ -207,14 +194,18 @@ impl Git {
         Ok(String::from_utf8_lossy(&out).trim().to_string())
     }
 
-    pub(super) fn check_target(&self, config: &GitConfig) -> Result<(), RepairRequired> {
+    pub(super) fn check_target(
+        &self,
+        remote: Option<&str>,
+        branch: &str,
+    ) -> Result<(), RepairRequired> {
         let head = self
             .text(&["symbolic-ref", "--quiet", "HEAD"], None, None, &[0])
             .map_err(repair)?;
-        if head != format!("refs/heads/{}", config.branch()) {
+        if head != format!("refs/heads/{branch}") {
             return Err(repair("managed catalog branch was changed"));
         }
-        match config.remote() {
+        match remote {
             None => {
                 if !self
                     .text(&["remote"], None, None, &[0])
@@ -251,37 +242,6 @@ impl Git {
                 }
             }
         }
-        Ok(())
-    }
-
-    pub(super) fn fetch_tip(&self, branch: &str) -> Result<Option<String>, GitError> {
-        let branch = format!("refs/heads/{branch}");
-        let found = self.text(
-            &["ls-remote", "--heads", "origin", &branch],
-            None,
-            None,
-            &[0],
-        )?;
-        let tip = if found.is_empty() {
-            None
-        } else {
-            self.run(&["fetch", "--no-tags", "origin", &branch], None, None, &[0])?;
-            Some(self.text(&["rev-parse", "--verify", "FETCH_HEAD"], None, None, &[0])?)
-        };
-        Ok(tip)
-    }
-
-    pub(super) fn push_candidate(&self, candidate: &Oid, branch: &str) -> Result<(), GitError> {
-        self.run(
-            &[
-                "push",
-                "origin",
-                &format!("{}:refs/heads/{branch}", candidate.as_str()),
-            ],
-            None,
-            None,
-            &[0],
-        )?;
         Ok(())
     }
 

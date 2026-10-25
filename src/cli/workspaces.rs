@@ -1,8 +1,15 @@
 use super::*;
 use args::StreamFields;
+use std::sync::{Arc, atomic::AtomicBool};
 use streams_temper::{
-    frontend::FrontendId,
-    runtime::{conversations::ConversationRoots, workspace::WorkspaceRuntime},
+    frontend::{FrontendId, herdr::HerdrNativeSnapshot},
+    model::{RecordKind, Status},
+    runtime::{
+        conversations::ConversationRoots,
+        native_markers::selected_stream,
+        workspace::{SelectedConversation, WorkspaceRuntime},
+    },
+    storage::records::{RecordAddress, RecordRead, RecordStore},
 };
 
 pub(super) enum Creation {
@@ -10,7 +17,125 @@ pub(super) enum Creation {
     Workspace(Option<FrontendRequest>),
 }
 
+struct MetadataSelection {
+    stream: Stream,
+    snapshot: HerdrNativeSnapshot,
+}
+
+fn require_local(opened: &application::OpenedRecords, stream: &Stream) -> Result<()> {
+    if stream.owner_host_id != opened.host().as_str() {
+        return Err(CliError::message(
+            "native workspace action requires the Stream's fixed local writer",
+        ));
+    }
+    Ok(())
+}
+
+fn exact_stream(opened: &application::OpenedRecords, id: &str) -> Result<Stream> {
+    let address = RecordAddress::new(opened.host().as_str(), RecordKind::Stream, id)
+        .map_err(application::ApplicationError::from)?;
+    Ok(opened
+        .records()
+        .with_reader(|reader| -> application::Result<Stream> {
+            let read = reader
+                .read(&address)?
+                .ok_or_else(|| ValidationError::new("addressed Stream is missing"))?;
+            let Record::Stream(stream) = read.record else {
+                unreachable!("addressed Stream codec")
+            };
+            Ok(stream)
+        })?)
+}
+
+fn member_sessions<'a>(stream: &Stream, inventory: &'a [RecordRead]) -> Vec<&'a Session> {
+    inventory
+        .iter()
+        .filter_map(|read| match &read.record {
+            Record::Session(session)
+                if session.stream_id == stream.id && session.host_id == stream.owner_host_id =>
+            {
+                Some(session)
+            }
+            _ => None,
+        })
+        .collect()
+}
+
+fn requested_sessions<'a>(
+    stream: &Stream,
+    inventory: &'a [RecordRead],
+    reference: Option<&str>,
+) -> Result<Vec<&'a Session>> {
+    let members = member_sessions(stream, inventory);
+    if let Some(reference) = reference {
+        return Ok(vec![*resolve(&members, reference, |session| {
+            (&session.id, &session.title, Some(&session.host_id))
+        })?]);
+    }
+    Ok(members
+        .into_iter()
+        .filter(|session| session.status == Status::Active)
+        .collect())
+}
+
 impl App {
+    // Positional references always use human discovery, even when they look like UUIDs.
+    fn explicit_workspace_target(
+        &self,
+        opened: &application::OpenedRecords,
+        target: &Target,
+        inventory: &[RecordRead],
+    ) -> Result<Option<Stream>> {
+        if target.current {
+            if target.reference.is_some() {
+                return Err(CliError::message(
+                    "--current cannot be combined with a reference",
+                ));
+            }
+            return self
+                .environment
+                .get("STREAMS_STREAM_ID")
+                .map(|id| exact_stream(opened, id))
+                .transpose();
+        }
+        let reference = target
+            .reference
+            .as_deref()
+            .ok_or_else(|| CliError::InvalidRef("supply a reference or --current".into()))?;
+        Ok(Some(catalog::select_stream(inventory, reference)?.clone()))
+    }
+
+    fn metadata_workspace_target(
+        &self,
+        opened: &application::OpenedRecords,
+        frontend: Option<&BuiltinFrontend>,
+    ) -> Result<MetadataSelection> {
+        let client = frontend.and_then(BuiltinFrontend::herdr).ok_or_else(|| {
+            CliError::message(
+                "metadata-only --current requires Herdr; supply an explicit Stream key",
+            )
+        })?;
+        let snapshot = client
+            .session_snapshot()
+            .and_then(|snapshot| HerdrNativeSnapshot::parse(&snapshot))
+            .map_err(runtime::RuntimeError::from)?;
+        let caller = client
+            .current_pane_from(snapshot.raw())
+            .map_err(runtime::RuntimeError::from)?;
+        let id = selected_stream(
+            &snapshot,
+            &caller.workspace_id,
+            opened.source_id(),
+            opened.host().as_str(),
+        )?
+        .ok_or_else(|| {
+            CliError::message("calling workspace has no Stream marker; supply a reference")
+        })?;
+        let stream = exact_stream(opened, &id)?;
+        require_local(opened, &stream)?;
+        Ok(MetadataSelection { stream, snapshot })
+    }
+
     pub(super) fn create_stream(
         &self,
         title: String,
@@ -18,215 +143,217 @@ impl App {
         cwd: Option<PathBuf>,
         creation: Creation,
     ) -> Result<Output> {
-        let opened = application::open(&self.config)?;
-        let mut stream = Stream::new(
-            Uuid::new_v4().to_string(),
-            title,
-            None,
-            opened.host().as_str(),
-        )?;
-        stream.title_mode = TitleMode::Manual;
-        let changes = fields::stream(&stream, &fields, &mut |path| self.read_text(path))?;
-        let base = Record::Stream(stream);
-        let desired = operations::apply_changes(&base, &changes, Actor::User)?;
-        let operation = Operation::new(
-            Uuid::new_v4().to_string(),
-            None,
-            desired,
-            Actor::User,
-            None,
-            vec![],
-        )?;
-        let saved = save(opened.backend(), &operation)?;
-        let event = match &creation {
-            Creation::Record => SyncEvent::Stream,
-            Creation::Workspace(_) => SyncEvent::Start,
-        };
-        let extra = if saved.accepted() {
-            let completion: Result<Option<Value>> = (|| {
-                let directory = self.path(cwd.as_deref().unwrap_or(&self.cwd))?;
-                self.locations(&opened)?.remember(
-                    operation.target().id(),
-                    &directory,
-                    None,
-                    false,
-                    None,
-                    None,
-                )?;
-                if let Creation::Workspace(frontend) = creation {
-                    let Record::Stream(stream) = operation.after() else {
-                        unreachable!("stream creation operation")
-                    };
-                    let result =
-                        self.runtime_open(&opened, stream, &[], frontend, None, cwd.as_deref())?;
-                    Ok(Some(json!({"runtime":result})))
+        let opened = application::open_records(&self.config)?;
+        let stream = self.proposed_stream(opened.host().as_str(), title, &fields)?;
+        let operation = Uuid::new_v4().to_string();
+        let saved =
+            application::create_record(opened.records(), &operation, &Record::Stream(stream));
+        let current = saved
+            .as_ref()
+            .ok()
+            .map(|saved| match &saved.current.record {
+                Record::Stream(stream) => stream.clone(),
+                _ => unreachable!("Stream creation target"),
+            });
+        let mut output = catalog::finish_save(&operation, saved)?;
+        if !output.accepted_save {
+            return Ok(output);
+        }
+        let stream = current.expect("accepted creation returns its actual Stream");
+        let completion = (|| -> Result<Option<runtime::workspace::OpenResult>> {
+            let directory = self.path(cwd.as_deref().unwrap_or(&self.cwd))?;
+            let locations = self.locations(opened.root(), opened.host().as_str())?;
+            locations.remember(&stream.id, &directory, None, false, None, None)?;
+            let Creation::Workspace(requested) = creation else {
+                return Ok(None);
+            };
+            let frontend = self.native_frontend(&self.selection(requested)?, 30.0)?;
+            let roots = ConversationRoots::from_environment()?;
+            let cancelled = AtomicBool::new(false);
+            Ok(Some(
+                WorkspaceRuntime::new(
+                    opened.host().as_str(),
+                    &locations,
+                    frontend.as_ref(),
+                    opened.source_id(),
+                    &roots,
+                    &self.environment,
+                )
+                .open(&cancelled, &stream, &[], Some(&directory), None)?,
+            ))
+        })();
+        match completion {
+            Ok(Some(result)) => {
+                output.code = if result.needs_attention.is_empty() {
+                    0
                 } else {
-                    Ok(None)
-                }
-            })();
-            match completion {
-                Ok(extra) => extra,
-                Err(error) => Some(
-                    json!({"runtime":{"error":error.data()["error"],"detail":"stream saved; retry open with its ID"}}),
-                ),
+                    2
+                };
+                output.value["runtime"] = json!(result);
             }
-        } else {
-            None
+            Ok(None) => {}
+            Err(error) => {
+                output.code = 2;
+                output.value["completion_error"] = json!({"message":error.to_string(),
+                    "detail":"Stream saved; select a valid directory or retry open with its reference"});
+            }
+        }
+        Ok(output)
+    }
+
+    fn proposed_stream(&self, host: &str, title: String, intent: &StreamFields) -> Result<Stream> {
+        let mut stream = Stream::new(Uuid::new_v4().to_string(), title, None, host)?;
+        stream.title_mode = TitleMode::Manual;
+        let changes = fields::stream(&stream, intent, &mut |path| self.read_text(path))?;
+        let Record::Stream(stream) =
+            operations::apply_changes(&Record::Stream(stream), &changes, Actor::User)?
+        else {
+            unreachable!("Stream fields preserve record kind")
         };
-        finish(opened.backend(), &operation, saved, event, extra)
+        Ok(stream)
     }
-    fn runtime_open(
-        &self,
-        opened: &OpenedCatalog,
-        stream: &Stream,
-        sessions: &[Session],
-        frontend: Option<FrontendRequest>,
-        session: Option<&str>,
-        cwd: Option<&Path>,
-    ) -> Result<runtime::workspace::OpenResult> {
-        let selected = self.selection(frontend)?;
-        let frontend = self.native_frontend(&selected, 30.0)?;
-        let state = self.state(opened)?;
-        let locations = self.locations(opened)?;
-        let roots = ConversationRoots::from_environment()?;
-        let cwd = cwd.map(|p| self.path(p)).transpose()?;
-        Ok(WorkspaceRuntime::new(
-            &state,
-            &locations,
-            frontend.as_ref(),
-            opened.backend(),
-            &roots,
-            &self.environment,
-        )
-        .open(stream, sessions, session, cwd.as_deref())?)
-    }
+
     pub(super) fn open_workspace(
         &self,
         target: Target,
         session: Option<String>,
         cwd: Option<PathBuf>,
     ) -> Result<Output> {
-        let opened = application::open(&self.config)?;
-        let catalog = opened.backend().snapshot()?.catalog;
-        let stream = self.target(&opened, &catalog, &target)?;
-        let sessions: Vec<_> = catalog
-            .sessions()
+        let opened = application::open_records(&self.config)?;
+        let settings = self.config.load()?;
+        if settings.catalog_root != opened.root() {
+            return Err(CliError::message(
+                "catalog root setting changed during open",
+            ));
+        }
+        let inventory = opened.inventory()?;
+        let explicit = self.explicit_workspace_target(&opened, &target, &inventory)?;
+        if let Some(stream) = &explicit {
+            require_local(&opened, stream)?;
+        }
+        let selection =
+            frontend::resolve_frontend(settings.frontend, target.frontend, &self.environment)?;
+        let frontend = self.native_frontend(&selection, 30.0)?;
+        let cancelled = AtomicBool::new(false);
+        let metadata = explicit
+            .is_none()
+            .then(|| self.metadata_workspace_target(&opened, frontend.as_ref()))
+            .transpose()?;
+        let stream = explicit
+            .as_ref()
+            .unwrap_or_else(|| &metadata.as_ref().expect("metadata target").stream);
+        let observed = metadata.as_ref().map(|selected| &selected.snapshot);
+        let sessions = requested_sessions(stream, &inventory, session.as_deref())?;
+        let locations = self.locations(opened.root(), opened.host().as_str())?;
+        let bindings = sessions
             .iter()
-            .filter(|s| s.stream_id == stream.id)
-            .cloned()
-            .collect();
-        let result = self.runtime_open(
-            &opened,
-            stream,
-            &sessions,
-            target.frontend,
-            session.as_deref(),
-            cwd.as_deref(),
-        )?;
-        let publication = opened.backend().sync(SyncEvent::Start);
-        let incomplete = !result.needs_attention.is_empty() || publication.needs_attention();
-        let mut output = Output::value(
-            json!({"stream_id":stream.id,"runtime":result,"publication":result_data(&publication)?}),
-        );
-        output.code = if incomplete { 2 } else { 0 };
-        Ok(output)
-    }
-    pub(super) fn capture_workspace(&self, target: Target) -> Result<Output> {
-        let opened = application::open(&self.config)?;
-        let catalog = opened.backend().snapshot()?.catalog;
-        let stream = self.target(&opened, &catalog, &target)?;
-        self.capture_workspace_record(&opened, &catalog, stream, target.frontend)
-    }
-
-    pub(super) fn capture_workspace_stream_id(&self, stream_id: &str) -> Result<Output> {
-        let opened = application::open(&self.config)?;
-        let catalog = opened.backend().snapshot()?.catalog;
-        let stream = catalog
-            .streams()
+            .map(|session| locations.transcript_file(&stream.id, &session.id))
+            .collect::<std::result::Result<Vec<_>, runtime::RuntimeError>>()?;
+        let selected = sessions
             .iter()
-            .find(|stream| stream.id == stream_id)
-            .ok_or_else(|| CliError::NotFound(format!("Stream {stream_id} not found")))?;
-        self.capture_workspace_record(&opened, &catalog, stream, None)
-    }
-
-    fn capture_workspace_record(
-        &self,
-        opened: &OpenedCatalog,
-        catalog: &Catalog,
-        stream: &Stream,
-        requested: Option<FrontendRequest>,
-    ) -> Result<Output> {
-        let sessions: Vec<_> = catalog
-            .sessions()
-            .iter()
-            .filter(|s| s.stream_id == stream.id)
-            .cloned()
-            .collect();
-        let selected = self.selection(requested)?;
-        let frontend = self.native_frontend(&selected, 30.0)?;
-        let state = self.state(opened)?;
-        let locations = self.locations(opened)?;
+            .zip(&bindings)
+            .map(|(session, binding)| SelectedConversation {
+                session,
+                locator: binding.as_deref(),
+            })
+            .collect::<Vec<_>>();
         let roots = ConversationRoots::from_environment()?;
-        let arrangement = WorkspaceRuntime::new(
-            &state,
+        let cwd = cwd.as_deref().map(|path| self.path(path)).transpose()?;
+        let result = WorkspaceRuntime::new(
+            opened.host().as_str(),
             &locations,
             frontend.as_ref(),
-            opened.backend(),
+            opened.source_id(),
             &roots,
             &self.environment,
         )
-        .capture(stream, &sessions)?;
-        Ok(Output::value(
-            json!({"stream_id":stream.id,"arrangement":arrangement}),
-        ))
+        .open(&cancelled, stream, &selected, cwd.as_deref(), observed)?;
+        let mut output = Output::value(json!({"stream_id":stream.id,"runtime":result}));
+        output.code = if result.needs_attention.is_empty() {
+            0
+        } else {
+            2
+        };
+        Ok(output)
     }
+
     pub(super) fn resume_session(
         &self,
         target: Target,
         session: Option<String>,
         cwd: Option<PathBuf>,
     ) -> Result<Output> {
-        let opened = application::open(&self.config)?;
-        let catalog = opened.backend().snapshot()?.catalog;
-        let stream = self.target(&opened, &catalog, &target)?;
-        let sessions: Vec<_> = catalog
-            .sessions()
-            .iter()
-            .filter(|s| s.stream_id == stream.id)
-            .cloned()
-            .collect();
-        // Resume is an exec in this terminal, not a native launch-frontend selection.
-        // Herdr inventory still protects duplicates even alongside CMUX caller variables.
-        let configured = self.config.load()?.frontend;
-        let use_herdr = matches!(&configured,FrontendMode::Explicit(id) if *id==FrontendId::herdr())
+        let opened = application::open_records(&self.config)?;
+        let settings = self.config.load()?;
+        if settings.catalog_root != opened.root() {
+            return Err(CliError::message(
+                "catalog root setting changed during resume",
+            ));
+        }
+        let inventory = opened.inventory()?;
+        let explicit = self.explicit_workspace_target(&opened, &target, &inventory)?;
+        if let Some(stream) = &explicit {
+            require_local(&opened, stream)?;
+        }
+        // Resume executes here; observed reuse is best effort, without discovery.
+        let use_herdr = matches!(&settings.frontend, FrontendMode::Explicit(id) if *id == FrontendId::herdr())
             || self.environment.get("HERDR_ENV").map(String::as_str) == Some("1");
         let frontend = if use_herdr {
             Some(BuiltinFrontend::connect(
                 &FrontendId::herdr(),
-                std::sync::Arc::new(streams_temper::process::NativeProcessRunner),
+                Arc::new(streams_temper::process::NativeProcessRunner),
                 self.environment.clone(),
                 30.0,
             )?)
         } else {
             None
         };
-        let state = self.state(&opened)?;
-        let locations = self.locations(&opened)?;
+        let metadata = explicit
+            .is_none()
+            .then(|| self.metadata_workspace_target(&opened, frontend.as_ref()))
+            .transpose()?;
+        let stream = explicit
+            .as_ref()
+            .unwrap_or_else(|| &metadata.as_ref().expect("metadata target").stream);
+        let observed = metadata.as_ref().map(|selected| &selected.snapshot);
+        let sessions = requested_sessions(stream, &inventory, session.as_deref())?;
+        let session = match sessions.as_slice() {
+            [session] => *session,
+            [] => {
+                return Err(CliError::NotFound(
+                    "Stream has no active Session to resume".into(),
+                ));
+            }
+            _ => {
+                return Err(CliError::Ambiguous {
+                    message: "multiple active Sessions; choose --session".into(),
+                    candidates: sessions.iter().map(|session| session.id.clone()).collect(),
+                });
+            }
+        };
+        let locations = self.locations(opened.root(), opened.host().as_str())?;
+        let locator = locations.transcript_file(&stream.id, &session.id)?;
+        let selected = SelectedConversation {
+            session,
+            locator: locator.as_deref(),
+        };
         let roots = ConversationRoots::from_environment()?;
-        let cwd = cwd.as_deref().map(|p| self.path(p)).transpose()?;
-        opened.backend().sync(SyncEvent::Start);
+        let cwd = cwd.as_deref().map(|path| self.path(path)).transpose()?;
         let runtime = WorkspaceRuntime::new(
-            &state,
+            opened.host().as_str(),
             &locations,
             frontend.as_ref(),
-            opened.backend(),
+            opened.source_id(),
             &roots,
             &self.environment,
         );
-        let permit = runtime.resume(stream, &sessions, session.as_deref(), cwd.as_deref())?;
-        match permit.exec() {
+        let command = runtime.resume(stream, selected, cwd.as_deref(), observed)?;
+        match command.exec() {
             Ok(never) => match never {},
             Err(error) => Err(error.into()),
         }
     }
 }
+
+#[cfg(test)]
+mod tests;

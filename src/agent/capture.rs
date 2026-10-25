@@ -4,17 +4,19 @@ use std::collections::{BTreeMap, BTreeSet};
 
 use serde_json::{Value, json};
 
+use crate::storage::records::{RecordAddress, RecordStore};
 use crate::{
-    application::InspectedCatalog,
+    application::OpenedRecords,
     codec::{object, record_to_data},
-    frontend::herdr::{HerdrAgent, HerdrTopology},
-    model::{Record, Session, Stream, ValidationError, check_text},
+    frontend::herdr::{HerdrAgent, HerdrNativeSnapshot, HerdrTopology},
+    model::{Record, RecordKind, Session, Stream, TitleDefaults, ValidationError, check_text},
     runtime::{
+        DirectoryBindings,
         conversations::{
             ConversationRoots, Harness, NativeIdentity, NativeSessionMetadata, conversation_file,
             native_identity,
         },
-        state::RuntimeState,
+        native_markers::{selected_stream, stream_tokens},
     },
 };
 
@@ -121,151 +123,200 @@ fn topology_error(errors: &[String]) -> Option<String> {
     (!message.is_empty()).then_some(message)
 }
 
-fn sample_context(
-    inspected: &InspectedCatalog,
-    session: Option<&Session>,
-    fallback: Option<&Stream>,
-) -> Value {
-    let catalog = &inspected.inspection.snapshot.catalog;
-    let stream = session
-        .and_then(|s| catalog.stream(&s.stream_id))
-        .or(fallback);
-    let authority = stream
-        .and_then(|s| inspected.inspection.authorities.get(&s.id))
-        .map(|a| json!({"host_id": a.host_id, "token": "[redacted]"}));
-    json!({
-        "catalog_source": inspected.source, "host_id": inspected.host.as_str(),
-        "stream": stream.map(|s| record_to_data(&Record::Stream(s.clone()))),
-        "session": session.map(|s| record_to_data(&Record::Session(s.clone()))),
-        "sessions": catalog.sessions().iter()
-            .filter(|s| stream.is_some_and(|stream| s.stream_id == stream.id))
-            .map(|s| record_to_data(&Record::Session(s.clone()))).collect::<Vec<_>>(),
-        "authority": authority,
-    })
+fn read_stream(opened: &OpenedRecords, id: &str) -> Result<Stream, ValidationError> {
+    let address = RecordAddress::new(opened.host().as_str(), RecordKind::Stream, id)
+        .map_err(|error| ValidationError::new(error.to_string()))?;
+    opened
+        .records()
+        .with_reader::<_, super::RecordContextError>(|reader| {
+            let read = reader
+                .read(&address)?
+                .ok_or_else(|| ValidationError::new("addressed Stream is missing"))?;
+            let Record::Stream(stream) = read.record else {
+                unreachable!("addressed Stream codec")
+            };
+            Ok(stream)
+        })
+        .map_err(|error| ValidationError::new(error.to_string()))
 }
 
-/// Capture actual local records and bounded saved-file identities, never projected state.
-/// All native/backend acquisition belongs to the caller; this function takes no effect capability.
+fn sample_context(
+    opened: &OpenedRecords,
+    key: &str,
+    fallback: Option<&Stream>,
+    defaults: TitleDefaults,
+) -> Result<super::RecordContext, ValidationError> {
+    let host = opened.host().as_str();
+    let address = RecordAddress::new(host, RecordKind::Session, key)
+        .map_err(|error| ValidationError::new(error.to_string()))?;
+    opened
+        .records()
+        .with_reader::<_, super::RecordContextError>(|reader| {
+            let read = reader.read(&address)?;
+            let session = read.map(|read| match read.record {
+                Record::Session(session) => session,
+                _ => unreachable!("addressed Session codec"),
+            });
+            let stream = match session.as_ref() {
+                Some(session) if fallback.is_some_and(|stream| stream.id == session.stream_id) => {
+                    fallback.cloned()
+                }
+                Some(session) => {
+                    let address = RecordAddress::new(host, RecordKind::Stream, &session.stream_id)
+                        .map_err(|error| ValidationError::new(error.to_string()))?;
+                    let read = reader
+                        .read(&address)
+                        .map_err(|error| ValidationError::new(error.to_string()))?
+                        .ok_or_else(|| {
+                            ValidationError::new("Session's current Stream is missing")
+                        })?;
+                    let Record::Stream(stream) = read.record else {
+                        unreachable!("addressed Stream codec")
+                    };
+                    Some(stream)
+                }
+                None => fallback.cloned(),
+            };
+            Ok(super::RecordContext {
+                catalog_source: opened.source_id().into(),
+                host_id: host.into(),
+                title_defaults: defaults,
+                stream,
+                sessions: session.iter().cloned().collect(),
+                session,
+            })
+        })
+        .map_err(|error| ValidationError::new(error.to_string()))
+}
+
+/// Explicit diagnostic inventory or exact Stream/workspace inputs, never a catalog roster.
+/// Native acquisition is supplied; this function cannot dispatch frontend effects.
 pub fn capture_inputs(
-    inspected: &InspectedCatalog,
-    state: &RuntimeState,
-    native: Result<(&HerdrTopology, &str), String>,
+    opened: &OpenedRecords,
+    native: Result<&HerdrNativeSnapshot, String>,
     target: CaptureTarget<'_>,
+    defaults: TitleDefaults,
+    locations: &DirectoryBindings,
     roots: &ConversationRoots,
 ) -> Result<Value, ValidationError> {
-    let host_id = inspected.host.as_str();
-    check_text(&inspected.source, "catalog_source", false)?;
-    if state.host_id() != host_id {
-        return Err(ValidationError::new(
-            "runtime state belongs to another host",
-        ));
-    }
-    let catalog = &inspected.inspection.snapshot.catalog;
-    let mut selected = match target {
-        CaptureTarget::Stream(id) => Some(
-            catalog
-                .stream(id)
-                .ok_or_else(|| ValidationError::new(format!("no stream with exact ID {id:?}")))?,
-        ),
-        _ => None,
-    };
+    let host = opened.host().as_str();
+    check_text(opened.source_id(), "catalog_source", false)?;
     let mut errors = Vec::new();
-    let mut bindings = BTreeMap::new();
-    let topology = match native {
+    let native = match native {
+        Ok(native) => Some(native),
         Err(error) => {
             errors.push(error);
             None
         }
-        Ok((topology, scope)) => {
-            let inventory = (|| {
-                let mut bindings = BTreeMap::new();
-                for scoped in state
-                    .associations(Some(scope))
-                    .map_err(|e| ValidationError::new(e.to_string()))?
-                {
-                    let binding = scoped.record();
-                    if !binding.ready() {
-                        continue;
-                    }
-                    if catalog.stream(binding.stream_id()).is_none()
-                        || bindings
-                            .insert(
-                                binding.workspace_id().to_owned(),
-                                binding.stream_id().to_owned(),
-                            )
-                            .is_some()
-                    {
-                        return Err(ValidationError::new(
-                            "ambiguous or dangling ready workspace association",
-                        ));
-                    }
-                }
-                Ok(bindings)
-            })();
-            match inventory {
-                Ok(found) => {
-                    bindings = found;
-                    Some(topology)
-                }
-                Err(error) => {
-                    errors.push(error.to_string());
-                    None
-                }
+    };
+    let inventory = matches!(target, CaptureTarget::Inventory);
+    let mut selected = match target {
+        CaptureTarget::Stream(id) => Some(read_stream(opened, id)?),
+        _ => None,
+    };
+    let mut bindings = BTreeMap::new();
+    let workspace_ids: Vec<String> = match target {
+        CaptureTarget::Inventory => native
+            .map(|snapshot| {
+                snapshot
+                    .topology()
+                    .workspaces
+                    .iter()
+                    .map(|workspace| workspace.id.clone())
+                    .collect()
+            })
+            .unwrap_or_default(),
+        CaptureTarget::Workspace(id) => {
+            if native.is_none_or(|snapshot| snapshot.workspace_tokens(id).is_none()) {
+                return Err(ValidationError::new(
+                    "workspace not observed in valid Herdr snapshot",
+                ));
+            }
+            vec![id.into()]
+        }
+        CaptureTarget::Stream(id) => {
+            let desired = stream_tokens(opened.source_id(), host, id);
+            match native {
+                Some(snapshot) => snapshot
+                    .topology()
+                    .workspaces
+                    .iter()
+                    .filter(|workspace| {
+                        snapshot
+                            .workspace_tokens(&workspace.id)
+                            .is_some_and(|tokens| {
+                                desired
+                                    .iter()
+                                    .all(|(key, value)| tokens.get(key) == Some(value))
+                            })
+                    })
+                    .map(|workspace| workspace.id.clone())
+                    .collect(),
+                None => Vec::new(),
             }
         }
     };
-    let workspaces: Vec<Value> = topology
-        .into_iter()
-        .flat_map(|t| &t.workspaces)
-        .map(|w| json!({"id": w.id, "label": w.label, "stream_id": bindings.get(&w.id)}))
-        .collect();
-    let mut result = json!({
-        "version": 1, "host_id": host_id,
-        "streams": catalog.streams().iter().map(|s| record_to_data(&Record::Stream(s.clone()))).collect::<Vec<_>>(),
-        "workspaces": workspaces,
-        "topology_error": topology_error(&errors),
-    });
-    let (target, workspace_ids) = match target {
-        CaptureTarget::Inventory => return Ok(result),
+    if let Some(snapshot) = native {
+        for workspace in &workspace_ids {
+            match selected_stream(snapshot, workspace, opened.source_id(), host) {
+                Ok(Some(id)) => {
+                    bindings.insert(workspace.clone(), id);
+                }
+                Ok(None) => {}
+                Err(error) => errors.push(error.to_string()),
+            }
+        }
+        if let CaptureTarget::Workspace(id) = target
+            && let Some(stream) = bindings.get(id)
+        {
+            selected = Some(read_stream(opened, stream)?);
+        }
+    }
+    let streams: Vec<_> = if inventory {
+        opened
+            .inventory()
+            .map_err(|error| ValidationError::new(error.to_string()))?
+            .into_iter()
+            .filter_map(|read| match read.record {
+                Record::Stream(stream) if stream.owner_host_id == host => {
+                    Some(record_to_data(&Record::Stream(stream)))
+                }
+                _ => None,
+            })
+            .collect()
+    } else {
+        selected
+            .iter()
+            .cloned()
+            .map(|stream| record_to_data(&Record::Stream(stream)))
+            .collect()
+    };
+    let workspaces: Vec<_> = native.into_iter().flat_map(|snapshot| &snapshot.topology().workspaces)
+        .filter(|workspace| inventory || workspace_ids.contains(&workspace.id))
+        .map(|workspace| json!({"id":workspace.id,"label":workspace.label,"stream_id":bindings.get(&workspace.id)})).collect();
+    let mut result = json!({"version":1,"host_id":host,"streams":streams,"workspaces":workspaces,"topology_error":topology_error(&errors)});
+    if inventory {
+        return Ok(result);
+    }
+    result["target"] = match target {
+        CaptureTarget::Stream(id) => {
+            json!({"kind":"stream","id":id,"title":selected.as_ref().expect("exact Stream").title})
+        }
         CaptureTarget::Workspace(id) => {
-            let workspace = topology
-                .and_then(|t| t.workspaces.iter().find(|w| w.id == id))
-                .ok_or_else(|| {
-                    ValidationError::new(format!(
-                        "workspace {id:?} not observed in valid Herdr topology"
-                    ))
-                })?;
-            selected = bindings.get(id).and_then(|id| catalog.stream(id));
-            (
-                json!({"kind": "workspace", "id": id, "title": workspace.label}),
-                vec![id.to_owned()],
-            )
+            json!({"kind":"workspace","id":id,"title":native.expect("observed workspace").topology().workspaces.iter().find(|workspace| workspace.id == id).expect("observed workspace").label})
         }
-        CaptureTarget::Stream(_) => {
-            let stream = selected.expect("exact stream target was checked");
-            let workspace_ids = topology
-                .into_iter()
-                .flat_map(|t| &t.workspaces)
-                .filter(|w| bindings.get(&w.id) == Some(&stream.id))
-                .map(|w| w.id.clone())
-                .collect();
-            (
-                json!({"kind": "stream", "id": stream.id, "title": stream.title}),
-                workspace_ids,
-            )
-        }
+        CaptureTarget::Inventory => unreachable!("inventory returned"),
     };
     let mut live: BTreeMap<String, Vec<VerifiedAgent<'_>>> = BTreeMap::new();
     let mut unsupported = Vec::new();
     let mut unresolved = Vec::new();
-    if let Some(topology) = topology {
+    if let Some(snapshot) = native {
         for workspace in &workspace_ids {
-            for agent in workspace_agents(topology, workspace, &mut unresolved, &mut errors) {
+            for agent in
+                workspace_agents(snapshot.topology(), workspace, &mut unresolved, &mut errors)
+            {
                 if agent.harness != Harness::Pi {
-                    unsupported.push(json!({
-                        "harness": agent.harness, "native_session_id": agent.identity.id,
-                        "workspace_id": workspace,
-                    }));
+                    unsupported.push(json!({"harness":agent.harness,"native_session_id":agent.identity.id,"workspace_id":workspace}));
                 } else {
                     live.entry(agent.identity.id.clone())
                         .or_default()
@@ -274,116 +325,39 @@ pub fn capture_inputs(
             }
         }
     }
-    let mut known = BTreeMap::new();
-    let mut samples = BTreeMap::new();
-    for session in catalog.sessions() {
-        if known.insert(session.native_identity(), session).is_some() {
-            return Err(ValidationError::new(
-                "ambiguous catalog native conversation identity",
-            ));
-        }
-        if selected.is_some_and(|stream| stream.id == session.stream_id) {
-            if session.harness != "pi" {
-                unsupported.push(json!({
-                    "host_id": session.host_id, "harness": session.harness,
-                    "native_session_id": session.harness_session_id,
-                }));
-            } else {
-                samples.insert(
-                    (session.host_id.clone(), session.harness_session_id.clone()),
-                    Some(session),
-                );
-            }
-        }
-    }
-    for native_id in live.keys() {
-        samples.insert(
-            (host_id.to_owned(), native_id.clone()),
-            known.get(&(host_id, "pi", native_id.as_str())).copied(),
-        );
-    }
-    if topology.is_some_and(|t| {
-        t.agents.iter().any(|a| {
-            a.native.get("agent").and_then(Value::as_str) == Some("pi")
-                && !workspace_ids.contains(&a.workspace_id)
-        })
-    }) && samples
-        .keys()
-        .any(|(host, native)| host == host_id && !live.contains_key(native))
-    {
-        errors.push("Pi identities outside selected workspaces were not verified; historical open state unknown".into());
-    }
-    let mut captured = Vec::new();
-    for ((host, native_id), session) in samples {
-        let local = host == host_id;
-        let agents = if local {
-            live.get(&native_id).map(Vec::as_slice).unwrap_or_default()
-        } else {
-            &[]
-        };
-        let locations: Vec<Value> = agents
+    let keys: BTreeSet<_> = live.keys().cloned().collect();
+    let mut samples = Vec::new();
+    for id in keys {
+        let agents = live.get(&id).map(Vec::as_slice).unwrap_or_default();
+        let key = Session::id_for(host, "pi", &id);
+        let context = sample_context(opened, &key, selected.as_ref(), defaults)?;
+        let locators: BTreeSet<_> = agents
             .iter()
-            .map(|a| {
-                json!({
-                    "workspace_id": a.agent.workspace_id, "tab_id": a.agent.tab_id,
-                    "pane_id": a.agent.pane_id, "terminal_id": a.agent.terminal_id,
-                })
-            })
+            .filter_map(|agent| agent.identity.locator.as_deref())
             .collect();
-        let fallback_ids: BTreeSet<_> = agents
-            .iter()
-            .map(|a| bindings.get(&a.agent.workspace_id).map(String::as_str))
-            .collect();
-        if session.is_none() && fallback_ids.len() > 1 {
-            return Err(ValidationError::new(
-                "ambiguous workspace stream context for uncarded conversation",
-            ));
-        }
-        let fallback = fallback_ids
-            .iter()
-            .next()
-            .copied()
-            .flatten()
-            .and_then(|id| catalog.stream(id));
-        let (transcript, unavailable) = if !local {
-            (None, Some("foreign host".to_owned()))
-        } else {
-            let locators: BTreeSet<_> = agents
-                .iter()
-                .filter_map(|a| a.identity.locator.as_deref())
-                .collect();
-            if locators.len() > 1 {
-                (
-                    None,
-                    Some("ambiguous saved conversation locators".to_owned()),
-                )
-            } else {
-                match conversation_file(
-                    Harness::Pi,
-                    &native_id,
-                    locators.iter().next().copied(),
-                    roots,
-                ) {
-                    Ok(path) => (Some(path), None),
-                    Err(error) => (None, Some(error.to_string())),
-                }
+        let (transcript, unavailable) = if locators.len() > 1 {
+            (
+                None,
+                Some("ambiguous observed conversation locators".to_owned()),
+            )
+        } else if let Some(path) = locators.first() {
+            (Some((*path).to_owned()), None)
+        } else if let Some(session) = &context.session
+            && let Some(path) = locations
+                .transcript_file(&session.stream_id, &session.id)
+                .map_err(|error| ValidationError::new(error.to_string()))?
+        {
+            match conversation_file(Harness::Pi, &id, Some(&path), roots) {
+                Ok(path) => (Some(path), None),
+                Err(error) => (None, Some(error.to_string())),
             }
-        };
-        let open = if !agents.is_empty() {
-            Some(true)
-        } else if !errors.is_empty() || !local {
-            None
         } else {
-            Some(false)
+            (None,Some("no retained exact transcript locator; enroll the conversation before replaying".into()))
         };
-        captured.push(json!({
-            "host_id": host, "harness": "pi", "native_session_id": native_id,
-            "open": open, "locations": locations, "catalog": sample_context(inspected, session, fallback),
-            "transcript_file": transcript, "unavailable": unavailable,
-        }));
+        let locations: Vec<_> = agents.iter().map(|agent| json!({"workspace_id":agent.agent.workspace_id,"tab_id":agent.agent.tab_id,"pane_id":agent.agent.pane_id,"terminal_id":agent.agent.terminal_id})).collect();
+        samples.push(json!({"host_id":host,"harness":"pi","native_session_id":id,"open":true,"locations":locations,"catalog":context,"transcript_file":transcript,"unavailable":unavailable}));
     }
-    result["target"] = target;
-    result["samples"] = json!(captured);
+    result["samples"] = json!(samples);
     result["unsupported"] = json!(unsupported);
     result["unresolved"] = json!(unresolved);
     result["topology_error"] = json!(topology_error(&errors));

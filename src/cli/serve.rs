@@ -2,10 +2,8 @@
 mod dispatch;
 mod files;
 mod native;
-mod scope;
 
 use super::{App, CliError, Output, PathBuf, Result};
-use scope::Owner;
 use std::{
     collections::{BTreeMap, BTreeSet},
     io::{BufRead, Write},
@@ -33,19 +31,13 @@ enum Wake {
     InputFinished,
     Failed(String),
     Files(u8, notify::Result<notify::Event>),
-    Native(
-        std::result::Result<SubscriptionUpdate, String>,
-        mpsc::SyncSender<Owner>,
-    ),
+    Native(std::result::Result<SubscriptionUpdate, String>),
 }
 
 enum NativeWork {
     Request(RequestId, Request),
     Files(u8, notify::Result<notify::Event>),
-    Native(
-        std::result::Result<SubscriptionUpdate, String>,
-        mpsc::SyncSender<Owner>,
-    ),
+    Native(std::result::Result<SubscriptionUpdate, String>),
 }
 
 const SHUTDOWN_GRACE: Duration = Duration::from_secs(5);
@@ -153,9 +145,11 @@ impl Server {
 
     fn native_request(
         &self,
-        controller: &mut native::Controller,
+        controller: &mut Option<native::Controller>,
         id: RequestId,
         request: Request,
+        stopping: &streams_temper::cancellation::Cancellation,
+        plugin_root: &std::path::Path,
     ) -> Result<()> {
         let cancelled = self.cancelled(id)?;
         let outcome = (|| {
@@ -167,14 +161,38 @@ impl Server {
                 Request::SessionStarted {}
                 | Request::Attach {}
                 | Request::OpenCard {}
-                | Request::CloseCard {} => controller.request(app, request, cancelled),
+                | Request::CloseCard {} => {
+                    let controller = controller.get_or_insert_with(|| {
+                        native::Controller::new(
+                            app.clone(),
+                            self.session_id.clone(),
+                            plugin_root.into(),
+                            self.sender.clone(),
+                            self.output.clone(),
+                            stopping.clone(),
+                        )
+                    });
+                    controller.request(&request, cancelled)
+                }
+                Request::Enroll { request } => {
+                    let value = serde_json::Value::Object(request);
+                    match controller {
+                        Some(controller) => controller.enroll(&app, &value, cancelled),
+                        None => app.enroll_request(&value.to_string()),
+                    }
+                }
                 request => {
-                    let saved = matches!(request, Request::Apply { .. } | Request::Enroll { .. });
-                    let app = controller.app.as_ref().unwrap_or(&app);
+                    let saved = matches!(request, Request::Apply { .. });
+                    let app = controller
+                        .as_ref()
+                        .map(|controller| &controller.app)
+                        .unwrap_or(&app);
                     let mut output = dispatch::execute(app, &self.session_id, request)?;
                     if saved && (output.code == 0 || output.accepted_save) {
                         output.accepted_save = true;
-                        if let Err(error) = controller.saved(self.app()?, cancelled) {
+                        if let Some(controller) = controller
+                            && let Err(error) = controller.saved(cancelled)
+                        {
                             output.notices.push(error.to_string());
                         }
                     }
@@ -182,7 +200,7 @@ impl Server {
                 }
             }
         })();
-        self.remember_app(controller.app.as_ref())?;
+        self.remember_app(controller.as_ref().map(|controller| &controller.app))?;
         self.respond(id, outcome)
     }
 
@@ -204,7 +222,6 @@ fn native_queue(request: &Request) -> bool {
             | Request::CloseCard {}
             | Request::Apply { .. }
             | Request::Enroll { .. }
-            | Request::CaptureWorkspace { .. }
     )
 }
 
@@ -290,47 +307,39 @@ fn read_input(server: Arc<Server>) {
 fn native_worker(
     server: Arc<Server>,
     receiver: mpsc::Receiver<NativeWork>,
-    stopping: Arc<AtomicBool>,
+    stopping: streams_temper::cancellation::Cancellation,
     plugin_root: PathBuf,
 ) -> Result<()> {
-    let mut controller = native::Controller::new(
-        server.session_id.clone(),
-        plugin_root,
-        server.sender.clone(),
-        server.output.clone(),
-    );
-    let result = (|| -> Result<()> {
-        for work in &receiver {
-            if stopping.load(Ordering::Acquire) {
-                break;
-            }
-            match work {
-                NativeWork::Request(id, request) => {
-                    server.native_request(&mut controller, id, request)?
-                }
-                NativeWork::Native(update, reply) => {
-                    let result = controller.update(update);
-                    let _ = reply.send(controller.owner());
-                    server.remember_app(controller.app.as_ref())?;
-                    if let Err(error) = result {
-                        server.warning(&error)?;
-                    }
-                }
-                NativeWork::Files(generation, event) => {
-                    if let Err(error) = controller.file_event(generation, event) {
-                        server.warning(&error)?;
-                    }
-                    server.remember_app(controller.app.as_ref())?;
-                }
-            }
-            let _ = server.sender.send(Wake::Finished);
+    let mut controller: Option<native::Controller> = None;
+    let flag = stopping.flag();
+    for work in &receiver {
+        if flag.load(Ordering::Acquire) {
+            break;
         }
-        Ok(())
-    })();
-    // Release routing acknowledgements before joining the subscription reader.
-    drop(receiver);
-    controller.shutdown();
-    result
+        match work {
+            NativeWork::Request(id, request) => {
+                server.native_request(&mut controller, id, request, &stopping, &plugin_root)?
+            }
+            NativeWork::Native(update) => {
+                if let Some(controller) = &mut controller {
+                    if let Err(error) = controller.update(update, flag.clone()) {
+                        server.warning(&error)?;
+                    }
+                    server.remember_app(Some(&controller.app))?;
+                }
+            }
+            NativeWork::Files(generation, event) => {
+                if let Some(controller) = &mut controller {
+                    if let Err(error) = controller.file_event(generation, event, flag.clone()) {
+                        server.warning(&error)?;
+                    }
+                    server.remember_app(Some(&controller.app))?;
+                }
+            }
+        }
+        let _ = server.sender.send(Wake::Finished);
+    }
+    Ok(())
 }
 
 pub(super) fn run(session_id: String, plugin_root: PathBuf) -> Result<()> {
@@ -346,7 +355,7 @@ pub(super) fn run(session_id: String, plugin_root: PathBuf) -> Result<()> {
     });
     let (native_sender, native_receiver) = mpsc::channel();
     let (done, completed) = mpsc::sync_channel(1);
-    let stopping = Arc::new(AtomicBool::new(false));
+    let stopping = streams_temper::cancellation::Cancellation::new()?;
     let native = {
         let server = server.clone();
         let stopping = stopping.clone();
@@ -389,7 +398,7 @@ pub(super) fn run(session_id: String, plugin_root: PathBuf) -> Result<()> {
             };
             let work = match wake {
                 Wake::Request(id, request) => Some(NativeWork::Request(id, request)),
-                Wake::Native(update, reply) => Some(NativeWork::Native(update, reply)),
+                Wake::Native(update) => Some(NativeWork::Native(update)),
                 Wake::Files(generation, event) => Some(NativeWork::Files(generation, event)),
                 Wake::Finished => None,
                 Wake::InputFinished => {
@@ -407,7 +416,7 @@ pub(super) fn run(session_id: String, plugin_root: PathBuf) -> Result<()> {
         Ok(())
     })();
     server.cancel_all();
-    stopping.store(true, Ordering::Release);
+    stopping.cancel()?;
     drop(native_sender);
     drop(receiver);
     let deadline = deadline.unwrap_or_else(|| Instant::now() + SHUTDOWN_GRACE);
@@ -418,7 +427,7 @@ pub(super) fn run(session_id: String, plugin_root: PathBuf) -> Result<()> {
             result.and(native_result)
         }
         Err(_) => result.and(Err(CliError::message(
-            "native shutdown timed out; existing uncertainty fences retained",
+            "native worker did not stop promptly",
         ))),
     }
 }

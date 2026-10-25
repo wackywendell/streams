@@ -1,153 +1,117 @@
-//! Native directory watches, narrowed to the owner's logical records before any read.
+//! File events select rereads of admitted named records, never compute membership.
 
 use super::{
-    super::{App, CliError, Result, application},
+    super::{CliError, Result, application},
     Wake,
 };
 use notify::{Event, EventKind, RecommendedWatcher, RecursiveMode, Watcher};
 use std::{
     collections::{BTreeMap, BTreeSet},
     fs,
-    path::PathBuf,
+    path::{Path, PathBuf},
     sync::mpsc::Sender,
 };
 use streams_temper::{
-    agent,
-    model::Record,
-    runtime::{
-        conversations::Harness,
-        state::{RuntimeState, herdr_scope},
-    },
-    yaml_store::{YamlStore, encode_component},
+    model::{RecordKind, Session},
+    storage::records::RecordAddress,
+    yaml_store::records::relative_record_path,
 };
 
 type Versions = BTreeMap<&'static str, std::result::Result<Option<Vec<u8>>, String>>;
-
 pub(super) struct Files {
     watcher: RecommendedWatcher,
     sender: Sender<Wake>,
     directories: BTreeSet<PathBuf>,
-    groups: BTreeMap<&'static str, Vec<PathBuf>>,
+    groups: BTreeMap<&'static str, PathBuf>,
     versions: Versions,
     root: PathBuf,
     host: String,
-    session: String,
-    legacy: Option<PathBuf>,
-    stream: Option<String>,
-    runtime: RuntimeState,
-    scope: Option<String>,
+    streams: PathBuf,
     generation: u8,
 }
-
 fn watcher(sender: Sender<Wake>, generation: u8) -> Result<RecommendedWatcher> {
     // RecommendedWatcher is native (FSEvents/inotify); never substitute a polling backend.
     notify::recommended_watcher(move |event| {
         let _ = sender.send(Wake::Files(generation, event));
     })
-    .map_err(|e| CliError::message(format!("required file subscription: {e}")))
+    .map_err(|error| CliError::message(format!("required file subscription: {error}")))
 }
-
 impl Files {
-    pub fn new(app: &App, session: &str, sender: Sender<Wake>) -> Result<Self> {
-        // Native backends report physical paths (for example /private/var on macOS).
-        let root = fs::canonicalize(app.config.load()?.catalog_root)?;
-        let host = app.config.host_identity()?.as_str().to_owned();
-        let runtime = RuntimeState::new(app.config.runtime_state_dir_for(&root)?, &host)?;
-        let scope = app.herdr.as_ref().map(|read| {
-            let endpoint = read.client.endpoint();
-            herdr_scope(&endpoint.socket, endpoint.session.as_deref())
-        });
+    pub fn new(
+        records: &application::OpenedRecords,
+        native_session: &str,
+        sender: Sender<Wake>,
+    ) -> Result<Self> {
+        let host = records.host().as_str();
+        let address = RecordAddress::new(
+            host,
+            RecordKind::Session,
+            Session::id_for(host, "pi", native_session),
+        )
+        .map_err(application::ApplicationError::from)?;
+        let root = std::fs::canonicalize(records.root())?;
+        let session =
+            root.join(relative_record_path(&address).map_err(application::ApplicationError::from)?);
+        let streams = session
+            .parent()
+            .expect("conversation directory")
+            .parent()
+            .expect("host partition")
+            .join("streams");
         let mut files = Self {
             watcher: watcher(sender.clone(), 0)?,
             sender,
             directories: BTreeSet::new(),
-            groups: BTreeMap::new(),
+            groups: BTreeMap::from([("session", session)]),
             versions: BTreeMap::new(),
             root,
-            session: agent::session_id_for(&host, Harness::Pi, session),
-            host,
-            legacy: None,
-            stream: app.environment.get("STREAMS_STREAM_ID").cloned(),
-            runtime,
-            scope,
+            host: host.into(),
+            streams,
             generation: 0,
         };
-        files.prepare(
-            app.environment
-                .get("HERDR_WORKSPACE_ID")
-                .map(String::as_str),
-        )?;
+        files.prepare()?;
         Ok(files)
     }
 
-    /// Discover historical IDs/legacy locations once, after the initial watch is active.
-    /// The subsequent owner observation covers changes during this bootstrap read.
-    pub fn discover(&mut self, app: &App, native_session: &str) -> Result<()> {
-        let opened = application::open(&app.config)?;
-        let catalog = opened.backend().snapshot()?.catalog;
-        if let Some(session) = catalog.sessions().iter().find(|session| {
-            session.host_id == self.host
-                && session.harness == "pi"
-                && session.harness_session_id == native_session
-        }) {
-            self.session = session.id.clone();
-            self.stream = Some(session.stream_id.clone());
-            let record = Record::Session(session.clone());
-            let store = YamlStore::new(&self.root);
-            let relative = store.record_path(&record);
-            if relative.starts_with("sessions") {
-                self.legacy = Some(self.root.join(relative));
+    /// The collector supplies the current key. Do not baseline a newly selected file
+    /// after observation: an already-queued write must still cause its next reread.
+    pub fn set_stream(&mut self, stream: Option<&str>) -> Result<()> {
+        let path =
+            if let Some(stream) = stream {
+                let address = RecordAddress::new(&self.host, RecordKind::Stream, stream)
+                    .map_err(application::ApplicationError::from)?;
+                Some(self.root.join(
+                    relative_record_path(&address).map_err(application::ApplicationError::from)?,
+                ))
+            } else {
+                None
+            };
+        self.set_path("stream", path)
+    }
+
+    fn set_path(&mut self, group: &'static str, path: Option<PathBuf>) -> Result<()> {
+        if self.groups.get(group) == path.as_ref() {
+            return Ok(());
+        }
+        match path {
+            Some(path) => {
+                self.groups.insert(group, path);
+            }
+            None => {
+                self.groups.remove(group);
             }
         }
-        Ok(())
+        self.versions.remove(group);
+        self.watch_parents()
     }
 
-    fn session_paths(&self) -> Vec<PathBuf> {
-        let mut paths = vec![
-            self.root
-                .join("conversations")
-                .join(encode_component(&self.host))
-                .join(format!("{}.yaml", encode_component(&self.session))),
-        ];
-        paths.extend(self.legacy.clone());
-        paths
-    }
-
-    /// Baseline before observation, not after it: a write racing the read must
-    /// remain a future trigger rather than being silently marked as observed.
-    pub fn prepare(&mut self, workspace: Option<&str>) -> Result<bool> {
-        let session_paths = self.session_paths();
-        if let Ok(Some(bytes)) = version(&session_paths)
-            && let Some(path) = session_paths.iter().find(|path| path.exists())
-            && let Ok(relative) = path.strip_prefix(&self.root)
-            && let Ok(Record::Session(session)) =
-                YamlStore::decode_record(&relative.to_string_lossy(), &bytes)
-        {
-            self.stream = Some(session.stream_id);
-        }
-        let mut groups = BTreeMap::from([("session", session_paths)]);
-        if let Some(stream) = &self.stream {
-            groups.insert(
-                "stream",
-                vec![
-                    self.root
-                        .join("streams")
-                        .join(format!("{}.yaml", encode_component(stream))),
-                ],
-            );
-        }
-        if let (Some(scope), Some(workspace)) = (&self.scope, workspace.filter(|id| !id.is_empty()))
-        {
-            let [association, claim] = self.runtime.workspace_binding_paths(scope, workspace)?;
-            groups.insert("association", vec![association]);
-            groups.insert("claim", vec![claim]);
-        }
-        self.groups = groups;
+    /// Register before rechecking, then baseline before collecting domain records.
+    pub fn prepare(&mut self) -> Result<bool> {
         self.watch_parents()?;
         let versions = self
             .groups
             .iter()
-            .map(|(key, paths)| (*key, version(paths)))
+            .map(|(key, path)| (*key, version(path)))
             .collect();
         let changed = self.versions != versions;
         self.versions = versions;
@@ -156,8 +120,13 @@ impl Files {
 
     fn watch_parents(&mut self) -> Result<()> {
         let mut directories = BTreeSet::new();
-        for path in self.groups.values().flatten() {
-            let mut parent = path.parent().expect("absolute record parent");
+        for requested in self
+            .groups
+            .values()
+            .map(|path| path.parent().expect("absolute record parent"))
+            .chain(std::iter::once(self.streams.as_path()))
+        {
+            let mut parent = requested;
             loop {
                 match fs::metadata(parent) {
                     Ok(metadata) if metadata.is_dir() => break,
@@ -204,7 +173,7 @@ impl Files {
             return false;
         }
         event.paths.iter().any(|path| {
-            self.groups.values().flatten().any(|target| {
+            self.groups.values().any(|target| {
                 // Missing ancestor creation/deletion only repairs this narrow watch;
                 // unchanged logical file bytes still produce no observation.
                 target == path
@@ -236,15 +205,12 @@ impl Files {
     }
 }
 
-fn version(paths: &[PathBuf]) -> std::result::Result<Option<Vec<u8>>, String> {
-    for path in paths {
-        match fs::read(path) {
-            Ok(bytes) => return Ok(Some(bytes)),
-            Err(e) if e.kind() == std::io::ErrorKind::NotFound => {}
-            Err(e) => return Err(format!("{}: {e}", path.display())),
-        }
+fn version(path: &Path) -> std::result::Result<Option<Vec<u8>>, String> {
+    match fs::read(path) {
+        Ok(bytes) => Ok(Some(bytes)),
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(None),
+        Err(error) => Err(format!("{}: {error}", path.display())),
     }
-    Ok(None)
 }
 
 #[cfg(test)]
@@ -252,36 +218,77 @@ mod tests {
     use super::*;
     use notify::event::{CreateKind, ModifyKind, RenameMode};
     use std::sync::mpsc;
+    use streams_temper::{
+        config::{Config, Strategy},
+        model::{Record, Stream},
+        storage::{
+            StorageError,
+            records::{RecordChange, RecordRequest, RecordStore},
+        },
+    };
+
+    fn records() -> (tempfile::TempDir, application::OpenedRecords) {
+        let directory = tempfile::tempdir().unwrap();
+        let root = directory.path().canonicalize().unwrap();
+        let env = BTreeMap::from([("HOME".into(), root.to_str().unwrap().to_owned())]);
+        let config = Config::new(&env, &root).unwrap();
+        let records =
+            application::initialize_records(&config, Strategy::None, None, "main").unwrap();
+        (directory, records)
+    }
+    fn save(records: &application::OpenedRecords, id: &str, record: Record) {
+        let request = RecordRequest::new(
+            RecordAddress::for_record(&record),
+            id,
+            &serde_json::json!({"record":record}),
+        )
+        .unwrap();
+        records
+            .records()
+            .save::<StorageError>(&request, |_, _| {
+                Ok(RecordChange {
+                    record: record.clone(),
+                    outcome: serde_json::json!({"outcome":"changes"})
+                        .as_object()
+                        .unwrap()
+                        .clone(),
+                })
+            })
+            .unwrap();
+    }
 
     #[test]
     fn exact_paths_filter_before_reads_and_atomic_echoes_coalesce() {
-        let directory = tempfile::tempdir().unwrap();
-        let root = directory.path();
-        let environment = BTreeMap::from([("HOME".into(), root.to_string_lossy().into_owned())]);
-        let app = App {
-            config: super::super::super::Config::new(&environment, root).unwrap(),
-            environment,
-            cwd: root.into(),
-            input: super::super::super::Input::Stdin,
-            herdr: None,
-        };
-        application::initialize(
-            &app.config,
-            streams_temper::config::Strategy::None,
-            None,
-            "main",
-            false,
-        )
-        .unwrap();
+        let (_directory, records) = records();
         let (sender, _) = mpsc::channel();
-        let mut files = Files::new(&app, "pi", sender).unwrap();
-        let path = files.session_paths().remove(0);
+        let mut files = Files::new(&records, "pi", sender).unwrap();
+        let path = files.groups["session"].clone();
+        let host = records.host().as_str();
+        assert_eq!(
+            path,
+            records.root().join(
+                relative_record_path(
+                    &RecordAddress::new(
+                        host,
+                        RecordKind::Session,
+                        Session::id_for(host, "pi", "pi")
+                    )
+                    .unwrap()
+                )
+                .unwrap()
+            )
+        );
+        assert_eq!(
+            files.groups.len(),
+            1,
+            "no legacy candidates, environment hint or claim watches"
+        );
         let unrelated = Event::new(EventKind::Create(CreateKind::File))
             .add_path(path.with_file_name("unrelated.yaml"));
         assert!(!files.relevant(&unrelated));
         let mut observations = 0;
         for _ in 0..32 {
-            if files.relevant(&unrelated) && files.prepare(None).unwrap() {
+            if files.relevant(&unrelated) && files.prepare().unwrap() {
                 observations += 1;
             }
         }
@@ -292,7 +299,7 @@ mod tests {
         fs::rename(temporary, &path).unwrap();
         let rename = Event::new(EventKind::Modify(ModifyKind::Name(RenameMode::To))).add_path(path);
         for _ in 0..32 {
-            if files.relevant(&rename) && files.prepare(None).unwrap() {
+            if files.relevant(&rename) && files.prepare().unwrap() {
                 observations += 1;
             }
         }
@@ -301,11 +308,81 @@ mod tests {
             "duplicate save notifications must coalesce"
         );
         files.recover().unwrap();
-        assert!(
-            !files.current(0),
-            "queued errors from the dropped watcher must be ignored"
-        );
+        assert!(!files.current(0));
         assert!(files.current(1));
         assert!(files.recover().is_err(), "a second actual drop is fatal");
+    }
+
+    #[test]
+    fn observed_keys_retarget_watches_without_computing_membership_or_hiding_a_queued_write() {
+        let (_directory, records) = records();
+        let host = records.host().as_str();
+        for id in ["old", "next"] {
+            save(
+                &records,
+                id,
+                Record::Stream(Stream::new(id, id, None, host).unwrap()),
+            );
+        }
+        let session = |stream: &str| {
+            Record::Session(
+                Session::new(
+                    Session::id_for(host, "pi", "native"),
+                    host,
+                    stream,
+                    "pi",
+                    "native",
+                    "Lane",
+                )
+                .unwrap(),
+            )
+        };
+        save(&records, "initial", session("old"));
+        let (sender, _) = mpsc::channel();
+        let mut files = Files::new(&records, "native", sender).unwrap();
+        assert!(
+            files.directories.contains(&files.streams),
+            "watch all possible addressed Stream events before context collection"
+        );
+        files.set_stream(Some("old")).unwrap();
+        files.prepare().unwrap();
+        let old_path = files.groups["stream"].clone();
+        save(&records, "move", session("next"));
+        assert!(files.prepare().unwrap());
+        assert_eq!(
+            files.groups["stream"], old_path,
+            "raw Session bytes cannot compute desired membership"
+        );
+        let mut changed = Stream::new(
+            "next",
+            "next",
+            Some("changed after context collection".into()),
+            host,
+        )
+        .unwrap();
+        changed.status = streams_temper::model::Status::Waiting;
+        save(&records, "racing-next", Record::Stream(changed));
+        files.set_stream(Some("next")).unwrap();
+        let next_path = files.groups["stream"].clone();
+        assert_ne!(next_path, old_path);
+        assert!(
+            !files.versions.contains_key("stream"),
+            "retarget must not baseline over the racing write"
+        );
+        assert!(
+            files.relevant(
+                &Event::new(EventKind::Modify(ModifyKind::Any)).add_path(next_path.clone())
+            )
+        );
+        assert!(
+            !files.relevant(&Event::new(EventKind::Modify(ModifyKind::Any)).add_path(old_path))
+        );
+        assert!(files.prepare().unwrap());
+        assert_eq!(
+            files.versions["stream"],
+            Ok(Some(fs::read(next_path).unwrap()))
+        );
+        files.set_stream(None).unwrap();
+        assert!(!files.groups.contains_key("stream"));
     }
 }

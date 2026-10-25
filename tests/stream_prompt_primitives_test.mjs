@@ -1,5 +1,6 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
+import {sessionId} from './helpers/session-id.mjs';
 import { mkdtempSync, readFileSync, writeFileSync, rmSync, statSync, symlinkSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
@@ -13,8 +14,8 @@ const runtime=complete=>({model,modelRegistry:{find:(p,id)=>p===model.provider&&
 function fixture(){
  const directory=mkdtempSync(join(tmpdir(),'streams-primitives-')),root=join(directory,'debug'),manager=SessionManager.inMemory(directory,{id:'native'});
  const stream={id:'effort',title:'Work',title_mode:'automatic',goal:'Goal',goal_short:null,goal_mode:'automatic',status:'active',archived:false,owner:{host_id:'host'},repositories:{},issues:[],prs:[],documents:[]};
- const session={id:'session',host_id:'host',stream_id:'effort',harness:'pi',harness_session_id:'native',title:'Lane',title_mode:'automatic',status:'active',state:'Before',state_short:null,remaining:'Next',checkout:null};
- const catalog={catalog_source:'source',host_id:'host',stream,session,sessions:[session],authority:{host_id:'host',token:'live-token'}};
+ const session={id:sessionId('host','pi','native'),host_id:'host',stream_id:'effort',harness:'pi',harness_session_id:'native',title:'Lane',title_mode:'automatic',status:'active',state:'Before',state_short:null,remaining:'Next',checkout:null};
+ const catalog={catalog_source:'source',host_id:'host',stream,session,sessions:[session],title_defaults:{stream:'automatic',session:'automatic'}};
  manager.appendMessage({role:'user',content:[{type:'text',text:'Synthetic evidence'},{type:'image',data:'AA==',mimeType:'image/png'}],timestamp:1});
  manager.appendMessage({...response({}),content:[{type:'toolCall',id:'call',name:'bash',arguments:{command:'synthetic'}}]});
  manager.appendMessage({role:'toolResult',toolCallId:'call',toolName:'bash',content:[{type:'text',text:'Full tool evidence'}],isError:false,timestamp:2});
@@ -92,9 +93,9 @@ test('partial capture preserves verified evidence and unresolved locations witho
 test('tampered task/schema/input and symlinked manifests fail before inference',async()=>{
  const f=fixture();try{
   const prepared=prepare(f.capture,{sample:0,type:'session'});let calls=0;
-  for(const mutate of [v=>{v.input.messages=[];},v=>{v.model_request.tools[0].parameters={type:'object'};},v=>{v.source.native_session_id='foreign';},v=>{v.input.catalog.authority.token='live-token';}]){
+  for(const mutate of [v=>{v.input.messages=[];},v=>{v.model_request.tools[0].parameters={type:'object'};},v=>{v.source.native_session_id='foreign';},v=>{v.input.catalog.authority={host_id:'host',token:'live-token'};}]){
    const artifact=savePrepared(f.root,prepared),path=join(artifact.directory,'request.json'),value=JSON.parse(readFileSync(path,'utf8'));mutate(value);writeFileSync(path,JSON.stringify(value));
-   await assert.rejects(executeLab({operation:'run',request_id:artifact.id,model:selection},{root:f.root,client:f.client,runtime:runtime(()=>{calls++;})},signal()),/prepared|Prepared/);
+   await assert.rejects(executeLab({operation:'run',request_id:artifact.id,model:selection},{root:f.root,client:f.client,runtime:runtime(()=>{calls++;})},signal()),/prepared|Prepared|catalog context/);
   }
   const artifact=savePrepared(f.root,prepared),path=join(artifact.directory,'request.json'),copy=join(f.directory,'copy.json');writeFileSync(copy,readFileSync(path));rmSync(path);symlinkSync(copy,path);
   assert.throws(()=>loadPrepared(f.root,artifact.id),/regular file|symbolic/);assert.equal(calls,0);

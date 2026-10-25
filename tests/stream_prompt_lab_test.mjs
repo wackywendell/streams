@@ -1,5 +1,6 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
+import {sessionId} from './helpers/session-id.mjs';
 import { existsSync, mkdirSync, mkdtempSync, readFileSync, renameSync, rmSync, statSync, symlinkSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
@@ -16,8 +17,8 @@ const { StreamCli } = await load('streams');
 const { defaults } = await load('settings');
 const { default: extension } = await load('index');
 const stream = {id:'effort',title:'Work',title_mode:'manual',goal:'Original goal',goal_short:'Old goal',goal_mode:'automatic',status:'active',archived:false,owner:{host_id:'host'},repositories:{},issues:[],prs:[],documents:[]};
-const session = {id:'session',host_id:'host',stream_id:'effort',harness:'pi',harness_session_id:'native',title:'Lane',title_mode:'automatic',status:'active',state:'Original state',state_short:'Old state',remaining:'Next',checkout:null};
-const context = () => structuredClone({catalog_source:'source',host_id:'host',stream,session,sessions:[session],authority:{host_id:'host',token:'real-live-token'}});
+const session = {id:sessionId('host','pi','native'),host_id:'host',stream_id:'effort',harness:'pi',harness_session_id:'native',title:'Lane',title_mode:'automatic',status:'active',state:'Original state',state_short:'Old state',remaining:'Next',checkout:null};
+const context = () => structuredClone({catalog_source:'source',host_id:'host',stream,session,sessions:[session],title_defaults:{stream:'automatic',session:'automatic'}});
 const response = args => ({role:'assistant',api:'openai-responses',provider:'test',model:'model',timestamp:1,stopReason:'toolUse',usage:{input:0,output:0,cacheRead:0,cacheWrite:0,totalTokens:0,cost:{input:0,output:0,cacheRead:0,cacheWrite:0,total:0}},content:[{type:'toolCall',id:'record',name:'record_card',arguments:args}]});
 function fixture() {
  const dir = mkdtempSync(join(tmpdir(),'streams-prompt-lab-')),root = join(dir,'debug');
@@ -50,17 +51,17 @@ test('pure payload construction and strict parsing share schemas without mutatin
  assert.equal(raw.content[0].arguments.changes.status,'active');
  assert.throws(()=>parseInferenceResponse({type:'session',catalog:context(),messages:[]},response({changes:{session_state:'wrong alias'}})),/invalid structured/);
 });
-test('stream preparation centers all contributions without singling out the reporting conversation',()=>{
+test('stream preparation uses only the addressed contribution without claiming a complete roster',()=>{
  const catalog=context(),sibling={...session,id:'sibling',title:'Other lane',state:'Independent contribution'};
  catalog.sessions=[{...catalog.session,state:'Stale target'},sibling];catalog.session.state='Latest target';
  const request={type:'stream',catalog,messages:[{role:'user',content:'Rename this effort to my local task',timestamp:1}]},before=structuredClone(request);
  const payload=buildInferencePayload(request),sent=JSON.parse(payload.messages.at(-1).content);
  assert.equal(payload.messages.length,1);assert.deepEqual(Object.keys(sent.catalog),['stream','sessions']);
- assert.deepEqual(sent.catalog.sessions,[catalog.session,sibling]);assert.deepEqual(sent.catalog.stream,catalog.stream);
+ assert.deepEqual(sent.catalog.sessions,[catalog.session]);assert.deepEqual(sent.catalog.stream,catalog.stream);
  assert.doesNotMatch(JSON.stringify(payload),/Rename this effort to my local task|Stale target/);
  assert.deepEqual(request,before);
  catalog.sessions=[sibling];
- assert.deepEqual(JSON.parse(buildInferencePayload(request).messages[0].content).catalog.sessions,[sibling,catalog.session]);
+ assert.deepEqual(JSON.parse(buildInferencePayload(request).messages[0].content).catalog.sessions,[catalog.session]);
 });
 test('report prompts name one write target and its exact automatic fields',()=>{
  for(const [kind,label] of [['stream','Stream'],['session','Session']]) for(const manual of [false,true]) {
@@ -128,7 +129,7 @@ test('capture freezes cards, projected context, open locations and source bytes 
   assert.equal(capture.context_mode,'full');
   assert.deepEqual(capture.samples[0].evidence,{messages:f.manager.buildSessionProjection().messages,leafId:f.manager.getLeafId()});
   assert.equal(capture.samples[0].projection_source,'persisted-leaf');assert.equal(capture.samples[0].open,true);
-  assert.equal(capture.samples[0].catalog.authority.token,'[redacted]');assert.equal(f.inventory.samples[0].catalog.authority.token,'real-live-token');
+  assert.equal(Object.hasOwn(capture.samples[0].catalog,'authority'),false);assert.deepEqual(capture.samples[0].catalog.title_defaults,{stream:'automatic',session:'automatic'});
   assert.equal(readFileSync(f.source,'utf8'),f.raw);assert.equal(readFileSync(join(directory,capture.samples[0].snapshot_file),'utf8'),f.raw);
   assert.equal(statSync(directory).mode&0o777,0o700);assert.equal(statSync(join(directory,'capture.json')).mode&0o777,0o600);
   assert.deepEqual(captureIds(f.root),[capture.id]);assert.deepEqual(loadCapture(f.root,capture.id),capture);
@@ -146,7 +147,7 @@ test('capture uses the exact current-session leaf, preserving evidence projectio
 });
 test('capture retains unavailable foreign sessions and unknown openness rather than dropping them',()=>{
  const f=fixture();try {
-  const sample=structuredClone(f.inventory.samples[0]);sample.host_id='foreign';sample.native_session_id='remote';sample.catalog.session={...session,host_id:'foreign',harness_session_id:'remote'};sample.open=null;sample.locations=[];sample.transcript_file=null;sample.unavailable='foreign host';f.inventory.samples.push(sample);
+  const sample=structuredClone(f.inventory.samples[0]);sample.host_id='foreign';sample.native_session_id='remote';sample.catalog.session={...session,id:sessionId('foreign','pi','remote'),host_id:'foreign',harness_session_id:'remote'};sample.catalog.sessions=[sample.catalog.session];sample.catalog.stream.owner.host_id='foreign';sample.open=null;sample.locations=[];sample.transcript_file=null;sample.unavailable='foreign host';f.inventory.samples.push(sample);
   f.inventory.topology_error='Herdr unavailable';
   const {capture}=captureSessions(f.inventory,f.root);
   assert.equal(capture.samples.length,2);assert.equal(capture.samples[1].unavailable,'foreign host');assert.equal(capture.samples[1].open,null);
@@ -196,17 +197,14 @@ test('reset on an uncarded sample is skipped with the refusal notice, not report
   assert.match(readFileSync(join(directory,'comparison.md'),'utf8'),/skipped[\s\S]*Reset requires an attached work card/);
  }finally{f.dispose();}
 });
-test('stream resets with only protected manual fields explicitly skip inference',async()=>{
- for(const auto of [false,true]) {
-  const f=fixture();try {
-   f.inventory.samples[0].catalog.stream.goal_mode='manual';
-   if(auto)f.inventory.samples[0].catalog.authority=null;
-   const {capture}=captureSessions(f.inventory,f.root);
-   const {run}=await replayCapture(capture,f.root,runtime(()=>assert.fail('no model')),model,{kind:'reset',target:'stream',auto},()=>assert.fail('no preview'),new AbortController().signal);
-   assert.equal(run.samples[0].status,'skipped');assert.deepEqual(run.samples[0].tasks,[]);
-   assert.match(run.samples[0].notices[0],/No helper ran/);
-  }finally{f.dispose();}
- }
+test('stream reset without auto preserves protected manual fields and explicitly skips inference',async()=>{
+ const f=fixture();try {
+  f.inventory.samples[0].catalog.stream.goal_mode='manual';
+  const {capture}=captureSessions(f.inventory,f.root);
+  const {run}=await replayCapture(capture,f.root,runtime(()=>assert.fail('no model')),model,{kind:'reset',target:'stream',auto:false},()=>assert.fail('no preview'),new AbortController().signal);
+  assert.equal(run.samples[0].status,'skipped');assert.deepEqual(run.samples[0].tasks,[]);
+  assert.match(run.samples[0].notices[0],/No helper ran/);
+ }finally{f.dispose();}
 });
 test('valid empty helper deltas still complete even when no simulated save is needed',async()=>{
  const f=fixture();try {
@@ -318,7 +316,7 @@ test('real preview child applies live derivative-clearing and reconciliation rul
 });
 test('real enrollment preview feeds later helpers with deterministic private working-copy identities',async t=>{
  const f=fixture();try {
-  Object.assign(f.inventory.samples[0].catalog,{stream:null,session:null,sessions:[],authority:null});
+  Object.assign(f.inventory.samples[0].catalog,{stream:null,session:null,sessions:[]});
   const {capture}=captureSessions(f.inventory,f.root),client=childCli(f.dir);t.after(()=>client.stop());
   const rt=runtime(async(_model,payload)=>{
    const request=JSON.parse(payload.messages.at(-1).content);
