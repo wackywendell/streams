@@ -1,6 +1,6 @@
 # One native controller for each Pi session
 
-Active version 2 transport, switched together in Rust and Pi. There is no version-1 adapter.
+Active version 2 transport, switched together in Rust and Pi. There is no version-1 adapter. The accepted [observe-and-act redesign](native-observe-and-act.md) replaces native proof requirements below; that runtime simplification is not yet implemented.
 
 The child owns the native queue, lifecycle, observation and existing projection handlers.
 Pure effect planning, membership reconciliation, card following and closure cleanup remain separate work.
@@ -34,9 +34,10 @@ For example, the proposed envelope is:
 
 The child is already bound to the Pi session ID supplied at launch. An open
 request should not supply another session ID, pane address or caller proof.
-The child must establish caller origin itself. It should resolve only the owner
-and pass the typed proof directly to the application operation, not read every
-Pi transcript to reduce an inventory to that owner.
+The child trusts that bound identity and locates the owner from one native
+observation. It does not prove request origin or search Pi transcripts.
+Missing or ambiguous identity stops the affected native action, not independent
+catalog work.
 
 The one-shot CLI should parse its arguments into the same application requests.
 Neither frontend should reconstruct CLI syntax inside the application layer.
@@ -85,9 +86,9 @@ is disabled. Either lifecycle request succeeds with
 `{"native":"inactive","reason":"outside_herdr"}` outside Herdr, or
 `{"native":"inactive","reason":"not_enrolled"}` when the addressed Session
 does not exist. These are expected inactive states, not string-matched errors.
-Malformed or unreadable records, unproved caller origin and native failures
-remain errors. Explicit open or close requests report a refusal in inactive
-states rather than claiming an effect succeeded.
+Malformed or unreadable records, unavailable or ambiguous native identity and
+native failures remain errors. Explicit open or close requests report a refusal
+in inactive states rather than claiming an effect succeeded.
 
 Background work can emit `view` with `desired_pi_name`, or a `warning` message.
 Request-scoped warnings belong to the response; the child must not emit them
@@ -116,8 +117,8 @@ field's normalization exactly.
 Catalog work that cannot mutate native state need not wait behind native work.
 A catalog change that affects projections should select work on the native
 queue, not start another controller. This is one controller per Pi session,
-not a new host daemon. One-shot CLI actions should use the same handlers and
-host-local native lock, without a separate automatic control loop.
+not a new host daemon. One-shot CLI actions should use the same handlers,
+without a separate automatic control loop or caller-proof protocol.
 
 ## Lifecycle is not transport startup
 
@@ -143,8 +144,8 @@ The extension should retain the existing limit of one automatic child restart
 per Pi session. It should reject requests whose child died without replaying
 them. A second transport failure stops Streams until reload. Closing stdin
 should end the child and its subscriptions after bounded shutdown. A restarted
-child has no inherited caller proof; an unprovable moved origin must still
-refuse, even if the previous child could attest it.
+child locates its bound Session from current reported identity. Stale inherited
+pane addresses are not proof of absence and do not require origin recovery.
 
 ## Pi keeps model and branch admission
 
@@ -172,10 +173,10 @@ A `{"type":"cancel","id":7}` message should cancel that request, not kill the
 child. Cancellation before dispatch should prevent the operation from starting.
 Running work should stop at its next cancellable boundary.
 
-If an unsafe call may already have happened, cancellation cannot prove that it
-did not. The executor must preserve its evidence and any uncertainty fence.
-It must not roll back, retry or replace the request. The child should still
-finish its response; Pi may discard a response to an already-cancelled request.
+If a native call may already have happened, cancellation cannot undo it.
+Report that uncertainty without a persistent launch fence. Do not roll back,
+retry or replace the request. The child should still finish its response;
+Pi may discard a response to an already-cancelled request.
 Unknown or completed cancellation IDs should have no effect.
 
 ## Cut over both sides together
@@ -185,9 +186,6 @@ protocol version should fail the connection, not select a fallback. Version 2
 must replace the CLI-vector transport and the scope-to-`--expect` loop together,
 including their fakes and tests. There should be no version-1 adapter.
 
-Ready evidence now stores an [immutable launch receipt](native-context-reconciliation.md),
-not the card's current placement. Missing linking is handled by the normal
-[proof-and-difference planner](effect-planning.md#durable-records-are-actions-too),
-not a recovery branch for a particular interruption or move. An acknowledged
-receipt does not relax caller or resource ownership checks. Uncertain launches
-stay fenced, and follow never replaces a missing or closed card.
+Native opening, card lifetime, following and duplicate handling follow the
+[observe-and-act decision](native-observe-and-act.md), not the retired receipt
+and pair-publication protocol. The typed transport does not carry proof objects.

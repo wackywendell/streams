@@ -1,6 +1,6 @@
 # ADR: Verify reconciliation across Pi and Herdr
 
-Status: proposed. This is a design decision, not an implemented relaxation of the current runtime guards. It extends the [native Herdr ADR](native-herdr-work-cards.md).
+Status: membership and report-admission proposal, not fully implemented. [Observe and act](native-observe-and-act.md) supersedes the former caller-attestation, card-evidence and native launch-fence requirements. This record retains membership, cross-host and captured-result semantics.
 
 ## Context
 
@@ -14,35 +14,19 @@ The conversation follows the workspace. When it moves into a workspace associate
 
 Every verified owner move brings its existing owned card into the owner's tab, even if the user previously moved the card independently. The Pi child performs this reconciliation; the card only observes. This does not reopen a closed card or replace a missing one automatically.
 
-The trigger is an owner `pane.moved` event matched by `previous_pane_id` and confirmed by the child's already-attested `terminal_id`. The child takes one snapshot. If the card is already in its owner's tab, it does nothing. Otherwise it plans one move into that tab, targeting the owner with `split: "down"` so the card arrives below it. Moving a card on its own does not trigger this action. A child that missed a move while stopped does not reposition the card on startup; the next owner move reconciles it.
-
-Follow is idempotent toward a placement, not a launch. It stores no owner tuple, move generation or pending follow intent. An uncertain move reply produces a warning and ends that pass; a later owner move is a new trigger. Herdr's `same_tab` no-op is success; `zoomed_tab` produces a warning. A cross-workspace move may change the card's pane ID, so take the returned pane rather than retaining the old ID. Do not swap, rebuild the layout or relaunch. This does not clear or bypass pending launch or editor evidence.
+Owner movement selects one fresh observation and one move of the existing card, targeting Pi with `split: "down"`. A card-only move does not select follow. A restarted child establishes its current baseline without catching up a missed follow. A failed or uncertain move warns and ends the pass; the next owner move is a new trigger. There is no stored follow intent, relaunch or layout reconstruction. The [observe-and-act contract](native-observe-and-act.md) owns safe target identity and duplicate handling.
 
 Retain previous membership relationships as participation history, with one current membership. This records that a conversation participated in a Stream, not what its work card said then. Do not duplicate or freeze work cards. A historical relationship grants no authority to update that Stream.
 
 Changing membership preserves the conversation's repository, checkout and working-directory knowledge. These belong to the conversation, not its current Stream's repository aliases. Do not reinterpret them through the destination or add repositories to that Stream as a side effect.
 
-## Card lifetime and native evidence
+## Card lifetime
 
-Card identity is the conversation identity plus its launch nonce, within the catalog source. Current Stream membership and the owner tuple are observations, not immutable identity or write authority. Only the Pi child/native executor writes card evidence and owner markers. On `q` or owner exit the card just exits, without writes. This replaces the earlier [card-written self-close proposal](bounded-work-and-card-events.md#closing-a-card). A card's launch scope identifies its original lifetime; it never grants authority to write the current or former Stream.
-
-The canonical conversation key is lowercase SHA256 of the compact UTF-8 JSON array `["streams-native-conversation",2,catalog_source,host_id,harness,native_session_id]`, in that order. Use this key for both native pair identity and version-2 evidence lookup. It excludes the catalog Session ID, Stream, socket and owner location, so a catalog ID migration does not rekey the lifetime. Evidence retains the endpoint and resource observations separately; a different endpoint does not establish continuity.
-
-For a completed card launch, the saved pane and tab IDs are an immutable launch receipt, not the current placement. Locate the card by its verified terminal and launch nonce in the fresh snapshot before acting; the native ownership markers must still agree. Moving the card does not rewrite its evidence. This does not relax interrupted-launch or partial-publication fences.
-
-The child subscribes to `pane.closed` and `pane.exited` for its own card. An event says to re-read: after one fresh positive-absence check, the child records closure and clears the stale owner marker. If no child is running, its next start observes and records closure. Missing or uncertain observations retain uncertainty.
-
-At startup and after every event batch, the card reads its own evidence by conversation key and launch nonce. If the record is absent or its nonce differs, the card exits without writing. Legitimate launch intent exists before dispatch. An orphan therefore cannot outlive the removal or replacement of its evidence, including after offline reset.
-
-Native evidence lives at `$XDG_STATE_HOME/streams/native`, defaulting to `~/.local/state/streams/native`. Only explicit configuration can override this host-local root. The socket is an observation in each record, never part of its address or default root. Changing endpoints must not hide the previous conversation's evidence.
-
-One native writer lock lives in this root. Its identity includes neither socket nor workspace. It replaces the per-socket and per-workspace native locks; do not nest them. Hold it for one bounded plan and effect/reply pass, then release it. This serializes writes to conversation-keyed evidence across owner moves and endpoints.
-
-Use a versioned, conversation-keyed evidence record carrying that lifetime's nonce, phase and resources. Version 2 records declare `purpose: "card"` or `purpose: "editor"`; editors carry no owner or follow state. Normal operations read that one named record and reject unsupported versions. A fresh root needs no completion marker or migration. Readers never create it; writers create it under the native lock. They never read legacy keys, replay history or scan for evidence.
+Card identity follows the catalog-scoped Session, not its membership or pane address. The [observe-and-act decision](native-observe-and-act.md) replaces launch nonces, reciprocal pairing, native evidence records and predecessor retirement with ordinary markers and a card process lock. The child acts; the card observes and exits on `q` or observed owner loss. No closure record or marker cleanup is needed to prevent background reopening.
 
 ### Offline reset
 
-The alpha catalog cutover follows the [coordinator's manual checklist](native-catalog-reset.md): stop the old children and viewers, close card panes, leave editors open and archive the old catalog, native evidence and runtime associations and fences before initialising the empty catalog and re-enrolling. There is no built reset, migration command, native cleanup component or legacy reader. Old readers cannot write evidence, and absent or nonce-mismatched evidence makes them exit. The coordinator handles stray panes or workspaces by hand; ordinary runtime actions never infer this reset or use it to discard uncertainty.
+The alpha catalog cutover still follows the [coordinator's manual checklist](native-catalog-reset.md). Stop old children and viewers before archiving their native state; leave editors open and clean up stray panes manually. There is no runtime migration, evidence recovery or legacy reader. Do not discard evidence while the old implementation is active.
 
 ## Cross-host participation
 
@@ -52,9 +36,9 @@ Session identity is `(host, agent, native Session ID)`, where agent means the co
 
 ## CLI and Pi boundary
 
-The library owns reconciliation and result admission, exposed through the CLI. Pi supplies its session identity and observed Herdr state when requesting cards. The library verifies the live context, reconciles membership and returns the cards with a context reference. Ordinary catalog reads remain read-only; requesting reconciled context deliberately permits membership changes.
+The library owns reconciliation and result admission, exposed through the CLI. The Pi child is bound to its Session and collects native observations itself. It reconciles membership and returns cards with their captured context. Ordinary catalog reads remain read-only; requesting reconciled context deliberately permits membership changes.
 
-Pi runs the model and returns its proposed updates with that original context reference and its latest observed Herdr state. The CLI reconciles again and assesses conversation-local and Stream-shared updates separately. A workspace move need not invalidate useful work-card updates, but results computed for the previous Stream must not be retargeted to the destination.
+Pi runs the model and returns its proposed updates with their original captured context. The library assesses conversation-local and Stream-shared updates separately against current records. A workspace move need not invalidate useful work-card updates, but results computed for the previous Stream must not be retargeted to the destination. Pi does not send caller proof or a native snapshot back to the child.
 
 Pi carries request context without interpreting membership or orchestrating record changes. The CLI owns the checks and returns which updates were accepted. This keeps movement policy and stale-result handling consistent across callers.
 
@@ -66,13 +50,13 @@ Pi carries request context without interpreting membership or orchestrating reco
 | Reorder panes or change pane IDs | Follow verified live conversation and terminal identity, not inherited addresses. Membership changes only if the workspace changes. |
 | Move a card independently | Retain its conversation association. The next owner move brings it into the owner's tab, unless it is already there. Do not close it or launch a replacement. |
 | Move an editor independently | Retain its conversation association. Do not automatically move it back, close it or launch a replacement. |
-| Close a display | Reporting continues. No background respawn; explicit reopen requires positive absence and duplicate checks. |
-| Lose observations or restore a workspace | Pause affected effects until fresh proof is available. Missing observations do not prove closure; recycled handles do not prove continuity. |
+| Close a display | Reporting continues. No background respawn; explicit reopen uses observed reuse and self-exiting duplicates. |
+| Lose observations or restore a workspace | Stop affected effects until usable observations are available. Missing observations do not prove closure; safe targeting must reject recycled handles. |
 | Fork or create a conversation | Create a fresh Session and work card and join the verified workspace's Stream automatically. Do not copy the parent's identity or outstanding effect authority. |
 
 Tree navigation preserves conversation identity but invalidates work captured against the old branch. A completed conversation replacement retires the old runtime's work; cancellation leaves it usable.
 
-Reconcile on relevant native events and Streams interactions, following the [event-driven process contract](bounded-work-and-card-events.md). Normal transitions preserve pending native-effect evidence. Membership changes or resource reappearance cannot erase launch uncertainty or authorize duplicate effects. The explicit offline reset above is the deploy exception.
+Reconcile on relevant native events and Streams interactions, following the [event-driven process contract](bounded-work-and-card-events.md). Failed effects warn and stop, without a persistent launch fence or automatic replay. Catalog retry receipts remain separate from native launch behaviour.
 
 ## Work status and native presence
 
@@ -80,12 +64,10 @@ Keep work status separate from observed native presence: running, closed or unkn
 
 Give the model native context alongside conversation evidence and the cards. It may use that information to propose work status. Reopening does not mechanically unpark work, and closure does not mechanically park it. The pane displays both dimensions; the library validates proposals against their captured context.
 
-## Scope and open questions
+## Scope and verification
 
-This changes the earlier fixed-membership proposal: verified workspace moves intentionally change membership, but cannot change which conversation a result belongs to. Reconciliation still requires current identity and ownership proof; user confirmation cannot substitute for it. The [caller-attestation proposal](native-caller-attestation.md) separates request-origin proof from native location.
+Workspace moves intentionally change membership, but cannot change which conversation a captured result belongs to. The [record-local operations ADR](record-local-operations.md#membership-move-contract) owns the single-Session save and membership-period checks.
 
-Physical-pairing requirements for separated resource navigation and explicit recovery from uncertain native launches remain open. They must not silently become blanket restrictions on conversation reporting.
+The existing [resource model](../specs/native_reconciliation.ioa.toml) covers the older runtime proof protocol, not the new observe-and-act design. Replace that coverage with tests of the real controller under injected outside changes. The [membership/admission model](../specs/native_membership.ioa.toml) and [tests](../tests/native_membership.rs) retain their separate purpose: moves, membership revisits and captured-result admission. Neither establishes concrete crash-safe report receipts.
 
-The [resource model](../specs/native_reconciliation.ioa.toml) covers native-effect safety under the earlier fixed-membership assumptions; it does not yet model the card-follow policy. The [membership/admission model](../specs/native_membership.ioa.toml) and [tests](../tests/native_membership.rs) cover conversation-only moves, per-card context checks, membership revisits and observation recovery. Both abstract identity and commit evidence; neither proves concrete caller attestation, ordered-history persistence or crash-safe report receipts.
-
-A retried report must retain its original intent across a move and a lost acknowledgement, rather than becoming a newly retargeted edit. The production admission protocol still needs to establish that guarantee before activation.
+A retried report must retain its original target across a move and a lost acknowledgement. Removing native launch fences does not permit retargeting an accepted or captured catalog operation.

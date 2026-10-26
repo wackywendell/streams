@@ -1,6 +1,6 @@
 # ADR: Native Herdr work cards as Streams projections
 
-Status: accepted; implemented, reviewed, verified in native Herdr and active in the local runtime. The imported implementation retains its original history. This decision replaces its separate catalog and membership model, not its presentation design.
+Status: historical import and UI decision; the native base was implemented and activated. [Observe and act](native-observe-and-act.md) supersedes the caller attestation, effect-recovery, pair ownership and launch-fence requirements below. [Active-Session reopening](record-local-operations.md#reopen-active-sessions) supersedes saved arrangement capture and restoration. Those passages describe the former design, not requirements for its replacement; UI and document-resolution rationale remain.
 
 ## Context and decision
 

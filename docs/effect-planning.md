@@ -1,6 +1,6 @@
 # ADR: Plan effects as data, then execute them
 
-Status: accepted design, partially implemented. Card receipt linking and runtime close use pure planning and checked replies. Native membership destination admission reads one canonical Stream placement selected by the same caller snapshot or already-collected actual current Session/Stream. It uses shared placement readiness, distinguishes agreeing missing binding metadata from conflicts, and plans from that same borrowed caller proof; the catalog save still checks the actual Session, source and destination. Missing metadata requires projection, not movement or a new destination Stream. `NativePass` consumes the already-built `RecordContext` and that native observation directly, without a display DTO or Source adapter; it supports consuming close and receipt-link executions. The driver does not yet use these ports. The Stream-global placement codec, addressed reader and guarded binding-install port are also available but inactive. Shared placement observations distinguish agreeing missing metadata from conflicts and complete readiness. Retained layout-capture foundations are not driver activation. The [active-Session reopening decision](record-local-operations.md#reopen-active-sessions) supersedes them: remove saved layout capture/restoration rather than activate those ports. The unsafe workspace writer and retirement of old relationship consumers remain pending. The full lifetime planner and single-observation projection are not yet implemented. [Enrollment and native placement from one observation](native-enrollment-boundary.md) defines the pending record-only enrollment and checked native-binding boundary. Native reconciliation will use them first, followed by `streams native project`; this record will be revised from what that implementation shows. It builds on the [bounded work ADR](bounded-work-and-card-events.md), which sets the cost budgets this structure is meant to make reachable.
+Status: accepted design, partially implemented. [Observe and act](native-observe-and-act.md) supersedes native caller proofs, launch journals and runtime proof-state execution. Pure planning, one pass per trigger and separate catalog/frontend executors remain. Implementation of the old receipt-linking ports is not a reason to preserve them.
 
 ## Problem
 
@@ -47,7 +47,7 @@ A process's own effects come back as events, such as `tab.renamed` after a renam
 
 An executor should take Herdr's reply to an action as its confirmation, without a further snapshot. It should still check two things the reply already contains: that the reply concerns the same pane, tab or workspace the action targeted, and that the value matches what was asked for. Neither check costs a request.
 
-If an action fails, or its reply does not match, the executor should stop the list there and report the action and the reply. Remaining actions in the list do not run: lists are short and ordered, and "record intent, act, record outcome" depends on that order.
+If an action fails, or its reply does not match, the executor should stop the list there and report the action and the reply. Remaining actions in the list do not run. A missing reply may mean that the effect happened; report that without automatically repeating it.
 
 Projections plan only real differences. The planner compares each desired value with the value observed in the trigger's snapshot, both normalised the way the frontend normalises them, and plans an action only where they differ. An echo of Streams' own write therefore plans nothing. Streams keeps no history of applied actions: whether an action runs depends only on the desired and observed values. Restoring a value that someone else cleared is an ordinary difference, and applies normally.
 
@@ -61,40 +61,31 @@ enum HerdrAction { SetWorkspaceMetadata { .. }, RenameTab { .. }, RenamePane { .
 enum CatalogAction { SaveSession { .. }, SaveStream { .. }, Publish }
 ```
 
-The types enforce the boundary: the Herdr executor cannot be given a catalog action, so it only ever needs the host-local native writer lock, and the catalog executor only the catalog lock. No plan holds both locks or needs a transaction across them.
+The types enforce the boundary: the Herdr executor cannot be given a catalog action or hold a catalog lock. The native queue serializes its own work; catalog saves use their record locks. No plan needs a transaction across the two systems.
 
 When one system's change requires the other to act, events connect them. For example, a conversation moves to another workspace. Herdr reports the move, the catalog side saves the Session under the new workspace's Stream, and that save is a record change the Herdr side then plans from, for example to rename the tab. Because data flows one way per field, this chain ends: the Herdr side's display actions are not inputs to the catalog side. It costs one extra pass when both systems change, which is cheap next to holding two locks.
 
-### Plan under the lock
+### Observe once, then plan
 
-An executor should take its lock, read fresh state once, and plan from that state, rather than checking whether a plan made before the lock still holds. A plan made before the lock only decides whether there is anything to do. Planning is pure, so doing it under the lock costs almost nothing, and the plan that runs is always the one fresh state calls for. This is not a retry: each trigger is still planned and executed once. This replaces the per-step re-checks that account for most of today's snapshots. The existing rule stands: effects act only on a fresh snapshot taken under the host-local native writer lock.
+The executor reads the concerned records and takes at most one native snapshot for a pass. Its pure plan compares those inputs with the requested behaviour. All actions consume that plan and the same observations; they do not attest the caller or re-read native state between effects.
 
-### Durable records are actions too
+The Pi child's queue serializes its work. Catalog writes retain their own record locks. Neither a local queue nor a native lock prevents the user changing Herdr between observation and action. Safe target identity is therefore a [frontend contract](native-observe-and-act.md#keep-targeting-safe-at-the-frontend-boundary), not something repeated observations can prove.
 
-Some effects must be preceded by a durable record, so a crash leaves evidence. These include card and editor launch evidence: the pending fence written before dispatch, followed by the acknowledged creation receipt. An action list should express the order directly: record the intent, act, record the outcome.
+### Failures do not create native history
 
-These files describe Herdr state and are protected by the host-local native writer lock, so they are `HerdrAction`s written by the Herdr executor. That keeps the whole "record, act, record" sequence in one executor under one lock.
+Native creation uses no record-intent → effect → record-outcome journal. A lost reply reports that the resource may have opened and ends the affected pass. The next explicit request observes current state. Card duplicates exit themselves; editor, Pi and workspace duplicates are an accepted best-effort trade-off. No saved attempt is replayed or repaired.
 
-A crash between those steps leaves a state layer 1 must recognise: the intent is recorded but the outcome is unknown. Uncertainty then becomes an explicit state rather than checks spread through the effect code. Pending launch and editor outcomes stay fenced; reappearance or reattestation alone cannot clear them.
+Actions may use handles returned by an earlier action in the same list. Resolving those handles from a checked reply is execution, not another observation. Catalog save receipts remain durable catalog data; removing native receipts does not change save admission or accepted-result reporting.
 
-An acknowledged creation receipt is a fact available to the normal planner. If the current caller and resource proofs permit acting on that card, missing ownership fields are ordinary desired-versus-observed differences. There is no interruption-specific recovery branch. Reserved resources still require their exact receipt proof; conflicting or uncertain identity retains the fence.
-
-Actions later in the same list may use resource handles returned by an earlier action. Resolving those handles from a checked reply is execution, not another observation or planning pass. A creation acknowledgement must be saved before publishing ownership. A failed action ends the list without clearing the recorded uncertainty or launching a replacement.
-
-Neither partial linking nor a move authorizes replacing a missing or closed card. Placement is selected only by a verified owner-move event; startup and other triggers do not cause catch-up following.
-
-[Owner-event card follow](native-context-reconciliation.md#decision) is different: putting an existing owned card in its owner's tab is idempotent. It needs no pending intent. An uncertain reply ends the pass with a warning, without replanning; the next owner move is a new trigger.
+Card follow is selected only by an observed owner move. It moves an existing card and never creates one. There is no pending follow intent, startup catch-up or automatic retry after a failed move.
 
 ### Applies across the stack
 
 This applies to native cards, the catalog and sync, `streams serve` reacting to owner moves, and card display. The Pi extension follows the same rule in TypeScript: its handlers translate Pi events into messages to the Rust child, and the child does the rest.
 
-## Order of work
+## Verification
 
-1. Apply this structure to card lifetime planning and execution, membership on verified moves, owner-event following and closure cleanup. Use one fresh observation per pass and confirm native actions from their replies.
-2. Then move native name and metadata projection onto that executor, measuring before and after I/O. Extend the structure to the remaining editor and card-display paths.
-
-The socket client and `streams serve` should land first, because they rewrite the same native card code.
+The [observe-and-act tests](native-observe-and-act.md#demonstrate-safety-and-progress-in-tests) exercise the real controller against outside changes between reads and effects. Counting tests enforce one snapshot per pass and no work for an unchanged projection. They replace tests whose only purpose is to preserve launch phases or caller attestation.
 
 ## Open questions
 

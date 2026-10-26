@@ -1,6 +1,6 @@
 # ADR: Bounded, event-driven work in every Streams process
 
-Status: proposed. The poll interval stopgap is applied locally; nothing else here is implemented. This builds on the [native Herdr ADR](native-herdr-work-cards.md) and the [native reconciliation ADR](native-context-reconciliation.md).
+Status: event-driven design and historical measurements; implementation has progressed separately. [Observe and act](native-observe-and-act.md) supersedes native attestation, evidence files, launch fences and confirmation reads. The event, keyed-read and cost-budget requirements remain.
 
 ## Problem
 
@@ -16,7 +16,7 @@ Some reads also scale with data that has nothing to do with them. Finding one Se
 
 ### Fixed cost per operation
 
-Every operation should have a declared budget of process starts, Herdr requests, files read and fsyncs. A single-Session budget must not grow with unrelated Streams, Sessions or panes. Capture reads Sessions named by the workspace's Pi panes; open/resume read the saved arrangement's Sessions and skip changed membership. Stream-member listing and title resolution are explicit user discovery, like `list`; they never run on an event or report path. `check` and `sync` may also enumerate records. Tests should enforce budgets by counting calls through the existing fake Herdr and process runner, not by timing; host load makes timings unreliable. A new loop that performs I/O for each item then needs a deliberate budget change, rather than appearing as a slowdown later.
+Every operation should have a declared budget of process starts, Herdr requests, files read and fsyncs. A single-Session budget must not grow with unrelated Streams, Sessions or panes. Diagnostic capture reads Sessions named by the workspace's Pi panes; explicit reopening discovers active Sessions as defined by [record-local operations](record-local-operations.md#reopen-active-sessions). No saved arrangement remains. Stream-member listing and title resolution are explicit user discovery, like `list`; they never run on an event or report path. `check` and `sync` may also enumerate records. Tests should enforce budgets by counting calls through the existing fake Herdr and process runner, not by timing; host load makes timings unreliable. A new loop that performs I/O for each item then needs a deliberate budget change, rather than appearing as a slowdown later.
 
 Proposed budgets:
 
@@ -27,7 +27,7 @@ Proposed budgets:
 | Pi lifecycle event, through the Pi child | 0 | at most 1 | the card's keyed files |
 | One-off CLI `check` or `observe` | the CLI itself | 1 snapshot | the card's keyed files |
 | Card closes itself | 0 | 0 | 0 |
-| `open`, `close`, `focus` | the CLI itself | 1 snapshot, the effect and its confirmation | keyed files and the evidence file |
+| `open`, `close`, `focus` | the CLI itself | at most 1 snapshot, then effects and their replies | concerned keyed records; no launch-evidence file |
 
 ### Every process is event-driven
 
@@ -62,7 +62,7 @@ Each process should keep one connection to its active native frontend, behind th
 
 ### Separate display from effects
 
-Displaying state and acting on it need different freshness. A card displays state kept current by events. An effect — open, close, focus or capture — takes one fresh snapshot under the native workspace lock, compares it with what it expects, then acts. This keeps every existing fence and its uncertainty handling. A card snapshot already grants no save or effect authority, and that remains true.
+Displaying state and acting on it need different freshness. A card displays state kept current by events. An effect — open, close or focus — takes one current snapshot, compares it with the request, then acts. A painted frame does not select an effect target without that observation. Safe target identity belongs at the frontend boundary; no lock or repeated attestation prevents outside changes.
 
 ### Look records up by key
 
@@ -83,7 +83,7 @@ Moving the binding into the Session record would put one host's paths into a por
 
 The [record-local operations ADR](record-local-operations.md) replaces the earlier lookup-only proposal. The records themselves should supply each operation's inputs, with exactly one writing host per Stream and its Sessions. Ordinary reads and saves should read their named records, apply their input as a pure function, and write the result. They must not scan the catalog, replay history or consult a derived cache, including at Pi child startup. Git sync alone consults history for commit/pull/push. It does not merge domain records; same-file concurrent changes fail.
 
-That ADR inventories current operation paths and defines host-partitioned records, deterministic Session location, host-local relationships and explicit deploy migration. It supersedes full-catalog save validation, authority replay, native-ID indexes and scan fallback. Session.stream_id alone records membership. Moves atomically replace one Session file with its embedded retry receipt; there is no roster or multi-file transaction. Captured native panes and saved arrangements supply bounded inventory, not ordinary single-Session context.
+That ADR inventories current operation paths and defines host-partitioned records, deterministic Session location, host-local relationships and explicit deploy migration. It supersedes full-catalog save validation, authority replay, native-ID indexes and scan fallback. Session.stream_id alone records membership. Moves atomically replace one Session file with its embedded retry receipt; there is no roster or multi-file transaction. Observed native panes supply diagnostic inventory, not ordinary single-Session context. Saved arrangements are retired.
 
 ### Event-driven cards
 
@@ -119,13 +119,13 @@ When the user presses `q`, or the owner pane closes, the card should close itsel
 1. Cancel any in-flight read. Reads have no effects.
 2. Exit without writing evidence or owner markers.
 
-Herdr removes a plugin pane when its process exits. The server log shows this for card panes today. The Pi child/native executor is the sole evidence and marker writer. It handles the card's pane.closed/pane.exited event with one positive-absence snapshot, or checks on next start if it was absent. Uncertainty remains until positively resolved. Self-close itself needs no Herdr requests, evidence reads or writes.
+Herdr removes a plugin pane when its process exits. The server log shows this for card panes today. There is no native closure record or reciprocal owner marker to repair. The child observes current card presence when an operation needs it. Self-close itself needs no Herdr requests or native-state writes.
 
 Today, `q` first restores the terminal, which leaves the blank pane with a cursor. It then waits for any in-flight read to finish, which can take 30 seconds. Then it runs the external close path from inside the card: an attestation, two marked observations, two source reads, a Herdr snapshot and a `plugin pane close` request. At current costs, that can keep the blank pane visible for minutes. None of that work protects anything a self-close leaves exposed.
 
-Automatic opening should depend only on the auto-open setting, not on why a card last closed. A card opens automatically when Pi starts or resumes the conversation and the setting is on. Within a running Pi session, a closed card stays closed until the user opens it. Today, any existing evidence record for the owner suppresses automatic opening in every later session; that should stop. The trigger is Pi's session start event, not the Rust child starting, so restarting a crashed child does not reopen a card the user closed. Automatic opening keeps its positive-absence and duplicate checks.
+Automatic opening should depend only on the auto-open setting, not on why a card last closed. A card opens automatically when Pi starts or resumes the conversation and the setting is on. Within a running Pi session, a closed card stays closed until the user opens it. Today, any existing evidence record for the owner suppresses automatic opening in every later session; that should stop. The trigger is Pi's session start event, not the Rust child starting, so restarting a crashed child does not reopen a card the user closed. Opening reuses an observed card; duplicates exit through the per-Session process lock. It does not require a durable absence proof.
 
-Closing a card from outside — the CLI, or Pi on the user's request — remains an effect. It takes one fresh snapshot under the lock, marks the record closed, requests the close, and confirms through the `pane.closed` event or one snapshot.
+Closing a card from outside — the CLI, or Pi on the user's request — remains an effect. It takes one snapshot and targets the observed Session card through the frontend's safe identity contract. The reply completes the pass. A lost reply warns and stops; it creates no closure record and triggers no confirmation snapshot.
 
 ### One Streams process per Pi session
 
