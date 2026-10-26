@@ -23,6 +23,7 @@ From that follow:
 - Projections compare the desired value with the observed one, and act only on a difference. No history of past actions decides whether an action runs.
 - External effects are the one exception. A frontend call that isn't idempotent, such as opening a pane, may need recorded intent and outcome. Name the unsafe call, and the frontend capability that would remove the need.
 - Old formats are read only by explicit offline migrations, never by runtime code or caches.
+- Build machinery only for what runs often or unattended. Rare events, or anything a person does while watching, get a written step, not code. Migration and recovery code is complexity that has to be designed, tested and reviewed, yet serves one occasion. Resetting and redoing a little by hand is usually simpler.
 
 ## Local permissions
 
