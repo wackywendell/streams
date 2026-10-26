@@ -1,6 +1,6 @@
 # ADR: Plan effects as data, then execute them
 
-Status: accepted design, partially implemented. Card receipt linking uses pure difference planning and checked replies. The full lifetime planner and single-observation projection are not yet implemented. Native reconciliation will use them first, followed by `streams native project`; this record will be revised from what that implementation shows. It builds on the [bounded work ADR](bounded-work-and-card-events.md), which sets the cost budgets this structure is meant to make reachable.
+Status: accepted design, partially implemented. Card receipt linking and runtime close use pure planning and checked replies. Native membership destination admission reads the caller's two named relationship records once and plans from that same borrowed caller proof; the catalog save still checks the actual Session, source and destination. This admission port is not yet active in the driver. The full lifetime planner and single-observation projection are not yet implemented. Native reconciliation will use them first, followed by `streams native project`; this record will be revised from what that implementation shows. It builds on the [bounded work ADR](bounded-work-and-card-events.md), which sets the cost budgets this structure is meant to make reachable.
 
 ## Problem
 

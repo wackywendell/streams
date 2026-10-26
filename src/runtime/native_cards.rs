@@ -14,6 +14,7 @@ mod handover;
 mod inspection;
 mod launch_context;
 mod linking;
+mod membership;
 mod projection;
 #[cfg(test)]
 mod tests;
@@ -22,6 +23,7 @@ pub use config::NativeCardsConfig;
 pub use display::{CardPlacement, DisplayLifetime};
 pub use inspection::{DisplayCondition, NativeCardStatus, NativeOwnerContext, NativeOwnerView};
 pub use launch_context::LaunchedCardContext;
+pub use membership::{NativeMembershipObservation, NativeMembershipPlan};
 pub use projection::{NameOutcome, NameReport};
 
 use std::collections::BTreeMap;
