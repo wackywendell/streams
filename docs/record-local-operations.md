@@ -39,6 +39,14 @@ Strict decoding includes supported schema versions, unique object keys, regular 
 
 A positional CLI `REF` requests explicit human discovery by ID, title or substring, using the same enumeration as `list`. It must resolve to exactly one host-qualified ID or fail on ambiguity before invoking the operation. UUID-looking strings are not reserved, and there is no new `--id` flag. Automation, the Pi child, cards and Pi keep their existing exact-key paths, including `--stream-id`, `--session-id` and `--current`. Those paths use point reads, never catalog enumeration. Discovery of a foreign Stream does not grant permission to modify it.
 
+### Record selection is not native permission
+
+An explicit record key will select a read without proving native readiness. A known Stream key, including `STREAMS_STREAM_ID` for `--current`, needs no frontend connection merely to read that record. An exact Session query reads that Session and its saved Stream; workspace metadata cannot replace its membership. This keeps record inspection independent of missing or incomplete native projection.
+
+Without an explicit key, Herdr workspace metadata may select one Stream. The reader must verify that selector against the named canonical placement and the same snapshot's complete binding fields, endpoint and calling workspace. Missing, incomplete or conflicting evidence refuses this metadata-only selection. CMUX has no workspace metadata capability, so it requires an explicit key rather than a reverse lookup or fabricated Herdr proof.
+
+Selecting a record grants no native permission. Effects still pass their operation-specific native admission. Herdr placement and caller attestation, where required, use full readiness and the same observation-local caller proof. There is no optional or partly-ready `ReadyHerdrPlacement` and no fallback from failed native admission to a record selector.
+
 ### Membership move contract
 
 A move reads exactly 3 catalog inputs: the Session, the old Stream and the new Stream. The Session supplies the old Stream key; verified destination input supplies the new key. The domain entry point takes those typed records and verified move input, not a complete `Catalog`. All 3 records must belong to the current host. If a destination Stream must be created, that is a separate local creation before the move, not a multi-file transaction or permission to scan for another Stream.
