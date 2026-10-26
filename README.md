@@ -124,21 +124,26 @@ For a portable checkout reference, add `--repository ALIAS --ref BRANCH` when at
 The checkout's Pi extension maintains catalog records instead of generating scratch drafts. By default it reports after each completed response, using the current Pi model and trimmed conversation context. Meaningful work can enroll an effort and its first session automatically; greetings alone do not. Existing caller-workspace associations are reused without launching agents or moving focus.
 
 - `/streams` or `/streams card` opens the card without running a model. Edit labelled fields, choose valid statuses and manage reference rows. Whole-effort actions are separate from session actions; IDs, ownership and membership are read-only.
-- Editing a title or goal makes it manual. Change its mode back to automatic to allow refinement. Invalid or conflicting edits retain their input; unchanged fields are not submitted.
+- Editing a title or goal makes it manual. Titles can return to automatic or inherit the global default; goals use automatic or manual. Invalid or conflicting edits retain their input; unchanged fields are not submitted.
+- `/streams name [session|stream] <name>` saves and protects a title, including unchanged text. The default target is Session. `/streams title-mode [session|stream] automatic|manual|inherit` changes policy without generating a new title.
 - Card discussion can answer without edits, refresh descriptions, or carry out an explicitly requested edit. User direction is approval; uncertain intent produces a question rather than a management action.
-- `/streams report` requests a report now, not a draft awaiting Apply. Use `/streams report [instructions]` to give reporting direction. Explicit reporting can enroll an unbound conversation. `/streams reset [--auto]` regenerates automatic fields (and with `--auto`, restores automatic title/goal modes and reclaims Pi/Herdr names). The model-callable `checkpoint` tool remains unchanged.
+- `/streams report` requests a report now, not a draft awaiting Apply. Use `/streams report [instructions]` to give reporting direction. Explicit reporting can enroll an unbound conversation. `/streams reset [--auto]` regenerates automatic fields (and with `--auto`, restores automatic title/goal modes before inference). The model-callable `checkpoint` tool remains unchanged.
 - `/streams attach` offers initial selection or creation; attached conversations cannot switch efforts.
-- `/streams settings` controls automatic/manual reporting, initial enrollment, completed responses between reports, context, model and Herdr startup/naming. Manual reporting disables background requests, not explicit commands.
+- `/streams settings` controls reporting, enrollment, response frequency, context, model and Herdr startup. Its Naming submenu separates title-generation defaults, incoming Pi name edits and outgoing frontend synchronization. Manual reporting disables background requests, not explicit commands.
 - `/streams pane` opens the native Herdr card; `/streams pane close` closes only its display. Neither requests a report or changes membership.
-- Tab completes `card`, `report`, `reset`, `settings`, `attach` and `pane`. Unknown subcommands or invalid management arguments show usage without reporting or saving. Free-text instructions must follow `report`.
+- Tab completes `card`, `report`, `name`, `title-mode`, `reset`, `settings`, `attach` and `pane`. Unknown subcommands or invalid management arguments show usage without reporting or saving. Free-text instructions must follow `report`.
 
 Settings live in `$PI_CODING_AGENT_DIR/stream-reporting.json`, defaulting to `~/.pi/agent/stream-reporting.json`. The defaults are:
 
 ```json
-{"reporting": "automatic", "enrollment": "automatic", "frequency": 1, "context": "trimmed"}
+{"reporting": "automatic", "enrollment": "automatic", "frequency": 1, "context": "trimmed", "pi_name_edits": true}
 ```
 
 Add `"model": {"provider": "PROVIDER", "id": "MODEL_ID"}` to select a helper model; omit it to use the current Pi model. Unavailable models fail visibly without fallback. Trimmed context excludes tool calls/results and thinking; full context preserves the active projected conversation, excluding incomplete tool batches. Oversized input fails rather than silently dropping history.
+
+The Naming submenu saves Stream and Session title-generation defaults through the Rust configuration API (`naming.stream` and `naming.session`). They live in `$XDG_CONFIG_HOME/streams/config.json`, normally `~/.config/streams/config.json`, not `stream-reporting.json`. Defaults affect records in `inherit` mode, not explicit automatic or manual modes. Enrollment may still create an initial title under a manual default. Changing a default does not run inference or rename a frontend.
+
+Pi's built-in `/name` imports a different name as a manual Session title when Pi name edits are enabled. Matching names are ignored; use `/streams name session <name>` to pin one. Unbound conversations stay native-only. Incoming edits and outgoing Pi synchronization are independent: disable both to keep the names separate. A rare late projection echo can be imported as manual; see the [name-ownership decision](docs/name-ownership.md#native-pi-name).
 
 Session progress and effort metadata use separate inferences, so updating both takes two helper requests. Reports preserve captured records, ownership and conversation-lineage guards. They may update session status, but cannot park, finish or archive the whole effort. Historical conversation is evidence, not fresh verification of files or remote services.
 
@@ -165,7 +170,7 @@ Work Cards history is retained through `e7d74ce22f95893fa8eed570ef2e6a14d61f74bd
 
 The root Pi extension delegates native effects and the terminal card to Rust after exact Herdr/Pi attestation. TypeScript retains Pi events, inline UI and the Pi session-name setter. Neither boundary runs a separate summarizer or writes another catalog. The earlier [cutover plan](plans/catalog-cutover.md) describes the Python installation, not activation of this Rust branch.
 
-Native presentation settings remain in `$PI_CODING_AGENT_DIR/work-cards.json`, separate from reporting settings. `workspace_startup` selects automatic or manual pane startup. `workspace_naming`, `tab_naming` and `session_naming` are independent booleans, each defaulting to `true` regardless of startup; `null` is invalid. Enabled surfaces mirror saved Streams titles; disable synchronization to manage a frontend name independently. `document_command` selects a trusted editor command, otherwise `$EDITOR` or `less` is used. Removed inference settings are rejected; see the [presentation configuration](integrations/herdr-work-cards/README.md#presentation-configuration).
+Native presentation settings remain in `$PI_CODING_AGENT_DIR/work-cards.json`, separate from reporting settings. `workspace_startup` selects automatic or manual pane startup. `workspace_naming`, `tab_naming` and `session_naming` are independent booleans, each defaulting to `true` regardless of startup; `null` is invalid. Enabled surfaces mirror saved Streams titles. Disabling outgoing synchronization stops Streams from renaming that surface; Pi name edits remain independently controlled by `pi_name_edits`. `document_command` selects a trusted editor command, otherwise `$EDITOR` or `less` is used. Removed inference settings are rejected; see the [presentation configuration](integrations/herdr-work-cards/README.md#presentation-configuration).
 
 Closing with `q` or `/streams pane close` is display-only and suppresses automatic reopening, including after reload. `/streams pane` explicitly reopens it. An uncertain launch remains blocked for inspection, even after an explicit request.
 

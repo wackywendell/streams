@@ -1,6 +1,6 @@
 # Streams owns synchronized names
 
-Streams will own the names it synchronizes into frontends. A native rename will no longer be an independent override that Streams must detect and preserve. Users will either name the Stream or Session through Streams, or disable synchronization for that surface.
+Streams will own the names it synchronizes into frontends. A native rename will no longer be an independent override that Streams must detect and preserve. Users will either name the Stream or Session through Streams, or disable outgoing synchronization for that surface. Importing Pi name edits is separate; disable both directions to keep Pi and Streams names independent.
 
 This replaces the independent native-name protection and provenance requirements in [native work cards](native-herdr-work-cards.md), the imported [automatic naming policy](../integrations/herdr-work-cards/docs/automatic-naming.md), [effect planning](effect-planning.md) and [record-local operations](record-local-operations.md). The decision is accepted; implementation follows separately.
 
@@ -18,33 +18,53 @@ Enrollment may generate an initial title once, including when the new record inh
 
 Separate switches will control workspace, tab and agent-session name synchronization. Both automatic and manual saved titles will project when the corresponding switch is enabled. Manual means the saved title cannot be regenerated; it does not mean its frontend copies stop updating.
 
+The Naming settings submenu keeps generation defaults, incoming Pi name edits and outgoing synchronization separate. Stream and Session defaults are Rust configuration values, not duplicate Pi reporting settings. Changing a default affects inherited titles on later reports; it does not rewrite record modes, run inference or rename a frontend.
+
 The existing mapping remains:
 
 | Surface | Saved source | Eligibility |
 | --- | --- | --- |
-| Workspace name | Stream title | Current verified workspace binding |
+| Workspace name | Stream title | Observed workspace associated with the Stream |
 | Agent tab name | Session title | Agent owns the actual first layout pane |
 | Pi session name | Session title | Current Pi session |
 | Card caption | Stream title | Current paired card |
-| Editor tab name | Exact document identity | Verified editor owns the actual first layout pane |
+| Editor tab name | Exact document identity | Observed editor owns the actual first layout pane |
 
-The card pane will display the saved Stream title, matching the workspace name when workspace naming is enabled. A static launch title such as `Streams work card` must not mask that projection. The native projection executor will own this pane-name update; Pi and the renderer will not add separate writers. Tab synchronization continues to cover editor tabs. Disabling a switch leaves the current frontend name unchanged and permits independent frontend naming. Re-enabling it resumes projection without reclaiming or consulting old provenance.
+The card pane will display the saved Stream title, matching the workspace name when workspace naming is enabled. A static launch title such as `Streams work card` must not mask that projection. The native projection executor will own this pane-name update; Pi and the renderer will not add separate writers. Tab synchronization continues to cover editor tabs. Disabling an outgoing switch leaves the current frontend name unchanged. Pi imports remain separately controlled. Re-enabling it resumes projection without reclaiming or consulting old provenance.
 
 ## Rename through the saved record
 
 `/streams name [session|stream] <name>` will save the selected record's title and manual mode before requesting projection. The omitted target will mean the current Session. Mode controls will also let users return a record to automatic or inherit without renaming it.
 
-Pi must not rename itself first and then attempt a catalog update. The saved record is authoritative. A failed catalog change must produce no frontend rename. A failed projection must leave the accepted title saved and report the projection failure without implying rollback. A later projection can apply the current saved value again.
+The `/streams name` command must not rename Pi first and then attempt a catalog update. The saved record is authoritative. A failed catalog change must produce no frontend rename. A failed projection must leave the accepted title saved and report the projection failure without implying rollback. A later projection can apply the current saved value again.
 
-Pi 1.4.0 emits `session_info_changed` after `/name` and other calls to its session-name setter. The extension will treat a nonempty name change outside its own projection as a manual Session-title update. A scoped write context will distinguish Streams' own events, including delivery delayed by other extension handlers. It requires no persisted naming history. Because Pi emits the event after the name changes, a failed catalog save will be reported; the saved Streams title remains authoritative. An empty name is not a valid record title and will not become a manual title.
+### Native Pi `/name`
 
-When synchronization is enabled, a direct Herdr or cmux rename may be overwritten on the next projection. Streams will not import those edits or preserve separate overrides. Pi name changes that cannot be observed through the supported event have the same behavior. A same-value manual assignment through either Streams or the observed Pi event still changes the record's mode to manual.
+Pi 1.4.0 emits `session_info_changed` after `/name` and other calls to its session-name setter. The separate Pi name edits setting imports these names and defaults to enabled, independently of outgoing Pi synchronization. In a bound conversation, a nonempty name is saved with `title_mode: manual` only when it differs from the current saved Session title. Other enabled projections then follow that title.
+
+Comparing the two values ignores ordinary echoes of Streams' `setSessionName` calls. There is no projection-origin flag, scoped async context, name history or transcript provenance shared with the event handler. Streams does not intercept or replace Pi's built-in command.
+
+This simple comparison has two accepted costs:
+
+- Repeating the saved name through `/name` does not pin an automatic or inherited title to manual. Use `/streams name session <name>` to pin it, even when the text is unchanged.
+- A rare late projection echo may differ from a newer saved title and be imported as a manual name. The handler does not attempt to reconstruct its origin.
+
+For an unbound conversation, `/name` remains native-only: it makes no catalog write, warning or enrollment attempt. Empty names are ignored. A failed catalog save is visible after Pi's own rename; Streams does not claim a save or project a replacement itself.
+
+| Outgoing Pi synchronization | Pi name edits | Effect |
+| --- | --- | --- |
+| Enabled | Enabled | Changed Pi names become saved manual titles; ordinary projection mirrors saved titles. |
+| Enabled | Disabled | Pi names are not imported; a later projection can restore the saved title. |
+| Disabled | Enabled | Changed Pi names update saved titles; Streams never renames Pi. |
+| Disabled | Disabled | Pi and Streams names are independent. |
+
+When synchronization is enabled, a direct Herdr or cmux rename may be overwritten on the next projection. Streams will not import those edits or preserve separate overrides. Pi name changes that cannot be observed through the supported event have the same behavior. Same-value assignments through `/streams name` still set manual mode.
 
 ## Project current values without naming history
 
 Projection will compare the desired saved title with the observed frontend value and set it only when different. It will not read or write last-applied names, owner ledgers, manual-caption tokens or Pi naming-provenance entries. Existing derived naming history will be ignored; removing it from live storage is not required for correctness.
 
-Native identity, binding, first-pane eligibility, cancellation and acknowledgement checks still apply. Label ownership does not grant authority over a different workspace, tab, pane or conversation. Several Sessions sharing a tab do not gain competing naming rights: the existing first-pane rule selects the source. Current frontend support remains the limit; this decision does not add missing native lifecycle support to an adapter.
+Observed Session identity, workspace association and actual first-pane position select native targets under the [observe-and-act design](native-observe-and-act.md), without durable native proof. Label ownership does not grant permission to rename a different workspace, tab, pane or conversation. Several Sessions sharing a tab do not gain competing naming rights: the existing first-pane rule selects the source. Current frontend support remains the limit; this decision does not add missing native lifecycle support to an adapter.
 
 Projection failures remain visible. No action-history cache or automatic retry protocol is needed to remember which names Streams owns. Re-reading current records and observations determines the next projection.
 

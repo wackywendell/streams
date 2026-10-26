@@ -18,11 +18,35 @@ export function parseNamingEdit(command: "name" | "title-mode", args: string): N
  return {target, changes: {title_mode: mode}};
 }
 
+export function namingCompletions(prefix: string): {value: string; label: string; description: string}[] | null {
+ const match = /^(name|title-mode) (.*)$/s.exec(prefix);
+ if (!match) return null;
+ const [, command, rest] = match, selector = /^(session|stream) +/.exec(rest);
+ const partial = selector ? rest.slice(selector[0].length) : rest;
+ if (/\s/.test(partial)) return null;
+ const targets = [{label: "session", description: "This conversation's saved title"}, {label: "stream", description: "The whole effort's saved title"}];
+ const modes = titleModes.map(label => ({label, description: label === "inherit" ? "Follow the global title default" : label === "manual" ? "Protect the saved title from generation" : "Allow future title generation"}));
+ const choices = [...(!selector ? targets : []), ...(command === "title-mode" ? modes : [])];
+ const matches = choices.filter(item => item.label.startsWith(partial)).map(item => ({...item, value: `${command} ${selector?.[0] ?? ""}${item.label}`}));
+ return matches.length ? matches : null;
+}
+
 /** Save captured naming intent; ordinary projection belongs to the catalog-change path. */
 export async function saveNamingEdit(client: Pick<StreamCli, "context" | "apply">, nativeId: string, edit: NamingEdit, assertCurrent: () => void): Promise<Receipt> {
  assertCurrent();
  const catalog = await client.context(nativeId);
  const request = editRequest(catalog, edit.target, edit.changes, "user");
+ assertCurrent();
+ return client.apply(request);
+}
+
+/** Comparing current values also ignores ordinary echoes from Pi name projection. */
+export async function savePiNameEdit(client: Pick<StreamCli, "context" | "apply">, nativeId: string, name: string | undefined, assertCurrent: () => void): Promise<Receipt | undefined> {
+ if (!name?.trim() || name.includes("\0")) return;
+ assertCurrent();
+ const catalog = await client.context(nativeId);
+ if (!catalog.session || catalog.session.title === name) return;
+ const request = editRequest(catalog, "session", {title: name, title_mode: "manual"}, "user");
  assertCurrent();
  return client.apply(request);
 }

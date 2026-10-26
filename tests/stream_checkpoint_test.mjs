@@ -21,7 +21,8 @@ initTheme('dark');
 const { createAssistantMessageEventStream } = await import('@earendil-works/pi-ai');
 const { default: registerWorkCard } = await load('index');
 const { Reporter } = await load('reporter');
-const { defaults, validateSettings, loadSettings, saveSettings, settingsDialog } = await load('settings');
+const { defaults, validateSettings, loadSettings, saveSettings, settingsDialog: showSettingsDialog } = await load('settings');
+const settingsDialog=(ctx,settings,save,agentDir)=>showSettingsDialog(ctx,settings,save,{defaults:{stream:'automatic',session:'automatic'},save:assert.fail},agentDir);
 const stream = { id:'effort', title:'Work', title_mode:'manual', goal:'Goal', goal_mode:'automatic', goal_short:null, status:'active', archived:false, owner:{host_id:'host'}, repositories:{repo:{url:'https://example.com/repo'}}, issues:[], prs:[], documents:[] };
 const session = { id:'session', host_id:'host', stream_id:'effort', harness:'pi', harness_session_id:'native', title:'Session', title_mode:'automatic', status:'active', state:'', state_short:null, remaining:'', checkout:null };
 const context = () => structuredClone({catalog_source:'source-a',host_id:'host',stream,session,sessions:[session],title_defaults:{stream:'automatic',session:'automatic'}});
@@ -243,12 +244,13 @@ test('settings change in place, pick searchable models, and preserve Herdr confi
     press('\x1b[B');press('\r');assert.equal(saved.at(-1).session_logging,true);
     assert.equal(saved.at(-1).debug_commands,false);press('\x1b');
     press('\x1b[B');press('\r'); // workspace startup
-    press('\x1b[B');press('\r'); // workspace naming: enabled -> disabled
+    press('\x1b[B');press('\r'); // Naming subsection
+    for(let i=0;i<3;i++)press('\x1b[B');press('\r'); // workspace naming: enabled -> disabled
     const native=JSON.parse(readFileSync(join(root,'work-cards.json'),'utf8'));
     assert.equal(native.workspace_startup,'manual');assert.equal(native.workspace_naming,false);
     assert.equal(native.tab_naming,false);assert.equal(native.document_command,'vim');
     assert.match(component.render(100).join('\n'),/Pi session naming/);
-    assert.match(component.render(100).join('\n'),/Work card & Herdr settings/);press('\x1b');
+    assert.match(component.render(100).join('\n'),/Work card & Herdr settings/);press('\x1b');press('\x1b');
    });
   }}};
   await settingsDialog(ctx,{...defaults},value=>saved.push(structuredClone(value)),root);
@@ -273,10 +275,10 @@ test('settings revalidate concurrent native config changes before saving',async(
    const path=join(root,'work-cards.json'),bytes=JSON.stringify({workspace_startup:'invalid'});
    writeFileSync(path,bytes);
    for(let i=0;i<7;i++)component.handleInput('\x1b[B');
-   component.handleInput('\r');
+   component.handleInput('\r');for(let i=0;i<3;i++)component.handleInput('\x1b[B');component.handleInput('\r');
    assert.equal(readFileSync(path,'utf8'),bytes);
    assert.match(notices[0],/workspace_startup must be automatic or manual/);
-   component.handleInput('\x1b');
+   component.handleInput('\x1b');component.handleInput('\x1b');
   })}},{...defaults},()=>assert.fail('no reporting save'),root);
  }finally{rmSync(root,{recursive:true,force:true});}
 });
@@ -293,6 +295,10 @@ test('all settings explain their effects and leave description room on short ter
     'Model used to summarize progress and generate short titles.',
     'Configure debug commands and optional helper session logging.',
     'Automatically open the side-by-side Herdr work-card pane',
+    'Configure title generation, incoming Pi name edits',
+    'Default for Stream titles in inherit mode.',
+    'Default for Session titles in inherit mode.',
+    'Save changed Pi /name edits as manual Session titles.',
     "Mirror the saved effort title in Herdr.",
     "Mirror saved Session titles in agent tabs",
     "Mirror the saved Session title in Pi.",
@@ -300,9 +306,9 @@ test('all settings explain their effects and leave description room on short ter
     const lines=component.render(100);assert.ok(lines.length<=16,lines.join('\n'));
     assert.doesNotMatch(lines.join(' '),/manual renames.*protected/);
     assert.ok(lines.join(' ').includes(description),lines.join('\n'));
-    component.handleInput('\x1b[B');
+    component.handleInput(description.startsWith('Configure title generation')?'\r':'\x1b[B');
    }
-   component.handleInput('\x1b');
+   component.handleInput('\x1b');component.handleInput('\x1b');
   }}},{...defaults},()=>assert.fail('viewing settings must not save'),root);
  }finally{rmSync(root,{recursive:true,force:true});}
 });
@@ -714,6 +720,8 @@ test('streams completes subcommand prefixes with short descriptions but never re
  const items=[
   {value:'card',label:'card',description:'Open the work card panel'},
   {value:'report',label:'report',description:'Save a progress update'},
+  {value:'name',label:'name',description:'Set and protect a saved title'},
+  {value:'title-mode',label:'title-mode',description:'Change title generation policy'},
   {value:'reset',label:'reset',description:'Regenerate automatic fields'},
    {value:'settings',label:'settings',description:'Configure reporting'},
   {value:'attach',label:'attach',description:'Attach an initial work card'},
@@ -772,7 +780,7 @@ test('streams reset clears omitted short state and automatic short goal but pres
 });
 test('streams reset extra rejects arguments before reading the catalog or running a model',async()=>{
  const f=commandFixture();await f.run('reset extra');await turn();
- assert.deepEqual(f.notices,[{text:"Streams — Usage: /streams [card]; /streams report [instructions]; /streams reset [session|stream|all] [--auto]; /streams settings; /streams attach; /streams pane [close]. Put report instructions after 'report'.",level:'warning'}]);
+ assert.deepEqual(f.notices,[{text:"Streams — Usage: /streams [card]; /streams report [instructions]; /streams name [session|stream] <name>; /streams title-mode [session|stream] automatic|manual|inherit; /streams reset [session|stream|all] [--auto]; /streams settings; /streams attach; /streams pane [close]. Put report instructions after 'report'.",level:'warning'}]);
  assert.equal(f.reads(),0);for(const effects of [f.requests,f.writes,f.receipts,f.dialogs,f.activity])assert.deepEqual(effects,[]);
 });
 test('streams reset session and stream scopes unlock and infer only the targeted scope',async()=>{
@@ -824,7 +832,7 @@ test('streams settings dispatches to the existing reporting dialog without repor
  const root=mkdtempSync(join(tmpdir(),'card-settings-command-'));t.after(()=>rmSync(root,{recursive:true,force:true}));
  const f=commandFixture({agentDir:root});await f.run(' settings ');
  assert.equal(f.dialogs.length,1);assert.match(f.dialogs[0].title,/Work card & Herdr settings/);assert.ok(f.dialogs[0].rows.includes('Response frequency: 1'));
- assert.equal(f.reads(),0);assert.deepEqual(f.requests,[]);assert.deepEqual(f.writes,[]);
+ assert.equal(f.reads(),1);assert.deepEqual(f.requests,[]);assert.deepEqual(f.writes,[]);
 });
 test('helper logging setting toggles in place and passes log options to reports and resets without changing model settings',async()=>{
  const root=mkdtempSync(join(tmpdir(),'card-helper-setting-')),choices=['Debug','Helper session logging: disabled','Back','Close','Debug','Helper session logging: enabled','Back','Close'],seen=[];

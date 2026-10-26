@@ -1,7 +1,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { SessionManager } from '@earendil-works/pi-coding-agent';
-import { projectSessionName, isProjectedSessionNameChange } from '../dist/pi/session-naming.js';
+import { projectSessionName } from '../dist/pi/session-naming.js';
 
 function fixture(manager = SessionManager.inMemory()) {
   let sets = 0;
@@ -55,37 +55,29 @@ test('name writes must be acknowledged by the same live session and guard', () =
     assert.throws(() => h.apply('Task', () => {
       if (changed && behavior === 'stale-guard') throw Error('cancelled');
     }), /acknowledged|cancelled/i);
-    assert.equal(isProjectedSessionNameChange(), false);
   }
 });
 
-test('async event delivery retains projection origin without marking independent edits', async () => {
-  const h = fixture(), pending = [], origins = [];
+test('projection does not wait for asynchronous name event delivery', async () => {
+  const h = fixture(), pending = [], names = [];
   const set = h.pi.setSessionName;
   let release;
   const delayedHandler = new Promise(resolve => { release = resolve; });
   h.pi.setSessionName = name => {
     set(name);
-    pending.push((async () => {
-      await delayedHandler;
-      origins.push([name, isProjectedSessionNameChange()]);
-    })());
+    pending.push((async () => {await delayedHandler;names.push(name);})());
   };
   assert.equal(h.apply(), 'renamed');
-  assert.equal(isProjectedSessionNameChange(), false);
   h.pi.setSessionName('User /name');
+  assert.deepEqual(names, []);
   release();
   await Promise.all(pending);
-  assert.deepEqual(origins, [['Own task', true], ['User /name', false]]);
+  assert.deepEqual(names, ['Own task', 'User /name']);
 });
 
-test('setter failures leave neither durable provenance nor a leaked write context', () => {
+test('setter failures create no durable naming provenance', () => {
   const h = fixture();
-  h.pi.setSessionName = () => {
-    assert.equal(isProjectedSessionNameChange(), true);
-    throw Error('set failed');
-  };
+  h.pi.setSessionName = () => {throw Error('set failed');};
   assert.throws(() => h.apply(), /set failed/);
-  assert.equal(isProjectedSessionNameChange(), false);
   assert.equal(h.manager.getEntries().length, 0);
 });

@@ -10,7 +10,7 @@ The card shows the shared Stream goal, documents, issues and pull requests along
 
 Each card captures an exact catalog, host, Stream, Session and native Pi session identity. Native effects also require the attested Herdr pane, tab and workspace. A changed or unavailable identity clears the view and shortcuts rather than displaying stale records or selecting another workspace by name.
 
-The projection does not create Streams, attach conversations, launch agents or manage checkouts. It can create and close its owned card and document displays, update eligible native names and open registered references. Enabled naming surfaces mirror saved Streams titles; disable a surface's naming switch to manage its label independently.
+The projection does not create Streams, attach conversations, launch agents or manage checkouts. It can create and close its owned card and document displays, update eligible native names and open registered references. Enabled naming surfaces mirror saved Streams titles. A disabled outgoing switch stops Streams from renaming that surface; incoming Pi name edits have their own setting.
 
 ## Commands and display lifecycle
 
@@ -20,7 +20,9 @@ Use the root Pi extension:
 | --- | --- |
 | `/streams` or `/streams card` | Open the in-Pi editor for saved Stream and Session fields |
 | `/streams report [instructions]` | Request a durable progress report |
-| `/streams settings` | Configure reporting and Herdr startup and naming |
+| `/streams name [session|stream] <name>` | Save a title and protect it from generation |
+| `/streams title-mode [session|stream] automatic\|manual\|inherit` | Change title policy without inference |
+| `/streams settings` | Configure reporting, startup and independent naming controls |
 | `/streams pane` | Explicitly open the native Herdr card |
 | `/streams pane close` | Close only the owned display |
 
@@ -50,7 +52,7 @@ Global configuration lives at `$PI_CODING_AGENT_DIR/work-cards.json`, defaulting
 | `herdr_timeout_ms` | `3000` | Native operation and document lock-wait timeout |
 | `pane_height_fraction` | `0.2` | Requested share of a new pair's initial split, within native layout constraints |
 
-Startup accepts `automatic` or `manual`. Each naming setting accepts only a boolean and defaults to `true`, independently of startup. `null` is invalid for naming. Disabling naming leaves that surface independently managed. Re-enabling it projects the saved Streams title, replacing a different frontend name.
+Startup accepts `automatic` or `manual`. Each naming setting accepts only a boolean and defaults to `true`, independently of startup. `null` is invalid for naming. Disabling outgoing naming stops Streams from renaming that surface. Re-enabling it projects the saved Streams title, replacing a different frontend name. Pi name edits are imported independently through `pi_name_edits` in `stream-reporting.json`, defaulting to `true`. Disable both Pi directions to keep its name independent. The Naming submenu also changes global Stream and Session generation defaults through the Rust configuration API; it does not copy them into either Pi configuration file.
 
 `herdr_timeout_ms` must be an integer from 1 to 2,147,483,647. Pane height must be strictly between zero and one. `document_command` accepts `null` or a nonblank command without control characters; malformed nonblank `$EDITOR` values also fail visibly.
 

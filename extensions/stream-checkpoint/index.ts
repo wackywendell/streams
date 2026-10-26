@@ -12,6 +12,7 @@ import { executeLab } from "./lab.ts";
 import { registerLabTools } from "./lab-tools.ts";
 import { SessionScope, captureInputs } from "./session-scope.ts";
 import { editRequest } from "./core.ts";
+import { namingCompletions, parseNamingEdit, saveNamingEdit, savePiNameEdit } from "./naming.ts";
 import { loadSettings, saveSettings, settingsDialog } from "./settings.ts";
 import type { ReportingSettings } from "./settings.ts";
 import { openCard, compose } from "./panel.ts";
@@ -98,7 +99,10 @@ export default function registerWorkCard(pi: ExtensionAPI, options: Options = {}
    ctx.ui.notify(`Streams — Catalog sync (${event}): ${message ?? JSON.stringify(failure)}. Inspect with streams sync; local saves and publication are separate.`, "warning");
   }
  }
- const configure = async (ctx: ExtensionContext) => settingsDialog(ctx, settings(), (value) => {saveSettings(agentDir, value);config = value;}, agentDir);
+ const configure = async (ctx: ExtensionContext) => {
+  const client = cli(ctx), catalog = await client.context(ctx.sessionManager.getSessionId());
+  await settingsDialog(ctx, settings(), value => {saveSettings(agentDir, value);config = value;}, {defaults: catalog.title_defaults, save: (target, mode) => client.setTitleDefault(target, mode)}, agentDir);
+ };
  async function discussion(ctx: ExtensionContext, state: CardState): Promise<void> {
   for (;;) {
    const fence = scope.fence();
@@ -196,6 +200,7 @@ export default function registerWorkCard(pi: ExtensionAPI, options: Options = {}
      ...(used.has("--reset") ? [{label: "--auto", description: "Re-enable automatic naming for reset"}] : []),
     ].filter(item => !used.has(item.label)));
    }
+   if (prefix.startsWith("name ") || prefix.startsWith("title-mode ")) return namingCompletions(prefix);
    if (prefix.startsWith("reset ")) {
     const rest = prefix.slice(6);
     const resetItems = [
@@ -213,6 +218,8 @@ export default function registerWorkCard(pi: ExtensionAPI, options: Options = {}
    const matches = [
     {value: "card", label: "card", description: "Open the work card panel"},
     {value: "report", label: "report", description: "Save a progress update"},
+    {value: "name", label: "name", description: "Set and protect a saved title"},
+    {value: "title-mode", label: "title-mode", description: "Change title generation policy"},
     {value: "reset", label: "reset", description: "Regenerate automatic fields"},
     {value: "settings", label: "settings", description: "Configure reporting"},
     {value: "attach", label: "attach", description: "Attach an initial work card"},
@@ -226,8 +233,8 @@ export default function registerWorkCard(pi: ExtensionAPI, options: Options = {}
    const paneFence = scope.fence();
    const input = args.trim(), command = input.split(/\s+/, 1)[0], instructions = input.slice(command.length).trim();
    const resetParsed = command === "reset" ? parseResetArgs(instructions) : null;
-   if (!["", "card", "report", "reset", "settings", "attach", "pane", "debug"].includes(command) || instructions && command !== "report" && command !== "debug" && !(command === "pane" && instructions === "close") && !(command === "reset" && resetParsed)) {
-    warning("Usage: /streams [card]; /streams report [instructions]; /streams reset [session|stream|all] [--auto]; /streams settings; /streams attach; /streams pane [close]. Put report instructions after 'report'.");return;
+   if (!["", "card", "report", "name", "title-mode", "reset", "settings", "attach", "pane", "debug"].includes(command) || instructions && !["report", "debug", "name", "title-mode"].includes(command) && !(command === "pane" && instructions === "close") && !(command === "reset" && resetParsed)) {
+    warning("Usage: /streams [card]; /streams report [instructions]; /streams name [session|stream] <name>; /streams title-mode [session|stream] automatic|manual|inherit; /streams reset [session|stream|all] [--auto]; /streams settings; /streams attach; /streams pane [close]. Put report instructions after 'report'.");return;
    }
    try {
     if (command === "" || command === "card") await show(ctx);
@@ -251,12 +258,19 @@ export default function registerWorkCard(pi: ExtensionAPI, options: Options = {}
       }
      }
     }
+    else if (command === "name" || command === "title-mode") {
+     const edit = parseNamingEdit(command, instructions);
+     const value = await saveNamingEdit(cli(ctx), ctx.sessionManager.getSessionId(), edit, () => {
+      if (!paneFence.current()) throw Error("Session changed before naming edit");
+     });
+     if (paneFence.live()) receipt(value);
+    }
     else if (command === "reset") reporter.reset(ctx, resetParsed!.auto, resetParsed!.target);
     else if (command === "settings") await configure(ctx);
     else if (command === "attach") await attach(ctx, {});
     else if (command === "report") {settings();reporter.request(ctx, true, instructions);}
    } catch(error) {
-    if ((command === "pane" || command === "debug") && !paneFence.current()) return;
+    if (["pane", "debug", "name", "title-mode"].includes(command) && !paneFence.current()) return;
     warning(error);
    }
   },
@@ -281,6 +295,18 @@ export default function registerWorkCard(pi: ExtensionAPI, options: Options = {}
   const starting = native.start();
   if (starting) {await starting;if (!fence.live()) return;}
   await sync(ctx, "start");
+ });
+ pi.on("session_info_changed", async (event, ctx) => {
+  if (scope.stopped || !event.name?.trim()) return;
+  scope.use(ctx);
+  const fence = scope.fence();
+  try {
+   if (!settings().pi_name_edits) return;
+   const value = await savePiNameEdit(cli(ctx), ctx.sessionManager.getSessionId(), event.name, () => {
+    if (!fence.current()) throw Error("Session changed before Pi name edit");
+   });
+   if (value && fence.live()) receipt(value, true);
+  } catch(error) {if (fence.current()) warning(`Pi name changed, but its Streams edit failed: ${String(error)}`);}
  });
  pi.on("agent_end", (event, ctx) => {
   if (scope.stopped) return;

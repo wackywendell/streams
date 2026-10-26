@@ -6,7 +6,6 @@ const jiti=createJiti(import.meta.url);
 const {NativeController}=await jiti.import('../extensions/stream-checkpoint/native.ts');
 const {loadRustNative}=await jiti.import('../extensions/stream-checkpoint/native-rust.ts');
 const {default:register}=await jiti.import('../extensions/stream-checkpoint/index.ts');
-const {isProjectedSessionNameChange}=await jiti.import('../integrations/herdr-work-cards/src/pi/session-naming.ts');
 const {defaults}=await jiti.import('../extensions/stream-checkpoint/settings.ts');
 const turn=()=>new Promise(resolve=>setImmediate(resolve));
 async function until(check) {for(let i=0;i<100&&!check();i++)await turn();assert.ok(check());}
@@ -20,7 +19,7 @@ function fixture(t,options={}) {
  const id=randomUUID(),requests=[],notices=[],listeners=new Set(),entries=[];
  let name,disposed=0,loads=0,loaded;
  const ctx={hasUI:true,mode:'tui',cwd:'/repo',sessionManager:{getSessionId:()=>id,getLeafId:()=> 'leaf',getBranch:()=>[{id:'leaf'}],buildSessionProjection:()=>({messages:[]})},ui:{notify:text=>notices.push(text),setStatus:()=>{},select:async()=> 'Close'}};
- const pi={getSessionName:()=>name,setSessionName:value=>{name=value;entries.push({value,projected:isProjectedSessionNameChange()});},appendEntry:()=>{}};
+ const pi={getSessionName:()=>name,setSessionName:value=>{name=value;entries.push({value});},appendEntry:()=>{}};
  const child={subscribe:listener=>{listeners.add(listener);return()=>listeners.delete(listener);},stop:async()=>{disposed++;},run:async(request,runOptions)=>{
   requests.push(structuredClone(request));
   if(options.run)return options.run(request,runOptions);
@@ -74,11 +73,10 @@ test('the child, not TypeScript, serializes explicit actions',async t=>{
  await f.controller.start();const opening=f.controller.open();await until(()=>!!release);
  await f.controller.close();assert.deepEqual(f.requests.map(value=>value.kind),['session_started','open_card','close_card']);release();await opening;
 });
-test('desired names use the checked setter and projected-change context; null and identical names are inert',async t=>{
+test('desired names use the checked setter without origin tracking; null and identical names are inert',async t=>{
  environment(t);const f=fixture(t);await f.controller.start();
- f.view('Saved title');f.view('Saved title');f.view(null);assert.equal(f.name(),'Saved title');assert.deepEqual(f.entries,[{value:'Saved title',projected:true}]);
- // Independent user edits do not enter the projected-change context.
- f.pi.setSessionName('User edit');assert.equal(f.entries.at(-1).projected,false);f.view('Catalog wins');assert.equal(f.name(),'Catalog wins');
+ f.view('Saved title');f.view('Saved title');f.view(null);assert.equal(f.name(),'Saved title');assert.deepEqual(f.entries,[{value:'Saved title'}]);
+ f.pi.setSessionName('User edit');f.view('Catalog wins');assert.equal(f.name(),'Catalog wins');assert.deepEqual(f.notices,[]);
  assert.deepEqual(f.requests,[{kind:'session_started'}]);f.controller.stop();await f.controller.idle();f.view('Retired');assert.equal(f.name(),'Catalog wins');assert.equal(f.disposed(),0,'shared transport is retired by index, not the UI adapter');
 });
 test('name application errors are UI warnings, not protocol failures or native refresh triggers',async t=>{
