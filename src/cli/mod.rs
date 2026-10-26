@@ -277,6 +277,7 @@ struct HerdrRead {
     client: frontend::herdr::HerdrClient,
     snapshot: Option<frontend::herdr::HerdrNativeSnapshot>,
     owner: Option<runtime::native_cards::PiOwner>,
+    workspace_stream: Option<String>,
 }
 
 #[derive(Clone)]
@@ -839,7 +840,10 @@ impl App {
                     .environment
                     .get("STREAMS_STREAM_ID")
                     .map(String::as_str),
-                workspace_stream_id: None,
+                workspace_stream_id: self
+                    .herdr
+                    .as_ref()
+                    .and_then(|read| read.workspace_stream.as_deref()),
             },
             settings.naming,
         )?;

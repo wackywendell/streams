@@ -228,6 +228,25 @@ impl Controller {
             records.source_id(),
             records.host().as_str(),
         )?;
+        if context.session.is_none()
+            && (selected.is_some() || self.app.environment.contains_key("STREAMS_STREAM_ID"))
+        {
+            context = self.app.context_from_records(
+                records,
+                ContextRequest {
+                    harness: Harness::Pi,
+                    native_id: &self.session_id,
+                    stream_id: None,
+                    environment_stream_id: self
+                        .app
+                        .environment
+                        .get("STREAMS_STREAM_ID")
+                        .map(String::as_str),
+                    workspace_stream_id: selected.as_deref(),
+                },
+                settings.naming,
+            )?;
+        }
         if cancelled.load(Ordering::Acquire) {
             return Err(crate::cli::CliError::message("native request cancelled"));
         }
@@ -304,6 +323,7 @@ impl Controller {
             client,
             snapshot: Some(snapshot),
             owner: Some(owner),
+            workspace_stream: selected.clone(),
         });
         self.view = UiFacts {
             desired_pi_name: config
@@ -430,6 +450,7 @@ impl Controller {
             return Ok(());
         }
         match event {
+            Ok(event) if event.need_rescan() => files.recover()?,
             Ok(event) if !files.relevant(&event) => return Ok(()),
             Ok(_) => {}
             Err(_) => files.recover()?,
@@ -494,6 +515,7 @@ impl Controller {
                 }
                 pass.context.session = Some(session.clone());
                 pass.context.sessions = vec![session];
+                let stream_id = stream.id.clone();
                 pass.context.stream = Some(stream);
                 self.view.desired_pi_name = pass
                     .config
@@ -502,6 +524,7 @@ impl Controller {
                 self.publish_view()?;
                 let mut engine = self.engine(pass, cancelled)?;
                 engine.project()?;
+                self.app.herdr.as_mut().unwrap().workspace_stream = Some(stream_id);
                 self.watch_engine(&engine);
                 Ok(())
             })();
@@ -528,3 +551,6 @@ impl Drop for Controller {
         self.stop();
     }
 }
+
+#[cfg(test)]
+mod tests;

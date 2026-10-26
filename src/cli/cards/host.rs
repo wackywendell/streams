@@ -304,7 +304,15 @@ impl Host {
                 Change::File(generation, event) => files.push((generation, event)),
             }
         }
+        if refresh == Refresh::Full || native_changed {
+            self.snapshot = None;
+            self.placement = None;
+        }
         let changed = self.files.as_mut().unwrap().consume(files)?;
+        if changed.recovered {
+            self.snapshot = None;
+            self.placement = None;
+        }
         if !initial
             && refresh != Refresh::Full
             && !native_changed
@@ -366,6 +374,7 @@ impl PaneHost for Host {
             client: self.client.as_ref().unwrap().clone(),
             snapshot: self.snapshot.clone(),
             owner: Some(self.lifetime.context().owner.clone()),
+            workspace_stream: None,
         });
         let mut engine = build(
             app,

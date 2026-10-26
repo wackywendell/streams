@@ -302,6 +302,53 @@ fn a_real_card_recovers_routing_from_a_new_observation_without_an_owner_baseline
 }
 
 #[test]
+fn failed_move_refresh_is_reobserved_before_file_refresh_and_replacement() {
+    let f = CardFixture::new();
+    let mut pty = f.spawn();
+    painted(&mut pty, "Before");
+    f.native
+        .fail_next_snapshot
+        .store(true, std::sync::atomic::Ordering::Release);
+    f.move_owner("owner-moved-after-failure");
+    pty.until(|p| p.screen().contains("Card unavailable"));
+    f.native.server.clear();
+    let before = f.native.snapshot.lock().unwrap().clone();
+    f.save_title("Recovered through file event");
+    painted(&mut pty, "Recovered through file event");
+    assert_eq!(
+        f.native
+            .server
+            .methods()
+            .iter()
+            .filter(|m| *m == "session.snapshot")
+            .count(),
+        1
+    );
+    assert_eq!(*f.native.snapshot.lock().unwrap(), before);
+    for key in ["panes", "agents"] {
+        f.native.snapshot.lock().unwrap()[key][0]["agent"] = json!("other");
+    }
+    f.native.server.emit(
+        json!({"event":"pane_updated","data":{"type":"pane_updated","pane":{
+        "pane_id":"owner-moved-after-failure","tab_id":"moved-tab","workspace_id":"workspace"}}}),
+    );
+    pty.finish(true);
+    let snapshot = f.native.snapshot.lock().unwrap();
+    assert_eq!(snapshot["panes"].as_array().unwrap().len(), 2);
+    assert_eq!(snapshot["panes"][0]["agent"], "other");
+    assert_eq!(snapshot["panes"][1]["terminal_id"], "card-terminal");
+    assert!(
+        !f.native
+            .server
+            .methods()
+            .iter()
+            .any(|m| m == "plugin.open" || m == "pane.close")
+    );
+    drop(snapshot);
+    f.assert_only_empty_locks();
+}
+
+#[test]
 fn quit_cancels_an_unavailable_initial_snapshot_and_leaves_resources_untouched() {
     let f = CardFixture::new();
     let before = f.native.snapshot.lock().unwrap().clone();

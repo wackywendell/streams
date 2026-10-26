@@ -447,6 +447,49 @@ fn workspace_metadata_selects_the_exact_destination_and_moves_only_its_session()
 }
 
 #[test]
+fn workspace_markers_select_the_existing_stream_for_unenrolled_lifecycle_and_enrollment() {
+    for lifecycle in ["session_started", "attach"] {
+        let f = NativeFixture::new();
+        let id = uuid::Uuid::new_v4().to_string();
+        for key in ["panes", "agents"] {
+            f.snapshot.lock().unwrap()[key][0]["agent_session"]["value"] = json!(id);
+        }
+        let stream_id = f.session["stream_id"].as_str().unwrap();
+        let before = f.fixture.ok(&["show", stream_id], None)["stream"].clone();
+        let mut child = Transport::start(f.command(), &id);
+        assert_eq!(child.next(), json!({"type":"ready","protocol":2}));
+        child.request(1, json!({"kind":lifecycle}));
+        let started = child.response(1);
+        assert_eq!(started["outcome"]["status"], "success", "{started}");
+        child.request(2, json!({"kind":"context"}));
+        let captured = child.response(2);
+        let context = &captured["outcome"]["result"];
+        assert_eq!(context["stream"], before, "{captured}");
+        assert!(context["session"].is_null());
+        assert_eq!(context["sessions"], json!([]));
+        child.request(3, json!({"kind":"enroll","request":{
+            "version":2,"operation_id":"enroll-second","catalog_source":context["catalog_source"],
+            "harness":"pi","harness_session_id":id,"actor":"user",
+            "cwd":f.fixture.directory.path(),"stream_id":context["stream"]["id"],
+            "session":{"title":"Second conversation"}
+        }}));
+        let enrolled = child.response(3);
+        assert_eq!(enrolled["outcome"]["status"], "success", "{enrolled}");
+        assert_eq!(
+            enrolled["outcome"]["result"]["session"]["stream_id"],
+            stream_id
+        );
+        child.request(4, json!({"kind":"context"}));
+        assert_eq!(
+            child.response(4)["outcome"]["result"]["stream"]["id"],
+            stream_id
+        );
+        assert_eq!(f.fixture.ok(&["show", stream_id], None)["stream"], before);
+        assert_eq!(child.finish(), (0, String::new()));
+    }
+}
+
+#[test]
 fn lifecycle_subscription_failure_is_a_domain_error_and_catalog_remains_available() {
     let f = NativeFixture::new();
     f.rejected.store(true, Ordering::Release);
