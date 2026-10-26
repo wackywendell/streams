@@ -12,6 +12,7 @@ pub mod native;
 pub mod native_cards;
 pub mod native_state;
 pub mod open_protocol;
+pub mod placement;
 pub mod revisions;
 pub mod state;
 pub mod workspace;

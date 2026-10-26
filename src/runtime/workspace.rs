@@ -1,5 +1,8 @@
 //! Catalog-owned native workspace orchestration. Effects never resume a loaded journal.
 
+mod capture;
+pub use capture::WorkspaceCaptureObservation;
+
 use super::{
     Result,
     arrangements::{self, ArrangedSession, Arrangement, ArrangementTab},

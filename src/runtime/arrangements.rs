@@ -25,6 +25,25 @@ pub fn verified_inventory<'a>(
     topology: &'a HerdrTopology,
     workspace: Option<&str>,
 ) -> Result<Vec<VerifiedAgent<'a>>> {
+    verified_inventory_with_caller(topology, workspace, None)
+}
+
+pub(super) fn verified_inventory_from_caller<'a>(
+    caller: &'a super::native::PiCallerObservation,
+    workspace: &str,
+) -> Result<Vec<VerifiedAgent<'a>>> {
+    verified_inventory_with_caller(
+        caller.snapshot().topology(),
+        Some(workspace),
+        Some(caller.caller()),
+    )
+}
+
+fn verified_inventory_with_caller<'a>(
+    topology: &'a HerdrTopology,
+    workspace: Option<&str>,
+    cached: Option<&super::native::NativeCaller>,
+) -> Result<Vec<VerifiedAgent<'a>>> {
     let mut verified = Vec::new();
     let mut seen = BTreeSet::new();
     for native in &topology.agents {
@@ -40,6 +59,19 @@ pub fn verified_inventory<'a>(
             continue;
         };
         let identity = (|| {
+            if let Some(caller) = cached.filter(|caller| caller.pane_id() == native.pane_id) {
+                if harness != Harness::Pi
+                    || caller.terminal_id() != native.terminal_id
+                    || caller.workspace_id() != native.workspace_id
+                    || caller.tab_id() != native.tab_id
+                {
+                    return Err(invalid("cached caller differs from its snapshot agent"));
+                }
+                return Ok(NativeIdentity {
+                    id: caller.native_session_id().to_owned(),
+                    locator: caller.locator().map(std::path::Path::to_path_buf),
+                });
+            }
             let metadata = native
                 .native
                 .get("agent_session")
@@ -300,9 +332,21 @@ pub fn capture(
         return Err(invalid("bound workspace absent from verified snapshot"));
     }
     let agents = verified_inventory(topology, Some(workspace_id))?;
+    capture_observed(topology, workspace_id, stream, sessions, host_id, &agents)
+}
+
+/// Assemble only from the retained inventory; no identity files are opened here.
+pub(super) fn capture_observed<'s>(
+    topology: &HerdrTopology,
+    workspace_id: &str,
+    stream: &Stream,
+    sessions: impl IntoIterator<Item = &'s Session>,
+    host_id: &str,
+    agents: &[VerifiedAgent<'_>],
+) -> Result<Arrangement> {
     let mut known = BTreeMap::new();
     for session in sessions
-        .iter()
+        .into_iter()
         .filter(|s| s.stream_id == stream.id && s.host_id == host_id)
     {
         if known
