@@ -133,7 +133,7 @@ The Pi extension should start one long-lived Rust child per Pi session and talk 
 
 The child should also reconcile moves of its own conversation. It should subscribe to `pane.moved` and `tab.moved` for its owner pane, and to `workspace.metadata_updated` for the owner's workspace. When the owner lands in a workspace associated with another Stream, the child should apply the membership change from the native reconciliation ADR. The card then sees the Session file change. This replaces "on the next Streams interaction" for moves while Pi is running. The owner pane is the Pi process, so a move cannot happen without a running child, except after a child crash.
 
-If the child exits unexpectedly, the extension should warn the user and restart it once. The new child reads current topology, so moves made while it was down are reconciled. If the restarted child also exits, the extension should warn again and stop Streams for that Pi session until reload.
+If the child exits unexpectedly, the extension should warn the user and restart it once. The new child observes current topology to establish its baseline. It does not catch up a missed card-follow move or reopen a closed card. If the restarted child also exits, the extension should warn again and stop Streams for that Pi session until reload.
 
 The stdio protocol becomes a long-lived interface between TypeScript and Rust, so it needs a version number checked at startup.
 

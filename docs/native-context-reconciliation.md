@@ -51,7 +51,7 @@ Pi carries request context without interpreting membership or orchestrating reco
 | Move a card independently | Retain its conversation association. The next owner move brings it into the owner's tab, unless it is already there. Do not close it or launch a replacement. |
 | Move an editor independently | Retain its conversation association. Do not automatically move it back, close it or launch a replacement. |
 | Close a display | Reporting continues. No background respawn; explicit reopen uses observed reuse and self-exiting duplicates. |
-| Lose observations or restore a workspace | Stop affected effects until usable observations are available. Missing observations do not prove closure; safe targeting must reject recycled handles. |
+| Lose observations or restore a workspace | Stop affected effects until usable observations are available. Missing observations do not prove closure. Abort a pass when its subscription ends; the within-pass restart race remains an accepted risk. |
 | Fork or create a conversation | Create a fresh Session and work card and join the verified workspace's Stream automatically. Do not copy the parent's identity or outstanding effect authority. |
 
 Tree navigation preserves conversation identity but invalidates work captured against the old branch. A completed conversation replacement retires the old runtime's work; cancellation leaves it usable.

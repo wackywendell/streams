@@ -69,7 +69,7 @@ When one system's change requires the other to act, events connect them. For exa
 
 The executor reads the concerned records and takes at most one native snapshot for a pass. Its pure plan compares those inputs with the requested behaviour. All actions consume that plan and the same observations; they do not attest the caller or re-read native state between effects.
 
-The Pi child's queue serializes its work. Catalog writes retain their own record locks. Neither a local queue nor a native lock prevents the user changing Herdr between observation and action. Safe target identity is therefore a [frontend contract](native-observe-and-act.md#keep-targeting-safe-at-the-frontend-boundary), not something repeated observations can prove.
+The Pi child's queue serializes its work. Catalog writes retain their own record locks. Neither a local queue nor a native lock prevents the user changing Herdr between observation and action. Use pass-local addresses and one subscription-ended check, with the [accepted restart risk](native-observe-and-act.md#bound-targeting-to-the-current-pass). Repeated observations cannot make targeting atomic.
 
 ### Failures do not create native history
 
