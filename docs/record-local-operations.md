@@ -71,7 +71,7 @@ Normal Session construction will derive its ID from immutable native identity, a
 
 A host-local checkout is the registry's saved checkout ID and canonical directory path, not a filesystem object. Device numbers can change across reboots; a directory recreated at the same path remains the same registered checkout. Do not persist device/inode identity or reject a root because those numbers changed. Explicit moves change the saved path while preserving the ID. Repository URL bindings, explicit defaults, directory existence and path-containment checks remain. During offline cutover, archive the old registry and remove its obsolete stamps while preserving IDs, paths, bindings and defaults; normal reads do not migrate it.
 
-Native workspace relationships also need direct addresses. Represent reservations and relationship phases at their enforcement keys: native workspace and host-local Stream association. Those few authoritative records must establish the existing exclusivity rules without enumerating every association, claim and attempt. Disagreement or unresolved reservation blocks the action; a pane address cannot repair it by inference.
+Native workspace relationships also need direct addresses. The [native placement contract](native-enrollment-boundary.md) keeps one canonical placement record per host-local Stream; workspace metadata is its observed projection and selector, not a second authority or reverse claim index. Exact endpoint, workspace and binding checks replace association and claim enumeration. Actual unsafe-launch attempts remain fenced in their named records; metadata absence cannot prove resource absence or repair an uncertain launch.
 
 ## Native actions
 
