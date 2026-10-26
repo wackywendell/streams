@@ -45,6 +45,53 @@ impl<'a> NativeMembershipObservation<'a> {
         self.caller
     }
 
+    pub(super) fn admit_context(&self, records: &crate::agent::RecordContext) -> Result<Scope> {
+        let session = records
+            .session
+            .as_ref()
+            .ok_or_else(|| invalid("native pass requires an enrolled Session"))?;
+        let stream = records
+            .stream
+            .as_ref()
+            .ok_or_else(|| invalid("enrolled native Session has no current Stream"))?;
+        session
+            .validate_portable()
+            .map_err(|error| invalid(error.to_string()))?;
+        stream
+            .validate()
+            .map_err(|error| invalid(error.to_string()))?;
+        if records.catalog_source != self.catalog_source
+            || records.host_id != self.host_id
+            || session.host_id != self.host_id
+            || stream.owner_host_id != self.host_id
+            || session.stream_id != stream.id
+            || session.harness != "pi"
+            || session.harness_session_id != self.caller.caller().native_session_id()
+        {
+            return Err(invalid(
+                "native pass requires the exact local conversation and current Stream",
+            ));
+        }
+        let NativeMembershipPlan::Ready(intent) = self.plan()? else {
+            return Err(invalid(
+                "native pass requires a ready destination association",
+            ));
+        };
+        if intent.destination_stream_id() != session.stream_id {
+            return Err(invalid(
+                "native destination differs from current Session membership",
+            ));
+        }
+        Ok(Scope {
+            catalog_source: records.catalog_source.clone(),
+            host_id: records.host_id.clone(),
+            stream_id: stream.id.clone(),
+            session_id: session.id.clone(),
+            harness: session.harness.clone(),
+            native_session_id: session.harness_session_id.clone(),
+        })
+    }
+
     /// No record, transcript or native reads. A ready intent is still subject to
     /// apply_move's actual Session/source/destination identity and host checks.
     pub fn plan(&self) -> Result<NativeMembershipPlan> {

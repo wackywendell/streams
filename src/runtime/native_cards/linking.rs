@@ -1,14 +1,14 @@
 use super::*;
 use serde_json::json;
 
-struct LinkPlan {
-    card: NativeTuple,
-    updates: Vec<(String, Tokens)>,
-    ready: NativeAttempt,
+pub(super) struct LinkPlan {
+    pub card: NativeTuple,
+    pub updates: Vec<(String, Tokens)>,
+    pub ready: NativeAttempt,
 }
 
 impl LinkPlan {
-    fn from_observation(v: &Verified, attempt: &NativeAttempt) -> Result<Self> {
+    pub(super) fn from_observation(v: &NativeFacts<'_>, attempt: &NativeAttempt) -> Result<Self> {
         v.bound()?;
         if v.caller != v.owner
             || attempt.key() != v.key
@@ -54,14 +54,11 @@ impl LinkPlan {
             _ => return Err(invalid("conflicting reserved pair publisher")),
         }
         let mut desired: Tokens = BTreeMap::from([
-            ("strm_agent".into(), v.identity.clone()),
+            ("strm_agent".into(), v.key.to_owned()),
             ("strm_nonce".into(), attempt.nonce().into()),
             ("strm_pi".into(), v.owner.terminal_id.clone()),
             ("strm_card".into(), card.terminal_id.clone()),
-            (
-                "strm_native".into(),
-                v.saved.card.scope().native_session_id.clone(),
-            ),
+            ("strm_native".into(), v.native_id.to_owned()),
             ("strm_role".into(), "card".into()),
         ]);
         let mut updates = Vec::new();
@@ -100,7 +97,7 @@ impl NativeCardEngine {
         observed: &Verified,
         attempt: &NativeAttempt,
     ) -> Result<Resources> {
-        let plan = LinkPlan::from_observation(observed, attempt)?;
+        let plan = LinkPlan::from_observation(&observed.facts(), attempt)?;
         for (pane, tokens) in plan.updates {
             self.call(
                 "pane.report_metadata",

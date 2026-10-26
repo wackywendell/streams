@@ -111,12 +111,7 @@ impl MetadataTarget {
 }
 
 pub(super) fn recorded_live(v: &Verified, attempt: &NativeAttempt) -> bool {
-    attempt.resources().is_some_and(|r| {
-        v.snapshot.topology().panes.iter().any(|p| {
-            p.terminal_id == r.terminal_id()
-                || matches!(attempt.phase(), NativePhase::Reserved(_)) && p.pane.id == r.pane_id()
-        })
-    })
+    v.facts().recorded_live(attempt)
 }
 fn paired_tuple(v: &Verified) -> Result<NativeTuple> {
     match v.pair()? {
@@ -140,71 +135,9 @@ impl NativeCardEngine {
         v: &Verified,
         attempt: Option<NativeAttempt>,
     ) -> Result<Option<NativeAttempt>> {
-        let pair = v.pair()?;
-        if matches!(pair, PairState::CardOnly { .. }) {
-            return Err(self.refuse(
-                "uncertain card-only launch retained; owner must complete its exact reservation",
-            ));
-        }
-        if let Some(record) = &attempt {
-            if matches!(record.phase(), NativePhase::Unlaunched) {
-                return Err(self.refuse("uncertain native launch retained; no retry permitted"));
-            }
-            if matches!(record.phase(), NativePhase::Reserved(_)) {
-                let r = record.resources().expect("reserved resources");
-                let mut derived = record.clone();
-                match pair {
-                    PairState::Absent { nonce, .. }
-                        if nonce == record.nonce()
-                            && v.owner_tokens().get("strm_card").map(String::as_str)
-                                == Some(r.terminal_id())
-                            && !recorded_live(v, record) =>
-                    {
-                        derived.mark_closed()?
-                    }
-                    PairState::Paired { card, nonce, .. }
-                        if nonce == record.nonce()
-                            && NativeTuple::from_pane(card).matches_resources(r) =>
-                    {
-                        derived.mark_ready()?
-                    }
-                    _ => {
-                        return Err(self.refuse(
-                            "uncertain reserved launch retained; exact pair proof required",
-                        ));
-                    }
-                }
-                return Ok(Some(derived));
-            }
-            if matches!(pair, PairState::Empty) && recorded_live(v, record) {
-                return Err(self.refuse("recorded card is live without verified ownership; no duplicate or cleanup permitted"));
-            }
-        }
-        let matches = match pair {
-            PairState::Empty => true,
-            PairState::Absent { nonce, .. } => attempt.as_ref().is_some_and(|a| {
-                a.nonce() == nonce
-                    && a.resources().is_some_and(|r| {
-                        v.owner_tokens().get("strm_card").map(String::as_str)
-                            == Some(r.terminal_id())
-                    })
-            }),
-            PairState::Paired { card, nonce, .. } | PairState::Separated { card, nonce, .. } => {
-                attempt.as_ref().is_some_and(|a| {
-                    a.nonce() == nonce
-                        && a.resources().is_some_and(|r| {
-                            card.terminal_id == r.terminal_id()
-                                && v.owner_tokens().get("strm_card").map(String::as_str)
-                                    == Some(r.terminal_id())
-                        })
-                })
-            }
-            PairState::CardOnly { .. } => false,
-        };
-        if !matches {
-            return Err(self.refuse("pair does not match durable native launch evidence"));
-        }
-        Ok(attempt)
+        v.facts()
+            .validate_evidence(attempt)
+            .map_err(|error| self.refuse(error.to_string()))
     }
 
     pub(super) fn marked(&mut self) -> Result<Verified> {

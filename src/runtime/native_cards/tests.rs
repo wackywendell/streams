@@ -3,6 +3,8 @@
 use super::*;
 #[path = "display_tests.rs"]
 mod display_tests;
+#[path = "pass_tests.rs"]
+mod pass_tests;
 use crate::model::{Document, Repository, Session, Stream};
 use crate::tui::{
     CardView, CheckoutBinding, CheckoutSelection, DisplayContext, DocumentLocation,

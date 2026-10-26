@@ -8,6 +8,7 @@ mod closing;
 mod config;
 mod display;
 mod documents;
+mod facts;
 #[cfg(test)]
 use crate::fake_herdr;
 mod handover;
@@ -15,6 +16,7 @@ mod inspection;
 mod launch_context;
 mod linking;
 mod membership;
+mod pass;
 mod projection;
 #[cfg(test)]
 mod tests;
@@ -24,6 +26,7 @@ pub use display::{CardPlacement, DisplayLifetime};
 pub use inspection::{DisplayCondition, NativeCardStatus, NativeOwnerContext, NativeOwnerView};
 pub use launch_context::LaunchedCardContext;
 pub use membership::{NativeMembershipObservation, NativeMembershipPlan};
+pub use pass::{NativePass, NativePorts};
 pub use projection::{NameOutcome, NameReport};
 
 use std::collections::BTreeMap;
@@ -33,6 +36,8 @@ use std::sync::atomic::{AtomicBool, Ordering};
 
 use serde::Serialize;
 use serde_json::Value;
+
+use facts::NativeFacts;
 
 use super::native::NativeInventory;
 use super::native_state::{
@@ -163,7 +168,6 @@ struct Verified {
     snapshot: HerdrNativeSnapshot,
     caller: NativeTuple,
     owner: NativeTuple,
-    identity: String,
     key: String,
     binding: Tokens,
 }
@@ -173,35 +177,27 @@ impl Verified {
             .locate_terminal(&self.owner.terminal_id)
             .expect("verified owner tuple")
     }
+    fn facts(&self) -> NativeFacts<'_> {
+        NativeFacts {
+            snapshot: &self.snapshot,
+            caller: &self.caller,
+            owner: &self.owner,
+            key: &self.key,
+            native_id: &self.saved.card.scope().native_session_id,
+            binding: &self.binding,
+        }
+    }
     fn pair(&self) -> Result<PairState<'_>> {
-        Ok(self
-            .snapshot
-            .classify_pair(&self.identity, &self.owner.terminal_id)?)
+        self.facts().pair()
     }
     fn owner_tokens(&self) -> &Tokens {
-        self.snapshot
-            .pane_tokens(&self.owner.pane_id)
-            .expect("verified owner tokens")
+        self.facts().owner_tokens()
     }
     fn workspace_tokens(&self) -> &Tokens {
-        self.snapshot
-            .workspace_tokens(&self.caller.workspace_id)
-            .expect("verified workspace tokens")
+        self.facts().workspace_tokens()
     }
     fn bound(&self) -> Result<&str> {
-        let tokens = self.workspace_tokens();
-        if self
-            .binding
-            .iter()
-            .any(|(key, value)| tokens.get(key) != Some(value))
-        {
-            return Err(invalid("verified native Stream binding required"));
-        }
-        tokens
-            .get("strm_binding")
-            .filter(|value| !value.is_empty())
-            .map(String::as_str)
-            .ok_or_else(|| invalid("verified native binding lifetime required"))
+        self.facts().bound()
     }
 }
 
@@ -472,8 +468,7 @@ impl NativeCardEngine {
         if scope.harness != "pi" {
             return Err(self.refuse("native cards require an attested Pi Session"));
         }
-        let identity = conversation_key(scope)?;
-        let key = identity.clone();
+        let key = conversation_key(scope)?;
         let binding = BTreeMap::from([
             ("strm_catalog".into(), json_digest(&scope.catalog_source)?),
             ("strm_host".into(), scope.host_id.clone()),
@@ -518,7 +513,6 @@ impl NativeCardEngine {
             snapshot,
             caller,
             owner: tuple,
-            identity,
             key,
             binding,
         })
@@ -528,8 +522,10 @@ impl NativeCardEngine {
         self.validate_pair(proof)
     }
     fn validate_pair(&self, proof: Verified) -> Result<Verified> {
-        let pair = proof.pair()?;
-        let native = &proof.saved.card.scope().native_session_id;
+        proof
+            .facts()
+            .validate_pair()
+            .map_err(|error| self.refuse(error.to_string()))?;
         if let Some(context) = &self.launched
             && (proof.caller == proof.owner
                 || context.scope() != proof.saved.card.scope()
@@ -539,28 +535,6 @@ impl NativeCardEngine {
             return Err(
                 self.refuse("launched card scope or caller is not its protected native lifetime")
             );
-        }
-        match pair {
-            PairState::Empty => {}
-            PairState::CardOnly { card, .. } => {
-                if proof
-                    .snapshot
-                    .pane_tokens(&card.pane.id)
-                    .and_then(|t| t.get("strm_native"))
-                    != Some(native)
-                {
-                    return Err(self.refuse("reserved card native Pi identity mismatch"));
-                }
-            }
-            PairState::Absent { agent, .. }
-            | PairState::Paired { agent, .. }
-            | PairState::Separated { agent, .. } => {
-                if NativeTuple::from_pane(agent) != proof.owner
-                    || proof.owner_tokens().get("strm_native") != Some(native)
-                {
-                    return Err(self.refuse("native Pi identity or owner tuple mismatch"));
-                }
-            }
         }
         if proof.caller.terminal_id != proof.owner.terminal_id {
             let PairState::Paired { card, nonce, .. } = proof.pair()? else {

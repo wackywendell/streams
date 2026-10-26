@@ -1,13 +1,13 @@
 use super::*;
 use serde_json::json;
 
-struct ClosePlan {
-    card: Option<NativeTuple>,
-    closed: Option<NativeAttempt>,
+pub(super) struct ClosePlan {
+    pub card: Option<NativeTuple>,
+    pub closed: Option<NativeAttempt>,
 }
 
 impl ClosePlan {
-    fn from_observation(v: &Verified, record: &NativeAttempt) -> Result<Self> {
+    pub(super) fn from_observation(v: &NativeFacts<'_>, record: &NativeAttempt) -> Result<Self> {
         v.bound()?;
         let card = match v.pair()? {
             PairState::Empty | PairState::Absent { .. } => None,
@@ -36,7 +36,7 @@ impl NativeCardEngine {
             .read_attempt(&observed.key, NativePurpose::Card)?
             .ok_or_else(|| self.refuse("missing close evidence"))?;
         self.validate_evidence(&observed, Some(record.clone()))?;
-        let plan = ClosePlan::from_observation(&observed, &record)?;
+        let plan = ClosePlan::from_observation(&observed.facts(), &record)?;
         self.check_cancelled()?;
         if let Some(closed) = plan.closed {
             lock.write(Some(&record), &closed)?;
