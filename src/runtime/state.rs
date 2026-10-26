@@ -8,6 +8,8 @@ use serde_json::Value;
 
 mod cutover;
 pub(crate) use cutover::PreparedRelationshipCutover;
+mod placement;
+pub use placement::{NativePlacement, PlacementBinding};
 
 #[cfg(test)]
 mod tests;
