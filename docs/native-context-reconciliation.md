@@ -38,27 +38,11 @@ Native evidence lives at `$XDG_STATE_HOME/streams/native`, defaulting to `~/.loc
 
 One native writer lock lives in this root. Its identity includes neither socket nor workspace. It replaces the per-socket and per-workspace native locks; do not nest them. Hold it for one bounded plan and effect/reply pass, then release it. This serializes writes to conversation-keyed evidence across owner moves and endpoints.
 
-Use a versioned, conversation-keyed evidence record carrying that lifetime's nonce, phase and resources. Version 2 records declare `purpose: "card"` or `purpose: "editor"`; editors carry no owner or follow state. Normal operations use direct keyed reads and require the completed new format. They never read legacy keys, replay history or scan for evidence. If migration is required, fail clearly and name the migration command.
+Use a versioned, conversation-keyed evidence record carrying that lifetime's nonce, phase and resources. Version 2 records declare `purpose: "card"` or `purpose: "editor"`; editors carry no owner or follow state. Normal operations read that one named record and reject unsupported versions. A fresh root needs no completion marker or migration. Readers never create it; writers create it under the native lock. They never read legacy keys, replay history or scan for evidence.
 
 ### Offline reset
 
-The alpha cutover resets native evidence instead of attributing old records. After backup, the coordinator stops Streams Pi children and their serve processes, then runs `streams native migrate-evidence --legacy-state-dir <known-v1-root>` under the native lock.
-
-The old root is an explicit input to this offline command, not something normal operations discover. The reset deletes old evidence there and writes the completion marker in the new host-local root. Card panes will restart; preserving their old nonce or lifetime through deploy is not required. Catalog identity migration can run in either order.
-
-For this first deploy, the coordinator also stops every pre-rule card process by command line, including `~/code/streams/target/debug/streams native pane`. They inspect a snapshot for leftover card panes and close them by hand. Replacing the executable does not upgrade running readers. Late launch requests must use the deployed binary at their captured `STREAMS_RUST_BIN` path. These are deploy steps, not runtime attribution.
-
-The reset takes one Herdr snapshot and runs one ordered plan, without retries:
-
-1. Close known card resources named by version-1 evidence, matching their nonce, resource tuple and card markers against the snapshot. The record shape alone cannot distinguish cards from editors. Leave editor and unclassified panes open.
-2. Clear Streams pair markers on every pane, guarding each target against its snapshot identity.
-3. Delete all version-1 card and editor evidence, then install the completed-version-2 marker.
-
-A late card from an in-flight version-1 launch starts the deployed binary, finds no matching version-2 evidence and exits. Unmarked or otherwise unclassified cards follow the same rule. The reset needs neither plugin provenance in the snapshot nor a frontend dispatch barrier. If an effect reply fails or mismatches, stop before deleting evidence or installing completion.
-
-Editor evidence is discarded even when a launch was uncertain. Editors may contain unsaved work, so the reset leaves them open. A later request may create a duplicate editor pane; this is an accepted alpha cost. This exception does not cover workspace-open attempts.
-
-After reset, automatic open or `/streams pane` can launch fresh cards. Normal operations never perform this reset, read version-1 evidence or support a mixed layout. There is no attribution, quarantine, migration manifest or editor evidence upgrade.
+The alpha catalog cutover follows the [coordinator's manual checklist](native-catalog-reset.md): stop the old children and viewers, close card panes, leave editors open and archive the old catalog, native evidence and runtime associations and fences before initialising the empty catalog and re-enrolling. There is no built reset, migration command, native cleanup component or legacy reader. Old readers cannot write evidence, and absent or nonce-mismatched evidence makes them exit. The coordinator handles stray panes or workspaces by hand; ordinary runtime actions never infer this reset or use it to discard uncertainty.
 
 ## Cross-host participation
 

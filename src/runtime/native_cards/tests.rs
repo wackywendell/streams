@@ -440,11 +440,6 @@ impl Fixture {
             .mode(0o700)
             .create(state.directory())
             .unwrap();
-        crate::file_io::write_json(
-            &state.directory().join("format.json"),
-            &json!({"version":2}),
-        )
-        .unwrap();
         let world = Arc::new(Mutex::new(World {
             snapshot: json!({
                 "workspaces":[{"workspace_id":"w","label":"Workspace","number":1,"tokens":{}}],
@@ -897,19 +892,12 @@ fn native_open_baseline_source_evidence_and_wait_counts() {
         .count();
     // The fake source counts context requests, not real catalog file reads.
     // The CLI/catalog integration budget must count those separately.
-    assert_eq!((source_reads, probes, reads, waits), (12, 24, 17, 0));
+    assert_eq!((source_reads, probes, reads, waits), (12, 12, 5, 0));
     let evidence = f
         .runner
         .state
         .directory()
         .join(format!("{}.json", f.runner.key));
-    let format = f.runner.state.directory().join("format.json");
-    assert_eq!(
-        io.iter()
-            .filter(|event| matches!(event, Io::Read(path) if path == &format))
-            .count(),
-        12
-    );
     assert_eq!(
         io.iter()
             .filter(|event| matches!(event, Io::Read(path) if path == &evidence))
@@ -918,7 +906,7 @@ fn native_open_baseline_source_evidence_and_wait_counts() {
     );
     for event in io {
         if let Io::Probe(path) | Io::Read(path) = event {
-            assert!(path == evidence || path == format);
+            assert_eq!(path, evidence);
         }
     }
 }
@@ -948,15 +936,14 @@ fn bootstrap_and_verify_are_read_only_and_require_pair_and_durable_evidence() {
 }
 
 #[test]
-fn missing_completed_format_refuses_launch_without_legacy_lookup_or_repair() {
+fn fresh_native_root_needs_no_marker_or_migration() {
     let f = Fixture::new();
-    std::fs::remove_file(f.runner.state.directory().join("format.json")).unwrap();
-    let error = f.engine().open_display(OpenMode::Explicit).unwrap_err();
+    std::fs::remove_dir(f.runner.state.directory()).unwrap();
     assert!(matches!(
-        error,
-        super::super::RuntimeError::NativeEvidenceResetRequired
+        f.engine().open_display(OpenMode::Explicit).unwrap(),
+        DisplayOutcome::Opened(_)
     ));
-    assert!(f.effects().is_empty());
+    assert!(matches!(f.record().phase(), NativePhase::Ready(_)));
     assert!(!f.runner.state.directory().join("format.json").exists());
 }
 

@@ -15,7 +15,6 @@ mod inspection;
 mod launch_context;
 mod linking;
 mod projection;
-mod reset;
 #[cfg(test)]
 mod tests;
 
@@ -24,7 +23,6 @@ pub use display::{CardPlacement, DisplayLifetime};
 pub use inspection::{DisplayCondition, NativeCardStatus, NativeOwnerContext, NativeOwnerView};
 pub use launch_context::LaunchedCardContext;
 pub use projection::{NameOutcome, NameReport};
-pub use reset::{EvidenceResetReport, reset_evidence};
 
 use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};

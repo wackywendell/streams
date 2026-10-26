@@ -23,9 +23,6 @@ impl CardFixture {
         let state = NativeState::new(home.join("state/streams/native")).unwrap();
         fs::create_dir_all(state.directory()).unwrap();
         fs::set_permissions(state.directory(), fs::Permissions::from_mode(0o700)).unwrap();
-        let marker = state.directory().join("format.json");
-        fs::write(&marker, r#"{"version":2}"#).unwrap();
-        fs::set_permissions(&marker, fs::Permissions::from_mode(0o600)).unwrap();
         let output = native
             .command()
             .args(["native", "check", "--session-id", &native.id, "--json"])

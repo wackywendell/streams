@@ -179,8 +179,6 @@ function real(t,{enrolled=true}={}) {
  const session=enrolled?cli('session','attach',stream.id,'--harness','pi','--session-id',id,'--title','Real Rust lane').session:null;
  cli('config','set','frontend.mode','herdr');
  const config=join(directory,'cards.json');writeFileSync(config,JSON.stringify({workspace_startup:'manual',session_naming:true,workspace_naming:false,tab_naming:false}));process.env.WORK_CARDS_CONFIG_PATH=config;
- const legacyState=join(dirname(socket),'streams-native');
- cli('native','migrate-evidence','--legacy-state-dir',legacyState);
  const catalog=cli('config','get','catalog.root'),hash=value=>createHash('sha256').update(value).digest('hex'),key=(...parts)=>hash('['+parts.map(JSON.stringify).join(', ')+']');
  const host=session?.host_id??JSON.parse(readFileSync(join(directory,'config/streams/host.json'),'utf8')).id;
  const state=join(directory,'state/streams/catalogs',hash(realpathSync(catalog)),key(host));
@@ -189,7 +187,7 @@ function real(t,{enrolled=true}={}) {
  const transcript=join(directory,'pi/sessions',id+'.jsonl');mkdirSync(dirname(transcript),{recursive:true});
  writeFileSync(transcript,JSON.stringify({type:'session',version:3,id,cwd:directory,timestamp:new Date(0).toISOString()})+'\n');
  const commands=()=>{assert.equal(existsSync(spawned),false,'the Rust CLI started a Herdr process');return existsSync(log)?readFileSync(log,'utf8').trim().split('\n').filter(Boolean).map(JSON.parse):[];};
- return {...f,directory,id,stream,state,legacyState,native,put,invoke,cli,load,child,commands};
+ return {...f,directory,id,stream,state,native,put,invoke,cli,load,child,commands};
 }
 test('one-shot native operations keep explicit interim snapshot budgets without a scope round trip',t=>{
  const f=real(t);writeFileSync(join(f.directory,'native-commands.jsonl'),'');
@@ -200,43 +198,6 @@ test('one-shot native operations keep explicit interim snapshot budgets without 
   assert.equal(counts.ping,1,operation);assert.equal(counts['session.snapshot'],snapshots,operation);
  }
 });
-test('native evidence reset works without a catalog, host identity or caller Session',t=>{
- const directory=temporary(t,async()=>{},'/tmp'),socket=join(directory,'config/herdr/sessions/fixture/herdr.sock');
- const file=join(directory,'native.json'),log=join(directory,'native-commands.jsonl'),legacy=join(directory,'known-v1');
- mkdirSync(dirname(socket),{recursive:true});
- writeFileSync(file,JSON.stringify({snapshot:{workspaces:[],tabs:[],panes:[],layouts:[],agents:[]}}));
- lifetime(t,directory,{HERDR_SOCKET_PATH:socket,HERDR_ENV:'0',HERDR_PANE_ID:'not-a-caller'});
- herdrServer(t,{socket,file,log});
- const result=spawnSync(binary,['native','migrate-evidence','--legacy-state-dir',legacy,'--json'],{env:process.env,cwd:directory,encoding:'utf8',timeout:120000});
- assert.ifError(result.error);assert.equal(result.status,0,result.stdout+result.stderr);
- assert.equal(JSON.parse(result.stdout).evidence_reset.deleted_evidence,0);
- assert.deepEqual(JSON.parse(readFileSync(join(directory,'state/streams/native/format.json'),'utf8')),{version:2});
- assert.equal(existsSync(join(directory,'config/streams/host.json')),false);
- assert.equal(existsSync(join(directory,'state/streams/catalogs')),false);
- assert.equal(existsSync(join(directory,'data/streams')),false);
- assert.equal(existsSync(legacy),false);
- assert.deepEqual(readFileSync(log,'utf8').trim().split('\n').map(line=>JSON.parse(line)[0]),['ping','session.snapshot']);
-});
-
-test('native evidence reset is explicit and does not need an enrolled Session',t=>{
- const f=real(t,{enrolled:false}),root=join(f.directory,'state/streams/native'),marker=join(root,'format.json');
- rmSync(marker);mkdirSync(f.legacyState,{recursive:true,mode:0o700});
- const key='ab'.repeat(32),path=join(f.legacyState,key+'.json');
- writeFileSync(path,JSON.stringify({version:1,key,nonce:'uncertain',phase:'pending'}),{mode:0o600});
- const before=f.commands().length;
- const scoped=f.invoke('native','--session-id',f.id,'migrate-evidence','--legacy-state-dir',f.legacyState);
- assert.notEqual(scoped.code,0);assert.match(scoped.data.error.message,/not Session-scoped/);
- assert.equal(f.commands().length,before);
- const reset=f.cli('native','migrate-evidence','--legacy-state-dir',f.legacyState);
- assert.equal(reset.version,2);assert.equal(reset.evidence_reset.deleted_evidence,1);
- assert.deepEqual(reset.evidence_reset.closed_cards,[]);
- assert.equal(existsSync(path),false);assert.deepEqual(JSON.parse(readFileSync(marker,'utf8')),{version:2});
- assert.deepEqual(f.commands().slice(before).map(([method])=>method),['ping','session.snapshot']);
- const again=f.commands().length;
- assert.equal(f.cli('native','migrate-evidence','--legacy-state-dir',f.legacyState).evidence_reset.already_completed,true);
- assert.deepEqual(f.commands().slice(again).map(([method])=>method),['ping']);
-});
-
 test('Pi reuses one real v2 child; catalog UI facts never trigger a TypeScript native control loop',async t=>{
  const f=real(t),notices=[],requests=[];let spawns=0;
  const child=f.child({warning:text=>notices.push(text),spawn:(...args)=>{spawns++;return spawn(...args);}});

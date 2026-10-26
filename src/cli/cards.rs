@@ -24,9 +24,6 @@ pub(super) struct Options {
 }
 impl App {
     pub(super) fn native_cards(&self, options: Options, command: NativeCommand) -> Result<Output> {
-        if let NativeCommand::MigrateEvidence { legacy_state_dir } = command {
-            return self.reset_native_evidence(options, legacy_state_dir);
-        }
         let launched = LaunchedCardContext::from_environment(&self.environment)?;
         if let (Some(path), Some(context)) = (&options.plugin_root, &launched)
             && std::fs::canonicalize(if path.is_absolute() {
@@ -124,37 +121,12 @@ impl App {
                 engine.close_display()?;
                 Ok(Output::value(json!({"closed":true})))
             }
-            NativeCommand::Pane | NativeCommand::MigrateEvidence { .. } => {
-                unreachable!("special branch handled above")
-            }
+            NativeCommand::Pane => unreachable!("special branch handled above"),
         }
     }
 }
 
 impl App {
-    fn reset_native_evidence(&self, options: Options, legacy_state_dir: PathBuf) -> Result<Output> {
-        if options.session_id.is_some() {
-            return Err(CliError::message(
-                "evidence reset is not Session-scoped; omit --session-id",
-            ));
-        }
-        let plugin_root = options.plugin_root.unwrap_or_else(|| {
-            PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("integrations/herdr-work-cards")
-        });
-        let config = NativeCardsConfig::load(&self.environment, &self.cwd, &plugin_root)?;
-        let client = HerdrClient::connect(self.environment.clone(), config.timeout_seconds())
-            .map_err(streams_temper::runtime::RuntimeError::from)?;
-        let state = NativeState::new(evidence_directory(options.state_dir, &self.environment)?)?;
-        let legacy = NativeState::new(legacy_state_dir)?;
-        let report = streams_temper::runtime::native_cards::reset_evidence(
-            &client,
-            &state,
-            &legacy,
-            config.timeout_seconds(),
-            &AtomicBool::new(false),
-        )?;
-        Ok(Output::value(json!({"version":2,"evidence_reset":report})))
-    }
     pub(super) fn capture_native_owner(&self, engine: &mut NativeCardEngine) -> Result<Output> {
         use streams_temper::runtime::{
             conversations::ConversationRoots, workspace::WorkspaceRuntime,

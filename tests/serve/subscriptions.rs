@@ -158,12 +158,6 @@ impl NativeFixture {
         let native = home.join("state/streams/native");
         fs::create_dir_all(&native).unwrap();
         fs::set_permissions(&native, fs::Permissions::from_mode(0o700)).unwrap();
-        fs::write(native.join("format.json"), r#"{"version":2}"#).unwrap();
-        fs::set_permissions(
-            native.join("format.json"),
-            fs::Permissions::from_mode(0o600),
-        )
-        .unwrap();
         fs::write(home.join("work-cards.json"), json!({
             "workspace_startup":"manual","workspace_naming":false,"tab_naming":false,"session_naming":true
         }).to_string()).unwrap();
@@ -579,11 +573,9 @@ fn accepted_save_with_native_completion_failure_retains_the_result_and_warns_onc
     let request = json!({"operation_id":"native-warning","catalog_source":context["catalog_source"],"actor":"user",
         "kind":"session","before":context["session"],"changes":{"title":"Saved despite native failure"},
         "ownership_token":context["authority"]["token"],"inputs":[]});
-    fs::remove_file(
-        f.fixture
-            .directory
-            .path()
-            .join("state/streams/native/format.json"),
+    fs::set_permissions(
+        f.fixture.directory.path().join("state/streams/native"),
+        fs::Permissions::from_mode(0o755),
     )
     .unwrap();
     child.request(1, json!({"kind":"apply","request":request}));
