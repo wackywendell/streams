@@ -5,7 +5,7 @@ use crate::{
     runtime::{
         conversations::IDENTITY_FILE_OPENS,
         native::PiCallerObservation,
-        state::{Association, RuntimeState, herdr_scope},
+        state::{NativePlacement, PlacementBinding, RuntimeState, herdr_scope},
     },
 };
 
@@ -34,6 +34,10 @@ fn inputs(f: &Fixture) -> (HerdrClient, RuntimeState, PathBuf) {
     std::fs::write(&transcript, "{\"type\":\"session\",\"id\":\"native\"}\n").unwrap();
     {
         let mut world = f.runner.world.lock().unwrap();
+        world.snapshot["workspaces"][0]["tokens"] = json!({
+            "strm_catalog":json_digest(&"catalog").unwrap(), "strm_host":"host",
+            "strm_stream":"effort", "strm_binding":"binding"
+        });
         let pane = &mut world.snapshot["panes"][0];
         pane["agent"] = json!("pi");
         pane["agent_session"] = json!({"agent":"pi","kind":"path","value":transcript});
@@ -45,10 +49,20 @@ fn inputs(f: &Fixture) -> (HerdrClient, RuntimeState, PathBuf) {
     let client = HerdrClient::connect(f.environment.clone(), 1.0).unwrap();
     let runtime = RuntimeState::new(f._temp.path().join("runtime"), "host").unwrap();
     let scope = herdr_scope(&f.runner.socket, None);
+    let cancelled = AtomicBool::new(false);
+    let guard = f.runner.state.lock(1.0, &cancelled).unwrap();
     runtime
-        .stream_lock(Some(&scope), "effort")
-        .unwrap()
-        .write_association(&Association::new("effort", "w", None, true).unwrap())
+        .save_placement_binding(
+            &guard,
+            context().stream.as_ref().unwrap(),
+            None,
+            &NativePlacement::new(
+                "effort",
+                &scope,
+                PlacementBinding::herdr("w", "binding").unwrap(),
+            )
+            .unwrap(),
+        )
         .unwrap();
     f.server.clear();
     IDENTITY_FILE_OPENS.with(|files| files.borrow_mut().clear());
@@ -68,8 +82,7 @@ fn record_native_pass_closes_without_source_context_proof_or_snapshot_rereads() 
         let guard = f.runner.state.lock(1.0, &cancelled).unwrap();
         let snapshot = HerdrNativeSnapshot::parse(&client.session_snapshot().unwrap()).unwrap();
         let caller = PiCallerObservation::from_snapshot(&client, snapshot, "native").unwrap();
-        let membership =
-            NativeMembershipObservation::observe("catalog", &runtime, &caller).unwrap();
+        let membership = NativeMembershipObservation::observe(&records, &runtime, &caller).unwrap();
         let pass = NativePass::new(
             &records,
             membership,
@@ -116,7 +129,7 @@ fn record_native_pass_links_the_exact_receipt_with_the_original_proof() {
     let guard = f.runner.state.lock(1.0, &cancelled).unwrap();
     let snapshot = HerdrNativeSnapshot::parse(&client.session_snapshot().unwrap()).unwrap();
     let caller = PiCallerObservation::from_snapshot(&client, snapshot, "native").unwrap();
-    let membership = NativeMembershipObservation::observe("catalog", &runtime, &caller).unwrap();
+    let membership = NativeMembershipObservation::observe(&records, &runtime, &caller).unwrap();
     let pass = NativePass::new(
         &records,
         membership,
@@ -179,10 +192,11 @@ fn record_native_pass_rejects_wrong_context_before_native_effects() {
         },
     ];
     for change in changes {
-        let mut records = context();
+        let original = context();
+        let mut records = original.clone();
         change(&mut records);
         let membership =
-            NativeMembershipObservation::observe("catalog", &runtime, &caller).unwrap();
+            NativeMembershipObservation::observe(&original, &runtime, &caller).unwrap();
         assert!(
             NativePass::new(
                 &records,
@@ -211,7 +225,7 @@ fn canceled_record_native_pass_does_not_publish_closed_intent() {
     let guard = f.runner.state.lock(1.0, &cancelled).unwrap();
     let snapshot = HerdrNativeSnapshot::parse(&client.session_snapshot().unwrap()).unwrap();
     let caller = PiCallerObservation::from_snapshot(&client, snapshot, "native").unwrap();
-    let membership = NativeMembershipObservation::observe("catalog", &runtime, &caller).unwrap();
+    let membership = NativeMembershipObservation::observe(&records, &runtime, &caller).unwrap();
     let pass = NativePass::new(
         &records,
         membership,
@@ -226,6 +240,47 @@ fn canceled_record_native_pass_does_not_publish_closed_intent() {
     assert!(pass.close_display().is_err());
     assert_eq!(f.record(), before);
     assert_eq!(f.server.methods(), ["session.snapshot"]);
+}
+
+#[test]
+fn incomplete_binding_refuses_before_private_evidence_read() {
+    let f = Fixture::new();
+    f.engine().open_display(OpenMode::Explicit).unwrap();
+    let (client, runtime, _) = inputs(&f);
+    f.runner.world.lock().unwrap().snapshot["workspaces"][0]["tokens"]
+        .as_object_mut()
+        .unwrap()
+        .remove("strm_binding");
+    let records = context();
+    let cancelled = AtomicBool::new(false);
+    let guard = f.runner.state.lock(1.0, &cancelled).unwrap();
+    std::fs::write(
+        f.runner.state.path(&f.runner.key).unwrap(),
+        "corrupt evidence",
+    )
+    .unwrap();
+    let snapshot = HerdrNativeSnapshot::parse(&client.session_snapshot().unwrap()).unwrap();
+    let caller = PiCallerObservation::from_snapshot(&client, snapshot, "native").unwrap();
+    let membership = NativeMembershipObservation::observe(&records, &runtime, &caller).unwrap();
+    assert!(matches!(
+        membership.plan().unwrap(),
+        NativeMembershipPlan::NeedsProjection { .. }
+    ));
+    let error = NativePass::new(
+        &records,
+        membership,
+        NativePorts {
+            client: &client,
+            writer: &guard,
+            cancelled: &cancelled,
+        },
+    )
+    .err()
+    .unwrap()
+    .to_string();
+    assert!(error.contains("complete destination placement"), "{error}");
+    assert_eq!(f.server.methods(), ["session.snapshot"]);
+    assert_eq!(f.runner.world.lock().unwrap().observation_reads, 0);
 }
 
 #[test]
@@ -246,8 +301,7 @@ fn record_native_pass_rejects_wrong_evidence_purpose_or_endpoint() {
         let guard = f.runner.state.lock(1.0, &cancelled).unwrap();
         let snapshot = HerdrNativeSnapshot::parse(&client.session_snapshot().unwrap()).unwrap();
         let caller = PiCallerObservation::from_snapshot(&client, snapshot, "native").unwrap();
-        let membership =
-            NativeMembershipObservation::observe("catalog", &runtime, &caller).unwrap();
+        let membership = NativeMembershipObservation::observe(&records, &runtime, &caller).unwrap();
         assert!(
             NativePass::new(
                 &records,
