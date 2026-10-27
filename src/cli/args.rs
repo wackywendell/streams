@@ -1,11 +1,10 @@
 use std::path::PathBuf;
 
-use clap::{ArgAction, ArgGroup, Args, Parser, Subcommand, builder::TypedValueParser};
+use clap::{ArgAction, ArgGroup, Args, Parser, Subcommand};
 use streams_temper::config::{ConfigKey, Strategy};
 use streams_temper::frontend::FrontendRequest;
 use streams_temper::model::{NamingMode, Status, TitleMode};
 use streams_temper::runtime::conversations::Harness;
-use streams_temper::sync::policy::SyncEvent;
 
 #[derive(Debug, Parser)]
 #[command(name = "streams", about = "Manage durable work streams")]
@@ -145,10 +144,7 @@ pub(super) enum Command {
         #[arg(value_name = "REF")]
         reference: Option<String>,
     },
-    Sync {
-        #[arg(long, default_value = "explicit", value_parser = clap::builder::PossibleValuesParser::new(["explicit", "start", "shutdown"]).map(|value| value.parse::<SyncEvent>().expect("listed sync event")))]
-        event: SyncEvent,
-    },
+    Sync,
     Session {
         #[command(subcommand)]
         command: SessionCommand,
@@ -509,7 +505,9 @@ mod tests {
                 "--session-id",
                 "id",
             ],
-            vec!["sync", "--event", "force"],
+            vec!["sync", "--event", "explicit"],
+            vec!["sync", "--event", "start"],
+            vec!["sync", "--event", "shutdown"],
         ] {
             assert!(parse(&args).is_err(), "{args:?}");
         }

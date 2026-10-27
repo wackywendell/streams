@@ -114,7 +114,7 @@ fn unsupported_frames_fields_and_positional_structs_fail() {
         json!({"type":"request","id":1,"request":{"kind":"enroll","request":null}}),
         json!({"type":"request","id":1,"request":{"kind":"capture_inputs","target":{"kind":"inventory","workspace_id":"w"}}}),
         json!({"type":"request","id":1,"request":{"kind":"preview","catalog":{},"action":{"apply":null},"request":{}}}),
-        json!({"type":"request","id":1,"request":{"kind":"sync","event":{"start":null}}}),
+        json!({"type":"request","id":1,"request":{"kind":"sync","event":"start"}}),
         json!({"type":"cancel","id":1,"request":{"kind":"open_card"}}),
     ] {
         assert!(decode_client(&frame.to_string()).is_err(), "{frame}");

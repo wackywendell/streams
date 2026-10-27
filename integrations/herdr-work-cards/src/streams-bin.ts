@@ -18,15 +18,8 @@ function executable(path: string, selector: string): string {
 
 /** Pin reporting and native subprocesses to the same Rust CLI, never PATH or .venv. */
 export function resolveStreamsBin(env: NodeJS.ProcessEnv = process.env): string {
-  if (env.STREAMS_BIN_PATH !== undefined || env.STREAMS_RUST_BIN !== undefined) {
-    const selected = env.STREAMS_BIN_PATH !== undefined
-      ? executable(env.STREAMS_BIN_PATH, 'STREAMS_BIN_PATH')
-      : executable(env.STREAMS_RUST_BIN!, 'STREAMS_RUST_BIN');
-    if (env.STREAMS_BIN_PATH !== undefined && env.STREAMS_RUST_BIN !== undefined
-      && executable(env.STREAMS_RUST_BIN, 'STREAMS_RUST_BIN') !== selected) {
-      throw Error('STREAMS_BIN_PATH and STREAMS_RUST_BIN select different executables; use one Rust CLI for reporting and native cards');
-    }
-    return selected;
+  if (env.STREAMS_BIN_PATH !== undefined) {
+    return executable(env.STREAMS_BIN_PATH, 'STREAMS_BIN_PATH');
   }
   const binary = join(resolve(packageRoot, env.CARGO_TARGET_DIR ?? 'target'), 'debug', 'streams');
   try {

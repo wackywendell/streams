@@ -137,7 +137,7 @@ pub struct HerdrCreatedWorkspace {
     pub root_pane: HerdrPane,
 }
 
-/// Raw, caller-prepared native metadata tokens. Projection/normalization policy
+/// One pinned protocol-22 endpoint per process. Herdr closes ordinary request
 /// sockets after each reply, so each request connects; only subscriptions persist.
 #[derive(Clone)]
 pub struct HerdrClient {

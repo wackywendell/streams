@@ -16,8 +16,6 @@ fn config_keys_roundtrip_exact_wire_names() {
         (ConfigKey::FrontendMode, "frontend.mode"),
         (ConfigKey::StreamNaming, "naming.stream"),
         (ConfigKey::SessionNaming, "naming.session"),
-        (ConfigKey::StreamSeconds, "sync.stream_seconds"),
-        (ConfigKey::SessionSeconds, "sync.session_seconds"),
     ];
     assert_eq!(
         ConfigKey::iter().collect::<Vec<_>>(),
@@ -32,6 +30,8 @@ fn config_keys_roundtrip_exact_wire_names() {
     for wire in [
         "unknown",
         "notes.root",
+        "sync.stream_seconds",
+        "sync.session_seconds",
         "CatalogRoot",
         "catalog.Root",
         "catalog.root ",
@@ -50,7 +50,7 @@ fn unknown_json_keys_preserve_diagnostics() {
         ),
         (
             json!({"sync":{"attempts":1}}),
-            "unknown streams config key: sync.attempts",
+            "invalid config section: sync",
         ),
         (
             json!({"frontend":{"Mode":"none"}}),
@@ -78,6 +78,8 @@ fn malformed_settings_schema_is_rejected() {
         json!({"catalog":{"unknown":"x"}}),
         json!({"notes":{}}),
         json!({"sync":{"attempts":1}}),
+        json!({"sync":{"stream_seconds":300}}),
+        json!({"sync":{"session_seconds":3600}}),
         json!({"frontend":{"mode":true}}),
         json!({"frontend":{"mode":" "}}),
     ] {
@@ -127,59 +129,17 @@ fn title_defaults_accept_only_automatic_or_manual_and_default_independently() {
 }
 
 #[test]
-fn durations_are_strict_nonnegative_finite_json_numbers() {
-    let config = config();
-    for key in [ConfigKey::StreamSeconds, ConfigKey::SessionSeconds] {
-        let name = key.as_ref().split_once('.').unwrap().1;
-        for text in ["0", "-0.0", "0.25", "12", "1e100"] {
-            let expected = text.parse::<f64>().unwrap();
-            assert_eq!(
-                config.parse_value(key, text).unwrap().as_f64(),
-                Some(expected)
-            );
-            let mut data = json!({"sync":{}});
-            data["sync"][name] = load_json(text).unwrap();
-            let parsed = config.validate_overrides(data).unwrap();
-            assert_eq!(parsed["sync"][name].as_f64(), Some(expected));
-        }
-        for text in [
-            "-1",
-            "true",
-            "false",
-            "null",
-            "\"12\"",
-            "{}",
-            "[]",
-            "NaN",
-            "Infinity",
-            "-Infinity",
-            "1e999",
-            "",
-        ] {
-            assert!(config.parse_value(key, text).is_err(), "{key} {text}");
-            let document = format!("{{\"sync\":{{\"{name}\":{text}}}}}");
-            let parsed = load_json(&document)
-                .map_err(|error| invalid(error.to_string()))
-                .and_then(|data| config.validate_overrides(data));
-            assert!(parsed.is_err(), "{document}");
-        }
-    }
-}
-
-#[test]
-fn overrides_normalize_paths_and_preserve_explicit_frontend_and_numbers() {
+fn overrides_normalize_paths_and_preserve_explicit_frontend() {
     assert_eq!(
         config()
             .validate_overrides(json!({
                 "catalog":{"root":"~/Catalog"},
-                "frontend":{"mode":"third-party-adapter"},
-                "sync":{"stream_seconds":0.25,"session_seconds":12}
+                "frontend":{"mode":"third-party-adapter"}
             }))
             .unwrap(),
         json!({
             "catalog":{"root":"/home/test/Catalog"},
-            "frontend":{"mode":"third-party-adapter"},
-            "sync":{"stream_seconds":0.25,"session_seconds":12}
+            "frontend":{"mode":"third-party-adapter"}
         })
     );
 }

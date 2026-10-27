@@ -26,32 +26,32 @@ function hooks(cli, infer = () => assert.fail('lifecycle sync must not invoke a 
  return {handlers,ctx,warnings,entries};
 }
 
-test('typed lifecycle preserves publication results, passes the trigger and requests a total deadline',async()=>{
+test('typed lifecycle preserves publication results and requests a total deadline',async()=>{
  for(const sharing of ['local-only','pending','confirmed','failed','blocked','uncertain']) {
   const calls=[], value={...local,sharing};
   const cli=new StreamCli('/tmp',async(...args)=>{calls.push(args);return {status:'success',result:value};});
-  assert.deepEqual(await cli.sync('start'),value);
-  assert.deepEqual(calls[0],[{kind:'sync',event:'start'},{timeout:10000}]);
-  await cli.sync('shutdown');assert.deepEqual(calls[1][0],{kind:'sync',event:'shutdown'});
+  assert.deepEqual(await cli.sync(),value);
+  assert.deepEqual(calls[0],[{kind:'sync'},{timeout:10000}]);
+  await cli.sync();assert.deepEqual(calls[1][0],{kind:'sync'});
  }
  for(const outcome of [{status:'success',result:{}},{status:'error',error:{kind:'repair-required',message:'Inspect marker'}},{status:'success',result:{...local,sharing:'made-up'}}]) {
-  await assert.rejects(new StreamCli('/tmp',async()=>outcome).sync('shutdown'),StreamsCliError);
+  await assert.rejects(new StreamCli('/tmp',async()=>outcome).sync(),StreamsCliError);
  }
 });
 
 test('startup awaits sync; shutdown is awaited, best effort and idempotent without a summary',async()=>{
  const events=[];let finish, settled=false;
- const f=hooks({sync:async event=>{events.push(event);if(event==='start')return local;return new Promise(resolve=>{finish=resolve;});}});
- await f.handlers.get('session_start')({},f.ctx);assert.deepEqual(events,['start']);
+ const f=hooks({sync:async()=>{events.push(events.length+1);if(events.length!==2)return local;return new Promise(resolve=>{finish=resolve;});}});
+ await f.handlers.get('session_start')({},f.ctx);assert.deepEqual(events,[1]);
  // Pi constructs a fresh context per event, even within the same conversation.
  const shutdown=f.handlers.get('session_shutdown')({reason:'quit'},{...f.ctx});
  assert.equal(f.handlers.get('session_shutdown')({reason:'quit'},{...f.ctx}),shutdown);
  shutdown.then(()=>settled=true);await Promise.resolve();assert.equal(settled,false);
  finish({...local,sharing:'uncertain',detail:'lost push response'});await shutdown;
- assert.deepEqual(events,['start','shutdown']);assert.equal(f.entries.length,1);assert.equal(f.entries[0].type,'stream-catalog-sync');
+ assert.deepEqual(events,[1,2]);assert.equal(f.entries.length,1);assert.equal(f.entries[0].type,'stream-catalog-sync');
  assert.match(f.warnings[0].text,/lost push response/);assert.equal(f.warnings[0].level,'warning');
  f.handlers.get('agent_end')({messages:[{role:'assistant',stopReason:'stop'}]},f.ctx);
- await f.handlers.get('session_start')({},f.ctx);assert.deepEqual(events,['start','shutdown','start']);
+ await f.handlers.get('session_start')({},f.ctx);assert.deepEqual(events,[1,2,3]);
 });
 
 test('a late lifecycle failure cannot notify or append into a replacement conversation',async()=>{
@@ -65,9 +65,9 @@ test('a late lifecycle failure cannot notify or append into a replacement conver
 });
 
 test('shutdown cancels in-flight inference, never adds a summary, and retains sync errors',async()=>{
- let entered, signal, models=0;
+ let entered, signal, models=0, syncs=0;
  const started=new Promise(resolve=>entered=resolve);
- const f=hooks({context:async()=>({...context(),stream:null,session:null,sessions:[]}),sync:async event=>{if(event==='shutdown')throw Error('offline or timed out');return local;}},async(_ctx,_request,abort)=>{models++;signal=abort;entered();return new Promise(resolve=>abort.addEventListener('abort',()=>resolve({meaningful:false}),{once:true}));});
+ const f=hooks({context:async()=>({...context(),stream:null,session:null,sessions:[]}),sync:async()=>{if(++syncs===2)throw Error('offline or timed out');return local;}},async(_ctx,_request,abort)=>{models++;signal=abort;entered();return new Promise(resolve=>abort.addEventListener('abort',()=>resolve({meaningful:false}),{once:true}));});
  await f.handlers.get('session_start')({},f.ctx);
  f.handlers.get('agent_end')({messages:[{role:'assistant',stopReason:'stop'}]},f.ctx);await started;
  await f.handlers.get('session_shutdown')({reason:'reload'},{...f.ctx});
@@ -77,9 +77,9 @@ test('shutdown cancels in-flight inference, never adds a summary, and retains sy
 
 test('shutdown retires a pending startup before awaiting its own diagnostic result',async()=>{
  for(const reject of [false,true]) {
-  let finishStart,finishShutdown;
-  const f=hooks({sync:event=>new Promise((resolve,rejectStart)=>{
-   if(event==='start')finishStart=()=>reject?rejectStart(Error('stale start error')):resolve({...local,sharing:'failed',detail:'stale start result'});
+  let finishStart,finishShutdown,calls=0;
+  const f=hooks({sync:()=>new Promise((resolve,rejectStart)=>{
+   if(++calls===1)finishStart=()=>reject?rejectStart(Error('stale start error')):resolve({...local,sharing:'failed',detail:'stale start result'});
    else finishShutdown=resolve;
   })});
   const start=f.handlers.get('session_start')({},f.ctx);
@@ -91,7 +91,7 @@ test('shutdown retires a pending startup before awaiting its own diagnostic resu
 });
 
 test('a replacement startup retires an old shutdown completion but tree changes retain live sync diagnostics',async()=>{
- let finish;const f=hooks({sync:async event=>event==='shutdown'?new Promise(resolve=>finish=resolve):local});
+ let finish,calls=0;const f=hooks({sync:async()=>++calls===2?new Promise(resolve=>finish=resolve):local});
  await f.handlers.get('session_start')({},f.ctx);
  const shutdown=f.handlers.get('session_shutdown')({}, {...f.ctx});
  const next={...f.ctx,sessionManager:{...f.ctx.sessionManager,getSessionId:()=> 'next'}};
@@ -164,7 +164,7 @@ test('Pi/CLI reports publish across two isolated Git catalogs, remain saved offl
  let cli=childCli(checkout,'native',a.env);clients.push(cli);const empty=await cli.context('native');
  const enrollment=await cli.enroll({version:2,catalog_source:empty.catalog_source,operation_id:'enrollment',harness:'pi',harness_session_id:'native',stream:{title:'Shared effort'},session:{title:'Implement sharing'},actor:'automatic',cwd:checkout});
  assert.equal(enrollment.publication,undefined);assert.ok(enrollment.saves.every(item=>item.save.local==='persisted'));
- assert.equal((await cli.sync('start')).sharing,'confirmed');
+ assert.equal((await cli.sync()).sharing,'confirmed');
  await command(b,'init','--sync','git','--remote',remote);
  const imported=await command(b,'sync');assert.equal(imported.sharing,'confirmed',JSON.stringify(imported));
  const shown=await command(b,'show',enrollment.stream.id,'--refresh');assert.equal(shown.sessions.length,1);

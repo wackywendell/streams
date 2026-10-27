@@ -315,7 +315,7 @@ impl App {
             "WORK_CARDS_CONFIG_PATH",
             "EDITOR",
             "STREAMS_CARDS_CONTEXT",
-            "STREAMS_RUST_BIN",
+            "STREAMS_BIN_PATH",
             "DISPLAY",
             "WAYLAND_DISPLAY",
             "XDG_RUNTIME_DIR",
@@ -478,15 +478,12 @@ impl App {
     }
     fn sync_records(&self) -> Result<Output> {
         let opened = application::open_records(&self.config)?;
-        catalog::sync(&opened, self.config.load()?.sync)
+        catalog::sync(&opened)
     }
     fn refresh_records(&self, opened: &application::OpenedRecords) -> Result<Value> {
-        let transport = streams_temper::sync::records::RecordSync::open(
-            opened.root(),
-            opened.host().as_str(),
-            self.config.load()?.sync,
-        )
-        .map_err(application::ApplicationError::from)?;
+        let transport =
+            streams_temper::sync::records::RecordSync::open(opened.root(), opened.host().as_str())
+                .map_err(application::ApplicationError::from)?;
         result_data(&transport.sync())
     }
     fn show_records(&self, target: &Target, refresh: bool) -> Result<Output> {
@@ -675,7 +672,7 @@ impl App {
                 let opened = application::open_records(&self.config)?;
                 catalog::check(&opened, reference.as_deref())
             }
-            Command::Sync { event: _ } => self.sync_records(),
+            Command::Sync => self.sync_records(),
             Command::Session { command } => self.session(command),
             Command::Checkout { command } => self.checkout(command),
             Command::Agent { command } => self.agent(command),
@@ -738,8 +735,6 @@ impl App {
             ConfigKey::FrontendMode,
             ConfigKey::StreamNaming,
             ConfigKey::SessionNaming,
-            ConfigKey::StreamSeconds,
-            ConfigKey::SessionSeconds,
         ] {
             let text = key.to_string();
             let (section, name) = text.split_once('.').expect("closed configuration key");
@@ -767,8 +762,10 @@ impl App {
             opened.host().as_str(),
         )?;
         let native = (|| -> Result<_> {
-            let connection =
-                self.native_frontend(&self.selection(None)?, settings.sync.timeout_seconds())?;
+            let connection = self.native_frontend(
+                &self.selection(None)?,
+                streams_temper::sync::COMMAND_TIMEOUT_SECONDS,
+            )?;
             let client = connection
                 .as_ref()
                 .and_then(BuiltinFrontend::herdr)

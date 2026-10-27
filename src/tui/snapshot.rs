@@ -140,10 +140,10 @@ impl CardSnapshot {
             ));
         }
         if let Some(checkout) = &session.checkout
-            && checkout.repository_url(&stream).is_none()
+            && checkout.repository_url.is_none()
         {
             return Err(ValidationError::new(
-                "Viewing session checkout has no repository URL or known alias",
+                "Viewing session checkout has no repository URL",
             ));
         }
         for value in [

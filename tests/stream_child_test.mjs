@@ -48,7 +48,7 @@ test('one launch, exact envelope, ready gating and out-of-order typed outcomes',
  const f=fixture(t),first=f.manager.run({kind:'context'}),child=f.children[0];
  await tick();assert.deepEqual(child.messages,[]);
  assert.deepEqual(f.launches[0].argv.slice(0,3),['serve','--session-id','pi-session']);assert.equal(f.launches[0].options.cwd,'/tmp');
- assert.equal(f.launches[0].options.env.STREAMS_RUST_BIN,f.launches[0].binary);
+ assert.equal(f.launches[0].options.env.STREAMS_BIN_PATH,f.launches[0].binary);
  child.emitMessage({type:'ready',protocol:2});await tick();
  const second=f.manager.run({kind:'apply',request:{captured:true}});await tick();
  respond(child,child.messages[1].id,{receipt:true},['offline','retained']);
@@ -74,7 +74,7 @@ test('abort and deadlines cancel only their request, discard late responses and 
  const request=f.manager.run({kind:'open_card'},{timeout:1000,signal:controller.signal});await tick();
  const id=child.messages[0].id;controller.abort(Error('cancelled by caller'));await assert.rejects(request,/cancelled by caller/);
  assert.deepEqual(child.messages.at(-1),{type:'cancel',id});respond(child,id);assert.equal(child.killed,undefined);
- const timed=f.manager.run({kind:'sync',event:'shutdown'},{timeout:1});await assert.rejects(timed,/timed out.*uncertain/);
+ const timed=f.manager.run({kind:'sync'},{timeout:1});await assert.rejects(timed,/timed out.*uncertain/);
  assert.equal(child.messages.at(-1).type,'cancel');assert.equal(child.killed,undefined);
  const next=f.manager.run({kind:'list_streams'});await tick();respond(child,child.messages.at(-1).id);await next;assert.equal(f.launches.length,1);
 });
@@ -157,7 +157,7 @@ test('ready has a fixed ten-second deadline',async t=>{
  t.mock.timers.tick(9999);assert.equal(f.launches.length,1);t.mock.timers.tick(1);await assert.rejects(started,/handshake timed out/);assert.equal(f.launches.length,2);await f.ready();
 });
 test('shutdown closes stdin, drains accepted responses and never restarts',async t=>{
- const f=fixture(t),child=await f.ready(),request=f.manager.run({kind:'sync',event:'shutdown'});await tick();
+ const f=fixture(t),child=await f.ready(),request=f.manager.run({kind:'sync'});await tick();
  const stopped=f.manager.stop();assert.equal(child.ended,true);assert.equal(child.killed,undefined);
  child.emitMessage({type:'warning',message:'Retired background warning'});child.emitMessage({type:'view',view:{desired_pi_name:'Retired name'}});
  respond(child,child.messages[0].id);await request;child.emit('close',0);await stopped;assert.deepEqual(f.warnings,[]);assert.equal(f.launches.length,1);

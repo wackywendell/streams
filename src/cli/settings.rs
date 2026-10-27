@@ -48,7 +48,7 @@ mod tests {
             input: Input::Stdin,
             herdr: None,
         };
-        app.config.set(ConfigKey::StreamSeconds, "17").unwrap();
+        app.config.set(ConfigKey::FrontendMode, "none").unwrap();
         assert_eq!(
             app.set_title_default(TitleTarget::Stream, NamingMode::Manual)
                 .unwrap()
@@ -72,8 +72,8 @@ mod tests {
             json!({"title_defaults":{"stream":"automatic","session":"automatic"}})
         );
         assert_eq!(
-            app.config.get(ConfigKey::StreamSeconds).unwrap(),
-            json!(17.0)
+            app.config.get(ConfigKey::FrontendMode).unwrap(),
+            json!("none")
         );
         assert!(!app.config.load().unwrap().catalog_root.exists());
         assert!(!root.join(".local/state").exists());
@@ -83,7 +83,7 @@ mod tests {
             config,
             json!({
                 "naming":{"stream":"automatic","session":"automatic"},
-                "sync":{"stream_seconds":17}
+                "frontend":{"mode":"none"}
             })
         );
     }

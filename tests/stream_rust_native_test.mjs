@@ -88,37 +88,37 @@ test('native defaults to requested Cargo debug binary without explicit selectors
  delete process.env.STREAMS_BIN_PATH;process.env.CARGO_TARGET_DIR=target;const adapter=await f.load();assert.deepEqual(f.commands(),[]);
  await adapter.start(new AbortController().signal);assert.deepEqual(f.commands(),[{kind:'session_started'}]);
 });
-test('invalid or conflicting binary selectors never fall back to another controller',async t=>{
- const f=fake(t),other=join(f.directory,'other-cli');symlinkSync(process.execPath,other);
- for(const selector of ['STREAMS_BIN_PATH','STREAMS_RUST_BIN'])for(const value of ['', 'relative',join(f.directory,'absent'),f.directory]) {
-  const env={...process.env};delete env.STREAMS_BIN_PATH;delete env.STREAMS_RUST_BIN;env[selector]=value;
-  const adapter=await f.load({env});await assert.rejects(adapter.start(new AbortController().signal),new RegExp(selector));
+test('invalid binary selectors never fall back to another controller',async t=>{
+ const f=fake(t);
+ for(const value of ['', 'relative',join(f.directory,'absent'),f.directory]) {
+  const adapter=await f.load({env:{...process.env,STREAMS_BIN_PATH:value}});
+  await assert.rejects(adapter.start(new AbortController().signal),/STREAMS_BIN_PATH/);
  }
- const adapter=await f.load({env:{...process.env,STREAMS_RUST_BIN:other}});await assert.rejects(adapter.start(new AbortController().signal),/select different/);assert.deepEqual(f.commands(),[]);
+ assert.deepEqual(f.commands(),[]);
 });
-test('native accepts canonical matching selectors and the binary alias',async t=>{
- const f=fake(t),alias=join(f.directory,'alias');symlinkSync(f.executable,alias);delete process.env.STREAMS_BIN_PATH;process.env.STREAMS_RUST_BIN=alias;
- await (await f.load()).start(new AbortController().signal);process.env.STREAMS_BIN_PATH=f.executable;await (await f.load()).start(new AbortController().signal);
- assert.deepEqual(f.commands(),[{kind:'session_started'},{kind:'session_started'}]);
+test('native canonicalizes an explicit binary symlink',async t=>{
+ const f=fake(t),alias=join(f.directory,'alias');symlinkSync(f.executable,alias);process.env.STREAMS_BIN_PATH=alias;
+ await (await f.load()).start(new AbortController().signal);
+ assert.deepEqual(f.commands(),[{kind:'session_started'}]);
 });
 test('Rust launch manifest and packaged launcher require the binary and plain launch inputs',t=>{
  const directory=temporary(t),script=join(plugin,'bin/open-rust-streams-pane.sh'),log=join(directory,'launch.json');
  const executable=join(directory,'explicit rust');
  writeFileSync(executable,`#!${process.execPath}\nrequire('node:fs').writeFileSync(${JSON.stringify(log)},JSON.stringify({args:process.argv.slice(2),context:process.env.STREAMS_CARDS_CONTEXT}));\n`,{mode:0o700});
- const env={PATH:process.env.PATH,STREAMS_RUST_BIN:executable,STREAMS_CARDS_CONTEXT:'plain launch inputs'};
+ const env={PATH:process.env.PATH,STREAMS_BIN_PATH:executable,STREAMS_CARDS_CONTEXT:'plain launch inputs'};
  const run=environment=>spawnSync('/bin/sh',[script],{env:environment,encoding:'utf8',timeout:5000});
  const syntax=spawnSync('/bin/sh',['-n',script]);assert.equal(syntax.status,0);
- for(const key of ['STREAMS_RUST_BIN','STREAMS_CARDS_CONTEXT']) {
+ for(const key of ['STREAMS_BIN_PATH','STREAMS_CARDS_CONTEXT']) {
   const invalid={...env};delete invalid[key];assert.notEqual(run(invalid).status,0);assert.equal(existsSync(log),false);
  }
- assert.equal(run({...env,STREAMS_RUST_BIN:'relative'}).status,1);
+ assert.equal(run({...env,STREAMS_BIN_PATH:'relative'}).status,1);
  const result=run(env);assert.equal(result.status,0,result.stderr);assert.deepEqual(JSON.parse(readFileSync(log,'utf8')),{args:['native','pane'],context:'plain launch inputs'});
  const manifest=readFileSync(join(plugin,'streams-rust-herdr-plugin.toml'),'utf8');
  assert.match(manifest,/id = "streams-rust-work-cards"/);assert.match(manifest,/command = \["\/bin\/sh", "bin\/open-rust-streams-pane.sh"\]/);
  for(const file of ['package.json','integrations/herdr-work-cards/package.json']) {
   const files=JSON.parse(readFileSync(join(root,file),'utf8')).files;
   assert.ok(files.some(path=>path.endsWith('streams-rust-herdr-plugin.toml')));
-  for(const shared of ['src/herdr/subprocess.ts','src/pi/session-naming.ts','src/streams-context.ts']) assert.ok(files.includes(file==='package.json'?'integrations/herdr-work-cards/'+shared:shared));
+  for(const shared of ['src/pi/session-naming.ts','src/streams-context.ts']) assert.ok(files.includes(file==='package.json'?'integrations/herdr-work-cards/'+shared:shared));
  }
 });
 

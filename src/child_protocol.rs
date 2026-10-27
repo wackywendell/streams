@@ -9,7 +9,6 @@ use serde_json::{Map, Value};
 use crate::{
     codec,
     model::{NamingMode, ValidationError},
-    sync::policy::SyncEvent,
 };
 
 pub type DomainObject = Map<String, Value>;
@@ -135,9 +134,7 @@ pub enum Request {
         target: TitleTarget,
         mode: NamingMode,
     },
-    Sync {
-        event: SyncEvent,
-    },
+    Sync {},
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, strum::EnumString, strum::VariantNames)]

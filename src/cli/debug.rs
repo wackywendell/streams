@@ -26,12 +26,11 @@ pub(super) fn forward(mut arguments: Vec<String>, json: bool) -> Result<Output> 
     }
     let executable = std::env::current_exe()?;
     // Replacing this process preserves the foreground signal group and exit status.
-    // Both selectors pin observational calls to this executable, not an installed CLI.
+    // STREAMS_BIN_PATH pins observational calls to this executable, not an installed CLI.
     let error = Command::new("node")
         .arg(runner)
         .args(arguments)
-        .env("STREAMS_BIN_PATH", &executable)
-        .env("STREAMS_RUST_BIN", executable)
+        .env("STREAMS_BIN_PATH", executable)
         .exec();
     Err(CliError::message(format!(
         "cannot start the Node prompt lab: {error}; Node 22 or newer must be on PATH"

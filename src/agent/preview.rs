@@ -46,10 +46,6 @@ struct ContextWire {
     _checkouts: Option<Value>,
     #[serde(default, rename = "document_locations")]
     _documents: Option<Value>,
-    #[serde(default, rename = "native")]
-    _native: Option<Value>,
-    #[serde(default, rename = "native_inventory")]
-    _native_inventory: Option<Value>,
 }
 
 struct Snapshot {

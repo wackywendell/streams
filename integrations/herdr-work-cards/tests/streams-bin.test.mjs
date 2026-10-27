@@ -54,21 +54,14 @@ test('explicit executable overrides are canonical and take priority over Cargo s
   const f = await fixture(t), binary = f.executable(join(f.root, 'installed streams'));
   const alias = join(f.root, 'symlink');symlinkSync(binary, alias);
   assert.equal(f.select({ STREAMS_BIN_PATH: alias, CARGO_TARGET_DIR: 'absent' }), binary);
-  assert.equal(f.select({ STREAMS_RUST_BIN: alias }), binary);
-  assert.equal(f.select({ STREAMS_BIN_PATH: binary, STREAMS_RUST_BIN: alias }), binary);
-  const other = f.executable(join(f.root, 'other streams'));
-  assert.throws(() => f.select({ STREAMS_BIN_PATH: binary, STREAMS_RUST_BIN: other }), /select different executables/);
+
 });
 
-test('invalid explicit selectors fail without trying valid aliases, Cargo, .venv or PATH', async t => {
+test('invalid explicit selectors fail without trying Cargo, .venv or PATH', async t => {
   const f = await fixture(t), binary = f.executable(join(f.root, 'target/debug/streams'));
   const nonExecutable = f.executable(join(f.root, 'not executable'));chmodSync(nonExecutable, 0o600);
   f.executable(join(f.root, '.venv/bin/streams'));
-  for (const selector of ['STREAMS_BIN_PATH', 'STREAMS_RUST_BIN']) {
-    for (const value of ['', 'streams', resolve(f.root, 'missing'), f.root, nonExecutable]) {
-      assert.throws(() => f.select({ [selector]: value, PATH: dirname(binary) }), new RegExp(selector));
-    }
+  for (const value of ['', 'streams', resolve(f.root, 'missing'), f.root, nonExecutable]) {
+      assert.throws(() => f.select({ STREAMS_BIN_PATH: value, PATH: dirname(binary) }), /STREAMS_BIN_PATH/);
   }
-  assert.throws(() => f.select({ STREAMS_BIN_PATH: '', STREAMS_RUST_BIN: binary }), /STREAMS_BIN_PATH/);
-  assert.throws(() => f.select({ STREAMS_BIN_PATH: binary, STREAMS_RUST_BIN: '' }), /STREAMS_RUST_BIN/);
 });

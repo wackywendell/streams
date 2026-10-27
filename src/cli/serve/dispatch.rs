@@ -39,7 +39,7 @@ pub(super) fn execute(app: &App, session_id: &str, request: Request) -> Result<O
             catalog::list_records(&opened, None, &[], false, false, None)
         }
         Request::SetTitleDefault { target, mode } => app.set_title_default(target, mode),
-        Request::Sync { event: _ } => app.sync_records(),
+        Request::Sync {} => app.sync_records(),
         Request::SessionStarted {}
         | Request::Attach {}
         | Request::OpenCard {}

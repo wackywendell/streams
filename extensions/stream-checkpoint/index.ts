@@ -91,7 +91,7 @@ export default function registerWorkCard(pi: ExtensionAPI, options: Options = {}
   let failure: {event: string; result?: unknown; error?: string} | undefined;
   let message: string | undefined;
   try {
-   const value = await cli(ctx).sync(event);
+   const value = await cli(ctx).sync();
    if (resultNeedsAttention(value)) failure = {event, result: value};
   } catch (error) {failure = {event, error: String(error)};message = error instanceof Error ? error.message : String(error);}
   if (failure && fence.live()) {

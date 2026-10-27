@@ -11,7 +11,7 @@ export type NativeFactory = (input: {pi: ExtensionAPI; ctx: ExtensionContext; se
 export const loadNative: NativeFactory = async input => {
  const {loadRustNative} = await import("./native-rust.ts");return loadRustNative(input);
 };
-const environmentKeys = ["HERDR_ENV", "HERDR_PANE_ID", "HERDR_TAB_ID", "HERDR_WORKSPACE_ID", "HERDR_SOCKET_PATH", "HERDR_BIN_PATH", "STREAMS_STREAM_ID", "XDG_CONFIG_HOME", "XDG_DATA_HOME", "XDG_STATE_HOME", "PI_CODING_AGENT_DIR", "HOME", "STREAMS_RUST_BIN", "STREAMS_BIN_PATH", "CARGO_TARGET_DIR", "WORK_CARDS_CONFIG_PATH", "PATH", "EDITOR", "HERDR_SESSION", "CODEX_HOME", "CLAUDE_CONFIG_DIR", "PI_OFFLINE"];
+const environmentKeys = ["HERDR_ENV", "HERDR_PANE_ID", "HERDR_TAB_ID", "HERDR_WORKSPACE_ID", "HERDR_SOCKET_PATH", "HERDR_BIN_PATH", "STREAMS_STREAM_ID", "XDG_CONFIG_HOME", "XDG_DATA_HOME", "XDG_STATE_HOME", "PI_CODING_AGENT_DIR", "HOME", "STREAMS_BIN_PATH", "CARGO_TARGET_DIR", "WORK_CARDS_CONFIG_PATH", "PATH", "EDITOR", "HERDR_SESSION", "CODEX_HOME", "CLAUDE_CONFIG_DIR", "PI_OFFLINE"];
 
 /** Pi fences its own UI lifetime; the Rust child is the only native controller. */
 export class NativeController {

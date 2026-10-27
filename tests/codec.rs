@@ -43,10 +43,7 @@ fn finite_wire_enums_accept_only_their_canonical_strings() {
         config::Strategy,
         model::{NamingMode, Status},
         operations::{Actor, DomainOutcome},
-        sync::{
-            outcomes::{LocalStatus, SharingStatus},
-            policy::SyncEvent,
-        },
+        sync::outcomes::{LocalStatus, SharingStatus},
     };
     fn check<T: Serialize + DeserializeOwned + PartialEq + std::fmt::Debug>(value: T) {
         let wire = serde_json::to_value(&value).unwrap();
@@ -74,7 +71,6 @@ fn finite_wire_enums_accept_only_their_canonical_strings() {
     check(Strategy::None);
     check(LocalStatus::RepairRequired);
     check(SharingStatus::LocalOnly);
-    check(SyncEvent::Explicit);
 }
 
 #[test]

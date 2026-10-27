@@ -2,9 +2,8 @@
 
 pub mod git_io;
 pub mod outcomes;
-pub mod policy;
 pub mod records;
-pub mod scalars;
 pub mod state;
 
-pub use scalars::Seconds;
+/// Deadline for one Git command or diagnostic native request.
+pub const COMMAND_TIMEOUT_SECONDS: f64 = 30.0;

@@ -71,7 +71,7 @@ impl NativeCardEngine {
             serde_json::to_string(&context).map_err(|error| invalid(error.to_string()))?,
         );
         env.insert(
-            "STREAMS_RUST_BIN".into(),
+            "STREAMS_BIN_PATH".into(),
             path_text(&std::env::current_exe()?)?.into(),
         );
         env.insert(

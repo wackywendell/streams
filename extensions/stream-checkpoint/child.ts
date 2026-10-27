@@ -40,7 +40,7 @@ export class StreamsChild {
   try {
    const env = this.options.env ?? process.env, binary = resolveStreamsBin(env);
    child = (this.options.spawn ?? spawn)(binary, ["serve", "--session-id", this.options.sessionId, "--plugin-root", pluginRoot],
-    {cwd:this.options.cwd, env:{...env, STREAMS_RUST_BIN:binary}, stdio:["pipe", "pipe", "pipe"]});
+    {cwd:this.options.cwd, env:{...env, STREAMS_BIN_PATH:binary}, stdio:["pipe", "pipe", "pipe"]});
   } catch (error) {
    reject(error as Error);this.restart(error as Error);return result;
   }

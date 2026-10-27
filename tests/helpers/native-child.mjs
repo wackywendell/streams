@@ -2,7 +2,7 @@
 import { appendFileSync, readFileSync, realpathSync } from 'node:fs';
 import { createInterface } from 'node:readline';
 
-if (process.env.STREAMS_RUST_BIN !== realpathSync(process.argv[1])) throw Error('native launch binary was not canonicalized');
+if (process.env.STREAMS_BIN_PATH !== realpathSync(process.argv[1])) throw Error('native launch binary was not canonicalized');
 const file=process.env.STREAMS_NATIVE_FIXTURE,log=process.env.STREAMS_NATIVE_LOG;
 const send=value=>process.stdout.write(JSON.stringify(value)+'\n');
 const reply=(id,result)=>send({type:'response',id,outcome:{status:'success',result}});

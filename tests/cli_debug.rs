@@ -53,10 +53,10 @@ fn debug_help_needs_neither_catalog_nor_sdk() {
 }
 
 #[test]
-fn debug_preserves_literal_arguments_and_pins_both_cli_selectors() {
+fn debug_preserves_literal_arguments_and_pins_the_cli_selector() {
     let fixture = Fixture::new();
     let runner = fixture.runner(
-        "console.log(JSON.stringify({args:process.argv.slice(2),bin:process.env.STREAMS_BIN_PATH,alias:process.env.STREAMS_RUST_BIN}));",
+        "console.log(JSON.stringify({args:process.argv.slice(2),bin:process.env.STREAMS_BIN_PATH}));",
     );
     for arguments in [
         vec![
@@ -80,7 +80,6 @@ fn debug_preserves_literal_arguments_and_pins_both_cli_selectors() {
             .command()
             .env("STREAMS_PROMPT_LAB_RUNNER", &runner)
             .env("STREAMS_BIN_PATH", "/wrong/installed/streams")
-            .env("STREAMS_RUST_BIN", "/different/streams")
             .args(arguments)
             .output()
             .unwrap();
@@ -96,7 +95,6 @@ fn debug_preserves_literal_arguments_and_pins_both_cli_selectors() {
                 "--json"
             ])
         );
-        assert_eq!(value["bin"], value["alias"]);
         assert_eq!(
             fs::canonicalize(value["bin"].as_str().unwrap()).unwrap(),
             fs::canonicalize(env!("CARGO_BIN_EXE_streams")).unwrap()

@@ -45,7 +45,7 @@ pub(super) fn context(
     let repository_url = session
         .checkout
         .as_ref()
-        .and_then(|portable| portable.repository_url(stream))
+        .and_then(|portable| portable.repository_url.as_deref())
         .or_else(|| {
             selected
                 .as_ref()

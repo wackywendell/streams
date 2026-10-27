@@ -92,8 +92,6 @@ fn defaults_and_reads_create_nothing() {
     assert_eq!(settings.catalog_root, f.home.join("data/streams/catalog"));
     assert_eq!(settings.frontend, FrontendMode::Auto);
     assert_eq!(settings.naming, TitleDefaults::default());
-    assert_eq!(settings.sync.stream_seconds(), 300.0);
-    assert_eq!(settings.sync.session_seconds(), 3600.0);
     assert_eq!(
         f.config.checkout_state_dir(),
         f.home.join("state/streams/checkouts")
@@ -231,16 +229,12 @@ fn overrides_get_set_and_extensible_frontends() {
     f.config
         .set(ConfigKey::FrontendMode, "third-party-adapter")
         .unwrap();
-    f.config.set(ConfigKey::StreamSeconds, "1.25").unwrap();
-    f.config.set(ConfigKey::SessionSeconds, " 2e2 ").unwrap();
     let settings = f.config.load().unwrap();
     assert_eq!(settings.catalog_root, f.home.join("Catalog"));
     assert_eq!(
         settings.frontend,
         FrontendMode::Explicit(FrontendId("third-party-adapter".into()))
     );
-    assert_eq!(settings.sync.stream_seconds(), 1.25);
-    assert_eq!(settings.sync.session_seconds(), 200.0);
     assert_eq!(
         f.config.get(ConfigKey::CatalogRoot).unwrap(),
         json!(f.home.join("Catalog"))
@@ -249,12 +243,10 @@ fn overrides_get_set_and_extensible_frontends() {
         f.config.get(ConfigKey::FrontendMode).unwrap(),
         "third-party-adapter"
     );
-    assert_eq!(f.config.get(ConfigKey::StreamSeconds).unwrap(), 1.25);
     assert_eq!(
         f.config.read_overrides().unwrap(),
         json!({
-            "catalog":{"root":f.home.join("Catalog")}, "frontend":{"mode":"third-party-adapter"},
-            "sync":{"stream_seconds":1.25,"session_seconds":200.0}
+            "catalog":{"root":f.home.join("Catalog")}, "frontend":{"mode":"third-party-adapter"}
         })
     );
     assert!(!f.home.join("Catalog").exists());
@@ -267,14 +259,14 @@ fn overrides_get_set_and_extensible_frontends() {
 #[test]
 fn invalid_setting_text_is_rejected_before_locking_or_writing() {
     let f = Fixture::new();
-    assert!(f.config.set(ConfigKey::StreamSeconds, "NaN").is_err());
+    assert!(f.config.set(ConfigKey::FrontendMode, "").is_err());
     assert_eq!(fs::read_dir(&f.home).unwrap().count(), 0);
-    let document = r#"{"sync":{"session_seconds":12}}"#;
+    let document = r#"{"frontend":{"mode":"none"}}"#;
     f.write(document);
     assert!(f.config.set(ConfigKey::CatalogRoot, "relative").is_err());
     assert!(
         f.config
-            .with_lock(|lock| lock.set(ConfigKey::StreamSeconds, "false"))
+            .with_lock(|lock| lock.set(ConfigKey::StreamNaming, "inherit"))
             .is_err()
     );
     assert_eq!(
@@ -494,8 +486,8 @@ fn concurrent_updates_and_host_creation_serialize() {
     for (key, value) in [
         (ConfigKey::FrontendMode, "herdr"),
         (ConfigKey::CatalogRoot, "~/catalog"),
-        (ConfigKey::StreamSeconds, "12"),
-        (ConfigKey::SessionSeconds, "34"),
+        (ConfigKey::StreamNaming, "manual"),
+        (ConfigKey::SessionNaming, "manual"),
     ] {
         let config = f.config.clone();
         let barrier = barrier.clone();
@@ -512,7 +504,7 @@ fn concurrent_updates_and_host_creation_serialize() {
     assert_eq!(
         f.config.read_overrides().unwrap(),
         json!({"catalog":{"root":f.home.join("catalog")},
-        "frontend":{"mode":"herdr"},"sync":{"stream_seconds":12,"session_seconds":34}})
+        "frontend":{"mode":"herdr"},"naming":{"stream":"manual","session":"manual"}})
     );
     assert_eq!(
         fs::read_dir(f.config.config_path().parent().unwrap())

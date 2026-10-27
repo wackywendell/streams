@@ -60,7 +60,7 @@ fn ordinary_human_edits_save_locally_without_opening_transport_or_publishing() {
     assert!(saved.get("publication").is_none());
     assert_eq!(ok(f.show(id))["stream"], saved["stream"]);
     assert!(
-        sync(&f.opened, Policy::default()).is_err(),
+        sync(&f.opened).is_err(),
         "explicit sync alone admits transport settings"
     );
 }

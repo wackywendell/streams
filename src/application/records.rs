@@ -55,7 +55,6 @@ pub fn initialize_records(
         strategy,
         remote.map(str::to_owned),
         branch,
-        settings.sync,
     )?;
     let source_id =
         records.with_reader(|_| -> Result<String> { Ok(source_id(records.root(), &host)?) })?;

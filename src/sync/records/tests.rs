@@ -56,7 +56,6 @@ fn transport(path: &Path, host: &str, remote: Option<&Path>) -> RecordSync {
         Strategy::Git,
         remote.map(|path| path.to_str().unwrap().into()),
         "records-v2",
-        Policy::default(),
     )
     .unwrap()
 }
@@ -83,37 +82,19 @@ fn local_only_transport_is_explicit_versioned_and_does_not_create_git_or_history
     let directory = tempfile::tempdir().unwrap();
     let root = directory.path();
     setup(root, "host");
-    assert!(RecordSync::open(root, "host", Policy::default()).is_err());
-    let sync = RecordSync::initialize(
-        root,
-        "host",
-        Strategy::None,
-        None,
-        "records-v2",
-        Policy::default(),
-    )
-    .unwrap();
+    assert!(RecordSync::open(root, "host").is_err());
+    let sync = RecordSync::initialize(root, "host", Strategy::None, None, "records-v2").unwrap();
     assert!(!root.join(".git").exists());
     assert!(!root.join(".catalog-sync").exists());
     assert_eq!(sync.sync().sharing, SharingStatus::LocalOnly);
-    assert!(RecordSync::open(root, "other", Policy::default()).is_err());
-    assert!(
-        RecordSync::initialize(
-            root,
-            "host",
-            Strategy::Git,
-            None,
-            "records-v2",
-            Policy::default()
-        )
-        .is_err()
-    );
+    assert!(RecordSync::open(root, "other").is_err());
+    assert!(RecordSync::initialize(root, "host", Strategy::Git, None, "records-v2").is_err());
     fs::write(
         root.join(CONFIG),
         br#"{"version":2,"mode":{"strategy":"none"},"unknown":true}"#,
     )
     .unwrap();
-    assert!(RecordSync::open(root, "host", Policy::default()).is_err());
+    assert!(RecordSync::open(root, "host").is_err());
 }
 
 #[test]
@@ -249,7 +230,7 @@ fn same_record_divergence_refuses_even_when_text_fields_do_not_overlap() {
         .unwrap();
     }
     fs::write(b.join(".catalog.lock"), "").unwrap();
-    let b_sync = RecordSync::open(&b, "owner", Policy::default()).unwrap();
+    let b_sync = RecordSync::open(&b, "owner").unwrap();
     for (key, value) in [
         ("user.name", "Streams"),
         ("user.email", "streams@localhost"),

@@ -320,7 +320,7 @@ fn sync_and_diagnostic_capture_use_application_operations_without_saved_layouts(
         json!({"kind":"capture_inputs","target":{"kind":"stream","stream_id":id}}),
     );
     assert_eq!(child.response(1)["outcome"]["result"], expected);
-    child.request(2, json!({"kind":"sync","event":"start"}));
+    child.request(2, json!({"kind":"sync"}));
     assert_eq!(child.response(2)["outcome"]["status"], "success");
     assert_eq!(child.finish(), (0, String::new()));
 }

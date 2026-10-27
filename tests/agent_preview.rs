@@ -25,7 +25,7 @@ fn context() -> Value {
     let session = record_to_data(&Record::Session(session));
     json!({"catalog_source":"physical-source","host_id":"host","title_defaults":TitleDefaults::default(),
         "stream":stream,"session":session,"sessions":[session],"checkouts":[],
-        "document_locations":[],"native":{"opaque":"preserved, not attested"}})
+        "document_locations":[]})
 }
 fn empty() -> Value {
     let mut value = context();
@@ -238,7 +238,6 @@ fn v2_enrollment_and_follow_on_edits_use_addressed_records_without_storage_or_au
     let third = project(&second["catalog"], "apply", &request);
     assert_eq!(third["catalog"]["stream"]["goal"], "Refined goal");
     assert!(third["catalog"]["stream"]["goal_short"].is_null());
-    assert_eq!(third["catalog"]["native"], capture["native"]);
     assert_eq!(
         third["catalog"]["document_locations"],
         capture["document_locations"]
@@ -466,6 +465,8 @@ fn malformed_objects_unknown_fields_enum_maps_and_duplicate_json_are_rejected() 
     for path in [
         "/unexpected",
         "/catalog/unexpected",
+        "/catalog/native",
+        "/catalog/native_inventory",
         "/catalog/session/unexpected",
         "/catalog/stream/unexpected",
         "/request/unexpected",

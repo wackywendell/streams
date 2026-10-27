@@ -127,7 +127,6 @@ fn checkout_directory() -> String {
     ".".into()
 }
 
-// Keep the field diagnostic used to recover ambiguous legacy YAML titles.
 fn deserialize_stream_title<'de, D: Deserializer<'de>>(d: D) -> Result<String, D::Error> {
     String::deserialize(d)
         .map_err(|_| serde::de::Error::custom("stream.title must be a nonempty string"))
@@ -346,17 +345,7 @@ impl Checkout {
         Ok(checkout)
     }
 
-    /// Resolve old aliases only while no independent repository URL has been recorded.
-    pub fn repository_url<'a>(&'a self, stream: &'a Stream) -> Option<&'a str> {
-        self.repository_url.as_deref().or_else(|| {
-            stream
-                .repositories
-                .get(&self.repository)
-                .map(|repo| repo.url.as_str())
-        })
-    }
-
-    /// Check portable checkout fields; the catalog resolves legacy repository aliases.
+    /// Check portable checkout fields.
     pub fn validate(&self) -> Result<(), ValidationError> {
         check_text(&self.repository, "checkout.repository", false)?;
         if let Some(url) = &self.repository_url {

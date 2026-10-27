@@ -562,9 +562,14 @@ fn domain_and_location_validation_does_not_guess_or_touch_filesystem() {
     let mut bad = s.session.clone();
     bad.stream_id = "another".into();
     assert!(build(s.stream.clone(), bad, s.context.clone()).is_err());
-    let mut bad = s.session.clone();
-    bad.checkout = Some(Checkout::new("unknown", "main", ".").unwrap());
-    assert!(build(s.stream.clone(), bad, s.context.clone()).is_err());
+    for repository in [
+        "unknown",
+        s.stream.repositories.keys().next().unwrap().as_str(),
+    ] {
+        let mut bad = s.session.clone();
+        bad.checkout = Some(Checkout::new(repository, "main", ".").unwrap());
+        assert!(build(s.stream.clone(), bad, s.context.clone()).is_err());
+    }
     let mut bad = s.context.clone();
     bad.documents.clear();
     assert!(build(s.stream.clone(), s.session.clone(), bad).is_err());

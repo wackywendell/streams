@@ -107,10 +107,10 @@ test('index branch events and already-bound attach do not request projection, ca
 });
 test('index sends session_started before startup sync and still syncs after a native lifecycle error',async t=>{
  environment(t);let release;const f=fixture(t,{run:async()=>new Promise(resolve=>release=resolve)}),handlers=new Map(),syncs=[];
- register({...f.pi,on:(name,handler)=>handlers.set(name,handler),registerCommand:()=>{},registerTool:()=>{}},{cli:{sync:async event=>{syncs.push(event);return {local:'unchanged',sharing:'local-only',domain:null};}},native:input=>f.factory({...input,child:f.child}),settings:{...defaults,reporting:'manual',enrollment:'manual'}});
+ register({...f.pi,on:(name,handler)=>handlers.set(name,handler),registerCommand:()=>{},registerTool:()=>{}},{cli:{sync:async()=>{syncs.push('sync');return {local:'unchanged',sharing:'local-only',domain:null};}},native:input=>f.factory({...input,child:f.child}),settings:{...defaults,reporting:'manual',enrollment:'manual'}});
  const starting=handlers.get('session_start')({},f.ctx);await until(()=>!!release);assert.deepEqual(f.requests,[{kind:'session_started'}]);assert.deepEqual(syncs,[]);
- release({status:'error',error:{kind:'runtime',message:'Origin not proved'}});await starting;assert.deepEqual(syncs,['start']);assert.match(f.notices[0],/Origin not proved/);
- await handlers.get('session_shutdown')({},f.ctx);assert.deepEqual(syncs,['start','shutdown']);
+ release({status:'error',error:{kind:'runtime',message:'Origin not proved'}});await starting;assert.deepEqual(syncs,['sync']);assert.match(f.notices[0],/Origin not proved/);
+ await handlers.get('session_shutdown')({},f.ctx);assert.deepEqual(syncs,['sync','sync']);
 });
 test('native actions retain accepted warning outcomes and return display results without confirmation reads',async t=>{
  environment(t);const f=fixture(t,{run:async request=>({status:request.kind==='session_started'?'success':'saved_with_warnings',result:request.kind==='session_started'?{native:'active',display:'suppressed'}:{display:'opened'},...(request.kind==='session_started'?{}:{warnings:['Title saved; projection deferred']})})});

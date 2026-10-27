@@ -15,12 +15,10 @@ use sha2::{Digest, Sha256};
 use strum::{AsRefStr, Display, EnumIter, EnumString, VariantNames};
 use uuid::Uuid;
 
-use crate::codec::load_json;
 use crate::file_io;
 use crate::frontend::{FrontendId, FrontendMode};
 use crate::model::{NamingMode, TitleDefaults};
 use crate::storage::StorageError;
-use crate::sync::policy::Policy;
 
 #[cfg(test)]
 mod tests;
@@ -36,10 +34,6 @@ pub enum ConfigKey {
     StreamNaming,
     #[strum(serialize = "naming.session")]
     SessionNaming,
-    #[strum(serialize = "sync.stream_seconds")]
-    StreamSeconds,
-    #[strum(serialize = "sync.session_seconds")]
-    SessionSeconds,
 }
 
 /// Validation and filesystem failures retain uncertain-write evidence from storage.
@@ -58,13 +52,12 @@ fn invalid(message: impl Into<String>) -> ConfigError {
     ConfigError::Invalid(message.into())
 }
 
-/// Effective settings; policy-only transport limits retain their existing defaults.
+/// Effective host-local settings.
 #[derive(Debug, Clone, PartialEq)]
 pub struct Settings {
     pub catalog_root: PathBuf,
     pub frontend: FrontendMode,
     pub naming: TitleDefaults,
-    pub sync: Policy,
 }
 
 /// An immutable environment snapshot and the paths derived from it.
@@ -157,7 +150,7 @@ impl Config {
             .as_object_mut()
             .ok_or_else(|| invalid("config must contain a JSON object"))?;
         for (section, values) in object {
-            if !matches!(section.as_str(), "catalog" | "frontend" | "naming" | "sync") {
+            if !matches!(section.as_str(), "catalog" | "frontend" | "naming") {
                 return Err(invalid(format!("invalid config section: {section}")));
             }
             for (name, value) in values
@@ -185,19 +178,6 @@ impl Config {
             .pointer("/frontend/mode")
             .and_then(Value::as_str)
             .unwrap_or("auto");
-        let default = Policy::default();
-        let sync = Policy::new(
-            data.pointer("/sync/stream_seconds")
-                .and_then(Value::as_f64)
-                .unwrap_or(default.stream_seconds()),
-            data.pointer("/sync/session_seconds")
-                .and_then(Value::as_f64)
-                .unwrap_or(default.session_seconds()),
-            default.cooldown_seconds(),
-            default.timeout_seconds(),
-            default.attempts(),
-        )
-        .map_err(invalid)?;
         Ok(Settings {
             catalog_root: PathBuf::from(root.as_str().expect("validated string")),
             frontend: match mode {
@@ -209,11 +189,10 @@ impl Config {
                 data.get("naming").cloned().unwrap_or_else(|| json!({})),
             )
             .expect("validated naming defaults"),
-            sync,
         })
     }
 
-    /// Effective settings in the existing Python JSON schema, with no transport-only keys.
+    /// Effective settings, including defaults for unspecified keys.
     pub fn values(&self) -> Result<Value> {
         let settings = self.load()?;
         let mode = match settings.frontend {
@@ -223,8 +202,7 @@ impl Config {
         };
         Ok(
             json!({"catalog":{"root":settings.catalog_root}, "frontend":{"mode":mode},
-            "naming":settings.naming,
-            "sync":{"stream_seconds":settings.sync.stream_seconds(),"session_seconds":settings.sync.session_seconds()}}),
+            "naming":settings.naming}),
         )
     }
 
@@ -280,15 +258,7 @@ impl Config {
     }
 
     fn parse_value(&self, key: ConfigKey, text: &str) -> Result<Value> {
-        let value = match key {
-            ConfigKey::StreamSeconds | ConfigKey::SessionSeconds => {
-                load_json(text).map_err(|e| invalid(e.to_string()))?
-            }
-            ConfigKey::CatalogRoot
-            | ConfigKey::FrontendMode
-            | ConfigKey::StreamNaming
-            | ConfigKey::SessionNaming => json!(text),
-        };
+        let value = json!(text);
         self.validate_value(key, value)
     }
 
@@ -304,14 +274,6 @@ impl Config {
                 })
         };
         match key {
-            ConfigKey::StreamSeconds | ConfigKey::SessionSeconds => {
-                if !value.as_f64().is_some_and(|v| v.is_finite() && v >= 0.0) {
-                    return Err(invalid(format!(
-                        "{key} must be a finite nonnegative number"
-                    )));
-                }
-                Ok(value)
-            }
             ConfigKey::FrontendMode => {
                 text()?;
                 Ok(value)

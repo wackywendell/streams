@@ -1,9 +1,9 @@
 //! Transport-only publication of host-partitioned records. No operation/history replay.
 
 use super::{
+    COMMAND_TIMEOUT_SECONDS,
     git_io::{Git, GitError},
     outcomes::{LocalStatus, Result as SyncResult, SharingStatus},
-    policy::Policy,
 };
 use crate::{
     config::Strategy,
@@ -62,7 +62,7 @@ fn git_error(error: GitError) -> StorageError {
 
 impl RecordSync {
     /// Read only the selected transport's fixed metadata. No Git command or snapshot.
-    pub fn open(root: &Path, host: &str, policy: Policy) -> Result<Self, StorageError> {
+    pub fn open(root: &Path, host: &str) -> Result<Self, StorageError> {
         YamlRecordStore::new(root, host)?.with_reader::<_, StorageError>(|_| Ok(()))?;
         let bytes = read_bytes(&root.join(CONFIG))?
             .ok_or_else(|| invalid("transport is not initialized; run offline catalog cutover"))?;
@@ -81,7 +81,7 @@ impl RecordSync {
             root: root.into(),
             host: host.into(),
             selection,
-            git: Git::new(root, policy.timeout_seconds()),
+            git: Git::new(root, COMMAND_TIMEOUT_SECONDS),
         })
     }
 
@@ -92,10 +92,9 @@ impl RecordSync {
         strategy: Strategy,
         remote: Option<String>,
         branch: &str,
-        policy: Policy,
     ) -> Result<Self, StorageError> {
         if root.join(CONFIG).exists() {
-            let existing = Self::open(root, host, policy)?;
+            let existing = Self::open(root, host)?;
             if existing.strategy() != strategy
                 || existing.remote() != remote.as_deref()
                 || (strategy == Strategy::Git && existing.branch() != Some(branch))
@@ -120,7 +119,7 @@ impl RecordSync {
                 "fresh record transport cannot adopt an existing Git repository",
             ));
         }
-        let git = Git::new(root, policy.timeout_seconds());
+        let git = Git::new(root, COMMAND_TIMEOUT_SECONDS);
         let mode = match strategy {
             Strategy::None => {
                 if remote.is_some() {
@@ -194,7 +193,7 @@ impl RecordSync {
         };
         write_json(&root.join(CONFIG), &Selection { version: 2, mode })?;
         drop(_lock);
-        Self::open(root, host, policy)
+        Self::open(root, host)
     }
     pub fn strategy(&self) -> Strategy {
         match self.selection.mode {

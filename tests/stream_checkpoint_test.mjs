@@ -1152,5 +1152,5 @@ test('record-local save receipt does not claim publication and uncertain writes 
  assert.deepEqual(retained,uncertain);assert.equal(calls,1);assert.equal(edit.dirty,true);
  assert.equal(receiptCanContinue(uncertain),false);
  const publication=new StreamCli('/tmp',async()=>({status:'success',result:{local:'unchanged',domain:null}}));
- await assert.rejects(publication.sync('start'),/Invalid catalog receipt/);
+ await assert.rejects(publication.sync(),/Invalid catalog receipt/);
 });

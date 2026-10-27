@@ -12,7 +12,7 @@ use streams_temper::{
     application::{self, OpenedRecords},
     codec::record_to_data,
     model::{Record, Status, Stream, TitleDefaults, ValidationError},
-    sync::{policy::Policy, records::RecordSync},
+    sync::records::RecordSync,
 };
 
 pub(super) fn list_records(
@@ -188,8 +188,8 @@ pub(super) fn finish_record(
     output
 }
 
-pub(super) fn sync(opened: &OpenedRecords, policy: Policy) -> Result<Output> {
-    let transport = RecordSync::open(opened.root(), opened.host().as_str(), policy)
+pub(super) fn sync(opened: &OpenedRecords) -> Result<Output> {
+    let transport = RecordSync::open(opened.root(), opened.host().as_str())
         .map_err(application::ApplicationError::from)?;
     let result = transport.sync();
     Ok(Output::receipt(
