@@ -13,6 +13,9 @@ pub(super) fn context(
     stream: &Stream,
     session: &Session,
 ) -> Value {
+    if stream.repositories.is_empty() {
+        return json!({"checkouts":[],"document_locations":[]});
+    }
     let mut snapshot = registry.snapshot().map_err(|error| error.to_string());
     let selected = (|| -> Result<_, String> {
         let checkouts = snapshot.as_mut().map_err(|error| error.clone())?;
