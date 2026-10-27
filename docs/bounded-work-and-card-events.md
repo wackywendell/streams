@@ -63,6 +63,14 @@ change justify the cheap keyed reads. [Record-local operations](record-local-ope
 owns point reads, receipts and the separate discovery budget for explicit listing,
 capture and reopening. No automatic path scans for a Session or roster.
 
+### Separate record inputs from display inputs
+
+Native name projection needs the Stream, Session and owner identity. It must not resolve checkouts or document files merely to construct a card-shaped input. Validated record inputs stand on their own; a displayed card adds a complete set of document locations. This keeps the card's completeness checks without inventing unavailable-document results for a pass that never requested them.
+
+A display read uses one operation-local registry snapshot and shares checked checkout roots across repository aliases. The snapshot retains no state between operations and grants no effect authority. Opening a document still resolves current display inputs and rechecks the registry, canonical paths, containment and regular-file identity before acting.
+
+The card builds its record input from the bytes its file watcher has already observed, rather than reopening the same Session and Stream. A membership change selects the new Stream's exact path. An explicit full refresh rereads watched files even without a notification; subscription recovery also rereads them. Neither needs a second cache or an invalidation protocol.
+
 ### Event-driven cards
 
 A card should update only when something it displays may have changed. Events say what to re-read; they are not data to apply. When an event arrives, the card should drain any further queued events, then do one read. That read is the changed files, or one Herdr snapshot for a native event. A burst of changes therefore produces one update.
@@ -108,6 +116,10 @@ The child should also reconcile moves of its own conversation. It should subscri
 If the child exits unexpectedly, the extension should warn the user and restart it once. The new child observes current topology and moves an existing separated card into Pi's tab. It keeps no owner-move baseline and does not reopen a closed card. If the restarted child also exits, the extension should warn again and stop Streams for that Pi session until reload.
 
 The stdio protocol becomes a long-lived interface between TypeScript and Rust, so it needs a version number checked at startup.
+
+### Bounded transcript identity reads
+
+Pi and Codex identify a saved conversation in the first transcript header. Verification reads through that line with a small buffer, retaining the existing 65,537-byte bound for malformed or oversized headers. It never scans neighboring transcript directories. Claude retains its multi-record identity check: stopping at its first identity would miss conflicting records.
 
 ## Appendix: measurements
 
