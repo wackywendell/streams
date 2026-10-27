@@ -313,7 +313,8 @@ impl Host {
         Ok(())
     }
     fn observe(&mut self, refresh: Refresh) -> Result<CardSnapshot> {
-        if self.files.is_none() {
+        let prepared = self.files.is_none();
+        if prepared {
             self.prepare()?;
         }
         let initial = self.snapshot.is_none();
@@ -334,7 +335,7 @@ impl Host {
             .files
             .as_mut()
             .unwrap()
-            .consume(files, if initial { Refresh::Changed } else { refresh })?;
+            .consume(files, if prepared { Refresh::Changed } else { refresh })?;
         if changed.recovered {
             self.snapshot = None;
             self.placement = None;
@@ -401,7 +402,6 @@ impl Host {
         self.lifetime
             .admit(&frame, &placement)
             .map_err(|error| error.to_string())?;
-        self.watch_scope(frame.scope(), &placement)?;
         Ok(frame)
     }
 }
