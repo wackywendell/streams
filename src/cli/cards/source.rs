@@ -1,10 +1,10 @@
 use std::{path::PathBuf, sync::Arc};
 
 use serde::Deserialize;
-use streams_temper::runtime::RuntimeError;
-use streams_temper::runtime::conversations::Harness;
-use streams_temper::runtime::native_cards::{NativeCardSource, ResolvedEditor, SourceLaunch};
-use streams_temper::tui::{
+use streams::runtime::RuntimeError;
+use streams::runtime::conversations::Harness;
+use streams::runtime::native_cards::{NativeCardSource, ResolvedEditor, SourceLaunch};
+use streams::tui::{
     CardRecords, CardSnapshot, CheckoutBinding, CheckoutSelection, DocumentLocation,
     DocumentProblem, DocumentTarget, NativeOwnerObservation, ResolvedDocument, Scope,
 };
@@ -19,7 +19,7 @@ pub(super) struct ApplicationSource {
     records: Arc<application::OpenedRecords>,
     native_session_id: String,
     expected_scope: Option<Scope>,
-    context: Option<streams_temper::agent::RecordContext>,
+    context: Option<streams::agent::RecordContext>,
 }
 impl ApplicationSource {
     pub(super) fn new(
@@ -27,7 +27,7 @@ impl ApplicationSource {
         records: Arc<application::OpenedRecords>,
         native_session_id: String,
         scope: Option<Scope>,
-        context: Option<streams_temper::agent::RecordContext>,
+        context: Option<streams::agent::RecordContext>,
     ) -> Self {
         Self {
             app,
@@ -39,7 +39,7 @@ impl ApplicationSource {
     }
     fn records(
         &mut self,
-        owner: &streams_temper::frontend::herdr::HerdrInventoryPane,
+        owner: &streams::frontend::herdr::HerdrInventoryPane,
     ) -> Result<CardRecords> {
         let context = match self.context.take() {
             Some(context) => context,
@@ -52,7 +52,7 @@ impl ApplicationSource {
                 }
                 self.app.context_from_records(
                     &self.records,
-                    streams_temper::agent::ContextRequest {
+                    streams::agent::ContextRequest {
                         harness: Harness::Pi,
                         native_id: &self.native_session_id,
                         stream_id: None,
@@ -86,7 +86,7 @@ impl ApplicationSource {
     }
     fn observe(
         &mut self,
-        owner: &streams_temper::frontend::herdr::HerdrInventoryPane,
+        owner: &streams::frontend::herdr::HerdrInventoryPane,
     ) -> Result<CardSnapshot> {
         let records = self.records(owner)?;
         self.display(records)
@@ -193,14 +193,14 @@ impl ApplicationSource {
 impl NativeCardSource for ApplicationSource {
     fn read_records(
         &mut self,
-        owner: &streams_temper::frontend::herdr::HerdrInventoryPane,
+        owner: &streams::frontend::herdr::HerdrInventoryPane,
     ) -> std::result::Result<CardRecords, RuntimeError> {
         self.records(owner)
             .map_err(|error| RuntimeError::Invalid(error.to_string()))
     }
     fn read(
         &mut self,
-        owner: &streams_temper::frontend::herdr::HerdrInventoryPane,
+        owner: &streams::frontend::herdr::HerdrInventoryPane,
     ) -> std::result::Result<CardSnapshot, RuntimeError> {
         self.observe(owner)
             .map_err(|error| RuntimeError::Invalid(error.to_string()))

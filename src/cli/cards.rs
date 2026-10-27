@@ -9,7 +9,7 @@ use super::{
     json,
 };
 use std::sync::{Arc, atomic::AtomicBool};
-use streams_temper::{
+use streams::{
     agent::RecordContext,
     frontend::herdr::{HerdrClient, HerdrNativeSnapshot},
     process::{NativeProcessRunner, ProcessRequest, ProcessRunner},
@@ -45,16 +45,16 @@ impl App {
             };
             let app = self.clone();
             let control = context.control_socket.clone();
-            let exit = streams_temper::tui::application::run(move |cancel, events| {
+            let exit = streams::tui::application::run(move |cancel, events| {
                 host::Host::new(app, options, config, context, cancel, events)
             })
             .map_err(CliError::message)?;
-            if exit == streams_temper::tui::application::ExitReason::Quit {
+            if exit == streams::tui::application::ExitReason::Quit {
                 let saved = control
                     .as_deref()
                     .ok_or_else(|| "card has no child control endpoint".to_owned())
                     .and_then(|path| {
-                        streams_temper::runtime::native_cards::control::closed(path)
+                        streams::runtime::native_cards::control::closed(path)
                             .map_err(|error| error.to_string())
                     });
                 if let Err(error) = saved {
@@ -103,9 +103,9 @@ impl App {
             NativeCommand::Open { automatic } => {
                 engine.project()?;
                 let display = engine.open_display(if automatic {
-                    streams_temper::runtime::native_cards::OpenMode::Automatic
+                    streams::runtime::native_cards::OpenMode::Automatic
                 } else {
-                    streams_temper::runtime::native_cards::OpenMode::Explicit
+                    streams::runtime::native_cards::OpenMode::Explicit
                 })?;
                 Ok(Output::value(
                     json!({"display":display_name(display),"native":engine.status()?}),
@@ -179,15 +179,15 @@ pub(super) fn build(
     }
     .and_then(|client| client.with_context(read_environment.clone()))
     .and_then(|client| client.observing())
-    .map_err(streams_temper::runtime::RuntimeError::from)?;
+    .map_err(streams::runtime::RuntimeError::from)?;
     let snapshot = match app.herdr.as_ref().and_then(|read| read.snapshot.clone()) {
         Some(snapshot) => snapshot,
         None => HerdrNativeSnapshot::parse(
             &client
                 .session_snapshot()
-                .map_err(streams_temper::runtime::RuntimeError::from)?,
+                .map_err(streams::runtime::RuntimeError::from)?,
         )
-        .map_err(streams_temper::runtime::RuntimeError::from)?,
+        .map_err(streams::runtime::RuntimeError::from)?,
     };
     let owner = match app
         .herdr
@@ -200,7 +200,7 @@ pub(super) fn build(
             &snapshot,
             &client
                 .current_pane_from(snapshot.raw())
-                .map_err(streams_temper::runtime::RuntimeError::from)?
+                .map_err(streams::runtime::RuntimeError::from)?
                 .id,
             session_id,
         )?,

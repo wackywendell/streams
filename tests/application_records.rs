@@ -6,7 +6,7 @@ use std::{
 };
 
 use serde_json::json;
-use streams_temper::{
+use streams::{
     application,
     config::Config,
     model::{Record, RecordKind, Session, Stream, TitleDefaults},
@@ -266,21 +266,20 @@ fn record_factory_rejects_missing_legacy_incomplete_and_foreign_producer_roots_w
 #[test]
 fn fresh_initialization_creates_the_saved_producer_and_selected_transport_without_domain_records() {
     for strategy in [
-        streams_temper::config::Strategy::None,
-        streams_temper::config::Strategy::Git,
+        streams::config::Strategy::None,
+        streams::config::Strategy::Git,
     ] {
         let directory = tempfile::tempdir().unwrap();
         let config = fixture_config(directory.path());
         let opened = application::initialize_records(&config, strategy, None, "main").unwrap();
         assert_eq!(opened.host(), &config.host_identity().unwrap());
         assert!(opened.inventory().unwrap().is_empty());
-        let sync =
-            streams_temper::sync::records::RecordSync::open(opened.root(), opened.host().as_str())
-                .unwrap();
+        let sync = streams::sync::records::RecordSync::open(opened.root(), opened.host().as_str())
+            .unwrap();
         assert_eq!(sync.strategy(), strategy);
         assert_eq!(
             opened.root().join(".git").exists(),
-            strategy == streams_temper::config::Strategy::Git
+            strategy == streams::config::Strategy::Git
         );
         assert_eq!(
             application::open_records(&config).unwrap().source_id(),
@@ -299,13 +298,8 @@ fn fresh_initialization_does_not_create_a_producer_for_an_existing_nonempty_root
     let path = root.join("unrecognized-data");
     fs::write(&path, "leave intact").unwrap();
     assert!(
-        application::initialize_records(
-            &config,
-            streams_temper::config::Strategy::None,
-            None,
-            "main"
-        )
-        .is_err()
+        application::initialize_records(&config, streams::config::Strategy::None, None, "main")
+            .is_err()
     );
     assert!(!config.host_path().exists());
     assert!(!root.join(".catalog-local").exists());

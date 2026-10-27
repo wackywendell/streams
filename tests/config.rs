@@ -6,9 +6,9 @@ use std::sync::{Arc, Barrier};
 
 use serde_json::json;
 use sha2::{Digest, Sha256};
-use streams_temper::config::{Config, ConfigKey, HostIdentity, resolve_path, source_id};
-use streams_temper::frontend::{FrontendId, FrontendMode};
-use streams_temper::model::{NamingMode, TitleDefaults};
+use streams::config::{Config, ConfigKey, HostIdentity, resolve_path, source_id};
+use streams::frontend::{FrontendId, FrontendMode};
+use streams::model::{NamingMode, TitleDefaults};
 
 const HOST: &str = "01234567-89ab-4def-8123-456789abcdef";
 

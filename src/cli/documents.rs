@@ -2,7 +2,7 @@
 
 use serde_json::{Value, json};
 use std::collections::BTreeMap;
-use streams_temper::{
+use streams::{
     model::{Session, Stream},
     runtime::{CheckoutRegistry, DirectoryBindings},
 };

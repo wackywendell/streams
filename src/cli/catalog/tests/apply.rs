@@ -1,6 +1,6 @@
 use std::sync::{Arc, Mutex};
 
-use streams_temper::{
+use streams::{
     model::TitleDefaults,
     storage::{
         StorageError,

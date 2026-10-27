@@ -6,7 +6,7 @@ use std::{
     path::PathBuf,
     sync::{Arc, Mutex},
 };
-use streams_temper::{
+use streams::{
     agent::{CaptureTarget, capture_inputs},
     application::{self, OpenedRecords},
     config::{Config, Strategy},
@@ -251,7 +251,7 @@ fn exact_capture_reads_only_its_target_and_observed_native_keys_at_zero_or_64_un
                     relative_record_path(
                         &RecordAddress::new(
                             opened.host().as_str(),
-                            streams_temper::model::RecordKind::Stream,
+                            streams::model::RecordKind::Stream,
                             "effort"
                         )
                         .unwrap()

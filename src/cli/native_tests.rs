@@ -1,5 +1,5 @@
 use super::*;
-use streams_temper::{config::Strategy, runtime::conversations::Harness};
+use streams::{config::Strategy, runtime::conversations::Harness};
 
 #[test]
 fn current_identity_never_suppresses_configuration_errors() {

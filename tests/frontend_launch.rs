@@ -3,8 +3,8 @@ use crate::support::herdr::Scripted;
 use serde_json::{Value, json};
 use std::collections::BTreeMap;
 use std::path::Path;
-use streams_temper::frontend::herdr::{HerdrClient, HerdrPane};
-use streams_temper::frontend::*;
+use streams::frontend::herdr::{HerdrClient, HerdrPane};
+use streams::frontend::*;
 
 fn client() -> (Scripted, HerdrClient, WorkspaceRef) {
     let fake = Scripted::new();

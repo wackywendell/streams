@@ -214,7 +214,7 @@ fn typed_preview_apply_and_enroll_keep_domain_packets_without_stdin() {
     let f = Fixture::new();
     let (context, request) = f.capture();
     let preview = json!({"catalog":context,"action":"apply","request":request});
-    let expected = streams_temper::agent::preview(&preview.to_string()).unwrap();
+    let expected = streams::agent::preview(&preview.to_string()).unwrap();
     let mut child = f.start();
     child.request(
         1,

@@ -16,7 +16,7 @@ use std::{
     thread,
     time::{Duration, Instant},
 };
-use streams_temper::{
+use streams::{
     child_protocol::{
         self, ClientFrame, Outcome, Request, RequestError, RequestId, ServerFrame, Version2,
         Warnings,
@@ -154,7 +154,7 @@ impl Server {
         controller: &mut Option<native::Controller>,
         id: RequestId,
         request: Request,
-        stopping: &streams_temper::cancellation::Cancellation,
+        stopping: &streams::cancellation::Cancellation,
         plugin_root: &std::path::Path,
     ) -> Result<()> {
         let cancelled = self.cancelled(id)?;
@@ -314,7 +314,7 @@ fn read_input(server: Arc<Server>) {
 fn native_worker(
     server: Arc<Server>,
     receiver: mpsc::Receiver<NativeWork>,
-    stopping: streams_temper::cancellation::Cancellation,
+    stopping: streams::cancellation::Cancellation,
     plugin_root: PathBuf,
 ) -> Result<()> {
     let mut controller: Option<native::Controller> = None;
@@ -374,7 +374,7 @@ pub(super) fn run(session_id: String, plugin_root: PathBuf) -> Result<()> {
     });
     let (native_sender, native_receiver) = mpsc::channel();
     let (done, completed) = mpsc::sync_channel(1);
-    let stopping = streams_temper::cancellation::Cancellation::new()?;
+    let stopping = streams::cancellation::Cancellation::new()?;
     let native = {
         let server = server.clone();
         let stopping = stopping.clone();

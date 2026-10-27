@@ -7,7 +7,7 @@ use std::{
         atomic::{AtomicBool, Ordering},
     },
 };
-use streams_temper::{application, config::Config, runtime::native_markers::stream_tokens};
+use streams::{application, config::Config, runtime::native_markers::stream_tokens};
 
 #[path = "cards.rs"]
 mod cards;
@@ -132,7 +132,7 @@ impl NativeFixture {
                     }]}))
                 }
                 "plugin.pane.open" => {
-                    let launch: streams_temper::runtime::native_cards::LaunchedCardContext =
+                    let launch: streams::runtime::native_cards::LaunchedCardContext =
                         serde_json::from_str(
                             params["env"]["STREAMS_CARDS_CONTEXT"].as_str().unwrap(),
                         )
@@ -675,7 +675,7 @@ fn automatic_cards_open_on_startup_or_outside_attach_and_not_again_on_refresh() 
         assert_eq!(params["placement"], "split");
         assert_eq!(params["direction"], "down");
         assert_eq!(params["focus"], false);
-        let launch: streams_temper::runtime::native_cards::LaunchedCardContext =
+        let launch: streams::runtime::native_cards::LaunchedCardContext =
             serde_json::from_str(params["env"]["STREAMS_CARDS_CONTEXT"].as_str().unwrap()).unwrap();
         assert_eq!(launch.scope.session_id, attached["id"]);
         assert_eq!(launch.scope.stream_id, attached["stream_id"]);
@@ -856,7 +856,7 @@ fn outside_attach_opens_after_delayed_pi_transcript_detection() {
 
 #[test]
 fn card_preferences_and_the_control_endpoint_survive_close_refresh_and_child_restart() {
-    use streams_temper::{
+    use streams::{
         child_protocol::{Outcome, Request},
         runtime::native_cards::control,
     };
@@ -865,7 +865,7 @@ fn card_preferences_and_the_control_endpoint_survive_close_refresh_and_child_res
     child.request(1, json!({"kind":"open_card"}));
     assert_eq!(child.response(1)["outcome"]["result"]["display"], "opened");
     let opens = f.server.requests();
-    let launch: streams_temper::runtime::native_cards::LaunchedCardContext = serde_json::from_str(
+    let launch: streams::runtime::native_cards::LaunchedCardContext = serde_json::from_str(
         opens
             .iter()
             .find(|(method, _)| method == "plugin.pane.open")
@@ -963,7 +963,7 @@ fn card_preferences_and_the_control_endpoint_survive_close_refresh_and_child_res
     // A failed preference write is a typed error on either connection.
     let config = Config::new(&launch.reader.environment, &launch.reader.cwd).unwrap();
     let records = application::open_records(&config).unwrap();
-    let store = streams_temper::runtime::card_settings::CardSettings::new(
+    let store = streams::runtime::card_settings::CardSettings::new(
         &config,
         records.root(),
         records.host().as_str(),

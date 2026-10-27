@@ -7,11 +7,9 @@ use std::path::{Path, PathBuf};
 use std::sync::{Arc, Barrier, Mutex};
 
 use serde_json::{Value, json};
-use streams_temper::process::{ProcessError, ProcessOutput, ProcessRequest, ProcessRunner};
-use streams_temper::runtime::checkouts::{canonical_directory, inspect_directory_with_runner};
-use streams_temper::runtime::{
-    CheckoutRegistry, DirectoryBindings, RepositoryInspection, RuntimeError,
-};
+use streams::process::{ProcessError, ProcessOutput, ProcessRequest, ProcessRunner};
+use streams::runtime::checkouts::{canonical_directory, inspect_directory_with_runner};
+use streams::runtime::{CheckoutRegistry, DirectoryBindings, RepositoryInspection, RuntimeError};
 
 fn fake_inspector(path: &Path) -> Result<Option<RepositoryInspection>, RuntimeError> {
     let current = canonical_directory(path)?;
@@ -70,8 +68,8 @@ fn legacy_binding_path(bindings: &DirectoryBindings, stream: &str, session: &str
     use sha2::{Digest, Sha256};
     let wire = format!(
         "[{}, {}]",
-        streams_temper::codec::ascii_json(stream),
-        streams_temper::codec::ascii_json(session)
+        streams::codec::ascii_json(stream),
+        streams::codec::ascii_json(session)
     );
     bindings
         .path(stream, None)
@@ -1315,7 +1313,7 @@ fn malformed_nearest_marker_and_mismatched_reported_root_do_not_fall_back() {
 
 #[test]
 fn post_replacement_uncertainty_is_preserved_in_runtime_errors() {
-    let uncertain = RuntimeError::from(streams_temper::storage::StorageError::uncertain(
+    let uncertain = RuntimeError::from(streams::storage::StorageError::uncertain(
         "directory fsync failed after rename",
     ));
     assert!(uncertain.is_uncertain());

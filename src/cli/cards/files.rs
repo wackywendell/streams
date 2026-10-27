@@ -8,7 +8,7 @@ use std::{
     path::{Path, PathBuf},
     sync::{Arc, Mutex},
 };
-use streams_temper::tui::application::Refresh;
+use streams::tui::application::Refresh;
 
 type Version = Result<Option<Vec<u8>>, String>;
 fn version(path: &Path) -> Version {
@@ -200,7 +200,7 @@ impl Files {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use streams_temper::tui::application::PaneEvents;
+    use streams::tui::application::PaneEvents;
     fn events() -> Events {
         Events::new(PaneEvents::new(|_| {}))
     }

@@ -1,10 +1,10 @@
 use std::path::PathBuf;
 
 use clap::{ArgAction, ArgGroup, Args, Parser, Subcommand};
-use streams_temper::config::{ConfigKey, Strategy};
-use streams_temper::frontend::FrontendRequest;
-use streams_temper::model::{NamingMode, Status, TitleMode};
-use streams_temper::runtime::conversations::Harness;
+use streams::config::{ConfigKey, Strategy};
+use streams::frontend::FrontendRequest;
+use streams::model::{NamingMode, Status, TitleMode};
+use streams::runtime::conversations::Harness;
 
 #[derive(Debug, Parser)]
 #[command(name = "streams", about = "Manage durable work streams")]
@@ -471,7 +471,7 @@ mod tests {
         assert!(parse(&["show"]).is_ok());
         let parsed = parse(&["show", "effort", "-c", "-f", "new-adapter"]).unwrap();
         assert!(
-            matches!(parsed.command, Command::Show { target: Target { reference: Some(reference), current: true, frontend: Some(frontend) }, .. } if reference == "effort" && frontend == FrontendRequest::Explicit(streams_temper::frontend::FrontendId("new-adapter".into())))
+            matches!(parsed.command, Command::Show { target: Target { reference: Some(reference), current: true, frontend: Some(frontend) }, .. } if reference == "effort" && frontend == FrontendRequest::Explicit(streams::frontend::FrontendId("new-adapter".into())))
         );
     }
 

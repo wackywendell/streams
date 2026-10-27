@@ -1,5 +1,5 @@
 use serde_json::{Value, json};
-use streams_temper::{
+use streams::{
     agent::{EnrollmentRequest, effort_id_for, preview, session_id_for},
     codec::record_to_data,
     model::{Record, Session, Stream, TitleDefaults},

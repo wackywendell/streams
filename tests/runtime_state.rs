@@ -1,5 +1,5 @@
 //! The remaining host-local root only addresses directory bindings.
-use streams_temper::runtime::state::RuntimeState;
+use streams::runtime::state::RuntimeState;
 #[test]
 fn host_scoped_root_construction_is_inert_and_keeps_its_existing_address() {
     let directory = tempfile::tempdir().unwrap();

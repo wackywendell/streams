@@ -1,7 +1,7 @@
 use super::*;
 use args::{SessionSelection, StreamFields};
 use std::sync::{Arc, atomic::AtomicBool};
-use streams_temper::{
+use streams::{
     frontend::{FrontendId, herdr::HerdrNativeSnapshot},
     model::{RecordKind, Status},
     runtime::{
@@ -361,7 +361,7 @@ impl App {
         let frontend = if use_herdr {
             Some(BuiltinFrontend::connect(
                 &FrontendId::herdr(),
-                Arc::new(streams_temper::process::NativeProcessRunner),
+                Arc::new(streams::process::NativeProcessRunner),
                 self.environment.clone(),
                 30.0,
             )?)

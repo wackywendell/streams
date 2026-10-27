@@ -1,7 +1,7 @@
 use crate::support::record_io;
 use serde_json::{Value, json};
 use std::sync::{Arc, Mutex};
-use streams_temper::{
+use streams::{
     agent::parse_record_update,
     application::{move_session_observed, save_record_update},
     model::{NamingMode, Record, RecordKind, Session, Stream, TitleDefaults, TitleMode},
@@ -54,14 +54,14 @@ fn setup(root: &std::path::Path) -> YamlRecordStore {
 fn wire(id: &str, before: &Session, actor: &str, state: &str) -> Value {
     json!({"version":2,"title_default":"automatic","catalog_source":"source","operation_id":id,"kind":"session","actor":actor,"before":before,"changes":{"state":state},"inputs":[]})
 }
-fn update(store: &YamlRecordStore, value: &Value) -> streams_temper::storage::records::RecordSave {
+fn update(store: &YamlRecordStore, value: &Value) -> streams::storage::records::RecordSave {
     update_with_defaults(store, value, TitleDefaults::default())
 }
 fn update_with_defaults(
     store: &YamlRecordStore,
     value: &Value,
     defaults: TitleDefaults,
-) -> streams_temper::storage::records::RecordSave {
+) -> streams::storage::records::RecordSave {
     save_record_update(
         store,
         &parse_record_update(&value.to_string(), "source", defaults).unwrap(),
@@ -348,7 +348,7 @@ fn accepted_report_retry_after_later_edits_reads_only_target_and_retains_origina
             &parse_record_update(
                 &changed.to_string(),
                 "source",
-                streams_temper::model::TitleDefaults::default()
+                streams::model::TitleDefaults::default()
             )
             .unwrap()
         )
@@ -455,7 +455,7 @@ fn request_schema_rejects_old_tokens_unversioned_requests_and_rosters() {
         parse_record_update(
             &valid.to_string(),
             "source",
-            streams_temper::model::TitleDefaults::default()
+            streams::model::TitleDefaults::default()
         )
         .is_ok()
     );
@@ -489,7 +489,7 @@ fn request_schema_rejects_old_tokens_unversioned_requests_and_rosters() {
             parse_record_update(
                 &invalid.to_string(),
                 "source",
-                streams_temper::model::TitleDefaults::default()
+                streams::model::TitleDefaults::default()
             )
             .is_err()
         );
@@ -498,7 +498,7 @@ fn request_schema_rejects_old_tokens_unversioned_requests_and_rosters() {
         parse_record_update(
             &valid.to_string(),
             "changed-source",
-            streams_temper::model::TitleDefaults::default()
+            streams::model::TitleDefaults::default()
         )
         .is_err()
     );
@@ -507,7 +507,7 @@ fn request_schema_rejects_old_tokens_unversioned_requests_and_rosters() {
         parse_record_update(
             &roster.to_string(),
             "source",
-            streams_temper::model::TitleDefaults::default()
+            streams::model::TitleDefaults::default()
         )
         .is_err()
     );
@@ -524,7 +524,7 @@ fn manual_stream_edit_has_no_session_dependency_even_after_membership_changes() 
         parse_record_update(
             &invalid.to_string(),
             "source",
-            streams_temper::model::TitleDefaults::default()
+            streams::model::TitleDefaults::default()
         )
         .is_err()
     );
@@ -582,7 +582,7 @@ fn declined_manual_text_is_still_part_of_the_retry_fingerprint() {
             &parse_record_update(
                 &request.to_string(),
                 "source",
-                streams_temper::model::TitleDefaults::default()
+                streams::model::TitleDefaults::default()
             )
             .unwrap()
         )

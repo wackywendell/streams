@@ -5,14 +5,12 @@ use std::{
     path::{Path, PathBuf},
     sync::Mutex,
 };
-use streams_temper::{
+use streams::{
     process::{ProcessError, ProcessOutput, ProcessRequest, ProcessRunner},
     runtime::checkouts::{CheckoutRegistry, RepositoryInspection},
 };
 
-fn inspect(
-    path: &Path,
-) -> Result<Option<RepositoryInspection>, streams_temper::runtime::RuntimeError> {
+fn inspect(path: &Path) -> Result<Option<RepositoryInspection>, streams::runtime::RuntimeError> {
     Ok(path
         .join(".test-checkout")
         .is_file()

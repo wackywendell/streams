@@ -5,7 +5,7 @@ use std::{
 
 use serde::{Serialize, de::DeserializeOwned};
 use serde_json::json;
-use streams_temper::{
+use streams::{
     codec::record_from_data,
     model::{NamingMode, RecordKind, Status, TitleMode},
     operations::{Actor, DomainOutcome},

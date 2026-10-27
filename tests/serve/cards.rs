@@ -3,7 +3,7 @@ use super::subscriptions::NativeFixture;
 use crate::support::pty::Pty;
 use serde_json::{Value, json};
 use std::{collections::BTreeMap, fs, path::PathBuf, process::Command, time::Duration};
-use streams_temper::{
+use streams::{
     application,
     config::Config,
     model::Record,
@@ -131,7 +131,7 @@ impl CardFixture {
         }
     }
     fn save_recap(&self, recap: &str) {
-        let mut session: streams_temper::model::Session =
+        let mut session: streams::model::Session =
             serde_json::from_value(self.native.session.clone()).unwrap();
         session.recap = recap.into();
         let value = serde_json::to_value(&session).unwrap();

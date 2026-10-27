@@ -1,6 +1,6 @@
 use super::*;
 use std::{fs, sync::Mutex};
-use streams_temper::{
+use streams::{
     config::Config,
     yaml_store::records::{RecordIoEvent, YamlRecordStore, relative_record_path},
 };

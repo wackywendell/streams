@@ -2,7 +2,7 @@
 
 use super::{App, CliError, Output, Result, application};
 use serde::Serialize;
-use streams_temper::{
+use streams::{
     agent::{ContextRequest, EnrollmentRequest, RecordContext},
     model::{Record, Session, Stream},
     runtime::checkouts::canonical_directory,
@@ -181,7 +181,7 @@ impl App {
                 self.registry(opened.host().as_str())?
                     .bind_inferred_repositories(
                         &checkout.id,
-                        &streams_temper::process::NativeProcessRunner,
+                        &streams::process::NativeProcessRunner,
                     )?;
             }
             directory_selected = true;

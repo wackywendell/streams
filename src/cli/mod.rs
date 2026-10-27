@@ -29,7 +29,7 @@ use std::{
     path::{Path, PathBuf},
     process::ExitCode,
 };
-use streams_temper::{
+use streams::{
     agent::{self, ContextRequest},
     application,
     config::{Config, ConfigKey},
@@ -92,8 +92,8 @@ message_error!(
     serde_json::Error,
     ValidationError,
     application::ApplicationError,
-    streams_temper::config::ConfigError,
-    streams_temper::sync::state::RepairRequired
+    streams::config::ConfigError,
+    streams::sync::state::RepairRequired
 );
 
 impl From<frontend::FrontendSelectionError> for CliError {
@@ -384,7 +384,7 @@ impl App {
                 }
                 BuiltinFrontend::connect(
                     id,
-                    std::sync::Arc::new(streams_temper::process::NativeProcessRunner),
+                    std::sync::Arc::new(streams::process::NativeProcessRunner),
                     self.environment.clone(),
                     timeout,
                 )
@@ -404,7 +404,7 @@ impl App {
             .get("STREAMS_STREAM_ID")
             .map(String::as_str);
         if let Some(id) = explicit {
-            streams_temper::model::check_text(id, "STREAMS_STREAM_ID", false)?;
+            streams::model::check_text(id, "STREAMS_STREAM_ID", false)?;
             return Ok(id.to_owned());
         }
         let selection = frontend::resolve_frontend(configured, requested, &self.environment)?;
@@ -441,7 +441,7 @@ impl App {
         opened: &application::OpenedRecords,
         target: &Target,
     ) -> Result<Stream> {
-        use streams_temper::{
+        use streams::{
             model::RecordKind,
             storage::records::{RecordAddress, RecordStore},
         };
@@ -482,7 +482,7 @@ impl App {
     }
     fn refresh_records(&self, opened: &application::OpenedRecords) -> Result<Value> {
         let transport =
-            streams_temper::sync::records::RecordSync::open(opened.root(), opened.host().as_str())
+            streams::sync::records::RecordSync::open(opened.root(), opened.host().as_str())
                 .map_err(application::ApplicationError::from)?;
         result_data(&transport.sync())
     }
@@ -706,9 +706,9 @@ impl App {
                     match key {
                         ConfigKey::StreamNaming | ConfigKey::SessionNaming => {
                             let target = if key == ConfigKey::StreamNaming {
-                                streams_temper::child_protocol::TitleTarget::Stream
+                                streams::child_protocol::TitleTarget::Stream
                             } else {
-                                streams_temper::child_protocol::TitleTarget::Session
+                                streams::child_protocol::TitleTarget::Session
                             };
                             let mode = value.parse().map_err(|_| {
                                 CliError::message(format!("{key} must be automatic or manual"))
@@ -750,7 +750,7 @@ impl App {
     }
     fn capture_inputs(&self, stream: Option<&str>, workspace: Option<&str>) -> Result<Output> {
         use agent::CaptureTarget;
-        use streams_temper::runtime::{conversations::ConversationRoots, state::RuntimeState};
+        use streams::runtime::{conversations::ConversationRoots, state::RuntimeState};
         let opened = application::open_records(&self.config)?;
         let settings = self.config.load()?;
         if settings.catalog_root != opened.root() {
@@ -765,7 +765,7 @@ impl App {
         let native = (|| -> Result<_> {
             let connection = self.native_frontend(
                 &self.selection(None)?,
-                streams_temper::sync::COMMAND_TIMEOUT_SECONDS,
+                streams::sync::COMMAND_TIMEOUT_SECONDS,
             )?;
             let client = connection
                 .as_ref()
@@ -801,9 +801,9 @@ impl App {
         &self,
         opened: &application::OpenedRecords,
         request: ContextRequest<'_>,
-        title_defaults: streams_temper::model::TitleDefaults,
+        title_defaults: streams::model::TitleDefaults,
     ) -> Result<agent::RecordContext> {
-        streams_temper::storage::records::RecordStore::with_reader(opened.records(), |reader| {
+        streams::storage::records::RecordStore::with_reader(opened.records(), |reader| {
             agent::record_context(
                 reader,
                 opened.host().as_str(),
@@ -817,7 +817,7 @@ impl App {
 
     fn agent_observation(
         &self,
-        harness: streams_temper::runtime::conversations::Harness,
+        harness: streams::runtime::conversations::Harness,
         session_id: &str,
         stream_id: Option<&str>,
     ) -> Result<AgentObservation> {

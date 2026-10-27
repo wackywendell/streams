@@ -2,7 +2,7 @@
 
 use std::collections::BTreeMap;
 use std::time::{Duration, Instant};
-use streams_temper::process::{NativeProcessRunner, ProcessRequest, ProcessRunner};
+use streams::process::{NativeProcessRunner, ProcessRequest, ProcessRunner};
 
 fn fixture(script: &str, timeout: f64) -> ProcessRequest {
     ProcessRequest {

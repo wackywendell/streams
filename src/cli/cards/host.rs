@@ -5,7 +5,7 @@ use super::{
     source::ApplicationSource,
 };
 use std::{collections::BTreeSet, path::PathBuf, sync::Arc};
-use streams_temper::{
+use streams::{
     cancellation::Cancellation,
     frontend::herdr::{HerdrClient, HerdrNativeSnapshot, events::EventPane},
     model::{Record, RecordKind, Session},
@@ -42,11 +42,7 @@ impl Inputs {
             || scope.host_id != records.host().as_str()
             || scope.harness != "pi"
             || scope.session_id
-                != streams_temper::model::Session::id_for(
-                    &scope.host_id,
-                    "pi",
-                    &scope.native_session_id,
-                )
+                != streams::model::Session::id_for(&scope.host_id, "pi", &scope.native_session_id)
         {
             return Err("watched scope does not match its admitted catalog conversation".into());
         }
@@ -61,7 +57,7 @@ impl Inputs {
             .map_err(|e| e.to_string())?;
         let bindings = DirectoryBindings::new(runtime.root(), registry.clone());
         let physical =
-            |path: PathBuf| streams_temper::config::resolve_path(&path).map_err(|e| e.to_string());
+            |path: PathBuf| streams::config::resolve_path(&path).map_err(|e| e.to_string());
         let directories = [
             physical(bindings.path(&scope.stream_id, Some(&scope.session_id)))?,
             physical(bindings.path(&scope.stream_id, None))?,
@@ -112,7 +108,7 @@ impl Inputs {
         &self,
         files: &Files,
         session: Session,
-        owner: streams_temper::tui::NativeOwnerObservation,
+        owner: streams::tui::NativeOwnerObservation,
     ) -> Result<CardRecords> {
         let address =
             RecordAddress::new(&self.scope.host_id, RecordKind::Stream, &session.stream_id)
@@ -247,7 +243,7 @@ impl Host {
         Ok(())
     }
     fn routes(&self, placement: &CardPlacement) -> Routes {
-        let pane = |location: &streams_temper::tui::NativeOwnerObservation, terminal| EventPane {
+        let pane = |location: &streams::tui::NativeOwnerObservation, terminal| EventPane {
             pane_id: location.pane_id.clone(),
             tab_id: location.tab_id.clone(),
             workspace_id: location.workspace_id.clone(),

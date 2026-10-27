@@ -1,4 +1,4 @@
-use streams_temper::{
+use streams::{
     child_protocol::{CaptureTarget, DomainObject, PreviewAction, Request},
     runtime::conversations::Harness,
 };

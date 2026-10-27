@@ -1,4 +1,4 @@
-use streams_temper::{child_protocol::TitleTarget, model::NamingMode};
+use streams::{child_protocol::TitleTarget, model::NamingMode};
 
 use super::*;
 
@@ -7,8 +7,8 @@ impl App {
         &self,
         records: &application::OpenedRecords,
         native_id: &str,
-    ) -> Result<streams_temper::runtime::card_settings::CardSettings> {
-        Ok(streams_temper::runtime::card_settings::CardSettings::new(
+    ) -> Result<streams::runtime::card_settings::CardSettings> {
+        Ok(streams::runtime::card_settings::CardSettings::new(
             &self.config,
             records.root(),
             records.host().as_str(),
@@ -28,10 +28,10 @@ impl App {
     pub(super) fn set_card_mode(
         &self,
         native_id: &str,
-        target: streams_temper::child_protocol::CardTarget,
-        mode: streams_temper::config::CardMode,
+        target: streams::child_protocol::CardTarget,
+        mode: streams::config::CardMode,
     ) -> Result<Output> {
-        use streams_temper::{child_protocol::CardTarget, config::CardMode};
+        use streams::{child_protocol::CardTarget, config::CardMode};
         match target {
             CardTarget::Global => {
                 let value = match mode {

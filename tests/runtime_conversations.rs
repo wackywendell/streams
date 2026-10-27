@@ -4,8 +4,8 @@ use std::fs;
 use std::os::unix::fs::symlink;
 use std::path::{Path, PathBuf};
 
-use streams_temper::runtime::RuntimeError;
-use streams_temper::runtime::conversations::{
+use streams::runtime::RuntimeError;
+use streams::runtime::conversations::{
     ConversationRoots, Harness, NativeIdentityKind, NativeSessionMetadata, conversation_file,
     native_identity,
 };

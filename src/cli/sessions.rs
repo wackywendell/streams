@@ -3,14 +3,14 @@ use super::args::SessionCommand;
 use super::{
     App, CliError, Output, Result, application, binding_data, catalog, fields, json, resolve,
 };
-use streams_temper::{
+use streams::{
     model::{Checkout, Record, RecordKind, Session, Stream, TitleMode, ValidationError},
     storage::records::{RecordAddress, RecordStore},
 };
 use uuid::Uuid;
 
 fn select_session(
-    records: &[streams_temper::storage::records::RecordRead],
+    records: &[streams::storage::records::RecordRead],
     reference: &str,
 ) -> Result<Session> {
     let sessions: Vec<_> = records

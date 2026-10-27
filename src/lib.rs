@@ -2,7 +2,7 @@
 
 // Share independent fixture adapters with the integration-test harness.
 #[cfg(test)]
-extern crate self as streams_temper;
+extern crate self as streams;
 
 #[cfg(test)]
 #[path = "../tests/support/herdr.rs"]

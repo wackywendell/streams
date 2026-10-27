@@ -1,7 +1,7 @@
 use super::*;
 use serde_json::{Value, json};
 use std::{cell::Cell, collections::BTreeMap};
-use streams_temper::{
+use streams::{
     config::{Config, Strategy},
     model::TitleDefaults,
     storage::records::{RecordAddress, RecordChange, RecordRequest, RecordStore},
@@ -14,7 +14,7 @@ fn record_selector_discovers_host_qualified_identity_and_refuses_duplicate_uuid_
     let id = "11234567-89ab-4def-8123-456789abcdef";
     let records: Vec<_> = ["a", "b"]
         .into_iter()
-        .map(|host| streams_temper::storage::records::RecordRead {
+        .map(|host| streams::storage::records::RecordRead {
             record: Record::Stream(Stream::new(id, "Shared", None, host).unwrap()),
             revision: "observed".into(),
         })

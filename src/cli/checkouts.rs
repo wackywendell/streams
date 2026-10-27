@@ -1,5 +1,5 @@
 use super::*;
-use streams_temper::process::NativeProcessRunner;
+use streams::process::NativeProcessRunner;
 
 impl App {
     pub(super) fn checkout(&self, command: CheckoutCommand) -> Result<Output> {

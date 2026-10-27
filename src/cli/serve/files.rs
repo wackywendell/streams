@@ -11,7 +11,7 @@ use std::{
     path::{Path, PathBuf},
     sync::mpsc::Sender,
 };
-use streams_temper::{
+use streams::{
     model::{RecordKind, Session},
     storage::records::RecordAddress,
     yaml_store::records::relative_record_path,
@@ -218,7 +218,7 @@ mod tests {
     use super::*;
     use notify::event::{CreateKind, ModifyKind, RenameMode};
     use std::sync::mpsc;
-    use streams_temper::{
+    use streams::{
         config::{Config, Strategy},
         model::{Record, Stream},
         storage::{
@@ -360,7 +360,7 @@ mod tests {
             host,
         )
         .unwrap();
-        changed.status = streams_temper::model::Status::Waiting;
+        changed.status = streams::model::Status::Waiting;
         save(&records, "racing-next", Record::Stream(changed));
         files.set_stream(Some("next")).unwrap();
         let next_path = files.groups["stream"].clone();

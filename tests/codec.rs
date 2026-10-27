@@ -1,5 +1,5 @@
 use serde_json::{Value, json};
-use streams_temper::{
+use streams::{
     codec::{record_from_data, record_to_data},
     model::{Document, RecordKind, Session, Stream},
 };
@@ -39,7 +39,7 @@ fn object_helpers_do_not_hide_duplicate_named_fields() {
 #[test]
 fn finite_wire_enums_accept_only_their_canonical_strings() {
     use serde::{Serialize, de::DeserializeOwned};
-    use streams_temper::{
+    use streams::{
         config::Strategy,
         model::{NamingMode, Status},
         operations::{Actor, DomainOutcome},

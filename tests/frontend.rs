@@ -7,10 +7,10 @@ use std::collections::{BTreeMap, VecDeque};
 use std::os::unix::process::ExitStatusExt;
 use std::path::Path;
 use std::sync::{Arc, Mutex};
-use streams_temper::frontend::cmux::CmuxClient;
-use streams_temper::frontend::herdr::{HerdrClient, HerdrEndpoint, HerdrTopology};
-use streams_temper::frontend::*;
-use streams_temper::process::{ProcessError, ProcessOutput, ProcessRequest, ProcessRunner};
+use streams::frontend::cmux::CmuxClient;
+use streams::frontend::herdr::{HerdrClient, HerdrEndpoint, HerdrTopology};
+use streams::frontend::*;
+use streams::process::{ProcessError, ProcessOutput, ProcessRequest, ProcessRunner};
 
 #[derive(Default)]
 struct FakeRunner {

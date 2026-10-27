@@ -7,7 +7,7 @@ use super::args::StreamFields;
 use super::{CliError, Output, Result, fields, fold, printable, resolve, result_data};
 use serde_json::{Map, Value, json};
 use std::{collections::BTreeSet, path::Path};
-use streams_temper::{
+use streams::{
     agent,
     application::{self, OpenedRecords},
     codec::record_to_data,
@@ -16,7 +16,7 @@ use streams_temper::{
 };
 
 pub(super) fn list_records(
-    opened: &streams_temper::application::OpenedRecords,
+    opened: &streams::application::OpenedRecords,
     query: Option<&str>,
     status: &[Status],
     archived: bool,
@@ -71,7 +71,7 @@ pub(super) fn list_records(
 }
 
 pub(super) fn select_stream<'a>(
-    records: &'a [streams_temper::storage::records::RecordRead],
+    records: &'a [streams::storage::records::RecordRead],
     reference: &str,
 ) -> Result<&'a Stream> {
     let streams: Vec<_> = records
@@ -127,10 +127,10 @@ pub(super) fn save_stream_edit(
 }
 
 pub(super) fn apply(
-    store: &impl streams_temper::storage::records::RecordStore,
+    store: &impl streams::storage::records::RecordStore,
     captured: &str,
     source_id: &str,
-    defaults: streams_temper::model::TitleDefaults,
+    defaults: streams::model::TitleDefaults,
 ) -> Result<Output> {
     let update = agent::parse_record_update(captured, source_id, defaults)?;
     finish_save(
@@ -141,13 +141,11 @@ pub(super) fn apply(
 
 pub(super) fn finish_save(
     operation_id: &str,
-    saved: application::Result<streams_temper::storage::records::RecordSave>,
+    saved: application::Result<streams::storage::records::RecordSave>,
 ) -> Result<Output> {
     match saved {
         Ok(saved) => Ok(finish_record(operation_id, saved)),
-        Err(streams_temper::application::ApplicationError::Storage(error))
-            if error.is_uncertain() =>
-        {
+        Err(streams::application::ApplicationError::Storage(error)) if error.is_uncertain() => {
             Ok(Output::receipt(
                 json!({
                     "operation_id":operation_id,
@@ -162,7 +160,7 @@ pub(super) fn finish_save(
 
 pub(super) fn finish_record(
     operation_id: &str,
-    saved: streams_temper::storage::records::RecordSave,
+    saved: streams::storage::records::RecordSave,
 ) -> Output {
     let ok = matches!(
         saved

@@ -4,7 +4,7 @@ use std::path::Path;
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
-use streams_temper::sync::git_io::{Git, GitError};
+use streams::sync::git_io::{Git, GitError};
 use tempfile::TempDir;
 
 fn fixture(timeout: f64) -> (TempDir, Git) {

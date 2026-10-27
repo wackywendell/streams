@@ -2,7 +2,7 @@ use std::path::Path;
 
 use serde::Serialize;
 use serde_json::{Map, Value};
-use streams_temper::model::{Document, Link, Repository, Session, Stream};
+use streams::model::{Document, Link, Repository, Session, Stream};
 
 use super::CliError;
 use super::args::{SessionFields, StreamFields};
@@ -270,7 +270,7 @@ fn links(
 mod tests {
     use super::*;
     use serde_json::json;
-    use streams_temper::model::{NamingMode, Status, TitleMode};
+    use streams::model::{NamingMode, Status, TitleMode};
 
     fn current_stream() -> Stream {
         Stream::new("stream", "Title", Some("Goal".into()), "host").unwrap()

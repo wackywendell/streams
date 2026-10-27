@@ -4,7 +4,7 @@ use crate::support::record_io;
 use std::sync::{Arc, Mutex};
 
 use serde_json::{Map, json};
-use streams_temper::{
+use streams::{
     application::move_session_observed,
     model::{Record, RecordKind, Session, Stream},
     operations::membership::MoveIntent,

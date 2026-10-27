@@ -13,7 +13,7 @@ use std::{
     thread,
     time::{Duration, Instant},
 };
-use streams_temper::tui::{
+use streams::tui::{
     CardSnapshot, CheckoutBinding, CheckoutSelection, DisplayContext, DocumentLocation,
     NativeOwnerObservation, ResolvedDocument, Target,
     application::{self, PaneHost},

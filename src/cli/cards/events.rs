@@ -2,7 +2,7 @@ use std::{
     sync::{Arc, Mutex},
     thread::{self, JoinHandle},
 };
-use streams_temper::{
+use streams::{
     frontend::herdr::{
         HerdrClient,
         events::{

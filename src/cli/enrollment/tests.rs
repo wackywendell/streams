@@ -6,7 +6,7 @@ use std::{
     fs,
     sync::{Arc, Mutex},
 };
-use streams_temper::{
+use streams::{
     config::{Config, Strategy},
     model::TitleDefaults,
     operations::membership::MoveIntent,
@@ -197,8 +197,7 @@ fn retained_enrollment_keeps_its_original_decision_and_current_records_without_r
 fn directory_failure_preserves_accepted_records_without_claiming_local_completion() {
     let f = Fixture::new();
     let request = f.request("initial", None);
-    let effort =
-        streams_temper::agent::effort_id_for(f.opened.host().as_str(), Harness::Pi, NATIVE);
+    let effort = streams::agent::effort_id_for(f.opened.host().as_str(), Harness::Pi, NATIVE);
     let directory_path = f
         .app
         .locations(f.opened.root(), f.opened.host().as_str())

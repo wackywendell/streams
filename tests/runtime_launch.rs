@@ -1,5 +1,5 @@
 use std::{collections::BTreeMap, fs};
-use streams_temper::{
+use streams::{
     model::{Session, Status, Stream},
     runtime::{
         RuntimeError,

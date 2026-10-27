@@ -249,7 +249,7 @@ fn session_attach_captures_explicit_native_id_and_keeps_local_directory_state_pr
 
 #[test]
 fn membership_move_keeps_checkout_selection_and_never_uses_destination_alias_url() {
-    use streams_temper::{
+    use streams::{
         application, operations::membership::MoveIntent, yaml_store::records::YamlRecordStore,
     };
     let f = Fixture::new();
@@ -335,7 +335,7 @@ fn membership_move_keeps_checkout_selection_and_never_uses_destination_alias_url
 
 #[test]
 fn record_local_cli_initializes_enrolls_reports_and_retries_without_scans_or_publication() {
-    use streams_temper::{
+    use streams::{
         model::RecordKind, storage::records::RecordAddress,
         yaml_store::records::relative_record_path,
     };
@@ -518,7 +518,7 @@ fn record_local_cli_initializes_enrolls_reports_and_retries_without_scans_or_pub
 
 #[test]
 fn record_local_session_commands_pin_checkout_identity_and_preserve_host_qualified_discovery() {
-    use streams_temper::{
+    use streams::{
         application,
         model::{Record, Session, Stream},
         storage::records::RecordAddress,
@@ -925,30 +925,30 @@ fn session_references_and_candidates_keep_the_host_qualified_identity() {
     let mut foreign = local.clone();
     foreign["host_id"] = json!(foreign_host);
     foreign["harness_session_id"] = json!("foreign-native");
-    let foreign_id = streams_temper::model::Session::id_for(foreign_host, "pi", "foreign-native");
+    let foreign_id = streams::model::Session::id_for(foreign_host, "pi", "foreign-native");
     foreign["id"] = json!(foreign_id);
     let mut foreign_stream = stream.clone();
     foreign_stream["owner"]["host_id"] = json!(foreign_host);
-    let stream_address = streams_temper::storage::records::RecordAddress::new(
+    let stream_address = streams::storage::records::RecordAddress::new(
         foreign_host,
-        streams_temper::model::RecordKind::Stream,
+        streams::model::RecordKind::Stream,
         stream["id"].as_str().unwrap(),
     )
     .unwrap();
     let stream_path = f
         .root()
-        .join(streams_temper::yaml_store::records::relative_record_path(&stream_address).unwrap());
+        .join(streams::yaml_store::records::relative_record_path(&stream_address).unwrap());
     fs::create_dir_all(stream_path.parent().unwrap()).unwrap();
     fs::write(stream_path, serde_json::to_vec_pretty(&json!({"version":2,"revision":"foreign-stream","kind":"stream","record":foreign_stream,"receipts":{}})).unwrap()).unwrap();
-    let address = streams_temper::storage::records::RecordAddress::new(
+    let address = streams::storage::records::RecordAddress::new(
         foreign_host,
-        streams_temper::model::RecordKind::Session,
+        streams::model::RecordKind::Session,
         &foreign_id,
     )
     .unwrap();
     let path = f
         .root()
-        .join(streams_temper::yaml_store::records::relative_record_path(&address).unwrap());
+        .join(streams::yaml_store::records::relative_record_path(&address).unwrap());
     fs::create_dir_all(path.parent().unwrap()).unwrap();
     fs::write(
         path,

@@ -4,7 +4,7 @@ use std::{
     io::{BufReader, Read},
     os::unix::net::UnixStream,
 };
-use streams_temper::runtime::native_cards::control::{
+use streams::runtime::native_cards::control::{
     CONTROL_TIMEOUT, ControlEndpoint, MAX_CONTROL_FRAME,
 };
 

@@ -1,7 +1,7 @@
 use super::*;
 use crate::cli::Input;
 use std::{collections::BTreeMap, sync::Mutex};
-use streams_temper::config::{Config, Strategy};
+use streams::config::{Config, Strategy};
 
 #[test]
 fn a_pathless_file_rescan_reinstalls_the_watch_before_filtering_paths() {

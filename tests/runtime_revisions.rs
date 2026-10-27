@@ -6,11 +6,11 @@ use std::path::{Path, PathBuf};
 use std::process::{Command, ExitStatus};
 use std::sync::Mutex;
 
-use streams_temper::process::{
+use streams::process::{
     NativeProcessRunner, ProcessError, ProcessOutput, ProcessRequest, ProcessRunner,
 };
-use streams_temper::runtime::checkouts::canonical_directory;
-use streams_temper::runtime::{CheckoutRegistry, RepositoryInspection, RuntimeError};
+use streams::runtime::checkouts::canonical_directory;
+use streams::runtime::{CheckoutRegistry, RepositoryInspection, RuntimeError};
 use tempfile::TempDir;
 
 const CID: &str = "1234567890abcdef1234567890abcdef12345678";
@@ -56,7 +56,7 @@ impl Fixture {
         path: &str,
         revision: &str,
         runner: &dyn ProcessRunner,
-    ) -> Result<streams_temper::runtime::revisions::RevisionDocument, RuntimeError> {
+    ) -> Result<streams::runtime::revisions::RevisionDocument, RuntimeError> {
         self.registry
             .revision_document(&self.id, path, revision, runner, 3.0, &self.cache)
     }

@@ -2,7 +2,7 @@ use super::*;
 use crate::cli::Input;
 use serde_json::json;
 use std::{collections::BTreeMap, fs, sync::Mutex};
-use streams_temper::{
+use streams::{
     agent::{self, ContextRequest},
     config::Config,
     frontend::herdr::HerdrInventoryPane,
@@ -161,7 +161,7 @@ fn source_reuses_supplied_records_and_each_later_read_addresses_only_its_session
         );
         let destination = Stream::new("destination", "Destination", None, host.as_str()).unwrap();
         save(&records, "destination", Record::Stream(destination));
-        let intent = streams_temper::operations::membership::MoveIntent::new(
+        let intent = streams::operations::membership::MoveIntent::new(
             host.as_str(),
             "pi",
             NATIVE,

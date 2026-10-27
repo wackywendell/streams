@@ -1,6 +1,6 @@
 //! Pass-local selectors and exact owner identity, without native attestation or saved placement.
 use serde_json::{Value, json};
-use streams_temper::{
+use streams::{
     frontend::herdr::HerdrNativeSnapshot,
     runtime::{
         native_cards::PiOwner,

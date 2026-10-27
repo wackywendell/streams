@@ -2,7 +2,7 @@ use super::*;
 use crate::cli::Input;
 use serde_json::json;
 use std::{collections::BTreeMap, fs};
-use streams_temper::yaml_store::records::YamlRecordStore;
+use streams::yaml_store::records::YamlRecordStore;
 
 const HOST: &str = "01234567-89ab-4def-8123-456789abcdef";
 
@@ -35,7 +35,7 @@ fn watched_inputs_have_one_canonical_session_and_stream_address_and_both_directo
         catalog_source: records.source_id().into(),
         host_id: HOST.into(),
         stream_id: "project/name".into(),
-        session_id: streams_temper::model::Session::id_for(HOST, "pi", native_id),
+        session_id: streams::model::Session::id_for(HOST, "pi", native_id),
         harness: "pi".into(),
         native_session_id: native_id.into(),
     };
@@ -84,7 +84,7 @@ fn watched_inputs_have_one_canonical_session_and_stream_address_and_both_directo
         };
         assert!(Inputs::new(&app, &records, &invalid).is_err());
     }
-    let stream = streams_temper::model::Stream::new(&scope.stream_id, "Work", None, HOST).unwrap();
+    let stream = streams::model::Stream::new(&scope.stream_id, "Work", None, HOST).unwrap();
     let session = Session::new(
         &scope.session_id,
         HOST,
@@ -107,7 +107,7 @@ fn watched_inputs_have_one_canonical_session_and_stream_address_and_both_directo
         .records(
             &files,
             session,
-            streams_temper::tui::NativeOwnerObservation {
+            streams::tui::NativeOwnerObservation {
                 pane_id: "pane".into(),
                 tab_id: "tab".into(),
                 workspace_id: "workspace".into(),

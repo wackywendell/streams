@@ -11,7 +11,7 @@ use std::{
     },
     thread::{self, JoinHandle},
 };
-use streams_temper::{
+use streams::{
     agent::{ContextRequest, EnrollmentRequest, RecordContext},
     cancellation::Cancellation,
     child_protocol::{Request, ServerFrame, UiFacts},
@@ -117,7 +117,7 @@ impl Controller {
             config.timeout_seconds(),
             self.stopping.clone(),
         )
-        .map_err(streams_temper::runtime::RuntimeError::from)?;
+        .map_err(streams::runtime::RuntimeError::from)?;
         if self.records.is_none() {
             let records = Arc::new(application::open_records(&self.app.config)?);
             self.files = Some(Files::new(&records, &self.session_id, self.sender.clone())?);
@@ -206,9 +206,9 @@ impl Controller {
         let mut snapshot = HerdrNativeSnapshot::parse(
             &client
                 .session_snapshot()
-                .map_err(streams_temper::runtime::RuntimeError::from)?,
+                .map_err(streams::runtime::RuntimeError::from)?,
         )
-        .map_err(streams_temper::runtime::RuntimeError::from)?;
+        .map_err(streams::runtime::RuntimeError::from)?;
         let settings = self.app.config.load()?;
         let records = self.records.as_ref().unwrap().clone();
         if settings.catalog_root != records.root() {
@@ -305,7 +305,7 @@ impl Controller {
         }
         client
             .check_subscription()
-            .map_err(streams_temper::runtime::RuntimeError::from)?;
+            .map_err(streams::runtime::RuntimeError::from)?;
         if moved_workspace && let Some(session) = &context.session {
             let destination = match &selected {
                 Some(id) => id.clone(),
@@ -335,7 +335,7 @@ impl Controller {
                                 &id,
                             ),
                         )
-                        .map_err(streams_temper::runtime::RuntimeError::from)?;
+                        .map_err(streams::runtime::RuntimeError::from)?;
                     id
                 }
             };
@@ -345,7 +345,7 @@ impl Controller {
                 }
                 client
                     .check_subscription()
-                    .map_err(streams_temper::runtime::RuntimeError::from)?;
+                    .map_err(streams::runtime::RuntimeError::from)?;
                 let intent = MoveIntent::new(
                     records.host().as_str(),
                     "pi",
@@ -433,7 +433,7 @@ impl Controller {
         }
     }
     pub fn request(&mut self, request: &Request, cancelled: Arc<AtomicBool>) -> Result<Output> {
-        use streams_temper::{child_protocol::CardTarget, config::CardMode};
+        use streams::{child_protocol::CardTarget, config::CardMode};
         let mode = match request {
             Request::OpenCard {} => Some(CardMode::Automatic),
             Request::CloseCard {} => Some(CardMode::Manual),
@@ -594,7 +594,7 @@ impl Controller {
             .map(str::to_owned)
             .or_else(|| {
                 request.stream_proposal().map(|_| {
-                    streams_temper::agent::effort_id_for(
+                    streams::agent::effort_id_for(
                         records.host().as_str(),
                         request.harness(),
                         request.harness_session_id(),
