@@ -13,13 +13,15 @@ pub(super) fn context(
     stream: &Stream,
     session: &Session,
 ) -> Value {
+    let mut snapshot = registry.snapshot().map_err(|error| error.to_string());
     let selected = (|| -> Result<_, String> {
+        let checkouts = snapshot.as_mut().map_err(|error| error.clone())?;
         let selected = locations
-            .read(&stream.id, Some(&session.id))
+            .read_with_checkouts(&stream.id, Some(&session.id), checkouts)
             .map_err(|error| error.to_string())?
             .ok_or("no directory is selected for this Session; use streams session directory")?;
         if let Some(checkout) = &selected.checkout {
-            let primary = registry
+            let primary = checkouts
                 .get(&checkout.id)
                 .map_err(|error| error.to_string())?;
             if primary.repository_urls.is_empty() {
@@ -59,7 +61,9 @@ pub(super) fn context(
     for (alias, repository) in &stream.repositories {
         let resolved = match &selected {
             Err(error) => Err(error.clone()),
-            Ok(_) => registry
+            Ok(_) => snapshot
+                .as_mut()
+                .expect("selected directory admitted the registry")
                 .resolve(&repository.url, selected_id, repository_url)
                 .map_err(|error| error.to_string()),
         };

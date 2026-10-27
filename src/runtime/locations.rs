@@ -9,7 +9,7 @@ mod tests;
 
 use crate::codec::{object, required_nullable};
 
-use super::checkouts::{CheckoutRegistry, canonical_directory, relative_path};
+use super::checkouts::{CheckoutRegistry, CheckoutSnapshot, canonical_directory, relative_path};
 use super::{Result, digest, invalid, lock, read_json, text, write_json};
 
 /// A resolved local cwd, optionally anchored to a movable checkout ID.
@@ -150,6 +150,13 @@ impl DirectoryBindings {
     }
 
     fn resolve(&self, selection: Current) -> Result<DirectoryBinding> {
+        Self::resolve_with(selection, |id, within| self.checkouts.directory(id, within))
+    }
+
+    fn resolve_with(
+        selection: Current,
+        directory: impl FnOnce(&str, &str) -> Result<PathBuf>,
+    ) -> Result<DirectoryBinding> {
         let transcript_file = selection.transcript_file;
         match selection.location {
             Location::Directory { cwd } => Ok(DirectoryBinding {
@@ -162,7 +169,7 @@ impl DirectoryBindings {
                 within,
                 repository_url,
             } => Ok(DirectoryBinding {
-                cwd: self.checkouts.directory(&id, &within)?,
+                cwd: directory(&id, &within)?,
                 checkout: Some(BoundCheckout {
                     id,
                     relative_cwd: within,
@@ -182,6 +189,20 @@ impl DirectoryBindings {
     ) -> Result<Option<DirectoryBinding>> {
         self.selection(stream_id, session_id)?
             .map(|selection| self.resolve(selection))
+            .transpose()
+    }
+
+    /// Resolve display hints using the same operation-local checkout observations as its documents.
+    pub fn read_with_checkouts(
+        &self,
+        stream_id: &str,
+        session_id: Option<&str>,
+        checkouts: &mut CheckoutSnapshot<'_>,
+    ) -> Result<Option<DirectoryBinding>> {
+        self.selection(stream_id, session_id)?
+            .map(|selection| {
+                Self::resolve_with(selection, |id, within| checkouts.directory(id, within))
+            })
             .transpose()
     }
 

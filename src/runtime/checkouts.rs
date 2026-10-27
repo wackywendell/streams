@@ -1,5 +1,6 @@
 //! Stable host-local checkout IDs and exact, explicit repository URL bindings.
 
+use std::collections::BTreeMap;
 use std::fs;
 use std::path::{Path, PathBuf};
 
@@ -8,6 +9,8 @@ use uuid::Uuid;
 
 mod canonical;
 mod state;
+#[cfg(test)]
+mod tests;
 use state::State;
 
 use super::{Result, RuntimeError, digest, invalid, lock, read_json, text, write_json};
@@ -38,6 +41,39 @@ pub struct CheckoutRegistry {
     path: PathBuf,
     host_id: String,
     inspector: Inspector,
+}
+
+/// One read-only operation's registry and checked roots, never native-effect authority.
+pub struct CheckoutSnapshot<'a> {
+    registry: &'a CheckoutRegistry,
+    state: State,
+    observed: BTreeMap<String, CheckoutLocation>,
+}
+impl CheckoutSnapshot<'_> {
+    pub fn get(&mut self, id: &str) -> Result<CheckoutLocation> {
+        if let std::collections::btree_map::Entry::Vacant(entry) =
+            self.observed.entry(id.to_owned())
+        {
+            entry.insert(self.registry.validate(self.state.lookup(id)?)?);
+        }
+        Ok(self.observed[id].clone())
+    }
+    pub fn resolve(
+        &mut self,
+        repository_url: &str,
+        selected_id: Option<&str>,
+        selected_repository_url: Option<&str>,
+    ) -> Result<CheckoutLocation> {
+        let id = self
+            .state
+            .resolve(repository_url, selected_id, selected_repository_url)?
+            .id
+            .clone();
+        self.get(&id)
+    }
+    pub fn directory(&mut self, id: &str, relative: &str) -> Result<PathBuf> {
+        self.get(id)?.contained(relative, true)
+    }
 }
 
 /// Resolve an existing directory, using actual directory-entry spelling on macOS too.
@@ -155,6 +191,15 @@ impl CheckoutRegistry {
             .iter()
             .find(|checkout| checkout.directory == root)
             .cloned()
+    }
+
+    /// Observe the registry once and reuse checked roots within read-only hints.
+    pub fn snapshot(&self) -> Result<CheckoutSnapshot<'_>> {
+        Ok(CheckoutSnapshot {
+            registry: self,
+            state: self.read()?,
+            observed: BTreeMap::new(),
+        })
     }
 
     /// List saved intent without requiring old roots to remain available.
