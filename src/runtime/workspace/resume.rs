@@ -33,7 +33,7 @@ impl WorkspaceRuntime<'_> {
         let command = SessionCommand::verified(selected.session, Some(locator), self.roots)?;
         let directory = self.directory(stream, Some(selected.session), cwd)?;
         if cwd.is_some() {
-            self.remember(stream, Some(selected.session), &directory)?;
+            self.remember(stream, Some(selected.session), &directory, false)?;
         }
         Ok(ResumeCommand {
             stream_id: stream.id.clone(),

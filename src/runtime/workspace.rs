@@ -129,12 +129,18 @@ impl<'a> WorkspaceRuntime<'a> {
             ))
         })
     }
-    fn remember(&self, stream: &Stream, session: Option<&Session>, cwd: &Path) -> Result<()> {
+    fn remember(
+        &self,
+        stream: &Stream,
+        session: Option<&Session>,
+        cwd: &Path,
+        if_missing: bool,
+    ) -> Result<()> {
         self.locations.remember(
             &stream.id,
             cwd,
             session.map(|session| session.id.as_str()),
-            false,
+            if_missing,
             None,
             None,
         )?;

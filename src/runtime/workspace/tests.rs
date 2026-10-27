@@ -6,6 +6,7 @@ use crate::{
 use serde_json::{Value, json};
 use std::{
     fs,
+    os::unix::fs::MetadataExt,
     sync::{Arc, atomic::AtomicUsize},
 };
 
@@ -284,6 +285,14 @@ fn reopen_launches_one_tab_per_requested_session_without_saved_addresses() {
     let snapshot = HerdrNativeSnapshot::parse(&bound_snapshot()).unwrap();
     let (one, first) = f.session("one");
     let (two, second) = f.session("two");
+    let bindings: Vec<_> = [&one, &two]
+        .into_iter()
+        .map(|session| {
+            let path = f.locations.path(&f.stream.id, Some(&session.id));
+            let before = fs::metadata(&path).unwrap().ino();
+            (path, before)
+        })
+        .collect();
     let result = f
         .runtime()
         .open(
@@ -305,11 +314,53 @@ fn reopen_launches_one_tab_per_requested_session_without_saved_addresses() {
         .unwrap();
     assert_eq!(result.restored, [one.id, two.id]);
     assert_eq!(tabs.load(Ordering::Relaxed), 2);
+    for (path, before) in bindings {
+        assert_eq!(
+            fs::metadata(path).unwrap().ino(),
+            before,
+            "opening with saved intent must not replace a binding"
+        );
+    }
     assert!(f.server.methods().iter().all(|method| matches!(
         method.as_str(),
         "ping" | "tab.create" | "agent.start" | "workspace.focus"
     )));
     f.assert_no_saved_native_addresses();
+}
+
+#[test]
+fn remembered_directory_is_preserved_unless_the_caller_supplies_a_replacement() {
+    let f = Fixture::new(|method, _| panic!("unexpected {method}"));
+    let (session, _) = f.session("directory");
+    let original = f
+        .locations
+        .read(&f.stream.id, Some(&session.id))
+        .unwrap()
+        .unwrap();
+    let new = f.temp.path().join("replacement");
+    fs::create_dir(&new).unwrap();
+    let new = new.canonicalize().unwrap();
+    f.runtime()
+        .remember(&f.stream, Some(&session), &new, true)
+        .unwrap();
+    assert_eq!(
+        f.locations
+            .read(&f.stream.id, Some(&session.id))
+            .unwrap()
+            .unwrap(),
+        original
+    );
+    f.runtime()
+        .remember(&f.stream, Some(&session), &new, false)
+        .unwrap();
+    assert_eq!(
+        f.locations
+            .read(&f.stream.id, Some(&session.id))
+            .unwrap()
+            .unwrap()
+            .cwd,
+        new
+    );
 }
 
 #[test]

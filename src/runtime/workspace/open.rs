@@ -108,7 +108,12 @@ impl WorkspaceRuntime<'_> {
         if let Some(workspace) = existing.filter(|_| launches.is_empty()) {
             if cwd.is_some() {
                 let selected = sessions.first().map(|selected| selected.session);
-                self.remember(stream, selected, &self.directory(stream, selected, cwd)?)?;
+                self.remember(
+                    stream,
+                    selected,
+                    &self.directory(stream, selected, cwd)?,
+                    false,
+                )?;
             }
             check_cancelled(cancelled)?;
             client.focus(&self.reference(&workspace.id)?)?;
@@ -127,13 +132,13 @@ impl WorkspaceRuntime<'_> {
         };
         let environment = native_environment(&stream.id, self.environment)?;
         for (session, _, directory) in &launches {
-            self.remember(stream, Some(session), directory)?;
+            self.remember(stream, Some(session), directory, cwd.is_none())?;
         }
         let mut root = None;
         let workspace = match existing {
             Some(workspace) => workspace.id.clone(),
             None => {
-                self.remember(stream, None, &directory)?;
+                self.remember(stream, None, &directory, cwd.is_none())?;
                 check_cancelled(cancelled)?;
                 let created = client.create_native(&CreateWorkspace {
                     title: stream.title.clone(),
@@ -220,6 +225,7 @@ impl WorkspaceRuntime<'_> {
             stream,
             selected.map(|selected| selected.session),
             &directory,
+            cwd.is_none(),
         )?;
         check_cancelled(cancelled)?;
         // CMUX has no observable Stream marker. Create explicitly rather than
