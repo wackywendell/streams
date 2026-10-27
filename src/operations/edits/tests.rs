@@ -202,14 +202,25 @@ fn local_work_and_stream_input_changes_supersede_old_inference() {
         NamingMode::Automatic,
     )
     .unwrap();
+    // Conversation-local work edits and non-prose Stream metadata edits do not supersede Stream prose,
+    // whereas a concurrent edit to Stream prose does.
     assert!(matches!(
         edit.apply(&target, Some(&current), NamingMode::Automatic),
-        Reconciliation::Superseded { .. }
+        Reconciliation::Changes { .. }
     ));
-    let mut current_target = target.clone();
-    current_target.archived = true;
+    let mut archived_target = target.clone();
+    archived_target.archived = true;
+    let Record::Stream(after) =
+        changed(edit.apply(&archived_target, Some(&before), NamingMode::Automatic))
+    else {
+        unreachable!()
+    };
+    assert!(after.archived);
+    assert_eq!(after.goal.as_deref(), Some("old goal"));
+    let mut prose_changed_target = target.clone();
+    prose_changed_target.goal = Some("concurrent goal".into());
     assert!(matches!(
-        edit.apply(&current_target, Some(&before), NamingMode::Automatic),
+        edit.apply(&prose_changed_target, Some(&before), NamingMode::Automatic),
         Reconciliation::Superseded { .. }
     ));
 }

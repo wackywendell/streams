@@ -1,15 +1,29 @@
 //! Pure captured edits. Conversation work and effort prose have different input guards.
 
 use std::collections::BTreeSet;
+use std::sync::OnceLock;
 
 use serde::Serialize;
 use serde_json::{Map, Value};
+use temper_jit::table::{EvalContext, TransitionTable};
 
 use super::{
-    Actor, Reconciliation, apply_changes, copy_field, field_eq, field_policy,
+    Actor, Reconciliation, agent_field_allowed, apply_changes, copy_field, field_eq, field_policy,
     filter_automatic_changes, merge_additive, record_field_names, text_group_guards,
 };
-use crate::model::{NamingMode, Record, Session, Stream, TitleMode, ValidationError, check_text};
+use crate::model::{
+    NamingMode, Record, Session, Stream, TitleDefaults, TitleMode, ValidationError, check_text,
+};
+
+pub const REPORT_ADMISSION_IOA: &str = include_str!("../../specs/report_admission.ioa.toml");
+
+pub fn report_admission_table() -> &'static TransitionTable {
+    static TABLE: OnceLock<TransitionTable> = OnceLock::new();
+    TABLE.get_or_init(|| {
+        TransitionTable::try_from_ioa_source(REPORT_ADMISSION_IOA)
+            .expect("valid report-admission IOA specification")
+    })
+}
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 pub struct SessionEdit {
@@ -92,15 +106,72 @@ impl SessionEdit {
                 false,
             );
         }
-        apply_fields(
-            &self.operation_id,
-            self.actor,
-            &Record::Session(self.before.clone()),
-            &Record::Session(self.after.clone()),
-            &Record::Session(current.clone()),
+        let before = Record::Session(self.before.clone());
+        let after = Record::Session(self.after.clone());
+        let current_record = Record::Session(current.clone());
+        let changed = changed_fields(&before, &after);
+        if self.actor == Actor::Automatic {
+            let (admission, protection) = self.admission_and_protection(
+                &before,
+                &current_record,
+                current,
+                &changed,
+                title_default,
+            );
+            apply_automatic(
+                &self.operation_id,
+                &before,
+                &after,
+                &current_record,
+                &changed,
+                "AdmitSessionReport",
+                &admission,
+                protection,
+            )
+        } else {
+            apply_user_fields(
+                &self.operation_id,
+                &before,
+                &after,
+                &current_record,
+                &changed,
+            )
+        }
+    }
+
+    pub fn admission_context(&self, current: &Session, current_default: NamingMode) -> EvalContext {
+        let before = Record::Session(self.before.clone());
+        let after = Record::Session(self.after.clone());
+        let current_record = Record::Session(current.clone());
+        let changed = changed_fields(&before, &after);
+        self.admission_and_protection(&before, &current_record, current, &changed, current_default)
+            .0
+    }
+
+    fn admission_and_protection(
+        &self,
+        before: &Record,
+        current_record: &Record,
+        current: &Session,
+        changed: &BTreeSet<&'static str>,
+        current_default: NamingMode,
+    ) -> (EvalContext, Option<(&'static str, &'static [&'static str])>) {
+        let protection = automatic_protection_conflict(
+            before,
+            current_record,
+            changed,
             self.title_default,
-            title_default,
-        )
+            current_default,
+        );
+        let ctx = build_admission_context(
+            same_captured_stream(&self.before, Some(current)),
+            same_membership_period(&self.before, Some(current)),
+            prose_inputs_clean(before, current_record, changed),
+            true,
+            protection.is_some(),
+            false,
+        );
+        (ctx, protection)
     }
 }
 
@@ -176,27 +247,103 @@ impl StreamEdit {
                 false,
             );
         }
-        if let Some(captured) = &self.captured_session
-            && session != Some(captured)
-        {
-            return refuse(
-                &self.operation_id,
-                self.actor,
-                "captured conversation or membership period changed",
-                &["inputs"],
-                true,
+        let before = Record::Stream(self.before.clone());
+        let after = Record::Stream(self.after.clone());
+        let current_record = Record::Stream(current.clone());
+        let changed = changed_fields(&before, &after);
+        if self.actor == Actor::Automatic {
+            let (admission, protection) = self.admission_and_protection(
+                &before,
+                &current_record,
+                session,
+                &changed,
+                title_default,
             );
+            apply_automatic(
+                &self.operation_id,
+                &before,
+                &after,
+                &current_record,
+                &changed,
+                "AdmitStreamReport",
+                &admission,
+                protection,
+            )
+        } else {
+            apply_user_fields(
+                &self.operation_id,
+                &before,
+                &after,
+                &current_record,
+                &changed,
+            )
         }
-        apply_fields(
-            &self.operation_id,
-            self.actor,
-            &Record::Stream(self.before.clone()),
-            &Record::Stream(self.after.clone()),
-            &Record::Stream(current.clone()),
-            self.title_default,
-            title_default,
-        )
     }
+
+    pub fn admission_context(
+        &self,
+        current: &Stream,
+        session: Option<&Session>,
+        current_default: NamingMode,
+    ) -> EvalContext {
+        let before = Record::Stream(self.before.clone());
+        let after = Record::Stream(self.after.clone());
+        let current_record = Record::Stream(current.clone());
+        let changed = changed_fields(&before, &after);
+        self.admission_and_protection(&before, &current_record, session, &changed, current_default)
+            .0
+    }
+
+    fn admission_and_protection(
+        &self,
+        before: &Record,
+        current_record: &Record,
+        session: Option<&Session>,
+        changed: &BTreeSet<&'static str>,
+        current_default: NamingMode,
+    ) -> (EvalContext, Option<(&'static str, &'static [&'static str])>) {
+        let protection = automatic_protection_conflict(
+            before,
+            current_record,
+            changed,
+            self.title_default,
+            current_default,
+        );
+        let captured = self.captured_session.as_ref();
+        let ctx = build_admission_context(
+            captured.is_some_and(|captured| same_captured_stream(captured, session)),
+            captured.is_some_and(|captured| same_membership_period(captured, session)),
+            true,
+            prose_inputs_clean(before, current_record, changed),
+            false,
+            protection.is_some(),
+        );
+        (ctx, protection)
+    }
+}
+
+/// Combined state projection for a captured conversation/effort report pair.
+pub fn report_admission_context(
+    session_edit: &SessionEdit,
+    stream_edit: &StreamEdit,
+    current_session: &Session,
+    current_stream: &Stream,
+    current_defaults: TitleDefaults,
+) -> EvalContext {
+    let session_ctx = session_edit.admission_context(current_session, current_defaults.session);
+    let stream_ctx = stream_edit.admission_context(
+        current_stream,
+        Some(current_session),
+        current_defaults.stream,
+    );
+    build_admission_context(
+        stream_ctx.booleans["in_captured_stream"],
+        stream_ctx.booleans["membership_unchanged"],
+        session_ctx.booleans["session_inputs_clean"],
+        stream_ctx.booleans["stream_inputs_clean"],
+        session_ctx.booleans["session_protected"],
+        stream_ctx.booleans["stream_protected"],
+    )
 }
 
 fn prepare(
@@ -250,54 +397,139 @@ fn refuse(id: &str, actor: Actor, reason: &str, fields: &[&str], stale: bool) ->
     }
 }
 
-fn apply_fields(
-    id: &str,
-    actor: Actor,
-    before: &Record,
-    after: &Record,
-    current: &Record,
-    captured_default: NamingMode,
-    current_default: NamingMode,
-) -> Reconciliation {
-    if let Err(error) = current.validate_portable() {
-        return refuse(id, actor, &error.to_string(), &["relationships"], false);
-    }
-    let changed: BTreeSet<_> = record_field_names(after)
+fn changed_fields(before: &Record, after: &Record) -> BTreeSet<&'static str> {
+    record_field_names(after)
         .iter()
         .copied()
         .filter(|field| field_eq(before, after, field) == Some(false))
-        .collect();
-    if actor == Actor::Automatic {
-        if changed.contains("title") {
-            let captured_mode = match before {
-                Record::Stream(stream) => stream.title_mode,
-                Record::Session(session) => session.title_mode,
-                _ => unreachable!(),
-            };
-            if captured_mode == TitleMode::Inherit && captured_default != current_default {
-                return refuse(
-                    id,
-                    actor,
-                    "title generation default changed",
-                    &["title_default"],
-                    true,
-                );
-            }
-            let current_mode = match current {
-                Record::Stream(stream) => stream.title_mode,
-                Record::Session(session) => session.title_mode,
-                _ => unreachable!(),
-            };
-            if current_mode.resolve(current_default) == NamingMode::Manual {
-                return refuse(id, actor, "manual text is protected", &["title_mode"], true);
-            }
+        .collect()
+}
+
+fn same_captured_stream(captured: &Session, current: Option<&Session>) -> bool {
+    current.is_some_and(|session| {
+        session.id == captured.id
+            && session.native_identity() == captured.native_identity()
+            && session.host_id == captured.host_id
+            && session.stream_id == captured.stream_id
+    })
+}
+
+fn same_membership_period(captured: &Session, current: Option<&Session>) -> bool {
+    same_captured_stream(captured, current)
+        && current
+            .is_some_and(|session| session.previous_stream_ids == captured.previous_stream_ids)
+}
+
+fn prose_inputs_clean(before: &Record, current: &Record, changed: &BTreeSet<&'static str>) -> bool {
+    record_field_names(before).iter().all(|field| {
+        !(agent_field_allowed(before.kind(), Actor::Automatic, field) || changed.contains(field))
+            || field_eq(before, current, field) == Some(true)
+    })
+}
+
+fn automatic_protection_conflict(
+    before: &Record,
+    current: &Record,
+    changed: &BTreeSet<&'static str>,
+    captured_default: NamingMode,
+    current_default: NamingMode,
+) -> Option<(&'static str, &'static [&'static str])> {
+    if changed.contains("title") {
+        let captured_mode = match before {
+            Record::Stream(stream) => stream.title_mode,
+            Record::Session(session) => session.title_mode,
+            _ => unreachable!(),
+        };
+        if captured_mode == TitleMode::Inherit && captured_default != current_default {
+            return Some(("title generation default changed", &["title_default"]));
         }
-        if let Record::Stream(stream) = current
-            && stream.goal_mode == NamingMode::Manual
-            && (changed.contains("goal") || changed.contains("goal_short"))
-        {
-            return refuse(id, actor, "manual text is protected", &["goal_mode"], true);
+        let current_mode = match current {
+            Record::Stream(stream) => stream.title_mode,
+            Record::Session(session) => session.title_mode,
+            _ => unreachable!(),
+        };
+        if current_mode.resolve(current_default) == NamingMode::Manual {
+            return Some(("manual text is protected", &["title_mode"]));
         }
+    }
+    if let Record::Stream(stream) = current
+        && stream.goal_mode == NamingMode::Manual
+        && (changed.contains("goal") || changed.contains("goal_short"))
+    {
+        return Some(("manual text is protected", &["goal_mode"]));
+    }
+    None
+}
+
+fn build_admission_context(
+    in_captured_stream: bool,
+    membership_unchanged: bool,
+    session_inputs_clean: bool,
+    stream_inputs_clean: bool,
+    session_protected: bool,
+    stream_protected: bool,
+) -> EvalContext {
+    let mut ctx = EvalContext::default();
+    for (name, value) in [
+        ("in_captured_stream", in_captured_stream),
+        ("membership_unchanged", membership_unchanged),
+        ("session_inputs_clean", session_inputs_clean),
+        ("stream_inputs_clean", stream_inputs_clean),
+        ("session_protected", session_protected),
+        ("stream_protected", stream_protected),
+    ] {
+        ctx.booleans.insert(name.into(), value);
+    }
+    debug_assert!(
+        report_admission_table()
+            .initial_values
+            .booleans
+            .keys()
+            .all(|key| ctx.booleans.contains_key(key))
+    );
+    ctx
+}
+
+pub fn report_admission_allows(action: &str, ctx: &EvalContext) -> bool {
+    let table = report_admission_table();
+    table
+        .evaluate_ctx(&table.initial_state, ctx, action)
+        .is_some_and(|result| result.success)
+}
+
+#[allow(clippy::too_many_arguments)]
+fn apply_automatic(
+    id: &str,
+    _before: &Record,
+    after: &Record,
+    current: &Record,
+    changed: &BTreeSet<&'static str>,
+    admission_action: &str,
+    admission_ctx: &EvalContext,
+    protection: Option<(&'static str, &'static [&'static str])>,
+) -> Reconciliation {
+    if let Err(error) = current.validate_portable() {
+        return refuse(
+            id,
+            Actor::Automatic,
+            &error.to_string(),
+            &["relationships"],
+            false,
+        );
+    }
+    if admission_action == "AdmitStreamReport" && !admission_ctx.booleans["membership_unchanged"] {
+        debug_assert!(!report_admission_allows(admission_action, admission_ctx));
+        return refuse(
+            id,
+            Actor::Automatic,
+            "captured conversation or membership period changed",
+            &["inputs"],
+            true,
+        );
+    }
+    if let Some((reason, fields)) = protection {
+        debug_assert!(!report_admission_allows(admission_action, admission_ctx));
+        return refuse(id, Actor::Automatic, reason, fields, true);
     }
     if changed
         .iter()
@@ -305,21 +537,59 @@ fn apply_fields(
     {
         return Reconciliation::no_change(id, "");
     }
-    if actor == Actor::Automatic
-        && record_field_names(before).iter().any(|field| {
-            // Membership is not an input to conversation-local work. All its other fields are.
-            !(matches!(before, Record::Session(_))
-                && ["stream_id", "previous_stream_ids"].contains(field))
-                && field_eq(before, current, field) != Some(true)
-        })
-    {
+    if !report_admission_allows(admission_action, admission_ctx) {
         return refuse(
             id,
-            actor,
+            Actor::Automatic,
             "generated description inputs changed",
             &["inputs"],
             true,
         );
+    }
+    let mut candidate = current.clone();
+    for field in changed {
+        copy_field(&mut candidate, after, field);
+    }
+    if let Err(error) = candidate.validate_portable() {
+        return refuse(
+            id,
+            Actor::Automatic,
+            &error.to_string(),
+            &["relationships"],
+            false,
+        );
+    }
+    if &candidate == current {
+        Reconciliation::no_change(id, "")
+    } else {
+        Reconciliation::Changes {
+            operation_id: id.into(),
+            record: Box::new(candidate),
+        }
+    }
+}
+
+fn apply_user_fields(
+    id: &str,
+    before: &Record,
+    after: &Record,
+    current: &Record,
+    changed: &BTreeSet<&'static str>,
+) -> Reconciliation {
+    if let Err(error) = current.validate_portable() {
+        return refuse(
+            id,
+            Actor::User,
+            &error.to_string(),
+            &["relationships"],
+            false,
+        );
+    }
+    if changed
+        .iter()
+        .all(|field| field_eq(current, after, field) == Some(true))
+    {
+        return Reconciliation::no_change(id, "");
     }
     let mut candidate = current.clone();
     let mut conflicts = Vec::new();
@@ -332,13 +602,12 @@ fn apply_fields(
             }
             continue;
         }
-        if actor == Actor::User
-            && let (
-                Record::Stream(base),
-                Record::Stream(desired),
-                Record::Stream(actual),
-                Record::Stream(target),
-            ) = (before, after, current, &mut candidate)
+        if let (
+            Record::Stream(base),
+            Record::Stream(desired),
+            Record::Stream(actual),
+            Record::Stream(target),
+        ) = (before, after, current, &mut candidate)
         {
             match field {
                 "documents" => {
@@ -378,14 +647,20 @@ fn apply_fields(
     if !conflicts.is_empty() {
         return refuse(
             id,
-            actor,
+            Actor::User,
             "concurrent intent conflicts with captured base",
             &conflicts,
             false,
         );
     }
     if let Err(error) = candidate.validate_portable() {
-        return refuse(id, actor, &error.to_string(), &["relationships"], false);
+        return refuse(
+            id,
+            Actor::User,
+            &error.to_string(),
+            &["relationships"],
+            false,
+        );
     }
     if &candidate == current {
         Reconciliation::no_change(id, "")

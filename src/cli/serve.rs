@@ -24,7 +24,7 @@ use streams::{
     frontend::herdr::events::SubscriptionUpdate,
 };
 
-type SharedOutput = Arc<Mutex<std::io::Stdout>>;
+type SharedOutput = Arc<Mutex<Option<std::io::Stdout>>>;
 
 enum Wake {
     Request(RequestId, Request),
@@ -233,12 +233,15 @@ fn native_queue(request: &Request) -> bool {
 }
 
 fn send(output: &SharedOutput, frame: &ServerFrame) -> Result<()> {
+    let mut bytes = serde_json::to_vec(frame)?;
+    bytes.push(b'\n');
     let mut output = output
         .lock()
         .map_err(|error| CliError::message(error.to_string()))?;
-    serde_json::to_writer(&mut *output, frame)?;
-    output.write_all(b"\n")?;
-    output.flush()?;
+    if let Some(stdout) = output.as_mut() {
+        stdout.write_all(&bytes)?;
+        stdout.flush()?;
+    }
     Ok(())
 }
 
@@ -362,7 +365,7 @@ fn native_worker(
 }
 
 pub(super) fn run(session_id: String, plugin_root: PathBuf) -> Result<()> {
-    let output = Arc::new(Mutex::new(std::io::stdout()));
+    let output = Arc::new(Mutex::new(Some(std::io::stdout())));
     send(&output, &ServerFrame::Ready { protocol: Version2 })?;
     let (sender, receiver) = mpsc::channel();
     let server = Arc::new(Server {
@@ -439,6 +442,9 @@ pub(super) fn run(session_id: String, plugin_root: PathBuf) -> Result<()> {
     })();
     server.cancel_all();
     stopping.cancel()?;
+    if let Ok(mut output) = server.output.lock() {
+        *output = None;
+    }
     drop(native_sender);
     drop(receiver);
     let deadline = deadline.unwrap_or_else(|| Instant::now() + SHUTDOWN_GRACE);

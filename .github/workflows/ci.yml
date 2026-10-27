@@ -21,6 +21,10 @@ jobs:
       - uses: jdx/mise-action@v5
       - run: npm ci
       - run: npm --prefix integrations/herdr-work-cards ci --ignore-scripts
+      - if: runner.os == 'Linux'
+        run: sudo apt-get update && sudo apt-get install -y libz3-dev libclang-dev pkg-config
+      - if: runner.os == 'macOS'
+        run: brew install z3 pkg-config
       - run: mise run test
 
   build:

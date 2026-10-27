@@ -33,9 +33,14 @@ env = { GIT_CONFIG_GLOBAL = "/dev/null", GIT_CONFIG_SYSTEM = "/dev/null", GIT_CO
 description = "Run Rust contracts in one harness; filter with cargo test --test contracts <module>"
 run = 'RUSTC=$(rustup which rustc) RUSTDOC=$(rustup which rustdoc) cargo test --locked --lib --bins --test contracts -- --test-threads=4'
 
+[tasks."test:verify"]
+env = { GIT_CONFIG_GLOBAL = "/dev/null", GIT_CONFIG_SYSTEM = "/dev/null", GIT_CONFIG_NOSYSTEM = "1" }
+description = "Run bounded Temper formal verification and production conformance checks"
+run = 'RUSTC=$(rustup which rustc) RUSTDOC=$(rustup which rustdoc) cargo test --locked --test verification -- --test-threads=4'
+
 [tasks."test:rust"]
 env = { GIT_CONFIG_GLOBAL = "/dev/null", GIT_CONFIG_SYSTEM = "/dev/null", GIT_CONFIG_NOSYSTEM = "1" }
-description = "Run all Rust record, file transport, native and documentation tests"
+description = "Run all Rust record, file transport, native, verification and documentation tests"
 run = [
   'RUSTC=$(rustup which rustc) RUSTDOC=$(rustup which rustdoc) cargo test --locked --all-targets -- --test-threads=4',
   'RUSTC=$(rustup which rustc) RUSTDOC=$(rustup which rustdoc) cargo test --locked --doc',

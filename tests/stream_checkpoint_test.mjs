@@ -997,7 +997,9 @@ for(const inside of [true,false])test(`real checkout CLI enroll/context/guarded 
   const unaffected=await cli.apply(guardedStream);assert.equal(unaffected.save.domain.outcome,'changes');
   const ownGuard=editRequest(await cli.context('native'),'stream',{goal:'Before own contribution changed'},'automatic');
   const sessionSaved=await cli.apply(guardedSession);assert.equal(sessionSaved.save.domain.outcome,'changes');
-  const superseded=await cli.apply(ownGuard);assert.equal(superseded.save.domain.outcome,'superseded');
+  const streamAfterSession=await cli.apply(ownGuard);assert.equal(streamAfterSession.save.domain.outcome,'changes');
+  const staleStream=editRequest(withSibling,'stream',{goal:'Stale effort prose'},'automatic');
+  const superseded=await cli.apply(staleStream);assert.equal(superseded.save.domain.outcome,'superseded');
   const independent=await cli.apply(editRequest(withSibling,'session',{title:'Independent manual edit'},'user'));assert.equal(independent.save.domain.outcome,'changes');
   const blocked=await cli.apply(editRequest(await cli.context('native'),'session',{status:'blocked'},'automatic'));assert.equal(blocked.session.status,'blocked');
   const invalid=await run(['agent','apply','--json'],'{"operation_id":"bad","kind":"stream","changes":{"repositories":{}}}');assert.equal(invalid.code,2);

@@ -1,0 +1,127 @@
+# Report-admission contract for one captured generated report across
+# conversation membership moves, concurrent prose edits and manual text protection.
+# Evaluated at runtime by src/operations/edits.rs and verified against concrete
+# Session/Stream operations in tests/verification.rs.
+[automaton]
+name = "ReportAdmission"
+states = ["Captured", "SessionAdmitted", "StreamAdmitted"]
+initial = "Captured"
+terminal = ["SessionAdmitted", "StreamAdmitted"]
+
+[[state]]
+name = "in_captured_stream"
+type = "bool"
+initial = true
+
+[[state]]
+name = "membership_unchanged"
+type = "bool"
+initial = true
+
+[[state]]
+name = "session_inputs_clean"
+type = "bool"
+initial = true
+
+[[state]]
+name = "stream_inputs_clean"
+type = "bool"
+initial = true
+
+[[state]]
+name = "session_protected"
+type = "bool"
+initial = false
+
+[[state]]
+name = "stream_protected"
+type = "bool"
+initial = false
+
+[[action]]
+name = "MoveToOtherStream"
+kind = "input"
+from = ["Captured"]
+to = "Captured"
+guard = "in_captured_stream"
+effect = ["in_captured_stream = false", "membership_unchanged = false"]
+
+[[action]]
+name = "ReturnToCapturedStream"
+kind = "input"
+from = ["Captured"]
+to = "Captured"
+guard = "!in_captured_stream"
+effect = ["in_captured_stream = true", "membership_unchanged = false"]
+
+[[action]]
+name = "DirtySessionInputs"
+kind = "input"
+from = ["Captured"]
+to = "Captured"
+guard = "true"
+effect = ["session_inputs_clean = false"]
+
+[[action]]
+name = "DirtyStreamInputs"
+kind = "input"
+from = ["Captured"]
+to = "Captured"
+guard = "true"
+effect = ["stream_inputs_clean = false"]
+
+[[action]]
+name = "ProtectSessionText"
+kind = "input"
+from = ["Captured"]
+to = "Captured"
+guard = "true"
+effect = ["session_protected = true"]
+
+[[action]]
+name = "ProtectStreamText"
+kind = "input"
+from = ["Captured"]
+to = "Captured"
+guard = "true"
+effect = ["stream_protected = true"]
+
+[[action]]
+name = "AdmitSessionReport"
+kind = "internal"
+from = ["Captured"]
+to = "SessionAdmitted"
+guard = "session_inputs_clean && !session_protected"
+effect = []
+
+[[action]]
+name = "AdmitStreamReport"
+kind = "internal"
+from = ["Captured"]
+to = "StreamAdmitted"
+guard = "membership_unchanged && stream_inputs_clean && !stream_protected"
+effect = []
+
+[[invariant]]
+name = "MembershipPeriodImpliesCurrentStream"
+assert = "membership_unchanged => in_captured_stream"
+
+[[invariant]]
+name = "SessionReportRequiresCleanInputs"
+assert = "status in ['SessionAdmitted'] => session_inputs_clean"
+
+[[invariant]]
+name = "SessionReportRespectsProtectedText"
+assert = "status in ['SessionAdmitted'] => !session_protected"
+
+[[invariant]]
+name = "StreamReportRequiresUnchangedMembershipPeriod"
+assert = "status in ['StreamAdmitted'] => (membership_unchanged && in_captured_stream)"
+
+[[invariant]]
+name = "StreamReportRequiresCleanStreamInputs"
+assert = "status in ['StreamAdmitted'] => stream_inputs_clean"
+
+[[invariant]]
+name = "StreamReportRespectsProtectedText"
+assert = "status in ['StreamAdmitted'] => !stream_protected"
