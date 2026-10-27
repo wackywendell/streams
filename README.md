@@ -253,6 +253,14 @@ Rust tests cover record-local saves, captured reports, file transport, CLI, nati
 
 `test:fast` is a development gate, not full acceptance; run `test` before integration, a trial or release. Tests use isolated homes, fake native endpoints and deterministic model responses, not live credentials or inference. See [Contributing](CONTRIBUTING.md) for requirements and focused commands, and the [Rust runtime decision](docs/rust-temper-architecture.md) for the cutover boundary.
 
+## Documentation
+
+- [Contributing](CONTRIBUTING.md): developer setup and landing checks
+- [Catalog saving and sync](docs/catalog-sync-usage.md): local saves, sharing and troubleshooting
+- [Testing policy](docs/testing.md): test selection, isolation and verification limits
+
+Design decisions and architecture records live in [`docs/`](docs/), alongside usage guides.
+
 ## License
 
 MIT
