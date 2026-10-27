@@ -2,7 +2,7 @@
 
 use std::collections::BTreeSet;
 use std::fs::{self, OpenOptions};
-use std::io::Read;
+use std::io::{BufRead, BufReader, Read};
 use std::os::unix::fs::OpenOptionsExt;
 use std::path::{Path, PathBuf};
 
@@ -202,9 +202,22 @@ fn verified_file(harness: Harness, path: &Path) -> Result<(String, PathBuf)> {
     if !file.metadata()?.is_file() {
         return Err(invalid("saved conversation must be a regular file"));
     }
-    let mut prefix = Vec::new();
-    file.take((LIMIT + 1) as u64).read_to_end(&mut prefix)?;
+    let prefix = read_identity_prefix(harness, file)?;
     Ok((identity_prefix(harness, &prefix)?, canonical))
+}
+
+fn read_identity_prefix(harness: Harness, reader: impl Read) -> std::io::Result<Vec<u8>> {
+    let mut reader = reader.take((LIMIT + 1) as u64);
+    let mut prefix = Vec::new();
+    match harness {
+        Harness::Pi | Harness::Codex => {
+            BufReader::with_capacity(256, reader).read_until(b'\n', &mut prefix)?;
+        }
+        Harness::Claude => {
+            reader.read_to_end(&mut prefix)?;
+        }
+    }
+    Ok(prefix)
 }
 
 /// Validate native metadata against the expected harness and inspect path-based identities.

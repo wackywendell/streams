@@ -1,6 +1,52 @@
 use super::*;
 
 #[test]
+fn first_line_harnesses_read_one_small_buffer_not_the_message_body() {
+    struct Counted<'a> {
+        bytes: &'a [u8],
+        transferred: usize,
+    }
+    impl Read for Counted<'_> {
+        fn read(&mut self, buffer: &mut [u8]) -> std::io::Result<usize> {
+            let count = self.bytes.read(buffer)?;
+            self.transferred += count;
+            Ok(count)
+        }
+    }
+    for (harness, header) in [
+        (Harness::Pi, "{\"type\":\"session\",\"id\":\"target\"}\n"),
+        (
+            Harness::Codex,
+            "{\"type\":\"session_meta\",\"payload\":{\"id\":\"target\"}}\n",
+        ),
+    ] {
+        for body in [LIMIT, LIMIT * 16] {
+            let bytes = format!("{header}{}", "x".repeat(body));
+            let mut reader = Counted {
+                bytes: bytes.as_bytes(),
+                transferred: 0,
+            };
+            let prefix = read_identity_prefix(harness, &mut reader).unwrap();
+            assert_eq!(prefix, header.as_bytes());
+            assert_eq!(reader.transferred, 256);
+            assert_eq!(identity_prefix(harness, &prefix).unwrap(), "target");
+        }
+        let oversized = vec![b'x'; LIMIT * 2];
+        let mut reader = Counted {
+            bytes: &oversized,
+            transferred: 0,
+        };
+        let prefix = read_identity_prefix(harness, &mut reader).unwrap();
+        assert_eq!(reader.transferred, LIMIT + 1);
+        assert!(identity_prefix(harness, &prefix).is_err());
+    }
+    let bytes = b"{\"sessionId\":\"target\"}\n{\"sessionId\":\"other\"}\n";
+    let prefix = read_identity_prefix(Harness::Claude, &bytes[..]).unwrap();
+    assert_eq!(prefix, bytes);
+    assert!(identity_prefix(Harness::Claude, &prefix).is_err());
+}
+
+#[test]
 fn discovery_counts_all_jsonl_files_across_directories_before_matching_hints() {
     let mut discovery = Discovery::new("target");
     for index in 0..DISCOVERY_LIMIT {
