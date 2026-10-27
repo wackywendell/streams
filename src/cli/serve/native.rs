@@ -36,6 +36,11 @@ enum Binding {
     Session(String),
 }
 
+enum FileBaseline {
+    Required,
+    Prepared,
+}
+
 struct Pass {
     newly_bound: bool,
     context: RecordContext,
@@ -179,13 +184,20 @@ impl Controller {
         self.client = Some(client);
         Ok(())
     }
-    fn observe(&mut self, cancelled: &AtomicBool, event: Option<&HerdrEvent>) -> Result<Pass> {
+    fn observe(
+        &mut self,
+        cancelled: &AtomicBool,
+        event: Option<&HerdrEvent>,
+        baseline: FileBaseline,
+    ) -> Result<Pass> {
         let mut config = self.config()?;
         self.ensure(&config)?;
         if cancelled.load(Ordering::Acquire) {
             return Err(crate::cli::CliError::message("native request cancelled"));
         }
-        self.files.as_mut().unwrap().prepare()?;
+        if matches!(baseline, FileBaseline::Required) {
+            self.files.as_mut().unwrap().prepare()?;
+        }
         let client = self
             .client
             .as_ref()
@@ -457,7 +469,7 @@ impl Controller {
                 json!({"native":"inactive","reason":"outside_herdr"}),
             ));
         }
-        let pass = self.observe(&cancelled, None)?;
+        let pass = self.observe(&cancelled, None, FileBaseline::Required)?;
         if pass.context.session.is_none() {
             if matches!(request, Request::OpenCard {} | Request::CloseCard {}) {
                 return Err(crate::cli::CliError::message(
@@ -495,11 +507,16 @@ impl Controller {
         self.watch_engine(&engine);
         Ok(Output::value(result))
     }
-    fn project(&mut self, cancelled: Arc<AtomicBool>, event: Option<&HerdrEvent>) -> Result<()> {
+    fn project(
+        &mut self,
+        cancelled: Arc<AtomicBool>,
+        event: Option<&HerdrEvent>,
+        baseline: FileBaseline,
+    ) -> Result<()> {
         if !self.enabled || self.app.environment.get("HERDR_ENV").map(String::as_str) != Some("1") {
             return Ok(());
         }
-        let pass = self.observe(&cancelled, event)?;
+        let pass = self.observe(&cancelled, event, baseline)?;
         if pass.context.session.is_some() {
             let newly_bound = pass.newly_bound;
             let mut engine = self.engine(pass, cancelled)?;
@@ -521,8 +538,12 @@ impl Controller {
                 self.stop();
                 Err(crate::cli::CliError::message(error))
             }
-            Ok(SubscriptionUpdate::Event(event)) => self.project(cancelled, Some(&event)),
-            Ok(SubscriptionUpdate::Resubscribed) => self.project(cancelled, None),
+            Ok(SubscriptionUpdate::Event(event)) => {
+                self.project(cancelled, Some(&event), FileBaseline::Required)
+            }
+            Ok(SubscriptionUpdate::Resubscribed) => {
+                self.project(cancelled, None, FileBaseline::Required)
+            }
         }
     }
     pub fn file_event(
@@ -546,10 +567,10 @@ impl Controller {
         if !files.prepare()? {
             return Ok(());
         }
-        self.project(cancelled, None)
+        self.project(cancelled, None, FileBaseline::Prepared)
     }
     pub fn saved(&mut self, cancelled: Arc<AtomicBool>) -> Result<()> {
-        self.project(cancelled, None)
+        self.project(cancelled, None, FileBaseline::Required)
     }
     pub fn enroll(
         &mut self,
@@ -560,7 +581,7 @@ impl Controller {
         if !self.enabled || self.app.environment.get("HERDR_ENV").map(String::as_str) != Some("1") {
             return fallback.enroll_request(&request.to_string());
         }
-        let mut pass = self.observe(&cancelled, None)?;
+        let mut pass = self.observe(&cancelled, None, FileBaseline::Required)?;
         let records = self.records.as_ref().unwrap().clone();
         let request = EnrollmentRequest::parse(&request.to_string(), records.source_id())?;
         let target = request
