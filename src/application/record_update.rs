@@ -50,6 +50,22 @@ pub fn save_record_update(store: &impl RecordStore, update: &RecordUpdate) -> Re
                 };
                 edit.apply(stream, session, update.title_defaults.stream)
             }
+            (CapturedEdit::Documents(edit), Record::Stream(stream)) => {
+                let captured = edit.captured_session();
+                let address =
+                    RecordAddress::new(&captured.host_id, RecordKind::Session, &captured.id)?;
+                let session = reader.read(&address)?;
+                let session = match &session {
+                    Some(read) => {
+                        let Record::Session(session) = &read.record else {
+                            return Err(ValidationError::new("expected captured Session").into());
+                        };
+                        Some(session)
+                    }
+                    None => None,
+                };
+                edit.apply(stream, session)
+            }
             _ => return Err(ValidationError::new("captured edit target kind changed").into()),
         };
         Ok(change(&target.record, decision))

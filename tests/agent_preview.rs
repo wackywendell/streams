@@ -64,6 +64,33 @@ fn simulated(result: &Value) {
 }
 
 #[test]
+fn document_preview_uses_the_same_membership_guard_after_its_own_session_report() {
+    let mut captured = context();
+    captured["stream"]["repositories"] = json!({"repo":{"url":"https://example.test/repo"}});
+    let request = update(
+        &captured,
+        "stream",
+        json!({"document_additions":[{"repository":"repo","ref":"main","path":"docs/design.md","description":"Design"}]}),
+        Actor::Automatic,
+    );
+    let progress = update(
+        &captured,
+        "session",
+        json!({"state":"Working"}),
+        Actor::Automatic,
+    );
+    let after_progress = project(&captured, "apply", &progress)["catalog"].clone();
+    let after = project(&after_progress, "apply", &request);
+    assert_eq!(after["catalog"]["session"]["state"], "Working");
+    let document = &after["catalog"]["stream"]["documents"][0];
+    assert_eq!(document["path"], "docs/design.md");
+    assert_eq!(document["source_session_id"], captured["session"]["id"]);
+    assert!(document.get("commit").is_none());
+    assert_eq!(captured["stream"]["documents"], json!([]));
+    assert_eq!(after["receipt"]["save"]["domain"]["outcome"], "changes");
+}
+
+#[test]
 fn enrollment_parser_and_constructors_share_typed_identity_and_naming_rules() {
     let mut wire = enrollment();
     wire["actor"] = json!("user");

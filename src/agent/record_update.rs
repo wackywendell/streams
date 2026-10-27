@@ -8,6 +8,7 @@ use crate::{
     model::{NamingMode, Record, RecordKind, Session, TitleDefaults, ValidationError, check_text},
     operations::{
         Actor, agent_field_allowed,
+        documents::{DocumentAdditions, DocumentProposal},
         edits::{SessionEdit, StreamEdit},
     },
     storage::records::{RecordAddress, RecordRequest},
@@ -23,12 +24,14 @@ pub struct RecordUpdate {
 pub(crate) enum CapturedEdit {
     Session(SessionEdit),
     Stream(StreamEdit),
+    Documents(DocumentAdditions),
 }
 impl RecordUpdate {
     pub fn operation_id(&self) -> &str {
         match &self.edit {
             CapturedEdit::Session(edit) => edit.operation_id(),
             CapturedEdit::Stream(edit) => edit.operation_id(),
+            CapturedEdit::Documents(edit) => edit.operation_id(),
         }
     }
 }
@@ -77,8 +80,12 @@ pub fn parse_record_update(
             "captured edits require user/automatic Stream or Session intent",
         ));
     }
+    let document_additions = wire.kind == RecordKind::Stream
+        && wire.actor == Actor::Automatic
+        && wire.changes.len() == 1
+        && wire.changes.contains_key("document_additions");
     for field in wire.changes.keys() {
-        if !agent_field_allowed(wire.kind, wire.actor, field) {
+        if !document_additions && !agent_field_allowed(wire.kind, wire.actor, field) {
             return Err(ValidationError::new(format!(
                 "unknown agent update field: {field}"
             )));
@@ -117,14 +124,32 @@ pub fn parse_record_update(
                     ));
                 }
             };
-            CapturedEdit::Stream(StreamEdit::new(
-                &wire.operation_id,
-                &stream,
-                &wire.changes,
-                wire.actor,
-                captured_session,
-                wire.title_default,
-            )?)
+            if document_additions {
+                let proposals: Vec<DocumentProposal> = serde_json::from_value(
+                    wire.changes["document_additions"].clone(),
+                )
+                .map_err(|error| {
+                    ValidationError::new(format!("invalid document additions: {error}"))
+                })?;
+                let session = captured_session.as_ref().ok_or_else(|| {
+                    ValidationError::new("document additions require a captured Session")
+                })?;
+                CapturedEdit::Documents(DocumentAdditions::new(
+                    &wire.operation_id,
+                    &stream,
+                    session,
+                    proposals,
+                )?)
+            } else {
+                CapturedEdit::Stream(StreamEdit::new(
+                    &wire.operation_id,
+                    &stream,
+                    &wire.changes,
+                    wire.actor,
+                    captured_session,
+                    wire.title_default,
+                )?)
+            }
         }
         Record::Host(_) => unreachable!("Host edits refused above"),
     };

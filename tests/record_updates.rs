@@ -28,9 +28,12 @@ fn stream(id: &str) -> Stream {
     Stream::new(id, id, None, "host").unwrap()
 }
 fn put(store: &YamlRecordStore, record: Record) {
+    put_with_id(store, record, "setup");
+}
+fn put_with_id(store: &YamlRecordStore, record: Record, operation_id: &str) {
     let request = RecordRequest::new(
         RecordAddress::for_record(&record),
-        "setup",
+        operation_id,
         &json!({"record":record}),
     )
     .unwrap();
@@ -558,6 +561,195 @@ fn manual_stream_edit_has_no_session_dependency_even_after_membership_changes() 
             ),
         ]
     );
+}
+
+fn document_wire(before: &Stream, paths: &[&str]) -> Value {
+    json!({"version":2,"title_default":"automatic","catalog_source":"source","operation_id":"documents","kind":"stream","actor":"automatic","before":before,"changes":{"document_additions":paths.iter().map(|path| json!({"repository":"repo","ref":"main","path":path,"description":"Design"})).collect::<Vec<_>>()},"inputs":[{"kind":"session","record":session()}]})
+}
+fn document_stream() -> Stream {
+    let mut stream = stream("a");
+    stream.repositories.insert(
+        "repo".into(),
+        streams::model::Repository::new("https://example.test/repo").unwrap(),
+    );
+    stream
+}
+
+#[test]
+fn document_additions_preserve_current_links_and_ignore_unrelated_session_progress() {
+    let directory = tempfile::tempdir().unwrap();
+    let store = setup(directory.path());
+    let before = document_stream();
+    put_with_id(&store, Record::Stream(before.clone()), "before");
+    let request = document_wire(&before, &["docs/new.md", "docs/new.md"]);
+    // The report's own Session save and another Session's reading-list additions are independent.
+    update(
+        &store,
+        &wire("progress", &session(), "automatic", "Working"),
+    );
+    let mut current = before.clone();
+    current.documents.push(
+        streams::model::Document::new(
+            "repo",
+            "other",
+            "docs/concurrent.md",
+            "Keep",
+            Some("commit".into()),
+        )
+        .unwrap(),
+    );
+    put_with_id(&store, Record::Stream(current.clone()), "current");
+    let events = Arc::new(Mutex::new(Vec::new()));
+    let observed = events.clone();
+    let store = store.with_io_observer(move |event| observed.lock().unwrap().push(event));
+    let result = update(&store, &request);
+    let Record::Stream(saved) = &result.current.record else {
+        unreachable!()
+    };
+    assert_eq!(saved.documents.len(), 2);
+    assert_eq!(saved.documents[0], current.documents[0]);
+    assert_eq!(saved.documents[1].path, "docs/new.md");
+    assert_eq!(
+        saved.documents[1].source_session_id.as_deref(),
+        Some(session().id.as_str())
+    );
+    assert_eq!(saved.documents[1].commit, None);
+    let target = RecordAddress::new("host", RecordKind::Stream, "a").unwrap();
+    let dependency = RecordAddress::new("host", RecordKind::Session, session().id).unwrap();
+    assert_eq!(
+        record_io::accesses(&events.lock().unwrap()),
+        vec![
+            RecordIoEvent::Lock(directory.path().join(".catalog.lock")),
+            RecordIoEvent::Read(directory.path().join(".catalog-local/records.json")),
+            RecordIoEvent::Read(
+                directory
+                    .path()
+                    .join(relative_record_path(&target).unwrap())
+            ),
+            RecordIoEvent::Read(
+                directory
+                    .path()
+                    .join(relative_record_path(&dependency).unwrap())
+            ),
+        ]
+    );
+    let writes = record_io::writes(&events.lock().unwrap());
+    assert_eq!(writes.len(), 1);
+    assert_eq!(
+        writes[0].0,
+        directory
+            .path()
+            .join(relative_record_path(&target).unwrap())
+    );
+    assert!(update(&store, &request).repeated);
+    let mut fresh = request.clone();
+    fresh["operation_id"] = json!("documents-again");
+    assert_eq!(update(&store, &fresh).outcome["outcome"], "no-change");
+}
+
+#[test]
+fn document_additions_do_not_restore_removed_links_or_overwrite_a_concurrent_description() {
+    let directory = tempfile::tempdir().unwrap();
+    let store = setup(directory.path());
+    let mut before = document_stream();
+    before.documents.push(
+        streams::model::Document::new("repo", "old", "docs/removed.md", "Old", None).unwrap(),
+    );
+    let request = document_wire(&before, &["docs/removed.md", "docs/new.md"]);
+    let mut current = document_stream();
+    current.documents.push(
+        streams::model::Document::new(
+            "repo",
+            "manual",
+            "docs/new.md",
+            "Human description",
+            Some("verified".into()),
+        )
+        .unwrap(),
+    );
+    put_with_id(&store, Record::Stream(current.clone()), "current");
+    let result = update(&store, &request);
+    assert_eq!(result.outcome["outcome"], "no-change");
+    assert_eq!(result.current.record, Record::Stream(current));
+}
+
+#[test]
+fn document_additions_reject_moves_including_return_to_the_original_stream() {
+    for returned in [false, true] {
+        let directory = tempfile::tempdir().unwrap();
+        let store = setup(directory.path());
+        let before = document_stream();
+        put_with_id(&store, Record::Stream(before.clone()), "before");
+        let request = document_wire(&before, &["docs/new.md"]);
+        move_session_observed(
+            &store,
+            "move",
+            &MoveIntent::new("host", "pi", "native", "b").unwrap(),
+        )
+        .unwrap();
+        if returned {
+            move_session_observed(
+                &store,
+                "return",
+                &MoveIntent::new("host", "pi", "native", "a").unwrap(),
+            )
+            .unwrap();
+        }
+        let result = update(&store, &request);
+        assert_eq!(result.outcome["outcome"], "superseded");
+        assert_eq!(result.current.record, Record::Stream(before));
+    }
+}
+
+#[test]
+fn document_additions_refuse_changed_repository_bindings_and_invalid_authority() {
+    let directory = tempfile::tempdir().unwrap();
+    let store = setup(directory.path());
+    let before = document_stream();
+    let valid = document_wire(&before, &["docs/new.md"]);
+    let mut current = before.clone();
+    current.repositories.insert(
+        "repo".into(),
+        streams::model::Repository::new("https://example.test/elsewhere").unwrap(),
+    );
+    put_with_id(&store, Record::Stream(current.clone()), "current");
+    assert_eq!(update(&store, &valid).outcome["outcome"], "superseded");
+    let mut invalids = Vec::new();
+    for (field, value) in [
+        ("repository", json!("unknown")),
+        ("path", json!("/tmp/report.md")),
+        ("path", json!("../escape.md")),
+        ("source_session_id", json!("other")),
+        ("commit", json!("guessed")),
+    ] {
+        let mut invalid = valid.clone();
+        invalid["changes"]["document_additions"][0][field] = value;
+        invalids.push(invalid);
+    }
+    for (field, value) in [
+        ("actor", json!("user")),
+        ("inputs", json!([])),
+        (
+            "inputs",
+            json!([{"kind":"session","record":session()},{"kind":"session","record":session()}]),
+        ),
+    ] {
+        let mut invalid = valid.clone();
+        invalid[field] = value;
+        invalids.push(invalid);
+    }
+    let mut mixed = valid.clone();
+    mixed["changes"]["goal"] = json!("Mixed operation");
+    invalids.push(mixed);
+    let mut replacement = valid.clone();
+    replacement["changes"] = json!({"documents":[]});
+    invalids.push(replacement);
+    for invalid in invalids {
+        assert!(
+            parse_record_update(&invalid.to_string(), "source", TitleDefaults::default()).is_err(),
+            "{invalid}"
+        );
+    }
 }
 
 #[test]

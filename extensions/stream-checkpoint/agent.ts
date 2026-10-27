@@ -7,7 +7,7 @@ import { Check, Errors } from "typebox/value";
 import type { ExtensionContext } from "@earendil-works/pi-coding-agent";
 import type { AssistantMessage } from "@earendil-works/pi-ai";
 import type { LocalContext } from "./streams.ts";
-import { automaticFields, fields, statuses, validateChanges } from "./core.ts";
+import { automaticFields, documentAdditionsRequest, fields, statuses, validateChanges, type DocumentProposal } from "./core.ts";
 
 /** Drop the entire incomplete batch, and results with no surviving earlier call. */
 export function completedMessages(messages: any[]): any[] {
@@ -29,13 +29,26 @@ export function completedMessages(messages: any[]): any[] {
  }
  return kept;
 }
+function fileActivity(calls: any[]): {operation: string; path: string}[] {
+ return calls.flatMap(call => {
+  const operation = call?.name?.split(".").at(-1), path = call?.arguments?.path;
+  return ["read", "write", "edit"].includes(operation) && typeof path === "string" && path.trim() && path.isWellFormed() && !/[\p{Cc}\p{Cf}\p{Zl}\p{Zp}]/u.test(path) ? [{operation, path}] : [];
+ });
+}
+const activityText = (activity: ReturnType<typeof fileActivity>) => ({type:"text", text:`Attempted file activity (paths only; not proof of success): ${JSON.stringify(activity)}`});
 export function projectMessages(source: any[], mode: "trimmed" | "full" = "trimmed"): any[] {
  let messages = completedMessages(source);
  if (mode === "trimmed") messages = messages.flatMap((message: any) => {
-  if (["toolResult", "bashExecution", "system"].includes(message.role)) return [];
+  if (message.role === "toolResult") {
+   const activity = message.toolName?.split(".").at(-1) === "codemode" && Array.isArray(message.nestedCalls?.calls) ? fileActivity(message.nestedCalls.calls) : [];
+   return activity.length ? [{role:"user", content:[activityText(activity)], timestamp:message.timestamp}] : [];
+  }
+  if (["bashExecution", "system"].includes(message.role)) return [];
   if (message.role !== "assistant" && message.role !== "user") return [message];
   if (typeof message.content === "string") return [message];
   const content = message.content.filter((block: any) => block.type === "text" || (message.role === "user" && block.type === "image"));
+  const activity = message.role === "assistant" ? fileActivity(message.content.filter((block: any) => block.type === "toolCall")) : [];
+  if (activity.length) content.push(activityText(activity));
   return content.length ? [{...message, content, ...(message.role === "assistant" ? {stopReason: "stop"} : {})}] : [];
  });
  return structuredClone(messages);
@@ -53,7 +66,7 @@ export type ReportInference = InferenceInput & {type: "session" | "stream"; rese
 type DiscussionInference = InferenceInput & {type: "discussion"; discussion?: {role: "user" | "assistant"; text: string}[]};
 export type Inference = EnrollmentInference | ReportInference | DiscussionInference;
 export type EnrollmentResult = {meaningful: boolean; stream?: {title: string; goal?: string; goal_short?: string}; session?: {title: string}};
-export type ReportResult = {changes: Record<string, unknown>};
+export type ReportResult = {changes: Record<string, unknown>; document_additions?: DocumentProposal[]};
 type DiscussionResult = {reply: string; edit?: {kind: "stream" | "session"; actor: "automatic" | "user"; changes: Record<string, unknown>}};
 export type Inferred = EnrollmentResult | ReportResult | DiscussionResult;
 export type InferenceResult<T extends Inference> = T extends EnrollmentInference ? EnrollmentResult : T extends ReportInference ? ReportResult : DiscussionResult;
@@ -106,7 +119,7 @@ export function buildInferencePayload(request: Inference, timestamp = 0): Infere
  else if (request.type === "discussion") schema = Type.Object({reply: Type.String(), edit: Type.Optional(Type.Union((["stream", "session"] as const).filter((kind) => request.catalog[kind]).flatMap((kind) => (["automatic", "user"] as const).map((actor) => Type.Object({kind: Type.Literal(kind), actor: Type.Literal(actor), changes: changesSchema(kind, request.catalog, actor, false)}, {additionalProperties: false})))))}, {additionalProperties: false});
  else {
   const before = request.catalog[request.type];if (!before) throw Error("No attached catalog target");
-  schema = Type.Object({changes: changesSchema(request.type, request.catalog, "automatic")}, {additionalProperties: false});
+  schema = Type.Object({changes: changesSchema(request.type, request.catalog, "automatic"), ...(request.type === "session" ? {document_additions:Type.Optional(Type.Array(Type.Object({repository:Type.String(), ref:Type.String(), path:Type.String(), description:Type.String()}, {additionalProperties:false})))} : {})}, {additionalProperties: false});
  }
  const messages = request.type === "stream" ? [] : convertToLlm(request.messages);
  const {catalog_source: _source, ...visibleCatalog} = structuredClone(request.catalog);
@@ -136,7 +149,7 @@ export function buildInferencePayload(request: Inference, timestamp = 0): Infere
   const target = request.type === "stream" ? "Stream" : "Session";
   prompt += `\n\nUpdate only the ${target} card. Allowed fields in changes: ${JSON.stringify(Object.keys(schema.properties.changes.properties))}. The other catalog records are read-only evidence, not additional write targets. Use unprefixed field names directly inside changes. Never use stream_ or session_ prefixes or return another card's fields. If this target needs no changes, return {"changes": {}}.`;
  }
- if (request.type === "session") prompt += `\n\n${sessionEditingPrompt}`;
+ if (request.type === "session") prompt += `\n\n${sessionEditingPrompt}\n\nYou may also propose document_additions outside changes: a small reading list of project documents this conversation produced or meaningfully used. File-activity paths are evidence of attempted use, not proof a file exists. Prefer durable design and usage documents, not incidental source files, historical mentions or temporary reports. Use only a supplied Stream repository alias and a repository-relative path. Use a ref explicitly established by the evidence or the supplied Session checkout; never guess a branch or ref. If repository, ref, path or relevance is uncertain, omit the proposal. Do not propose /tmp artifacts, issues or PRs. Omit already-linked repository/path identities. Never remove or rewrite existing links. The save assigns source_session_id; do not supply provenance or claim commit verification. An empty changes object may accompany document_additions. These proposals are saved separately on the captured Stream, not as Session fields.`;
  return {systemPrompt: prompt, messages, tools: [{name: "record_card", description: "Return the structured report or discussion response", parameters: schema}]};
 }
 export function parseInferenceResponse<T extends Inference>(request: T, response: AssistantMessage, payload = buildInferencePayload(request)): InferenceResult<T> {
@@ -169,6 +182,7 @@ export function parseInferenceResponse<T extends Inference>(request: T, response
  } else if (request.type === "session" || request.type === "stream") {
   const result = rawArgs as ReportResult;
   if (Object.keys(result.changes).length) validateChanges(request.type, request.catalog[request.type]!, result.changes, "automatic", request.catalog.title_defaults[request.type]);
+  if (request.type === "session" && result.document_additions?.length) documentAdditionsRequest(request.catalog, result.document_additions, "validate-document-additions");
  }
  return rawArgs as InferenceResult<T>;
 }

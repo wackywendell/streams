@@ -1,4 +1,4 @@
-import { automaticFields, editRequest } from "./core.ts";
+import { automaticFields, documentAdditionsRequest, editRequest } from "./core.ts";
 import { receiptCanContinue } from "./streams.ts";
 import type { LocalContext, Receipt, ApplyRequest } from "./streams.ts";
 import type { EnrollmentInference, InferenceResult, ReportInference } from "./agent.ts";
@@ -34,11 +34,19 @@ export async function runReport(action: ReportAction, environment: ReportEnviron
    if (capture.catalog.session![short] != null && !Object.hasOwn(inferred.changes, short)) inferred.changes[short] = null;
   }
   if (kind === "stream" && reset && capture.catalog.stream!.goal_mode === "automatic" && capture.catalog.stream!.goal_short !== null && !Object.hasOwn(inferred.changes, "goal_short")) inferred.changes.goal_short = null;
-  if (!Object.keys(inferred.changes).length) return true;
-  const receipt = await environment.apply(editRequest(capture.catalog, kind, inferred.changes, "automatic", environment.operationId()));
-  environment.receipt(receipt);
-  if (receiptCanContinue(receipt)) {savedAny = true;return true;}
-  return false;
+  const additions = kind === "session" && inferred.document_additions?.length ? documentAdditionsRequest(capture.catalog, inferred.document_additions, environment.operationId()) : undefined;
+  const requests = [
+   ...(Object.keys(inferred.changes).length ? [editRequest(capture.catalog, kind, inferred.changes, "automatic", environment.operationId())] : []),
+   ...(additions ? [additions] : []),
+  ];
+  for (const request of requests) {
+   if (signal.aborted || !await capture.attached()) return false;
+   const receipt = await environment.apply(request);
+   environment.receipt(receipt);
+   if (!receiptCanContinue(receipt)) return false;
+   savedAny = true;
+  }
+  return true;
  };
  if (!capture.catalog.session) {
   if (reset) {environment.notice("Reset requires an attached work card. Use /streams attach first.");return false;}

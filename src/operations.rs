@@ -1,5 +1,6 @@
 //! Domain-owned intent and pure reconciliation, independent of persistence.
 
+pub mod documents;
 pub mod edits;
 pub mod membership;
 

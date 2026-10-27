@@ -1,5 +1,5 @@
 import { randomUUID } from "node:crypto";
-import { receiptCanContinue, type ApplyRequest, type LocalContext, type Receipt, type SessionWire, type StreamWire, type Mode } from "./streams.ts";
+import { receiptCanContinue, type Document, type ApplyRequest, type LocalContext, type Receipt, type SessionWire, type StreamWire, type Mode } from "./streams.ts";
 export const statuses = ["active", "waiting", "blocked", "parked", "done"];
 export const titleModes = ["automatic", "manual", "inherit"] as const;
 export const fields = {
@@ -65,6 +65,14 @@ export function editRequest(context: LocalContext, kind: "stream" | "session", c
   inputs.push({kind:"session", record:context.session});
  }
  return structuredClone({version:2, catalog_source:context.catalog_source, operation_id:operationId, kind, actor, before, changes, title_default, inputs});
+}
+export type DocumentProposal = Pick<Document, "repository" | "ref" | "path" | "description">;
+export function documentAdditionsRequest(context: LocalContext, additions: DocumentProposal[], operationId: string): ApplyRequest {
+ const {stream, session} = context;
+ if (!stream || !session || session.stream_id !== stream.id || session.host_id !== context.host_id || stream.owner.host_id !== context.host_id) throw Error("Document additions require a local captured Stream and Session");
+ validateReferences("documents", additions, stream);
+ if (additions.some(row => Object.keys(row).some(key => !["repository", "ref", "path", "description"].includes(key)))) throw Error("Document provenance is assigned by the save, not the reporting model");
+ return structuredClone({version:2, catalog_source:context.catalog_source, operation_id:operationId, kind:"stream", actor:"automatic", before:stream, changes:{document_additions:additions}, title_default:context.title_defaults.stream, inputs:[{kind:"session", record:session}]});
 }
 export class FieldEdit {
  readonly base: LocalContext;

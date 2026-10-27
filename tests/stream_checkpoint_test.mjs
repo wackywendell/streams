@@ -11,7 +11,8 @@ import { childCli } from './helpers/stream-cli.mjs';
 const jiti = createJiti(import.meta.url);
 const load = (name) => jiti.import(new URL(`../extensions/stream-checkpoint/${name}.ts`, import.meta.url).pathname);
 const { StreamCli, StreamsCliError, receiptText, receiptCanContinue } = await load('streams');
-const { automaticFields, editRequest, FieldEdit } = await load('core');
+const { automaticFields, documentAdditionsRequest, editRequest, FieldEdit } = await load('core');
+const { runReport } = await load('report-workflow');
 const { checkpointContext, infer, changesSchema, buildInferencePayload, parseInferenceResponse } = await load('agent');
 const { chooseInitial } = await load('chooser');
 const { openCard, compose, editField } = await load('panel');
@@ -130,6 +131,67 @@ test('card settings use typed child requests and reject inconsistent effective m
   await assert.rejects(invalid.cardSettings(),/Invalid card settings/);
  }
 });
+const proposedDocument={repository:'repo',ref:'main',path:'docs/design.md',description:'Design rationale'};
+test('only Session reporting can propose separate add-only documents, not provenance or replacement fields',()=>{
+ const request={type:'session',catalog:context(),messages:[]}, response=args=>({content:[{type:'toolCall',name:'record_card',arguments:args}]});
+ const answer={changes:{},document_additions:[proposedDocument]};
+ assert.deepEqual(parseInferenceResponse(request,response(answer)),answer);
+ assert.equal(Object.hasOwn(buildInferencePayload(request).tools[0].parameters.properties.changes.properties,'documents'),false);
+ assert.equal(Object.hasOwn(buildInferencePayload({...request,type:'stream'}).tools[0].parameters.properties,'document_additions'),false);
+ assert.throws(()=>parseInferenceResponse({...request,type:'stream'},response(answer)),/invalid structured/);
+ for(const document of [
+  {...proposedDocument,repository:'unknown'}, {...proposedDocument,path:'/tmp/report.md'},
+  {...proposedDocument,path:'../escape.md'}, {...proposedDocument,source_session_id:'forged'}, {...proposedDocument,commit:'guessed'},
+ ]) assert.throws(()=>parseInferenceResponse(request,response({...answer,document_additions:[document]})));
+ const sent=documentAdditionsRequest(request.catalog,[proposedDocument],'op');request.catalog.session.state='Later';
+ assert.equal(sent.kind,'stream');assert.equal(sent.actor,'automatic');assert.equal(sent.inputs[0].record.state,'');
+ assert.deepEqual(sent.changes,{document_additions:[proposedDocument]});
+ assert.throws(()=>editRequest(context(),'stream',{documents:[proposedDocument]},'automatic'),/not allowed/);
+});
+test('trimmed evidence retains completed file paths, including nested codemode metadata, but no bodies or results',()=>{
+ const calls=[{type:'toolCall',id:'read',name:'read',arguments:{path:'docs/read.md',content:'Secret argument'}},{type:'toolCall',id:'write',name:'functions.write',arguments:{path:'docs/write.md',content:'Secret body'}}];
+ const messages=[
+  {role:'assistant',stopReason:'toolUse',content:[{type:'thinking',thinking:'Secret thought'},...calls]},
+  ...calls.map(call=>({role:'toolResult',toolCallId:call.id,toolName:call.name,content:[{type:'text',text:'Secret result'}]})),
+  {role:'assistant',stopReason:'toolUse',content:[{type:'toolCall',id:'nested',name:'codemode',arguments:{code:'Secret code'}}]},
+  {role:'toolResult',toolCallId:'nested',toolName:'codemode',content:[{type:'text',text:'Secret nested result'}],nestedCalls:{calls:[{name:'edit',arguments:{path:'docs/nested.md',oldText:'Secret original',newText:'Secret replacement'}},{name:'read',arguments:{path:'bad\npath'}}]}},
+  {role:'assistant',stopReason:'pending',content:[{type:'toolCall',id:'pending',name:'read',arguments:{path:'docs/pending.md'}}]},
+  {role:'toolResult',toolCallId:'orphan',toolName:'codemode',content:[],nestedCalls:{calls:[{name:'read',arguments:{path:'docs/orphan.md'}}]}},
+ ];
+ const evidence=checkpointContext({buildSessionProjection:()=>({messages}),getLeafId:()=>null},'trimmed');
+ const text=JSON.stringify(evidence);
+ for(const path of ['docs/read.md','docs/write.md','docs/nested.md']) assert.ok(text.includes(path));
+ assert.doesNotMatch(text,/Secret|pending.md|orphan.md|bad|toolCall|toolResult/);
+ assert.match(text,/not proof of success/);
+});
+test('Session reporting saves progress and document proposals separately from the same captured base with one inference',async()=>{
+ for(const progress of [false,true]) {
+  const catalog=context();catalog.stream.goal_mode='manual';const initial=structuredClone(catalog),requests=[],generated=[],receipts=[];
+  const saved=await runReport({kind:'report',force:true},{
+   signal:new AbortController().signal,automaticEnrollment:true,operationId:randomUUID,
+   capture:async()=>({native:'native',cwd:'/repo',evidence:{messages:[],leafId:null},catalog:structuredClone(catalog),valid:()=>true,attached:async()=>true}),
+   generate:async request=>{generated.push(request);return {changes:progress?{state:'Working'}:{},document_additions:[proposedDocument]};},
+   apply:async request=>{requests.push(request);if(request.kind==='session')catalog.session.state=request.changes.state;return {operation_id:request.operation_id,save:{local:'persisted',domain:{outcome:'changes'}}};},
+   enroll:assert.fail,receipt:value=>receipts.push(value),notice:assert.fail,
+  });
+  assert.equal(saved,true);assert.equal(generated.length,1);assert.equal(requests.length,progress?2:1);assert.equal(receipts.length,requests.length);
+  const docs=requests.at(-1);assert.deepEqual(docs.before,initial.stream);assert.deepEqual(docs.inputs,[{kind:'session',record:initial.session}]);
+  assert.deepEqual(docs.changes,{document_additions:[proposedDocument]});
+ }
+});
+test('a refused document save keeps the progress receipt and does not retry or run Stream inference',async()=>{
+ const requests=[],receipts=[],catalog=context();let generated=0;
+ assert.equal(await runReport({kind:'report',force:true},{
+  signal:new AbortController().signal,automaticEnrollment:true,operationId:randomUUID,
+  capture:async()=>({native:'native',cwd:'/repo',evidence:{messages:[],leafId:null},catalog,valid:()=>true,attached:async()=>true}),
+  generate:async()=>{generated++;return {changes:{state:'Working'},document_additions:[proposedDocument]};},
+  apply:async request=>{requests.push(request);return {operation_id:request.operation_id,save:{local:'persisted',domain:{outcome:requests.length===1?'changes':'superseded'}}};},
+  enroll:assert.fail,receipt:value=>receipts.push(value),notice:assert.fail,
+ }),false);
+ assert.equal(generated,1);assert.equal(requests.length,2);assert.equal(receipts.length,2);
+ assert.equal(receipts[0].save.domain.outcome,'changes');assert.equal(receipts[1].save.domain.outcome,'superseded');
+});
+
 test('automatic fields omit protected names and all lifecycle and identity fields',()=>{
  assert.deepEqual(automaticFields('stream',stream,'automatic'),['goal','goal_short']);
  assert.deepEqual(automaticFields('session',session,'automatic'),['title','status','recap','recap_short','state','state_short','remaining','remaining_short']);

@@ -179,6 +179,16 @@ fn apply(snapshot: &mut Snapshot, source: &str) -> Result<Value, ValidationError
             }
             edit.apply(current, snapshot.session.as_ref(), snapshot.defaults.stream)
         }
+        CapturedEdit::Documents(edit) => {
+            let current = snapshot
+                .stream
+                .as_ref()
+                .filter(|stream| *stream == edit.before())
+                .ok_or_else(|| {
+                    ValidationError::new("captured target does not match supplied context")
+                })?;
+            edit.apply(current, snapshot.session.as_ref())
+        }
     };
     let save = simulated(
         json!({"operation_id":update.operation_id(),"outcome":decision.outcome(),
@@ -198,7 +208,9 @@ fn apply(snapshot: &mut Snapshot, source: &str) -> Result<Value, ValidationError
     let mut receipt = json!({"simulated":true,"local":"unchanged","operation_id":update.operation_id(),"save":save});
     match &update.edit {
         CapturedEdit::Session(_) => receipt["session"] = json!(snapshot.session),
-        CapturedEdit::Stream(_) => receipt["stream"] = json!(snapshot.stream),
+        CapturedEdit::Stream(_) | CapturedEdit::Documents(_) => {
+            receipt["stream"] = json!(snapshot.stream)
+        }
     }
     Ok(receipt)
 }
