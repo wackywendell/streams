@@ -370,15 +370,11 @@ fn an_invalid_caption_is_rejected_before_opening_a_card() {
     engine.config.tab_naming = false;
     let mut session = engine.card.session().clone();
     session.title = "Hidden\u{200b}format".into();
-    engine.card = CardSnapshot::new(
+    engine.card = CardRecords::new(
         engine.card.stream().clone(),
         session,
-        DisplayContext {
-            catalog_source: "catalog".into(),
-            owner: engine.card.owner().clone(),
-            checkouts: vec![],
-            documents: vec![],
-        },
+        "catalog".into(),
+        engine.card.owner().clone(),
     )
     .unwrap();
     engine.project().unwrap();
