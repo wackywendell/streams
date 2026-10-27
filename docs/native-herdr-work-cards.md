@@ -1,83 +1,104 @@
 # ADR: Native Herdr work cards as Streams projections
 
-Status: historical import and UI decision; the native base was implemented and activated. [Observe and act](native-observe-and-act.md) supersedes the caller attestation, effect-recovery, pair ownership and launch-fence requirements below. [Active-Session reopening](record-local-operations.md#reopen-active-sessions) supersedes saved arrangement capture and restoration. Those passages describe the former design, not requirements for its replacement; UI and document-resolution rationale remain.
+Status: implemented and activated. [Observe and act](native-observe-and-act.md)
+owns native lifetime and effects; [record-local operations](record-local-operations.md)
+owns storage and active-Session reopening.
 
-## Context and decision
+## Keep the card, not a second catalog
 
-Keep the native Herdr Work Cards UI alongside Pi's Alt+P card. The user values the work already invested in its layout, navigation, independent agent views and naming protections. Import the existing package and history rather than reconstructing the display from its appearance.
+Keep a native card beside each agent, alongside Pi's inline card. The imported
+history through `e7d74ce22f95893fa8eed570ef2e6a14d61f74bd` preserves the original
+implementation; rebuilding only its appearance would discard tested behavior.
 
-Streams is the only writable work catalog. The native card reads a stream's shared purpose and references together with its owning session's contribution. It does not create another account of the effort or run a second summarizer. The [catalog ADR](durable-work-catalog.md) owns record meaning; the [Pi ADR](pi-work-card.md) owns reporting, editing and initial conversation enrollment.
+Streams is the sole writable work catalog. The card combines shared Stream purpose
+and references with its exact Session's contribution. It neither keeps a separate
+account nor runs another summarizer. One Session finishing does not finish the
+effort. A workspace association names an effort, not an arbitrary Session in it.
+Titles, cwd and GUI focus never establish conversation identity.
 
-The imported [orientation](../integrations/herdr-work-cards/docs/design.md), [workspace and display](../integrations/herdr-work-cards/docs/workspace-context.md) and [naming](../integrations/herdr-work-cards/docs/automatic-naming.md) decisions retain the reasoning behind the UI. Their legacy storage APIs, commands and membership transitions are not interfaces to the Streams catalog.
+Orientation is not an activity log. Purpose, evidenced progress and remaining work
+belong in short records; substantive plans and decisions stay in project documents.
+Existing summaries are editable drafts, not independent evidence. Helpers receive
+runtime-selected evidence and narrow proposal permissions, not filesystem,
+executable-selection or native-effect authority. Historical tool outcomes remain
+historical; prompt instructions and validation cannot guarantee semantic truth.
 
-## Preserve the card, replace its authority
+## Preserve readable density and exact navigation
 
-Retain a card beside each owning agent, not a new workspace-overview tab. Its shared section comes from the Stream; its title, status, current state and remaining scope come from the exact Session. Finishing that contribution must not imply finishing the effort. The field mapping is recorded in the catalog ADR.
+Put `Stream title: Session title` in the card-pane caption. Show a muted shared Goal
+above the Session recap, current Status and Remaining blocks. Omit empty text
+sections and keep lifecycle status distinct from native presence. Spare rows create
+quiet section breaks rather than pushing content off-screen for labels or the close hint.
 
-Preserve the existing renderer's density, Unicode handling, clipping, quiet section grouping, responsive document grid and visible-shortcut rules. Keep terminal-link gestures, exact-target document navigation and editor reuse. [Streams name ownership](name-ownership.md) supersedes the imported independent manual-name protections. The port must carry their regression coverage forward rather than treating a similar screenshot as equivalence.
+Documents use a responsive row-major grid. Prefer full paths before truncating a
+single column. Shortcut assignment stays stable across column layouts, but can
+change when references change. Only fully painted shortcuts are active; a resize
+or refresh invalidates old actions before new input can use them. Truncation and
+display labels must never change the opaque target.
 
-The stream ID, catalog source, host and native conversation identity establish the view's scope. A native workspace association identifies an effort, not an arbitrary session within it. Resolve the owning conversation exactly; do not select a contribution by title, cwd, GUI focus or the number of sessions found. A missing or contradictory association is unavailable state, not permission to enroll or guess.
+HTTP links use the terminal client's link gesture. Displayed issue/PR numbers are
+not removal identities. Keep exact URLs and full descriptions in records. This
+editor-first navigation avoids an agent-feedback channel that could accidentally
+address a replacement conversation; annotation integrations remain out of scope.
 
-Catalog reads and validated operations remain behind the Streams application boundary. TypeScript does not write catalog YAML, mirror records into the old Work Cards store or infer ownership from matching record text. Cached display state never grants mutation or native-effect authority. Before each native effect, the backend attests the exact owner's pane and bounded saved Pi session header against a ready Stream workspace association. Reading or opening a card does not start reporting, attach a conversation or launch a workspace.
+Resizing paints the current snapshot without waiting for I/O. That snapshot is
+display data, not authority to mutate or open something. Native and record events
+drive reads; there is no polling or retry loop.
 
-## Keep native effects host-local
+## Resolve documents from explicit local mappings
 
-Pane ownership, display attempts, terminal identities and editor bindings stay on the execution host. Naming has no provenance ledger. They are not portable catalog fields. Reuse the existing safety policies, but adapt their proofs to Streams identities: an old Work Cards store binding is not proof of a current Streams association.
+Prefer the viewing Session's working file, including uncommitted edits. Two tabs
+in the same Herdr workspace can have different jj workspaces or repositories.
+A workspace-wide directory map would conflate them.
 
-Closing with `q` remains display-only. It must not stop catalog reporting, delete records, detach the conversation or cause background respawn. Persist uncertain launch attempts before effects; a timeout or missing display after an attempt must not authorize a duplicate launch. Cleanup may affect only positively verified owned resources.
+Streams owns checkout selection. A stable checkout ID names a canonical root on
+this host. Explicit repository URL bindings distinguish intentional mappings from
+matching remotes or directory names. A move updates the ID's root rather than
+rewriting each Session. The viewing Session's selection wins for that repository;
+explicit defaults can supply other repositories. Missing or unbound selections
+remain visible errors, not permission to choose another checkout.
 
-Native workspace names project `stream.title`; card captions combine `Stream title: Session title`. Pi and eligible agent-tab names project `session.title`; editor names come from exact document identity. Compact purpose uses workspace token `strm_goal_short`. The Pi pane publishes `strm_recap_short`, `strm_state_short` and `strm_remaining_short`, so users can choose which sidebar hint to show. These copy saved short forms, not another inference or text truncation. Preserve independent synchronization switches and the actual-first-pane rule. An enabled naming surface mirrors the saved title, whether that title was generated or written manually. Disable synchronization to manage a frontend label independently.
+A document identifies a Stream repository alias and relative path. Its optional
+commit and source Session are provenance, not a pin to old contents. The current
+card resolves only working files: it has no active source/revision chooser.
+A missing local file never deletes the portable reference.
 
-Native metadata is a bounded hint, not another copy of the narrative. [Herdr's token contract](https://github.com/herdrdev/herdr/blob/v0.9.5/src/app/api_helpers.rs#L244-L279) trims values, removes controls and caps text at 80 Unicode scalar values. Streams uses a stricter limit: fewer than 25 characters. Publish an existing compact summary only when it meets that limit and Herdr retains it unchanged. Otherwise clear the hint; keep the full text in the catalog and card. Do not truncate or infer a replacement just to fill a native field.
+Before opening, revalidate the painted reference, viewing scope, selected root and
+canonical regular file. Reject traversal and escaping symlinks. Reuse an observed
+Streams editor only for the exact resolved identity; matching a relative path or
+an unmarked tab is insufficient. Do not automatically move or close editors.
+Trusted host configuration selects the editor command, with the filename passed
+as data rather than executable text.
 
-Native effects are not a transaction with catalog persistence. Verify current scope and acknowledgements, report partial effects and preserve recovery evidence. A successfully saved title is not proof that a native name changed.
+## Project saved names and bounded metadata
 
-A GUI-created terminal inherits the frontend server's environment, not the invoking CLI's. Launches explicitly carry the caller's catalog, host-state, checkout-registry and harness-selection paths, including effective defaults. The card subprocess separately captures the owning agent's bounded read environment. Neither boundary forwards the caller's full environment or credentials; otherwise a workspace or card could silently read another catalog despite carrying the same Stream ID.
+Workspace names use the Stream title; card captions combine Stream and Session
+titles. Pi and eligible agent tabs use the Session title; editor tabs use document
+identity. Workspace token `strm_goal_short` and Pi-pane tokens `strm_recap_short`,
+`strm_state_short` and `strm_remaining_short` copy their matching saved short forms. Independent
+synchronization switches and the actual-first-pane rule select one tab-name writer.
+[Name ownership](name-ownership.md) owns manual/automatic policy and Pi name import;
+there is no native-name provenance ledger or separate manual override to infer.
 
-## Separate display, observation and effect recovery
+Herdr trims metadata, removes controls and caps text at 80 Unicode scalar values.
+Streams imposes a stricter limit of fewer than 25 characters. Publish an existing
+compact summary only when it meets that limit and Herdr retains it unchanged;
+otherwise clear the hint. Keep full text in the catalog and card. Do not truncate
+or run another inference just to fill a native field.
 
-The accepted recovery follow-up separates local painting, conversation verification and native effects. A missing transcript during startup does not prove that its conversation disappeared. Pi may advertise a path before saving its first message, or briefly expose an incomplete header while rewriting it. Capture validates the complete host topology, then verifies every supported conversation in the target workspace. If any cannot be verified, preserve the previous arrangement rather than save a partial subset. Launch, resume and session-targeted focus retain host-wide identity and duplicate checks.
+## Keep failures and environments separate
 
-Resizing repaints the current snapshot without waiting for catalog reads or native effects. That snapshot remains display data, never authority for navigation or mutation. Refresh and effects stay serialized; a resize invalidates shortcuts selected against an older painted frame. Failed capture retries on the next actual update, without replaying successful display and naming effects.
+Closing the card is display-only. Reporting continues. Native actions compare
+current observations and execute once; lost replies warn, with best-effort reuse
+on a later request instead of recorded launch phases. Catalog saves and native
+effects are not one transaction, and a saved title does not prove a rename worked.
 
-Unchanged projections need no effect lock. Fresh attestation, ownership checks and observed labels may establish that nothing needs changing. Any effect still acquires the workspace lock and repeats its authority checks. This reduces contention without allowing a cached card to authorize a rename or launch.
+GUI-created terminals inherit the frontend server's environment, not the invoking
+CLI's. Launches explicitly carry bounded catalog, host-state, registry and harness
+selection paths, including defaults. They do not forward the full environment or
+credentials. Otherwise a card could read another catalog despite the same Stream ID.
 
-Workspace exclusion must survive process death without stale-lock theft. Retain a descriptor to a persistent lock inode and use the operating system's advisory lock. A short isolated Python helper acquires through an inherited descriptor; Node retains the lock after the helper exits. Descriptor closure or process death releases ownership. This requires Python 3 with `fcntl` and adds interpreter startup cost when acquiring a lock. It avoids native-addon packaging and does not depend on asynchronous unlink cleanup.
-
-Lock files remain after release. Never delete or replace them to make progress. Their contents do not establish ownership. Clients that require marker contents or use file existence as a lock need a coordinated cutover; guessing whether a recorded PID is alive cannot make mixed protocols safe. Cancellation stops subprocess groups and awaits closure. Shutdown and replacement drain retired native work before their lifetimes end. A complete reservation may be rolled back only when this invocation knows that no native effect was dispatched. Uncertain dispatched effects retain their launch evidence rather than permit duplicates.
-
-These decisions are accepted; the [cutover plan](../plans/catalog-cutover.md) records review and activation separately from the already active native base.
-
-## Documents prefer the viewing checkout
-
-Prefer the viewing agent/tab's working file, including uncommitted edits. Here A and B are separate tabs and jj workspaces inside one Herdr workspace, not separate Herdr workspaces. The shared reference supplies the repository and relative path; the viewing agent supplies the local checkout. Recovery metadata must not replace an available viewing file.
-
-For example, agent A adds a document at `a1` and advances to `a5`. Agent B's jj workspace is at `b5`. If B has the file, its card opens B's working copy, not A's copy or `a1`. A missing viewing file may instead resolve to a source Session's checkout or a captured revision. Neither choice switches branches.
-
-Streams owns checkout selection and document resolution; the pane receives resolved locations, not a policy to reimplement. Each host-local checkout has a stable ID and an exact canonical root. Explicit repository-URL bindings distinguish intentional mappings from remotes or similarly named directories. A move updates that ID's root rather than changing every Session selection.
-
-Each Session selects its own checkout and relative cwd. A Herdr-workspace-wide map would conflate A and B. Its selected checkout takes precedence for documents in that repository. An explicitly registered default can supply another repository's checkout. A missing or unbound selection must not silently redirect to that default; reading a card never registers checkouts or selects defaults.
-
-Revalidate the painted reference, viewing scope and resolved root before opening or reusing an editor. Editor reuse must match the viewing Session and canonical file, not merely its repository-relative path.
-
-Use only the application-resolved targets. Lowercase document shortcuts open the default target; Shift+letter offers a source chooser. Revision files are extracted only on open, never during card polling. If no eligible target exists, show “Document not present in this checkout.” Missing or ambiguous checkout bindings also remain visible errors. Never create a checkout or remove the shared reference because a viewing file is missing.
-
-## Restore work without inventing launch intent
-
-`open STREAM` restores the effort's last recorded working arrangement or focuses its verified existing workspace. `resume` remains the lower-level operation: run one saved conversation in the invoking terminal, without reconstructing a workspace. These are different user intentions, not aliases.
-
-Capture only observed conversations matched to local catalog Sessions. Historical helper contributions are not a list of processes to launch. Restore the captured tab grouping, order and manual labels; leave existing tabs and agents untouched. The initial case has no captured arrangement: restore the sole eligible Session, or open a shell and request a choice when several qualify. Empty or failed captures must not erase useful prior observations.
-
-Exclude done and parked Sessions by default, while allowing explicit selection. Session status reports assignment completion, not process death: a done conversation can still be running, and unfinished work can have no live process. Verify live identities before reuse or launch; inspect saved headers rather than trusting filenames. A missing or ambiguous conversation is a visible recovery problem, never permission to start a replacement.
-
-Keep one native workspace per Stream on the execution host, across frontend endpoints. Serialize launch and enrollment decisions per Stream, and retain attempts before effects. An association on an endpoint that cannot be checked blocks a second launch rather than proving the first workspace closed. This accepts manual recovery after uncertain effects in exchange for avoiding duplicate agents.
-
-The arrangement records agent tabs and conversations, not arbitrary shell commands, editor-tab contents or exact pane geometry. Existing editor tabs are preserved, not automatically reconstructed after closure. These bounds avoid treating observed terminal state as executable intent.
-
-## Alternatives and consequences
-
-Using Alt+P alone would avoid a native port, but the user chose to retain the side pane. Rebuilding only its visual appearance would discard tested behavior and design context. Keeping the old writer and synchronizing two catalogs would introduce competing memberships, summaries and manual overrides. Importing its history and adapting the authority boundary preserves the implementation without that second catalog.
-
-This costs more than changing a record reader. Legacy movement automatically reassigned an agent to its destination workspace; Streams has no implicit catalog membership move or fork. Native topology changes are nevertheless valid environment inputs. The proposed [reconciliation contract](native-context-reconciliation.md) distinguishes automatic location adoption after fresh identity and ownership proof from retryable suspension and explicit enrollment. It does not relax current production fences. Document resolution and native ownership need explicit adapters before activation.
-
-The import and the functional port are separate changes. Retain original commits and documents, then verify catalog mapping, navigation, close/reopen behavior, naming and partial failures independently. Legacy record and helper tests remain historical coverage; they do not prove the new adapter correct. Run isolated native acceptance before activation, with the old writer and namers quiescent. Do not obtain quiescence by restarting busy agents without direction.
+Frozen renderer fixtures, outside-change fakes and isolated PTYs test distinct
+boundaries. Neither a similar screenshot nor a fake endpoint establishes live
+platform support. Keep one active writer and matching loaded CLI/Pi versions;
+updating installed processes remains separate from repository integration.

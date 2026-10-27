@@ -1,67 +1,35 @@
 # ADR: Online-first Temper Cloud sync with local outbox and explicit reseed
 
-Status: proposed; follow-on synchronization backend after the core Rust cutover ([Rust and Temper architecture ADR](rust-temper-architecture.md)). The [durable work catalog ADR](durable-work-catalog.md) owns logical record semantics, and the [Git sync ADR](catalog-git-sync.md) continues to govern `none` and `git` synchronization.
+Status: proposed, not implemented. [Record-local operations](record-local-operations.md)
+now governs `none` and `git`. The earlier service sketch assumed catalog-wide
+operation replay and transferable ownership; those assumptions are retired.
+This proposal needs a new record-local interface design before implementation.
+It does not authorize an outbox, scheduler, reseed command or ownership handover.
 
-## Context and decision
+## Goal and retained trade-offs
 
-Add a `temper-cloud` synchronization backend that uses a personal [Datadog Temper Cloud](https://github.com/ddoghq/temper-cloud) instance as the shared catalog authority across hosts (such as a Mac laptop and remote Cloud Workspaces), while retaining a complete local YAML snapshot and a FIFO operation outbox on every host.
+A personal [Datadog Temper Cloud](https://github.com/ddoghq/temper-cloud) instance
+could transport work records between hosts while local saves remain useful offline.
+The intended service behavior is online-first, locally durable when disconnected,
+and explicitly recoverable after server storage resets.
 
-Two simpler service models were rejected during design:
+A pure online-only client would simplify sync state but break offline reporting.
+Rebuilding a Git-style local commit graph against a service would keep complexity
+that a server does not need. The earlier FIFO outbox was one proposed alternative,
+not an existing runtime interface or a settled record-local design.
 
-- **Pure online-only client:** Making every `streams` mutation a direct network call with no local persistence eliminates client sync state, but breaks catalog edits, session enrollment, and Pi progress reporting whenever a laptop is offline or disconnected from the corporate network.
-- **Git-style client commit rebuilding against a server:** Using a server merely as a remote target for batch sync while keeping Git's local commit graph and candidate-adoption pass retains the most error-prone part of Git sync (`AdoptingAttempt` and `read-tree` branch replacement) even though a server actor can serialize and reconcile operations directly.
+All current record types, including Streams, have one immutable writing host.
+Cross-host manual edits and handover are not exceptions. A service backend must
+preserve those partitions, embedded retry receipts, captured report admission and
+the distinction between local persistence and publication. Host-local checkout
+registrations, directory bindings, native sockets and process locks never become
+shared catalog records.
 
-Instead, the `temper-cloud` backend is **online-first when connected, local-outbox-backed when offline, and explicitly re-seedable if server storage resets**:
-
-1. Every host maintains its full local YAML catalog (`confirmed`, the last state acknowledged by the server) plus an ordered local `outbox` (`.catalog-sync/outbox.json`) of unacknowledged `Operation` envelopes.
-2. When online, writes append to `outbox`, dispatch immediately to the `temper-cloud` instance, and—upon acknowledgement—update `confirmed` and remove the operation from `outbox`.
-3. When offline, writes append to `outbox` and return `local = "persisted"`, `sharing = "pending"`. Reads and local authority fold `outbox` over `confirmed` through the domain's pure `reconcile` function.
-4. If the `temper-cloud` instance storage is reset or replaced, normal sync refuses to overwrite local files and requires an explicit `streams sync --reseed` command to repopulate the server from local state.
-
-## Why offline conflicts remain bounded without Git history
-
-In general distributed systems, offline queues can accumulate complex multi-writer conflicts. Streams' logical data model ([durable work catalog ADR](durable-work-catalog.md)) makes offline conflicts rare by construction:
-
-- **`Session` and `Host` records are producer-partitioned:** A host only ever writes `sessions/<this-host-id>/*` and `hosts/<this-host-id>.yaml`. While a machine is offline, no other machine can access its native conversations or legally write to its producer partition.
-- **New `Stream` creations use fresh identities:** A stream created offline receives a fresh UUID and establishes local creation authority immediately; no other host knows of or can mutate that stream until the creating host reconnects.
-- **Automatic `Stream` inference is owner-gated:** Background agent refinement of a stream's title or goal requires the active `ownership_token`. While the owning host is offline, another host can only modify that stream if the user explicitly performs a manual edit or ownership handover on the second host.
-
-Consequently, when an offline host reconnects and drains its `outbox` in FIFO order:
-
-- all `Host`, `Session`, and newly created `Stream` operations apply without contention;
-- any automatic `Stream` report generated under an `ownership_token` that was superseded while the host was offline is cleanly retired with `outcome = "superseded"`; and
-- only a concurrent manual `Stream` edit made offline on one host and online on another produces a domain `conflict`, which pauses that specific operation for user direction without blocking unrelated streams or session progress.
-
-## Client state and the disappearance of local branch adoption
-
-In the `git` backend, a client must rewrite its local Git commit graph (`L1 -> L2`) into the rebased remote commit graph (`R1 -> C1 -> C2`) after pushing, creating a window where remote publication is `confirmed` while local branch adoption is `repair-required`.
-
-With `temper-cloud`, the server's entity actors own the canonical event sequence. Each host stores:
-
-```text
-<catalog root>/
-  streams/<stream-id>.yaml               # confirmed server snapshot
-  sessions/<host-id>/<session-id>.yaml
-  hosts/<host-id>.yaml
-  .catalog-sync/
-    cli.json                             # {version: 1, host, strategy: "temper"}
-    temper.json                          # instance URL, tenant, last_sequence, epoch_id
-    outbox.json                          # FIFO list of pending Operation envelopes
-    receipts.json                        # durable operation-id -> sha256 digest map
-    save.json                            # in-flight local file replacement marker
-```
-
-The host's effective local catalog at any moment is:
-
-$$\text{effective\_catalog} = \text{fold}(\text{reconcile}, \text{confirmed}, \text{outbox})$$
-
-### Write and retry flow
-
-1. **Local durability first:** Under `.catalog.lock`, the client validates the `Operation` against `effective_catalog`, appends it to `outbox.json` (and records its digest in `receipts.json`), and releases any local caller immediately if the server cannot be reached within a short connection budget.
-2. **Immediate online flush:** When reachable, the client drains `outbox.json` in FIFO order by invoking the corresponding Temper OData action for each `Operation`.
-3. **Lost response recovery without an adoption phase:** If a network timeout or crash occurs after `temper-cloud` commits an operation but before the client receives the HTTP response, the operation remains at the head of `outbox.json` with its original `operation.id`. On the next flush, the client re-sends the same `Operation`. The server's durable receipt ledger recognizes the `(operation_id, digest)` pair, returns the current entity state without re-applying effects, and the client advances `confirmed` and pops the operation from `outbox.json`.
-
-Host-local runtime state (`$XDG_STATE_HOME/streams/`—checkout registrations, directory bindings, Herdr Unix sockets, pane attestations, and workspace locks) remains strictly on the execution host and is never sent to `temper-cloud`.
+The service must persist duplicate-intent evidence if it promises retries across
+server restarts; an HTTP idempotency cache alone is insufficient. The exact client
+queue, acknowledgement and reset model remains to be designed against current
+record interfaces. The old `Operation`, ownership-token, standalone receipt and
+save-marker layouts are not compatibility contracts to recreate.
 
 ## Datadog hosting evaluation and `temper-cloud` constraints
 
@@ -104,13 +72,13 @@ When a normal read refresh or write sync detects that `CatalogMeta('root')` is m
 2. **Explicit re-seed (`streams sync --reseed`):** When invoked by the user:
    - pushes the Streams `.ioa.toml`, `.csdl.xml`, and `.cedar` specifications to the `temper-cloud` instance if they are absent;
    - creates a new `CatalogMeta('root')` with a fresh `epoch_id`;
-   - uploads all records from the host's local `confirmed` snapshot along with recorded creation/ownership tokens and operation fingerprints (`receipts.json`); and
+   - uploads preserved record envelopes, including their embedded retry receipts; and
    - replays the host's pending `outbox.json` operations on top, updating `.catalog-sync/temper.json` to the new `epoch_id`.
-3. **Secondary host convergence after a re-seed:** When a second host (such as a remote Cloud Workspace) later syncs and observes a new `epoch_id` created by the first host's `--reseed`, it does not discard its local state. Instead, it reconciles any records present in its own local `confirmed` snapshot and `outbox` that are missing or newer on the server—specifically its producer-owned `sessions/<second-host-id>/*` and `hosts/<second-host-id>.yaml` records, plus any streams for which it holds the latest ownership token—before adopting the new `epoch_id`. Because producer partitions are disjoint across hosts, the union of the hosts' local copies reconstructs the catalog across a total server wipe.
+3. **Secondary host convergence after a re-seed:** When a second host (such as a remote Cloud Workspace) later syncs and observes a new `epoch_id` created by the first host's `--reseed`, it does not discard its local state. Instead, it reconciles any records present in its own local `confirmed` snapshot and `outbox` that are missing or newer on the server—specifically its immutable `hosts/<second-host-id>/` partition—before adopting the new `epoch_id`. Because producer partitions are disjoint across hosts, the union of the hosts' local copies reconstructs the catalog across a total server wipe.
 
 ## Consequences and open questions
 
-- **Positive:** Gives Streams low-latency online sync and simple single-actor ownership handover without sacrificing offline operation or risking data loss when a `temper-cloud` sandbox is wiped. Keeping `confirmed` as standard YAML files preserves human inspectability on disk and reuses the existing local storage layout.
+- **Positive:** Would provide online sync and offline local work, subject to designing the record-local durability and reset boundaries. It does not add ownership handover or guarantee recovery from a sandbox wipe. Keeping durable local record envelopes would preserve human inspectability.
 - **Negative:** Requires maintaining the Temper app specification (`specs/catalog.csdl.xml`, `.ioa.toml`, `.cedar`) alongside the Rust client, and requires user action (`streams sync --reseed`) after a sandbox reset.
 - **Open questions to resolve before implementation:**
   - **Authentication Plumbing:** Verify whether the `streams` CLI should invoke `ddtool auth token` directly (with caching) or delegate token acquisition to the installed `temper` CLI config (`ddoghq/temper-cloud`) once `TMPR-44` (broad ISA group admission) is live in staging.

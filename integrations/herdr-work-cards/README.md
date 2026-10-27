@@ -8,9 +8,9 @@ The source was imported with its original history through `e7d74ce22f95893fa8eed
 
 The card shows the shared Stream goal, documents, issues and pull requests alongside the viewing Session's title, status, current state and remaining work. It reads these through the Streams CLI, not scratch notes or standalone Work Cards YAML files.
 
-Each card captures an exact catalog, host, Stream, Session and native Pi session identity. Native effects also require the attested Herdr pane, tab and workspace. A changed or unavailable identity clears the view and shortcuts rather than displaying stale records or selecting another workspace by name.
+Each card is scoped to a catalog, host, Session and native Pi conversation. The Session supplies current Stream membership. Native effects use current observed pane, tab and workspace identity, not stored attestation. Missing or contradictory identity stops affected actions rather than guessing from labels.
 
-The projection does not create Streams, attach conversations, launch agents or manage checkouts. It can create and close its owned card and document displays, update eligible native names and open registered references. Enabled naming surfaces mirror saved Streams titles. A disabled outgoing switch stops Streams from renaming that surface; incoming Pi name edits have their own setting.
+The projection does not create Streams, attach conversations, launch agents or manage checkouts. It can open cards and documents, close only its Session's card, update eligible native names and open registered references. Enabled naming surfaces mirror saved Streams titles. A disabled outgoing switch stops Streams from renaming that surface; incoming Pi name edits have their own setting.
 
 ## Commands and display lifecycle
 
@@ -26,7 +26,7 @@ Use the root Pi extension:
 | `/streams pane` | Explicitly open the native Herdr card |
 | `/streams pane close` | Close only the owned display |
 
-Opening or closing the pane does not request a report or change membership. Pressing `q` closes the display. Automatic opening runs when Pi starts or resumes and `workspace_startup` is `automatic`. Within that Pi lifetime, a closed card stays closed until `/streams pane` reopens it. An exact recorded launch can finish interrupted pairing under the workspace lock. A launch without verifiable native identity stays blocked rather than risking a duplicate pane.
+Opening or closing the pane does not request a report or change membership. Pressing `q` closes the display. Automatic opening runs when Pi starts or resumes and `workspace_startup` is `automatic`. Within that Pi lifetime, a closed card stays closed until `/streams pane` reopens it. A lost launch reply warns and ends the pass; later requests observe again. There is no pairing journal or exactly-once launch guarantee. Duplicate cards exit through an OS process lock.
 
 The terminal pane subscribes to native and saved-record changes and reflows on resize. Its document shortcuts use the currently displayed target and revalidate it before opening. If the reference or checkout changes, redraw and press the shortcut again.
 
@@ -34,7 +34,7 @@ The terminal pane subscribes to native and saved-record changes and reflows on r
 
 Streams owns repository identities, document references and host-local checkout registrations. Register checkouts through the CLI; the card does not discover roots from Git remotes or choose an arbitrary directory.
 
-A document normally opens from the viewing Session's selected checkout, including local edits. The app supplies available locations and any alternate choices. A recorded commit is provenance, not a requirement that the working file match that revision. Revision choices contain explicit metadata, not synthetic checkout IDs. The CLI extracts their contents only when you open them, never while refreshing the card. The adapter checks the selected binding and canonical file before opening. Missing mappings, missing files and paths escaping the checkout fail visibly; they do not remove the shared reference.
+A document opens from the viewing Session's resolved working checkout, including local edits. A recorded commit and source Session are provenance, not navigation pins. The current card does not offer alternate source or revision choices. The adapter checks the selected binding and canonical file before opening. Missing mappings, missing files and paths escaping the checkout fail visibly; they do not remove the shared reference.
 
 `document_command` is a trusted command prefix. It falls back to `$EDITOR`, then `less`. Do not copy untrusted document, record or model text into executable configuration.
 
@@ -62,9 +62,7 @@ Inference settings belong to the root extension's `stream-reporting.json`. Remov
 
 Rust is the only native implementation on this branch. The Pi extension defaults to this checkout's `target/debug/streams`, respecting `CARGO_TARGET_DIR`. Build it with `mise run build`. Set `STREAMS_BIN_PATH` to an absolute matching executable when using a packaged extension or a different build. Missing or invalid executables fail; there is no Python, TypeScript-coordinator or `PATH` fallback. This source cutover does not activate or replace installed tools.
 
-The Pi extension keeps commands, tools, event serialization and the Pi session-name setter. Rust handles native card open/close, metadata, Herdr names and arrangement capture. Every effect re-attests the captured catalog, host, conversation, endpoint, terminal and workspace binding. A changed scope permanently suspends the old adapter until reload. Cancellation drains the child process group; it does not clear uncertain launch evidence or close displays.
-
-Reporting and native effects share one executable selector. `STREAMS_RUST_BIN` remains a compatibility alias; when both variables are set, their canonical paths must match. Load only one checkout's Streams extension.
+The Pi extension keeps commands, tools, event serialization, branch admission and the Pi session-name setter. Rust handles card open/close, metadata and Herdr names. Each pass reads concerned records and observes at most one native snapshot; the executor checks subscription liveness before effects. There is no saved native launch evidence or arrangement capture. Reporting and native effects share `STREAMS_BIN_PATH`. Load only one checkout's extension.
 
 The Rust card uses `streams-rust-herdr-plugin.toml` and `bin/open-rust-streams-pane.sh`. The launcher requires the protected launch envelope and executes that explicit Rust binary, not a CLI found on `PATH`.
 
@@ -80,12 +78,12 @@ npm --prefix integrations/herdr-work-cards run check
 npm --prefix integrations/herdr-work-cards test
 ```
 
-`npm test` builds the surviving TypeScript support code and runs `tests/*.test.mjs`. `mise run build` builds the Rust native runtime. Restart participating Pi sessions and reopen native pane processes after changing loaded code. Do not mix old and new launch-record protocols during an update. Use the root Streams extension, not a standalone Pi entrypoint from this package.
+`npm test` builds the surviving TypeScript support code and runs `tests/*.test.mjs`. `mise run build` builds the Rust native runtime. Restart participating Pi sessions and reopen native pane processes after changing loaded code. Do not mix loaded CLI and extension revisions during an update. Use the root Streams extension, not a standalone Pi entrypoint from this package.
 
 The `streams-rust-herdr-plugin.toml` manifest requires a compatible Herdr native plugin API. Explicit pane opening can register the exact missing plugin; it refuses conflicting or disabled registrations. It does not update or restart Herdr.
 
-This package tests configuration, executable selection, Pi naming, subprocesses and the document launcher. Rust tests cover rendering, exact context, ownership, native lifecycle and guarded documents, retaining frozen renderer fixtures. Native effects use fake protocols. Run isolated native acceptance before activating changed launch code; automated tests do not establish live platform support.
+This package tests configuration, executable selection, Pi naming and the document launcher. Rust tests cover rendering, exact context, ownership, native lifecycle and guarded documents, retaining frozen renderer fixtures. Native effects use fake protocols. Run isolated native acceptance before activating changed launch code; automated tests do not establish live platform support.
 
-## Historical design documents
+## Design contracts
 
-The imported [orientation design](docs/design.md), [workspace context design](docs/workspace-context.md) and [automatic naming design](docs/automatic-naming.md) record the original product's rationale. Their standalone record, inference and command contracts are historical, not current runtime instructions. The [Streams native projection decision](../../docs/native-herdr-work-cards.md) takes precedence.
+The [native projection decision](../../docs/native-herdr-work-cards.md) preserves UI and document rationale. [Name ownership](../../docs/name-ownership.md) owns saved-title projection, and [observe and act](../../docs/native-observe-and-act.md) owns lifetime, failure and targeting policy. The imported standalone implementation remains in version history, not a second current runbook.

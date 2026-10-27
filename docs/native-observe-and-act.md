@@ -1,6 +1,6 @@
 # ADR: Observe native state and test behaviour under outside changes
 
-Status: accepted; implemented in Rust, not activated. This replaces native caller attestation, pair proofs and durable launch fences, not catalog save or report-admission rules.
+Status: implemented in Rust and activated. This replaces native caller attestation, pair proofs and durable launch fences, not catalog save or report-admission rules.
 
 ## Make ordinary native actions ordinary
 
@@ -62,25 +62,30 @@ Check safety after every step: no unrelated close or move, no automatic editor o
 
 Count work as well as outcomes. A settled projection produces no effects; a pass takes at most one snapshot and never re-reads a transcript to attest its caller. Run duplicate-exit tests with real processes and OS locks. Do not add generated sequences, model exploration or a shrinking framework unless bugs escape the scripted scenarios. Native operations will not execute the old proof state machine at runtime.
 
-## What this supersedes
+## Plan actions, then execute once
 
-The [caller-attestation proposal](native-caller-attestation.md) is retired. Native lifetime and effect-proof requirements in [reconciliation](native-context-reconciliation.md), [effect planning](effect-planning.md), [bounded work](bounded-work-and-card-events.md), [Pi child transport](pi-child-protocol.md), [native enrollment](native-enrollment-boundary.md) and [record-local operations](record-local-operations.md) yield to this decision. The original [native-card ADR](native-herdr-work-cards.md) remains the UI and import rationale, not a requirement to preserve its recovery protocol.
+Pure planning combines typed records, the current observation and the request,
+then compares desired and observed values to produce actions. Reading and
+executing belong to the shell. Catalog changes and frontend effects have separate
+action types and executors; no executor holds a transaction across both systems.
 
-Keep record-local catalog saves, host ownership, membership periods, captured report targets, document path checks and naming policy. Removing native launch receipts does not remove catalog save receipts or Pi branch admission. Activation and the [manual catalog cutover](native-catalog-reset.md) remain coordinator work; this ADR changes no live state and does not authorize discarding evidence while the old runtime is active.
+Each field has one direction: an observed workspace move can change Session
+membership; saved titles feed native display. Display changes do not move Pi or
+select membership. An echo event therefore finds no difference instead of
+starting a feedback loop.
 
-## Appendix: measured retirement footprint
+Trust a checked reply without a confirmation snapshot. Where the reply supplies
+identity and values, verify that they match the action. An acknowledgement-only
+adapter must model normalization accurately rather than claim an observed value
+it did not receive. Handles from checked replies can feed later actions in the
+same list. A failed or mismatched reply stops that list; execution does not
+re-enter planning or save a retry.
 
-At `c41d1c47`, `src/runtime/native*.rs` and recursive `src/runtime/native_cards/` contain 7,959 physical lines: 4,424 outside test modules and 3,535 in test modules. The non-test portions declare 51 structs/enums, plus one trait and one type alias. Counts include comments and blank lines; they are not executable-line counts.
+## Catalog and UI boundaries remain
 
-These modules implement machinery the new design will retire:
-
-| Module | Non-test lines | Structs/enums |
-| --- | ---: | ---: |
-| `src/runtime/native_state.rs` | 555 | 8 |
-| `src/runtime/native_cards/handover.rs` | 199 | 1 |
-| `src/runtime/native_cards/facts.rs` | 162 | 1 |
-| `src/runtime/native_cards/linking.rs` | 113 | 1 |
-| `src/runtime/open_protocol.rs` | 99 | 3 |
-| Total | 1,128 | 14 |
-
-The last module is outside the native-file baseline above. These are gross retirement footprints, not a forecast net deletion: the small card lock and ordinary resource data still need homes. Repeated guards in opening, documents, projection and caller observation, plus pair classification in `src/frontend/herdr/ownership.rs`, add further removal not included in that total. Existing tests that only enforce the retired protocol will be replaced with behavioural tests; the measured baseline does not predict the size of that replacement suite.
+Keep record-local catalog saves, immutable host ownership, membership history,
+captured report targets, document path checks and naming policy. Removing native
+launch receipts does not remove catalog save receipts or Pi branch admission.
+[Reconciliation](native-context-reconciliation.md) owns move-versus-refresh
+semantics; [enrollment](native-enrollment-boundary.md) owns the record-only helper;
+[native cards](native-herdr-work-cards.md) owns UI and document rationale.

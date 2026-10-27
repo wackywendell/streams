@@ -1,12 +1,18 @@
 # ADR: Record-local operations with one writer per file
 
-Status: decided, not implemented. This replaces the lookup-only proposal in [Bounded, event-driven work](bounded-work-and-card-events.md) and the authority/replay design in [Git sync](catalog-git-sync.md). Local durability remains separate from publication. [Observe and act](native-observe-and-act.md) now governs native lifetime, targeting and failures; it supersedes the former proof and launch-fence requirements, not catalog receipts. The single-host rule below supersedes cross-host participation and ownership-transfer proposals in earlier records.
+Status: implemented and activated. Local durability is separate from publication.
+[Observe and act](native-observe-and-act.md) governs native lifetime, targeting and
+failures, not catalog receipts. Each Stream and its Sessions have one immutable
+writing host.
 
 ## Make the records sufficient
 
-A Session report should read the Session and its Stream, apply the report, and save the changed records. Today that path repeatedly loads the catalog. Git backing also replays history to recover ownership and prove that working files agree with supported commits. A direct final lookup would leave those larger dependencies intact.
-
-An operation will instead read its named records, apply its input as a pure function, and persist the result. Reconciliation belongs inside apply, not in a history-driven coordinator around every save. Ordinary operations will not scan the catalog, traverse history or consult a derived cache, including at process startup. Git sync alone consults history for transport; it will not replay operations or merge domain records.
+A Session report reads its named records, applies its input as a pure function and
+persists one target. Reconciliation belongs inside apply, not in a history-driven
+coordinator around every save. Ordinary operations do not scan the catalog,
+traverse history or consult a derived cache, including at process startup. Git
+sync alone consults history for transport; it does not replay operations or merge
+domain records.
 
 The domain and pure apply function must not depend on YAML, Git or a frontend. Storage reads and writes typed records; sync transports the files. Herdr, cmux and future frontends supply observations and execute their own action types behind interfaces. Frontend and sync choices do not change local operation semantics.
 
@@ -18,7 +24,7 @@ Each Stream belongs to exactly one host. That host alone writes the Stream recor
 
 Partition portable catalog files by host. The host in the physical location is part of record identity, not a mutable owner field. Typed records carry that host identity; decoding checks it against the path, and the write boundary checks it against the configured producer before any replacement. Creation selects the current host's partition. Updates and moves cannot select another host or change a record's host.
 
-There will be no effective-authority tokens, ownership periods, pending ownership transitions, handover or stale-owner reconciliation. The Stream's host is fixed at creation. Native workspace associations and card launch context cannot grant write permission to another partition. Reading synchronized records remains allowed, but local reports and native effects for foreign Streams must refuse before changing records or dispatching effects.
+There are no effective-authority tokens, ownership periods, pending ownership transitions, handover or stale-owner reconciliation. The Stream's host is fixed at creation. Native workspace associations and card launch context cannot grant write permission to another partition. Reading synchronized records remains allowed, but local reports and native effects for foreign Streams must refuse before changing records or dispatching effects.
 
 `Session.stream_id` is the only membership authority. There is no Stream roster or separate membership index to keep in sync. A move changes one Session file atomically; both Stream records stay unchanged. Point each query at the records that already hold its answer:
 
@@ -37,11 +43,11 @@ Apply assesses conversation-local and Stream-shared proposals separately. A Sess
 
 Strict decoding includes supported schema versions, unique object keys, regular files, safe paths, record-address identity and relationships among the named records. A malformed record is not absence. Creation distinguishes a missing key from unreadable or conflicting state. Whole-catalog validation belongs to explicit inspection and cutover, not opening a backend handle. `list` and `check` may enumerate current records; neither replays history.
 
-A positional CLI `REF` requests explicit human discovery by ID, title or substring, using the same enumeration as `list`. It must resolve to exactly one host-qualified ID or fail on ambiguity before invoking the operation. UUID-looking strings are not reserved, and there is no new `--id` flag. Automation, the Pi child, cards and Pi keep their existing exact-key paths, including `--stream-id`, `--session-id` and `--current`. Those paths use point reads, never catalog enumeration. Discovery of a foreign Stream does not grant permission to modify it.
+A positional CLI `REF` requests explicit human discovery by exact ID, title or title substring, using the same enumeration as `list`. UUID prefixes are not supported. It must resolve to exactly one host-qualified ID or fail on ambiguity before invoking the operation. UUID-looking strings are not reserved, and there is no new `--id` flag. Automation, the Pi child, cards and Pi keep their existing exact-key paths, including `--stream-id`, `--session-id` and `--current`. Those paths use point reads, never catalog enumeration. Discovery of a foreign Stream does not grant permission to modify it.
 
 ### Record selection is not native permission
 
-An explicit record key will select a read without proving native readiness. A known Stream key, including `STREAMS_STREAM_ID` for `--current`, needs no frontend connection merely to read that record. An exact Session query reads that Session and its saved Stream; workspace metadata cannot replace its membership. This keeps record inspection independent of missing or incomplete native projection.
+An explicit record key selects a read without proving native readiness. A known Stream key, including `STREAMS_STREAM_ID` for `--current`, needs no frontend connection merely to read that record. An exact Session query reads that Session and its saved Stream; workspace metadata cannot replace its membership. This keeps record inspection independent of missing or incomplete native projection.
 
 Without an explicit key, the calling Herdr workspace's ordinary catalog, host and Stream markers may select one Stream from the current snapshot. Read that named record and check its immutable host. Missing, incomplete or conflicting markers refuse this metadata-only selection. There is no placement record to consult. CMUX has no workspace metadata capability, so it requires an explicit key rather than a reverse lookup or fabricated Herdr proof.
 
@@ -57,7 +63,7 @@ The catalog layer owns this function and persistence. Native reconciliation supp
 
 ### Durability without history as a journal
 
-Local saves acknowledge durable record changes, not publication. They do not create or verify Git commits or run inline sync. They may emit a separate sync trigger; a due publication check cannot hide a catalog scan inside a report response. Sync failure cannot turn an accepted local save into a clean failure inviting a duplicate action.
+Local saves acknowledge durable record changes, not publication. They do not create or verify Git commits or run inline sync. Explicit and lifecycle sync are separate; a publication request cannot hide a catalog scan inside a report response. Sync failure cannot turn an accepted local save into a clean failure inviting a duplicate action.
 
 Stable operation IDs and exact-intent fingerprints prevent double application and changed-intent retries after lost acknowledgements. The retry key is `(record identity, operation ID)`. Keep its fingerprint and accepted outcome in the target record's envelope, written atomically with the record. There is no second receipt file, host-wide receipt map, separate journal or history lookup. Retain enough receipt identities to recognize earlier retries after later edits; a last-operation-only marker would lose that guarantee. Receipts are deduplication evidence, not replayable operations. Store compact decisions and target IDs, never captured or historical record snapshots. Work text belongs only in the current record.
 
@@ -73,21 +79,24 @@ After the explicit reset, re-enrollment creates Sessions under their native-iden
 
 `catalog_source` identifies the logical catalog by saved host UUID and canonical catalog path. Do not include device numbers, inodes or another UUID. Replacing contents at the same path does not create a different logical catalog. Ordinary updates retain their captured-field and target-local receipt guards; explicit offline reset stops writers and retires obsolete runtime references instead of asking normal actions to detect directory replacement.
 
-Keep portable Stream/Session records, the host-wide checkout registry and host-local per-Session directory bindings separate. Read the registry once and pass its decoded value through directory and document resolution. Stream-only directory defaults remain separately Stream-keyed. Each Session checkout always carries its resolved portable repository URL, populated at attach or creation. A Stream-local alias is only a label, so repository edits cannot orphan unread Sessions and moves cannot reinterpret aliases through the destination.
+Keep portable Stream/Session records, the host-wide checkout registry and host-local per-Session directory bindings separate. Read the registry once and pass its decoded value through directory and document resolution. Stream-only directory defaults remain separately Stream-keyed. A portable Session checkout carries its explicit repository URL when present; automatic enrollment may leave it absent. Host-local directory selection does not invent a portable ref. A Stream-local alias is only a label, so repository edits cannot orphan unread Sessions and moves cannot reinterpret aliases through the destination.
 
-Normal Session construction will derive its ID from immutable native identity, and checkout construction will require the portable URL. These domain types will change with the atomic catalog switch: tightening them while the legacy backend remains active would reject its existing data. The archived catalog stays opaque; no legacy catalog decoder or replay model remains. There will be no parallel runtime domain models or public validated wrapper around a mutable record.
+Session construction derives its ID from immutable native identity. Portable
+checkout admission requires an explicit URL, not a Stream alias fallback. The
+archived catalog stays opaque; there is no legacy decoder, alias lookup or
+parallel runtime domain model.
 
-A host-local checkout is the registry's saved checkout ID and canonical directory path, not a filesystem object. Device numbers can change across reboots; a directory recreated at the same path remains the same registered checkout. Do not persist device/inode identity or reject a root because those numbers changed. Explicit moves change the saved path while preserving the ID. Repository URL bindings, explicit defaults, directory existence and path-containment checks remain. The coordinator's manual checklist removes obsolete stamps from the retained registry; normal reads never migrate it.
+A host-local checkout is the registry's saved checkout ID and canonical directory path, not a filesystem object. Device numbers can change across reboots; a directory recreated at the same path remains the same registered checkout. Do not persist device/inode identity or reject a root because those numbers changed. Explicit moves change the saved path while preserving the ID. Repository URL bindings, explicit defaults, directory existence and path-containment checks remain. The offline reset removed obsolete stamps from the retained registry; normal reads never migrate it.
 
-Native addresses are not saved records. The [native enrollment boundary](native-enrollment-boundary.md) uses ordinary catalog, host and Stream markers observed on workspaces. Explicit reopening finds a matching workspace in its snapshot, or creates one. Delete saved placements, nonces and pending-attempt state rather than maintain another authority or reverse index. Current observations drive best-effort reuse; conflicting markers do not permit adoption.
+Native addresses are not saved records. The [native enrollment boundary](native-enrollment-boundary.md) uses ordinary catalog, host and Stream markers observed on workspaces. Explicit reopening finds a matching workspace in its snapshot, or creates one. There are no saved placements, nonces or pending-attempt records to maintain as another authority or reverse index. Current observations drive best-effort reuse; conflicting markers do not permit adoption.
 
 ## Native actions
 
 ### Reopen active Sessions
 
-Stream reopening will use current Session records and one fresh native observation. Discover active same-host Sessions for this explicit user command, create or reuse the Stream workspace, and open each missing Session in its own tab. Already-running Sessions stay where they are; report their locations rather than move or duplicate them. There is no saved tab order, pane sizing, topology, open/closed cache or layout restoration. Remove layout capture and saved arrangements instead of maintaining another source of work state.
+Stream reopening uses current Session records and one fresh native observation. Discover active same-host Sessions for this explicit user command, create or reuse the Stream workspace, and open each missing Session in its own tab. Already-running Sessions stay where they are; report their locations rather than move or duplicate them. There is no saved tab order, pane sizing, topology, open/closed cache, layout capture or arrangement restoration.
 
-Each Session's host-local binding will hold its exact transcript locator beside its directory intent, at `session-directories/<digest(Session.id)>.json` under the existing runtime host root. `DirectoryBindings` owns persistence. The native driver supplies the verified locator in memory; enrollment or local binding save records it, and directory-only edits preserve it. No new index, portable catalog path or transcript search is needed. Missing launch inputs produce a Session-specific diagnostic. Definite failures need not prevent other Sessions opening; an uncertain native effect warns and stops the affected execution without a durable fence. Reuse is best effort: skip observed running Sessions without transcript searches, and tolerate rare duplicates when launches race or registration is late. Workspace, tab and pane addresses remain local to this pass; none is persisted.
+Each Session's host-local binding holds its exact transcript locator beside its directory intent, at `session-directories/<digest(Session.id)>.json` under the existing runtime host root. `DirectoryBindings` owns persistence. The native driver supplies the verified locator in memory; enrollment or local binding save records it, and directory-only edits preserve it. No new index, portable catalog path or transcript search is needed. Missing launch inputs produce a Session-specific diagnostic. Definite failures need not prevent other Sessions opening; an uncertain native effect warns and stops the affected execution without a durable fence. Reuse is best effort: skip observed running Sessions without transcript searches, and tolerate rare duplicates when launches race or registration is late. Workspace, tab and pane addresses remain local to this pass; none is persisted.
 
 ### Observe and execute once
 
@@ -95,11 +104,11 @@ A native operation reads its concerned records and takes at most one current sna
 
 Membership apply reads the bound Session, source Stream, destination Stream and observed native relationship once. After the save, the native engine consumes the returned current record context and the same native observation. It does not re-read Source, resolve every transcript or construct a new caller proof. Catalog save receipts and captured-result checks remain unchanged.
 
-The [manual catalog cutover](native-catalog-reset.md) archives old native state after stopping old children and viewers. There is no runtime reset component, legacy reader or evidence migration. Do not discard the old implementation's evidence while it is still active.
+The explicit offline reset stops writers before archiving old catalog and native state. There is no runtime reset component, legacy reader or evidence migration.
 
 ## Sync transports files
 
-Sync will use Git commit/pull/push over the host-partitioned files. Before committing, it rejects local edits outside the current host's partition. Different hosts' changes have disjoint paths by construction, so Git can combine those paths without interpreting record fields. Concurrent changes to the same file are an error: fail closed, retain both sides and report the conflict. Do not use text, field, set or domain merge to choose a result, even if Git could combine different lines in that file automatically.
+Sync uses Git commit/pull/push over the host-partitioned files. Before committing, it rejects local edits outside the current host's partition. Different hosts' changes have disjoint paths by construction, so Git can combine those paths without interpreting record fields. Concurrent changes to the same file are an error: fail closed, retain both sides and report the conflict. Do not use text, field, set or domain merge to choose a result, even if Git could combine different lines in that file automatically.
 
 Local apply enforces actor and captured-input guards once. Sync does not replay operations, re-evaluate report captures, derive authority or preserve one-operation-envelope-per-commit history. A later input change can leave accepted generated prose stale until the next report; that is acceptable for alpha software. Retry receipts travel with their target record envelopes. Checkout selections, registry files and native evidence remain host-local and outside Git.
 
@@ -107,26 +116,35 @@ Sync owns its Git interaction and reports publication or installation failures w
 
 ## Explicit cutover
 
-The coordinator alone performs the [manual cutover checklist](native-catalog-reset.md): stop all Pi Streams children and card viewers; close Herdr panes whose `tokens.strm_role` is `card`, leaving editors open; move the old catalog, native evidence and runtime associations and fences into a backup; retain `host.json` and the checkout registry, stripping its device/inode stamps; initialize an empty catalog with the new binary, reload Pi and re-enroll. The coordinator handles visible stray panes or workspaces by hand. This alpha reset replaces record migration, native cleanup tooling and fence translation: no reset component, legacy reader, old-ID alias service or automatic recovery remains in the fresh-catalog implementation.
+The activation used a supervised shutdown, backup and fresh initialization.
+For a future approved format reset: stop Pi Streams children and card viewers;
+close only card panes, leaving editors open; preserve the catalog and obsolete
+native/runtime state in a backup; retain host identity and the checkout registry;
+initialize an empty catalog, reload matching Pi code and re-enroll. Handle stray
+panes manually. This procedure is not a reset command, migration component or
+permission to change live state during ordinary development.
 
 ## Inventory and operation budgets
 
-The current-source column below describes the implementation before this redesign. Common costs include `application::open` and `agent::context` full snapshots, receipt/history-based authority and `YamlTransaction::save` whole-catalog revision comparison plus pre/post reads. Those dependencies must disappear rather than move behind a keyed API.
+The required record sets are:
 
-Budgets include fixed configuration/producer/schema files, counted separately by name. A save reads its target's embedded receipt, not another file or recovery marker. Single-Session counts are independent of unrelated records and history. Diagnostic capture declares a per-observed-pane budget. Explicit Stream reopening declares its discovery cost and per-selected-Session launch cost; that discovery never runs on idle or event paths. The checkout registry is read once per operation, not once per repository.
+| Operation | Addressed inputs and effects |
+| --- | --- |
+| Session report | Target Session + current Stream; one Session replacement with embedded receipt |
+| Automatic Stream report | Target Stream + captured Session; one Stream replacement with embedded receipt |
+| Card context | Session + current Stream, plus Session binding and checkout registry when needed for documents |
+| Native projection/open/close | Concerned records + at most one native snapshot; directory and launch inputs only when needed |
+| Membership move | Session + old Stream + new Stream; replace only the Session |
+| Enrollment | Create missing Stream first, then Session as separate local saves |
+| Diagnostic capture | One workspace snapshot, then each observed Session by native-identity key |
+| Explicit Stream open | Discover active same-host Sessions once; read each selected Session's launch inputs |
+| Stream show/member list | Explicit discovery may enumerate host-scoped Session files |
+| Sync | Enumerate partitioned files for transport; no domain replay |
 
-| Operation | Current dependencies | Required record set and changes |
-| --- | --- | --- |
-| Report / save | Full catalogs, captured inputs, host-wide receipts, authority/history, inline sync and post-save reads | Session + current Stream for conversation work; target Stream + captured Session for Stream work; only typed captured dependencies. Pi fences branch liveness; pure apply separates conversation-local and Stream membership guards. Save each target independently with its embedded receipt; no Git activity or transaction fence. |
-| Card read / ordinary context | Repeated snapshots and authority, all Stream Sessions for inventory, legacy directory discovery, registry rereads and document checks | Session + current Stream + Session binding + registry. Return only this Session. Native snapshots are separate event inputs; there is no native evidence-file read. Check only this Stream's document availability when required. |
-| Native project | Repeated source contexts, evidence, name ledgers and snapshots | Session + Stream and exact workspace relationship; at most one snapshot. No evidence or name ledger. No directory/document reads to project titles/summaries. |
-| Diagnostic capture | Full catalog filtered to workspace members, authority, relationship enumeration and topology | One fresh workspace snapshot → each observed Session by native-identity key. No saved arrangement or contributor roster; file count grows with the observed subjects. |
-| Native open | Full source contexts, evidence, assets and repeated absence/launch/confirmation checks | Session + Stream, exact relationship, fixed assets and at most one snapshot followed by effects/replies. No pending intent or evidence file. Read directory inputs only if launch needs them. |
-| Native close | Full source contexts before/after, evidence, markers and confirmation | External: concerned records, one snapshot, safely targeted effect and reply. Card q/owner-exit: exit only, no closure record. No confirmation snapshot or directory/document reads. |
-| Enroll / move | Catalog/native-ID scans, authority/history, duplicate caller snapshots, relationship enumeration, directory discovery, separate saves and inline sync | Enrollment creates a local Stream before its Session as separate single-record saves. Move reads Session + old Stream + new Stream, all same-host, and atomically writes only the Session with its receipt. Native relationship updates are separate plans. No roster, fence or other Session writes. |
-| Workspace open / resume | Full catalog member selection, saved arrangements and repeated authority checks | Explicit reopening discovers current active same-host Sessions once; single-Session resume uses its selected record. Read needed Session directory bindings; take one native observation and find the workspace by its ordinary Stream marker. Open missing Sessions in separate tabs, leaving existing Sessions in place. No saved layout or open-state history. |
-| Stream show | Full catalog, title resolution, all members and optional refresh | Explicit user discovery may enumerate host-scoped Sessions and filter by stream_id. Human title discovery likewise precedes exact-key actions. Neither enumeration runs on events/reports. Refresh is separate sync. |
-| Sync | Operation history/replay, receipts, complete catalogs and domain candidate validation | Git commit/pull/push of partitioned files; path/schema/relationship validation. Same-file concurrent changes fail, never merge. No domain replay or generic recovery transaction. No host-local runtime state enters Git. |
+Fixed configuration, producer identity and schema inputs count separately by name.
+A save reads its target's embedded receipt, not a separate journal. The checkout
+registry is read once per operation, not once per repository. Automatic operations
+must not hide enumeration in startup or another helper.
 
 The record-adapter observer measures named reads, directory listings, returned content bytes and installed record bytes. The following budgets include its fixed schema marker; configuration, producer identity and native runtime inputs remain separate. Backend admission is not workspace open or resume.
 
@@ -139,4 +157,4 @@ The record-adapter observer measures named reads, directory listings, returned c
 
 These are adapter counters, not process-wide metrics. They exclude initialization/transport writes, failed partial I/O, filesystem metadata, configuration/native inputs, process starts and lock duration. Do not infer zero cost outside that boundary. Actual card and native open/resume budgets must exercise their real callers; a library context budget is not a card-read budget.
 
-Records and embedded receipts can grow; the contract bounds addressed records, not constant byte size. Counting tests name files and directory listings, including setup and receipt access. Grow unrelated catalogs and history and require identical automatic-operation counts. Cover strict decoding, foreign-partition writes, changed-intent/lost-ack retries after later edits, same-host single-file moves, Pi branch fences, stale Stream membership captures and interrupted atomic replacement. Timing is not the acceptance test.
+Records, embedded receipts and membership history can grow; the contract bounds addressed records, not constant byte size. Counting tests name files and directory listings, including setup and receipt access. Grow unrelated catalogs and history and require identical automatic-operation counts. Cover strict decoding, foreign-partition writes, changed-intent/lost-ack retries after later edits, same-host single-file moves, Pi branch fences, stale Stream membership captures and interrupted atomic replacement. Timing is not the acceptance test.

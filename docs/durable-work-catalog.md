@@ -1,6 +1,9 @@
 # ADR: Durable streams without scratch notes
 
-Status: accepted. The catalog, CLI and Pi integration implement these record boundaries. Native Herdr adaptation is governed by the [work-card projection ADR](native-herdr-work-cards.md); handover remains incomplete. Host-local arrangement restoration is governed by that same native ADR. Examples describe the domain, not a storage API.
+Status: implemented. This record owns field meaning and lifecycle.
+[Record-local operations](record-local-operations.md) owns fixed-host storage and
+transport; [native cards](native-herdr-work-cards.md) owns presentation. Examples
+illustrate logical fields, not record envelopes.
 
 ## Decision and rationale
 
@@ -14,7 +17,7 @@ Streams already provides discovery, lifecycle commands and session resumption. E
 
 A stream represents an effort the user prioritises, parks, finishes and returns to as a unit. Generally, one Herdr workspace represents one stream; its tabs and sessions contribute to that effort. This redesign is one stream, even though several sessions handle different strands. Completing a session's assignment does not complete the stream.
 
-The stream survives closing its workspace and changing machines. Its ID is independent of its title and native workspace identity. Registration is automatic once meaningful work context exists, with an explicit-registration mode available. Agents may refine names and goals while preserving the effort's scope and manual overrides.
+The Stream survives closing its workspace and can be read on other hosts, but its writing host is immutable. Its ID is independent of its title and native workspace identity. Registration is automatic once meaningful work context exists, with an explicit-registration mode available. Agents may refine names and goals while preserving the effort's scope and manual overrides.
 
 Retain `active`, `waiting`, `blocked`, `parked` and `done`. Parked work is unfinished but off the user's current priority list. Archive is an independent visibility flag: any status can be archived, and restoring visibility preserves that status. Archived work remains searchable. Neither archiving nor changing status necessarily closes workspaces or deletes checkouts, although it is expected those will often happen together.
 
@@ -53,7 +56,7 @@ documents:
     path: docs/durable-work-catalog.md
     description: Lifecycle and data-model decisions
     commit: immutable-commit-id
-    source_session_id: ses_lifecycle
+    source_session_id: bc26a2a9-d12f-59cc-9a80-b9efbf910ff1
 
 issues: []
 prs: []
@@ -63,16 +66,17 @@ The naming modes distinguish automatic text from protected manual choices. `goal
 
 Repository aliases belong to the stream. A document's identity is its repository alias and relative path. Its `ref` is a recovery branch or bookmark, not part of its identity or a navigation pin. Optional `commit` records the latest known immutable document revision, not its creation time. `source_session_id` identifies the Session whose checkout supplies the origin fallback. Unknown or uncommitted-only provenance remains absent.
 
-Two references to the same repository/path cannot become different documents by naming different refs. Existing historical operations must not be silently deduplicated to satisfy this rule. Issue and PR references contain URLs and descriptions. Missing local checkouts must not erase references. Non-repository work may have an empty repository map.
+Two references to the same repository/path cannot become different documents by naming different refs. Issue and PR references contain URLs and descriptions. Missing local checkouts must not erase references. Non-repository work may have an empty repository map.
 
 ### Session record
 
 A session belongs to a host and references one stream. Its native identity is `(host_id, harness, harness_session_id)`; the catalog ID locates its record. Resuming the same session on that host reuses the record. A fork with a new native session ID gets another record.
 
 ```yaml
-id: ses_lifecycle
+id: bc26a2a9-d12f-59cc-9a80-b9efbf910ff1
 host_id: host_laptop
 stream_id: str_catalog
+previous_stream_ids: []
 harness: pi
 harness_session_id: native-session-uuid
 title: Lifecycle design
@@ -87,13 +91,16 @@ remaining_short: Agree fields
 
 checkout:
   repository: streams
+  repository_url: https://github.com/wackywendell/streams
   ref: lifecycle-design
   directory_within_checkout: "."
 ```
 
 `title` concisely names the contribution. `recap` describes this conversation's cumulative scope and achievements in a sentence or two. Rewrite it only when the scope or main outcome changes. `state`, labelled Status, describes what it is doing right now in one short sentence. `remaining` describes unfinished work; reports select one concrete next action or blocking decision. These are descriptions, not a growing journal or task backlog. Session text is always report-writable; title modes protect only titles. New fields default to empty text or absent short forms, so older records remain readable without a reset. The session's status concerns its assignment, not whether its process is running or the stream is complete. Recovery uses the named remote ref's pushed state; it does not require a pinned commit.
 
-Each session normally updates only its own record. Persistence must preserve accepted update order, without requiring a per-session counter in the logical model. Stream attachment and ownership checks remain separate from progress reporting. Optional placement observations can preserve last-known tab inclusion and order without storing native pane identities in the catalog.
+Session IDs derive deterministically from host, harness and native ID, as in this example. `stream_id` is current membership; ordered `previous_stream_ids` records ended memberships and distinguishes a return to the same Stream. A move changes only this Session and preserves its work and checkout. A historical membership grants no write authority.
+
+Portable `checkout` can be null, especially after automatic enrollment. When supplied it includes an explicit URL and ref. Host-local directory selection is separate and does not populate it. Each Session normally updates only its own record; progress reporting does not rewrite the Stream.
 
 ### Mapping to Work Cards
 
@@ -123,49 +130,48 @@ Storage may report when a record was last edited. Display this as “record last
 
 Runtime inspection returns process state with its check time, separately from the session description. An unavailable host means unknown, not stopped. A host check-in contains host identity, display label and check-in time: a concrete observation that does not freshen its sessions' descriptions. Publication, fetch and user priority-review times likewise remain distinct from record updates.
 
-## Initial physical data model
+## Physical records and host-local state
 
-The first storage adapter maps these logical records to versioned YAML files. It supports local-only persistence or Git coordination with one shared branch. This layout illustrates the separation between shared records and host-local state, not an API for locating runtime files:
+Current portable records are host-partitioned:
 
 ```text
-<catalog Git repository>/
-  streams/<stream-id>.yaml
-  sessions/<host-id>/<session-record-id>.yaml
-  hosts/<host-id>.yaml
+<catalog>/
+  hosts/<host>/host.yaml
+  hosts/<host>/streams/<stream-id>.yaml
+  hosts/<host>/conversations/<deterministic-session-id>.yaml
 
-<host-local state>/                    # not synchronised
+<host-local state>/                    # not synchronized
   installation identity
-  checkout and saved-session locators
-  native workspace and pane bindings
-  sync bookkeeping
+  checkout registry
+  per-Session directory bindings and exact transcript locators
 ```
 
-Encoding versions, directory conventions and Git commits belong to this adapter, not the logical records. Stable IDs determine filenames, so renaming and archiving do not move files. Git history supplies edit metadata; Git ancestry and locally serialised operations supply save ordering. Filesystem timestamps are not durable across clones and checkouts. Local files hold installation identity, absolute paths, saved-session locations, native ownership/layout information and sync bookkeeping.
+Versioned envelopes hold one logical record and its retry receipts. The physical
+host address is part of identity and is checked against the record. Stable IDs
+keep renames, archive and membership moves from moving files. No saved native
+addresses, arrangement, ownership-transfer period or legacy layout is read.
 
-The adapter must preserve logical identities, relationships and operation semantics, and expose revisions and save outcomes without leaking storage mechanics into domain rules. JSON files, database tables or ticket-system fields could provide another physical mapping. A ticket-backed catalog would still need independent personal lifecycle state, not equate it with a team ticket's status. Only file-backed YAML storage with local-only or Git coordination is in scope now.
+One immutable host writes a Stream and all of its Sessions. Synchronized copies
+are read-only elsewhere. Cross-host participation and handover are unsupported.
+A native workspace move cannot grant permission to write another host's partition.
 
-## Host ownership and resumption
-
-A stream has one owning host at a time. Delayed reports from a previous period of ownership must not become current state, even if the stream has since returned to that same host. The operations therefore need a way to distinguish ownership changes; the exact version token is an internal consistency detail. Old session records remain useful historical context, but their native session IDs are not resumable on another host.
-
-Ownership governs execution and reporting, not where the user may manage the catalog. An advisor elsewhere may request a handover. The handover must check the expected previous owner and activate the new owner only after shared storage confirms the change. With the Git backend, it attempts immediate publication rather than waiting for batched sync. A failed or offline request can remain saved and visibly pending, but grants no execution authority.
-
-This is authority over accepted reports, not a distributed process lock. An unreachable old host may still be running. Handover must expose that uncertainty; it cannot claim to have stopped the old processes. Once the old host learns of the transfer, it stops stream-owned automatic effects. Returning ownership to it requires reattachment under the new ownership.
-
-Opening an effort should reconstruct the previous working arrangement where practical, not always select the last recorded session. The lower-level `resume` operation runs one conversation in the invoking terminal. Tools expose known tabs, sessions and recovery options so the user or advisor can restore the set or choose a subset; unavailable conversations never silently become replacements. Reuse a verified live workspace or saved sessions on the owning host. After cross-host handover, start fresh sessions from the stream's goal and references, its sessions' descriptions, and the last pushed branches or bookmarks. Session titles and descriptions explain each contribution's context.
-
-Recovery does not promise uncommitted edits, synchronised transcripts or exact pane geometry. Launch results must identify what actually opened, including partial failures, rather than encouraging retries that duplicate resources.
+Explicit reopening discovers active same-host Sessions and opens missing ones in
+separate tabs, leaving observed running conversations where they are. Single
+`resume` replaces the invoking terminal with the selected saved conversation.
+Neither restores tab order or exact geometry. Missing launch inputs are errors,
+not permission to start a replacement conversation. Native reuse is best effort,
+with visible uncertainty and rare duplicates rather than a durable launch journal.
 
 ## Management and persistence contract
 
 The `streams` CLI is the primary interface for listing, searching, inspecting and managing work, with human-readable and structured output. Pi tools and any future picker use the same operations. Catalog access does not require a live workspace; runtime actions use the relevant harness or frontend adapter. A custom browser is not needed initially.
 
-The domain layer validates operations against logical records. Operations carry stable IDs, exact targets and relevant preconditions. Independent changes may combine; conflicting intent must be surfaced. Adapters provide revision-checked persistence; domain rules decide whether changed data conflicts. Git sync replays domain operations rather than merging arbitrary YAML, preserving operation identity and rejecting superseded ownership or stale updates. Generated descriptions still need input checks before saving, since save order alone cannot prevent an old inference from finishing late. Session progress updates do not rewrite the stream record.
+Pure apply checks typed captured inputs, manual protection, host and membership. Storage atomically replaces one target and its receipt. Stable operation IDs reject changed-intent reuse and recognize identical retries after intervening edits. Generated descriptions still need input checks because save order alone cannot prevent old inference from finishing late.
 
-With local-only coordination, an ordinary save succeeds at validated store persistence and requires no Git repository or network. With Git coordination, it succeeds after a local commit. Publication is separately pending, failed or confirmed, and unpublished changes remain for later reconciliation. Sync is session-driven or explicitly requested, with batched reports and check-ins; it does not require a host daemon. Cached reads and local work continue offline. Handover is the exception to delayed activation because an unpublished ownership claim cannot authorise another host.
+Both storage modes acknowledge local record persistence without Git or network activity. Explicit sync or Pi lifecycle sync commits and transports files separately. Disjoint host paths combine; same-file concurrent changes fail without text or domain merge. Publication failure cannot undo an accepted save. There are no interval settings, scheduled read projections or background daemon.
 
 ## Boundaries
 
-This decision establishes record meaning and lifecycle, not a complete CLI specification or a claim that every recovery path is implemented. The [README](../README.md) owns current commands and setup. The [sync ADR](catalog-git-sync.md) owns publication and reconciliation; the [Pi ADR](pi-work-card.md) owns evidence and guarded reporting; the [native Herdr ADR](native-herdr-work-cards.md) owns the Work Cards adaptation.
+This decision establishes record meaning and lifecycle, not a complete CLI specification or a claim that every recovery path is implemented. The [README](../README.md) owns current commands and setup. [Record-local operations](record-local-operations.md) owns persistence and file transport; the [Pi ADR](pi-work-card.md) owns evidence and guarded reporting; the [native Herdr ADR](native-herdr-work-cards.md) owns the Work Cards adaptation.
 
-Legacy-format compatibility and an automatic migration subsystem are not required. A one-off migration may preserve real identities, statuses and source references through validated operations without making old scratch notes or Work Cards records a second writable catalog. The retired scratch format contract (`src/_streams/FORMAT.md` at commit `c427e579`) and [checkpoint specification](pi-stream-checkpoint-spec.md) remain historical context, not current workflow instructions.
+The alpha activation used an explicit shutdown, backup and fresh initialization. Runtime code accepts only the current format. There is no migration subsystem, old-record reader or second writable scratch/Work Cards store.

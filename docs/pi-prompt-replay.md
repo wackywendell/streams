@@ -43,9 +43,9 @@ The shared reporting workflow owns the ordering of enrollment, session reporting
 
 The live adapter supplies current attachment checks, cancellation, guarded catalog writes, receipt handling and native updates. The replay adapter supplies frozen evidence and a private working copy. A later helper in the same conversation sees earlier simulated card changes, just as the effort helper normally sees an accepted session report.
 
-Simulated card operations use Rust's pure preview boundary, sharing enrollment construction, normalization and reconciliation over supplied snapshots. They do not open a backend, acquire live ownership, infer checkout bindings or publish. Simulated receipts are labelled as such. Replay tests card proposals and their ordering, not the live guarantees around concurrent edits, workspace claims, publication or native effects.
+Simulated card operations use Rust's pure preview boundary, sharing enrollment construction, normalization and reconciliation over supplied records. They do not open a backend, infer checkout bindings or publish. Simulated receipts are labelled as such. Replay tests proposals and ordering, not live guarantees around concurrent edits, membership moves, publication or native effects.
 
-Capture also requires an explicitly read-only catalog inspection boundary. An ordinary catalog read may establish missing retry evidence, and a Git status check may refresh the index. Neither is acceptable during debug capture. Inspection must validate the catalog and effective authority without repairing bookkeeping, creating missing state or refreshing the index. Captured authority records preserve permission presence but redact live tokens.
+Capture uses an explicitly read-only inspection boundary. It reads durable local records without saving, syncing, creating bookkeeping or refreshing a Git index. The current immutable host partition replaces effective-authority tokens; capture does not fabricate or redact a token absent from that format.
 
 ## Keep incremental behavior as the default
 

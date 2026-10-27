@@ -1,3 +1,0 @@
-# Native cards at the manual catalog cutover
-
-The [catalog cutover](record-local-operations.md#explicit-cutover) is a coordinator-run manual checklist, not tooling: stop all Pi Streams children and card viewers; close Herdr panes whose `tokens.strm_role` is `card`, leaving editors open; move the old catalog, native evidence and runtime associations and fences into a backup; keep `host.json` and the checkout registry, removing its device/inode stamps; initialise the empty catalog with the new binary, reload Pi and re-enroll. The coordinator cleans up stray panes or workspaces by hand. There is no reset/preflight component, migration command, rekeying or legacy reader. This explicit alpha clean break does not relax the uncertainty fences of ordinary runtime actions.

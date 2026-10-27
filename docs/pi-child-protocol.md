@@ -1,10 +1,10 @@
 # One native controller for each Pi session
 
-Active version 2 transport, switched together in Rust and Pi. There is no version-1 adapter. The accepted [observe-and-act redesign](native-observe-and-act.md) replaces native proof requirements below; that runtime simplification is not yet implemented.
-
-The child owns the native queue, lifecycle, observation and existing projection handlers.
-Pure effect planning, membership reconciliation, card following and closure cleanup remain separate work.
-Moving a conversation does not yet change its catalog Stream membership.
+Active version-2 transport, switched together in Rust and Pi. There is no version-1
+adapter. The child owns the native queue, lifecycle, observation, membership
+reconciliation and projection. [Observe and act](native-observe-and-act.md) owns
+effects; [reconciliation](native-context-reconciliation.md) distinguishes matching
+workspace-move events from refreshes that preserve membership.
 
 ## Why change the protocol
 
@@ -24,7 +24,7 @@ Version 2 should carry typed requests for lifecycle changes, user actions and
 catalog operations. It should not carry `argv`, CLI flags or `--expect`. Each
 request's fields should be the inputs to its application operation.
 
-For example, the proposed envelope is:
+For example:
 
 ```json
 {"type":"request","id":7,"request":{"kind":"open_card"}}
@@ -41,8 +41,8 @@ catalog work.
 
 The one-shot CLI should parse its arguments into the same application requests.
 Neither frontend should reconstruct CLI syntax inside the application layer.
-Catalog context, capture inputs, preview, enrollment, apply, listing, workspace
-capture and sync should have typed payloads too. Existing domain request and
+Catalog context, capture inputs, preview, enrollment, apply, listing and sync
+have typed payloads too. Existing domain request and
 result schemas remain the contracts for those operations.
 
 Responses should retain request IDs and distinguish success, failure and a save
@@ -60,8 +60,8 @@ domain submissions; the existing domain codecs still admit those packets.
 Context is bound to the child's Pi session, with an optional Stream selector.
 Capture-input selectors explicitly distinguish inventory, Stream and workspace.
 Preview carries its catalog, action and request as separate fields. Enrollment
-and apply carry their domain request object, not serialized stdin. Workspace
-capture names its target Stream. Sync carries the domain scheduling event.
+and apply carry their domain request object, not serialized stdin.
+Sync is simply `{"kind":"sync"}`, without an event or scheduling policy.
 `set_title_default` accepts only a `stream` or `session` target and an
 `automatic` or `manual` mode. It saves the corresponding global naming setting
 and returns `{"title_defaults":{"stream":"...","session":"..."}}`.
@@ -103,12 +103,11 @@ unsupported versions and positional struct arrays are rejected.
 ## One native queue
 
 The child should serialize native user requests and selected native or catalog
-events through one execution queue. It should own startup, projection, native
-layout capture, verified owner movement and card-closure cleanup. An event
+events through one execution queue. It owns startup, projection, observed owner movement and card following. An event
 selects records to read; its payload is not proof of current topology.
 
 Each handler should collect its concerned inputs, make a pure plan and execute
-that plan through the frontend adapter. The [effect-planning contract](effect-planning.md)
+that plan through the frontend adapter. The [observe-and-act contract](native-observe-and-act.md#plan-actions-then-execute-once)
 applies: compare normalized desired and observed values, without an applied-action
 history or a no-repeat map. Use authoritative replies rather than confirmation
 polling. An acknowledgement alone is enough only when the adapter models that
@@ -126,7 +125,7 @@ The extension should still start one child per Pi session with the selected
 binary, environment, working directory and plugin root. A session switch ends
 the old child. The first line should be `{"type":"ready","protocol":2}`.
 Readiness means the transport can accept requests; it should not itself trigger
-native observation, projection, capture or opening.
+native observation, projection or opening.
 
 An eligible interactive Pi session should send `session_started` before startup
 sync. Only that lifecycle input may consider configured automatic opening.
@@ -136,8 +135,8 @@ enable native work for those callers.
 
 After a crash, a child whose native lifecycle was enabled should send `attach`
 before new requests. Attachment may restore subscriptions, observe the owner
-and refresh projections. It must not repeat automatic opening or startup
-catch-up follow. Catalog requests need not await the attachment outcome.
+and refresh projections. It must not repeat automatic opening. It compares current card and Pi placement
+and follows an existing separated card; it keeps no movement baseline. Catalog requests need not await the attachment outcome.
 Lifecycle errors should warn without disabling catalog operations.
 
 The extension should retain the existing limit of one automatic child restart
@@ -162,7 +161,7 @@ fixed-membership contract.
 The child may return display facts and a desired Pi session name. Those are UI
 outputs, not caller authority to send back with the next native action. Pi may
 apply the desired name through its checked setter, but must not decide that a
-view change calls for another native projection or capture. Enabled title sync
+view change calls for another native projection. Enabled title sync
 uses the authoritative catalog title; the protocol should have no naming
 provenance or reclaim operation.
 
@@ -186,6 +185,6 @@ protocol version should fail the connection, not select a fallback. Version 2
 must replace the CLI-vector transport and the scope-to-`--expect` loop together,
 including their fakes and tests. There should be no version-1 adapter.
 
-Native opening, card lifetime, following and duplicate handling follow the
+Native opening, card lifetime, following and duplicate handling use the
 [observe-and-act decision](native-observe-and-act.md), not the retired receipt
 and pair-publication protocol. The typed transport does not carry proof objects.

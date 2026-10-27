@@ -15,7 +15,7 @@ mise run build
 
 The examples below use `streams`; from this checkout, substitute `./target/debug/streams`. If `CARGO_TARGET_DIR` is set, use its `debug/streams` instead. Use isolated XDG directories when testing; commands otherwise use your normal configuration and catalog.
 
-The Pi extension selects this checkout's debug Rust build by default. `STREAMS_BIN_PATH` can select another absolute Rust executable. `STREAMS_RUST_BIN` remains an alias; if both are set, they must identify the same executable. There is no Python or `PATH` fallback. Loading this checkout does not update installed tools; native PTY and live-platform acceptance are still required before a trial.
+The Pi extension selects this checkout's debug Rust build by default. `STREAMS_BIN_PATH` can select another absolute Rust executable. There is no Python or `PATH` fallback. Loading this checkout does not update installed tools or reload running processes.
 
 ## Initialise a catalog
 
@@ -36,11 +36,9 @@ streams config
 streams config get catalog.root
 streams config set catalog.root ~/work-catalog
 streams config set frontend.mode auto
-streams config set sync.stream_seconds 300
-streams config set sync.session_seconds 3600
 ```
 
-The supported settings are `catalog.root`, `frontend.mode`, `sync.stream_seconds` and `sync.session_seconds`. Defaults are `$XDG_DATA_HOME/streams/catalog`, `auto`, 300 seconds (M) and 3,600 seconds (N). Intervals accept finite nonnegative numbers; zero makes every eligible event due. N also controls automatic read refresh.
+The supported settings are `catalog.root`, `frontend.mode`, `naming.stream` and `naming.session`. Defaults are `$XDG_DATA_HOME/streams/catalog`, `auto` and automatic title generation for both record types. Sync runs explicitly or at Pi startup/shutdown, not on a timer.
 
 Configuration is host-local at `$XDG_CONFIG_HOME/streams/config.json`; each CLI process reads it anew. Unset XDG variables use `~/.local/share` and `~/.config`. Sync strategy, remote and branch belong to catalog setup, not these settings. Changing `catalog.root` selects another catalog; initialise it before use.
 
@@ -74,9 +72,9 @@ streams check
 
 Search is a case-insensitive literal substring of the title or goal. It has no operators or query language. Repeat `--status` to select several statuses. `list` excludes archived streams unless you use `--archived` or `--all`.
 
-References accept an exact ID, an exact title or a unique title substring. IDs take precedence. Ambiguous references fail and report candidate IDs; they never select the first result.
+References accept an exact ID, an exact title or a unique title substring. IDs take precedence; UUID prefixes are not supported. Ambiguous references fail and report candidate IDs; they never select the first result.
 
-`show` prints the complete logical stream and its sessions as YAML. `--json` gives the same structure. Sharing diagnostics sit beside the saved records, not inside them. `check` validates saved records, relationships and host-local runtime state. With Herdr active, it also checks live workspace and Work Card pairings. It does not probe remote branches or require saved conversations to be running.
+`show` prints the complete logical stream and its sessions as YAML. `--json` gives the same structure. `check` validates saved records and relationships. It does not require saved conversations to be running or probe remote branches.
 
 ## Edit work
 
@@ -118,7 +116,7 @@ streams session update SESSION_RECORD_ID --status done
 
 Attaching records an existing conversation; it does not start it. A session has one concise title, a lifecycle status, a cumulative `recap`, current `state` (labelled Status) and `remaining` work. Each text has a matching `_short` form. Reports prefer 1–2 words and fewer than 20 characters, with a 24-character maximum. Session text stays report-writable; only titles have automatic/manual/inherit modes. All 6 text fields accept `--FIELD`, `--FIELD-file` and `--clear-FIELD` (use hyphens in flag names). Clearing full text saves an empty string; clearing a short form saves null. Its native identity belongs to one host. The owning host must authorise attachments and session updates. Finishing a session does not finish the stream.
 
-For a portable checkout reference, add `--repository ALIAS --ref BRANCH` when attaching. `--cwd` records the local directory. Session references also accept `HOST_ID/SESSION_RECORD_ID` when needed to disambiguate IDs.
+For a portable checkout reference, add `--repository ALIAS --ref BRANCH` when attaching. `--cwd` records the local directory. Session references also accept `HOST_ID/SESSION_RECORD_ID` when needed to disambiguate IDs. Attach creates a record; it cannot move an already enrolled Session. There is no Session-move CLI command.
 
 ## Pi work cards
 
@@ -167,13 +165,13 @@ Capture, preparation and inspection stay local. Run and replay send evidence to 
 
 ## Native Herdr work cards
 
-Work Cards history is retained through `e7d74ce22f95893fa8eed570ef2e6a14d61f74bd`. Its surviving support code and design documents live under [`integrations/herdr-work-cards`](integrations/herdr-work-cards); the duplicate native implementation is retired. The [native projection decision](docs/native-herdr-work-cards.md) identifies which behavior carries forward and which legacy authority is superseded.
+Work Cards history is retained through `e7d74ce22f95893fa8eed570ef2e6a14d61f74bd`. Its surviving support code and package documentation live under [`integrations/herdr-work-cards`](integrations/herdr-work-cards); the duplicate native implementation is retired. The [native projection decision](docs/native-herdr-work-cards.md) identifies which behavior carries forward and which legacy authority is superseded.
 
-The root Pi extension delegates native effects and the terminal card to Rust after exact Herdr/Pi attestation. TypeScript retains Pi events, inline UI and the Pi session-name setter. Neither boundary runs a separate summarizer or writes another catalog. The earlier [cutover plan](plans/catalog-cutover.md) describes the Python installation, not activation of this Rust branch.
+The root Pi extension delegates native effects and the terminal card to Rust. It observes current Herdr/Pi identity and plans effects from that pass; there is no saved caller proof or native launch journal. TypeScript retains Pi events, branch admission, inline UI and the Pi session-name setter. The native card runs no separate summarizer and writes no second catalog.
 
 Native presentation settings remain in `$PI_CODING_AGENT_DIR/work-cards.json`, separate from reporting settings. `workspace_startup` selects automatic or manual pane startup. `workspace_naming`, `tab_naming` and `session_naming` are independent booleans, each defaulting to `true` regardless of startup; `null` is invalid. Enabled surfaces mirror saved Streams titles. Disabling outgoing synchronization stops Streams from renaming that surface; Pi name edits remain independently controlled by `pi_name_edits`. `document_command` selects a trusted editor command, otherwise `$EDITOR` or `less` is used. Removed inference settings are rejected; see the [presentation configuration](integrations/herdr-work-cards/README.md#presentation-configuration).
 
-Closing with `q` or `/streams pane close` is display-only and suppresses automatic reopening, including after reload. `/streams pane` explicitly reopens it. An uncertain launch remains blocked for inspection, even after an explicit request.
+Closing with `q` or `/streams pane close` is display-only. Within that Pi lifetime, a closed card stays closed until `/streams pane` explicitly reopens it. A Pi start/resume can open it automatically; a Rust child restart cannot. An uncertain launch warns and ends the pass. A later explicit request observes again, with best-effort reuse rather than an exactly-once guarantee.
 
 ### Select local checkouts
 
@@ -189,9 +187,11 @@ streams checkout resolve https://github.com/you/project.git
 streams checkout move CHECKOUT_ID ~/code/project-moved
 ```
 
-`--repository` on `checkout register` is an exact URL; on `session directory` it is the Stream's repository alias. A Session's selected checkout wins for its repository. Set a default explicitly for documents in other repositories. Reads never infer bindings from Git remotes, create checkouts or change defaults. A moved checkout keeps its ID; `session directory --cwd PATH` can replace an obsolete directory selection.
+`--repository` on `checkout register` is an exact URL; on `session directory` it is the Stream's repository alias. A Session's selected checkout wins for its repository. Set a default explicitly for documents in other repositories. Reads never infer bindings from Git remotes, create checkouts or change defaults. A moved checkout keeps its ID; `session directory --cwd PATH` can replace an obsolete directory selection. Register its URL first, or pass `--repository ALIAS` using an existing Stream repository. Without either, a discovered root has no inferred URL binding.
 
-Documents prefer the viewing Session's current working file, including local edits. Optional `commit` and `source_session_id` fields record provenance; they do not pin that working file. When it is unavailable, the card can use a known source checkout or recorded revision. Use Shift+letter to choose among available sources. The CLI extracts revision contents only when opened. Missing files or mappings remain visible errors and never remove the shared reference. Host-local checkout registrations live under `$XDG_STATE_HOME/streams/checkouts`.
+Directory selection is host-local and does not populate the portable `session.checkout`. Automatic enrollment can therefore have a null `session.checkout` while `checkouts[]` contains valid local mappings. Explicit attach with `--repository` and `--ref` can populate portable metadata; directory selection cannot invent a ref.
+
+The current native card opens the viewing Session's resolved working file, including local edits. Optional `commit` and `source_session_id` record provenance, not a navigation pin. The card does not currently offer a source/revision chooser. Missing files or mappings remain visible errors and never remove the shared reference. Host-local checkout registrations live under `$XDG_STATE_HOME/streams/checkouts`.
 
 ## Open or resume work
 
@@ -208,21 +208,19 @@ streams resume --current
 
 `start` creates a stream and opens it. If opening fails, the stream remains saved and the result reports its ID. Retry `open` with that ID instead of creating another stream.
 
-Herdr `open` focuses an existing verified workspace, or restores the last recorded agent-tab arrangement after it closes. It preserves grouping, order and manual labels, excluding done and parked Sessions by default. `--session` explicitly selects a conversation, including done or parked work. Existing tabs and agents are never closed automatically. Without a saved arrangement, a sole unfinished local Session is restored; several candidates produce a shell and a request to choose.
+Herdr `open` discovers active same-host Sessions and opens missing conversations in separate tabs in an observed or new Stream workspace. Already-observed running Sessions stay where they are and their locations are reported. `--session` explicitly selects one conversation, including inactive work. No tab order, pane geometry or saved arrangement is restored. Existing tabs and agents are never closed automatically.
 
-`resume` replaces the current terminal process with one recorded Pi, Codex or Claude conversation. Multiple eligible Sessions require `--session`; it does not reconstruct or focus a workspace. Both paths refuse a duplicate live conversation and validate saved files. Missing or ambiguous files are reported, not replaced with fresh conversations. CMUX supports single-session opening, not arrangement reconstruction.
+`resume` replaces the current terminal process with one recorded Pi, Codex or Claude conversation. Multiple eligible Sessions require `--session`; it does not reconstruct or focus a workspace. Both paths refuse a duplicate live conversation and validate saved files. Missing or ambiguous files are reported, not replaced with fresh conversations. CMUX supports single-session opening, not multi-Session reopening.
 
-Capture the current verified Herdr arrangement with `streams workspace capture STREAM_ID`. Pi also captures after an attested native refresh. Capture does not enroll conversations or save progress. Restoration does not recreate unrelated shell/editor tabs or exact pane geometry.
-
-`--current` uses the invoking session or workspace's explicit association. It never infers a stream from a title, working directory or another client's GUI focus. `--frontend` chooses an adapter independently of the target. An association on another frontend endpoint or a partial open requires inspection; Streams does not automatically relaunch or roll back native resources. If a creation response is lost, a saved pending-attempt file blocks another launch. Keep that evidence until you have reconciled native state.
+`--current` uses the invoking Session or workspace's explicit association. It never infers a Stream from a title, working directory or another client's GUI focus. `--frontend` chooses an adapter independently of the target. Native reuse uses one current observation. A failed or lost reply warns and stops; no saved attempt is replayed. Rare duplicate workspaces, editors or conversations can require manual cleanup.
 
 An explicit `--cwd` updates the selected session's local directory mapping, including on resume and workspace reuse. Reusing a workspace does not change an existing terminal's working directory.
 
-Local directories and native bindings live under `$XDG_STATE_HOME/streams/catalogs/<catalog-path-hash>`, not in the shared catalog. The default state root is `~/.local/state`. Opening requires effective authority for this host. Ownership handover and cross-host session reattachment are not implemented.
+Local directories and native bindings live under `$XDG_STATE_HOME/streams/catalogs/<catalog-path-hash>`, not in the shared catalog. The default state root is `~/.local/state`. Opening requires the Stream's immutable host to match this host. Ownership handover and cross-host Session reattachment are unsupported.
 
 ## Understand saving and sharing
 
-A local-only save succeeds when storage persists it. A Git save succeeds after a local commit. Results report local saving separately from publication; an offline push does not undo a successful edit. Unpublished commits remain for later sync:
+A save succeeds when its target record and embedded receipt are persisted locally, for either storage mode. Git commits and publication happen separately:
 
 ```sh
 streams sync --json
@@ -230,15 +228,13 @@ streams list --refresh
 streams show STREAM_ID --refresh --json
 ```
 
-Without a remote, Git saves report `local="committed"` and `sharing="local-only"`. Reads and lifecycle syncs stay local, report freshness `local-only` and create no publication clocks. Adding a Git remote outside Streams fails closed; it does not enable publication.
+With `none`, sync validates records without Git or network access. Git without a remote checkpoints local producer changes and reports local-only sharing. With a remote, sync combines disjoint host-partitioned files and publishes. Concurrent changes to the same file stop sync; it never merges record fields or replays domain operations.
 
-With a configured remote, the Git coordinator checks publication intervals after successful and no-change writes. Stream edits, starts and attachments use M, initially 5 minutes. Session reports use N, initially 60 minutes, or M while stream edits are pending. Explicit `sync` bypasses those intervals and the failed-attempt cooldown, not safety checks. There is no background daemon.
+Ordinary reads are local. Explicit `--refresh` runs sync before reading, including publication of pending local files; it is not a remote-only display projection. There are no timed refreshes, publication intervals, cooldowns or background daemon.
 
-Pi session startup runs `streams sync --event start --json`, respecting M and the cooldown. Shutdown cancels inference and awaits `streams sync --event shutdown --json`, bypassing timing without generating a summary. Both lifecycle calls have a 10-second total deadline covering the CLI and its child process group. Ordinary CLI commands retain their library timeouts. Failed or uncertain lifecycle syncs produce a warning and a durable `stream-catalog-sync` Pi entry; they do not undo local saves. A timeout can leave uncertain publication or interrupted adoption: run `streams sync` to inspect the outcome, and follow the [manual repair guidance](docs/catalog-sync-usage.md#inspecting-interrupted-saves-and-manual-changes) if required.
+Pi startup and shutdown request the same sync operation through the Rust child. Shutdown cancels inference first and does not generate a report. Lifecycle requests have a 10-second total deadline; ordinary Git subprocesses retain a 30-second deadline. Failures warn and produce a durable `stream-catalog-sync` Pi entry without undoing local saves.
 
-`list` and `show` refresh shared state when the read interval expires, or when you pass `--refresh`. Reads never push. A refreshed view can combine confirmed remote changes with pending local edits without rewriting local records. Writes and runtime authority still use saved local state. Run `streams sync` before editing or opening a record visible only in that refreshed view.
-
-If reconciliation finds a conflict, reads retain the complete local view and expose the confirmed alternative in sharing diagnostics. The whole outgoing batch stays blocked. Failed refreshes report stale data; uncertain publication and interrupted local saves remain visible rather than being treated as safe retries.
+A lost reply may leave an uncertain save or push. Preserve accepted receipts and inspect the actual state rather than blindly retrying. See [saving and sync](docs/catalog-sync-usage.md) for outcomes and manual inspection.
 
 ## Develop
 
@@ -249,9 +245,9 @@ mise run test:fast
 mise run test
 ```
 
-Rust tests cover the catalog, CLI, persistence, Git recovery, native effects, terminal card and embedded Temper specifications. Frozen wire and renderer fixtures remain after retiring the Python and duplicate TypeScript implementations. Node tests cover the Pi boundary, frozen helper requests, session names, configuration and subprocess shutdown. Real Rust CLI acceptance exercises checkout integration, two-host Git publication, offline saves and fresh-process recovery.
+Rust tests cover record-local saves, captured reports, file transport, CLI, native effects and the terminal card. Frozen wire and renderer fixtures remain after retiring the Python and duplicate TypeScript implementations. Node tests cover the Pi boundary, frozen helper requests, session names, configuration and subprocess shutdown. Real Rust CLI acceptance exercises checkout integration, two-host Git publication, offline saves and fresh-process recovery.
 
-`test:fast` omits Git recovery and the full Temper cascade; run `test` before a trial or release. Tests use isolated homes, fake native endpoints and deterministic model responses, not live credentials or inference. See [Contributing](CONTRIBUTING.md) for requirements and focused commands, and the [Rust runtime decision](docs/rust-temper-architecture.md) for the cutover boundary.
+`test:fast` is a development gate, not full acceptance; run `test` before integration, a trial or release. Tests use isolated homes, fake native endpoints and deterministic model responses, not live credentials or inference. See [Contributing](CONTRIBUTING.md) for requirements and focused commands, and the [Rust runtime decision](docs/rust-temper-architecture.md) for the cutover boundary.
 
 ## License
 
