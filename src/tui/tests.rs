@@ -152,7 +152,7 @@ fn lines(buffer: &Buffer) -> Vec<String> {
         .collect()
 }
 
-#[derive(serde::Serialize, Deserialize)]
+#[derive(Deserialize)]
 struct CardGolden {
     name: String,
     lines: Vec<String>,

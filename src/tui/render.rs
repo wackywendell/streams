@@ -517,8 +517,9 @@ pub(super) fn render(
             rows.push(Row::Text(format!("… {hidden} more; enlarge pane"), DIM));
         }
         let mut boundaries = Vec::new();
-        if work_end > goal_end && rows.len() > work_end {
-            boundaries.push(work_end);
+        let body_end = work_end.max(goal_end);
+        if body_end > 0 && rows.len() > body_end {
+            boundaries.push(body_end);
         }
         if goal_end > 0 && work_end > goal_end {
             boundaries.push(goal_end);

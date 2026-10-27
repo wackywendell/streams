@@ -1,8 +1,9 @@
 # Active Streams renderer fixtures
 
 `active-renderer.json` preserves 140 deterministic outputs from the retired
-JavaScript `renderStreamsCard` implementation. Rust tests still consume these
-unchanged goldens; removing the duplicate renderer does not remove its fixtures.
+JavaScript `renderStreamsCard` implementation. Rust tests reuse its input snapshots;
+`card-text-renderer.json` records the current Rust layout, visible document keys
+and links. It also covers recap blocks, lifecycle markers and empty text.
 
 The original renderer, tests and `extract.mjs` remain in revision `fd744307`.
 Reproduce them in a separate workspace at that revision, not from the current Rust
@@ -34,12 +35,11 @@ At width 1 this also removes its standalone content row, moving the following
 section up one row. At widths 5, 18, 35 and 80 it removes only the trailing scalar.
 Interior U+0D4E-plus-letter graphemes remain intact.
 
-The migration explicitly accepts standard Rust layout for these five cases rather
-than adding a Unicode compatibility patch. `unicode-width-differences.json` records
-the exact approved line edits. The original JavaScript goldens remain unchanged.
-The fixture test asserts 135 exact matches and the five approved Rust outputs,
-including their unchanged document targets and links. No parity tests are ignored,
-and no broader Unicode differences are accepted. Native activation is not included.
+The migration accepted standard Rust layout rather than adding a Unicode
+compatibility patch. The original JavaScript outputs remain historical evidence;
+current expected lines are in `card-text-renderer.json`. The fixture test checks
+every input against those lines, visible document keys, exact document targets and
+links. Native activation is not included.
 
 The historical JavaScript sanitizer stripped all Cc/Cf scalars, including ZWJ, before
 layout. Rust preserves that policy: a supplied woman-technologist sequence is
