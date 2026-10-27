@@ -13,12 +13,10 @@ pub struct StorageError {
     kind: StorageErrorKind,
 }
 
-/// A stale-revision rejection never writes, so it cannot also be uncertain.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum StorageErrorKind {
     Definite,
     Uncertain,
-    RevisionConflict,
 }
 
 impl StorageError {
@@ -38,22 +36,8 @@ impl StorageError {
         }
     }
 
-    /// Constructs a definite rejection of a save based on stale revisions.
-    pub fn revision_conflict(message: impl Into<String>) -> Self {
-        Self {
-            message: message.into(),
-            kind: StorageErrorKind::RevisionConflict,
-        }
-    }
-
-    pub fn kind(&self) -> StorageErrorKind {
-        self.kind
-    }
     pub fn is_uncertain(&self) -> bool {
         self.kind == StorageErrorKind::Uncertain
-    }
-    pub fn is_revision_conflict(&self) -> bool {
-        self.kind == StorageErrorKind::RevisionConflict
     }
 
     // Once replacement occurred, any subsequent failure must preserve that ambiguity.

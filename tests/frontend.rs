@@ -7,10 +7,8 @@ use std::collections::{BTreeMap, VecDeque};
 use std::os::unix::process::ExitStatusExt;
 use std::path::Path;
 use std::sync::{Arc, Mutex};
-use streams_temper::frontend::cmux::{CmuxClient, CmuxPresentation};
-use streams_temper::frontend::herdr::{
-    HerdrClient, HerdrEndpoint, HerdrPresentation, HerdrTopology,
-};
+use streams_temper::frontend::cmux::CmuxClient;
+use streams_temper::frontend::herdr::{HerdrClient, HerdrEndpoint, HerdrTopology};
 use streams_temper::frontend::*;
 use streams_temper::process::{ProcessError, ProcessOutput, ProcessRequest, ProcessRunner};
 
@@ -284,7 +282,7 @@ fn cmux_rejects_malformed_incomplete_duplicate_and_ambiguous_inventory() {
 }
 
 #[test]
-fn cmux_create_focus_rename_and_presentation_follow_native_contracts() {
+fn cmux_create_focus_and_rename_follow_native_contracts() {
     let fake = Arc::new(FakeRunner::default());
     let client = cmux(&fake, &[]);
     fake.json(json!({"workspace_id":"new-id","surface_id":"surface-1"}));
@@ -314,20 +312,6 @@ fn cmux_create_focus_rename_and_presentation_follow_native_contracts() {
     fake.json(cmux_inventory());
     fake.bytes("");
     client.rename(&target, "Renamed").unwrap();
-    fake.json(cmux_inventory());
-    for _ in 0..3 {
-        fake.bytes("");
-    }
-    client
-        .update_presentation(
-            &target,
-            &CmuxPresentation {
-                title: "Title".into(),
-                description: "description\nlinks".into(),
-                color: "Green".into(),
-            },
-        )
-        .unwrap();
     let commands = fake.commands();
     assert_eq!(
         commands[2],
@@ -343,42 +327,6 @@ fn cmux_create_focus_rename_and_presentation_follow_native_contracts() {
             "rename",
             "--title",
             "Renamed"
-        ])
-    );
-    assert_eq!(
-        commands[6],
-        expected(&[
-            "workspace-action",
-            "--workspace",
-            "workspace:1",
-            "--action",
-            "rename",
-            "--title",
-            "Title"
-        ])
-    );
-    assert_eq!(
-        commands[7],
-        expected(&[
-            "workspace-action",
-            "--workspace",
-            "workspace:1",
-            "--action",
-            "set-description",
-            "--description",
-            "description\nlinks"
-        ])
-    );
-    assert_eq!(
-        commands[8],
-        expected(&[
-            "workspace-action",
-            "--workspace",
-            "workspace:1",
-            "--action",
-            "set-color",
-            "--color",
-            "Green"
         ])
     );
     fake.exhausted();
@@ -440,38 +388,6 @@ fn creation_errors_preserve_uncertainty_raw_resources_and_never_retry() {
 }
 
 #[test]
-fn presentation_failure_retains_acknowledged_and_uncertain_effects() {
-    let fake = Arc::new(FakeRunner::default());
-    let client = cmux(&fake, &[]);
-    fake.json(cmux_inventory());
-    fake.bytes("");
-    fake.uncertain();
-    let error = client
-        .update_presentation(
-            &reference(&client, "uuid-1"),
-            &CmuxPresentation {
-                title: "Title".into(),
-                description: "Description".into(),
-                color: "Green".into(),
-            },
-        )
-        .unwrap_err();
-    assert_eq!(
-        error
-            .commands
-            .iter()
-            .map(|c| &c.outcome)
-            .collect::<Vec<_>>(),
-        vec![
-            &CommandOutcome::ReadOnly,
-            &CommandOutcome::Acknowledged,
-            &CommandOutcome::Uncertain
-        ]
-    );
-    assert_eq!(fake.commands().len(), 3);
-}
-
-#[test]
 fn finite_timeout_and_launch_validation_precede_any_transport_call() {
     let fake = Arc::new(FakeRunner::default());
     let herdr_fake = Scripted::new();
@@ -520,55 +436,6 @@ fn duplicate_native_identity_fields_fail_closed_with_uncertain_effect_evidence()
     assert_eq!(error.commands[0].outcome, CommandOutcome::Uncertain);
     assert_eq!(response(&error.commands[0]), reply);
     assert_eq!(fake.server.methods(), ["ping", "workspace.create"]);
-    fake.exhausted();
-}
-
-#[test]
-fn invalid_presentation_is_rejected_before_any_native_command() {
-    let fake = Arc::new(FakeRunner::default());
-    let client = cmux(&fake, &[]);
-    let error = client
-        .update_presentation(
-            &reference(&client, "uuid-1"),
-            &CmuxPresentation {
-                title: "Valid".into(),
-                description: "Invalid\0description".into(),
-                color: "blue".into(),
-            },
-        )
-        .unwrap_err();
-    assert!(error.commands.is_empty());
-    assert!(fake.commands().is_empty());
-    fake.exhausted();
-
-    let fake = Scripted::new();
-    let client = herdr(&fake, &[]);
-    for (key, value) in [
-        ("", "value"),
-        (" ", "value"),
-        ("state", ""),
-        ("state", "bad\0value"),
-        ("state", "bad\nvalue"),
-    ] {
-        let error = client
-            .update_presentation(
-                &reference(&client, "w1"),
-                &HerdrPresentation {
-                    title: "Valid".into(),
-                    tokens: context(&[(key, value)]),
-                },
-            )
-            .unwrap_err();
-        assert!(error.commands.is_empty());
-    }
-    assert!(
-        client
-            .resolve(WorkspaceSelector::Explicit(" "))
-            .unwrap_err()
-            .commands
-            .is_empty()
-    );
-    assert_eq!(fake.server.methods(), ["ping"]);
     fake.exhausted();
 }
 
@@ -704,7 +571,8 @@ fn herdr_missing_caller_mismatched_pane_and_workspace_fail_closed() {
     ] {
         let fake = Scripted::new();
         let client = herdr(&fake, &values);
-        assert!(client.current_pane().is_err());
+        assert!(client.resolve(WorkspaceSelector::Caller).is_err());
+        assert!(client.resolve(WorkspaceSelector::Explicit(" ")).is_err());
         assert_eq!(fake.server.methods(), ["ping"]);
     }
     let fake = Scripted::new();
@@ -714,7 +582,7 @@ fn herdr_missing_caller_mismatched_pane_and_workspace_fail_closed() {
         "pane",
         snapshot()["panes"][0].clone(),
     ));
-    assert!(client.current_pane().is_err());
+    assert!(client.resolve(WorkspaceSelector::Caller).is_err());
     fake.result(result(
         "workspace_info",
         "workspace",
@@ -808,7 +676,7 @@ fn herdr_bad_creation_receipts_keep_uncertain_resource_evidence() {
 }
 
 #[test]
-fn herdr_focus_rename_and_silent_metadata_contracts_and_partial_effects() {
+fn herdr_focus_and_rename_contracts_and_uncertain_effects() {
     let fake = Scripted::new();
     let client = herdr(&fake, &[]);
     let target = reference(&client, "w1");
@@ -820,46 +688,20 @@ fn herdr_focus_rename_and_silent_metadata_contracts_and_partial_effects() {
         native_workspace("w1", "Title"),
     ));
     client.rename(&target, "Title").unwrap();
-    fake.result(result(
-        "workspace_info",
-        "workspace",
-        native_workspace("w1", "Title"),
-    ));
-    fake.result(json!({"type":"ok"}));
-    let presentation = HerdrPresentation {
-        title: "Title".into(),
-        tokens: context(&[("stream_slug", "an-effort"), ("stream_state", "Doing it")]),
-    };
-    client.update_presentation(&target, &presentation).unwrap();
-    let rename = (
-        "workspace.rename".to_owned(),
-        json!({"workspace_id":"w1","label":"Title"}),
-    );
     assert_eq!(
         fake.server.requests()[1..],
         [
             ("workspace.focus".into(), json!({"workspace_id":"w1"})),
-            rename.clone(),
-            rename,
             (
-                "workspace.report_metadata".into(),
-                json!({"workspace_id":"w1","source":"streams",
-                    "tokens":{"stream_slug":"an-effort","stream_state":"Doing it"}})
+                "workspace.rename".into(),
+                json!({"workspace_id":"w1","label":"Title"})
             ),
         ]
     );
-    fake.result(result(
-        "workspace_info",
-        "workspace",
-        native_workspace("w1", "Title"),
-    ));
-    // The reply never arrives: the metadata effect may have happened.
     fake.reply(Reply::Raw(Vec::new()));
-    let error = client
-        .update_presentation(&target, &presentation)
-        .unwrap_err();
-    assert_eq!(error.commands[0].outcome, CommandOutcome::Acknowledged);
-    assert_eq!(error.commands[1].outcome, CommandOutcome::Uncertain);
+    let error = client.rename(&target, "Title").unwrap_err();
+    assert_eq!(error.commands.len(), 1);
+    assert_eq!(error.commands[0].outcome, CommandOutcome::Uncertain);
     fake.exhausted();
 }
 

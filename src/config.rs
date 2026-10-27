@@ -133,11 +133,6 @@ impl Config {
         self.state_home.join("streams/checkouts")
     }
 
-    /// Runtime identity is the resolved catalog path, not frontend selection or inode.
-    pub fn runtime_state_dir(&self) -> Result<PathBuf> {
-        self.runtime_state_dir_for(&self.load()?.catalog_root)
-    }
-
     /// Bind runtime state to an already-open catalog instead of reloading mutable settings.
     pub fn runtime_state_dir_for(&self, root: &Path) -> Result<PathBuf> {
         let root = resolve_path(root)?;
@@ -348,9 +343,6 @@ pub struct ConfigLock<'a> {
 impl ConfigLock<'_> {
     pub fn settings(&self) -> Result<Settings> {
         self.config.load()
-    }
-    pub fn existing_host_identity(&self) -> Result<HostIdentity> {
-        self.config.host_identity()
     }
     pub fn set(&mut self, key: ConfigKey, text: &str) -> Result<()> {
         let value = self.config.parse_value(key, text)?;

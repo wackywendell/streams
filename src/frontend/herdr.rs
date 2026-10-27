@@ -138,14 +138,6 @@ pub struct HerdrCreatedWorkspace {
 }
 
 /// Raw, caller-prepared native metadata tokens. Projection/normalization policy
-/// belongs to the runtime; the adapter neither invents nor truncates values.
-#[derive(Debug, Clone)]
-pub struct HerdrPresentation {
-    pub title: String,
-    pub tokens: BTreeMap<String, String>,
-}
-
-/// One pinned protocol-22 endpoint per process. Herdr closes ordinary request
 /// sockets after each reply, so each request connects; only subscriptions persist.
 #[derive(Clone)]
 pub struct HerdrClient {
@@ -405,11 +397,6 @@ impl HerdrClient {
         Ok(pane)
     }
 
-    /// Exact caller observation; it does not attest a saved conversation or owner.
-    pub fn current_pane(&self) -> Result<HerdrPane, FrontendError> {
-        self.pane(&mut Operation::default())
-    }
-
     pub fn session_snapshot(&self) -> Result<Value, FrontendError> {
         self.read_snapshot(&mut Operation::default())
     }
@@ -485,27 +472,6 @@ impl HerdrClient {
         if renamed.id != reference.native_id {
             return Err(op.error("Herdr renamed workspace ID mismatch"));
         }
-        op.acknowledge();
-        Ok(())
-    }
-
-    /// Rename then publish the native metadata hint, retaining partial evidence.
-    pub fn update_presentation(
-        &self,
-        reference: &WorkspaceRef,
-        presentation: &HerdrPresentation,
-    ) -> Result<(), FrontendError> {
-        check_ref(self, reference)?;
-        nonempty(&presentation.title, "workspace title")?;
-        for (key, value) in &presentation.tokens {
-            nonempty(key, "metadata token")?;
-            nonempty(value, "metadata token")?;
-        }
-        let mut op = Operation::default();
-        self.rename_native(&mut op, reference, &presentation.title)?;
-        let params = json!({"workspace_id":reference.native_id,"source":"streams",
-            "tokens":presentation.tokens});
-        self.call(&mut op, "workspace.report_metadata", params, true)?;
         op.acknowledge();
         Ok(())
     }

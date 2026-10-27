@@ -21,14 +21,6 @@ impl CmuxEndpoint {
     }
 }
 
-/// CMUX-only presentation. It is not interchangeable with Herdr metadata.
-#[derive(Debug, Clone)]
-pub struct CmuxPresentation {
-    pub title: String,
-    pub description: String,
-    pub color: String,
-}
-
 #[derive(Clone)]
 pub struct CmuxClient {
     transport: Transport,
@@ -205,46 +197,6 @@ impl CmuxClient {
             .into_iter()
             .find(|v| v.workspace.reference == *reference)
             .ok_or_else(|| op.error("exact CMUX workspace ID not found"))
-    }
-
-    /// Applies native presentation in Python's rename/description/color order.
-    pub fn update_presentation(
-        &self,
-        reference: &WorkspaceRef,
-        presentation: &CmuxPresentation,
-    ) -> Result<(), FrontendError> {
-        nonempty(&presentation.title, "workspace title")?;
-        nonempty(&presentation.color, "workspace color")?;
-        if presentation.description.contains('\0') {
-            return Err(FrontendError::invalid("workspace description contains NUL"));
-        }
-        let mut op = Operation::default();
-        let target = self.target(&mut op, reference)?;
-        for (action, flag, value) in [
-            ("rename", "--title", &presentation.title),
-            (
-                "set-description",
-                "--description",
-                &presentation.description,
-            ),
-            ("set-color", "--color", &presentation.color),
-        ] {
-            op.run(
-                &self.transport,
-                &args(&[
-                    "workspace-action",
-                    "--workspace",
-                    &target.display_ref,
-                    "--action",
-                    action,
-                    flag,
-                    value,
-                ]),
-                true,
-            )?;
-            op.acknowledge();
-        }
-        Ok(())
     }
 }
 

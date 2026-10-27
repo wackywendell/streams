@@ -298,7 +298,7 @@ fn membership_move_keeps_checkout_selection_and_never_uses_destination_alias_url
     let host = session["host_id"].as_str().unwrap();
     let store = YamlRecordStore::new(f.root(), host).unwrap();
     let intent = MoveIntent::new(host, "pi", "native", destination_id).unwrap();
-    application::move_session(&store, "move", &intent).unwrap();
+    application::move_session_observed(&store, "move", &intent).unwrap();
     assert_eq!(
         f.ok(&["session", "directory", session_id])["directory"],
         selected

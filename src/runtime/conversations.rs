@@ -207,12 +207,6 @@ fn verified_file(harness: Harness, path: &Path) -> Result<(String, PathBuf)> {
     Ok((identity_prefix(harness, &prefix)?, canonical))
 }
 
-/// Read at most 65,537 bytes and verify the source-specific identity records.
-/// No cwd, title, filename, or catalog association participates in this check.
-pub fn file_identity(harness: Harness, path: &Path) -> Result<String> {
-    verified_file(harness, path).map(|(id, _)| id)
-}
-
 /// Validate native metadata against the expected harness and inspect path-based identities.
 pub fn native_identity(
     metadata: &NativeSessionMetadata,

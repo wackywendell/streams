@@ -100,7 +100,7 @@ fn defaults_and_reads_create_nothing() {
     );
     assert!(
         f.config
-            .runtime_state_dir()
+            .runtime_state_dir_for(&settings.catalog_root)
             .unwrap()
             .starts_with(f.home.join("state/streams/catalogs"))
     );
@@ -377,7 +377,6 @@ fn host_requires_explicit_creation_is_private_and_stable() {
     );
     f.config
         .with_lock(|lock| {
-            assert_eq!(lock.existing_host_identity()?, id);
             assert_eq!(lock.settings()?.frontend, FrontendMode::Auto);
             lock.set(ConfigKey::FrontendMode, "herdr")?;
             Ok(())
@@ -537,16 +536,29 @@ fn resolve_missing_paths_symlinks_and_runtime_identity() {
     f.config
         .set(ConfigKey::CatalogRoot, root.to_str().unwrap())
         .unwrap();
-    let first = f.config.runtime_state_dir().unwrap();
+    let first = f
+        .config
+        .runtime_state_dir_for(&f.config.load().unwrap().catalog_root)
+        .unwrap();
     f.config
         .set(
             ConfigKey::CatalogRoot,
             resolved_home.join("actual/missing/next").to_str().unwrap(),
         )
         .unwrap();
-    assert_eq!(f.config.runtime_state_dir().unwrap(), first);
+    assert_eq!(
+        f.config
+            .runtime_state_dir_for(&f.config.load().unwrap().catalog_root)
+            .unwrap(),
+        first
+    );
     f.config.set(ConfigKey::FrontendMode, "none").unwrap();
-    assert_eq!(f.config.runtime_state_dir().unwrap(), first);
+    assert_eq!(
+        f.config
+            .runtime_state_dir_for(&f.config.load().unwrap().catalog_root)
+            .unwrap(),
+        first
+    );
     symlink("broken-target", f.home.join("broken")).unwrap();
     assert_eq!(
         resolve_path(&f.home.join("broken/child")).unwrap(),

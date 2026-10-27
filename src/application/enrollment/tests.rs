@@ -87,7 +87,7 @@ fn existing_enrollment_does_not_edit_text_or_replace_membership() {
     let original = enroll_session(&store, "host", &initial).unwrap();
     let id = read_session(&store).unwrap().id;
     put_stream(&store, Stream::new("b", "B", None, "host").unwrap());
-    crate::application::move_session(
+    crate::application::move_session_observed(
         &store,
         "move",
         &crate::operations::membership::MoveIntent::new("host", "pi", "native", "b").unwrap(),

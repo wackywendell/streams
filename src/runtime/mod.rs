@@ -9,7 +9,6 @@ pub mod launch;
 pub mod locations;
 pub mod native;
 pub mod native_cards;
-pub mod native_inventory;
 pub mod native_markers;
 pub mod revisions;
 pub mod state;

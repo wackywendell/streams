@@ -7,7 +7,7 @@ use std::path::{Path, PathBuf};
 use streams_temper::runtime::RuntimeError;
 use streams_temper::runtime::conversations::{
     ConversationRoots, Harness, NativeIdentityKind, NativeSessionMetadata, conversation_file,
-    file_identity, native_identity,
+    native_identity,
 };
 
 fn root() -> (tempfile::TempDir, PathBuf) {
@@ -25,6 +25,18 @@ fn fixture(harness: Harness) -> (&'static str, &'static str) {
             include_str!("fixtures/runtime/claude.jsonl"),
         ),
     }
+}
+
+fn file_identity(harness: Harness, path: &Path) -> Result<String, RuntimeError> {
+    native_identity(
+        &NativeSessionMetadata {
+            agent: harness,
+            kind: NativeIdentityKind::Path,
+            value: path.to_str().unwrap().into(),
+        },
+        harness,
+    )
+    .map(|identity| identity.id)
 }
 
 fn roots(path: &Path) -> ConversationRoots {

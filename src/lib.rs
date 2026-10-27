@@ -1,4 +1,4 @@
-//! Durable catalog, pure reconciliation, and Temper-backed persistence protocols.
+//! Durable records, pure reconciliation, and file publication.
 
 // Share independent fixture adapters with the integration-test harness.
 #[cfg(test)]

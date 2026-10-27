@@ -43,52 +43,6 @@ impl HerdrClient {
         Ok((tab, pane))
     }
 
-    pub fn split_pane(
-        &self,
-        pane: &HerdrPane,
-        cwd: &Path,
-        environment: &BTreeMap<String, String>,
-    ) -> Result<HerdrPane, FrontendError> {
-        validate_pane(pane)?;
-        let (cwd, environment) = launch_parameters(cwd, environment)?;
-        let params = json!({"target_pane_id":pane.id,"direction":"right","cwd":cwd,
-            "env":environment,"focus":false});
-        let mut op = Operation::default();
-        let result = self.result(&mut op, "pane.split", params, "pane_split", true)?;
-        let created = op.capture(HerdrPane::parse(&result["pane"]))?;
-        if created.workspace_id != pane.workspace_id
-            || created.tab_id != pane.tab_id
-            || created.id == pane.id
-        {
-            return Err(op.error("Herdr split pane/tab/workspace ID mismatch"));
-        }
-        op.acknowledge();
-        Ok(created)
-    }
-
-    pub fn rename_tab(&self, tab: &HerdrTab, label: &str) -> Result<(), FrontendError> {
-        nonempty(&tab.id, "Herdr tab ID")?;
-        nonempty(&tab.workspace_id, "Herdr workspace ID")?;
-        nonempty(label, "Herdr tab label")?;
-        let mut op = Operation::default();
-        let result = self.result(
-            &mut op,
-            "tab.rename",
-            json!({"tab_id":tab.id,"label":label}),
-            "tab_info",
-            true,
-        )?;
-        let renamed = op.capture(HerdrTab::parse(&result["tab"]))?;
-        if renamed.id != tab.id
-            || renamed.workspace_id != tab.workspace_id
-            || renamed.label.as_deref() != Some(label)
-        {
-            return Err(op.error("Herdr renamed tab identity/label mismatch"));
-        }
-        op.acknowledge();
-        Ok(())
-    }
-
     pub fn start_agent(
         &self,
         pane: &HerdrPane,
@@ -142,14 +96,6 @@ impl HerdrClient {
             terminal_id,
             interactive_ready: true,
         })
-    }
-
-    pub fn focus_agent(&self, pane: &HerdrPane) -> Result<(), FrontendError> {
-        validate_pane(pane)?;
-        let mut op = Operation::default();
-        self.call(&mut op, "agent.focus", json!({"target":pane.id}), true)?;
-        op.acknowledge();
-        Ok(())
     }
 }
 

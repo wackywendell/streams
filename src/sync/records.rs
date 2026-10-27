@@ -214,13 +214,6 @@ impl RecordSync {
             Mode::Git { branch, .. } => Some(branch),
         }
     }
-    pub fn pending_status(&self) -> SharingStatus {
-        if self.remote().is_some() {
-            SharingStatus::Pending
-        } else {
-            SharingStatus::LocalOnly
-        }
-    }
 
     fn tree(git: &Git, revision: &str) -> Result<Tree, StorageError> {
         let tree = git

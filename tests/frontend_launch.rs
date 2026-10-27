@@ -1,9 +1,9 @@
 //! Launch adapters use a scripted protocol-22 socket; no live Herdr effects.
-use crate::support::herdr::{Reply, Scripted};
+use crate::support::herdr::Scripted;
 use serde_json::{Value, json};
 use std::collections::BTreeMap;
 use std::path::Path;
-use streams_temper::frontend::herdr::{HerdrClient, HerdrPane, HerdrTab};
+use streams_temper::frontend::herdr::{HerdrClient, HerdrPane};
 use streams_temper::frontend::*;
 
 fn client() -> (Scripted, HerdrClient, WorkspaceRef) {
@@ -30,15 +30,6 @@ fn pane(id: &str) -> HerdrPane {
         tab_id: "w1:t1".into(),
         workspace_id: "w1".into(),
         cwd: "/observed".into(),
-    }
-}
-
-fn tab() -> HerdrTab {
-    HerdrTab {
-        id: "w1:t1".into(),
-        workspace_id: "w1".into(),
-        label: None,
-        number: None,
     }
 }
 
@@ -79,13 +70,6 @@ fn exact_commands_preserve_shell_metacharacters_as_arguments() {
         .unwrap();
     assert_eq!(created_tab.id, "w1:t1");
     assert_eq!(root, pane("w1:p1"));
-    fake.result(json!({"type":"pane_split","pane":native_pane("w1:p2")}));
-    assert_eq!(
-        client.split_pane(&root, cwd, &environment).unwrap(),
-        pane("w1:p2")
-    );
-    fake.result(json!({"type":"tab_info","tab":{"tab_id":"w1:t1","workspace_id":"w1","label":"Plan; $(no)"}}));
-    client.rename_tab(&created_tab, "Plan; $(no)").unwrap();
     fake.result(started());
     let receipt = client
         .start_agent(
@@ -100,8 +84,6 @@ fn exact_commands_preserve_shell_metacharacters_as_arguments() {
     assert_eq!(receipt.name, "streams-one");
     assert_eq!(receipt.agent, "future-kind");
     assert!(receipt.interactive_ready);
-    fake.result(json!({"type":"ok"}));
-    client.focus_agent(&root).unwrap();
     let cwd = cwd.to_str().unwrap();
     let env = json!({"A":"a b","Z":"$(touch /never); quoted ' text"});
     assert_eq!(
@@ -113,19 +95,10 @@ fn exact_commands_preserve_shell_metacharacters_as_arguments() {
                 json!({"workspace_id":"w1","cwd":cwd,"env":env,"focus":false,"label":"Plan; $(no)"})
             ),
             (
-                "pane.split".into(),
-                json!({"target_pane_id":"w1:p1","direction":"right","cwd":cwd,"env":env,"focus":false})
-            ),
-            (
-                "tab.rename".into(),
-                json!({"tab_id":"w1:t1","label":"Plan; $(no)"})
-            ),
-            (
                 "agent.start".into(),
                 json!({"name":"streams-one","kind":"future-kind","pane_id":"w1:p1",
                     "timeout_ms":20000,"args":["", "--resume", "id ' ; $(no)"]})
             ),
-            ("agent.focus".into(), json!({"target":"w1:p1"})),
         ]
     );
     fake.exhausted();
@@ -171,20 +144,6 @@ fn wrong_creation_linkages_remain_uncertain() {
                 .unwrap_err(),
         );
     }
-    for (field, value) in [
-        ("workspace_id", "wrong"),
-        ("tab_id", "wrong"),
-        ("pane_id", "w1:p1"),
-    ] {
-        let mut returned = native_pane("w1:p2");
-        returned[field] = json!(value);
-        fake.result(json!({"type":"pane_split","pane":returned}));
-        uncertain(
-            client
-                .split_pane(&pane("w1:p1"), Path::new("/checkout"), &BTreeMap::new())
-                .unwrap_err(),
-        );
-    }
     fake.exhausted();
 }
 
@@ -216,33 +175,12 @@ fn wrong_start_identity_readiness_or_terminal_retains_raw_evidence() {
 }
 
 #[test]
-fn rename_requires_exact_tuple_and_label() {
-    let (fake, client, _) = client();
-    for (key, value) in [
-        ("tab_id", "wrong"),
-        ("workspace_id", "wrong"),
-        ("label", "wrong"),
-    ] {
-        let mut returned = json!({"tab_id":"w1:t1","workspace_id":"w1","label":"New"});
-        returned[key] = json!(value);
-        fake.result(json!({"type":"tab_info","tab":returned}));
-        uncertain(client.rename_tab(&tab(), "New").unwrap_err());
-    }
-    fake.exhausted();
-}
-
-#[test]
 fn invalid_arguments_never_dispatch_effects() {
     let (fake, client, workspace) = client();
     for cwd in ["relative", "/bad\npath", "/bad\0path"] {
         assert!(
             client
                 .create_tab(&workspace, Path::new(cwd), &BTreeMap::new(), None)
-                .is_err()
-        );
-        assert!(
-            client
-                .split_pane(&pane("w1:p1"), Path::new(cwd), &BTreeMap::new())
                 .is_err()
         );
     }
@@ -258,11 +196,6 @@ fn invalid_arguments_never_dispatch_effects() {
                 .create_tab(&workspace, Path::new("/checkout"), &environment, None)
                 .is_err()
         );
-        assert!(
-            client
-                .split_pane(&pane("w1:p1"), Path::new("/checkout"), &environment)
-                .is_err()
-        );
     }
     for label in ["", "bad\nlabel"] {
         assert!(
@@ -275,7 +208,6 @@ fn invalid_arguments_never_dispatch_effects() {
                 )
                 .is_err()
         );
-        assert!(client.rename_tab(&tab(), label).is_err());
     }
     for name in [
         "",
@@ -316,22 +248,7 @@ fn invalid_arguments_never_dispatch_effects() {
         );
     }
     let invalid = pane("");
-    assert!(
-        client
-            .split_pane(&invalid, Path::new("/checkout"), &BTreeMap::new())
-            .is_err()
-    );
-    assert!(client.focus_agent(&invalid).is_err());
     assert!(client.start_agent(&invalid, "valid", "pi", &[]).is_err());
     assert_eq!(fake.server.methods(), ["ping"]);
-    fake.exhausted();
-}
-
-#[test]
-fn focus_without_a_complete_reply_is_uncertain_and_never_retries() {
-    let (fake, client, _) = client();
-    fake.reply(Reply::Raw(b"partial".to_vec()));
-    uncertain(client.focus_agent(&pane("w1:p1")).unwrap_err());
-    assert_eq!(fake.server.methods(), ["ping", "agent.focus"]);
     fake.exhausted();
 }

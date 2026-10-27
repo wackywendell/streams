@@ -5,7 +5,7 @@ use std::sync::{Arc, Mutex};
 
 use serde_json::{Map, json};
 use streams_temper::{
-    application::{move_session, move_session_observed},
+    application::move_session_observed,
     model::{Record, RecordKind, Session, Stream},
     operations::membership::MoveIntent,
     storage::{
@@ -150,7 +150,7 @@ fn membership_save_reads_only_three_records_and_retries_do_not_reapply_after_rev
         ]
     );
     let to_a = MoveIntent::new("host", "pi", "native", "a").unwrap();
-    let returned = move_session(&store, "move-a", &to_a).unwrap();
+    let returned = move_session_observed(&store, "move-a", &to_a).unwrap().save;
     events.lock().unwrap().clear();
     let observed = move_session_observed(&store, "move-b", &to_b).unwrap();
     assert!(observed.stream.is_none());
@@ -176,8 +176,9 @@ fn membership_save_reads_only_three_records_and_retries_do_not_reapply_after_rev
     assert_eq!(std::fs::read(b_path).unwrap(), b_bytes);
     let missing = MoveIntent::new("host", "pi", "native", "missing").unwrap();
     assert!(
-        move_session(&store, "missing", &missing)
-            .unwrap_err()
+        move_session_observed(&store, "missing", &missing)
+            .err()
+            .unwrap()
             .to_string()
             .contains("create it before moving")
     );

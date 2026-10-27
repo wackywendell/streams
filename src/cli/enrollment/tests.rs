@@ -148,7 +148,7 @@ fn retained_enrollment_keeps_its_original_decision_and_current_records_without_r
     let selected_path = binding.path("a", Some(&session.id));
     let selected = fs::read(&selected_path).unwrap();
     f.put(Stream::new("b", "B", None, f.opened.host().as_str()).unwrap());
-    application::move_session(
+    application::move_session_observed(
         f.opened.records(),
         "move",
         &MoveIntent::new(f.opened.host().as_str(), "pi", NATIVE, "b").unwrap(),

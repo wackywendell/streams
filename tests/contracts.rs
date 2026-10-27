@@ -1,5 +1,5 @@
 //! One contract harness avoids recompiling/linking the same dependencies per file.
-//! Git publication traces and the catalog verification cascade remain separate gates.
+//! Git publication traces remain a separate gate.
 
 mod support {
     pub mod herdr;
@@ -24,7 +24,6 @@ mod record_local;
 mod record_updates;
 mod runtime_conversations;
 mod runtime_inference;
-mod runtime_inventory;
 mod runtime_launch;
 mod runtime_native;
 mod runtime_registry;

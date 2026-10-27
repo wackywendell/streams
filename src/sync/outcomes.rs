@@ -3,7 +3,7 @@
 use serde::Serialize;
 use strum::{AsRefStr, Display, EnumString, VariantNames};
 
-use crate::operations::{DomainOutcome, Reconciliation};
+use crate::operations::Reconciliation;
 
 /// What happened to local persistence, independently of domain acceptance or sharing.
 #[derive(
@@ -60,40 +60,9 @@ impl Result {
         }
     }
 
-    pub fn with_domain(mut self, domain: Reconciliation) -> Self {
-        self.domain = Some(domain);
-        self
-    }
-
-    pub fn with_local_rev(mut self, rev: Option<String>) -> Self {
-        self.local_revision = rev;
-        self
-    }
-
-    pub fn with_remote_rev(mut self, rev: Option<String>) -> Self {
-        self.remote_revision = rev;
-        self
-    }
-
     pub fn with_detail(mut self, detail: impl Into<String>) -> Self {
         self.detail = detail.into();
         self
-    }
-
-    pub fn with_conflicts(mut self, conflicts: Vec<String>) -> Self {
-        self.conflicts = conflicts;
-        self
-    }
-
-    /// Domain acceptance is usable only while local state does not require repair.
-    pub fn accepted(&self) -> bool {
-        !self.requires_repair()
-            && self.domain.as_ref().is_some_and(|d| {
-                matches!(
-                    d.outcome(),
-                    DomainOutcome::Changes | DomainOutcome::NoChange
-                )
-            })
     }
 
     pub fn requires_repair(&self) -> bool {

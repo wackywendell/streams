@@ -3,7 +3,7 @@ node = "26"
 rust = "1.95.0"
 
 [env]
-# Temper has its own toolchain file; use one compiler for the entire Cargo graph.
+# Use the same compiler for local commands and task-runner builds.
 RUSTUP_TOOLCHAIN = "1.95.0"
 
 [tasks.build]
@@ -19,7 +19,7 @@ description = "Check Rust formatting without rewriting files"
 run = "cargo fmt --all -- --check"
 
 [tasks."test:fast"]
-description = "Development gate: Rust contracts and Pi tests, no Git recovery or Temper verification"
+description = "Development gate: Rust contracts and Pi tests, not full acceptance"
 depends = ["test:rust:fast", "test:pi"]
 
 [tasks."test:rust:unit"]
@@ -35,7 +35,7 @@ run = 'RUSTC=$(rustup which rustc) RUSTDOC=$(rustup which rustdoc) cargo test --
 
 [tasks."test:rust"]
 env = { GIT_CONFIG_GLOBAL = "/dev/null", GIT_CONFIG_SYSTEM = "/dev/null", GIT_CONFIG_NOSYSTEM = "1" }
-description = "Run Rust catalog, Git recovery, documentation and Temper verification (requires Z3 and libclang)"
+description = "Run all Rust record, file transport, native and documentation tests"
 run = [
   'RUSTC=$(rustup which rustc) RUSTDOC=$(rustup which rustdoc) cargo test --locked --all-targets -- --test-threads=4',
   'RUSTC=$(rustup which rustc) RUSTDOC=$(rustup which rustdoc) cargo test --locked --doc',
@@ -74,5 +74,5 @@ description = "Run surviving Herdr configuration, process and Pi-name boundary t
 run = "npm --prefix integrations/herdr-work-cards test"
 
 [tasks.test]
-description = "Full Rust-only acceptance: contracts, Git recovery, Temper, Pi, Herdr boundaries and replay"
+description = "Full Rust-only acceptance: contracts, file transport, Pi, Herdr boundaries and replay"
 depends = ["test:rust", "test:pi", "test:herdr", "test:replay", "test:native:rust"]

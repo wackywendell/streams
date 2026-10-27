@@ -3,7 +3,7 @@ use serde_json::{Value, json};
 use std::sync::{Arc, Mutex};
 use streams_temper::{
     agent::parse_record_update,
-    application::{move_session, save_record_update},
+    application::{move_session_observed, save_record_update},
     model::{NamingMode, Record, RecordKind, Session, Stream, TitleDefaults, TitleMode},
     operations::membership::MoveIntent,
     storage::{
@@ -74,7 +74,7 @@ fn session_report_reads_its_current_stream_after_a_valid_move() {
     let directory = tempfile::tempdir().unwrap();
     let store = setup(directory.path());
     let request = wire("report", &session(), "automatic", "progress");
-    move_session(
+    move_session_observed(
         &store,
         "move",
         &MoveIntent::new("host", "pi", "native", "b").unwrap(),
@@ -189,13 +189,13 @@ fn stream_report_checks_membership_period_without_retargeting_old_prose() {
     let directory = tempfile::tempdir().unwrap();
     let store = setup(directory.path());
     let request = json!({"version":2,"title_default":"automatic","catalog_source":"source","operation_id":"report","kind":"stream","actor":"automatic","before":stream("a"),"changes":{"goal":"old prose"},"inputs":[{"kind":"session","record":session()}]});
-    move_session(
+    move_session_observed(
         &store,
         "out",
         &MoveIntent::new("host", "pi", "native", "b").unwrap(),
     )
     .unwrap();
-    move_session(
+    move_session_observed(
         &store,
         "back",
         &MoveIntent::new("host", "pi", "native", "a").unwrap(),
@@ -300,7 +300,7 @@ fn accepted_report_retry_after_later_edits_reads_only_target_and_retains_origina
         unreachable!()
     };
     update(&store, &wire("newer", before, "user", "current work"));
-    move_session(
+    move_session_observed(
         &store,
         "move",
         &MoveIntent::new("host", "pi", "native", "b").unwrap(),
@@ -388,7 +388,7 @@ fn accepted_stream_title_retry_after_default_drift_and_move_reads_only_target() 
     let store = setup(directory.path());
     let request = json!({"version":2,"title_default":"automatic","catalog_source":"source","operation_id":"title","kind":"stream","actor":"automatic","before":stream("a"),"changes":{"title":"Generated effort"},"inputs":[{"kind":"session","record":session()}]});
     let first = update(&store, &request);
-    move_session(
+    move_session_observed(
         &store,
         "move",
         &MoveIntent::new("host", "pi", "native", "b").unwrap(),
@@ -528,7 +528,7 @@ fn manual_stream_edit_has_no_session_dependency_even_after_membership_changes() 
         )
         .is_err()
     );
-    move_session(
+    move_session_observed(
         &store,
         "move",
         &MoveIntent::new("host", "pi", "native", "b").unwrap(),

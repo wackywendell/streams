@@ -11,7 +11,6 @@
     "integrations/herdr-work-cards/dist/config.js",
     "integrations/herdr-work-cards/dist/config.d.ts",
     "integrations/herdr-work-cards/dist/config.js.map",
-    "integrations/herdr-work-cards/src/herdr/subprocess.ts",
     "integrations/herdr-work-cards/src/pi/session-naming.ts",
     "integrations/herdr-work-cards/src/config.ts",
     "integrations/herdr-work-cards/src/streams-bin.ts",

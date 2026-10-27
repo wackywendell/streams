@@ -30,15 +30,6 @@ pub enum ApplicationError {
 
 pub type Result<T> = std::result::Result<T, ApplicationError>;
 
-/// Persist one verified membership change. Native effects are deliberately not part of this save.
-pub fn move_session(
-    store: &impl crate::storage::records::RecordStore,
-    operation_id: &str,
-    intent: &crate::operations::membership::MoveIntent,
-) -> Result<crate::storage::records::RecordSave> {
-    Ok(move_session_observed(store, operation_id, intent)?.save)
-}
-
 /// Same-pass data, never serialized into the retained decision.
 pub struct MoveSave {
     pub save: crate::storage::records::RecordSave,

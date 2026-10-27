@@ -1,6 +1,3 @@
-import { readFile } from 'node:fs/promises';
-import { homedir } from 'node:os';
-import { join } from 'node:path';
 
 export interface WorkCardsConfig {
   workspace_startup: 'automatic' | 'manual';
@@ -28,15 +25,6 @@ function validateDocumentCommand(value: unknown, label: string): asserts value i
   }
 }
 
-export function documentCommand(config: WorkCardsConfig, env: NodeJS.ProcessEnv = process.env): string {
-  const command = config.document_command ?? (env.EDITOR?.trim() ? env.EDITOR : 'less');
-  validateDocumentCommand(command, config.document_command !== null ? 'document_command' : 'EDITOR');
-  return command;
-}
-
-export function configPath(env: NodeJS.ProcessEnv = process.env): string {
-  return join(env.PI_CODING_AGENT_DIR || join(env.HOME || homedir(), '.pi', 'agent'), 'work-cards.json');
-}
 
 export function parseConfig(input: unknown): WorkCardsConfig {
   if (!input || typeof input !== 'object' || Array.isArray(input)) throw new Error('expected a JSON object');
@@ -61,15 +49,3 @@ export function parseConfig(input: unknown): WorkCardsConfig {
   return { ...DEFAULT_CONFIG, ...input };
 }
 
-export async function loadConfig(path = configPath()): Promise<WorkCardsConfig> {
-  let raw: string;
-  try { raw = await readFile(path, 'utf8'); }
-  catch (error) {
-    if ((error as NodeJS.ErrnoException).code === 'ENOENT') return { ...DEFAULT_CONFIG };
-    throw new Error(`Cannot read work-cards config ${path}: ${(error as Error).message}`, { cause: error });
-  }
-  try { return parseConfig(JSON.parse(raw)); }
-  catch (error) {
-    throw new Error(`Invalid work-cards config ${path}: ${(error as Error).message}`, { cause: error });
-  }
-}

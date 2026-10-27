@@ -12,7 +12,6 @@ pub struct HerdrNativeSnapshot {
     pane_tokens: BTreeMap<String, Tokens>,
     workspace_tokens: BTreeMap<String, Tokens>,
     pane_labels: BTreeMap<String, String>,
-    workspace_numbers: BTreeMap<String, u64>,
 }
 
 impl HerdrNativeSnapshot {
@@ -20,7 +19,6 @@ impl HerdrNativeSnapshot {
         let topology = HerdrTopology::parse(value)?;
         let mut pane_tokens = BTreeMap::new();
         let mut workspace_tokens = BTreeMap::new();
-        let mut workspace_numbers = BTreeMap::new();
         let mut pane_labels = BTreeMap::new();
         // Topology parsing already checked the inventories and their identities.
         for key in ["workspaces", "tabs"] {
@@ -37,7 +35,6 @@ impl HerdrNativeSnapshot {
         for raw in value["workspaces"].as_array().unwrap() {
             let id = raw["workspace_id"].as_str().unwrap();
             workspace_tokens.insert(id.into(), tokens(raw)?);
-            workspace_numbers.insert(id.into(), raw["number"].as_u64().unwrap());
         }
         for raw in value["panes"].as_array().unwrap() {
             let id = raw["pane_id"].as_str().unwrap();
@@ -56,20 +53,7 @@ impl HerdrNativeSnapshot {
             pane_tokens,
             workspace_tokens,
             pane_labels,
-            workspace_numbers,
         })
-    }
-
-    pub fn workspace_number(&self, id: &str) -> Option<u64> {
-        self.workspace_numbers.get(id).copied()
-    }
-
-    pub fn tab_number(&self, id: &str) -> Option<u64> {
-        self.topology
-            .tabs
-            .iter()
-            .find(|tab| tab.id == id)
-            .and_then(|tab| tab.number)
     }
 
     pub fn raw(&self) -> &Value {
@@ -111,14 +95,6 @@ impl HerdrNativeSnapshot {
 
     pub fn pane_label(&self, pane_id: &str) -> Option<&str> {
         self.pane_labels.get(pane_id).map(String::as_str)
-    }
-
-    pub fn locate_terminal(&self, terminal: &str) -> Result<&HerdrInventoryPane, FrontendError> {
-        self.topology
-            .panes
-            .iter()
-            .find(|p| p.terminal_id == terminal)
-            .ok_or_else(|| FrontendError::invalid("missing live Herdr terminal identity"))
     }
 
     pub fn first_pane(&self, pane: &HerdrInventoryPane) -> bool {
@@ -209,8 +185,8 @@ mod tests {
         s["panes"][1]["label"] = Value::Null;
         s["workspaces"][0]["tokens"] = json!({"raw":" value\n "});
         let parsed = HerdrNativeSnapshot::parse(&s).unwrap();
-        assert!(!parsed.first_pane(parsed.locate_terminal("owner").unwrap()));
-        assert!(parsed.first_pane(parsed.locate_terminal("card").unwrap()));
+        assert!(!parsed.first_pane(&parsed.topology().panes[0]));
+        assert!(parsed.first_pane(&parsed.topology().panes[1]));
         assert_eq!(parsed.pane_label("a"), Some("Agent"));
         assert_eq!(parsed.pane_label("c"), None);
         assert!(parsed.pane_tokens("a").unwrap().is_empty());
