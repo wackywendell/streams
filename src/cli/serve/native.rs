@@ -210,7 +210,7 @@ impl Controller {
         )
         .map_err(streams_temper::runtime::RuntimeError::from)?;
         let settings = self.app.config.load()?;
-        let records = self.records.as_ref().unwrap();
+        let records = self.records.as_ref().unwrap().clone();
         if settings.catalog_root != records.root() {
             return Err(crate::cli::CliError::message(
                 "catalog root setting changed during native pass",
@@ -218,12 +218,12 @@ impl Controller {
         }
         config = config.with_auto_open(
             self.app
-                .conversation_card_settings(records, &self.session_id)?
+                .conversation_card_settings(&records, &self.session_id)?
                 .mode()?
                 .resolve(settings.card_auto_open),
         );
         let mut context = self.app.context_from_records(
-            records,
+            &records,
             ContextRequest {
                 harness: Harness::Pi,
                 native_id: &self.session_id,
@@ -233,6 +233,11 @@ impl Controller {
             },
             settings.naming,
         )?;
+        // Establish the catalog baseline even if Herdr has not detected Pi yet.
+        // Later binding changes are observed only after native observation succeeds.
+        if self.binding == Binding::Unobserved {
+            self.observe_binding(&context);
+        }
         let owner = match &self.owner {
             Some(owner) => owner.clone(),
             None => {
@@ -280,7 +285,7 @@ impl Controller {
             && (selected.is_some() || self.app.environment.contains_key("STREAMS_STREAM_ID"))
         {
             context = self.app.context_from_records(
-                records,
+                &records,
                 ContextRequest {
                     harness: Harness::Pi,
                     native_id: &self.session_id,

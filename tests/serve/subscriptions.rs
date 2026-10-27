@@ -721,6 +721,140 @@ fn automatic_cards_open_on_startup_or_outside_attach_and_not_again_on_refresh() 
 }
 
 #[test]
+fn outside_attach_opens_after_delayed_pi_transcript_detection() {
+    for (detected_at_startup, initially_bound) in [(true, false), (false, false), (false, true)] {
+        let f = NativeFixture::new();
+        f.fixture
+            .ok(&["config", "set", "cards.auto_open", "automatic"], None);
+        let id = if initially_bound {
+            f.id.clone()
+        } else {
+            uuid::Uuid::new_v4().to_string()
+        };
+        let transcript = f.fixture.directory.path().join("pi-session.jsonl");
+        fs::write(
+            &transcript,
+            json!({"type":"session","id":id}).to_string() + "\n",
+        )
+        .unwrap();
+        let owner = {
+            let mut snapshot = f.snapshot.lock().unwrap();
+            for key in ["panes", "agents"] {
+                snapshot[key][0]["agent_session"] =
+                    json!({"agent":"pi","kind":"path","value":transcript});
+            }
+            let owner = snapshot["agents"][0].clone();
+            if !detected_at_startup {
+                snapshot["agents"] = json!([]);
+            }
+            owner
+        };
+        let mut child = Transport::start(f.command(), &id);
+        assert_eq!(child.next(), json!({"type":"ready","protocol":2}));
+        child.request(1, json!({"kind":"session_started"}));
+        let started = child.response(1);
+        if detected_at_startup {
+            assert_eq!(started["outcome"]["result"]["reason"], "not_enrolled");
+        } else {
+            assert_eq!(started["outcome"]["status"], "error", "{started}");
+            assert!(
+                started["outcome"]["error"]["message"]
+                    .as_str()
+                    .unwrap()
+                    .contains("Pi pane reports a different conversation"),
+                "{started}"
+            );
+        }
+        let directory = f.fixture.directory.path().to_str().unwrap();
+        let attached = if initially_bound {
+            f.session.clone()
+        } else {
+            f.fixture.ok(
+                &[
+                    "session",
+                    "attach",
+                    f.session["stream_id"].as_str().unwrap(),
+                    "--harness",
+                    "pi",
+                    "--session-id",
+                    &id,
+                    "--title",
+                    "Outside attach",
+                    "--cwd",
+                    directory,
+                ],
+                None,
+            )["session"]
+                .clone()
+        };
+        f.fixture.ok(
+            &[
+                "session",
+                "directory",
+                attached["id"].as_str().unwrap(),
+                "--cwd",
+                directory,
+            ],
+            None,
+        );
+        if !detected_at_startup {
+            if !initially_bound {
+                // The catalog event arrives while native identity is still unavailable.
+                assert_eq!(child.next()["type"], "warning");
+            }
+            f.snapshot.lock().unwrap()["agents"] = json!([owner]);
+            f.server.emit(json!({"event":"pane_agent_detected","data":{
+                "type":"pane_agent_detected","pane_id":"pane","workspace_id":"workspace"
+            }}));
+        }
+        assert_eq!(child.next()["view"]["desired_pi_name"], attached["title"]);
+        // The normal refresh finishes the event pass without supplying a startup trigger.
+        child.request(2, json!({"kind":"attach"}));
+        assert_eq!(child.response(2)["outcome"]["status"], "success");
+        let opens = usize::from(!initially_bound);
+        {
+            let mut snapshot = f.snapshot.lock().unwrap();
+            assert_eq!(snapshot["panes"].as_array().unwrap().len(), 1 + opens);
+            if !initially_bound {
+                assert_eq!(
+                    snapshot["panes"][1]["tokens"]["strm_session"],
+                    attached["id"]
+                );
+                assert_eq!(snapshot["panes"][1]["tab_id"], "tab");
+                // An outside close is not another automatic-opening trigger.
+                snapshot["panes"].as_array_mut().unwrap().truncate(1);
+                snapshot["layouts"][0]["panes"]
+                    .as_array_mut()
+                    .unwrap()
+                    .truncate(1);
+            }
+        }
+        f.server
+            .emit(json!({"event":"pane_updated","data":{"type":"pane_updated",
+            "pane":{"pane_id":"pane","tab_id":"tab","workspace_id":"workspace"}}}));
+        assert_eq!(child.next()["view"]["desired_pi_name"], attached["title"]);
+        child.request(3, json!({"kind":"attach"}));
+        assert_eq!(child.response(3)["outcome"]["status"], "success");
+        assert_eq!(
+            f.snapshot.lock().unwrap()["panes"]
+                .as_array()
+                .unwrap()
+                .len(),
+            1
+        );
+        assert_eq!(
+            f.server
+                .methods()
+                .iter()
+                .filter(|method| *method == "plugin.pane.open")
+                .count(),
+            opens
+        );
+        assert_eq!(child.finish(), (0, String::new()));
+    }
+}
+
+#[test]
 fn card_preferences_and_the_control_endpoint_survive_close_refresh_and_child_restart() {
     use streams_temper::{
         child_protocol::{Outcome, Request},
