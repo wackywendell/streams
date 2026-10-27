@@ -136,9 +136,47 @@ pub(super) fn session(
     input: &SessionFields,
     read: &mut impl FnMut(&Path) -> Result<String, CliError>,
 ) -> Result<Map<String, Value>, CliError> {
-    if [input.state_file.as_deref(), input.remaining_file.as_deref()]
-        .into_iter()
-        .flatten()
+    let fields = [
+        (
+            "recap",
+            &input.recap,
+            input.recap_file.as_deref(),
+            input.clear_recap,
+        ),
+        (
+            "recap_short",
+            &input.recap_short,
+            input.recap_short_file.as_deref(),
+            input.clear_recap_short,
+        ),
+        (
+            "state",
+            &input.state,
+            input.state_file.as_deref(),
+            input.clear_state,
+        ),
+        (
+            "state_short",
+            &input.state_short,
+            input.state_short_file.as_deref(),
+            input.clear_state_short,
+        ),
+        (
+            "remaining",
+            &input.remaining,
+            input.remaining_file.as_deref(),
+            input.clear_remaining,
+        ),
+        (
+            "remaining_short",
+            &input.remaining_short,
+            input.remaining_short_file.as_deref(),
+            input.clear_remaining_short,
+        ),
+    ];
+    if fields
+        .iter()
+        .filter_map(|(_, _, file, _)| *file)
         .filter(|path| *path == Path::new("-"))
         .count()
         > 1
@@ -148,22 +186,19 @@ pub(super) fn session(
         ));
     }
     let mut changes = Map::new();
-    text(
-        &mut changes,
-        "state",
-        &input.state,
-        input.state_file.as_deref(),
-        false,
-        read,
-    )?;
-    text(
-        &mut changes,
-        "remaining",
-        &input.remaining,
-        input.remaining_file.as_deref(),
-        false,
-        read,
-    )?;
+    for (name, value, file, clear) in fields {
+        text(&mut changes, name, value, file, false, read)?;
+        if clear {
+            changes.insert(
+                name.into(),
+                if name.ends_with("_short") {
+                    Value::Null
+                } else {
+                    Value::String(String::new())
+                },
+            );
+        }
+    }
     optional(&mut changes, "title_mode", input.title_mode)?;
     optional(&mut changes, "status", input.status)?;
     Ok(changes)
@@ -320,6 +355,45 @@ mod tests {
         };
         let error = session(&current_session(), &input, &mut no_read).unwrap_err();
         assert!(error.to_string().contains("only one field can read stdin"));
+    }
+
+    #[test]
+    fn recap_and_short_forms_preserve_input_and_clear_to_their_wire_types() {
+        let input = SessionFields {
+            recap_file: Some("recap".into()),
+            recap_short: Some("Scope".into()),
+            state_short: Some("Now".into()),
+            remaining_short: Some("Next".into()),
+            ..Default::default()
+        };
+        let changes = session(&current_session(), &input, &mut |path| {
+            assert_eq!(path, Path::new("recap"));
+            Ok("Scope and achievements\n".into())
+        })
+        .unwrap();
+        assert_eq!(
+            Value::Object(changes),
+            json!({"recap":"Scope and achievements\n","recap_short":"Scope","state_short":"Now","remaining_short":"Next"})
+        );
+        let input = SessionFields {
+            clear_recap: true,
+            clear_recap_short: true,
+            clear_state: true,
+            clear_state_short: true,
+            clear_remaining: true,
+            clear_remaining_short: true,
+            ..Default::default()
+        };
+        assert_eq!(
+            Value::Object(session(&current_session(), &input, &mut no_read).unwrap()),
+            json!({"recap":"","recap_short":null,"state":"","state_short":null,"remaining":"","remaining_short":null})
+        );
+        let input = SessionFields {
+            recap_file: Some("-".into()),
+            remaining_short_file: Some("-".into()),
+            ..Default::default()
+        };
+        assert!(session(&current_session(), &input, &mut no_read).is_err());
     }
 
     #[test]

@@ -4,12 +4,12 @@ export const statuses = ["active", "waiting", "blocked", "parked", "done"];
 export const titleModes = ["automatic", "manual", "inherit"] as const;
 export const fields = {
  stream: ["title", "title_mode", "goal", "goal_short", "goal_mode", "status", "archived", "documents", "issues", "prs"],
- session: ["title", "title_mode", "status", "state", "state_short", "remaining"],
+ session: ["title", "title_mode", "status", "recap", "recap_short", "state", "state_short", "remaining", "remaining_short"],
 };
 export function automaticFields(kind: "stream" | "session", before: StreamWire | SessionWire, defaultMode: Mode): string[] {
  const result = (before.title_mode === "inherit" ? defaultMode : before.title_mode) === "automatic" ? ["title"] : [];
  if (kind === "stream") return [...result, ...((before as StreamWire).goal_mode === "automatic" ? ["goal", "goal_short"] : [])];
- return [...result, "status", "state", "state_short", "remaining"];
+ return [...result, "status", "recap", "recap_short", "state", "state_short", "remaining", "remaining_short"];
 }
 const nonempty = (value: unknown, field: string) => {if (typeof value !== "string" || !value.trim() || value.includes("\0")) throw Error(`${field} must be a nonempty string`);};
 export function validateChanges(kind: "stream" | "session", before: StreamWire | SessionWire, changes: Record<string, unknown>, actor: "automatic" | "user", defaultMode: Mode): void {
@@ -24,8 +24,8 @@ export function validateChanges(kind: "stream" | "session", before: StreamWire |
   else if (key === "goal_mode" && !["automatic", "manual"].includes(String(value))) throw Error("goal_mode: choose automatic or manual");
   else if (key === "status" && !statuses.includes(String(value))) throw Error("Choose a valid status");
   else if (key === "archived" && typeof value !== "boolean") throw Error("archived must be boolean");
-  else if (["goal", "goal_short", "state_short"].includes(key) && value !== null) nonempty(value, key);
-  else if (["state", "remaining"].includes(key) && (typeof value !== "string" || value.includes("\0"))) throw Error(`${key} must be text`);
+  else if (["goal", "goal_short", "recap_short", "state_short", "remaining_short"].includes(key) && value !== null) nonempty(value, key);
+  else if (["recap", "state", "remaining"].includes(key) && (typeof value !== "string" || value.includes("\0"))) throw Error(`${key} must be text`);
   else if (["documents", "issues", "prs"].includes(key)) validateReferences(key, value, before as StreamWire);
  }
 }

@@ -12,7 +12,7 @@ Streams records whole efforts separately from their sessions. Read the relevant 
 ## Record semantics
 
 - A stream has a stable ID, title, optional goal, status, repositories and references. A missing goal is null, not placeholder text.
-- Each session belongs to one stream and host. Its concise title names its contribution; `state` describes current progress and `remaining` describes unfinished work.
+- Each session belongs to one stream and host. Its concise title names its contribution; `recap` describes its scope and achievements, `state` its current moment (displayed as Status), and `remaining` its unfinished work. Each has a matching `_short` form: prefer 1–2 words and fewer than 20 characters, never 25 or more. Recap changes only with the scope or main outcome; state changes on most reports.
 - Status is `active`, `waiting`, `blocked`, `parked` or `done`. Archive controls visibility independently. Neither closes running agents or workspaces.
 - Agents may report their own progress and session status. Parking, finishing or archiving the whole effort requires user direction. An explicit request is approval; do not ask for a redundant confirmation.
 - Manual title/goal modes protect text from automatic refinement. Change a mode to automatic only when requested. Do not change scope while improving wording.

@@ -61,7 +61,7 @@ export async function editField(ctx: ExtensionContext, cli: StreamCli, catalog: 
     } else if (field === "archived") edit.value = !edit.base.stream!.archived;
     else {
      const value = await ctx.ui.editor(`${kind} ${field}${edit.error ? `\n${edit.error}` : ""}`, String(edit.value ?? ""));
-     if (value === undefined) return;edit.value = ["goal", "goal_short", "state_short"].includes(field) && !value.trim() ? null : value;
+     if (value === undefined) return;edit.value = ["goal", "goal_short", "recap_short", "state_short", "remaining_short"].includes(field) && !value.trim() ? null : value;
     }
     editValue = false;
    }
@@ -93,7 +93,7 @@ export async function openCard(ctx: ExtensionContext, cli: StreamCli, state: Car
    {value: "Re-enable automatic naming & reset", label: "Re-enable automatic naming & reset", description: "Make title and goal generation automatic, then regenerate"},
    {value: "Discuss live card", label: "Discuss live card", description: "Chat with the reporting helper to refine fields"},
    ...(session ? [
-    {value: "Reset this session only", label: "Reset this session only", description: "Regenerate only this tab's title, state, and remaining work"},
+    {value: "Reset this session only", label: "Reset this session only", description: "Regenerate only this tab's title, recap, status, and remaining work"},
     {value: "Re-enable session auto-naming & reset", label: "Re-enable session auto-naming & reset", description: "Make this session's title generation automatic, then regenerate"},
    ] : []),
    {value: "Reset whole effort only", label: "Reset whole effort only", description: "Regenerate only the shared effort title and goal"},
@@ -169,7 +169,8 @@ export async function openCard(ctx: ExtensionContext, cli: StreamCli, state: Car
       ...line(`Goal: ${stream.goal ?? "—"}`, 2),
       ` ${section("This session")} · ${clean(session?.title ?? "Not yet enrolled")} ${session ? theme.fg("muted", `[${session.status} · title:${session.title_mode}]`) : ""}`,
       ...(session ? [
-       ...line(`State: ${session.state || "—"}`, 2),
+       ...line(`Session: ${session.recap || "—"}`, 2),
+       ...line(`Status: ${session.state || "—"}`, 2),
        ...line(`Remaining: ${session.remaining || "—"}`, 1),
       ] : []),
      ].map((l) => truncateToWidth(l, width));

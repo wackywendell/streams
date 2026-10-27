@@ -5,13 +5,16 @@
       "changes": {
         "title": "Helper Logging",
         "goal_short": "Opt-in helper transcript logging",
+        "recap": "Built opt-in helper logging.",
+        "recap_short": "Helper logging",
         "state": "The logging contribution is complete.",
         "state_short": "Logging committed",
         "remaining": "No remaining implementation work for this session.",
+        "remaining_short": null,
         "status": "done"
       }
     },
-    "rejected_fields": ["state", "state_short", "remaining"]
+    "rejected_fields": ["recap", "recap_short", "state", "state_short", "remaining", "remaining_short"]
   },
   {
     "name": "prefixed Session fields returned for a Stream report",
@@ -23,11 +26,14 @@
         "status": "active",
         "session_title": "Helper Logging",
         "session_status": "done",
+        "session_recap": "Built opt-in helper logging.",
+        "session_recap_short": "Helper logging",
         "session_state": "The logging contribution is complete.",
         "session_state_short": "Logging committed",
-        "session_remaining": "Verify the contribution after integration."
+        "session_remaining": "Verify the contribution after integration.",
+        "session_remaining_short": "Verify"
       }
     },
-    "rejected_fields": ["session_title", "session_status", "session_state", "session_state_short", "session_remaining"]
+    "rejected_fields": ["session_title", "session_status", "session_recap", "session_recap_short", "session_state", "session_state_short", "session_remaining", "session_remaining_short"]
   }
 ]

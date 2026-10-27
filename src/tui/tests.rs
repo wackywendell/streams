@@ -1,4 +1,3 @@
-use std::collections::BTreeMap;
 use std::path::PathBuf;
 
 use super::*;
@@ -14,10 +13,6 @@ struct Fixture {
     width: u16,
     height: u16,
     notice: Option<String>,
-    lines: Vec<String>,
-    widths: Vec<usize>,
-    documents: Vec<(char, TargetDto)>,
-    links: Vec<String>,
 }
 #[derive(Deserialize)]
 struct SnapshotDto {
@@ -58,16 +53,6 @@ struct LocationDto {
     root: Option<PathBuf>,
     file: Option<PathBuf>,
     error: Option<String>,
-}
-#[derive(Deserialize)]
-struct TargetDto {
-    scope: ScopeDto,
-    #[serde(rename = "repositoryUrl")]
-    repository_url: String,
-    r#ref: String,
-    added_at: Option<String>,
-    #[serde(flatten)]
-    location: LocationDto,
 }
 impl LocationDto {
     fn resolved(self) -> ResolvedDocument {
@@ -167,11 +152,83 @@ fn lines(buffer: &Buffer) -> Vec<String> {
         .collect()
 }
 
-#[derive(Deserialize)]
-struct WidthDifference {
-    fixture: String,
-    remove_line: Option<usize>,
-    replace_line: Option<(usize, String)>,
+#[derive(serde::Serialize, Deserialize)]
+struct CardGolden {
+    name: String,
+    lines: Vec<String>,
+    documents: Vec<char>,
+    links: Vec<String>,
+}
+
+type CardCase = (String, Option<CardSnapshot>, u16, u16, Option<String>);
+
+fn card_text_cases() -> Vec<CardCase> {
+    let mut cases: Vec<_> = fixtures()
+        .into_iter()
+        .map(|f| {
+            (
+                f.name,
+                f.snapshot.map(SnapshotDto::snapshot),
+                f.width,
+                f.height,
+                f.notice,
+            )
+        })
+        .collect();
+    let mut card = snapshot();
+    card.stream.goal = Some("Help people track work across sessions and use their cards.".into());
+    card.session.title = "Naming".into();
+    card.session.recap = "Built naming settings and Pi name import.".into();
+    card.session.state = "Waiting on Argon review.".into();
+    card.session.remaining = "Deploy and reload.".into();
+    card.stream.documents.clear();
+    card.context.documents.clear();
+    card.stream.issues.clear();
+    card.stream.prs =
+        vec![Link::new("https://example.com/org/repo/pull/12", "Naming settings").unwrap()];
+    for (name, width, height) in [
+        ("wide", 44, 14),
+        ("narrow", 20, 16),
+        ("short-1", 44, 1),
+        ("short-2", 44, 2),
+        ("short-4", 44, 4),
+        ("short-6", 44, 6),
+    ] {
+        cases.push((
+            format!("card-text-{name}"),
+            Some(card.clone()),
+            width,
+            height,
+            None,
+        ));
+    }
+    for status in [
+        crate::model::Status::Active,
+        crate::model::Status::Waiting,
+        crate::model::Status::Blocked,
+        crate::model::Status::Parked,
+        crate::model::Status::Done,
+    ] {
+        let mut card = card.clone();
+        card.session.status = status;
+        cases.push((format!("card-text-{status}"), Some(card), 44, 14, None));
+    }
+    for field in ["recap", "state", "remaining", "all", "goal"] {
+        let mut card = card.clone();
+        match field {
+            "recap" => card.session.recap.clear(),
+            "state" => card.session.state.clear(),
+            "remaining" => card.session.remaining.clear(),
+            "goal" => card.stream.goal = None,
+            _ => {
+                card.session.recap.clear();
+                card.session.state.clear();
+                card.session.remaining.clear();
+            }
+        }
+        cases.push((format!("card-text-empty-{field}"), Some(card), 44, 14, None));
+    }
+    cases
 }
 
 #[test]
@@ -189,109 +246,49 @@ fn link_actions_require_fresh_membership_under_the_painters_url_policy() {
     assert!(!refreshed.contains_link(&url::Url::parse("file:///tmp/private").unwrap()));
 }
 #[test]
-fn active_renderer_goldens_and_approved_rust_unicode_layout() {
-    // The migration explicitly accepts standard Rust layout for these five cases;
-    // retain the original JS goldens and assert the exact approved line edits.
-    let evidence: Vec<WidthDifference> =
-        serde_json::from_str(include_str!("fixtures/unicode-width-differences.json")).unwrap();
-    assert_eq!(evidence.len(), 5);
-    assert_eq!(
-        UnicodeWidthStr::width("ൎ"),
-        0,
-        "Recheck the recorded Unicode-width evidence"
-    );
-    let mut observed = 0;
-    let mut differences = Vec::new();
-    for fixture in fixtures() {
-        let snapshot = fixture.snapshot.map(SnapshotDto::snapshot);
+fn card_text_goldens_cover_layout_actions_lifecycles_and_empty_blocks() {
+    let goldens: Vec<CardGolden> =
+        serde_json::from_str(include_str!("fixtures/card-text-renderer.json")).unwrap();
+    let cases = card_text_cases();
+    assert_eq!(cases.len(), goldens.len());
+    for ((name, snapshot, width, height, notice), expected) in cases.into_iter().zip(goldens) {
+        assert_eq!(name, expected.name);
         let rendered = super::render::render(
             snapshot.as_ref(),
-            Rect::new(0, 0, fixture.width, fixture.height),
-            fixture.notice.as_deref(),
+            Rect::new(0, 0, width, height),
+            notice.as_deref(),
         );
-        let mut expected = fixture.lines.clone();
-        if let Some(difference) = evidence
-            .iter()
-            .find(|difference| difference.fixture == fixture.name)
-        {
-            observed += 1;
-            assert_ne!(
-                lines(&rendered.buffer),
-                fixture.lines,
-                "Parity now holds: recheck the approved Rust layout difference"
-            );
-            if let Some(line) = difference.remove_line {
-                assert_eq!(expected.remove(line), "ൎ");
-                expected.push(String::new());
-            }
-            if let Some((line, text)) = &difference.replace_line {
-                assert_eq!(expected[*line], format!("{text}ൎ"));
-                expected[*line] = text.clone();
-            }
-        }
-        if lines(&rendered.buffer) != expected {
-            differences.push(format!(
-                "{}\nRust: {:?}\nExpected: {:?}",
-                fixture.name,
-                lines(&rendered.buffer),
-                expected
-            ));
-        }
-        assert!(fixture.widths.iter().all(|&w| w <= fixture.width as usize));
+        assert_eq!(lines(&rendered.buffer), expected.lines, "{name}");
+        assert!(
+            expected
+                .lines
+                .iter()
+                .all(|line| UnicodeWidthStr::width(line.as_str()) <= width as usize)
+        );
+        assert_eq!(
+            rendered.documents.keys().copied().collect::<Vec<_>>(),
+            expected.documents,
+            "{name} keys"
+        );
         assert_eq!(
             rendered
                 .links
                 .iter()
-                .map(|(_, url, _)| url.as_str())
+                .map(|(_, url, _)| url.to_string())
                 .collect::<Vec<_>>(),
-            fixture.links,
-            "{} links",
-            fixture.name
+            expected.links,
+            "{name} links"
         );
-        let targets: BTreeMap<_, _> = fixture
-            .documents
-            .into_iter()
-            .map(|(key, dto)| {
-                let snapshot = snapshot.as_ref().unwrap();
-                assert_eq!(dto.scope.catalog_source, snapshot.scope.catalog_source);
-                assert_eq!(dto.scope.host_id, snapshot.scope.host_id);
-                assert_eq!(dto.scope.stream_id, snapshot.scope.stream_id);
-                assert_eq!(dto.scope.session_id, snapshot.scope.session_id);
-                assert_eq!(
-                    dto.scope.native_session_id,
-                    snapshot.scope.native_session_id
-                );
-                let document = snapshot
-                    .stream
-                    .documents
-                    .iter()
-                    .find(|d| {
-                        d.repository == dto.location.repository && d.path == dto.location.path
-                    })
-                    .unwrap()
-                    .clone();
-                assert_eq!(dto.r#ref, document.r#ref);
-                assert_eq!(dto.added_at, document.commit);
-                (
-                    key,
-                    DocumentTarget {
-                        scope: snapshot.scope.clone(),
-                        owner: snapshot.context.owner.clone(),
-                        document,
-                        repository_url: dto.repository_url,
-                        location: dto.location.resolved(),
-                    },
-                )
-            })
-            .collect();
-        assert_eq!(
-            rendered.documents, targets,
-            "{} document targets",
-            fixture.name
-        );
+        for (key, target) in rendered.documents {
+            let snapshot = snapshot.as_ref().unwrap();
+            let index = super::render::DOCUMENT_KEYS.find(key).unwrap();
+            assert_eq!(
+                target,
+                snapshot.target(&snapshot.stream.documents[index]),
+                "{name} target {key}"
+            );
+        }
     }
-    assert_eq!(observed, evidence.len());
-    assert!(differences.is_empty(), "{}", differences.join("\n"));
 }
 
 #[test]

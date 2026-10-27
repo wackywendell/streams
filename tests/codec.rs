@@ -250,11 +250,14 @@ fn defaults_apply_only_to_missing_nonnullable_fields() {
     let encoded = roundtrip(RecordKind::Session, &session());
     assert_eq!(encoded["title_mode"], "inherit");
     assert_eq!(encoded["status"], "active");
+    assert_eq!(encoded["recap"], "");
+    assert_eq!(encoded["recap_short"], Value::Null);
+    assert_eq!(encoded["remaining_short"], Value::Null);
     assert_eq!(encoded["state"], "");
     assert_eq!(encoded["remaining"], "");
     assert_eq!(encoded["state_short"], Value::Null);
     assert_eq!(encoded["checkout"], Value::Null);
-    for field in ["title_mode", "status", "state", "remaining"] {
+    for field in ["title_mode", "status", "recap", "state", "remaining"] {
         let mut data = session();
         data[field] = Value::Null;
         assert!(

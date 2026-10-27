@@ -78,9 +78,12 @@ harness_session_id: native-session-uuid
 title: Lifecycle design
 title_mode: automatic
 status: active
-state: Draft ADR written.
-state_short: Model drafted
-remaining: Agree record fields and management operations.
+recap: Designed the lifecycle model and drafted its ADR.
+recap_short: Lifecycle model
+state: Reviewing the record fields.
+state_short: Field review
+remaining: Agree the record fields.
+remaining_short: Agree fields
 
 checkout:
   repository: streams
@@ -88,7 +91,7 @@ checkout:
   directory_within_checkout: "."
 ```
 
-`title` concisely names the contribution; there is no separate long assignment description. `state` describes its substantive progress and present condition, and `remaining` its unfinished scope, not just the next action. These are short descriptions, not a growing journal or task backlog. The session's status concerns its assignment, not whether its process is running or the stream is complete. Recovery uses the named remote ref's pushed state; it does not require a pinned commit.
+`title` concisely names the contribution. `recap` describes this conversation's cumulative scope and achievements in a sentence or two. Rewrite it only when the scope or main outcome changes. `state`, labelled Status, describes what it is doing right now in one short sentence. `remaining` describes unfinished work; reports select one concrete next action or blocking decision. These are descriptions, not a growing journal or task backlog. Session text is always report-writable; title modes protect only titles. New fields default to empty text or absent short forms, so older records remain readable without a reset. The session's status concerns its assignment, not whether its process is running or the stream is complete. Recovery uses the named remote ref's pushed state; it does not require a pinned commit.
 
 Each session normally updates only its own record. Persistence must preserve accepted update order, without requiring a per-session counter in the logical model. Stream attachment and ownership checks remain separate from progress reporting. Optional placement observations can preserve last-known tab inclusion and order without storing native pane identities in the catalog.
 
@@ -96,17 +99,21 @@ Each session normally updates only its own record. Persistence must preserve acc
 
 | Streams source | Current Work Cards field | Surface |
 | --- | --- | --- |
-| `stream.title` | workspace `title` | Herdr workspace title and card-pane caption |
+| `stream.title` | workspace `title` | Herdr workspace title |
 | `stream.goal` | workspace `goal.text` | Long shared goal in the card |
 | `stream.goal_short` | workspace `goal.short` | Short workspace description |
-| `session.title` | agent `title` | Pi session name, eligible agent-tab name and card heading |
+| `session.title` | agent `title` | Pi session name and eligible agent-tab name |
+| Stream and Session titles | card caption | `Stream title: Session title` |
+| `session.recap` | Session block | Cumulative scope and achievements |
+| `session.recap_short` | `strm_recap_short` | Optional Pi-pane sidebar hint |
 | `session.state` | agent `now` | Long current-state description |
-| `session.state_short` | agent `statusShort` | Short agent description |
+| `session.state_short` | `strm_state_short` | Optional Pi-pane sidebar hint |
 | `session.remaining` | agent `remaining` | Remaining work in the card |
+| `session.remaining_short` | `strm_remaining_short` | Optional Pi-pane sidebar hint |
 | `session.status` | agent `status` | Agent status indicator |
 | Stream document, issue and PR references | workspace references | Card links, resolved through local checkout bindings |
 
-The short fields are optional display derivatives. `goal_short` condenses the goal; `state_short` summarises the session's status, state and remaining work. Generate them alongside the full descriptions, not by truncation or separate per-surface inference. Regenerate or clear a short field when its source content changes. The short workspace description is purpose, not aggregate progress.
+The short fields are optional display derivatives. Each condenses only its matching full text. Generate them alongside those descriptions, not through separate per-surface inference. Prefer 1–2 words, shorter is better, preferably fewer than 20 characters and always fewer than 25. Report parsing caps generated hints at 24 Unicode characters; stored overlong hints remain readable but are not projected. Regenerate or clear a short field when its own source changes. The short workspace description is purpose, not aggregate progress.
 
 These naming mappings are authoritative when their synchronization switches are enabled; see [name ownership](name-ownership.md). Disable a surface's synchronization to manage its label independently. A direct tab rename does not redefine the catalog title or Pi session name. Editor-tab names continue to come from document identity. The stream's lifecycle status has no equivalent in the current shared Work Cards record; it must not replace the agent-status indicator.
 

@@ -15,7 +15,9 @@ export type StreamWire = {
 export type SessionWire = {
   id: string; host_id: string; stream_id: string; harness: string; harness_session_id: string;
   previous_stream_ids?: string[];
-  title: string; title_mode: TitleMode; status: Status; state: string; state_short: string | null; remaining: string;
+  title: string; title_mode: TitleMode; status: Status;
+  recap?: string; recap_short?: string | null;
+  state: string; state_short: string | null; remaining: string; remaining_short?: string | null;
   checkout: { repository: string; repository_url: string; ref: string; directory_within_checkout: string } | null;
 };
 export type LocalContext = {
@@ -50,6 +52,9 @@ export function isSession(value: unknown): value is SessionWire {
   return object(value) && [value.id, value.host_id, value.stream_id, value.harness, value.harness_session_id].every(identity)
     && [value.title, value.state, value.remaining].every(text) && titleMode(value.title_mode) && status(value.status)
     && nullableText(value.state_short)
+    && (value.recap === undefined || text(value.recap))
+    && (value.recap_short === undefined || nullableText(value.recap_short))
+    && (value.remaining_short === undefined || nullableText(value.remaining_short))
     && (value.previous_stream_ids === undefined || Array.isArray(value.previous_stream_ids)
       && value.previous_stream_ids.every(identity)
       && value.previous_stream_ids.every((id, i, ids) => id !== (i + 1 < ids.length ? ids[i + 1] : value.stream_id)))

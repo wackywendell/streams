@@ -149,7 +149,7 @@ test('production parser preserves manual protection and rejects unknown fields, 
  assert.deepEqual(parseInferenceResponse(request,response({changes:{title:'Unapproved',state:null}})),{changes:{state:''}});
  assert.throws(()=>parseInferenceResponse(request,response({changes:{unrecognized:'x'}})),/invalid structured/);
  const payload=buildInferencePayload(request);
- assert.match(payload.systemPrompt,/Infer session.status/);assert.match(payload.systemPrompt,/usually one short sentence/);
+ assert.match(payload.systemPrompt,/Infer session.status/);assert.match(payload.systemPrompt,/in one short sentence/);
  assert.equal(payload.tools[0].parameters.additionalProperties,false);
  assert.equal(payload.tools[0].parameters.properties.changes.additionalProperties,false);
 });

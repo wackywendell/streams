@@ -76,7 +76,9 @@ impl CardFixture {
             plugin_root: PathBuf::from(env!("CARGO_MANIFEST_DIR"))
                 .join("integrations/herdr-work-cards"),
         };
-        Self { native, launch }
+        let fixture = Self { native, launch };
+        fixture.save_recap("Before");
+        fixture
     }
     fn command(&self) -> Command {
         let mut command = self.native.fixture.command();
@@ -127,10 +129,10 @@ impl CardFixture {
             paths,
         }
     }
-    fn save_title(&self, title: &str) {
+    fn save_recap(&self, recap: &str) {
         let mut session: streams_temper::model::Session =
             serde_json::from_value(self.native.session.clone()).unwrap();
-        session.title = title.into();
+        session.recap = recap.into();
         let value = serde_json::to_value(&session).unwrap();
         let record = Record::Session(session);
         let path = self
@@ -256,7 +258,7 @@ fn real_card_observes_its_exact_session_after_a_pi_move_and_never_reopens() {
     let mut pty = f.spawn();
     painted(&mut pty, "Before");
     f.move_owner("owner-moved");
-    f.save_title("After external save");
+    f.save_recap("After external save");
     painted(&mut pty, "After external save");
     pty.send(b"q");
     pty.finish(true);
@@ -290,7 +292,7 @@ fn a_real_card_recovers_routing_from_a_new_observation_without_an_owner_baseline
     gate.entered.recv_timeout(Duration::from_secs(3)).unwrap();
     f.move_owner("owner-moved-during-gap");
     drop(gate);
-    f.save_title("After recovered observation");
+    f.save_recap("After recovered observation");
     painted(&mut pty, "After recovered observation");
     for key in ["panes", "agents"] {
         f.native.snapshot.lock().unwrap()[key][0]["agent"] = "other".into();
@@ -313,7 +315,7 @@ fn failed_move_refresh_is_reobserved_before_file_refresh_and_replacement() {
     pty.until(|p| p.screen().contains("Card unavailable"));
     f.native.server.clear();
     let before = f.native.snapshot.lock().unwrap().clone();
-    f.save_title("Recovered through file event");
+    f.save_recap("Recovered through file event");
     painted(&mut pty, "Recovered through file event");
     assert_eq!(
         f.native
@@ -403,7 +405,7 @@ fn a_second_real_card_exits_before_host_io_and_leaves_the_active_card_alone() {
     duplicate.finish(false);
     assert!(f.native.server.methods().is_empty());
     assert_eq!(*f.native.snapshot.lock().unwrap(), before);
-    f.save_title("Active card kept running");
+    f.save_recap("Active card kept running");
     painted(&mut active, "Active card kept running");
     active.send(b"q");
     active.finish(true);
@@ -430,7 +432,7 @@ fn a_real_card_can_refresh_after_its_initial_session_read_failed() {
     fs::write(&staging, original).unwrap();
     fs::rename(staging, path).unwrap();
     painted(&mut pty, "Before");
-    f.save_title("Recovered after initial failure");
+    f.save_recap("Recovered after initial failure");
     painted(&mut pty, "Recovered after initial failure");
     pty.send(b"q");
     pty.finish(true);

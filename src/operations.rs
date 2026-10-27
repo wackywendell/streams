@@ -111,18 +111,17 @@ pub fn normalize_changes(
         out.entry("goal_short".to_string()).or_insert(Value::Null);
     }
     if let Record::Session(session) = before {
-        let state_changed = [
-            ("state", session.state.as_str()),
-            ("remaining", session.remaining.as_str()),
-            ("status", session.status.as_ref()),
-        ]
-        .iter()
-        .any(|(field, current)| {
-            out.get(*field)
-                .is_some_and(|value| value.as_str() != Some(*current))
-        });
-        if state_changed {
-            out.entry("state_short".to_string()).or_insert(Value::Null);
+        for (field, current, short) in [
+            ("recap", session.recap.as_str(), "recap_short"),
+            ("state", session.state.as_str(), "state_short"),
+            ("remaining", session.remaining.as_str(), "remaining_short"),
+        ] {
+            if out
+                .get(field)
+                .is_some_and(|value| value.as_str() != Some(current))
+            {
+                out.entry(short.to_string()).or_insert(Value::Null);
+            }
         }
     }
     out
@@ -341,9 +340,12 @@ record_fields! {
             title: (true, Automatic),
             title_mode: (false, User),
             status: (true, Automatic),
+            recap: (true, Automatic),
+            recap_short: (true, Automatic),
             state: (true, Automatic),
             state_short: (true, Automatic),
             remaining: (true, Automatic),
+            remaining_short: (true, Automatic),
             checkout: (true, None),
         ]
     },
@@ -371,7 +373,15 @@ fn text_group_guards(
             }
         }
         RecordKind::Session => {
-            let state_group = ["state", "state_short", "remaining", "status"];
+            let state_group = [
+                "recap",
+                "recap_short",
+                "state",
+                "state_short",
+                "remaining",
+                "remaining_short",
+                "status",
+            ];
             if fields.iter().any(|f| state_group.contains(f)) {
                 fields.extend(state_group);
             }
@@ -443,7 +453,7 @@ mod field_policy_tests {
             ),
             (
                 RecordKind::Session,
-                "title status state state_short remaining",
+                "title status recap recap_short state state_short remaining remaining_short",
                 true,
                 true,
                 true,

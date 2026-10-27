@@ -4,10 +4,7 @@ use serde::Deserialize;
 use serde_json::{Map, Value, json};
 
 use crate::{
-    codec::{
-        ascii_json, load_json, object, record_from_data, record_to_data, require_object,
-        required_nullable,
-    },
+    codec::{ascii_json, load_json, object, record_from_data, require_object, required_nullable},
     model::{Record, RecordKind, Session, Stream, TitleDefaults, ValidationError, check_text},
     operations::Reconciliation,
 };
@@ -91,13 +88,13 @@ impl Snapshot {
                 },
             )
             .transpose()?;
-        let expected = Value::Array(
-            session
-                .iter()
-                .map(|session| record_to_data(&Record::Session(session.clone())))
-                .collect(),
-        );
-        if serde_json::to_value(&wire.sessions).expect("JSON values serialize") != expected {
+        let sessions = wire
+            .sessions
+            .iter()
+            .map(|value| record_from_data(RecordKind::Session, value))
+            .collect::<Result<Vec<_>, _>>()?;
+        let expected: Vec<_> = session.iter().cloned().map(Record::Session).collect();
+        if sessions != expected {
             return Err(ValidationError::new(
                 "catalog.sessions must contain only the exact addressed Session",
             ));

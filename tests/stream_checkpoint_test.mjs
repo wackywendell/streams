@@ -12,7 +12,7 @@ const jiti = createJiti(import.meta.url);
 const load = (name) => jiti.import(new URL(`../extensions/stream-checkpoint/${name}.ts`, import.meta.url).pathname);
 const { StreamCli, StreamsCliError, receiptText, receiptCanContinue } = await load('streams');
 const { automaticFields, editRequest, FieldEdit } = await load('core');
-const { checkpointContext, infer, changesSchema } = await load('agent');
+const { checkpointContext, infer, changesSchema, buildInferencePayload, parseInferenceResponse } = await load('agent');
 const { chooseInitial } = await load('chooser');
 const { openCard, compose, editField } = await load('panel');
 const { validateReferences, validateChanges } = await load('core');
@@ -118,7 +118,7 @@ test('title defaults use typed config intent and validate the returned policy',a
 });
 test('automatic fields omit protected names and all lifecycle and identity fields',()=>{
  assert.deepEqual(automaticFields('stream',stream,'automatic'),['goal','goal_short']);
- assert.deepEqual(automaticFields('session',session,'automatic'),['title','status','state','state_short','remaining']);
+ assert.deepEqual(automaticFields('session',session,'automatic'),['title','status','recap','recap_short','state','state_short','remaining','remaining_short']);
 });
 test('request freezes original target and stream dependencies; session progress does not guard siblings or stream',()=>{
  const captured=context(); const req=editRequest(captured,'session',{state:'Done'},'automatic');
@@ -490,7 +490,7 @@ test('report prompts separate contribution state from whole-effort purpose witho
   const ctx={model:{contextWindow:100000},modelRegistry:{complete:async(_model,payload)=>{prompts[type]=payload.systemPrompt;return {stopReason:'toolUse',content:[{type:'toolCall',name:'record_card',arguments:answer}]};}}};
   assert.deepEqual(await infer(ctx,{type,catalog:context(),messages:[]},new AbortController().signal),answer);
  }
- assert.match(prompts.session,/usually one short sentence/);assert.match(prompts.session,/empty string when none remains/);
+ assert.match(prompts.session,/in one short sentence/);assert.match(prompts.session,/empty string when none remains/);
  assert.match(prompts.session,/work inherited from or performed by other sessions/);
  assert.match(prompts.stream,/relatively stable purpose/);assert.match(prompts.stream,/saved goal and the addressed Session contribution/);assert.match(prompts.stream,/supplied Sessions are not a complete roster/);
  assert.doesNotMatch(prompts.stream,/actor user|update session.status|10–18 words/);
@@ -502,7 +502,7 @@ test('inference prompt requires short handles rather than work descriptions',asy
  let prompt;
  const ctx={model:{contextWindow:100000},modelRegistry:{complete:async(_model,payload)=>{prompt=payload.systemPrompt;return {stopReason:'toolUse',content:[{type:'toolCall',name:'record_card',arguments:{changes:{}}}]};}}};
  await infer(ctx,{type:'session',catalog:context(),messages:[]},new AbortController().signal);
- for(const rule of [/short, recognizable handles for the sidebar and tab bar/,/descriptions belong in goal and state/,/session.title.*1–2 words, 3 max/,/specific lane, topic, or role/,/not a task sentence or a repetition of the effort title/,/Infer session\.status \(active, waiting, blocked, parked, done\) from the evidence/])assert.match(prompt,rule);
+ for(const rule of [/short, recognizable handles for the sidebar and tab bar/,/descriptions belong in goal and recap/,/session.title.*1–2 words, 3 max/,/specific lane, topic, or role/,/not a task sentence or a repetition of the effort title/,/Infer session\.status \(active, waiting, blocked, parked, done\) from the evidence/])assert.match(prompt,rule);
 });
 test('session reset omits existing descriptions; stream reset retains contribution evidence and protects manual fields',async()=>{
  for(const type of ['session','stream'])for(const sessionMode of ['automatic','manual'])for(const titleMode of ['automatic','manual'])for(const goalMode of ['automatic','manual']) {
@@ -994,10 +994,27 @@ test('trimmed projection excludes tools/thinking; full retains only complete val
  assert.equal(full.messages.filter(m=>m.role==='toolResult').length,1);
  messages[1].content='mutation';assert.equal(trimmed.messages[1].content,'Work');
 });
+test('all session descriptions and short forms share automatic report and reset handling',async()=>{
+ const catalog=context();
+ Object.assign(catalog.session,{recap:'Built settings.',recap_short:'Settings',state:'Under review.',state_short:'Review',remaining:'Land settings.',remaining_short:'Land'});
+ catalog.sessions=[structuredClone(catalog.session)];
+ const f=commandFixture({catalog,infer:async req=>({changes:req.type==='session'?{recap:'Built settings.',state:'Review complete.',remaining:'Land settings.'}:{}})});
+ await f.run('reset session');await until(()=>f.writes.length===1);
+ const saved=f.writes.find(request=>request.kind==='session');
+ for(const field of ['recap_short','state_short','remaining_short'])assert.equal(saved.changes[field],null);
+ assert.equal(saved.changes.recap,'Built settings.');
+ const payload=buildInferencePayload({type:'session',catalog,messages:[]});
+ for(const field of ['recap','recap_short','remaining_short'])assert.ok(Object.hasOwn(payload.tools[0].parameters.properties.changes.properties,field));
+ for(const field of ['recap_short','state_short','remaining_short']){
+  const changes={[field]:' 😀'.repeat(30)};
+  const result=parseInferenceResponse({type:'session',catalog,messages:[]},{content:[{type:'toolCall',name:'record_card',arguments:{changes}}]});
+  assert.ok(Array.from(result.changes[field]).length<=24);
+ }
+});
 test('infer normalizes null remaining/state, empty nullable fields, overlong short hints, and echoed non-automatic fields',async()=>{
  const ctx=changes=>({model:{contextWindow:100000},modelRegistry:{complete:async()=>({stopReason:'toolUse',content:[{type:'toolCall',name:'record_card',arguments:{changes}}]})}});
  const sessionResult=await infer(ctx({title:'  ',state:null,state_short:`${'x'.repeat(90)}\nline`,remaining:null}),{type:'session',catalog:context(),messages:[],reset:true},new AbortController().signal);
- assert.deepEqual(sessionResult,{changes:{state:'',state_short:'x'.repeat(80),remaining:''}});
+ assert.deepEqual(sessionResult,{changes:{state:'',state_short:'x'.repeat(24),remaining:''}});
  const streamCatalog=context();streamCatalog.stream.goal=null;
  const streamResult=await infer(ctx({title:'Echoed manual',status:'active',goal:'   ',goal_short:'Orphan short'}),{type:'stream',catalog:streamCatalog,messages:[],reset:true},new AbortController().signal);
  assert.deepEqual(streamResult,{changes:{goal:null,goal_short:null}});

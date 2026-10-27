@@ -10,7 +10,7 @@ streams agent context --harness pi --session-id NATIVE_ID --json
 
 Use `codex` or `claude` for those harnesses. Context returns persisted local `stream`, `session`, related `sessions`, effective `authority`, `host_id` and an opaque `catalog_source`. It does not fetch or attach. An optional `--stream-id` supplies an exact initial effort identity; it cannot switch an attached conversation.
 
-Keep this capture immutable while generating one target's changes. A session report can update its title, status, state, state_short and remaining work. A stream description report can update title, goal and goal_short, not stream status or archive state. Omit manually protected names/goals. Produce compact derivatives alongside their source, or let them clear when that source changes.
+Keep this capture immutable while generating one target's changes. A session report can update title, lifecycle status, recap, state, remaining and their matching `_short` forms. Recap records this conversation’s cumulative scope and achievements; state records what it is doing right now. Keep short forms to 1–2 words when possible, preferably under 20 characters and always under 25. A stream description report can update title, goal and goal_short, not stream status or archive state. Omit manually protected names/goals. Produce compact derivatives alongside their source, or let them clear when that source changes.
 
 Before submitting, verify that the same native conversation and attachment are active and its captured evidence remains on the active branch. Appended turns may follow a valid captured prefix; a rewind or branch replacement invalidates it. If catalog selection changed, stop rather than applying to the replacement.
 

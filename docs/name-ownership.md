@@ -27,10 +27,10 @@ The existing mapping remains:
 | Workspace name | Stream title | Observed workspace associated with the Stream |
 | Agent tab name | Session title | Agent owns the actual first layout pane |
 | Pi session name | Session title | Current Pi session |
-| Card caption | Stream title | Current paired card |
+| Card caption | `Stream title: Session title` | Current paired card |
 | Editor tab name | Exact document identity | Observed editor owns the actual first layout pane |
 
-The card pane will display the saved Stream title, matching the workspace name when workspace naming is enabled. A static launch title such as `Streams work card` must not mask that projection. The native projection executor will own this pane-name update; Pi and the renderer will not add separate writers. Tab synchronization continues to cover editor tabs. Disabling an outgoing switch leaves the current frontend name unchanged. Pi imports remain separately controlled. Re-enabling it resumes projection without reclaiming or consulting old provenance.
+The card pane displays `Stream title: Session title`, so each contribution remains identifiable when several cards share a workspace. This replaces the earlier Stream-title-only caption; workspace names still use only the Stream title. A static launch title such as `Streams work card` must not mask that projection. The native projection executor will own this pane-name update; Pi and the renderer will not add separate writers. Tab synchronization continues to cover editor tabs. Disabling an outgoing switch leaves the current frontend name unchanged. Pi imports remain separately controlled. Re-enabling it resumes projection without reclaiming or consulting old provenance.
 
 ## Rename through the saved record
 

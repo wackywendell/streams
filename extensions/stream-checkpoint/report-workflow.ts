@@ -30,7 +30,9 @@ export async function runReport(action: ReportAction, environment: ReportEnviron
  const inferAndApply = async (kind: "session" | "stream"): Promise<boolean> => {
   const inferred = await generate({type: kind, catalog: capture.catalog, messages: capture.evidence.messages, instructions, reset});
   if (signal.aborted || !await capture.attached()) return false;
-  if (kind === "session" && reset && capture.catalog.session!.state_short !== null && !Object.hasOwn(inferred.changes, "state_short")) inferred.changes.state_short = null;
+  if (kind === "session" && reset) for (const short of ["recap_short", "state_short", "remaining_short"] as const) {
+   if (capture.catalog.session![short] != null && !Object.hasOwn(inferred.changes, short)) inferred.changes[short] = null;
+  }
   if (kind === "stream" && reset && capture.catalog.stream!.goal_mode === "automatic" && capture.catalog.stream!.goal_short !== null && !Object.hasOwn(inferred.changes, "goal_short")) inferred.changes.goal_short = null;
   if (!Object.keys(inferred.changes).length) return true;
   const receipt = await environment.apply(editRequest(capture.catalog, kind, inferred.changes, "automatic", environment.operationId()));

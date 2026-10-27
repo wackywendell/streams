@@ -209,12 +209,24 @@ fn session_attach_captures_explicit_native_id_and_keeps_local_directory_state_pr
         "session",
         "update",
         session_id,
+        "--recap",
+        "Added search filters",
+        "--recap-short",
+        "Search",
         "--state",
         "Working",
+        "--state-short",
+        "Review",
+        "--remaining-short",
+        "Land",
         "--remaining-file",
         "-",
     ]);
+    assert_eq!(changed["session"]["recap"], "Added search filters");
+    assert_eq!(changed["session"]["recap_short"], "Search");
     assert_eq!(changed["session"]["state"], "Working");
+    assert_eq!(changed["session"]["state_short"], "Review");
+    assert_eq!(changed["session"]["remaining_short"], "Land");
     let files = catalog_files(&f.root());
     assert!(
         !files

@@ -84,6 +84,12 @@ test('report prompts prefer current tasks, enduring responsibilities and actiona
  assert.match(sessionPrompt,/Do not confuse a request or a plan with work already completed/);
  assert.match(sessionPrompt,/continuing responsibility, not its latest task/);
  assert.match(sessionPrompt,/Keep recognizable titles that already fit/);
+ assert.match(sessionPrompt,/cumulative scope and main outcomes/);
+ assert.match(sessionPrompt,/rewrite it only when the scope or main outcome changes/);
+ assert.match(sessionPrompt,/what this session is doing right now/);
+ assert.match(sessionPrompt,/Produce recap_short, state_short and remaining_short alongside their full text/);
+ assert.match(sessionPrompt,/prefer 1–2 words, shorter is better/);
+ assert.match(sessionPrompt,/preferably fewer than 20 characters, always fewer than 25/);
  assert.match(sessionPrompt,/Remaining names ONE concrete next action or decision/);
  assert.match(sessionPrompt,/roughly 12 words/);
  assert.match(sessionPrompt,/Name the action and its target/);
@@ -308,7 +314,7 @@ test('real preview child applies live derivative-clearing and reconciliation rul
   const rt=runtime(async(_model,payload)=>response({changes:JSON.parse(payload.messages.at(-1).content).task==='session'?{remaining:'Finish tests'}:{goal:'Updated goal'}}));
   const {run}=await replayCapture(capture,f.root,rt,model,update,(input,signal)=>client.preview(input,signal),new AbortController().signal);
   const result=run.samples[0];assert.equal(result.status,'completed',result.error);
-  assert.equal(result.after.session.remaining,'Finish tests');assert.equal(result.after.session.state_short,null);
+  assert.equal(result.after.session.remaining,'Finish tests');assert.equal(result.after.session.state_short,'Old state');assert.equal(result.after.session.remaining_short,null);
   assert.equal(result.after.stream.goal_short,null);assert.equal(result.after.stream.title_mode,'manual');
   assert.ok(result.receipts.every(receipt=>receipt.simulated&&receipt.save.local==='unchanged'));
   assert.equal(readFileSync(f.source,'utf8'),f.raw);

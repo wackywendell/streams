@@ -15,7 +15,7 @@ use url::Url;
 
 use super::{CardSnapshot, DocumentTarget};
 
-const DOCUMENT_KEYS: &str = "abcdefghijklmnoprstuvwxyz";
+pub(super) const DOCUMENT_KEYS: &str = "abcdefghijklmnoprstuvwxyz";
 const DIM: Style = Style::new().add_modifier(Modifier::DIM);
 const BOLD: Style = Style::new().add_modifier(Modifier::BOLD);
 const CYAN: Style = Style::new().fg(Color::Cyan);
@@ -82,6 +82,42 @@ fn wrap(text: &str, width: usize, limit: usize) -> Vec<String> {
         .map(|y| buffer_line(&buffer, y))
         .take_while(|s| !s.is_empty())
         .collect()
+}
+
+/// Only the first goal row reserves the lifecycle marker; work continuations hang by two cells.
+fn wrap_block(
+    text: &str,
+    width: usize,
+    first_width: usize,
+    indent: usize,
+    limit: usize,
+) -> Vec<String> {
+    if limit == 0 {
+        return Vec::new();
+    }
+    let normalized = text.split_whitespace().collect::<Vec<_>>().join(" ");
+    let first = prefix(&normalized, first_width);
+    let end = if first.len() < normalized.len()
+        && !normalized[first.len()..].starts_with(' ')
+        && let Some(space) = first.rfind(' ')
+    {
+        space
+    } else {
+        first.len()
+    };
+    let (end, first) = if end == 0 && !normalized.is_empty() {
+        (normalized.graphemes(true).next().unwrap().len(), "…".into())
+    } else {
+        (end, first[..end].trim_end().to_owned())
+    };
+    let mut rows = vec![first];
+    let indent = indent.min(width.saturating_sub(1));
+    rows.extend(
+        wrap(normalized[end..].trim_start(), width - indent, limit - 1)
+            .into_iter()
+            .map(|line| format!("{}{line}", " ".repeat(indent))),
+    );
+    rows
 }
 
 pub(super) fn buffer_line(buffer: &Buffer, y: u16) -> String {
@@ -377,16 +413,18 @@ pub(super) fn render(
         let goal = plain(snapshot.stream.goal.as_deref().unwrap_or_default())
             .trim()
             .to_owned();
-        let title = plain(&snapshot.session.title).trim().to_owned();
+        let recap = plain(&snapshot.session.recap).trim().to_owned();
         let now = plain(&snapshot.session.state).trim().to_owned();
         let remaining = plain(&snapshot.session.remaining).trim().to_owned();
-        let mut sections = Vec::new();
-        if !goal.is_empty() {
-            sections.push((String::new(), goal, false, true));
-        }
-        sections.push((title, now, true, false));
-        if !remaining.is_empty() {
-            sections.push(("Remaining".into(), remaining, false, false));
+        let mut sections = vec![("", goal, true)];
+        for (label, body) in [
+            ("Session", recap),
+            ("Status", now),
+            ("Remaining", remaining),
+        ] {
+            if !body.is_empty() {
+                sections.push((label, body, false));
+            }
         }
         let mut budget = if references.is_empty() || content_height < 2 {
             content_height
@@ -404,11 +442,11 @@ pub(super) fn render(
         );
         let mut goal_end = 0;
         let mut work_end = 0;
-        for (index, (label, body, own_status, goal)) in sections.iter().enumerate() {
+        for (index, (label, body, goal)) in sections.iter().enumerate() {
             if budget == 0 {
                 break;
             }
-            let section_width = if *own_status && width >= status_width + 3 {
+            let first_width = if index == 0 && width >= status_width + 3 {
                 width - status_width - 2
             } else {
                 width
@@ -429,26 +467,36 @@ pub(super) fn render(
                     ""
                 }
             );
-            let mut state = wrap(&text, section_width, budget + 1);
-            if state.is_empty() && *own_status {
-                state.push(String::new());
-            }
-            let headings = wrap(&heading, section_width, budget + 1);
+            let mut state = wrap_block(
+                &text,
+                width,
+                first_width,
+                if *goal { 0 } else { 2 },
+                budget + 1,
+            );
             let reserved = (sections.len() - index - 1).min(budget - 1);
             let visible = state.len().min(budget - reserved);
             if state.len() > visible || (budget == visible && index < sections.len() - 1) {
-                state[visible - 1] = prefix(&state[visible - 1], section_width - 1)
+                let last_width = if visible == 1 { first_width } else { width };
+                state[visible - 1] = prefix(&state[visible - 1], last_width - 1)
                     .trim_end()
                     .to_owned()
                     + "…";
             }
             for (row, text) in state.into_iter().take(visible).enumerate() {
-                let heading = boundary(&text, headings.get(row).map_or(0, String::len));
+                let heading = boundary(
+                    &text,
+                    if row == 0 {
+                        heading.len().min(text.len())
+                    } else {
+                        0
+                    },
+                );
                 rows.push(Row::State {
                     text,
                     heading,
                     goal: *goal,
-                    status: (*own_status && row == 0 && width >= status_width + 3)
+                    status: (index == 0 && row == 0 && width >= status_width + 3)
                         .then(|| (status.clone(), style)),
                 });
             }
@@ -478,7 +526,7 @@ pub(super) fn render(
         boundaries.truncate(content_height - rows.len());
         boundaries.sort_unstable_by(|a, b| b.cmp(a));
         for boundary in boundaries {
-            rows.insert(boundary, Row::Text(String::new(), Style::new()));
+            rows.insert(boundary, Row::Text("─".repeat(width), DIM));
         }
     }
     while rows.len() < content_height {

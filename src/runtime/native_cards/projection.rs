@@ -41,6 +41,7 @@ impl NativeCardEngine {
             .expect("located tab");
         let workspace_title = self.card.stream().title.clone();
         let session_title = self.card.session().title.clone();
+        let card_title = format!("{workspace_title}: {session_title}");
         let association = stream_tokens(
             &self.card.scope().catalog_source,
             &self.card.scope().host_id,
@@ -78,8 +79,16 @@ impl NativeCardEngine {
                     Some(self.card.session().status.to_string()),
                 ),
                 (
+                    "strm_recap_short".into(),
+                    compact(self.card.session().recap_short.as_deref()),
+                ),
+                (
                     "strm_state_short".into(),
                     compact(self.card.session().state_short.as_deref()),
+                ),
+                (
+                    "strm_remaining_short".into(),
+                    compact(self.card.session().remaining_short.as_deref()),
                 ),
             ],
         );
@@ -104,10 +113,13 @@ impl NativeCardEngine {
         let caption = self
             .display
             .as_ref()
-            .filter(|pane| self.snapshot.pane_label(&pane.pane.id) != Some(&workspace_title))
+            .filter(|pane| self.snapshot.pane_label(&pane.pane.id) != Some(&card_title))
             .cloned();
-        if report.workspace == NameOutcome::Renamed || caption.is_some() {
+        if report.workspace == NameOutcome::Renamed {
             config::validate_title(&workspace_title)?;
+        }
+        if caption.is_some() {
+            config::validate_title(&card_title)?;
         }
         if report.tab == NameOutcome::Renamed {
             config::validate_title(&session_title)?;
@@ -142,7 +154,7 @@ impl NativeCardEngine {
             self.rename("tab", &owner.pane.tab_id, session_title)?;
         }
         if let Some(card) = caption {
-            self.rename("pane", &card.pane.id, workspace_title)?;
+            self.rename("pane", &card.pane.id, card_title)?;
         }
         self.follow_display()?;
         Ok(report)
@@ -162,7 +174,7 @@ fn compact(value: Option<&str>) -> Option<String> {
         .filter(|value| {
             !value.is_empty()
                 && value.trim() == *value
-                && value.chars().count() <= 80
+                && value.chars().count() < 25
                 && !value.chars().any(char::is_control)
         })
         .map(str::to_owned)

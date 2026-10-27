@@ -1,6 +1,6 @@
 # streams
 
-Streams keeps a personal catalog of ongoing work. Each stream has a stable identity, an optional goal, a work status and links to project documents. Sessions describe their own current state and remaining work. Plans and design decisions stay in project repositories, not in scratch notes.
+Streams keeps a personal catalog of ongoing work. Each stream has a stable identity, an optional goal, a work status and links to project documents. Sessions describe their own scope and achievements, current status and remaining work. Plans and design decisions stay in project repositories, not in scratch notes.
 
 This checkout includes the catalog CLI, Pi work-card extension and bundled agent skill. Published `v0.1.0` packages still use the scratch workflow; do not mix those packages with this CLI.
 
@@ -110,12 +110,13 @@ Omitted fields stay unchanged. `--clear-goal` removes a goal. Text-file flags re
 streams session attach STREAM_ID --harness pi --session-id NATIVE_ID --title "CLI tests"
 streams session list --stream STREAM_ID
 streams session show SESSION_RECORD_ID
-streams session update SESSION_RECORD_ID --state "Search tests pass" --remaining "Check refresh conflicts"
-streams session update SESSION_RECORD_ID --state-file ./state.txt --remaining-file ./remaining.txt
+streams session update SESSION_RECORD_ID --recap "Added search filters" --state "Checking refresh conflicts" --remaining "Review conflict handling"
+streams session update SESSION_RECORD_ID --recap-file ./recap.txt --state-file ./state.txt --remaining-file ./remaining.txt
+streams session update SESSION_RECORD_ID --recap-short "Search" --state-short "Review" --remaining-short "Land"
 streams session update SESSION_RECORD_ID --status done
 ```
 
-Attaching records an existing conversation; it does not start it. A session has one concise title, a status, current state and remaining work. Its native identity belongs to one host. The owning host must authorise attachments and session updates. Finishing a session does not finish the stream.
+Attaching records an existing conversation; it does not start it. A session has one concise title, a lifecycle status, a cumulative `recap`, current `state` (labelled Status) and `remaining` work. Each text has a matching `_short` form. Reports prefer 1–2 words and fewer than 20 characters, with a 24-character maximum. Session text stays report-writable; only titles have automatic/manual/inherit modes. All 6 text fields accept `--FIELD`, `--FIELD-file` and `--clear-FIELD` (use hyphens in flag names). Clearing full text saves an empty string; clearing a short form saves null. Its native identity belongs to one host. The owning host must authorise attachments and session updates. Finishing a session does not finish the stream.
 
 For a portable checkout reference, add `--repository ALIAS --ref BRANCH` when attaching. `--cwd` records the local directory. Session references also accept `HOST_ID/SESSION_RECORD_ID` when needed to disambiguate IDs.
 

@@ -54,6 +54,7 @@ impl World {
         owner["tokens"] = json!({"strm_status":card(&parsed).session().status.to_string()});
         let mut display = pane("card", "card-terminal", "w", "t", "original card");
         display["tokens"] = json!(card_tokens(card(&parsed).scope()));
+        display["label"] = json!("Effort: Conversation");
         Self {
             snapshot: json!({
             "workspaces":[{"workspace_id":"w","number":1,"label":"Effort","resource":"source workspace",
@@ -326,6 +327,60 @@ impl Fixture {
         )
     }
 }
+#[test]
+fn projection_owns_combined_caption_and_all_three_pi_short_forms() {
+    let f = Fixture::new();
+    f.world.lock().unwrap().row("pane", "card")["label"] = json!("Old caption");
+    let mut engine = f.engine().unwrap();
+    let set_short = |engine: &mut NativeCardEngine, recap, state, remaining| {
+        let mut session = engine.card.session().clone();
+        session.recap_short = recap;
+        session.state_short = state;
+        session.remaining_short = remaining;
+        engine.card = CardSnapshot::new(
+            engine.card.stream().clone(),
+            session,
+            DisplayContext {
+                catalog_source: "catalog".into(),
+                owner: engine.card.owner().clone(),
+                checkouts: vec![],
+                documents: vec![],
+            },
+        )
+        .unwrap();
+    };
+    set_short(
+        &mut engine,
+        Some("Card text".into()),
+        Some("Review".into()),
+        Some("Land".into()),
+    );
+    engine.project().unwrap();
+    {
+        let mut world = f.world.lock().unwrap();
+        assert_eq!(world.row("pane", "card")["label"], "Effort: Conversation");
+        let tokens = &world.row("pane", "owner")["tokens"];
+        assert_eq!(tokens["strm_recap_short"], "Card text");
+        assert_eq!(tokens["strm_state_short"], "Review");
+        assert_eq!(tokens["strm_remaining_short"], "Land");
+        assert_eq!(world.row("workspace", "w")["label"], "Effort");
+        assert_eq!(world.row("tab", "t")["label"], "Conversation");
+    }
+    let mut engine = f.engine().unwrap();
+    set_short(
+        &mut engine,
+        Some("x".repeat(25)),
+        Some("x".repeat(24)),
+        None,
+    );
+    engine.project().unwrap();
+    let mut world = f.world.lock().unwrap();
+    let tokens = &world.row("pane", "owner")["tokens"];
+    assert!(tokens.get("strm_recap_short").is_none());
+    assert_eq!(tokens["strm_state_short"], "x".repeat(24));
+    assert!(tokens.get("strm_remaining_short").is_none());
+}
+
 #[test]
 fn a_moved_pi_is_found_by_terminal_and_its_existing_card_follows_without_a_baseline() {
     let f = Fixture::new();

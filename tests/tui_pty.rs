@@ -28,7 +28,7 @@ fn snapshot(read: usize) -> CardSnapshot {
         root: "/code/library".into(),
     };
     let mut session = source["session"].clone();
-    session["title"] = format!("{} [read {read}]", session["title"].as_str().unwrap()).into();
+    session["recap"] = format!("Contribution [read {read}]").into();
     CardSnapshot::new(
         serde_json::from_value(source["stream"].clone()).unwrap(),
         serde_json::from_value(session).unwrap(),

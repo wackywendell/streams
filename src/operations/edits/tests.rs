@@ -1,5 +1,6 @@
 use super::*;
 use crate::model::{Link, Status};
+use crate::operations::DomainOutcome;
 use serde_json::json;
 
 fn changes(value: Value) -> Map<String, Value> {
@@ -24,6 +25,94 @@ fn changed(result: Reconciliation) -> Record {
         panic!("expected changes, got {result:?}")
     };
     *record
+}
+
+#[test]
+fn each_progress_field_invalidates_only_its_own_short_form() {
+    let mut before = session();
+    before.recap = "Scope".into();
+    before.state = "Now".into();
+    before.remaining = "Next".into();
+    before.recap_short = Some("Scope".into());
+    before.state_short = Some("Now".into());
+    before.remaining_short = Some("Next".into());
+    for field in ["recap", "state", "remaining", "status"] {
+        let value = if field == "status" {
+            "waiting"
+        } else {
+            "Updated"
+        };
+        let after = apply_changes(
+            &Record::Session(before.clone()),
+            &changes(json!({field:value})),
+            Actor::Automatic,
+        )
+        .unwrap();
+        let Record::Session(after) = after else {
+            unreachable!()
+        };
+        assert_eq!(after.recap_short.is_none(), field == "recap");
+        assert_eq!(after.state_short.is_none(), field == "state");
+        assert_eq!(after.remaining_short.is_none(), field == "remaining");
+        if field != "status" {
+            let short = format!("{field}_short");
+            let after = apply_changes(
+                &Record::Session(before.clone()),
+                &changes(json!({field:value,short.clone():"Fresh"})),
+                Actor::Automatic,
+            )
+            .unwrap();
+            assert_eq!(crate::codec::record_to_data(&after)[short], "Fresh");
+        }
+    }
+}
+
+#[test]
+fn progress_group_guards_cover_all_long_and_short_fields() {
+    let before = session();
+    for actor in [Actor::Automatic, Actor::User] {
+        for field in [
+            "recap",
+            "recap_short",
+            "state",
+            "state_short",
+            "remaining",
+            "remaining_short",
+            "status",
+        ] {
+            let edit = SessionEdit::new(
+                "report",
+                &before,
+                &changes(json!({"recap":"Scope", "recap_short":"Scope", "remaining_short":"Next"})),
+                actor,
+                NamingMode::Automatic,
+            )
+            .unwrap();
+            let value = if field == "status" {
+                "waiting"
+            } else {
+                "Concurrent"
+            };
+            let Record::Session(current) = apply_changes(
+                &Record::Session(before.clone()),
+                &changes(json!({field:value})),
+                Actor::User,
+            )
+            .unwrap() else {
+                unreachable!()
+            };
+            let result = edit.apply(&current, &stream("a"), NamingMode::Automatic);
+            assert_eq!(
+                result.outcome(),
+                if actor == Actor::Automatic {
+                    DomainOutcome::Superseded
+                } else {
+                    DomainOutcome::Conflict
+                },
+                "{field}"
+            );
+        }
+    }
 }
 
 #[test]

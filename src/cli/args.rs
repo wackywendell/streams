@@ -331,17 +331,49 @@ pub(super) struct StreamFields {
 
 #[derive(Debug, Default, Args)]
 #[group(skip)]
-#[command(group(ArgGroup::new("state-input").args(["state", "state_file"])))]
-#[command(group(ArgGroup::new("remaining-input").args(["remaining", "remaining_file"])))]
+#[command(group(ArgGroup::new("recap-input").args(["recap", "recap_file", "clear_recap"])))]
+#[command(group(ArgGroup::new("recap-short-input").args(["recap_short", "recap_short_file", "clear_recap_short"])))]
+#[command(group(ArgGroup::new("state-input").args(["state", "state_file", "clear_state"])))]
+#[command(group(ArgGroup::new("state-short-input").args(["state_short", "state_short_file", "clear_state_short"])))]
+#[command(group(ArgGroup::new("remaining-input").args(["remaining", "remaining_file", "clear_remaining"])))]
+#[command(group(ArgGroup::new("remaining-short-input").args(["remaining_short", "remaining_short_file", "clear_remaining_short"])))]
 pub(super) struct SessionFields {
+    #[arg(long)]
+    pub(super) recap: Option<String>,
+    #[arg(long)]
+    pub(super) recap_file: Option<PathBuf>,
+    #[arg(long)]
+    pub(super) clear_recap: bool,
+    #[arg(long)]
+    pub(super) recap_short: Option<String>,
+    #[arg(long)]
+    pub(super) recap_short_file: Option<PathBuf>,
+    #[arg(long)]
+    pub(super) clear_recap_short: bool,
     #[arg(long)]
     pub(super) state: Option<String>,
     #[arg(long)]
     pub(super) state_file: Option<PathBuf>,
     #[arg(long)]
+    pub(super) clear_state: bool,
+    #[arg(long)]
+    pub(super) state_short: Option<String>,
+    #[arg(long)]
+    pub(super) state_short_file: Option<PathBuf>,
+    #[arg(long)]
+    pub(super) clear_state_short: bool,
+    #[arg(long)]
     pub(super) remaining: Option<String>,
     #[arg(long)]
     pub(super) remaining_file: Option<PathBuf>,
+    #[arg(long)]
+    pub(super) clear_remaining: bool,
+    #[arg(long)]
+    pub(super) remaining_short: Option<String>,
+    #[arg(long)]
+    pub(super) remaining_short_file: Option<PathBuf>,
+    #[arg(long)]
+    pub(super) clear_remaining_short: bool,
     #[arg(long)]
     pub(super) title_mode: Option<TitleMode>,
     #[arg(long)]
@@ -611,10 +643,31 @@ mod tests {
     }
 
     #[test]
+    fn session_text_and_short_forms_have_exclusive_text_file_and_clear_flags() {
+        for field in [
+            "recap",
+            "recap-short",
+            "state",
+            "state-short",
+            "remaining",
+            "remaining-short",
+        ] {
+            let flag = format!("--{field}");
+            let file = format!("--{field}-file");
+            let clear = format!("--clear-{field}");
+            assert!(parse(&["session", "update", "id", &flag, "text"]).is_ok());
+            assert!(parse(&["session", "update", "id", &file, "-"]).is_ok());
+            assert!(parse(&["session", "update", "id", &clear]).is_ok());
+            assert!(parse(&["session", "update", "id", &flag, "text", &file, "-"]).is_err());
+            assert!(parse(&["session", "update", "id", &flag, "text", &clear]).is_err());
+            assert!(parse(&["session", "update", "id", &file, "-", &clear]).is_err());
+        }
+    }
+
+    #[test]
     fn session_rejects_flags_absent_from_existing_grammar() {
         for flag in [
-            "--clear-state",
-            "--clear-remaining",
+            "--recap-mode",
             "--state-mode",
             "--remaining-mode",
             "--checkout-repository",

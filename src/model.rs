@@ -509,12 +509,19 @@ pub struct Session {
     pub title_mode: TitleMode,
     #[serde(default)]
     pub status: Status,
-    /// Reported work state, distinct from status and the harness's native lifecycle.
+    /// This conversation's scope and cumulative contribution.
+    #[serde(default)]
+    pub recap: String,
+    #[serde(default)]
+    pub recap_short: Option<String>,
+    /// Current work, distinct from lifecycle status.
     #[serde(default)]
     pub state: String,
     pub state_short: Option<String>,
     #[serde(default)]
     pub remaining: String,
+    #[serde(default)]
+    pub remaining_short: Option<String>,
     #[serde(default, deserialize_with = "optional_object")]
     pub checkout: Option<Checkout>,
 }
@@ -570,9 +577,12 @@ impl Session {
             title: title.into(),
             title_mode: TitleMode::Inherit,
             status: Status::Active,
+            recap: String::new(),
+            recap_short: None,
             state: String::new(),
             state_short: None,
             remaining: String::new(),
+            remaining_short: None,
             checkout: None,
         }
         .validated()
@@ -609,10 +619,17 @@ impl Session {
             false,
         )?;
         check_text(&self.title, "session.title", false)?;
+        check_text(&self.recap, "session.recap", true)?;
         check_text(&self.state, "session.state", true)?;
         check_text(&self.remaining, "session.remaining", true)?;
-        if let Some(ref state_short) = self.state_short {
-            check_text(state_short, "session.state_short", false)?;
+        for (name, value) in [
+            ("session.recap_short", &self.recap_short),
+            ("session.state_short", &self.state_short),
+            ("session.remaining_short", &self.remaining_short),
+        ] {
+            if let Some(value) = value {
+                check_text(value, name, false)?;
+            }
         }
         if let Some(ref co) = self.checkout {
             co.validate()?;
