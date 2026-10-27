@@ -89,6 +89,9 @@ impl ApplicationSource {
         owner: &streams_temper::frontend::herdr::HerdrInventoryPane,
     ) -> Result<CardSnapshot> {
         let records = self.records(owner)?;
+        self.display(records)
+    }
+    pub(super) fn display(&self, records: CardRecords) -> Result<CardSnapshot> {
         let documents: Documents = serde_json::from_value(documents::context(
             &self.app.registry(self.records.host().as_str())?,
             &self

@@ -8,6 +8,7 @@ use std::{
     path::{Path, PathBuf},
     sync::{Arc, Mutex},
 };
+use streams_temper::tui::application::Refresh;
 
 type Version = Result<Option<Vec<u8>>, String>;
 fn version(path: &Path) -> Version {
@@ -135,9 +136,14 @@ impl Files {
     pub fn consume(
         &mut self,
         events: Vec<(u8, notify::Result<Event>)>,
+        refresh: Refresh,
     ) -> Result<FileChanges, String> {
         let paths = self.paths.lock().expect("card watch paths").clone();
-        let mut touched = BTreeSet::new();
+        let mut touched = if refresh == Refresh::Full {
+            paths.clone()
+        } else {
+            BTreeSet::new()
+        };
         let mut recovered = false;
         for (generation, event) in events {
             if generation != self.generation {
@@ -210,7 +216,12 @@ mod tests {
         ] {
             let event = Event::new(EventKind::Access(kind)).add_path(own.clone());
             assert!(!relevant(&[own.clone()].into(), &event));
-            assert!(!files.consume(vec![(0, Ok(event))]).unwrap().changed);
+            assert!(
+                !files
+                    .consume(vec![(0, Ok(event))], Refresh::Changed)
+                    .unwrap()
+                    .changed
+            );
         }
     }
     #[test]
@@ -233,14 +244,32 @@ mod tests {
         assert!(relevant(&[own].into(), &event));
         let mut reads = 0;
         for _ in 0..32 {
-            if files.consume(vec![(0, Ok(event.clone()))]).unwrap().changed {
+            if files
+                .consume(vec![(0, Ok(event.clone()))], Refresh::Changed)
+                .unwrap()
+                .changed
+            {
                 reads += 1;
             }
         }
         assert_eq!(reads, 1);
         let dropped = || notify::Error::generic("fixture watcher lost");
-        assert!(files.consume(vec![(0, Err(dropped()))]).unwrap().recovered);
-        assert!(!files.consume(vec![(0, Err(dropped()))]).unwrap().changed);
-        assert!(files.consume(vec![(1, Err(dropped()))]).is_err());
+        assert!(
+            files
+                .consume(vec![(0, Err(dropped()))], Refresh::Changed)
+                .unwrap()
+                .recovered
+        );
+        assert!(
+            !files
+                .consume(vec![(0, Err(dropped()))], Refresh::Changed)
+                .unwrap()
+                .changed
+        );
+        assert!(
+            files
+                .consume(vec![(1, Err(dropped()))], Refresh::Changed)
+                .is_err()
+        );
     }
 }

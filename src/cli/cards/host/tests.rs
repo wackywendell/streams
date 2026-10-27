@@ -84,4 +84,44 @@ fn watched_inputs_have_one_canonical_session_and_stream_address_and_both_directo
         };
         assert!(Inputs::new(&app, &records, &invalid).is_err());
     }
+    let stream = streams_temper::model::Stream::new(&scope.stream_id, "Work", None, HOST).unwrap();
+    let session = Session::new(
+        &scope.session_id,
+        HOST,
+        &scope.stream_id,
+        "pi",
+        native_id,
+        "Conversation",
+    )
+    .unwrap();
+    application::create_record(records.records(), "stream", &Record::Stream(stream)).unwrap();
+    application::create_record(records.records(), "session", &Record::Session(session)).unwrap();
+    let mut files = Files::new(paths, Events::new(PaneEvents::new(|_| {}))).unwrap();
+    let session = inputs.session(&files).unwrap();
+    let stream_path = records
+        .root()
+        .join(format!("hosts/{HOST}/streams/project%2Fname.yaml"));
+    fs::write(&inputs.session_path, "not a record").unwrap();
+    fs::write(stream_path, "not a record").unwrap();
+    let observed = inputs
+        .records(
+            &files,
+            session,
+            streams_temper::tui::NativeOwnerObservation {
+                pane_id: "pane".into(),
+                tab_id: "tab".into(),
+                workspace_id: "workspace".into(),
+            },
+        )
+        .unwrap();
+    assert_eq!(
+        observed.scope(),
+        &scope,
+        "building a frame must reuse watched bytes, not reopen its records"
+    );
+    files.consume(Vec::new(), Refresh::Full).unwrap();
+    assert!(
+        inputs.session(&files).is_err(),
+        "explicit refresh must reread the files rather than keep a stale frame"
+    );
 }

@@ -8,18 +8,18 @@ use std::{collections::BTreeSet, path::PathBuf, sync::Arc};
 use streams_temper::{
     cancellation::Cancellation,
     frontend::herdr::{HerdrClient, HerdrNativeSnapshot, events::EventPane},
-    model::{Record, RecordKind},
+    model::{Record, RecordKind, Session},
     runtime::{
         checkouts::CheckoutRegistry,
         locations::DirectoryBindings,
         native_cards::{
-            CardPlacement, DisplayLifetime, LaunchedCardContext, NativeCardSource,
-            NativeCardsConfig, SOURCE_ENV_KEYS, publish_card_marker,
+            CardPlacement, DisplayLifetime, LaunchedCardContext, NativeCardsConfig,
+            SOURCE_ENV_KEYS, publish_card_marker,
         },
     },
-    storage::records::RecordAddress,
+    storage::records::{RecordAddress, RecordStore},
     tui::{
-        CardSnapshot, Scope, Target,
+        CardRecords, CardSnapshot, Scope, Target,
         application::{PaneEvents, PaneHost, Refresh},
     },
     yaml_store::records::{decode_record, relative_record_path},
@@ -90,10 +90,10 @@ impl Inputs {
             ])
             .collect())
     }
-    fn membership(&self, files: &Files) -> Result<Option<String>> {
-        let Some(bytes) = files.bytes(&self.session_path)? else {
-            return Ok(None);
-        };
+    fn session(&self, files: &Files) -> Result<Session> {
+        let bytes = files
+            .bytes(&self.session_path)?
+            .ok_or("watched Session is missing")?;
         let Record::Session(session) = decode_record(&self.session, bytes)
             .map_err(|e| e.to_string())?
             .record
@@ -106,7 +106,29 @@ impl Inputs {
         {
             return Err("watched Session belongs to another conversation".into());
         }
-        Ok(Some(session.stream_id))
+        Ok(session)
+    }
+    fn records(
+        &self,
+        files: &Files,
+        session: Session,
+        owner: streams_temper::tui::NativeOwnerObservation,
+    ) -> Result<CardRecords> {
+        let address =
+            RecordAddress::new(&self.scope.host_id, RecordKind::Stream, &session.stream_id)
+                .map_err(|error| error.to_string())?;
+        let path = self
+            .root
+            .join(relative_record_path(&address).map_err(|error| error.to_string())?);
+        let bytes = files.bytes(&path)?.ok_or("watched Stream is missing")?;
+        let Record::Stream(stream) = decode_record(&address, bytes)
+            .map_err(|error| error.to_string())?
+            .record
+        else {
+            return Err("card input is not a Stream".into());
+        };
+        CardRecords::new(stream, session, self.scope.catalog_source.clone(), owner)
+            .map_err(|error| error.to_string())
     }
 }
 
@@ -308,7 +330,11 @@ impl Host {
             self.snapshot = None;
             self.placement = None;
         }
-        let changed = self.files.as_mut().unwrap().consume(files)?;
+        let changed = self
+            .files
+            .as_mut()
+            .unwrap()
+            .consume(files, if initial { Refresh::Changed } else { refresh })?;
         if changed.recovered {
             self.snapshot = None;
             self.placement = None;
@@ -331,26 +357,47 @@ impl Host {
         let routes = self.routes(&placement);
         self.native.as_mut().unwrap().activate(routes);
         let inputs = self.inputs.as_ref().unwrap();
-        if let Some(stream) = inputs.membership(self.files.as_ref().unwrap())? {
-            let mut scope = inputs.scope.clone();
-            scope.stream_id = stream;
-            self.watch_scope(&scope, &placement)?;
-        }
-        let owner = self
-            .lifetime
+        let session = inputs.session(self.files.as_ref().unwrap())?;
+        let mut scope = inputs.scope.clone();
+        scope.stream_id = session.stream_id.clone();
+        self.watch_scope(&scope, &placement)?;
+        self.lifetime
             .context()
             .owner
             .locate(self.snapshot.as_ref().unwrap())
             .map_err(|error| error.to_string())?
             .ok_or("Pi exited or changed conversation")?;
-        let mut source = ApplicationSource::new(
-            self.reader(Some(&placement))?,
+        self.records
+            .as_ref()
+            .unwrap()
+            .records()
+            .with_reader(|_| -> application::Result<()> { Ok(()) })
+            .map_err(|error| error.to_string())?;
+        let observed = self.inputs.as_ref().unwrap().records(
+            self.files.as_ref().unwrap(),
+            session,
+            placement.owner.clone(),
+        )?;
+        let reader = self.reader(Some(&placement))?;
+        if reader
+            .config
+            .load()
+            .map_err(|error| error.to_string())?
+            .catalog_root
+            != self.records.as_ref().unwrap().root()
+        {
+            return Err("catalog root setting changed during card read".into());
+        }
+        let source = ApplicationSource::new(
+            reader,
             self.records.as_ref().unwrap().clone(),
             self.lifetime.context().scope.native_session_id.clone(),
             None,
             None,
         );
-        let frame = source.read(owner).map_err(|error| error.to_string())?;
+        let frame = source
+            .display(observed)
+            .map_err(|error| error.to_string())?;
         self.lifetime
             .admit(&frame, &placement)
             .map_err(|error| error.to_string())?;
