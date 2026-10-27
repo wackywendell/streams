@@ -469,10 +469,24 @@ fn malformed_protocol_exits_even_with_a_blocked_request() {
         .unwrap()
         .write_all(b"not json\n")
         .unwrap();
-    assert!(matches!(
-        child.frames.recv_timeout(Duration::from_secs(10)),
-        Err(mpsc::RecvTimeoutError::Disconnected)
-    ));
+    match child.frames.recv_timeout(Duration::from_secs(10)) {
+        Err(mpsc::RecvTimeoutError::Disconnected) => {}
+        Ok(Ok(frame)) => {
+            // Malformed input can cancel request 1 before its worker reaches the lock.
+            assert_eq!(frame["type"], "response", "{frame}");
+            assert_eq!(frame["id"], 1, "{frame}");
+            assert_eq!(frame["outcome"]["status"], "error", "{frame}");
+            assert_eq!(
+                frame["outcome"]["error"]["message"], "request cancelled before dispatch",
+                "{frame}"
+            );
+            assert!(matches!(
+                child.frames.recv_timeout(Duration::from_secs(10)),
+                Err(mpsc::RecvTimeoutError::Disconnected)
+            ));
+        }
+        other => panic!("unexpected frame before protocol shutdown: {other:?}"),
+    }
     let (code, stderr) = child.finish();
     assert_ne!(code, 0);
     assert!(!stderr.is_empty());
