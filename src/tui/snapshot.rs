@@ -106,12 +106,19 @@ pub struct DisplayContext {
     pub documents: Vec<DocumentLocation>,
 }
 
-/// Validated owned display data, never a catalog save precondition or effect capability.
+/// Validated viewing records and identity, without document-location observations.
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub struct CardSnapshot {
+pub struct CardRecords {
     pub(super) stream: Stream,
     pub(super) session: Session,
     pub(super) scope: Scope,
+    pub(super) owner: NativeOwnerObservation,
+}
+
+/// Validated owned display data, never a catalog save precondition or effect capability.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct CardSnapshot {
+    pub(super) records: CardRecords,
     pub(super) context: DisplayContext,
 }
 
@@ -124,13 +131,12 @@ fn absolute(path: &Path) -> bool {
             .any(|c| matches!(c, Component::ParentDir | Component::CurDir))
 }
 
-impl CardSnapshot {
-    /// Checks domain fields, exact contribution membership, and complete location bindings.
-    /// This validates supplied data only; no path or native tuple is attested here.
+impl CardRecords {
     pub fn new(
         stream: Stream,
         session: Session,
-        context: DisplayContext,
+        catalog_source: String,
+        owner: NativeOwnerObservation,
     ) -> Result<Self, ValidationError> {
         stream.validate()?;
         session.validate()?;
@@ -147,15 +153,69 @@ impl CardSnapshot {
             ));
         }
         for value in [
-            &context.catalog_source,
-            &context.owner.pane_id,
-            &context.owner.tab_id,
-            &context.owner.workspace_id,
+            &catalog_source,
+            &owner.pane_id,
+            &owner.tab_id,
+            &owner.workspace_id,
         ] {
             check_text(value, "display identity", false)?;
         }
+        let scope = Scope {
+            catalog_source,
+            host_id: session.host_id.clone(),
+            stream_id: stream.id.clone(),
+            session_id: session.id.clone(),
+            harness: session.harness.clone(),
+            native_session_id: session.harness_session_id.clone(),
+        };
+        Ok(Self {
+            stream,
+            session,
+            scope,
+            owner,
+        })
+    }
+    pub fn scope(&self) -> &Scope {
+        &self.scope
+    }
+    pub fn stream(&self) -> &Stream {
+        &self.stream
+    }
+    pub fn session(&self) -> &Session {
+        &self.session
+    }
+    pub fn owner(&self) -> &NativeOwnerObservation {
+        &self.owner
+    }
+    /// Reuse the painter's URL policy when validating an external action.
+    pub fn contains_link(&self, url: &url::Url) -> bool {
+        self.stream
+            .issues
+            .iter()
+            .chain(&self.stream.prs)
+            .any(|link| super::render::web_url(&link.url).as_ref() == Some(url))
+    }
+}
+
+impl CardSnapshot {
+    /// Checks domain fields, exact contribution membership, and complete location bindings.
+    /// This validates supplied data only; no path or native tuple is attested here.
+    pub fn new(
+        stream: Stream,
+        session: Session,
+        context: DisplayContext,
+    ) -> Result<Self, ValidationError> {
+        let records = CardRecords::new(stream, session, context.catalog_source, context.owner)?;
+        Self::from_records(records, context.checkouts, context.documents)
+    }
+    pub fn from_records(
+        records: CardRecords,
+        checkouts: Vec<CheckoutBinding>,
+        documents: Vec<DocumentLocation>,
+    ) -> Result<Self, ValidationError> {
+        let stream = records.stream();
         let mut bindings = BTreeSet::new();
-        for binding in &context.checkouts {
+        for binding in &checkouts {
             check_text(&binding.selection.checkout_id, "checkout identity", false)?;
             if !stream.repositories.contains_key(&binding.repository)
                 || !absolute(&binding.selection.root)
@@ -166,13 +226,13 @@ impl CardSnapshot {
                 ));
             }
         }
-        if context.documents.len() != stream.documents.len() {
+        if documents.len() != stream.documents.len() {
             return Err(ValidationError::new(
                 "Exactly one app location is required per document",
             ));
         }
         let mut identities = BTreeSet::new();
-        for location in &context.documents {
+        for location in &documents {
             if !identities.insert((&location.repository, &location.path))
                 || !stream
                     .documents
@@ -184,8 +244,7 @@ impl CardSnapshot {
                 ));
             }
             if let Some(selection) = location.location.selection()
-                && !context
-                    .checkouts
+                && !checkouts
                     .iter()
                     .any(|b| b.repository == location.repository && b.selection == *selection)
             {
@@ -210,44 +269,36 @@ impl CardSnapshot {
                 _ => {}
             }
         }
-        let scope = Scope {
-            catalog_source: context.catalog_source.clone(),
-            host_id: session.host_id.clone(),
-            stream_id: stream.id.clone(),
-            session_id: session.id.clone(),
-            harness: session.harness.clone(),
-            native_session_id: session.harness_session_id.clone(),
+        let context = DisplayContext {
+            catalog_source: records.scope().catalog_source.clone(),
+            owner: records.owner().clone(),
+            checkouts,
+            documents,
         };
-        Ok(Self {
-            stream,
-            session,
-            scope,
-            context,
-        })
+        Ok(Self { records, context })
     }
 
+    pub fn into_records(self) -> CardRecords {
+        self.records
+    }
     pub fn scope(&self) -> &Scope {
-        &self.scope
+        self.records.scope()
     }
     pub fn stream(&self) -> &Stream {
-        &self.stream
+        self.records.stream()
     }
     pub fn session(&self) -> &Session {
-        &self.session
+        self.records.session()
     }
-    /// Reuse the painter's URL policy when validating an external action.
     pub fn contains_link(&self, url: &url::Url) -> bool {
-        self.stream
-            .issues
-            .iter()
-            .chain(&self.stream.prs)
-            .any(|link| super::render::web_url(&link.url).as_ref() == Some(url))
+        self.records.contains_link(url)
     }
     pub fn owner(&self) -> &NativeOwnerObservation {
-        &self.context.owner
+        self.records.owner()
     }
     pub fn document_target(&self, repository: &str, path: &str) -> Option<DocumentTarget> {
-        self.stream
+        self.records
+            .stream
             .documents
             .iter()
             .find(|document| document.repository == repository && document.path == path)
@@ -262,10 +313,10 @@ impl CardSnapshot {
             .find(|l| l.repository == document.repository && l.path == document.path)
             .expect("snapshot construction checks complete locations");
         DocumentTarget {
-            scope: self.scope.clone(),
-            owner: self.context.owner.clone(),
+            scope: self.scope().clone(),
+            owner: self.owner().clone(),
             document: document.clone(),
-            repository_url: self.stream.repositories[&document.repository].url.clone(),
+            repository_url: self.stream().repositories[&document.repository].url.clone(),
             location: location.location.clone(),
         }
     }

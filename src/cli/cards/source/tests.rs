@@ -6,7 +6,7 @@ use streams_temper::{
     agent::{self, ContextRequest},
     config::Config,
     frontend::herdr::HerdrInventoryPane,
-    model::{Record, Session, Stream},
+    model::{Document, Record, Repository, Session, Stream},
     storage::{
         StorageError,
         records::{RecordAddress, RecordChange, RecordRequest, RecordStore},
@@ -64,7 +64,17 @@ fn source_reuses_supplied_records_and_each_later_read_addresses_only_its_session
             })
             .unwrap(),
         );
-        let stream = Stream::new("effort", "Effort", None, host.as_str()).unwrap();
+        let mut stream = Stream::new("effort", "Effort", None, host.as_str()).unwrap();
+        for index in 0..4 {
+            let alias = format!("repository-{index}");
+            stream.repositories.insert(
+                alias.clone(),
+                Repository::new(format!("unavailable-{index}")).unwrap(),
+            );
+            stream
+                .documents
+                .push(Document::new(alias, "main", "not-present.md", "", None).unwrap());
+        }
         let mut session = Session::new(
             agent::session_id_for(host.as_str(), Harness::Pi, NATIVE),
             host.as_str(),
@@ -103,8 +113,9 @@ fn source_reuses_supplied_records_and_each_later_read_addresses_only_its_session
             None,
             Some(context),
         );
-        let frame = source.read(&owner).unwrap();
+        let frame = source.read_records(&owner).unwrap();
         assert_eq!(frame.session().id, session.id);
+        assert_eq!(frame.stream().documents.len(), 4);
         assert!(
             events.lock().unwrap().is_empty(),
             "provided context must not reopen or reread catalog records"
@@ -112,7 +123,10 @@ fn source_reuses_supplied_records_and_each_later_read_addresses_only_its_session
         session.title = "New title".into();
         save(&records, "rename", Record::Session(session.clone()));
         events.lock().unwrap().clear();
-        assert_eq!(source.read(&owner).unwrap().session().title, "New title");
+        assert_eq!(
+            source.read_records(&owner).unwrap().session().title,
+            "New title"
+        );
         let reads: Vec<_> = events
             .lock()
             .unwrap()
@@ -162,7 +176,7 @@ fn source_reuses_supplied_records_and_each_later_read_addresses_only_its_session
             Some(frame.scope().clone()),
             None,
         );
-        let moved = source.read(&owner).unwrap();
+        let moved = source.read_records(&owner).unwrap();
         assert_eq!(moved.scope().stream_id, "destination");
         assert!(frame.scope().same_conversation(moved.scope()));
     }

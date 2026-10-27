@@ -279,14 +279,14 @@ fn document_entries(snapshot: &CardSnapshot) -> Vec<Entry> {
     }
     let labels = root_labels(&roots);
     snapshot
-        .stream
+        .stream()
         .documents
         .iter()
         .enumerate()
         .map(|(index, doc)| {
             let target = snapshot.target(doc);
             let root = target.location.selection().and_then(|s| s.root.to_str());
-            let qualifier = if snapshot.stream.repositories.len() > 1 || roots.len() > 1 {
+            let qualifier = if snapshot.stream().repositories.len() > 1 || roots.len() > 1 {
                 if let Some(root) = root {
                     let label = &labels[roots
                         .iter()
@@ -375,11 +375,11 @@ pub(super) fn render(
             })
             .collect();
         for (index, (link, pr)) in snapshot
-            .stream
+            .stream()
             .issues
             .iter()
             .map(|l| (l, false))
-            .chain(snapshot.stream.prs.iter().map(|l| (l, true)))
+            .chain(snapshot.stream().prs.iter().map(|l| (l, true)))
             .enumerate()
         {
             let url = web_url(&link.url);
@@ -400,7 +400,7 @@ pub(super) fn render(
                 index: index + 1,
             });
         }
-        let status = snapshot.session.status;
+        let status = snapshot.session().status;
         let (symbol, style) = match status {
             crate::model::Status::Active => ("●", CYAN),
             crate::model::Status::Waiting => ("○", Style::new().fg(Color::Yellow)),
@@ -410,12 +410,12 @@ pub(super) fn render(
         };
         let status = format!("{symbol} {status}");
         let status_width = cells(&status);
-        let goal = plain(snapshot.stream.goal.as_deref().unwrap_or_default())
+        let goal = plain(snapshot.stream().goal.as_deref().unwrap_or_default())
             .trim()
             .to_owned();
-        let recap = plain(&snapshot.session.recap).trim().to_owned();
-        let now = plain(&snapshot.session.state).trim().to_owned();
-        let remaining = plain(&snapshot.session.remaining).trim().to_owned();
+        let recap = plain(&snapshot.session().recap).trim().to_owned();
+        let now = plain(&snapshot.session().state).trim().to_owned();
+        let remaining = plain(&snapshot.session().remaining).trim().to_owned();
         let mut sections = vec![("", goal, true)];
         for (label, body) in [
             ("Session", recap),

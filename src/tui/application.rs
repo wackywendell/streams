@@ -859,14 +859,14 @@ mod tests {
     fn lowercase_r_is_a_document_key_and_links_use_hit_regions() {
         let mut s = snapshot();
         for index in 1..18 {
-            let mut document = s.stream.documents[0].clone();
+            let mut document = s.records.stream.documents[0].clone();
             document.path = format!("docs/{index}.md");
             let mut location = s.context.documents[0].clone();
             location.path = document.path.clone();
-            s.stream.documents.push(document);
+            s.records.stream.documents.push(document);
             s.context.documents.push(location);
         }
-        let s = CardSnapshot::new(s.stream, s.session, s.context).unwrap();
+        let s = CardSnapshot::new(s.records.stream, s.records.session, s.context).unwrap();
         let mut c = Controller::new();
         let Some(Request::Read(token, _)) = c.complete(Response::Ready(Ok(()))).unwrap() else {
             panic!()

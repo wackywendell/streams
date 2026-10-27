@@ -176,15 +176,16 @@ fn card_text_cases() -> Vec<CardCase> {
         })
         .collect();
     let mut card = snapshot();
-    card.stream.goal = Some("Help people track work across sessions and use their cards.".into());
-    card.session.title = "Naming".into();
-    card.session.recap = "Built naming settings and Pi name import.".into();
-    card.session.state = "Waiting on Argon review.".into();
-    card.session.remaining = "Deploy and reload.".into();
-    card.stream.documents.clear();
+    card.records.stream.goal =
+        Some("Help people track work across sessions and use their cards.".into());
+    card.records.session.title = "Naming".into();
+    card.records.session.recap = "Built naming settings and Pi name import.".into();
+    card.records.session.state = "Waiting on Argon review.".into();
+    card.records.session.remaining = "Deploy and reload.".into();
+    card.records.stream.documents.clear();
     card.context.documents.clear();
-    card.stream.issues.clear();
-    card.stream.prs =
+    card.records.stream.issues.clear();
+    card.records.stream.prs =
         vec![Link::new("https://example.com/org/repo/pull/12", "Naming settings").unwrap()];
     for (name, width, height) in [
         ("wide", 44, 14),
@@ -210,20 +211,20 @@ fn card_text_cases() -> Vec<CardCase> {
         crate::model::Status::Done,
     ] {
         let mut card = card.clone();
-        card.session.status = status;
+        card.records.session.status = status;
         cases.push((format!("card-text-{status}"), Some(card), 44, 14, None));
     }
     for field in ["recap", "state", "remaining", "all", "goal"] {
         let mut card = card.clone();
         match field {
-            "recap" => card.session.recap.clear(),
-            "state" => card.session.state.clear(),
-            "remaining" => card.session.remaining.clear(),
-            "goal" => card.stream.goal = None,
+            "recap" => card.records.session.recap.clear(),
+            "state" => card.records.session.state.clear(),
+            "remaining" => card.records.session.remaining.clear(),
+            "goal" => card.records.stream.goal = None,
             _ => {
-                card.session.recap.clear();
-                card.session.state.clear();
-                card.session.remaining.clear();
+                card.records.session.recap.clear();
+                card.records.session.state.clear();
+                card.records.session.remaining.clear();
             }
         }
         cases.push((format!("card-text-empty-{field}"), Some(card), 44, 14, None));
@@ -234,15 +235,15 @@ fn card_text_cases() -> Vec<CardCase> {
 #[test]
 fn link_actions_require_fresh_membership_under_the_painters_url_policy() {
     let mut original = snapshot();
-    original.stream.issues = vec![Link::new("https://example.com", "Issue").unwrap()];
-    original.stream.prs.clear();
+    original.records.stream.issues = vec![Link::new("https://example.com", "Issue").unwrap()];
+    original.records.stream.prs.clear();
     let url = url::Url::parse("https://example.com/").unwrap();
     assert!(original.contains_link(&url));
     assert!(!original.contains_link(&url::Url::parse("https://forged.example/").unwrap()));
     let mut refreshed = original.clone();
-    refreshed.stream.issues.clear();
+    refreshed.records.stream.issues.clear();
     assert!(!refreshed.contains_link(&url));
-    refreshed.stream.prs = vec![Link::new("file:///tmp/private", "").unwrap()];
+    refreshed.records.stream.prs = vec![Link::new("file:///tmp/private", "").unwrap()];
     assert!(!refreshed.contains_link(&url::Url::parse("file:///tmp/private").unwrap()));
 }
 #[test]
@@ -284,7 +285,7 @@ fn card_text_goldens_cover_layout_actions_lifecycles_and_empty_blocks() {
             let index = super::render::DOCUMENT_KEYS.find(key).unwrap();
             assert_eq!(
                 target,
-                snapshot.target(&snapshot.stream.documents[index]),
+                snapshot.target(&snapshot.records.stream.documents[index]),
                 "{name} target {key}"
             );
         }
@@ -347,11 +348,11 @@ fn membership_and_owner_moves_keep_the_view_but_invalidate_old_actions() {
             .any(|line| line.contains("Refreshing"))
     );
     let mut moved = original;
-    moved.stream.id = "destination".into();
-    moved.session.stream_id = moved.stream.id.clone();
-    moved.scope.stream_id = moved.stream.id.clone();
-    moved.context.owner.tab_id = "new-tab".into();
-    moved.context.owner.workspace_id = "new-workspace".into();
+    moved.records.stream.id = "destination".into();
+    moved.records.session.stream_id = moved.records.stream.id.clone();
+    moved.records.scope.stream_id = moved.records.stream.id.clone();
+    moved.records.owner.tab_id = "new-tab".into();
+    moved.records.owner.workspace_id = "new-workspace".into();
     assert!(view.complete_refresh(token, Ok(moved.clone())));
     let frame = view.paint(area);
     assert_eq!(frame.freshness, Freshness::Current);
@@ -382,7 +383,7 @@ fn stale_completion_failure_and_scope_switch_never_authorize_actions() {
             .starts_with("Card unavailable: Malformed record. Refresh to retry.")
     );
     let mut other = snapshot();
-    other.scope.catalog_source = "different".into();
+    other.records.scope.catalog_source = "different".into();
     let token = view.begin_refresh();
     assert!(view.complete_refresh(token, Ok(other)));
     let failed = view.paint(Rect::new(0, 0, 120, 3));
@@ -403,10 +404,10 @@ fn stale_completion_failure_and_scope_switch_never_authorize_actions() {
 #[test]
 fn document_revision_label_uses_optional_commit_not_source_session() {
     let mut snapshot = snapshot();
-    let path = snapshot.stream.documents[0].path.clone();
-    snapshot.stream.documents[0].source_session_id = Some("source-session".into());
+    let path = snapshot.records.stream.documents[0].path.clone();
+    snapshot.records.stream.documents[0].source_session_id = Some("source-session".into());
     for commit in [None, Some("current-123456")] {
-        snapshot.stream.documents[0].commit = commit.map(str::to_owned);
+        snapshot.records.stream.documents[0].commit = commit.map(str::to_owned);
         let rendered = super::render::render(Some(&snapshot), Rect::new(0, 0, 160, 30), None);
         let rendered_lines = lines(&rendered.buffer);
         assert!(rendered_lines.iter().any(|line| line.contains(&path)));
@@ -421,7 +422,7 @@ fn document_revision_label_uses_optional_commit_not_source_session() {
         }
         assert_eq!(
             rendered.documents[&'a'].document,
-            snapshot.stream.documents[0]
+            snapshot.records.stream.documents[0]
         );
     }
 }
@@ -453,14 +454,19 @@ fn every_repaint_geometry_notice_and_target_change_invalidates_old_actions() {
         let mut changed = snapshot();
         let action = view.paint(Rect::new(0, 0, 100, 12)).documents[&'a'].clone();
         match field {
-            "ref" => changed.stream.documents[0].r#ref = "other".into(),
-            "commit" => changed.stream.documents[0].commit = Some("latest-commit".into()),
+            "ref" => changed.records.stream.documents[0].r#ref = "other".into(),
+            "commit" => changed.records.stream.documents[0].commit = Some("latest-commit".into()),
             "source-session" => {
-                changed.stream.documents[0].source_session_id = Some("source".into())
+                changed.records.stream.documents[0].source_session_id = Some("source".into())
             }
             "url" => {
-                changed.stream.repositories.get_mut("lib").unwrap().url =
-                    "https://example.com/other".into()
+                changed
+                    .records
+                    .stream
+                    .repositories
+                    .get_mut("lib")
+                    .unwrap()
+                    .url = "https://example.com/other".into()
             }
             "root" => {
                 let selection = CheckoutSelection {
@@ -487,7 +493,7 @@ fn every_repaint_geometry_notice_and_target_change_invalidates_old_actions() {
                 }
             }
             "order" => {
-                changed.stream.documents.insert(
+                changed.records.stream.documents.insert(
                     0,
                     Document::new("lib", "topic", "first.md", "", None).unwrap(),
                 );
@@ -504,10 +510,10 @@ fn every_repaint_geometry_notice_and_target_change_invalidates_old_actions() {
                 );
             }
             "removed" => {
-                changed.stream.documents.clear();
+                changed.records.stream.documents.clear();
                 changed.context.documents.clear();
             }
-            _ => changed.session.state = "Fresh progress".into(),
+            _ => changed.records.session.state = "Fresh progress".into(),
         }
         let token = view.begin_refresh();
         assert!(!view.is_current(&action));
@@ -531,7 +537,7 @@ fn every_repaint_geometry_notice_and_target_change_invalidates_old_actions() {
 #[test]
 fn editor_identity_preserves_viewing_file_and_checkout_lifetime_not_recovery_revision() {
     let snapshot = snapshot();
-    let mut target = snapshot.target(&snapshot.stream.documents[0]);
+    let mut target = snapshot.target(&snapshot.records.stream.documents[0]);
     let identity = target.editor_identity().unwrap();
     assert_eq!(identity.file, PathBuf::from("/code/library/docs/design.md"));
     target.document.r#ref = "recovery-branch".into();
@@ -559,30 +565,36 @@ fn editor_identity_preserves_viewing_file_and_checkout_lifetime_not_recovery_rev
 fn domain_and_location_validation_does_not_guess_or_touch_filesystem() {
     let s = snapshot();
     let build = |stream, session, context| CardSnapshot::new(stream, session, context);
-    let mut bad = s.session.clone();
+    let mut bad = s.records.session.clone();
     bad.stream_id = "another".into();
-    assert!(build(s.stream.clone(), bad, s.context.clone()).is_err());
+    assert!(build(s.records.stream.clone(), bad, s.context.clone()).is_err());
     for repository in [
         "unknown",
-        s.stream.repositories.keys().next().unwrap().as_str(),
+        s.records
+            .stream
+            .repositories
+            .keys()
+            .next()
+            .unwrap()
+            .as_str(),
     ] {
-        let mut bad = s.session.clone();
+        let mut bad = s.records.session.clone();
         bad.checkout = Some(Checkout::new(repository, "main", ".").unwrap());
-        assert!(build(s.stream.clone(), bad, s.context.clone()).is_err());
+        assert!(build(s.records.stream.clone(), bad, s.context.clone()).is_err());
     }
     let mut bad = s.context.clone();
     bad.documents.clear();
-    assert!(build(s.stream.clone(), s.session.clone(), bad).is_err());
+    assert!(build(s.records.stream.clone(), s.records.session.clone(), bad).is_err());
     let mut bad = s.context.clone();
     bad.checkouts.push(bad.checkouts[0].clone());
-    assert!(build(s.stream.clone(), s.session.clone(), bad).is_err());
+    assert!(build(s.records.stream.clone(), s.records.session.clone(), bad).is_err());
     let mut bad = s.context.clone();
     bad.documents[0].location = ResolvedDocument::File {
         selection: bad.checkouts[0].selection.clone(),
         file: "/another/checkout/design.md".into(),
     };
-    assert!(build(s.stream.clone(), s.session.clone(), bad).is_err());
-    assert!(build(s.stream, s.session, s.context).is_ok()); // nonexistent fixture roots are data
+    assert!(build(s.records.stream.clone(), s.records.session.clone(), bad).is_err());
+    assert!(build(s.records.stream, s.records.session, s.context).is_ok()); // nonexistent fixture roots are data
 }
 
 #[test]
@@ -591,12 +603,12 @@ fn gitlab_artifact_labels_use_the_first_artifact_not_a_suffix_path() {
         let mut snapshot = snapshot();
         let url = format!("https://gitlab.example/group/nested/project/-/{kind}/42/-/{kind}/7");
         let link = Link::new(&url, "artifact").unwrap();
-        snapshot.stream.issues.clear();
-        snapshot.stream.prs.clear();
+        snapshot.records.stream.issues.clear();
+        snapshot.records.stream.prs.clear();
         if pull_request {
-            snapshot.stream.prs.push(link);
+            snapshot.records.stream.prs.push(link);
         } else {
-            snapshot.stream.issues.push(link);
+            snapshot.records.stream.issues.push(link);
         }
         let rendered = super::render::render(Some(&snapshot), Rect::new(0, 0, 100, 30), None);
         let text = lines(&rendered.buffer).join("\n");
@@ -615,7 +627,7 @@ fn gitlab_artifact_labels_use_the_first_artifact_not_a_suffix_path() {
 #[test]
 fn unicode_and_styles_are_cell_bounded_without_terminal_sequences() {
     let mut s = snapshot();
-    s.stream.goal = Some("界😀é\u{1b}[31m\u{202e} literal | pipe 👩‍💻".into());
+    s.records.stream.goal = Some("界😀é\u{1b}[31m\u{202e} literal | pipe 👩‍💻".into());
     for width in 0..=40 {
         for height in 0..=10 {
             let rendered = super::render::render(

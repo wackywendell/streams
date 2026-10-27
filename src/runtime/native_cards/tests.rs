@@ -44,6 +44,7 @@ struct World {
     created: usize,
     lost_open_reply: bool,
     reads: usize,
+    display_reads: usize,
 }
 impl World {
     fn new() -> Self {
@@ -69,6 +70,7 @@ impl World {
             created: 0,
             lost_open_reply: false,
             reads: 0,
+            display_reads: 0,
         }
     }
     fn refresh(&mut self) {
@@ -236,8 +238,12 @@ struct Source {
     cwd: PathBuf,
 }
 impl NativeCardSource for Source {
-    fn read(&mut self, owner: &HerdrInventoryPane) -> Result<CardSnapshot> {
+    fn read_records(&mut self, owner: &HerdrInventoryPane) -> Result<CardRecords> {
         self.world.lock().unwrap().reads += 1;
+        Ok(card(owner).into_records())
+    }
+    fn read(&mut self, owner: &HerdrInventoryPane) -> Result<CardSnapshot> {
+        self.world.lock().unwrap().display_reads += 1;
         Ok(card(owner))
     }
     fn resolve_document(&mut self, _: &DocumentTarget) -> Result<ResolvedEditor> {
@@ -392,15 +398,11 @@ fn projection_owns_combined_caption_and_all_three_pi_short_forms() {
         session.recap_short = recap;
         session.state_short = state;
         session.remaining_short = remaining;
-        engine.card = CardSnapshot::new(
+        engine.card = CardRecords::new(
             engine.card.stream().clone(),
             session,
-            DisplayContext {
-                catalog_source: "catalog".into(),
-                owner: engine.card.owner().clone(),
-                checkouts: vec![],
-                documents: vec![],
-            },
+            "catalog".into(),
+            engine.card.owner().clone(),
         )
         .unwrap();
     };
@@ -437,6 +439,34 @@ fn projection_owns_combined_caption_and_all_three_pi_short_forms() {
 }
 
 #[test]
+fn opening_a_document_rereads_display_inputs_and_refuses_a_removed_reference() {
+    let f = Fixture::new();
+    let mut engine = f.engine().unwrap();
+    let target = DocumentTarget {
+        scope: engine.card.scope().clone(),
+        owner: engine.card.owner().clone(),
+        document: crate::model::Document::new("repo", "main", "removed.md", "", None).unwrap(),
+        repository_url: "repository".into(),
+        location: crate::tui::ResolvedDocument::Unavailable {
+            selection: None,
+            problem: crate::tui::DocumentProblem::MissingCheckout,
+        },
+    };
+    f.server.clear();
+    assert!(
+        engine
+            .open_document(&target)
+            .unwrap_err()
+            .to_string()
+            .contains("document viewing context changed")
+    );
+    let world = f.world.lock().unwrap();
+    assert_eq!(world.reads, 1);
+    assert_eq!(world.display_reads, 1);
+    assert!(f.server.methods().is_empty());
+}
+
+#[test]
 fn a_moved_pi_is_found_by_terminal_and_its_existing_card_follows_without_a_baseline() {
     let f = Fixture::new();
     f.world
@@ -455,6 +485,10 @@ fn a_moved_pi_is_found_by_terminal_and_its_existing_card_follows_without_a_basel
     assert_eq!(world.row("tab", "other-tab")["label"], "User tab");
     assert_eq!(world.created, 0);
     assert_eq!(world.reads, 1);
+    assert_eq!(
+        world.display_reads, 0,
+        "projection must not resolve display inputs"
+    );
     assert_eq!(world.changes, ["original card"]);
     drop(world);
     f.server.clear();

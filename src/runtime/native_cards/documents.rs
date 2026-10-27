@@ -3,8 +3,13 @@ use crate::tui::ResolvedDocument;
 
 impl NativeCardEngine {
     pub fn open_document(&mut self, target: &DocumentTarget) -> Result<()> {
-        if self
-            .card
+        let card = self.source.read(&self.owner_pane)?;
+        if card.scope() != self.card.scope() || card.owner() != self.card.owner() {
+            return Err(invalid(
+                "document viewing scope changed; redraw before opening",
+            ));
+        }
+        if card
             .document_target(&target.document.repository, &target.document.path)
             .as_ref()
             != Some(target)

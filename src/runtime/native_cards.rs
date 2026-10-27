@@ -25,7 +25,7 @@ use crate::{
         CommandEvidence, FrontendError,
         herdr::{HerdrClient, HerdrInventoryPane, HerdrNativeSnapshot},
     },
-    tui::{CardSnapshot, DocumentTarget, EditorIdentity, Scope},
+    tui::{CardRecords, CardSnapshot, DocumentTarget, EditorIdentity, Scope},
 };
 use serde::Serialize;
 use serde_json::{Value, json};
@@ -58,6 +58,7 @@ pub const SOURCE_ENV_KEYS: [&str; 14] = [
 type Tokens = BTreeMap<String, String>;
 
 pub trait NativeCardSource {
+    fn read_records(&mut self, owner: &HerdrInventoryPane) -> Result<CardRecords>;
     fn read(&mut self, owner: &HerdrInventoryPane) -> Result<CardSnapshot>;
     fn resolve_document(&mut self, target: &DocumentTarget) -> Result<ResolvedEditor>;
     fn launch_context(&self) -> SourceLaunch;
@@ -99,7 +100,7 @@ pub struct NativeCardStatus {
     pub pane_id: Option<String>,
 }
 pub struct NativeOwnerView {
-    pub card: CardSnapshot,
+    pub card: CardRecords,
     pub owner: PiOwner,
 }
 
@@ -136,14 +137,14 @@ fn marked_card<'a>(
     })
 }
 
-/// Created for one pass and then discarded. Effects never fetch another snapshot.
+/// Created for one pass and then discarded. Effects never fetch another native snapshot.
 pub struct NativeCardEngine {
     client: HerdrClient,
     source: Box<dyn NativeCardSource>,
     snapshot: HerdrNativeSnapshot,
     owner: PiOwner,
     owner_pane: HerdrInventoryPane,
-    card: CardSnapshot,
+    card: CardRecords,
     display: Option<HerdrInventoryPane>,
     config: NativeCardsConfig,
     environment: BTreeMap<String, String>,
@@ -165,7 +166,7 @@ impl NativeCardEngine {
             .locate(&snapshot)?
             .ok_or_else(|| invalid("Pi exited or changed conversation"))?
             .clone();
-        let card = source.read(&owner_pane)?;
+        let card = source.read_records(&owner_pane)?;
         if card.scope().harness != "pi"
             || card.scope().native_session_id != owner.native_session_id
             || card.owner() != &owner::location(&owner_pane)
@@ -225,7 +226,7 @@ impl NativeCardEngine {
         }
         ids
     }
-    pub fn verify_display(&self) -> Result<CardSnapshot> {
+    pub fn verify_display(&self) -> Result<CardRecords> {
         self.display
             .as_ref()
             .ok_or_else(|| invalid("Session's card is not observed"))?;

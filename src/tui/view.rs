@@ -166,9 +166,9 @@ impl CardView {
                 if self
                     .scope
                     .as_ref()
-                    .is_none_or(|scope| scope.same_conversation(&snapshot.scope)) =>
+                    .is_none_or(|scope| scope.same_conversation(snapshot.scope())) =>
             {
-                self.scope = Some(snapshot.scope.clone());
+                self.scope = Some(snapshot.scope().clone());
                 Observation::Current(snapshot)
             }
             Ok(_) => Observation::Switched,
