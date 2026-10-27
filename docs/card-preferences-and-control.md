@@ -1,6 +1,6 @@
 # ADR: Streams owns card preferences and lifecycle
 
-Status: accepted; implementation pending. This changes the automatic-opening and close behaviour in [observe and act](native-observe-and-act.md). Its observation, naming and duplicate-exclusion rules still apply.
+Status: accepted; implemented in Rust and Pi, not activated. This changes the automatic-opening and close behaviour in [observe and act](native-observe-and-act.md). Its observation, naming and duplicate-exclusion rules still apply.
 
 ## One owner for card behaviour
 
@@ -22,7 +22,7 @@ The old `workspace_startup` key in Pi's `work-cards.json` will be replaced by th
 
 Automatic opening will run at Pi startup and when an already-observing child's bound Session changes, only when the effective preference is automatic. A child restart establishes its binding baseline without treating that as a new Pi startup. Ordinary catalog/native refreshes continue projecting and following existing cards, but never reopen a missing card.
 
-An explicit `/streams pane open` will save the conversation override as `automatic`, then open or reuse its card. Both `/streams pane close` and a card's `q` will save `manual`. Explicit close will close the observed card; `q` will notify the child and exit its own terminal UI. These actions change only that conversation's preference, not the global default or catalog membership.
+An explicit `/streams pane` will save the conversation override as `automatic`, then open or reuse its card. Both `/streams pane close` and a card's `q` will save `manual`. Explicit close will close the observed card; `q` will notify the child and exit its own terminal UI. These actions change only that conversation's preference, not the global default or catalog membership.
 
 Herdr closure, a signal, a crash and observed owner loss are not `q` intent and will not change the preference. They still leave the card absent until a subsequent automatic-opening trigger or explicit open. No presence-to-closure inference or reciprocal marker is needed.
 
