@@ -36,7 +36,7 @@ pub fn address_from_relative_path(path: &Path) -> Result<RecordAddress, StorageE
     Ok(address)
 }
 
-fn components(path: &Path) -> Result<Vec<&str>, StorageError> {
+pub(super) fn components(path: &Path) -> Result<Vec<&str>, StorageError> {
     path.components()
         .map(|part| match part {
             Component::Normal(value) => value
@@ -48,7 +48,7 @@ fn components(path: &Path) -> Result<Vec<&str>, StorageError> {
         })
         .collect()
 }
-fn component(value: &str) -> Result<String, StorageError> {
+pub(super) fn component(value: &str) -> Result<String, StorageError> {
     let decoded = percent_encoding::percent_decode_str(value)
         .decode_utf8()
         .map_err(invalid)?
@@ -58,6 +58,15 @@ fn component(value: &str) -> Result<String, StorageError> {
     }
     Ok(decoded)
 }
+/// Validate either portable file kind without making artifacts work-card records.
+pub fn catalog_path_host(path: &Path) -> Result<String, StorageError> {
+    if let Ok(key) = super::artifacts::artifact_key_from_path(path) {
+        Ok(key.host)
+    } else {
+        Ok(address_from_relative_path(path)?.host().to_owned())
+    }
+}
+
 fn filename(value: &str) -> Result<String, StorageError> {
     component(
         value
@@ -85,22 +94,43 @@ pub fn decode_record_tree(
 ) -> Result<Vec<RecordRead>, StorageError> {
     let mut records = BTreeMap::new();
     for (path, bytes) in files {
-        let address = address_from_relative_path(path)?;
-        records.insert(address.clone(), decode_record(&address, bytes)?);
+        if super::artifacts::artifact_key_from_path(path).is_ok() {
+            // Interrupted saves may leave valid but unattached output text.
+            super::artifacts::decode_artifact_content(bytes)?;
+        } else {
+            let address = address_from_relative_path(path)?;
+            records.insert(address.clone(), decode_record(&address, bytes)?);
+        }
     }
     relationships(&records)?;
+    for read in records.values() {
+        let Record::Session(session) = &read.record else {
+            continue;
+        };
+        for stream in session.artifacts.keys() {
+            let stream_key = RecordAddress::new(&session.host_id, RecordKind::Stream, stream)?;
+            if !records.contains_key(&stream_key) {
+                return Err(StorageError::new("artifact's producing Stream is missing"));
+            }
+            for summary in crate::artifacts::summaries(session, stream) {
+                let path = super::artifacts::relative_artifact_path(&summary.key)?;
+                if !files.contains_key(&path) {
+                    return Err(StorageError::new("attached artifact content is missing"));
+                }
+            }
+        }
+    }
     Ok(records.into_values().collect())
 }
 
 impl YamlRecordStore {
     /// The caller holds the catalog lock; discovery and sync share one physical tree policy.
     pub(crate) fn read_locked_tree(&self) -> Result<BTreeMap<PathBuf, Vec<u8>>, StorageError> {
-        let mut addresses = Vec::new();
-        self.discover(&self.root.join("hosts"), &mut addresses)?;
-        addresses
+        let mut paths = Vec::new();
+        self.discover(&self.root.join("hosts"), &mut paths)?;
+        paths
             .into_iter()
-            .map(|address| {
-                let path = relative_record_path(&address)?;
+            .map(|path| {
                 let bytes = self.read_named(&path)?.ok_or_else(|| {
                     StorageError::new("record disappeared during locked discovery")
                 })?;
@@ -109,11 +139,7 @@ impl YamlRecordStore {
             .collect()
     }
 
-    fn discover(
-        &self,
-        directory: &Path,
-        addresses: &mut Vec<RecordAddress>,
-    ) -> Result<(), StorageError> {
+    fn discover(&self, directory: &Path, paths: &mut Vec<PathBuf>) -> Result<(), StorageError> {
         ensure_directory(directory, false)?;
         self.observe(RecordIoEvent::List(directory.into()));
         let entries = match fs::read_dir(directory) {
@@ -136,12 +162,23 @@ impl YamlRecordStore {
                     ["hosts", host, "streams" | "conversations"] => {
                         component(host)?;
                     }
+                    ["hosts", host, "streams", stream]
+                    | ["hosts", host, "streams", stream, "artifacts"] => {
+                        component(host)?;
+                        component(stream)?;
+                    }
+                    ["hosts", host, "streams", stream, "artifacts", session] => {
+                        component(host)?;
+                        component(stream)?;
+                        component(session)?;
+                    }
                     _ => return Err(StorageError::new("unexpected catalog directory")),
                 }
-                self.discover(&path, addresses)?;
+                self.discover(&path, paths)?;
             } else {
                 // Reader rejects symlinks, FIFOs and other special files before opening them.
-                addresses.push(address_from_relative_path(relative)?);
+                catalog_path_host(relative)?;
+                paths.push(relative.to_path_buf());
             }
         }
         Ok(())

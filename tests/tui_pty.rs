@@ -126,6 +126,7 @@ impl PaneHost for Host {
                 self.event("document:lib:docs/design.md");
             }
             Target::Link(_) => panic!("PTY fixture must never open a real browser"),
+            Target::Artifact(_) => panic!("this PTY fixture has no artifact references"),
         }
         if matches!(self.mode, Scenario::BlockedActivation) {
             self.wait("release-activation")?;

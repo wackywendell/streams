@@ -15,6 +15,7 @@ export type StreamWire = {
 export type SessionWire = {
   id: string; host_id: string; stream_id: string; harness: string; harness_session_id: string;
   previous_stream_ids?: string[];
+  artifacts?: Record<string, { name: string; description: string }[]>;
   title: string; title_mode: TitleMode; status: Status;
   recap?: string; recap_short?: string | null;
   state: string; state_short: string | null; remaining: string; remaining_short?: string | null;
@@ -58,6 +59,10 @@ export function isSession(value: unknown): value is SessionWire {
     && (value.previous_stream_ids === undefined || Array.isArray(value.previous_stream_ids)
       && value.previous_stream_ids.every(identity)
       && value.previous_stream_ids.every((id, i, ids) => id !== (i + 1 < ids.length ? ids[i + 1] : value.stream_id)))
+    && (value.artifacts === undefined || object(value.artifacts) && Object.entries(value.artifacts).every(([stream, entries]) =>
+      (stream === value.stream_id || Array.isArray(value.previous_stream_ids) && value.previous_stream_ids.includes(stream))
+      && Array.isArray(entries) && entries.every(entry => object(entry) && identity(entry.name) && identity(entry.description))
+      && new Set(entries.map(entry => entry.name)).size === entries.length))
     && (value.checkout === null || object(value.checkout)
       && identity(value.checkout.repository) && identity(value.checkout.ref) && text(value.checkout.directory_within_checkout)
       && identity(value.checkout.repository_url));

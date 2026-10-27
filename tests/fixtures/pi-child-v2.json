@@ -20,6 +20,12 @@
     {"type":"request","id":19,"request":{"kind":"set_title_default","target":"stream","mode":"manual"}},
     {"type":"request","id":20,"request":{"kind":"set_title_default","target":"session","mode":"automatic"}},
     {"type":"request","id":21,"request":{"kind":"set_title_default","target":"session","mode":"manual"}},
+    {"type":"request","id":22,"request":{"kind":"artifact","request":{"action":"write","name":"assessment.md","description":"Findings","text":"Useful output"}}},
+    {"type":"request","id":23,"request":{"kind":"artifact","request":{"action":"write","name":"assessment.md","description":"Findings","file":"/tmp/assessment.md"}}},
+    {"type":"request","id":24,"request":{"kind":"artifact","request":{"action":"read","reference":"host/work/session/assessment.md","offset":0,"limit":32768}}},
+    {"type":"request","id":25,"request":{"kind":"artifact","request":{"action":"list_session"}}},
+    {"type":"request","id":26,"request":{"kind":"artifact","request":{"action":"list_stream","host":"host","stream_id":"work"}}},
+    {"type":"request","id":27,"request":{"kind":"artifact","request":{"action":"delete","reference":"host/work/session/assessment.md"}}},
     {"type":"cancel","id":9007199254740991}
   ],
   "server": [

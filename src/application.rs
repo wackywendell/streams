@@ -1,5 +1,6 @@
 //! Host-bound admission and record-local catalog actions.
 
+pub mod artifacts;
 mod create;
 pub use create::create_record;
 mod enrollment;

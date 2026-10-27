@@ -16,3 +16,9 @@ id = "document"
 title = "Document"
 placement = "tab"
 command = ["/bin/sh", "bin/open-document.sh"]
+
+[[panes]]
+id = "artifact"
+title = "Session output"
+placement = "tab"
+command = ["/bin/sh", "bin/open-artifact.sh"]

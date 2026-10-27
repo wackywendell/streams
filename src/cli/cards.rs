@@ -286,6 +286,7 @@ fn activate(
     }
     match target {
         ViewTarget::Document(document) => engine.open_document(document).map_err(|e| e.to_string()),
+        ViewTarget::Artifact(artifact) => engine.open_artifact(artifact).map_err(|e| e.to_string()),
         ViewTarget::Link(url) => {
             engine
                 .client()

@@ -285,11 +285,50 @@ fn card_text_goldens_cover_layout_actions_lifecycles_and_empty_blocks() {
             let index = super::render::DOCUMENT_KEYS.find(key).unwrap();
             assert_eq!(
                 target,
-                snapshot.target(&snapshot.records.stream.documents[index]),
+                Target::Document(Box::new(
+                    snapshot.target(&snapshot.records.stream.documents[index])
+                )),
                 "{name} target {key}"
             );
         }
     }
+}
+
+#[test]
+fn artifacts_render_from_session_metadata_with_exact_fresh_shortcuts() {
+    let mut snapshot = snapshot();
+    snapshot.records.stream.documents.clear();
+    snapshot.context.documents.clear();
+    snapshot.records.session.artifacts.insert(
+        snapshot.records.stream.id.clone(),
+        vec![crate::artifacts::ArtifactEntry {
+            name: "assessment.md".into(),
+            description: "Investigation findings".into(),
+        }],
+    );
+    let expected =
+        crate::artifacts::summaries(&snapshot.records.session, &snapshot.records.stream.id)
+            .remove(0);
+    let mut view = view(snapshot.clone());
+    let frame = view.paint(Rect::new(0, 0, 100, 20)).clone();
+    let text = lines(&frame.buffer).join("\n");
+    assert!(text.contains("assessment.md"));
+    assert!(text.contains("Investigation findings"));
+    let action = frame.documents[&'a'].clone();
+    assert_eq!(action.target(), &Target::Artifact(Box::new(expected)));
+    assert!(view.is_current(&action));
+    view.begin_refresh();
+    assert!(!view.is_current(&action));
+    assert!(view.paint(Rect::new(0, 0, 100, 20)).documents.is_empty());
+    snapshot
+        .records
+        .session
+        .previous_stream_ids
+        .push(snapshot.records.stream.id.clone());
+    snapshot.records.session.stream_id = "destination".into();
+    snapshot.records.stream.id = "destination".into();
+    let rendered = super::render::render(Some(&snapshot), Rect::new(0, 0, 100, 20), None);
+    assert!(!lines(&rendered.buffer).join("\n").contains("assessment.md"));
 }
 
 #[test]
@@ -421,8 +460,10 @@ fn document_revision_label_uses_optional_commit_not_source_session() {
             assert!(!rendered_lines.iter().any(|line| line.contains(" (added ")));
         }
         assert_eq!(
-            rendered.documents[&'a'].document,
-            snapshot.records.stream.documents[0]
+            rendered.documents[&'a'],
+            Target::Document(Box::new(
+                snapshot.target(&snapshot.records.stream.documents[0])
+            ))
         );
     }
 }

@@ -11,6 +11,8 @@ use std::{
 
 use serde_json::{Value, json};
 
+#[path = "serve/artifacts.rs"]
+mod artifacts;
 #[path = "serve/subscriptions.rs"]
 mod subscriptions;
 

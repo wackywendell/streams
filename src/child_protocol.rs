@@ -135,6 +135,9 @@ pub enum Request {
         request: DomainObject,
     },
     ListStreams {},
+    Artifact {
+        request: crate::artifacts::ArtifactRequest,
+    },
     SetTitleDefault {
         target: TitleTarget,
         mode: NamingMode,

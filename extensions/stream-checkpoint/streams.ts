@@ -1,4 +1,4 @@
-import type { ChildRequest, DomainObject, Runner, TitleDefault, CardMode, CardSettings } from "./child-protocol.ts";
+import type { ArtifactRequest, ChildRequest, DomainObject, Runner, TitleDefault, CardMode, CardSettings } from "./child-protocol.ts";
 export type { CardMode, CardSettings } from "./child-protocol.ts";
 export type { Runner } from "./child-protocol.ts";
 
@@ -66,6 +66,9 @@ export class StreamCli {
   const value = await this.run({kind:"preview", catalog:input.catalog, action:input.action, request:input.request as DomainObject}, "read", {timeout:10000, signal});
   if (!object(value) || !receipt(value.receipt) || value.receipt.simulated !== true) throw new StreamsCliError("Invalid simulated catalog receipt");
   return {catalog:parseLocalContext(value.catalog), receipt:value.receipt};
+ }
+ async artifact(request: ArtifactRequest, signal?: AbortSignal): Promise<DomainObject> {
+  return this.run({kind:"artifact", request}, "read", {timeout:10000, signal});
  }
  async sync(): Promise<PublicationResult> {return this.run({kind:"sync"}, "publication");}
  async enroll(request: unknown): Promise<Receipt> {return this.run({kind:"enroll", request:request as DomainObject}, "save");}

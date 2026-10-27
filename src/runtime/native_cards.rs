@@ -1,6 +1,7 @@
 //! One native pass: supplied records, one snapshot, direct effects. No launch history.
 
 mod actions;
+mod artifacts;
 mod card_lock;
 mod config;
 pub mod control;

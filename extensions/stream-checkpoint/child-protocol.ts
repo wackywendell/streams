@@ -2,6 +2,12 @@ export type DomainObject = Record<string, unknown>;
 export type TitleDefault = "automatic" | "manual";
 export type CardMode = "inherit" | "automatic" | "manual";
 export type CardSettings = {global: TitleDefault; session: CardMode; effective: TitleDefault};
+export type ArtifactRequest =
+ | {action: "write"; name: string; description: string; session_id?: string; stream_id?: string; text?: string; file?: string}
+ | {action: "read"; reference: string; offset?: number; limit?: number}
+ | {action: "list_session"; host?: string; session_id?: string; stream_id?: string}
+ | {action: "list_stream"; host?: string; stream_id: string}
+ | {action: "delete"; reference: string};
 export type ChildRequest =
  | {kind: "session_started" | "attach" | "open_card" | "close_card" | "list_streams"}
  | {kind: "context"; stream_id?: string}
@@ -9,6 +15,7 @@ export type ChildRequest =
  | {kind: "preview"; catalog: DomainObject; action: "apply" | "enroll"; request: DomainObject}
  | {kind: "enroll" | "apply"; request: DomainObject}
  | {kind: "sync"}
+ | {kind: "artifact"; request: ArtifactRequest}
  | {kind: "set_title_default"; target: "stream" | "session"; mode: TitleDefault}
  | {kind: "card_settings"}
  | {kind: "set_card_mode"; target: "global" | "session"; mode: CardMode};

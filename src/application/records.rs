@@ -31,6 +31,9 @@ impl OpenedRecords {
     pub fn records(&self) -> &impl RecordStore {
         &self.records
     }
+    pub fn artifacts(&self) -> &impl crate::artifacts::ArtifactStore {
+        &self.records
+    }
     /// Explicit human discovery/inspection only; ordinary commands use `records()`.
     pub fn inventory(&self) -> Result<Vec<RecordRead>> {
         Ok(self.records.inventory()?)

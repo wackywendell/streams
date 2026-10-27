@@ -1,3 +1,5 @@
+mod artifacts;
+
 use super::*;
 use crate::{
     fake_herdr::{FakeHerdr, Reply},

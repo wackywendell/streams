@@ -156,6 +156,11 @@ pub(super) enum Command {
         reference: Option<String>,
     },
     Sync,
+    /// Store or read named Session outputs in the catalog.
+    Artifact {
+        #[command(subcommand)]
+        command: ArtifactCommand,
+    },
     Session {
         #[command(subcommand)]
         command: SessionCommand,
@@ -167,6 +172,45 @@ pub(super) enum Command {
     Agent {
         #[command(subcommand)]
         command: AgentCommand,
+    },
+}
+
+#[derive(Debug, Subcommand)]
+pub(super) enum ArtifactCommand {
+    /// Create or replace an output; read stdin unless --file or --description-only is supplied.
+    Write {
+        name: String,
+        #[arg(long)]
+        session_id: String,
+        #[arg(long)]
+        stream_id: Option<String>,
+        #[arg(long)]
+        description: String,
+        #[arg(long, conflicts_with = "description_only")]
+        file: Option<PathBuf>,
+        #[arg(long)]
+        description_only: bool,
+    },
+    /// Emit the original UTF-8 content to stdout, without adding a newline.
+    Read {
+        reference: String,
+    },
+    /// Open an exact output in a read-only terminal view.
+    View {
+        reference: String,
+    },
+    /// List one Session's outputs or a whole Stream; never the whole catalog.
+    #[command(group(ArgGroup::new("scope").args(["stream_id", "session_id"]).required(true).multiple(true)))]
+    List {
+        #[arg(long)]
+        host: Option<String>,
+        #[arg(long)]
+        stream_id: Option<String>,
+        #[arg(long)]
+        session_id: Option<String>,
+    },
+    Delete {
+        reference: String,
     },
 }
 

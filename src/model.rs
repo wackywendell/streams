@@ -491,6 +491,13 @@ pub struct Session {
     /// Ended memberships in transition order; revisiting a stream is allowed.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub previous_stream_ids: Vec<String>,
+    /// Attachment metadata grouped by the Stream where each output was produced.
+    #[serde(
+        default,
+        skip_serializing_if = "BTreeMap::is_empty",
+        deserialize_with = "crate::artifacts::groups"
+    )]
+    pub artifacts: BTreeMap<String, Vec<crate::artifacts::ArtifactEntry>>,
     pub harness: String,
     pub harness_session_id: String,
     pub title: String,
@@ -561,6 +568,7 @@ impl Session {
             host_id: host_id.into(),
             stream_id: stream_id.into(),
             previous_stream_ids: Vec::new(),
+            artifacts: BTreeMap::new(),
             harness: harness.into(),
             harness_session_id: harness_session_id.into(),
             title: title.into(),
@@ -600,6 +608,22 @@ impl Session {
             return Err(ValidationError::new(
                 "session membership transitions must change streams",
             ));
+        }
+        for (stream, artifacts) in &self.artifacts {
+            if stream != &self.stream_id && !self.previous_stream_ids.contains(stream) {
+                return Err(ValidationError::new(
+                    "artifact group must name a current or former Stream",
+                ));
+            }
+            let mut names = BTreeSet::new();
+            for artifact in artifacts {
+                artifact.validate()?;
+                if !names.insert(&artifact.name) {
+                    return Err(ValidationError::new(
+                        "duplicate artifact name in Session Stream group",
+                    ));
+                }
+            }
         }
         check_text(&self.harness, "session.harness", false)?;
         check_text(
@@ -692,6 +716,10 @@ impl Host {
 
 /// Any catalog record, used for operations that share an identity boundary.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[allow(
+    clippy::large_enum_variant,
+    reason = "keep owned records without adding a heap allocation to each Session read"
+)]
 pub enum Record {
     Stream(Stream),
     Session(Session),

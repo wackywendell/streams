@@ -35,6 +35,7 @@ pub struct RefreshToken {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Target {
     Document(Box<DocumentTarget>),
+    Artifact(Box<crate::artifacts::ArtifactSummary>),
     Link(Url),
 }
 
@@ -240,7 +241,7 @@ impl CardView {
                         key,
                         CapturedAction {
                             frame: identity.clone(),
-                            target: Target::Document(Box::new(document)),
+                            target: document,
                         },
                     )
                 })

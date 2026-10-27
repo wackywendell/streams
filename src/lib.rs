@@ -10,6 +10,7 @@ mod fake_herdr;
 
 pub mod agent;
 pub mod application;
+pub mod artifacts;
 pub mod cancellation;
 pub mod child_protocol;
 pub mod codec;

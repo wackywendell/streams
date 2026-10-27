@@ -13,7 +13,7 @@ use unicode_segmentation::UnicodeSegmentation;
 use unicode_width::UnicodeWidthStr;
 use url::Url;
 
-use super::{CardSnapshot, DocumentTarget};
+use super::{CardSnapshot, Target};
 
 pub(super) const DOCUMENT_KEYS: &str = "abcdefghijklmnoprstuvwxyz";
 const DIM: Style = Style::new().add_modifier(Modifier::DIM);
@@ -193,7 +193,7 @@ fn artifact_number(url: &Url, pr: bool) -> Option<&str> {
 #[derive(Clone)]
 struct Entry {
     label: String,
-    target: DocumentTarget,
+    target: Target,
     key: Option<char>,
 }
 #[derive(Clone)]
@@ -226,7 +226,7 @@ impl Row {
 
 pub(super) struct Rendering {
     pub buffer: Buffer,
-    pub documents: BTreeMap<char, DocumentTarget>,
+    pub documents: BTreeMap<char, Target>,
     pub links: Vec<(usize, Url, Rect)>,
 }
 
@@ -317,7 +317,7 @@ fn document_entries(snapshot: &CardSnapshot) -> Vec<Entry> {
                 .unwrap_or_default();
             Entry {
                 label: plain(&format!("{qualifier}{}{added}", doc.path)),
-                target,
+                target: Target::Document(Box::new(target)),
                 key: DOCUMENT_KEYS.chars().nth(index),
             }
         })
@@ -349,7 +349,18 @@ pub(super) fn render(
     };
     let mut rows = Vec::new();
     if let Some(snapshot) = snapshot.filter(|_| content_height > 0) {
-        let entries = document_entries(snapshot);
+        let mut entries = document_entries(snapshot);
+        for artifact in crate::artifacts::summaries(snapshot.session(), &snapshot.stream().id) {
+            let key = DOCUMENT_KEYS.chars().nth(entries.len());
+            entries.push(Entry {
+                label: plain(&format!(
+                    "Artifact {}: {}",
+                    artifact.key.name, artifact.description
+                )),
+                target: Target::Artifact(Box::new(artifact)),
+                key,
+            });
+        }
         let lengths: Vec<_> = entries
             .iter()
             .map(|e| cells(&e.label) + if e.key.is_some() { 4 } else { 0 })

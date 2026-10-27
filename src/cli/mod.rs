@@ -2,6 +2,7 @@
 //! Native activation is deliberately not installed by this experimental binary.
 
 mod args;
+mod artifacts;
 mod cards;
 mod catalog;
 mod checkouts;
@@ -188,6 +189,11 @@ fn execute(command: Command, input: Input, json: bool) -> Result<Output> {
         } if json => Err(CliError::message(
             "native pane is interactive and does not support --json",
         )),
+        Command::Artifact {
+            command: args::ArtifactCommand::View { .. },
+        } if json => Err(CliError::message(
+            "artifact view is interactive and does not support --json",
+        )),
         Command::Agent {
             command: AgentCommand::Preview,
         } => preview(&input),
@@ -234,6 +240,13 @@ pub(super) fn run() -> ExitCode {
             }
         };
     }
+    let raw_content = !parsed.json
+        && matches!(
+            &parsed.command,
+            Command::Artifact {
+                command: args::ArtifactCommand::Read { .. }
+            }
+        );
     let outcome = execute(parsed.command, Input::Stdin, parsed.json);
     let (text, code) = match outcome {
         Ok(output) => {
@@ -265,7 +278,12 @@ pub(super) fn run() -> ExitCode {
             return ExitCode::from(2);
         }
     };
-    if let Err(error) = writeln!(io::stdout(), "{text}") {
+    let printed = if raw_content {
+        write!(io::stdout(), "{text}")
+    } else {
+        writeln!(io::stdout(), "{text}")
+    };
+    if let Err(error) = printed {
         eprintln!("streams: output failed; inspect catalog before retrying: {error}");
         return ExitCode::from(2);
     }
@@ -315,6 +333,7 @@ impl App {
             "WORK_CARDS_CONFIG_PATH",
             "EDITOR",
             "STREAMS_CARDS_CONTEXT",
+            "STREAMS_ARTIFACT_CATALOG_SOURCE",
             "STREAMS_BIN_PATH",
             "DISPLAY",
             "WAYLAND_DISPLAY",
@@ -673,6 +692,7 @@ impl App {
                 catalog::check(&opened, reference.as_deref())
             }
             Command::Sync => self.sync_records(),
+            Command::Artifact { command } => self.artifact_cli(command),
             Command::Session { command } => self.session(command),
             Command::Checkout { command } => self.checkout(command),
             Command::Agent { command } => self.agent(command),

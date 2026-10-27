@@ -1,8 +1,10 @@
 //! Host-partitioned addressed records; no legacy locations or catalog-wide snapshots.
 //! Opening this store never imports, scans or falls back to that legacy layout.
 
+mod artifacts;
 mod inventory;
-pub use inventory::{address_from_relative_path, decode_record_tree};
+pub use artifacts::{artifact_key_from_path, decode_artifact_content, relative_artifact_path};
+pub use inventory::{address_from_relative_path, catalog_path_host, decode_record_tree};
 
 use std::{
     collections::BTreeMap,
@@ -324,6 +326,17 @@ impl RecordStore for YamlRecordStore {
             return Err(StorageError::new("cannot write another host's partition").into());
         }
         let scope = self.scope(true)?;
+        self.save_scoped(&scope, request, apply)
+    }
+}
+
+impl YamlRecordStore {
+    fn save_scoped<E: From<StorageError>>(
+        &self,
+        scope: &Reader<'_>,
+        request: &RecordRequest,
+        apply: impl FnOnce(&dyn RecordReader, Option<&RecordRead>) -> Result<RecordChange, E>,
+    ) -> Result<RecordSave, E> {
         let previous = scope.envelope(&request.target)?;
         if let Some((envelope, current)) = &previous
             && let Some(receipt) = envelope.receipts.get(&request.operation_id)
@@ -337,7 +350,7 @@ impl RecordStore for YamlRecordStore {
                 repeated: true,
             });
         }
-        let change = apply(&scope, previous.as_ref().map(|(_, current)| current))?;
+        let change = apply(scope, previous.as_ref().map(|(_, current)| current))?;
         change.record.validate_portable().map_err(invalid)?;
         if RecordAddress::for_record(&change.record) != request.target {
             return Err(StorageError::new("save cannot change target identity or host").into());

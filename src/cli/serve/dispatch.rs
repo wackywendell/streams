@@ -42,6 +42,7 @@ pub(super) fn execute(app: &App, session_id: &str, request: Request) -> Result<O
         Request::CardSettings {} => app.card_settings(session_id),
         Request::SetCardMode { target, mode } => app.set_card_mode(session_id, target, mode),
         Request::Sync {} => app.sync_records(),
+        Request::Artifact { request } => app.artifact_request(request, Some(session_id)),
         Request::SessionStarted {}
         | Request::Attach {}
         | Request::OpenCard {}

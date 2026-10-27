@@ -16,7 +16,7 @@ use crate::{
         StorageError,
         records::{RecordInventory, RecordStore},
     },
-    yaml_store::records::{YamlRecordStore, address_from_relative_path, decode_record_tree},
+    yaml_store::records::{YamlRecordStore, catalog_path_host, decode_record_tree},
 };
 use serde::{Deserialize, Serialize};
 use std::{
@@ -236,7 +236,7 @@ impl RecordSync {
     ) -> Result<String, StorageError> {
         let previous = Self::tree(&self.git, local)?;
         for path in changed(&previous, working) {
-            if address_from_relative_path(&path)?.host() != self.host {
+            if catalog_path_host(&path)? != self.host {
                 return Err(invalid(
                     "outgoing changes include another producer's partition",
                 ));
@@ -373,7 +373,7 @@ impl RecordSync {
     }
     fn install(&self, previous: &Tree, next: &Tree) -> Result<(), StorageError> {
         for path in changed(previous, next) {
-            address_from_relative_path(&path)?;
+            catalog_path_host(&path)?;
             crate::yaml_store::records::check_parents(&self.root, &path)?;
             let target = self.root.join(&path);
             match fs::symlink_metadata(&target) {
