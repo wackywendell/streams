@@ -328,6 +328,35 @@ impl Fixture {
     }
 }
 #[test]
+fn new_cards_get_the_combined_caption_without_a_later_projection() {
+    for mode in [OpenMode::Automatic, OpenMode::Explicit] {
+        let f = Fixture::new();
+        f.world.lock().unwrap().remove("card");
+        let mut engine = f.engine().unwrap();
+        engine.project().unwrap();
+        assert_eq!(engine.open_display(mode).unwrap(), DisplayOutcome::Opened);
+        {
+            let mut world = f.world.lock().unwrap();
+            assert_eq!(
+                world.row("pane", "opened-1")["label"],
+                "Effort: Conversation"
+            );
+            assert_eq!(world.created, 1);
+        }
+        f.server.clear();
+        assert_eq!(engine.open_display(mode).unwrap(), DisplayOutcome::Existing);
+        assert!(f.server.methods().is_empty());
+
+        let snapshot = f.world.lock().unwrap().observe();
+        publish_card_marker(&f.client, &snapshot, "opened-1", engine.card.scope()).unwrap();
+        f.server.clear();
+        f.engine().unwrap().project().unwrap();
+        assert!(f.server.methods().is_empty());
+        assert_eq!(f.world.lock().unwrap().created, 1);
+    }
+}
+
+#[test]
 fn projection_owns_combined_caption_and_all_three_pi_short_forms() {
     let f = Fixture::new();
     f.world.lock().unwrap().row("pane", "card")["label"] = json!("Old caption");

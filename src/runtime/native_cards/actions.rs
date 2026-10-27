@@ -110,7 +110,7 @@ impl NativeCardEngine {
             );
         }
         self.display = Some(pane.clone());
-        self.rename("pane", &pane.pane.id, self.card.stream().title.clone())?;
+        self.rename("pane", &pane.pane.id, self.card_caption())?;
         let fraction = self.config.pane_height_fraction;
         if fraction != 0.5 {
             let target = if fraction < 0.5 {

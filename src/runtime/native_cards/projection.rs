@@ -41,7 +41,7 @@ impl NativeCardEngine {
             .expect("located tab");
         let workspace_title = self.card.stream().title.clone();
         let session_title = self.card.session().title.clone();
-        let card_title = format!("{workspace_title}: {session_title}");
+        let card_title = self.card_caption();
         let association = stream_tokens(
             &self.card.scope().catalog_source,
             &self.card.scope().host_id,

@@ -192,6 +192,13 @@ impl NativeCardEngine {
     pub fn client(&self) -> &HerdrClient {
         &self.client
     }
+    fn card_caption(&self) -> String {
+        format!(
+            "{}: {}",
+            self.card.stream().title,
+            self.card.session().title
+        )
+    }
     pub fn observe_owner(&self) -> Result<NativeOwnerView> {
         Ok(NativeOwnerView {
             card: self.card.clone(),
