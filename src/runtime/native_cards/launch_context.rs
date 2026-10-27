@@ -10,6 +10,8 @@ pub struct LaunchedCardContext {
     pub reader: SourceLaunch,
     pub lock_directory: PathBuf,
     pub plugin_root: PathBuf,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub control_socket: Option<PathBuf>,
 }
 impl LaunchedCardContext {
     pub fn from_environment(environment: &BTreeMap<String, String>) -> Result<Option<Self>> {
@@ -39,6 +41,10 @@ impl LaunchedCardContext {
             || !context.reader.cwd.is_absolute()
             || !context.lock_directory.is_absolute()
             || !context.plugin_root.is_absolute()
+            || context
+                .control_socket
+                .as_ref()
+                .is_some_and(|path| !path.is_absolute())
             || context
                 .reader
                 .environment

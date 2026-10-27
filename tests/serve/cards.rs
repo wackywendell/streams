@@ -73,6 +73,7 @@ impl CardFixture {
                 cwd: home.into(),
             },
             lock_directory: home.join("card-locks"),
+            control_socket: None,
             plugin_root: PathBuf::from(env!("CARGO_MANIFEST_DIR"))
                 .join("integrations/herdr-work-cards"),
         };
@@ -250,6 +251,57 @@ fn painted(pty: &mut Pty, title: &str) {
         let text = p.screen();
         text.contains("[q] close") && text.contains(title)
     });
+}
+
+#[test]
+fn real_card_quit_saves_manual_through_the_child_or_exits_with_a_warning() {
+    for available in [true, false] {
+        let mut f = CardFixture::new();
+        let mut child = if available {
+            let (mut child, _) = f.native.start();
+            child.request(1, json!({"kind":"open_card"}));
+            assert_eq!(child.response(1)["outcome"]["status"], "success");
+            let requests = f.native.server.requests();
+            let launch: LaunchedCardContext = serde_json::from_str(
+                requests
+                    .iter()
+                    .find(|(method, _)| method == "plugin.pane.open")
+                    .unwrap()
+                    .1["env"]["STREAMS_CARDS_CONTEXT"]
+                    .as_str()
+                    .unwrap(),
+            )
+            .unwrap();
+            f.launch.control_socket = launch.control_socket;
+            // Remove the fake launch; the real terminal process below is the card.
+            child.request(2, json!({"kind":"close_card"}));
+            assert_eq!(child.response(2)["outcome"]["status"], "success");
+            child.request(
+                3,
+                json!({"kind":"set_card_mode","target":"session","mode":"automatic"}),
+            );
+            assert_eq!(
+                child.response(3)["outcome"]["result"]["effective"],
+                "automatic"
+            );
+            Some(child)
+        } else {
+            f.launch.control_socket = Some(f.native.fixture.directory.path().join("absent.sock"));
+            None
+        };
+        let mut card = f.spawn();
+        painted(&mut card, "Before");
+        card.send(b"q");
+        if !available {
+            card.until(|pty| pty.screen().contains("manual mode may not have been saved"));
+        }
+        card.finish(true);
+        if let Some(child) = &mut child {
+            child.request(4, json!({"kind":"card_settings"}));
+            assert_eq!(child.response(4)["outcome"]["result"]["session"], "manual");
+            assert_eq!(child.finish(), (0, String::new()));
+        }
+    }
 }
 
 #[test]

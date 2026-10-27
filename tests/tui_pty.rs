@@ -170,7 +170,7 @@ fn child_fixture() -> bool {
     });
     fs::write(
         result_root.join("result.tmp"),
-        serde_json::to_vec(&result).unwrap(),
+        serde_json::to_vec(&result.map(|_| ())).unwrap(),
     )
     .unwrap();
     fs::rename(result_root.join("result.tmp"), result_root.join("result")).unwrap();

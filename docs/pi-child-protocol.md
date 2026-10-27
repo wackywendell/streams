@@ -100,6 +100,12 @@ its checked setter. Neither event supplies caller proof or selects another
 projection, capture or observation pass. Unknown fields, duplicate JSON keys,
 unsupported versions and positional struct arrays are rejected.
 
+## Card preferences
+
+`card_settings` returns `global`, `session` and resolved `effective` modes. Global and effective modes are `automatic` or `manual`; session mode also accepts `inherit`. `set_card_mode` takes `target` (`global` or `session`) and `mode`. It returns the same settings object after saving. Global `inherit` is rejected.
+
+Only the Rust child reads or writes card preferences. Pi uses these requests over stdio. The card uses the same requests on its private local connection, supplied through `STREAMS_CARD_CONTROL_SOCKET`. That connection accepts no other operations. An explicit `q` sends session `manual`; a failed save warns but does not prevent exit. See [card preferences and control](card-preferences-and-control.md).
+
 ## One native queue
 
 The child should serialize native user requests and selected native or catalog
@@ -128,7 +134,7 @@ Readiness means the transport can accept requests; it should not itself trigger
 native observation, projection or opening.
 
 An eligible interactive Pi session should send `session_started` before startup
-sync. Only that lifecycle input may consider configured automatic opening.
+sync. That lifecycle input considers configured automatic opening. A binding change in an already-observing child can also open automatically, as defined by the [card preference decision](card-preferences-and-control.md).
 Catalog-only and headless callers should send no native lifecycle request,
 including after a child restart. Inherited Herdr environment variables must not
 enable native work for those callers.

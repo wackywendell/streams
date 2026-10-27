@@ -22,7 +22,10 @@ const { createAssistantMessageEventStream } = await import('@earendil-works/pi-a
 const { default: registerWorkCard } = await load('index');
 const { Reporter } = await load('reporter');
 const { defaults, validateSettings, loadSettings, saveSettings, settingsDialog: showSettingsDialog } = await load('settings');
-const settingsDialog=(ctx,settings,save,agentDir)=>showSettingsDialog(ctx,settings,save,{defaults:{stream:'automatic',session:'automatic'},save:assert.fail},agentDir);
+const settingsDialog=(ctx,settings,save,agentDir,cards)=>{
+ const state={global:'automatic',session:'inherit',effective:'automatic'};
+ return showSettingsDialog(ctx,settings,save,{defaults:{stream:'automatic',session:'automatic'},save:assert.fail},agentDir,cards??{settings:state,save:async(target,mode)=>{state[target]=mode;state.effective=state.session==='inherit'?state.global:state.session;return {...state};}});
+};
 const stream = { id:'effort', title:'Work', title_mode:'manual', goal:'Goal', goal_mode:'automatic', goal_short:null, status:'active', archived:false, owner:{host_id:'host'}, repositories:{repo:{url:'https://example.com/repo'}}, issues:[], prs:[], documents:[] };
 const session = { id:'session', host_id:'host', stream_id:'effort', harness:'pi', harness_session_id:'native', title:'Session', title_mode:'automatic', status:'active', state:'', state_short:null, remaining:'', checkout:null };
 const context = () => structuredClone({catalog_source:'source-a',host_id:'host',stream,session,sessions:[session],title_defaults:{stream:'automatic',session:'automatic'}});
@@ -116,6 +119,17 @@ test('title defaults use typed config intent and validate the returned policy',a
   const cli=new StreamCli('/tmp',async()=>({status:'success',result:{title_defaults}}));await assert.rejects(cli.setTitleDefault('session','manual'),/Invalid title defaults/);
  }
 });
+test('card settings use typed child requests and reject inconsistent effective modes',async()=>{
+ const calls=[],value={global:'automatic',session:'inherit',effective:'automatic'};
+ const cli=new StreamCli('/tmp',async request=>{calls.push(request);return {status:'success',result:{...value}};});
+ assert.deepEqual(await cli.cardSettings(),value);
+ assert.deepEqual(await cli.setCardMode('session','inherit'),value);
+ assert.deepEqual(calls,[{kind:'card_settings'},{kind:'set_card_mode',target:'session',mode:'inherit'}]);
+ for(const result of [{},{...value,global:'inherit'},{...value,session:'other'},{...value,effective:'manual'}]) {
+  const invalid=new StreamCli('/tmp',async()=>({status:'success',result}));
+  await assert.rejects(invalid.cardSettings(),/Invalid card settings/);
+ }
+});
 test('automatic fields omit protected names and all lifecycle and identity fields',()=>{
  assert.deepEqual(automaticFields('stream',stream,'automatic'),['goal','goal_short']);
  assert.deepEqual(automaticFields('session',session,'automatic'),['title','status','recap','recap_short','state','state_short','remaining','remaining_short']);
@@ -152,6 +166,17 @@ test('response cadence coalesces and accepts old prefixes then follows up; captu
  assert.equal(f.inferences[0].signal.aborted,false);f.release();await f.reporter.idle();
  assert.equal(f.saves[0].kind,'session');assert.equal(f.saves[1].kind,'stream');
  assert.equal(f.saves[1].inputs[0].record.state,'Reported');assert.equal(f.inferences.length,4);
+});
+test('reporting reads an outside attachment without restarting the Pi extension',async()=>{
+ const f=reporterFixture({enrollment:'manual'}),bound=context();
+ Object.assign(f.catalog,{stream:null,session:null,sessions:[]});
+ f.reporter.response(f.ctx);await f.reporter.idle();
+ assert.deepEqual(f.inferences,[]);assert.deepEqual(f.saves,[]);
+ Object.assign(f.catalog,bound);
+ f.reporter.response(f.ctx);await until(()=>f.inferences.length===1);
+ assert.equal(f.inferences[0].req.type,'session');assert.deepEqual(f.inferences[0].req.catalog.session,bound.session);
+ f.release();await f.reporter.idle();
+ assert.deepEqual(f.saves.map(request=>request.kind),['session','stream']);assert.deepEqual(f.notices,[]);
 });
 test('rewind and explicit invalidation cancel inference and cannot save stale evidence',async()=>{
  for(const invalidate of [false,true]){const f=reporterFixture();f.reporter.response(f.ctx);await until(()=>f.inferences.length===1);
@@ -243,11 +268,12 @@ test('settings change in place, pick searchable models, and preserve Herdr confi
     press('\x1b[B');press('\r'); // Debug subsection
     press('\x1b[B');press('\r');assert.equal(saved.at(-1).session_logging,true);
     assert.equal(saved.at(-1).debug_commands,false);press('\x1b');
-    press('\x1b[B');press('\r'); // workspace startup
+    press('\x1b[B'); // Streams global card opening
+    press('\x1b[B'); // conversation card opening
     press('\x1b[B');press('\r'); // Naming subsection
     for(let i=0;i<3;i++)press('\x1b[B');press('\r'); // workspace naming: enabled -> disabled
     const native=JSON.parse(readFileSync(join(root,'work-cards.json'),'utf8'));
-    assert.equal(native.workspace_startup,'manual');assert.equal(native.workspace_naming,false);
+    assert.equal(Object.hasOwn(native,'workspace_startup'),false);assert.equal(native.workspace_naming,false);
     assert.equal(native.tab_naming,false);assert.equal(native.document_command,'vim');
     assert.match(component.render(100).join('\n'),/Pi session naming/);
     assert.match(component.render(100).join('\n'),/Work card & Herdr settings/);press('\x1b');press('\x1b');
@@ -256,6 +282,24 @@ test('settings change in place, pick searchable models, and preserve Herdr confi
   await settingsDialog(ctx,{...defaults},value=>saved.push(structuredClone(value)),root);
   assert.equal(factories,1);
  }finally{rmSync(root,{recursive:true,force:true});}
+});
+test('card preference controls save through Streams without Pi files or session entries',async()=>{
+ const root=mkdtempSync(join(tmpdir(),'card-preference-ui-')),calls=[];
+ const state={global:'automatic',session:'inherit',effective:'automatic'};
+ try {
+  await settingsDialog({ui:{notify:assert.fail,custom:async factory=>{
+   let close;const closed=new Promise(resolve=>{close=resolve;});
+   const component=factory({terminal:{rows:30},requestRender(){}},{fg:(_color,text)=>text,bold:text=>text},{},close);
+   for(let i=0;i<6;i++)component.handleInput('\x1b[B');
+   component.handleInput('\r');await turn();
+   component.handleInput('\x1b[B');component.handleInput('\r');await turn();
+   assert.deepEqual(calls,[['global','manual'],['session','automatic']]);
+   assert.deepEqual(readdirSync(root),[]);
+   component.handleInput('\x1b');return closed;
+  }}},{...defaults},assert.fail,root,{settings:state,save:async(target,mode)=>{
+   calls.push([target,mode]);state[target]=mode;state.effective=state.session==='inherit'?state.global:state.session;return {...state};
+  }});
+ } finally {rmSync(root,{recursive:true,force:true});}
 });
 test('native settings use the integration config validator before viewing or saving invalid files',async()=>{
  const root=mkdtempSync(join(tmpdir(),'card-settings-validation-'));
@@ -274,10 +318,10 @@ test('settings revalidate concurrent native config changes before saving',async(
    const component=factory({terminal:{rows:30},requestRender(){}},{fg:(_color,text)=>text,bold:text=>text},{},done);
    const path=join(root,'work-cards.json'),bytes=JSON.stringify({workspace_startup:'invalid'});
    writeFileSync(path,bytes);
-   for(let i=0;i<7;i++)component.handleInput('\x1b[B');
+   for(let i=0;i<8;i++)component.handleInput('\x1b[B');
    component.handleInput('\r');for(let i=0;i<3;i++)component.handleInput('\x1b[B');component.handleInput('\r');
    assert.equal(readFileSync(path,'utf8'),bytes);
-   assert.match(notices[0],/workspace_startup must be automatic or manual/);
+   assert.match(notices[0],/unknown field workspace_startup/);
    component.handleInput('\x1b');component.handleInput('\x1b');
   })}},{...defaults},()=>assert.fail('no reporting save'),root);
  }finally{rmSync(root,{recursive:true,force:true});}
@@ -294,7 +338,8 @@ test('all settings explain their effects and leave description room on short ter
     'What conversation history the summary model reads',
     'Model used to summarize progress and generate short titles.',
     'Configure debug commands and optional helper session logging.',
-    'Automatically open the side-by-side Herdr work-card pane',
+    'Open cards automatically at Pi startup or attachment',
+    'Inherit the Streams default or override it for this conversation.',
     'Configure title generation, incoming Pi name edits',
     'Default for Stream titles in inherit mode.',
     'Default for Session titles in inherit mode.',
@@ -644,7 +689,7 @@ test('extension startup and card commands do not enroll or run a model; report u
 function commandFixture(options={}) {
  const commands=new Map(),tools=new Map(),handlers=new Map(),notices=[],requests=[],writes=[],receipts=[],activity=[],dialogs=[];
  const catalog=options.catalog??context();let reads=0;
- const cli={context:async()=>{reads++;return structuredClone(catalog);},list:async()=>[stream],apply:async req=>{writes.push(req);Object.assign(catalog[req.kind],req.changes);return {save:{local:'persisted',sharing:'local-only',domain:{outcome:'changes'}}};},enroll:async req=>{writes.push(req);catalog.stream=stream;catalog.session=session;return {stream,session,saves:[]};}};
+ const cli={context:async()=>{reads++;return structuredClone(catalog);},cardSettings:async()=>({global:'automatic',session:'inherit',effective:'automatic'}),list:async()=>[stream],apply:async req=>{writes.push(req);Object.assign(catalog[req.kind],req.changes);return {save:{local:'persisted',sharing:'local-only',domain:{outcome:'changes'}}};},enroll:async req=>{writes.push(req);catalog.stream=stream;catalog.session=session;return {stream,session,saves:[]};}};
  const ctx={mode:'tui',hasUI:true,cwd:'/repo',sessionManager:{getSessionId:()=> 'native',getLeafId:()=> 'leaf',getBranch:()=>[{id:'leaf'}],buildSessionProjection:()=>({messages:[]})},ui:{notify:(text,level)=>notices.push({text,level}),setStatus:(_key,text)=>activity.push(text),select:async(title,rows)=>{dialogs.push({title,rows});return options.select?.(title,rows)??'Close';},editor:async()=> 'Contribution',confirm:async()=>true}};
  registerWorkCard({on:(name,fn)=>handlers.set(name,fn),registerCommand:(name,value)=>commands.set(name,value),registerTool:value=>tools.set(value.name,value),registerShortcut:()=>assert.fail('no shortcuts'),appendEntry:(type,value)=>receipts.push({type,value})},{agentDir:options.agentDir,settings:{...defaults,reporting:'manual',enrollment:'manual',...options.settings},cli,infer:async(_ctx,req,_signal,_model,logging)=>{requests.push(req);return options.infer?await options.infer(req,logging):{changes:{}};}});
  return {commands,tools,handlers,ctx,notices,requests,writes,receipts,activity,dialogs,reads:()=>reads,run:args=>commands.get('streams').handler(args,ctx)};

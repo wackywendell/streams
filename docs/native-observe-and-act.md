@@ -2,6 +2,8 @@
 
 Status: implemented in Rust and activated. This replaces native caller attestation, pair proofs and durable launch fences, not catalog save or report-admission rules.
 
+The [card preference decision](card-preferences-and-control.md) extends this behaviour with outside-attach opening and explicit open/close preferences. It replaces the automatic-opening and closure-policy details below, not observation or native targeting.
+
 ## Make ordinary native actions ordinary
 
 Opening a card, moving Pi and reopening work previously passed through caller attestation, reciprocal ownership markers and recorded launch phases. Every feature had to preserve that protocol. The user wants simple, straightforward and predictable behaviour instead: outside changes are normal inputs, and rare duplicate launches are preferable to a recovery system.

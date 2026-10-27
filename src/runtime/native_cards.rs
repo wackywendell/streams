@@ -3,6 +3,7 @@
 mod actions;
 mod card_lock;
 mod config;
+pub mod control;
 mod display;
 mod documents;
 mod launch_context;

@@ -1,4 +1,5 @@
-import type { ChildRequest, DomainObject, Runner, TitleDefault } from "./child-protocol.ts";
+import type { ChildRequest, DomainObject, Runner, TitleDefault, CardMode, CardSettings } from "./child-protocol.ts";
+export type { CardMode, CardSettings } from "./child-protocol.ts";
 export type { Runner } from "./child-protocol.ts";
 
 import { parseLocalContext, isStream as stream, isSession as session, type StreamWire, type SessionWire, type LocalContext, type Mode } from "../../integrations/herdr-work-cards/src/streams-context.ts";
@@ -69,6 +70,12 @@ export class StreamCli {
  async sync(): Promise<PublicationResult> {return this.run({kind:"sync"}, "publication");}
  async enroll(request: unknown): Promise<Receipt> {return this.run({kind:"enroll", request:request as DomainObject}, "save");}
  async apply(request: ApplyRequest): Promise<Receipt> {return this.run({kind:"apply", request}, "save");}
+ private cardSettingsValue(value: any): CardSettings {
+  if (!object(value) || !["automatic", "manual"].includes(value.global) || !["inherit", "automatic", "manual"].includes(value.session) || value.effective !== (value.session === "inherit" ? value.global : value.session)) throw new StreamsCliError("Invalid card settings");
+  return value;
+ }
+ async cardSettings(): Promise<CardSettings> {return this.cardSettingsValue(await this.run({kind:"card_settings"}));}
+ async setCardMode(target: "global" | "session", mode: CardMode): Promise<CardSettings> {return this.cardSettingsValue(await this.run({kind:"set_card_mode", target, mode}));}
  async setTitleDefault(target: "stream" | "session", mode: TitleDefault): Promise<{stream: TitleDefault; session: TitleDefault}> {
   const value = await this.run({kind:"set_title_default", target, mode});
   if (!object(value.title_defaults) || !["automatic", "manual"].includes(value.title_defaults.stream) || !["automatic", "manual"].includes(value.title_defaults.session)) throw new StreamsCliError("Invalid title defaults");

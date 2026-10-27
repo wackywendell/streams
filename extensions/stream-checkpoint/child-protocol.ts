@@ -1,5 +1,7 @@
 export type DomainObject = Record<string, unknown>;
 export type TitleDefault = "automatic" | "manual";
+export type CardMode = "inherit" | "automatic" | "manual";
+export type CardSettings = {global: TitleDefault; session: CardMode; effective: TitleDefault};
 export type ChildRequest =
  | {kind: "session_started" | "attach" | "open_card" | "close_card" | "list_streams"}
  | {kind: "context"; stream_id?: string}
@@ -7,7 +9,9 @@ export type ChildRequest =
  | {kind: "preview"; catalog: DomainObject; action: "apply" | "enroll"; request: DomainObject}
  | {kind: "enroll" | "apply"; request: DomainObject}
  | {kind: "sync"}
- | {kind: "set_title_default"; target: "stream" | "session"; mode: TitleDefault};
+ | {kind: "set_title_default"; target: "stream" | "session"; mode: TitleDefault}
+ | {kind: "card_settings"}
+ | {kind: "set_card_mode"; target: "global" | "session"; mode: CardMode};
 export type ChildOutcome =
  | {status: "success"; result: DomainObject}
  | {status: "saved_with_warnings"; result: DomainObject; warnings: string[]}

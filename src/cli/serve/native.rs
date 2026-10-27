@@ -28,7 +28,16 @@ use streams_temper::{
     },
 };
 
+#[derive(Default, PartialEq)]
+enum Binding {
+    #[default]
+    Unobserved,
+    Unbound,
+    Session(String),
+}
+
 struct Pass {
+    newly_bound: bool,
     context: RecordContext,
     config: NativeCardsConfig,
     workspace_stream: Option<String>,
@@ -47,7 +56,9 @@ pub(super) struct Controller {
     thread: Option<JoinHandle<()>>,
     files: Option<Files>,
     records: Option<Arc<application::OpenedRecords>>,
+    control: Option<super::control::Control>,
     enabled: bool,
+    binding: Binding,
     view: UiFacts,
 }
 impl Controller {
@@ -72,7 +83,9 @@ impl Controller {
             thread: None,
             files: None,
             records: None,
+            control: None,
             enabled: false,
+            binding: Binding::Unobserved,
             view: UiFacts {
                 desired_pi_name: None,
             },
@@ -104,6 +117,17 @@ impl Controller {
             let records = Arc::new(application::open_records(&self.app.config)?);
             self.files = Some(Files::new(&records, &self.session_id, self.sender.clone())?);
             self.records = Some(records);
+        }
+        if self.control.is_none() {
+            let preferences = self
+                .app
+                .conversation_card_settings(self.records.as_ref().unwrap(), &self.session_id)?;
+            let control = super::control::Control::start(preferences.path(), self.sender.clone())?;
+            self.app.environment.insert(
+                "STREAMS_CARD_CONTROL_SOCKET".into(),
+                control.path().to_string_lossy().into_owned(),
+            );
+            self.control = Some(control);
         }
         let filter = EventFilter {
             kinds: [
@@ -156,7 +180,7 @@ impl Controller {
         Ok(())
     }
     fn observe(&mut self, cancelled: &AtomicBool, event: Option<&HerdrEvent>) -> Result<Pass> {
-        let config = self.config()?;
+        let mut config = self.config()?;
         self.ensure(&config)?;
         if cancelled.load(Ordering::Acquire) {
             return Err(crate::cli::CliError::message("native request cancelled"));
@@ -180,6 +204,12 @@ impl Controller {
                 "catalog root setting changed during native pass",
             ));
         }
+        config = config.with_auto_open(
+            self.app
+                .conversation_card_settings(records, &self.session_id)?
+                .mode()?
+                .resolve(settings.card_auto_open),
+        );
         let mut context = self.app.context_from_records(
             records,
             ContextRequest {
@@ -343,12 +373,27 @@ impl Controller {
                 .flatten(),
         };
         self.publish_view()?;
+        let newly_bound = self.observe_binding(&context);
         Ok(Pass {
+            newly_bound,
             context,
             config,
             workspace_stream: selected,
             transcript,
         })
+    }
+    fn observe_binding(&mut self, context: &RecordContext) -> bool {
+        let binding = context
+            .session
+            .as_ref()
+            .map_or(Binding::Unbound, |session| {
+                Binding::Session(session.id.clone())
+            });
+        let newly_bound = self.binding != Binding::Unobserved
+            && self.binding != binding
+            && matches!(binding, Binding::Session(_));
+        self.binding = binding;
+        newly_bound
     }
     fn engine(&self, pass: Pass, cancelled: Arc<AtomicBool>) -> Result<NativeCardEngine> {
         cards::build(
@@ -371,6 +416,32 @@ impl Controller {
         }
     }
     pub fn request(&mut self, request: &Request, cancelled: Arc<AtomicBool>) -> Result<Output> {
+        use streams_temper::{child_protocol::CardTarget, config::CardMode};
+        let mode = match request {
+            Request::OpenCard {} => Some(CardMode::Automatic),
+            Request::CloseCard {} => Some(CardMode::Manual),
+            _ => None,
+        }
+        .filter(|_| self.app.environment.get("HERDR_ENV").map(String::as_str) == Some("1"));
+        if let Some(mode) = mode {
+            if cancelled.load(Ordering::Acquire) {
+                return Err(crate::cli::CliError::message("native request cancelled"));
+            }
+            self.app
+                .set_card_mode(&self.session_id, CardTarget::Session, mode)?;
+        }
+        self.request_native(request, cancelled).map_err(|error| {
+            if let Some(mode) = mode {
+                crate::cli::CliError::message(format!(
+                    "Card preference saved as {}; native action failed: {error}",
+                    serde_json::to_string(&mode).unwrap()
+                ))
+            } else {
+                error
+            }
+        })
+    }
+    fn request_native(&mut self, request: &Request, cancelled: Arc<AtomicBool>) -> Result<Output> {
         self.enabled = true;
         if self.app.environment.get("HERDR_ENV").map(String::as_str) != Some("1") {
             if matches!(request, Request::OpenCard {} | Request::CloseCard {}) {
@@ -397,6 +468,7 @@ impl Controller {
                 json!({"native":"inactive","reason":"not_enrolled"}),
             ));
         }
+        let newly_bound = pass.newly_bound;
         let mut engine = self.engine(pass, cancelled)?;
         let result = match request {
             Request::CloseCard {} => {
@@ -413,6 +485,9 @@ impl Controller {
             }
             Request::Attach {} => {
                 engine.project()?;
+                if newly_bound {
+                    engine.open_display(OpenMode::Automatic)?;
+                }
                 json!({"native":"active"})
             }
             _ => unreachable!("native lifecycle request"),
@@ -426,8 +501,12 @@ impl Controller {
         }
         let pass = self.observe(&cancelled, event)?;
         if pass.context.session.is_some() {
+            let newly_bound = pass.newly_bound;
             let mut engine = self.engine(pass, cancelled)?;
             engine.project()?;
+            if newly_bound {
+                engine.open_display(OpenMode::Automatic)?;
+            }
             self.watch_engine(&engine);
         }
         Ok(())
@@ -531,8 +610,12 @@ impl Controller {
                     .session_naming()
                     .then(|| pass.context.session.as_ref().unwrap().title.clone());
                 self.publish_view()?;
+                let newly_bound = self.observe_binding(&pass.context);
                 let mut engine = self.engine(pass, cancelled)?;
                 engine.project()?;
+                if newly_bound {
+                    engine.open_display(OpenMode::Automatic)?;
+                }
                 self.app.herdr.as_mut().unwrap().workspace_stream = Some(stream_id);
                 self.watch_engine(&engine);
                 Ok(())

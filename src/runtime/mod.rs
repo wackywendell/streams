@@ -3,6 +3,7 @@
 //! These files are execution-host state, never shared catalog records. Callers must
 //! not publish their paths or use them to infer conversation membership.
 
+pub mod card_settings;
 pub mod checkouts;
 pub mod conversations;
 pub mod launch;

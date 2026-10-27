@@ -111,18 +111,27 @@ impl Drop for FileLock {
 
 /// Open without following symlinks or waiting on special files, then serialize writers.
 pub(crate) fn lock(path: &Path) -> Result<FileLock, StorageError> {
-    open_lock(path, false, true)
+    open_lock(path, false, true, false)
+}
+
+pub(crate) fn try_lock(path: &Path) -> Result<FileLock, StorageError> {
+    open_lock(path, false, true, true)
 }
 
 pub(crate) fn inspection_lock(path: &Path) -> Result<FileLock, StorageError> {
-    open_lock(path, true, false)
+    open_lock(path, true, false, false)
 }
 
 pub(crate) fn existing_write_lock(path: &Path) -> Result<FileLock, StorageError> {
-    open_lock(path, false, false)
+    open_lock(path, false, false, false)
 }
 
-fn open_lock(path: &Path, read_only: bool, create: bool) -> Result<FileLock, StorageError> {
+fn open_lock(
+    path: &Path,
+    read_only: bool,
+    create: bool,
+    nonblocking: bool,
+) -> Result<FileLock, StorageError> {
     ensure_directory(path.parent().expect("lock parent"), create)?;
     let file = OpenOptions::new()
         .create(create)
@@ -148,7 +157,7 @@ fn open_lock(path: &Path, read_only: bool, create: bool) -> Result<FileLock, Sto
         libc::LOCK_SH
     } else {
         libc::LOCK_EX
-    };
+    } | if nonblocking { libc::LOCK_NB } else { 0 };
     if unsafe { libc::flock(file.as_raw_fd(), operation) } != 0 {
         return Err(StorageError::new(format!(
             "cannot lock {}: {}",

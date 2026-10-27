@@ -1,4 +1,5 @@
 //! Typed transport with one FIFO for native work; read-only catalog work is independent.
+mod control;
 mod dispatch;
 mod files;
 mod native;
@@ -32,10 +33,12 @@ enum Wake {
     Failed(String),
     Files(u8, notify::Result<notify::Event>),
     Native(std::result::Result<SubscriptionUpdate, String>),
+    Control(RequestId, Request, std::os::unix::net::UnixStream),
 }
 
 enum NativeWork {
     Request(RequestId, Request),
+    Control(RequestId, Request, std::os::unix::net::UnixStream),
     Files(u8, notify::Result<notify::Event>),
     Native(std::result::Result<SubscriptionUpdate, String>),
 }
@@ -82,8 +85,8 @@ impl Server {
             .clone())
     }
 
-    fn respond(&self, id: RequestId, result: Result<Output>) -> Result<()> {
-        let outcome = match result {
+    fn outcome(result: Result<Output>) -> Result<Outcome> {
+        Ok(match result {
             Err(error) => Outcome::Error {
                 error: RequestError {
                     kind: error.data()["error"]["kind"]
@@ -109,7 +112,10 @@ impl Server {
                     Outcome::Success { result }
                 }
             }
-        };
+        })
+    }
+    fn respond(&self, id: RequestId, result: Result<Output>) -> Result<()> {
+        let outcome = Self::outcome(result)?;
         send(&self.output, &ServerFrame::Response { id, outcome })?;
         self.active
             .lock()
@@ -222,6 +228,7 @@ fn native_queue(request: &Request) -> bool {
             | Request::CloseCard {}
             | Request::Apply { .. }
             | Request::Enroll { .. }
+            | Request::SetCardMode { .. }
     )
 }
 
@@ -320,6 +327,18 @@ fn native_worker(
             NativeWork::Request(id, request) => {
                 server.native_request(&mut controller, id, request, &stopping, &plugin_root)?
             }
+            NativeWork::Control(id, request, mut stream) => {
+                let result = server
+                    .app()
+                    .and_then(|app| dispatch::execute(&app, &server.session_id, request));
+                let outcome = Server::outcome(result)?;
+                // A departed caller does not undo an accepted preference write.
+                let _ = writeln!(
+                    stream,
+                    "{}",
+                    serde_json::to_string(&ServerFrame::Response { id, outcome })?
+                );
+            }
             NativeWork::Native(update) => {
                 if let Some(controller) = &mut controller {
                     if let Err(error) = controller.update(update, flag.clone()) {
@@ -400,6 +419,9 @@ pub(super) fn run(session_id: String, plugin_root: PathBuf) -> Result<()> {
                 Wake::Request(id, request) => Some(NativeWork::Request(id, request)),
                 Wake::Native(update) => Some(NativeWork::Native(update)),
                 Wake::Files(generation, event) => Some(NativeWork::Files(generation, event)),
+                Wake::Control(id, request, stream) => {
+                    Some(NativeWork::Control(id, request, stream))
+                }
                 Wake::Finished => None,
                 Wake::InputFinished => {
                     deadline = Some(Instant::now() + SHUTDOWN_GRACE);

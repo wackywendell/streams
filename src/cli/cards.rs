@@ -44,12 +44,40 @@ impl App {
                 return Ok(Output::plain(json!(null), String::new()));
             };
             let app = self.clone();
-            streams_temper::tui::application::run(move |cancel, events| {
+            let control = context.control_socket.clone();
+            let exit = streams_temper::tui::application::run(move |cancel, events| {
                 host::Host::new(app, options, config, context, cancel, events)
             })
             .map_err(CliError::message)?;
+            if exit == streams_temper::tui::application::ExitReason::Quit {
+                let saved = control
+                    .as_deref()
+                    .ok_or_else(|| "card has no child control endpoint".to_owned())
+                    .and_then(|path| {
+                        streams_temper::runtime::native_cards::control::closed(path)
+                            .map_err(|error| error.to_string())
+                    });
+                if let Err(error) = saved {
+                    eprintln!(
+                        "Streams — Card closed; manual mode may not have been saved: {error}"
+                    );
+                }
+            }
             return Ok(Output::plain(json!(null), String::new()));
         }
+        let native_id = options
+            .session_id
+            .as_deref()
+            .or_else(|| {
+                launched
+                    .as_ref()
+                    .map(|context| context.scope.native_session_id.as_str())
+            })
+            .ok_or_else(|| CliError::message("native command requires the exact Pi session ID"))?;
+        let preferences = self.card_settings(native_id)?.value;
+        let mode = serde_json::from_value(preferences["effective"].clone())
+            .expect("typed card preference");
+        let config = config.with_auto_open(mode);
         let automatic = config.startup_automatic();
         let session_naming = config.session_naming();
         let mut engine = build(

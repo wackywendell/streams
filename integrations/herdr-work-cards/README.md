@@ -26,7 +26,11 @@ Use the root Pi extension:
 | `/streams pane` | Explicitly open the native Herdr card |
 | `/streams pane close` | Close only the owned display |
 
-Opening or closing the pane does not request a report or change membership. Pressing `q` closes the display. Automatic opening runs when Pi starts or resumes and `workspace_startup` is `automatic`. Within that Pi lifetime, a closed card stays closed until `/streams pane` reopens it. A lost launch reply warns and ends the pass; later requests observe again. There is no pairing journal or exactly-once launch guarantee. Duplicate cards exit through an OS process lock.
+Opening or closing the pane does not request a report or change membership. `/streams pane` saves automatic mode and opens the card. `/streams pane close` and `q` save manual mode. Other closes do not change preferences. If `q` cannot save, the card exits with a warning.
+
+Automatic opening runs at Pi startup and when an outside attachment binds a running conversation to a Session. It uses the effective Streams preference. Refreshes and child restarts do not reopen a missing card.
+
+A lost launch reply warns and ends the pass; later requests observe again. There is no pairing journal or exactly-once launch guarantee. Duplicate cards exit through an OS process lock.
 
 The terminal pane subscribes to native and saved-record changes and reflows on resize. Its document shortcuts use the currently displayed target and revalidate it before opening. If the reference or checkout changes, redraw and press the shortcut again.
 
@@ -44,7 +48,6 @@ Global configuration lives at `$PI_CODING_AGENT_DIR/work-cards.json`, defaulting
 
 | Setting | Default | Purpose |
 | --- | --- | --- |
-| `workspace_startup` | `automatic` | Open the native card automatically or require an explicit pane command |
 | `workspace_naming` | `true` | Track eligible Herdr workspace names |
 | `tab_naming` | `true` | Track eligible Herdr tab names |
 | `session_naming` | `true` | Track eligible Pi session names |
@@ -52,7 +55,9 @@ Global configuration lives at `$PI_CODING_AGENT_DIR/work-cards.json`, defaulting
 | `herdr_timeout_ms` | `3000` | Native operation and document lock-wait timeout |
 | `pane_height_fraction` | `0.2` | Requested share of a new pair's initial split, within native layout constraints |
 
-Startup accepts `automatic` or `manual`. Each naming setting accepts only a boolean and defaults to `true`, independently of startup. `null` is invalid for naming. Disabling outgoing naming stops Streams from renaming that surface. Re-enabling it projects the saved Streams title, replacing a different frontend name. Pi name edits are imported independently through `pi_name_edits` in `stream-reporting.json`, defaulting to `true`. Disable both Pi directions to keep its name independent. The Naming submenu also changes global Stream and Session generation defaults through the Rust configuration API; it does not copy them into either Pi configuration file.
+Card-opening preferences belong to Streams, not this file. `/streams settings` edits the global `cards.auto_open` default and the conversation override through the Rust child. Remove the retired `workspace_startup` field before activation. Set the global default explicitly with `streams config set cards.auto_open automatic` or `manual`; no fallback reads the retired field.
+
+Each naming setting accepts only a boolean and defaults to `true`. `null` is invalid for naming. Disabling outgoing naming stops Streams from renaming that surface. Re-enabling it projects the saved Streams title, replacing a different frontend name. Pi name edits are imported independently through `pi_name_edits` in `stream-reporting.json`, defaulting to `true`. Disable both Pi directions to keep its name independent. The Naming submenu also changes global Stream and Session generation defaults through the Rust configuration API; it does not copy them into either Pi configuration file.
 
 `herdr_timeout_ms` must be an integer from 1 to 2,147,483,647. Pane height must be strictly between zero and one. `document_command` accepts `null` or a nonblank command without control characters; malformed nonblank `$EDITOR` values also fail visibly.
 

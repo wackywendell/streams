@@ -1,6 +1,5 @@
 
 export interface WorkCardsConfig {
-  workspace_startup: 'automatic' | 'manual';
   workspace_naming: boolean;
   tab_naming: boolean;
   session_naming: boolean;
@@ -10,7 +9,6 @@ export interface WorkCardsConfig {
 }
 
 export const DEFAULT_CONFIG: Readonly<WorkCardsConfig> = Object.freeze({
-  workspace_startup: 'automatic',
   workspace_naming: true,
   tab_naming: true,
   session_naming: true,
@@ -30,9 +28,7 @@ export function parseConfig(input: unknown): WorkCardsConfig {
   if (!input || typeof input !== 'object' || Array.isArray(input)) throw new Error('expected a JSON object');
   for (const [key, value] of Object.entries(input)) {
     if (!Object.hasOwn(DEFAULT_CONFIG, key)) throw new Error(`unknown field ${key}`);
-    if (key === 'workspace_startup') {
-      if (value !== 'automatic' && value !== 'manual') throw new Error('workspace_startup must be automatic or manual');
-    } else if (key === 'workspace_naming' || key === 'tab_naming' || key === 'session_naming') {
+    if (key === 'workspace_naming' || key === 'tab_naming' || key === 'session_naming') {
       if (typeof value !== 'boolean') throw new Error(`${key} must be a boolean`);
     } else if (key === 'document_command') {
       if (value !== null) validateDocumentCommand(value, key);

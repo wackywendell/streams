@@ -6,7 +6,7 @@ import { DynamicBorder, getSettingsListTheme, getSelectListTheme } from "@earend
 import type { ExtensionContext } from "@earendil-works/pi-coding-agent";
 import { Container, Text, Input, SettingsList, SelectList, fuzzyFilter, matchesKey } from "@earendil-works/pi-tui";
 import type { SettingItem } from "@earendil-works/pi-tui";
-import type { LocalContext, Mode, StreamCli } from "./streams.ts";
+import type { LocalContext, Mode, StreamCli, CardMode, CardSettings } from "./streams.ts";
 export type ReportingSettings = {reporting: "automatic" | "manual"; enrollment: "automatic" | "manual"; frequency: number; context: "trimmed" | "full"; model?: {provider: string; id: string}; session_logging: boolean; debug_commands: boolean; pi_name_edits: boolean};
 export const defaults: ReportingSettings = {reporting: "automatic", enrollment: "automatic", frequency: 1, context: "trimmed", session_logging: false, debug_commands: false, pi_name_edits: true};
 const plainObject = (value: unknown): value is Record<string, unknown> => !!value && typeof value === "object" && (Object.getPrototypeOf(value) === Object.prototype || Object.getPrototypeOf(value) === null);
@@ -39,7 +39,7 @@ export function saveSettings(agentDir: string, value: ReportingSettings): void {
  }
  writeFileSync(temp, JSON.stringify(saved, null, 2) + "\n", {mode: 0o600});renameSync(temp, path);
 }
-export async function settingsDialog(ctx: ExtensionContext, settings: ReportingSettings, save: (value: ReportingSettings) => void, naming: {defaults: LocalContext["title_defaults"]; save: StreamCli["setTitleDefault"]}, agentDir?: string): Promise<void> {
+export async function settingsDialog(ctx: ExtensionContext, settings: ReportingSettings, save: (value: ReportingSettings) => void, naming: {defaults: LocalContext["title_defaults"]; save: StreamCli["setTitleDefault"]}, agentDir?: string, cards?: {settings: CardSettings; save: StreamCli["setCardMode"]}): Promise<void> {
  const value = structuredClone(settings);
  const nativePath = agentDir ? join(agentDir, "work-cards.json") : undefined;
  const native: Record<string, unknown> = nativePath ? {...parseConfig(storedSettings(nativePath))} : {};
@@ -68,13 +68,22 @@ export async function settingsDialog(ctx: ExtensionContext, settings: ReportingS
   {id: "context", label: "Context", currentValue: value.context, description: "What conversation history the summary model reads: 'trimmed' uses dialogue and compaction summaries; 'full' also includes tool calls and outputs.", values: ["trimmed", "full"]},
   {id: "model", label: "Model", currentValue: value.model ? `${value.model.provider}/${value.model.id}` : "current Pi model", description: "Model used to summarize progress and generate short titles. Press Enter to search and pick from available models."},
   {id: "debug", label: "Debug", currentValue: "settings", description: "Configure debug commands and optional helper session logging. Press Enter to open."},
-  ...(nativePath ? [
-   {id: "workspace_startup", label: "Herdr workspace startup", currentValue: String(native.workspace_startup), description: "Automatically open the side-by-side Herdr work-card pane when a chat is attached, or only when you run /streams pane.", values: ["automatic", "manual"]},
+  ...(cards ? [
+   {id: "cards_global", label: "Default card opening", currentValue: cards.settings.global, description: "Open cards automatically at Pi startup or attachment, or only by explicit command. Stored by Streams, not Pi.", values: ["automatic", "manual"]},
+   {id: "cards_session", label: "This conversation's card opening", currentValue: cards.settings.session, description: "Inherit the Streams default or override it for this conversation. Opening a pane saves automatic; closing it with q or the Pi close command saves manual.", values: ["inherit", "automatic", "manual"]},
   ] : []),
   {id: "naming", label: "Naming", currentValue: "settings", description: "Configure title generation, incoming Pi name edits and outgoing frontend synchronization independently. Press Enter to open."},
  ];
  const allItems = [...items, ...debugItems, ...namingItems];
  function change(id: string, next: string): void | Promise<void> {
+  if ((id === "cards_global" || id === "cards_session") && cards) {
+   return cards.save(id === "cards_global" ? "global" : "session", next as CardMode).then(settings => {
+    for (const target of ["global", "session"] as const) {
+     const item = items.find(item => item.id === `cards_${target}`)!;
+     item.currentValue = settings[target];savedValues.set(item.id, item.currentValue);
+    }
+   });
+  }
   if (id === "stream_title_default" || id === "session_title_default") {
    return naming.save(id === "stream_title_default" ? "stream" : "session", next as Mode).then(defaults => {
     for (const target of ["stream", "session"] as const) {
@@ -83,9 +92,9 @@ export async function settingsDialog(ctx: ExtensionContext, settings: ReportingS
     }
    });
   }
-  if (id === "workspace_startup" || id.endsWith("_naming")) {
+  if (id.endsWith("_naming")) {
    if (!nativePath || !agentDir) return;
-   const updated = {...storedSettings(nativePath), [id]: id === "workspace_startup" ? next : next === "enabled"};
+   const updated = {...storedSettings(nativePath), [id]: next === "enabled"};
    parseConfig(updated);
    mkdirSync(agentDir, {recursive: true});
    const temp = `${nativePath}.${randomUUID()}.tmp`;

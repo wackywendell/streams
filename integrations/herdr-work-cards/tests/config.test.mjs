@@ -16,28 +16,21 @@ test('partial config overlays defaults without changing unrelated settings', () 
   assert.deepEqual(parseConfig(overrides), { ...DEFAULT_CONFIG, ...overrides });
 });
 
-test('workspace startup accepts only automatic or manual', () => {
-  assert.equal(DEFAULT_CONFIG.workspace_startup, 'automatic');
+test('card opening is Streams-owned, not a Pi presentation setting', () => {
+  assert.equal(Object.hasOwn(DEFAULT_CONFIG, 'workspace_startup'), false);
   for (const workspace_startup of ['automatic', 'manual']) {
-    assert.equal(parseConfig({ workspace_startup }).workspace_startup, workspace_startup);
-  }
-  for (const workspace_startup of [null, true, 'legacy', 'Automatic', 0, [], {}]) {
-    assert.throws(() => parseConfig({ workspace_startup }), /workspace_startup/);
+    assert.throws(() => parseConfig({ workspace_startup }), /unknown field workspace_startup/);
   }
 });
 
 test('naming defaults to true independently of startup and other naming settings', () => {
   const keys = ['workspace_naming', 'tab_naming', 'session_naming'];
-  for (const workspace_startup of ['automatic', 'manual']) {
-    const defaults = parseConfig({ workspace_startup });
-    for (const key of keys) {
-      assert.equal(DEFAULT_CONFIG[key], true);
-      assert.equal(defaults[key], true);
-      for (const override of [true, false]) {
-        const config = parseConfig({ workspace_startup, [key]: override });
-        assert.equal(config[key], override);
-        for (const other of keys.filter(other => other !== key)) assert.equal(config[other], true);
-      }
+  for (const key of keys) {
+    assert.equal(DEFAULT_CONFIG[key], true);
+    for (const override of [true, false]) {
+      const config = parseConfig({ [key]: override });
+      assert.equal(config[key], override);
+      for (const other of keys.filter(other => other !== key)) assert.equal(config[other], true);
     }
   }
 });

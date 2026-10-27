@@ -101,7 +101,9 @@ export default function registerWorkCard(pi: ExtensionAPI, options: Options = {}
  }
  const configure = async (ctx: ExtensionContext) => {
   const client = cli(ctx), catalog = await client.context(ctx.sessionManager.getSessionId());
-  await settingsDialog(ctx, settings(), value => {saveSettings(agentDir, value);config = value;}, {defaults: catalog.title_defaults, save: (target, mode) => client.setTitleDefault(target, mode)}, agentDir);
+  const cards = await client.cardSettings();
+  await settingsDialog(ctx, settings(), value => {saveSettings(agentDir, value);config = value;}, {defaults: catalog.title_defaults, save: (target, mode) => client.setTitleDefault(target, mode)}, agentDir,
+   {settings: cards, save: (target, mode) => client.setCardMode(target, mode)});
  };
  async function discussion(ctx: ExtensionContext, state: CardState): Promise<void> {
   for (;;) {

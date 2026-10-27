@@ -468,10 +468,16 @@ impl Drop for TerminalState {
     }
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ExitReason {
+    Quit,
+    Other,
+}
+
 /// Requires interactive stdin/stdout. The single worker is joined on every exit,
 /// including unwind; bounded native calls are the host's responsibility.
-/// Quitting only cancels reads and exits. The Pi child owns closure evidence.
-pub fn run<H, F>(make_host: F) -> Result<(), String>
+/// Return explicit quit intent separately from owner loss, signals and failures.
+pub fn run<H, F>(make_host: F) -> Result<ExitReason, String>
 where
     H: PaneHost + 'static,
     F: FnOnce(Cancellation, PaneEvents) -> Result<H, String> + Send + 'static,
@@ -486,7 +492,7 @@ where
     // Validate terminal input before even constructing the native host.
     event::poll(Duration::ZERO).map_err(|e| e.to_string())?;
     if signals.raised.load(Ordering::SeqCst) {
-        return Ok(());
+        return Ok(ExitReason::Other);
     }
     let mut worker = Worker::start(make_host)?;
     let mut controller = Controller::new();
@@ -498,15 +504,18 @@ where
     finish_interaction(&mut worker, outcome, || state.restore())
 }
 
-fn finish_interaction(
+fn finish_interaction<T>(
     worker: &mut Worker,
-    outcome: Result<(), String>,
+    outcome: Result<T, String>,
     restore: impl FnOnce() -> io::Result<()>,
-) -> Result<(), String> {
+) -> Result<T, String> {
     // Restore on every exit before joining the cancelled worker and its subscriptions.
     let restored = restore().map_err(|e| format!("Terminal restore failed: {e}"));
     let joined = worker.finish();
-    restored.and(outcome).and(joined)
+    restored?;
+    let result = outcome?;
+    joined?;
+    Ok(result)
 }
 
 fn interact(
@@ -514,7 +523,7 @@ fn interact(
     controller: &mut Controller,
     worker: &Worker,
     signals: &Signals,
-) -> Result<(), String> {
+) -> Result<ExitReason, String> {
     let waker = Waker::from(Arc::new(InputWake(worker.events.clone())));
     let mut context = Context::from_waker(&waker);
     let mut input_events = event::EventStream::new();
@@ -523,7 +532,7 @@ fn interact(
         #[cfg(test)]
         controller.wakeups.fetch_add(1, Ordering::SeqCst);
         if signals.raised.load(Ordering::SeqCst) {
-            return Ok(());
+            return Ok(ExitReason::Other);
         }
         if controller.dirty {
             terminal
@@ -546,10 +555,10 @@ fn interact(
                 }
             };
             if signals.raised.load(Ordering::SeqCst) {
-                return Ok(());
+                return Ok(ExitReason::Other);
             }
             if quit(&input) {
-                return Ok(());
+                return Ok(ExitReason::Quit);
             }
             if matches!(input, Event::Resize(..)) {
                 controller.resize();
@@ -568,7 +577,7 @@ fn interact(
                 .unwrap_or_else(|| worker.responses.try_recv())
             {
                 Ok(Response::Input) => {}
-                Ok(Response::Signal) => return Ok(()),
+                Ok(Response::Signal) => return Ok(ExitReason::Other),
                 Ok(Response::Stopped) => {
                     return Err(
                         "Native worker disconnected; native card retained or uncertain".into(),
@@ -577,7 +586,7 @@ fn interact(
                 Ok(Response::Event(PaneEvent::Changed)) => {
                     controller.queue_read(Refresh::Changed);
                 }
-                Ok(Response::Event(PaneEvent::Exit)) => return Ok(()),
+                Ok(Response::Event(PaneEvent::Exit)) => return Ok(ExitReason::Other),
                 Ok(Response::Event(PaneEvent::Failed(error))) => return Err(error),
                 Ok(response) => controller.settle(response)?,
                 Err(mpsc::TryRecvError::Disconnected) => {

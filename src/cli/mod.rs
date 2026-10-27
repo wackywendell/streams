@@ -735,6 +735,7 @@ impl App {
             ConfigKey::FrontendMode,
             ConfigKey::StreamNaming,
             ConfigKey::SessionNaming,
+            ConfigKey::CardAutoOpen,
         ] {
             let text = key.to_string();
             let (section, name) = text.split_once('.').expect("closed configuration key");

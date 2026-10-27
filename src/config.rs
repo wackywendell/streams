@@ -34,6 +34,8 @@ pub enum ConfigKey {
     StreamNaming,
     #[strum(serialize = "naming.session")]
     SessionNaming,
+    #[strum(serialize = "cards.auto_open")]
+    CardAutoOpen,
 }
 
 /// Validation and filesystem failures retain uncertain-write evidence from storage.
@@ -58,6 +60,24 @@ pub struct Settings {
     pub catalog_root: PathBuf,
     pub frontend: FrontendMode,
     pub naming: TitleDefaults,
+    pub card_auto_open: CardMode,
+}
+
+#[derive(Debug, Default, Clone, Copy, PartialEq, Eq, Serialize, EnumString, VariantNames)]
+#[serde(rename_all = "lowercase")]
+#[strum(serialize_all = "lowercase")]
+pub enum CardMode {
+    #[default]
+    Inherit,
+    Automatic,
+    Manual,
+}
+crate::codec::deserialize_string_enum!(CardMode);
+
+impl CardMode {
+    pub fn resolve(self, global: Self) -> Self {
+        if self == Self::Inherit { global } else { self }
+    }
 }
 
 /// An immutable environment snapshot and the paths derived from it.
@@ -150,7 +170,10 @@ impl Config {
             .as_object_mut()
             .ok_or_else(|| invalid("config must contain a JSON object"))?;
         for (section, values) in object {
-            if !matches!(section.as_str(), "catalog" | "frontend" | "naming") {
+            if !matches!(
+                section.as_str(),
+                "catalog" | "frontend" | "naming" | "cards"
+            ) {
                 return Err(invalid(format!("invalid config section: {section}")));
             }
             for (name, value) in values
@@ -189,6 +212,12 @@ impl Config {
                 data.get("naming").cloned().unwrap_or_else(|| json!({})),
             )
             .expect("validated naming defaults"),
+            card_auto_open: serde_json::from_value(
+                data.pointer("/cards/auto_open")
+                    .cloned()
+                    .unwrap_or_else(|| json!("automatic")),
+            )
+            .expect("validated card default"),
         })
     }
 
@@ -202,7 +231,7 @@ impl Config {
         };
         Ok(
             json!({"catalog":{"root":settings.catalog_root}, "frontend":{"mode":mode},
-            "naming":settings.naming}),
+            "naming":settings.naming,"cards":{"auto_open":settings.card_auto_open}}),
         )
     }
 
@@ -284,6 +313,10 @@ impl Config {
                     .map_err(|_| invalid(format!("{key} must be automatic or manual")))?;
                 Ok(value)
             }
+            ConfigKey::CardAutoOpen => match text()?.parse::<CardMode>() {
+                Ok(CardMode::Automatic | CardMode::Manual) => Ok(value),
+                _ => Err(invalid("cards.auto_open must be automatic or manual")),
+            },
             ConfigKey::CatalogRoot => {
                 let path = expanduser(text()?, &self.home)?;
                 if !path.is_absolute() {

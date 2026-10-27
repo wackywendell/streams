@@ -4,26 +4,14 @@ use std::io::Read;
 use std::os::unix::fs::OpenOptionsExt;
 use std::path::{Path, PathBuf};
 
-use serde::{Deserialize, Serialize};
-use strum::{EnumString, VariantNames};
+use serde::Deserialize;
 use unicode_general_category::{GeneralCategory, get_general_category};
 
 use super::super::{Result, invalid};
 
-#[derive(Debug, Default, Clone, Copy, Serialize, EnumString, VariantNames)]
-#[serde(rename_all = "lowercase")]
-#[strum(serialize_all = "lowercase")]
-enum Startup {
-    #[default]
-    Automatic,
-    Manual,
-}
-crate::codec::deserialize_string_enum!(Startup);
-
 #[derive(Deserialize)]
 #[serde(default, deny_unknown_fields)]
 struct Wire {
-    workspace_startup: Startup,
     workspace_naming: bool,
     tab_naming: bool,
     session_naming: bool,
@@ -34,7 +22,6 @@ struct Wire {
 impl Default for Wire {
     fn default() -> Self {
         Self {
-            workspace_startup: Startup::Automatic,
             workspace_naming: true,
             tab_naming: true,
             session_naming: true,
@@ -47,7 +34,7 @@ impl Default for Wire {
 
 #[derive(Clone)]
 pub struct NativeCardsConfig {
-    startup: Startup,
+    automatic_open: bool,
     pub(super) workspace_naming: bool,
     pub(super) tab_naming: bool,
     pub(super) session_naming: bool,
@@ -121,7 +108,7 @@ impl NativeCardsConfig {
             validate_title(command)?;
         }
         Ok(Self {
-            startup: wire.workspace_startup,
+            automatic_open: true,
             workspace_naming: wire.workspace_naming,
             tab_naming: wire.tab_naming,
             session_naming: wire.session_naming,
@@ -139,7 +126,11 @@ impl NativeCardsConfig {
         self.timeout_seconds
     }
     pub fn startup_automatic(&self) -> bool {
-        matches!(self.startup, Startup::Automatic)
+        self.automatic_open
+    }
+    pub fn with_auto_open(mut self, mode: crate::config::CardMode) -> Self {
+        self.automatic_open = mode == crate::config::CardMode::Automatic;
+        self
     }
     pub fn source_path(&self) -> &Path {
         &self.source_path

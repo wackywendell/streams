@@ -119,6 +119,79 @@ impl NativeFixture {
                     }
                     Reply::Result(json!({"type":"ok"}))
                 }
+                "plugin.list" => {
+                    let root = PathBuf::from(concat!(
+                        env!("CARGO_MANIFEST_DIR"),
+                        "/integrations/herdr-work-cards"
+                    ))
+                    .canonicalize()
+                    .unwrap();
+                    Reply::Result(json!({"type":"plugin_list","plugins":[{
+                        "plugin_id":"streams-rust-work-cards","enabled":true,
+                        "plugin_root":root,"manifest_path":root.join("streams-rust-herdr-plugin.toml")
+                    }]}))
+                }
+                "plugin.pane.open" => {
+                    let launch: streams_temper::runtime::native_cards::LaunchedCardContext =
+                        serde_json::from_str(
+                            params["env"]["STREAMS_CARDS_CONTEXT"].as_str().unwrap(),
+                        )
+                        .unwrap();
+                    let mut snapshot = snapshot.lock().unwrap();
+                    let owner = snapshot["panes"]
+                        .as_array()
+                        .unwrap()
+                        .iter()
+                        .find(|pane| pane["pane_id"] == params["target_pane_id"])
+                        .unwrap()
+                        .clone();
+                    // Stand in for the card process publishing its launch identity.
+                    let mut tokens = stream_tokens(
+                        &launch.scope.catalog_source,
+                        &launch.scope.host_id,
+                        &launch.scope.stream_id,
+                    );
+                    tokens.remove("strm_stream");
+                    tokens.insert("strm_session".into(), launch.scope.session_id);
+                    tokens.insert("strm_role".into(), "card".into());
+                    let number = snapshot["panes"].as_array().unwrap().len();
+                    let pane = json!({"pane_id":format!("card-{number}"),
+                        "terminal_id":format!("card-terminal-{number}"),"workspace_id":owner["workspace_id"],
+                        "tab_id":owner["tab_id"],"cwd":params["cwd"],"label":"card","tokens":tokens});
+                    snapshot["panes"].as_array_mut().unwrap().push(pane.clone());
+                    snapshot["layouts"][0]["panes"]
+                        .as_array_mut()
+                        .unwrap()
+                        .push(json!({"pane_id":pane["pane_id"]}));
+                    Reply::Result(json!({"type":"plugin_pane_opened","plugin_pane":{
+                        "plugin_id":"streams-rust-work-cards","entrypoint":"card","pane":pane
+                    }}))
+                }
+                "plugin.pane.close" => {
+                    let mut snapshot = snapshot.lock().unwrap();
+                    snapshot["panes"]
+                        .as_array_mut()
+                        .unwrap()
+                        .retain(|pane| pane["pane_id"] != params["pane_id"]);
+                    for layout in snapshot["layouts"].as_array_mut().unwrap() {
+                        layout["panes"]
+                            .as_array_mut()
+                            .unwrap()
+                            .retain(|pane| pane["pane_id"] != params["pane_id"]);
+                    }
+                    Reply::Result(json!({"type":"plugin_pane_closed","pane_id":params["pane_id"]}))
+                }
+                "pane.rename" => {
+                    let mut snapshot = snapshot.lock().unwrap();
+                    let pane = snapshot["panes"]
+                        .as_array_mut()
+                        .unwrap()
+                        .iter_mut()
+                        .find(|pane| pane["pane_id"] == params["pane_id"])
+                        .unwrap();
+                    pane["label"] = params["label"].clone();
+                    Reply::Result(json!({"type":"pane_info","pane":pane}))
+                }
                 other => panic!("unexpected serve effect: {other}"),
             }
         });
@@ -146,9 +219,15 @@ impl NativeFixture {
             stream["id"].as_str().unwrap()
         ));
         fixture.ok(&["config", "set", "frontend.mode", "herdr"], None);
-        fs::write(home.join("work-cards.json"), json!({
-            "workspace_startup":"manual","workspace_naming":false,"tab_naming":false,"session_naming":true
-        }).to_string()).unwrap();
+        fixture.ok(&["config", "set", "cards.auto_open", "manual"], None);
+        fs::write(
+            home.join("work-cards.json"),
+            json!({
+                "workspace_naming":false,"tab_naming":false,"session_naming":true,"pane_height_fraction":0.5
+            })
+            .to_string(),
+        )
+        .unwrap();
         Self {
             server,
             fixture,
@@ -499,6 +578,273 @@ fn external_attach_into_an_unmarked_workspace_does_not_create_or_move_work() {
         "terminal"
     );
     assert_eq!(child.finish(), (0, String::new()));
+}
+
+#[test]
+fn automatic_cards_open_on_startup_or_outside_attach_and_not_again_on_refresh() {
+    for initially_bound in [false, true] {
+        let f = NativeFixture::new();
+        f.fixture
+            .ok(&["config", "set", "cards.auto_open", "automatic"], None);
+        fs::write(
+            f.fixture.directory.path().join("work-cards.json"),
+            json!({"workspace_naming":false,
+                "tab_naming":false,"session_naming":true,"pane_height_fraction":0.5})
+            .to_string(),
+        )
+        .unwrap();
+        let id = if initially_bound {
+            f.id.clone()
+        } else {
+            uuid::Uuid::new_v4().to_string()
+        };
+        {
+            let mut snapshot = f.snapshot.lock().unwrap();
+            snapshot["workspaces"][0]["tokens"] = json!({});
+            for key in ["panes", "agents"] {
+                snapshot[key][0]["agent_session"]["value"] = json!(id);
+            }
+        }
+        let mut child = Transport::start(f.command(), &id);
+        assert_eq!(child.next(), json!({"type":"ready","protocol":2}));
+        child.request(1, json!({"kind":"session_started"}));
+        let started = child.response(1);
+        assert_eq!(started["outcome"]["status"], "success", "{started}");
+        let attached = if initially_bound {
+            assert_eq!(started["outcome"]["result"]["display"], "opened");
+            f.session.clone()
+        } else {
+            assert_eq!(started["outcome"]["result"]["reason"], "not_enrolled");
+            let stream = f.session["stream_id"].as_str().unwrap();
+            f.fixture.ok(
+                &[
+                    "session",
+                    "attach",
+                    stream,
+                    "--harness",
+                    "pi",
+                    "--session-id",
+                    &uuid::Uuid::new_v4().to_string(),
+                    "--title",
+                    "Unrelated",
+                ],
+                None,
+            );
+            assert!(
+                child
+                    .frames
+                    .recv_timeout(Duration::from_millis(150))
+                    .is_err()
+            );
+            assert!(
+                !f.server
+                    .methods()
+                    .iter()
+                    .any(|method| method == "plugin.pane.open")
+            );
+            let attached = f.fixture.ok(
+                &[
+                    "session",
+                    "attach",
+                    stream,
+                    "--harness",
+                    "pi",
+                    "--session-id",
+                    &id,
+                    "--title",
+                    "Outside attach",
+                ],
+                None,
+            )["session"]
+                .clone();
+            assert_eq!(child.next()["view"]["desired_pi_name"], "Outside attach");
+            // FIFO barrier: the file-event pass must finish its native effects.
+            child.request(2, json!({"kind":"attach"}));
+            assert_eq!(child.response(2)["outcome"]["status"], "success");
+            attached
+        };
+        let opens = f
+            .server
+            .requests()
+            .into_iter()
+            .filter(|(method, _)| method == "plugin.pane.open")
+            .collect::<Vec<_>>();
+        assert_eq!(opens.len(), 1, "{opens:?}");
+        let params = &opens[0].1;
+        assert_eq!(params["target_pane_id"], "pane");
+        assert_eq!(params["placement"], "split");
+        assert_eq!(params["direction"], "down");
+        assert_eq!(params["focus"], false);
+        let launch: streams_temper::runtime::native_cards::LaunchedCardContext =
+            serde_json::from_str(params["env"]["STREAMS_CARDS_CONTEXT"].as_str().unwrap()).unwrap();
+        assert_eq!(launch.scope.session_id, attached["id"]);
+        assert_eq!(launch.scope.stream_id, attached["stream_id"]);
+        assert_eq!(launch.owner.native_session_id, id);
+        {
+            let snapshot = f.snapshot.lock().unwrap();
+            assert_eq!(snapshot["panes"][1]["tab_id"], "tab");
+            assert_eq!(
+                snapshot["panes"][1]["tokens"]["strm_session"],
+                attached["id"]
+            );
+            assert_eq!(snapshot["panes"][1]["tokens"]["strm_role"], "card");
+            assert_eq!(snapshot["panes"][0]["tokens"]["strm_status"], "active");
+            assert_eq!(
+                snapshot["workspaces"][0]["tokens"]["strm_stream"],
+                attached["stream_id"]
+            );
+        }
+        // A second, distinct Session write must refresh rather than open again.
+        f.fixture.ok(
+            &[
+                "session",
+                "update",
+                attached["id"].as_str().unwrap(),
+                "--title",
+                "After attach",
+            ],
+            None,
+        );
+        assert_eq!(child.next()["view"]["desired_pi_name"], "After attach");
+        child.request(3, json!({"kind":"attach"}));
+        assert_eq!(child.response(3)["outcome"]["status"], "success");
+        assert_eq!(
+            f.server
+                .methods()
+                .iter()
+                .filter(|method| *method == "plugin.pane.open")
+                .count(),
+            1
+        );
+        assert_eq!(child.finish(), (0, String::new()));
+    }
+}
+
+#[test]
+fn card_preferences_and_the_control_endpoint_survive_close_refresh_and_child_restart() {
+    use streams_temper::{
+        child_protocol::{Outcome, Request},
+        runtime::native_cards::control,
+    };
+    let f = NativeFixture::new();
+    let (mut child, _) = f.start();
+    child.request(1, json!({"kind":"open_card"}));
+    assert_eq!(child.response(1)["outcome"]["result"]["display"], "opened");
+    let opens = f.server.requests();
+    let launch: streams_temper::runtime::native_cards::LaunchedCardContext = serde_json::from_str(
+        opens
+            .iter()
+            .find(|(method, _)| method == "plugin.pane.open")
+            .unwrap()
+            .1["env"]["STREAMS_CARDS_CONTEXT"]
+            .as_str()
+            .unwrap(),
+    )
+    .unwrap();
+    let endpoint = launch.control_socket.unwrap();
+    let read = || match control::request(&endpoint, Request::CardSettings {}).unwrap() {
+        Outcome::Success { result } => Value::Object(result),
+        other => panic!("{other:?}"),
+    };
+    assert_eq!(
+        read(),
+        json!({"global":"manual","session":"automatic","effective":"automatic"})
+    );
+    control::closed(&endpoint).unwrap();
+    assert_eq!(read()["session"], "manual");
+    child.request(2, json!({"kind":"close_card"}));
+    assert_eq!(child.response(2)["outcome"]["result"]["closed"], true);
+    child.request(
+        3,
+        json!({"kind":"set_card_mode","target":"session","mode":"automatic"}),
+    );
+    assert_eq!(
+        child.response(3)["outcome"]["result"]["effective"],
+        "automatic"
+    );
+    f.fixture.ok(
+        &[
+            "session",
+            "update",
+            f.session["id"].as_str().unwrap(),
+            "--title",
+            "Still closed",
+        ],
+        None,
+    );
+    assert_eq!(child.next()["view"]["desired_pi_name"], "Still closed");
+    child.request(4, json!({"kind":"attach"}));
+    assert_eq!(child.response(4)["outcome"]["status"], "success");
+    assert_eq!(
+        f.snapshot.lock().unwrap()["panes"]
+            .as_array()
+            .unwrap()
+            .len(),
+        1
+    );
+    assert_eq!(child.finish(), (0, String::new()));
+    let (mut restarted, _) = f.start();
+    // A child restart is not a startup trigger, even with effective automatic mode.
+    assert_eq!(
+        f.snapshot.lock().unwrap()["panes"]
+            .as_array()
+            .unwrap()
+            .len(),
+        1
+    );
+    assert_eq!(read()["session"], "automatic");
+    // An already-running card's launch endpoint still addresses the new child.
+    control::closed(&endpoint).unwrap();
+    restarted.request(5, json!({"kind":"session_started"}));
+    assert_eq!(
+        restarted.response(5)["outcome"]["result"]["display"],
+        "suppressed"
+    );
+    restarted.request(
+        6,
+        json!({"kind":"set_card_mode","target":"session","mode":"inherit"}),
+    );
+    assert_eq!(
+        restarted.response(6)["outcome"]["result"]["effective"],
+        "manual"
+    );
+    restarted.request(
+        7,
+        json!({"kind":"set_card_mode","target":"global","mode":"automatic"}),
+    );
+    assert_eq!(
+        restarted.response(7)["outcome"]["result"]["effective"],
+        "automatic"
+    );
+    restarted.request(8, json!({"kind":"session_started"}));
+    assert_eq!(
+        restarted.response(8)["outcome"]["result"]["display"],
+        "opened"
+    );
+    restarted.request(
+        9,
+        json!({"kind":"set_card_mode","target":"global","mode":"inherit"}),
+    );
+    assert_eq!(restarted.response(9)["outcome"]["status"], "error");
+    // A failed preference write is a typed error on either connection.
+    let config = Config::new(&launch.reader.environment, &launch.reader.cwd).unwrap();
+    let records = application::open_records(&config).unwrap();
+    let store = streams_temper::runtime::card_settings::CardSettings::new(
+        &config,
+        records.root(),
+        records.host().as_str(),
+        &f.id,
+    )
+    .unwrap();
+    fs::remove_file(store.path()).unwrap();
+    fs::create_dir(store.path()).unwrap();
+    assert!(control::closed(&endpoint).is_err());
+    restarted.request(
+        10,
+        json!({"kind":"set_card_mode","target":"session","mode":"manual"}),
+    );
+    assert_eq!(restarted.response(10)["outcome"]["status"], "error");
+    assert_eq!(restarted.finish(), (0, String::new()));
 }
 
 #[test]

@@ -34,7 +34,7 @@ for(const custom of [false,true])test(`${custom?'custom':'fallback'} Naming keep
  if(custom) f.ui.custom=async factory=>{
   let closed=false;
   const component=factory({terminal:{rows:30},requestRender(){}},theme,{},()=>{closed=true;});
-  for(let i=0;i<7;i++)component.handleInput(down);component.handleInput(enter);
+  for(let i=0;i<6;i++)component.handleInput(down);component.handleInput(enter);
   const text=()=>stripVTControlCharacters(component.render(110).join('\n'));
   assert.match(text(),/Stream title generation\s+manual/);assert.match(text(),/Session title generation\s+automatic/);
   for(let i=0;i<6;i++) {component.handleInput(enter);await turn();if(i<5)component.handleInput(down);}
@@ -62,7 +62,7 @@ for(const custom of [false,true])test(`${custom?'custom':'fallback'} Naming rest
  });
  if(custom)f.ui.custom=async factory=>{
   const component=factory({terminal:{rows:30},requestRender(){}},theme,{},()=>{});
-  for(let i=0;i<7;i++)component.handleInput(down);component.handleInput(enter);
+  for(let i=0;i<6;i++)component.handleInput(down);component.handleInput(enter);
   const text=()=>stripVTControlCharacters(component.render(110).join('\n'));
   component.handleInput(enter);await turn();assert.match(text(),/Stream title generation\s+manual/);
   failing=false;component.handleInput(enter);await turn();
@@ -84,7 +84,7 @@ test('custom Naming displays an in-flight save and admits one action at a time',
  f.ui.custom=async factory=>{
   let closed=false;
   const component=factory({terminal:{rows:30},requestRender(){}},theme,{},()=>{closed=true;});
-  for(let i=0;i<7;i++)component.handleInput(down);component.handleInput(enter);component.handleInput(enter);
+  for(let i=0;i<6;i++)component.handleInput(down);component.handleInput(enter);component.handleInput(enter);
   assert.match(stripVTControlCharacters(component.render(110).join('\n')),/saving…/);
   component.handleInput(down);component.handleInput(enter);component.handleInput(escape);
   assert.equal(f.requests.length,1);assert.equal(closed,false);
@@ -98,7 +98,7 @@ test('Naming descriptions explain effective policy, initial titles and both Pi n
  const f=fixture(t);
  f.ui.custom=async factory=>{
   const component=factory({terminal:{rows:16},requestRender(){}},theme,{},()=>{});
-  for(let i=0;i<7;i++)component.handleInput(down);component.handleInput(enter);
+  for(let i=0;i<6;i++)component.handleInput(down);component.handleInput(enter);
   for(const expected of [/Default for Stream titles in inherit mode/,/Default for Session titles in inherit mode/,/Save changed Pi \/name edits as manual Session titles/,/Mirror the saved effort title/,/Mirror saved Session titles/,/Mirror the saved Session title in Pi/]) {
    const lines=component.render(100),text=stripVTControlCharacters(lines.join('\n'));assert.ok(lines.length<=16,text);assert.match(text,expected);
    if(expected.source.startsWith('Default')) {assert.match(text,/Does not change explicit/);assert.match(text,/Enrollment may still create an initial title/);}

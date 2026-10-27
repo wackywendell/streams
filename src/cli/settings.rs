@@ -3,6 +3,54 @@ use streams_temper::{child_protocol::TitleTarget, model::NamingMode};
 use super::*;
 
 impl App {
+    pub(super) fn conversation_card_settings(
+        &self,
+        records: &application::OpenedRecords,
+        native_id: &str,
+    ) -> Result<streams_temper::runtime::card_settings::CardSettings> {
+        Ok(streams_temper::runtime::card_settings::CardSettings::new(
+            &self.config,
+            records.root(),
+            records.host().as_str(),
+            native_id,
+        )?)
+    }
+    pub(super) fn card_settings(&self, native_id: &str) -> Result<Output> {
+        let records = application::open_records(&self.config)?;
+        let session = self
+            .conversation_card_settings(&records, native_id)?
+            .mode()?;
+        let global = self.config.load()?.card_auto_open;
+        Ok(Output::value(
+            json!({"global":global,"session":session,"effective":session.resolve(global)}),
+        ))
+    }
+    pub(super) fn set_card_mode(
+        &self,
+        native_id: &str,
+        target: streams_temper::child_protocol::CardTarget,
+        mode: streams_temper::config::CardMode,
+    ) -> Result<Output> {
+        use streams_temper::{child_protocol::CardTarget, config::CardMode};
+        match target {
+            CardTarget::Global => {
+                let value = match mode {
+                    CardMode::Automatic => "automatic",
+                    CardMode::Manual => "manual",
+                    CardMode::Inherit => {
+                        return Err(CliError::message("global card mode cannot inherit"));
+                    }
+                };
+                self.config.set(ConfigKey::CardAutoOpen, value)?;
+            }
+            CardTarget::Session => {
+                let records = application::open_records(&self.config)?;
+                self.conversation_card_settings(&records, native_id)?
+                    .set(mode)?;
+            }
+        }
+        self.card_settings(native_id)
+    }
     pub(super) fn set_title_default(
         &self,
         target: TitleTarget,

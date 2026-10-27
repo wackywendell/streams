@@ -16,6 +16,7 @@ fn config_keys_roundtrip_exact_wire_names() {
         (ConfigKey::FrontendMode, "frontend.mode"),
         (ConfigKey::StreamNaming, "naming.stream"),
         (ConfigKey::SessionNaming, "naming.session"),
+        (ConfigKey::CardAutoOpen, "cards.auto_open"),
     ];
     assert_eq!(
         ConfigKey::iter().collect::<Vec<_>>(),
@@ -126,6 +127,19 @@ fn title_defaults_accept_only_automatic_or_manual_and_default_independently() {
             session: NamingMode::Automatic,
         }
     );
+}
+
+#[test]
+fn automatic_card_default_accepts_only_automatic_or_manual() {
+    for mode in ["automatic", "manual"] {
+        assert_eq!(
+            config().parse_value(ConfigKey::CardAutoOpen, mode).unwrap(),
+            json!(mode)
+        );
+    }
+    for mode in ["inherit", "", "Automatic", "manual ", "null"] {
+        assert!(config().parse_value(ConfigKey::CardAutoOpen, mode).is_err());
+    }
 }
 
 #[test]

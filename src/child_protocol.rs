@@ -111,6 +111,11 @@ pub enum Request {
     Attach {},
     OpenCard {},
     CloseCard {},
+    CardSettings {},
+    SetCardMode {
+        target: CardTarget,
+        mode: crate::config::CardMode,
+    },
     Context {
         #[serde(skip_serializing_if = "Option::is_none")]
         stream_id: Option<String>,
@@ -161,7 +166,15 @@ pub enum PreviewAction {
     Enroll,
 }
 
-crate::codec::deserialize_string_enum!(PreviewAction, TitleTarget);
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, strum::EnumString, strum::VariantNames)]
+#[serde(rename_all = "snake_case")]
+#[strum(serialize_all = "snake_case")]
+pub enum CardTarget {
+    Global,
+    Session,
+}
+
+crate::codec::deserialize_string_enum!(PreviewAction, TitleTarget, CardTarget);
 
 /// A desired label for the bound Pi session, not a native scope or work selector.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
