@@ -33,6 +33,17 @@ pub(super) enum NativeCommand {
     #[command(hide = true)]
     Pane,
 }
+#[derive(Debug, Args)]
+#[group(multiple = false)]
+pub(super) struct SessionSelection {
+    /// Discover a member Session by ID, title or substring.
+    #[arg(id = "session", long = "session")]
+    pub reference: Option<String>,
+    /// Read exactly one member Session, without catalog discovery.
+    #[arg(id = "session_key", long = "session-key", value_name = "HOST/ID")]
+    pub key: Option<String>,
+}
+
 #[derive(Debug, Subcommand)]
 pub(super) enum Command {
     /// Serve typed protocol-2 requests for one Pi session over stdio.
@@ -111,16 +122,16 @@ pub(super) enum Command {
     Open {
         #[command(flatten)]
         target: Target,
-        #[arg(long)]
-        session: Option<String>,
+        #[command(flatten)]
+        session: SessionSelection,
         #[arg(long)]
         cwd: Option<PathBuf>,
     },
     Resume {
         #[command(flatten)]
         target: Target,
-        #[arg(long)]
-        session: Option<String>,
+        #[command(flatten)]
+        session: SessionSelection,
         #[arg(long)]
         cwd: Option<PathBuf>,
     },
@@ -713,6 +724,27 @@ mod tests {
                 ])
                 .is_err(),
                 "{flag}"
+            );
+        }
+    }
+
+    #[test]
+    fn open_and_resume_keep_human_references_separate_from_exact_session_keys() {
+        for command in ["open", "resume"] {
+            for selection in ["--session", "--session-key"] {
+                assert!(parse(&[command, "--current", selection, "host/id"]).is_ok());
+                assert!(parse(&[command, "Work", selection, "host/id"]).is_ok());
+            }
+            assert!(
+                parse(&[
+                    command,
+                    "--current",
+                    "--session",
+                    "Lane",
+                    "--session-key",
+                    "host/id"
+                ])
+                .is_err()
             );
         }
     }

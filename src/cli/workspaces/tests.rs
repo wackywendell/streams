@@ -1,4 +1,116 @@
 use super::*;
+use std::{fs, sync::Mutex};
+use streams_temper::{
+    config::Config,
+    yaml_store::records::{RecordIoEvent, YamlRecordStore, relative_record_path},
+};
+
+#[test]
+fn selected_session_key_reads_only_its_record_without_catalog_discovery() {
+    for unrelated in [0, 64] {
+        let directory = tempfile::tempdir().unwrap();
+        let cwd = directory.path().canonicalize().unwrap();
+        let environment = BTreeMap::from([("HOME".into(), cwd.to_str().unwrap().into())]);
+        let config = Config::new(&environment, &cwd).unwrap();
+        fs::create_dir_all(config.host_path().parent().unwrap()).unwrap();
+        fs::write(
+            config.host_path(),
+            json!({"version":1,"id":"01234567-89ab-4def-8123-456789abcdef"}).to_string(),
+        )
+        .unwrap();
+        let host = config.host_identity().unwrap();
+        let settings = config.load().unwrap();
+        YamlRecordStore::new(&settings.catalog_root, host.as_str())
+            .unwrap()
+            .initialize()
+            .unwrap();
+        let events = Arc::new(Mutex::new(Vec::new()));
+        let observed = events.clone();
+        let opened = application::open_records_observed(&config, move |event| {
+            observed.lock().unwrap().push(event)
+        })
+        .unwrap();
+        let stream = Stream::new("work", "Work", None, host.as_str()).unwrap();
+        let mut member = Session::new(
+            Session::id_for(host.as_str(), "pi", "native"),
+            host.as_str(),
+            "work",
+            "pi",
+            "native",
+            "Lane",
+        )
+        .unwrap();
+        member.status = Status::Done;
+        application::create_record(opened.records(), "stream", &Record::Stream(stream.clone()))
+            .unwrap();
+        application::create_record(
+            opened.records(),
+            "session",
+            &Record::Session(member.clone()),
+        )
+        .unwrap();
+        let neighbor = opened.root().join("hosts/unrelated/streams");
+        fs::create_dir_all(&neighbor).unwrap();
+        for index in 0..unrelated {
+            fs::write(neighbor.join(format!("bad-{index}.yaml")), "not a record").unwrap();
+        }
+        let selection = SessionSelection {
+            reference: None,
+            key: Some(format!("{}/{}", host.as_str(), member.id)),
+        };
+        events.lock().unwrap().clear();
+        assert_eq!(
+            selected_sessions(&opened, &stream, &selection, None).unwrap(),
+            [member.clone()]
+        );
+        let reads: Vec<_> = events
+            .lock()
+            .unwrap()
+            .iter()
+            .filter_map(|event| match event {
+                RecordIoEvent::Read(path) => Some(path.clone()),
+                _ => None,
+            })
+            .collect();
+        assert_eq!(
+            reads,
+            [
+                opened.root().join(".catalog-local/records.json"),
+                opened.root().join(
+                    relative_record_path(&RecordAddress::for_record(&Record::Session(member)))
+                        .unwrap()
+                )
+            ]
+        );
+        assert!(
+            !events
+                .lock()
+                .unwrap()
+                .iter()
+                .any(|event| matches!(event, RecordIoEvent::List(_)))
+        );
+        let other_stream = Stream::new("other", "Other", None, host.as_str()).unwrap();
+        assert!(selected_sessions(&opened, &other_stream, &selection, None).is_err());
+        for key in [
+            "not-qualified",
+            "foreign/session",
+            &format!("{}/missing", host.as_str()),
+        ] {
+            assert!(
+                selected_sessions(
+                    &opened,
+                    &stream,
+                    &SessionSelection {
+                        reference: None,
+                        key: Some(key.into())
+                    },
+                    None
+                )
+                .is_err()
+            );
+        }
+    }
+}
 
 fn session(host: &str, stream: &str, native: &str, status: Status) -> RecordRead {
     let mut session = Session::new(

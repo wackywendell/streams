@@ -1,5 +1,5 @@
 use super::*;
-use args::StreamFields;
+use args::{SessionSelection, StreamFields};
 use std::sync::{Arc, atomic::AtomicBool};
 use streams_temper::{
     frontend::{FrontendId, herdr::HerdrNativeSnapshot},
@@ -76,6 +76,58 @@ fn requested_sessions<'a>(
         .into_iter()
         .filter(|session| session.status == Status::Active)
         .collect())
+}
+
+fn selected_sessions(
+    opened: &application::OpenedRecords,
+    stream: &Stream,
+    selection: &SessionSelection,
+    inventory: Option<&[RecordRead]>,
+) -> Result<Vec<Session>> {
+    if let Some(key) = &selection.key {
+        let (host, id) = key
+            .split_once('/')
+            .ok_or_else(|| CliError::InvalidRef("--session-key requires HOST/ID".into()))?;
+        if host != stream.owner_host_id {
+            return Err(CliError::InvalidRef(
+                "Session key must name the selected Stream's local writer".into(),
+            ));
+        }
+        let address = RecordAddress::new(host, RecordKind::Session, id)
+            .map_err(application::ApplicationError::from)?;
+        let session = opened
+            .records()
+            .with_reader(|reader| -> application::Result<Session> {
+                let read = reader
+                    .read(&address)?
+                    .ok_or_else(|| ValidationError::new("addressed Session is missing"))?;
+                let Record::Session(session) = read.record else {
+                    unreachable!("addressed Session codec")
+                };
+                if session.stream_id != stream.id {
+                    return Err(ValidationError::new(
+                        "addressed Session is not a member of the selected Stream",
+                    )
+                    .into());
+                }
+                Ok(session)
+            })?;
+        return Ok(vec![session]);
+    }
+    let discovered;
+    let inventory = match inventory {
+        Some(inventory) => inventory,
+        None => {
+            discovered = opened.inventory()?;
+            &discovered
+        }
+    };
+    Ok(
+        requested_sessions(stream, inventory, selection.reference.as_deref())?
+            .into_iter()
+            .cloned()
+            .collect(),
+    )
 }
 
 impl App {
@@ -216,7 +268,7 @@ impl App {
     pub(super) fn open_workspace(
         &self,
         target: Target,
-        session: Option<String>,
+        session: SessionSelection,
         cwd: Option<PathBuf>,
     ) -> Result<Output> {
         let opened = application::open_records(&self.config)?;
@@ -226,8 +278,12 @@ impl App {
                 "catalog root setting changed during open",
             ));
         }
-        let inventory = opened.inventory()?;
-        let explicit = self.explicit_workspace_target(&opened, &target, &inventory)?;
+        let inventory = (!target.current).then(|| opened.inventory()).transpose()?;
+        let explicit = self.explicit_workspace_target(
+            &opened,
+            &target,
+            inventory.as_deref().unwrap_or_default(),
+        )?;
         if let Some(stream) = &explicit {
             require_local(&opened, stream)?;
         }
@@ -243,7 +299,7 @@ impl App {
             .as_ref()
             .unwrap_or_else(|| &metadata.as_ref().expect("metadata target").stream);
         let observed = metadata.as_ref().map(|selected| &selected.snapshot);
-        let sessions = requested_sessions(stream, &inventory, session.as_deref())?;
+        let sessions = selected_sessions(&opened, stream, &session, inventory.as_deref())?;
         let locations = self.locations(opened.root(), opened.host().as_str())?;
         let bindings = sessions
             .iter()
@@ -280,7 +336,7 @@ impl App {
     pub(super) fn resume_session(
         &self,
         target: Target,
-        session: Option<String>,
+        session: SessionSelection,
         cwd: Option<PathBuf>,
     ) -> Result<Output> {
         let opened = application::open_records(&self.config)?;
@@ -290,8 +346,12 @@ impl App {
                 "catalog root setting changed during resume",
             ));
         }
-        let inventory = opened.inventory()?;
-        let explicit = self.explicit_workspace_target(&opened, &target, &inventory)?;
+        let inventory = (!target.current).then(|| opened.inventory()).transpose()?;
+        let explicit = self.explicit_workspace_target(
+            &opened,
+            &target,
+            inventory.as_deref().unwrap_or_default(),
+        )?;
         if let Some(stream) = &explicit {
             require_local(&opened, stream)?;
         }
@@ -316,9 +376,9 @@ impl App {
             .as_ref()
             .unwrap_or_else(|| &metadata.as_ref().expect("metadata target").stream);
         let observed = metadata.as_ref().map(|selected| &selected.snapshot);
-        let sessions = requested_sessions(stream, &inventory, session.as_deref())?;
+        let sessions = selected_sessions(&opened, stream, &session, inventory.as_deref())?;
         let session = match sessions.as_slice() {
-            [session] => *session,
+            [session] => session,
             [] => {
                 return Err(CliError::NotFound(
                     "Stream has no active Session to resume".into(),

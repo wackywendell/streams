@@ -45,6 +45,8 @@ Strict decoding includes supported schema versions, unique object keys, regular 
 
 A positional CLI `REF` requests explicit human discovery by exact ID, title or title substring, using the same enumeration as `list`. UUID prefixes are not supported. It must resolve to exactly one host-qualified ID or fail on ambiguity before invoking the operation. UUID-looking strings are not reserved, and there is no new `--id` flag. Automation, the Pi child, cards and Pi keep their existing exact-key paths, including `--stream-id`, `--session-id` and `--current`. Those paths use point reads, never catalog enumeration. Discovery of a foreign Stream does not grant permission to modify it.
 
+`open` and `resume` also accept `--session-key HOST/ID` for one exact saved Session record, not a harness-native conversation ID. The key must name a member of the selected local Stream. Combined with `--current`, this reads only the selected Stream and Session; it never enumerates the catalog. `--session REF` keeps its existing ID, title and substring discovery, and cannot be combined with `--session-key`.
+
 ### Record selection is not native permission
 
 An explicit record key selects a read without proving native readiness. A known Stream key, including `STREAMS_STREAM_ID` for `--current`, needs no frontend connection merely to read that record. An exact Session query reads that Session and its saved Stream; workspace metadata cannot replace its membership. This keeps record inspection independent of missing or incomplete native projection.
