@@ -357,6 +357,32 @@ fn new_cards_get_the_combined_caption_without_a_later_projection() {
 }
 
 #[test]
+fn an_invalid_caption_is_rejected_before_opening_a_card() {
+    let f = Fixture::new();
+    f.world.lock().unwrap().remove("card");
+    let mut engine = f.engine().unwrap();
+    engine.config.tab_naming = false;
+    let mut session = engine.card.session().clone();
+    session.title = "Hidden\u{200b}format".into();
+    engine.card = CardSnapshot::new(
+        engine.card.stream().clone(),
+        session,
+        DisplayContext {
+            catalog_source: "catalog".into(),
+            owner: engine.card.owner().clone(),
+            checkouts: vec![],
+            documents: vec![],
+        },
+    )
+    .unwrap();
+    engine.project().unwrap();
+    f.server.clear();
+    assert!(engine.open_display(OpenMode::Automatic).is_err());
+    assert!(f.server.methods().is_empty());
+    assert_eq!(f.world.lock().unwrap().created, 0);
+}
+
+#[test]
 fn projection_owns_combined_caption_and_all_three_pi_short_forms() {
     let f = Fixture::new();
     f.world.lock().unwrap().row("pane", "card")["label"] = json!("Old caption");

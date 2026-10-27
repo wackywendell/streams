@@ -44,6 +44,8 @@ impl NativeCardEngine {
         if mode == OpenMode::Automatic && !self.config.startup_automatic() {
             return Ok(DisplayOutcome::Suppressed);
         }
+        let caption = self.card_caption();
+        config::validate_title(&caption)?;
         let root = self.config.plugin_root.canonicalize()?;
         let launch = self.source.launch_context();
         let bounded: BTreeMap<_, _> = launch
@@ -110,7 +112,7 @@ impl NativeCardEngine {
             );
         }
         self.display = Some(pane.clone());
-        self.rename("pane", &pane.pane.id, self.card_caption())?;
+        self.rename("pane", &pane.pane.id, caption)?;
         let fraction = self.config.pane_height_fraction;
         if fraction != 0.5 {
             let target = if fraction < 0.5 {
