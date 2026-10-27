@@ -54,7 +54,7 @@ fn target(engine: &NativeCardEngine) -> ArtifactSummary {
 }
 
 #[test]
-fn artifact_open_is_read_only_exactly_marked_reused_and_never_retried_after_lost_reply() {
+fn artifact_open_is_read_only_fresh_and_never_retried_after_lost_reply() {
     for lost_reply in [false, true] {
         let f = Fixture::new();
         let world = f.world.clone();
@@ -79,18 +79,19 @@ fn artifact_open_is_read_only_exactly_marked_reused_and_never_retried_after_lost
                         assert_eq!(params["env"]["STREAMS_ARTIFACT_CATALOG_SOURCE"], "catalog");
                         assert!(params["env"].get("STREAMS_ARTIFACT_PATH").is_none());
                         world.created += 1;
+                        let number = world.created;
                         let row = pane(
-                            "viewer",
-                            "viewer-terminal",
+                            &format!("viewer-{number}"),
+                            &format!("viewer-terminal-{number}"),
                             "w",
-                            "viewer-tab",
+                            &format!("viewer-tab-{number}"),
                             "artifact viewer",
                         );
                         world.snapshot["panes"]
                             .as_array_mut()
                             .unwrap()
                             .push(row.clone());
-                        world.snapshot["tabs"].as_array_mut().unwrap().push(json!({"tab_id":"viewer-tab","workspace_id":"w","number":2,"label":"Output","resource":"viewer tab"}));
+                        world.snapshot["tabs"].as_array_mut().unwrap().push(json!({"tab_id":format!("viewer-tab-{number}"),"workspace_id":"w","number":number + 1,"label":"Output","resource":"viewer tab"}));
                         world.refresh();
                         if lost_reply {
                             Reply::Raw(vec![])
@@ -101,7 +102,7 @@ fn artifact_open_is_read_only_exactly_marked_reused_and_never_retried_after_lost
                         }
                     }
                     "tab.focus" => {
-                        assert_eq!(params["tab_id"], "viewer-tab");
+                        assert_eq!(params["tab_id"], format!("viewer-tab-{}", world.created));
                         Reply::Result(json!({"type":"ok"}))
                     }
                     _ => world.reply(method, params, &plugin),
@@ -121,7 +122,8 @@ fn artifact_open_is_read_only_exactly_marked_reused_and_never_retried_after_lost
         if !lost_reply {
             let mut second = engine(&f, client);
             second.open_artifact(&output).unwrap();
-            assert_eq!(f.world.lock().unwrap().created, 1);
+            assert_eq!(f.world.lock().unwrap().created, 2);
+            assert_eq!(f.world.lock().unwrap().display_reads, 0);
             let mut stale = output.clone();
             stale.description = "Changed".into();
             assert!(second.open_artifact(&stale).is_err());

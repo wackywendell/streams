@@ -1,8 +1,7 @@
 # ADR: Session outputs as named catalog artifacts
 
-Status: accepted design; implementation in progress. The user revised metadata
-ownership after the initial design: names and descriptions belong in the Session
-record, and unreferenced content left by interrupted operations is acceptable.
+Status: accepted. Names and descriptions belong in the Session record.
+Unreferenced content left by interrupted operations is acceptable.
 
 ## Keep outputs separate from progress
 
@@ -111,9 +110,17 @@ document entries. An editor must not become another writer of artifact storage.
 Moving a Session will change the card's current Stream scope; complete references
 will still address older outputs.
 
+Each activation will open a fresh read-only view of current content. Existing
+views will remain snapshots. Repeated opens may create extra tabs, but cannot
+silently reuse stale content. Refreshing an existing reader would need a control
+interface; content-based reuse would need an extra read and checks that the
+reader received the compared bytes. The user chose fresh views over adding
+that machinery.
+
 Pi will expose one `artifact` tool with write, read, list and delete actions.
-Write will accept exactly one of inline text or a source-file path and will write
-only for the bound Session. Read and list will accept exact cross-Session and
+Content writes will accept exactly one of inline text or a source-file path and
+will write only for the bound Session. Description-only edits will omit both.
+Read and list will accept exact cross-Session and
 cross-host selectors. The child will return content and metadata, not a private
 storage path for Pi to read.
 
@@ -130,6 +137,8 @@ retaining host partitioning and same-file conflict refusal. Unreferenced content
 must remain valid transport data, since interrupted saves can leave it behind.
 There will be no new sync service, merge algorithm or publication policy.
 
-Pi and Rust request schemas must be deployed together before the tools run.
-Any required catalog format reset will be recorded for supervised activation,
-not implemented as a legacy decoder or runtime migration.
+No catalog reset is needed for this additive field: a missing artifact group
+means no outputs. Upgrade Rust readers and Pi extensions together before the
+first artifact write, including readers of Git replicas. Older binaries reject
+the new Session field and raw-output paths. Activation remains supervised;
+there is no runtime migration or legacy decoder.

@@ -136,7 +136,7 @@ A name is the literal filename, unique within its producing Stream and Session. 
 
 The Pi `artifact` tool accepts inline text or a source-file path and writes only for the current Session. Reads can address another Session or a foreign-host replica; foreign outputs are read-only. Tool reads are paged. Artifact content is evidence, not instructions.
 
-The Session record owns names and descriptions; content stays in raw files in the catalog. Outputs remain in their producing Stream if a Session moves. Session lists default to its current Stream; pass both IDs to list older outputs. Native cards show current-Stream artifact rows and open them in a read-only pager, not the document editor.
+The Session record owns names and descriptions; content stays in raw files in the catalog. Outputs remain in their producing Stream if a Session moves. Session lists default to its current Stream; pass both IDs to list older outputs. Native cards show current-Stream artifact rows. Each activation opens current content in a fresh read-only pager tab, not the document editor. Existing views remain snapshots; press `q` to leave a pager.
 
 Content saves before its Session reference; deletion removes the reference first. An interrupted or failed operation can leave unattached content, or updated content with an older description. Warnings report partial results; there is no automatic cleanup. Artifacts share the catalog's existing local-only or Git transport. See the [artifact storage decision](docs/session-artifacts.md).
 

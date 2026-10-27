@@ -140,7 +140,7 @@ impl App {
                     &ArtifactKey::parse(&reference)?,
                 )?;
                 let mut value = serde_json::to_value(&output)?;
-                if offset.is_some() || limit.is_some() {
+                if native_id.is_some() || offset.is_some() || limit.is_some() {
                     let offset = offset.unwrap_or(0);
                     if !output.content.is_char_boundary(offset) {
                         return Err(CliError::message(

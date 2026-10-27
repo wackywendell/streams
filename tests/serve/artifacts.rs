@@ -171,6 +171,27 @@ fn child_artifact_read_pages_use_utf8_boundaries_and_progress() {
     }
     child.request(5, json!({"kind":"artifact","request":{"action":"read","reference":reference,"offset":3,"limit":4}}));
     assert_eq!(child.response(5)["outcome"]["status"], "error");
+    let content = "x".repeat(40000);
+    child.request(6, json!({"kind":"artifact","request":{"action":"write","name":"large.md","description":"Large output","text":content}}));
+    let written = child.response(6);
+    let reference = written["outcome"]["result"]["artifact"]["reference"]
+        .as_str()
+        .unwrap();
+    child.request(
+        7,
+        json!({"kind":"artifact","request":{"action":"read","reference":reference}}),
+    );
+    let page = child.response(7);
+    assert_eq!(
+        page["outcome"]["result"]["content"].as_str().unwrap().len(),
+        32768
+    );
+    assert_eq!(page["outcome"]["result"]["next_offset"], 32768);
+    assert_eq!(page["outcome"]["result"]["total_bytes"], 40000);
+    assert_eq!(
+        f.ok(&["artifact", "read", reference], None)["content"],
+        content
+    );
     assert_eq!(child.finish(), (0, String::new()));
 }
 

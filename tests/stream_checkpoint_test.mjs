@@ -697,7 +697,7 @@ function commandFixture(options={}) {
 test('only streams slash command registers; model checkpoint tool retains its interface',()=>{
  const f=commandFixture();assert.deepEqual([...f.commands.keys()],['streams']);
  for(const old of ['checkpoint','checkpoint:settings','checkpoint:attach','streams:settings','streams:attach'])assert.equal(f.commands.has(old),false);
- assert.deepEqual([...f.tools.keys()],['stream_read','checkpoint','select_stream','create_stream']);
+ assert.deepEqual([...f.tools.keys()],['artifact','stream_read','checkpoint','select_stream','create_stream']);
  assert.ok(f.tools.get('checkpoint').parameters.properties.instructions);
 });
 test('bare debug gives gated informational help without model, CLI or dialog calls',async()=>{

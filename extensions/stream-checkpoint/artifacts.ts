@@ -36,6 +36,7 @@ export function registerArtifactTool(pi: ExtensionAPI, client: (ctx: ExtensionCo
      : {action:"read", reference:args.reference, offset:args.offset ?? 0, limit:args.limit ?? 32768};
    } else {
     if (args.scope === "stream") {
+     if (args.session_id !== undefined) throw Error("whole-Stream artifact listing cannot select a Session");
      if (!args.stream_id) throw Error("whole-Stream artifact listing requires stream_id");
      request = {action:"list_stream", stream_id:args.stream_id, ...(args.host !== undefined ? {host:args.host} : {})};
     } else request = {action:"list_session", ...(args.host !== undefined ? {host:args.host} : {}), ...(args.session_id !== undefined ? {session_id:args.session_id} : {}), ...(args.stream_id !== undefined ? {stream_id:args.stream_id} : {})};

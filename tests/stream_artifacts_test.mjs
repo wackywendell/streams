@@ -56,7 +56,7 @@ test('artifact lists stay scoped and invalid tool inputs never reach the child',
   {action:'write',name:'assessment.md'},
   {action:'write',name:'assessment.md',description:'Findings',text:'one',file:'two'},
   {action:'write',name:'assessment.md',description:'Findings',text:'one',session_id:'other'},
-  {action:'list',scope:'stream'}, {action:'read'}, {action:'delete'},
+  {action:'list',scope:'stream'}, {action:'list',scope:'stream',stream_id:'work',session_id:'other'}, {action:'read'}, {action:'delete'},
  ]) await assert.rejects(f.invoke(args));
  assert.equal(f.requests.length, 4);
 });
