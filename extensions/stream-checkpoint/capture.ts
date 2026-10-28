@@ -46,7 +46,7 @@ export function parseCaptureInventory(value: any): CaptureInventory {
 }
 export const digest = (value: string): string => createHash("sha256").update(value).digest("hex");
 export function sourceFiles(): Record<string, string> {
- return Object.fromEntries(["agent.ts", "core.ts", "report-workflow.ts", "capture.ts", "prompt-lab.ts", "replay.ts", "private-storage.ts", "helper-log.ts"].map(name => [name, digest(readFileSync(new URL(name, import.meta.url), "utf8"))]));
+ return Object.fromEntries(["agent.ts", "core.ts", "report-workflow.ts", "capture.ts", "prompt-lab.ts", "replay.ts", "private-storage.ts", "helper-log.ts", "provider-log.ts"].map(name => [name, digest(readFileSync(new URL(name, import.meta.url), "utf8"))]));
 }
 function transcript(content: string, expected: string): {entries: any[]; partial: boolean} {
  const lines = content.split("\n");if (lines.at(-1) === "") lines.pop();
