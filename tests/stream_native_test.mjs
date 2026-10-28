@@ -95,6 +95,75 @@ test('shutdown cancels a pending native request but never sends close or final c
  environment(t);let signal,release;const f=fixture(t,{run:async(_request,options)=>{signal=options.signal;await new Promise(resolve=>release=resolve);return {status:'success',result:{native:'active',display:'opened'}};}});
  const starting=f.controller.start();await until(()=>!!release);f.controller.stop();assert.equal(signal.aborted,true);release();await starting;await f.controller.idle();assert.deepEqual(f.notices,[]);assert.deepEqual(f.requests,[{kind:'session_started'}]);
 });
+function paneFixture(t,options={}) {
+ const handlers=new Map(),commands=new Map(),steps=[],inferences=[];
+ const catalog={catalog_source:'source-a',host_id:'host',stream:null,session:null,sessions:[],title_defaults:{stream:'automatic',session:'automatic'}};
+ let preference='inherit';
+ const f=fixture(t,{run:async request=>{
+  steps.push(request.kind);
+  if(request.kind==='session_started')return {status:'success',result:catalog.session?{native:'active',display:'suppressed'}:{native:'inactive',reason:'not_enrolled'}};
+  preference=request.kind==='close_card'?'manual':'automatic';
+  if(!catalog.session)return {status:'error',error:{kind:'runtime',message:'Card preference saved; native card effects require an enrolled Session'}};
+  return {status:'success',result:request.kind==='close_card'?{closed:true}:{display:'opened'}};
+ }});
+ const attach=()=>{
+  catalog.stream={id:'effort',title:'Work',title_mode:'automatic',goal:'Goal',goal_mode:'automatic',goal_short:null,status:'active',archived:false,owner:{host_id:'host'},repositories:{},issues:[],prs:[],documents:[]};
+  catalog.session={id:f.id,host_id:'host',stream_id:'effort',harness:'pi',harness_session_id:f.id,title:'Contribution',title_mode:'automatic',status:'active',recap:'',state:'',remaining:'',checkout:null};
+  catalog.sessions=[catalog.session];
+ };
+ if(options.attached)attach();
+ const cli={
+  context:async()=>structuredClone(catalog),
+  sync:async()=>({local:'unchanged',sharing:'local-only',domain:null}),
+  enroll:async request=>{
+   steps.push('enroll');
+   if(options.rejectEnrollment)return {saves:[{operation_id:request.operation_id,save:{local:'repair-required',sharing:'local-only',domain:null}}]};
+   attach();return {stream:catalog.stream,session:catalog.session,saves:[{operation_id:request.operation_id,save:{local:'persisted',sharing:'local-only',domain:{outcome:'changes'}}}]};
+  },
+  apply:async request=>{
+   steps.push(`apply-${request.kind}`);Object.assign(catalog[request.kind],request.changes);
+   return {operation_id:request.operation_id,save:{local:'persisted',sharing:'local-only',domain:{outcome:'changes'}}};
+  },
+ };
+ register({...f.pi,on:(key,value)=>handlers.set(key,value),registerCommand:(key,value)=>commands.set(key,value),registerTool:()=>{}},
+  {cli,native:input=>f.factory({...input,child:f.child}),settings:{...defaults,...options.settings},infer:async(ctx,request,signal)=>{
+   inferences.push(request.type);if(options.infer)await options.infer(ctx,request,signal);
+   return request.type==='enroll'?{meaningful:true,stream:{title:'Work'},session:{title:'Contribution'}}:{changes:request.type==='session'?{state:'Reported'}:{goal:'Refined'}};
+  }});
+ t.after(()=>handlers.get('session_shutdown')({},f.ctx));
+ return {...f,handlers,steps,inferences,catalog,preference:()=>preference,start:()=>handlers.get('session_start')({},f.ctx),run:(args='pane')=>commands.get('streams').handler(args,f.ctx)};
+}
+for(const reporting of ['automatic','manual'])test(`unenrolled pane reports then opens with ${reporting} background reporting`,async t=>{
+ environment(t);const f=paneFixture(t,{settings:{reporting}});await f.start();
+ assert.equal(f.catalog.session,null);assert.equal(f.preference(),'inherit');assert.deepEqual(f.inferences,[]);
+ await f.run();
+ assert.deepEqual(f.steps,['session_started','enroll','apply-session','apply-stream','open_card']);
+ assert.deepEqual(f.inferences,['enroll','session','stream']);assert.equal(f.preference(),'automatic');assert.equal(f.catalog.session.state,'Reported');
+ assert.ok(f.notices.every(text=>!text.includes('native action failed')&&!text.includes('require an enrolled')));
+});
+test('manual enrollment explains attach without inference, native actions or preference changes',async t=>{
+ environment(t);const f=paneFixture(t,{settings:{enrollment:'manual'}});await f.start();await f.run();
+ assert.deepEqual(f.inferences,[]);assert.deepEqual(f.steps,['session_started']);assert.equal(f.preference(),'inherit');assert.equal(f.catalog.session,null);
+ assert.match(f.notices.at(-1),/manual.*\/streams attach/);
+});
+test('already enrolled pane opens without inference even with both settings manual',async t=>{
+ environment(t);const f=paneFixture(t,{attached:true,settings:{reporting:'manual',enrollment:'manual'}});await f.start();await f.run();
+ assert.deepEqual(f.inferences,[]);assert.deepEqual(f.steps,['session_started','open_card']);assert.equal(f.preference(),'automatic');
+});
+for(const failure of ['model','save'])test(`pane ${failure} failure does not send open or save its preference`,async t=>{
+ environment(t);const f=paneFixture(t,{rejectEnrollment:failure==='save',infer:async()=>{if(failure==='model')throw Error('Model unavailable');}});await f.start();await f.run();
+ assert.deepEqual(f.inferences,['enroll']);assert.deepEqual(f.steps,failure==='save'?['session_started','enroll']:['session_started']);
+ assert.equal(f.preference(),'inherit');assert.equal(f.catalog.session,null);
+ assert.match(f.notices.at(-1),failure==='model'?/Model unavailable/:/did not enroll.*\/streams attach/);
+});
+test('pane enrollment is fenced when the session tree changes during inference',async t=>{
+ environment(t);let f;f=paneFixture(t,{infer:async(_ctx,_request,signal)=>{f.handlers.get('session_tree')({},f.ctx);assert.equal(signal.aborted,true);}});
+ await f.start();await f.run();assert.deepEqual(f.steps,['session_started']);assert.equal(f.preference(),'inherit');assert.deepEqual(f.notices,[]);
+});
+test('outside Herdr pane never runs enrollment',async t=>{
+ environment(t,{HERDR_ENV:undefined});const f=paneFixture(t);await f.start();await f.run();
+ assert.deepEqual(f.inferences,[]);assert.deepEqual(f.steps,[]);assert.equal(f.preference(),'inherit');assert.match(f.notices.at(-1),/interactive/);
+});
 test('index branch events and already-bound attach do not request projection, capture or reclaim',async t=>{
  environment(t);const f=fixture(t);
  // The test factory uses the same child while the index is given a fake catalog client.

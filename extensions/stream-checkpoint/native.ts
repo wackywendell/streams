@@ -44,11 +44,15 @@ export class NativeController {
    await adapter.start(this.controller.signal);this.assertCurrent();
   })().catch(error => {if (!this.controller.signal.aborted) this.options.warning(String(error));});
  }
- private async action(kind: "open" | "close"): Promise<unknown> {
+ async ready(): Promise<void> {
   if (!this.eligible() || !this.startup) throw Error("Native work cards require session startup in an interactive Pi Herdr pane.");
   await this.startup;this.assertCurrent();
   if (!this.adapter) throw Error("Native work-card startup did not initialize; reload required");
-  const adapter = await this.adapter;this.assertCurrent();
+  await this.adapter;this.assertCurrent();
+ }
+ private async action(kind: "open" | "close"): Promise<unknown> {
+  await this.ready();
+  const adapter = await this.adapter!;this.assertCurrent();
   const result = await adapter[kind](this.controller.signal);this.assertCurrent();return result;
  }
  open(): Promise<unknown> {return this.action("open");}

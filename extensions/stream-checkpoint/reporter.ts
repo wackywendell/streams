@@ -35,6 +35,11 @@ export class Reporter {
   this.pending = {ctx, force: force || !!this.pending?.force, instructions: instructions?.trim() || this.pending?.instructions, reset: Boolean(reset || this.pending?.reset), auto: Boolean(auto || this.pending?.auto), target: nextTarget};
   this.start();
  }
+ async reportNow(ctx: ExtensionContext): Promise<void> {
+  this.scope.use(ctx);
+  const fence = this.scope.fence();
+  await this.exclusive(async () => {await this.report({ctx, force: true}, fence);});
+ }
  invalidate(): void {this.scope.invalidate();}
  async idle(): Promise<void> {await this.running;}
  private start(): void {

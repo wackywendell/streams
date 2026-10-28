@@ -252,7 +252,22 @@ export default function registerWorkCard(pi: ExtensionAPI, options: Options = {}
      ctx.ui.setStatus?.("stream-reporting", instructions === "close" ? "Streams · Closing…" : "Streams · Opening…");
      let ok = false;
      try {
-      if (instructions === "close") await native.close();else await native.open();
+      if (instructions === "close") await native.close();
+      else {
+       await native.ready();
+       const client = cli(ctx), id = ctx.sessionManager.getSessionId();
+       const catalog = await client.context(id);
+       if (!paneFence.current()) return;
+       if (!catalog.session) {
+        if (settings().enrollment !== "automatic") throw Error("Enrollment is manual. Use /streams attach before opening a pane.");
+        await reporter.reportNow(ctx);
+        if (!paneFence.current()) return;
+        const reported = await client.context(id);
+        if (!paneFence.current()) return;
+        if (!reported.session) throw Error("Reporting did not enroll this Session. Use /streams attach to create or select a work card.");
+       }
+       await native.open();
+      }
       ok = true;
      } finally {
       if (paneFence.current()) {
