@@ -260,7 +260,9 @@ impl Link {
 #[serde(deny_unknown_fields)]
 pub struct Document {
     pub repository: String,
-    pub r#ref: String,
+    /// Optional recovery context; current-file opening uses repository and path.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub r#ref: Option<String>,
     pub path: String,
     #[serde(default)]
     pub description: String,
@@ -282,7 +284,7 @@ impl Document {
     ) -> Result<Self, ValidationError> {
         let document = Self {
             repository: repository.into(),
-            r#ref: r#ref.into(),
+            r#ref: Some(r#ref.into()),
             path: path.into(),
             description: description.into(),
             commit,
@@ -295,10 +297,10 @@ impl Document {
     /// Checks local fields, not repository membership or ref existence.
     pub fn validate(&self) -> Result<(), ValidationError> {
         check_text(&self.repository, "document.repository", false)?;
-        check_text(&self.r#ref, "document.ref", false)?;
         check_relative_path(&self.path, "document.path")?;
         check_text(&self.description, "document.description", true)?;
         for (name, value) in [
+            ("document.ref", &self.r#ref),
             ("document.commit", &self.commit),
             ("document.source_session_id", &self.source_session_id),
         ] {

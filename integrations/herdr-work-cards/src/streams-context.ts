@@ -4,7 +4,7 @@ export type TitleMode = Mode | 'inherit';
 export type TitleDefaults = { stream: Mode; session: Mode };
 export type Link = { url: string; description: string };
 export type Document = {
-  repository: string; ref: string; path: string; description: string;
+  repository: string; ref?: string | null; path: string; description: string;
   commit?: string | null; source_session_id?: string | null;
 };
 export type StreamWire = {
@@ -42,7 +42,7 @@ export function isStream(value: unknown): value is StreamWire {
     || !status(value.status) || typeof value.archived !== 'boolean' || !object(value.owner) || !identity(value.owner.host_id)
     || !object(value.repositories) || !Object.entries(value.repositories).every(([alias, repo]) => identity(alias) && object(repo) && identity(repo.url))
     || !Array.isArray(value.documents) || !value.documents.every(doc => object(doc)
-      && [doc.repository, doc.ref, doc.path].every(identity) && text(doc.description)
+      && [doc.repository, doc.path].every(identity) && provenance(doc.ref) && text(doc.description)
       && provenance(doc.commit) && provenance(doc.source_session_id)
       && Object.hasOwn(value.repositories as object, doc.repository as string))
     || !Array.isArray(value.issues) || !value.issues.every(link) || !Array.isArray(value.prs) || !value.prs.every(link)) return false;

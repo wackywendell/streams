@@ -17,10 +17,14 @@ model request or repository scan is needed.
 Trimmed evidence retains attempted read, write and edit paths, including nested
 codemode metadata. It does not copy file bodies, edit arguments or tool results.
 An attempted operation is not proof that a file exists. The helper must have a
-known Stream repository alias, repository-relative path and an evidenced ref;
-it should omit uncertain or incidental references. Temporary reports remain
-Session artifacts, not repository documents. Issues and PRs are outside this
-restoration.
+known Stream repository alias and repository-relative path; it should omit
+uncertain or incidental references. A ref is optional recovery context, not part
+of document identity or current-file opening. A null Session checkout is normal:
+the host-local checkout bindings can identify a repository root without a
+portable branch. Missing branch evidence must not suppress an otherwise useful
+link, and the helper must not guess a ref or perform VCS discovery to fill one.
+Temporary reports remain Session artifacts, not repository documents. Issues
+and PRs are outside this restoration.
 
 ## Add links, never replace the list
 

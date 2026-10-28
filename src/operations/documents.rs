@@ -9,7 +9,8 @@ use crate::model::{Document, Record, Session, Stream, ValidationError, check_tex
 #[serde(deny_unknown_fields)]
 pub struct DocumentProposal {
     pub repository: String,
-    pub r#ref: String,
+    #[serde(default)]
+    pub r#ref: Option<String>,
     pub path: String,
     pub description: String,
 }
@@ -39,17 +40,18 @@ impl DocumentAdditions {
         }
         let mut documents = Vec::new();
         for proposal in proposals {
-            let mut document = Document::new(
-                proposal.repository,
-                proposal.r#ref,
-                proposal.path,
-                proposal.description,
-                None,
-            )?;
+            let document = Document {
+                repository: proposal.repository,
+                r#ref: proposal.r#ref,
+                path: proposal.path,
+                description: proposal.description,
+                commit: None,
+                source_session_id: Some(session.id.clone()),
+            };
+            document.validate()?;
             if !before.repositories.contains_key(&document.repository) {
                 return Err(ValidationError::new("unknown document repository alias"));
             }
-            document.source_session_id = Some(session.id.clone());
             // An echoed existing link is not permission to restore it after manual removal.
             if !before
                 .documents

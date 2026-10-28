@@ -441,6 +441,33 @@ fn stale_completion_failure_and_scope_switch_never_authorize_actions() {
 }
 
 #[test]
+fn document_without_a_recovery_ref_is_rendered_and_opens_the_current_file() {
+    let mut snapshot = snapshot();
+    snapshot.records.stream.documents[0].r#ref = None;
+    snapshot.records.stream.documents[0].commit = None;
+    let snapshot = CardSnapshot::new(
+        snapshot.records.stream,
+        snapshot.records.session,
+        snapshot.context,
+    )
+    .unwrap();
+    let document = &snapshot.records.stream.documents[0];
+    let rendered = super::render::render(Some(&snapshot), Rect::new(0, 0, 160, 30), None);
+    assert!(
+        lines(&rendered.buffer)
+            .iter()
+            .any(|line| line.contains(&document.path))
+    );
+    let Target::Document(target) = &rendered.documents[&'a'] else {
+        panic!("expected document action")
+    };
+    assert_eq!(
+        target.editor_identity().unwrap().file,
+        PathBuf::from("/code/library/docs/design.md")
+    );
+}
+
+#[test]
 fn document_revision_label_uses_optional_commit_not_source_session() {
     let mut snapshot = snapshot();
     let path = snapshot.records.stream.documents[0].path.clone();
@@ -495,7 +522,7 @@ fn every_repaint_geometry_notice_and_target_change_invalidates_old_actions() {
         let mut changed = snapshot();
         let action = view.paint(Rect::new(0, 0, 100, 12)).documents[&'a'].clone();
         match field {
-            "ref" => changed.records.stream.documents[0].r#ref = "other".into(),
+            "ref" => changed.records.stream.documents[0].r#ref = Some("other".into()),
             "commit" => changed.records.stream.documents[0].commit = Some("latest-commit".into()),
             "source-session" => {
                 changed.records.stream.documents[0].source_session_id = Some("source".into())
@@ -581,7 +608,7 @@ fn editor_identity_preserves_viewing_file_and_checkout_lifetime_not_recovery_rev
     let mut target = snapshot.target(&snapshot.records.stream.documents[0]);
     let identity = target.editor_identity().unwrap();
     assert_eq!(identity.file, PathBuf::from("/code/library/docs/design.md"));
-    target.document.r#ref = "recovery-branch".into();
+    target.document.r#ref = Some("recovery-branch".into());
     target.document.commit = Some("b2".into());
     target.document.source_session_id = Some("source".into());
     assert_eq!(identity, target.editor_identity().unwrap());

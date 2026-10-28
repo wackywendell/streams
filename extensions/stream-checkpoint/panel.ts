@@ -36,7 +36,7 @@ async function referenceRows(ctx: ExtensionContext, field: string, edit: FieldEd
   const row: Record<string, string> = {...existing};
   if (field === "documents") {
    const alias = await ctx.ui.select("Existing repository alias", Object.keys(stream.repositories));if (!alias) continue;row.repository = alias;
-   const ref = await ctx.ui.editor("Recovery branch/bookmark (does not pin opening)", row.ref ?? "");if (ref === undefined) continue;row.ref = ref;
+   const ref = await ctx.ui.editor("Recovery branch/bookmark (optional; does not pin opening)", row.ref ?? "");if (ref === undefined) continue;if (ref.trim()) row.ref = ref;else delete row.ref;
    const path = await ctx.ui.editor("Portable relative document path", row.path ?? "");if (path === undefined) continue;row.path = path;
    const commitVal = await ctx.ui.editor("Commit SHA (optional recovery context)", row.commit ?? "");if (commitVal === undefined) continue;
    if (commitVal.trim()) row.commit = commitVal;else delete row.commit;

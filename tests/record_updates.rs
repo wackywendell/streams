@@ -576,6 +576,39 @@ fn document_stream() -> Stream {
 }
 
 #[test]
+fn document_additions_persist_without_a_ref_or_portable_session_checkout() {
+    for null in [false, true] {
+        let directory = tempfile::tempdir().unwrap();
+        let store = setup(directory.path());
+        let before = document_stream();
+        put_with_id(&store, Record::Stream(before.clone()), "before");
+        assert!(session().checkout.is_none());
+        let mut request = document_wire(&before, &["docs/design.md"]);
+        if null {
+            request["changes"]["document_additions"][0]["ref"] = Value::Null;
+        } else {
+            request["changes"]["document_additions"][0]
+                .as_object_mut()
+                .unwrap()
+                .remove("ref");
+        }
+        let saved = update(&store, &request);
+        let Record::Stream(stream) = &saved.current.record else {
+            unreachable!()
+        };
+        assert_eq!(stream.documents[0].r#ref, None);
+        assert_eq!(stream.documents[0].path, "docs/design.md");
+        assert_eq!(
+            stream.documents[0].source_session_id.as_deref(),
+            Some(session().id.as_str())
+        );
+        let retried = update(&store, &request);
+        assert!(retried.repeated);
+        assert_eq!(retried.current.record, saved.current.record);
+    }
+}
+
+#[test]
 fn document_additions_preserve_current_links_and_ignore_unrelated_session_progress() {
     let directory = tempfile::tempdir().unwrap();
     let store = setup(directory.path());

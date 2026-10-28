@@ -322,6 +322,31 @@ fn nested_descriptions_default_and_document_provenance_is_omitted_only_when_none
 }
 
 #[test]
+fn document_ref_is_optional_recovery_context_not_part_of_its_identity() {
+    let mut data = stream();
+    data["repositories"] = json!({"repo":{"url":"https://example.test/repo"}});
+    data["documents"] =
+        json!([{"repository":"repo","path":"docs/design.md","description":"Design"}]);
+    for value in [None, Some(Value::Null), Some(json!("topic"))] {
+        let mut input = data.clone();
+        if let Some(value) = &value {
+            input["documents"][0]["ref"] = value.clone();
+        }
+        let encoded = roundtrip(RecordKind::Stream, &input);
+        if value == Some(json!("topic")) {
+            assert_eq!(encoded["documents"][0]["ref"], "topic");
+        } else {
+            assert!(encoded["documents"][0].get("ref").is_none());
+        }
+    }
+    for invalid in [json!(""), json!(" "), json!(42), json!(false)] {
+        let mut input = data.clone();
+        input["documents"][0]["ref"] = invalid;
+        assert!(record_from_data(RecordKind::Stream, &input).is_err());
+    }
+}
+
+#[test]
 fn document_constructor_sets_commit_and_provenance_does_not_change_identity() {
     let document = Document::new("repo", "main", "doc", "", None).unwrap();
     assert_eq!(document.commit, None);
@@ -331,7 +356,7 @@ fn document_constructor_sets_commit_and_provenance_does_not_change_identity() {
     assert_eq!(document.source_session_id, None);
     document.commit = Some("latest".into());
     document.source_session_id = Some("session".into());
-    document.r#ref = "topic".into();
+    document.r#ref = Some("topic".into());
     document.description = "updated".into();
     document.validate().unwrap();
     assert_eq!(document.identity(), ("repo", "doc"));

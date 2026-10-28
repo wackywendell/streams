@@ -8,6 +8,7 @@ import { fileURLToPath } from 'node:url';
 import { randomUUID } from 'node:crypto';
 import { createJiti } from 'jiti';
 import { childCli } from './helpers/stream-cli.mjs';
+import { sessionId } from './helpers/session-id.mjs';
 const jiti = createJiti(import.meta.url);
 const load = (name) => jiti.import(new URL(`../extensions/stream-checkpoint/${name}.ts`, import.meta.url).pathname);
 const { StreamCli, StreamsCliError, receiptText, receiptCanContinue } = await load('streams');
@@ -69,6 +70,11 @@ test('StreamCli validates strict catalog fields and nullable document provenance
   const app=await read(value);
   assert.deepEqual(app.stream,value.stream);assert.deepEqual(app.session,value.session);
  }
+ for(const ref of [undefined,null,'topic']) {
+  const value=structuredClone(initial);
+  if(ref===undefined)delete value.stream.documents[0].ref;else value.stream.documents[0].ref=ref;
+  assert.deepEqual((await read(value)).stream.documents,value.stream.documents);
+ }
  const pinned=structuredClone(initial);
  pinned.session.checkout={repository:'old-app',repository_url:'https://example.test/original.git',ref:'topic',directory_within_checkout:'services/api'};
  assert.deepEqual((await read(pinned)).session,pinned.session);
@@ -86,6 +92,7 @@ test('StreamCli validates strict catalog fields and nullable document provenance
   value=>{value.stream.goal_mode='other';},
   value=>{value.stream.status=['active'];},
   value=>{value.host_id='';},
+  ...['',' ',42,false].map(ref=>value=>{value.stream.documents[0].ref=ref;}),
   value=>{value.stream.documents[0].commit='';},
   value=>{value.stream.documents[0].source_session_id=42;},
   value=>{value.stream.documents.push({...value.stream.documents[0],ref:'other'});},
@@ -130,6 +137,33 @@ test('card settings use typed child requests and reject inconsistent effective m
   const invalid=new StreamCli('/tmp',async()=>({status:'success',result}));
   await assert.rejects(invalid.cardSettings(),/Invalid card settings/);
  }
+});
+test('live-shaped reports discover and save local documents without a portable checkout or a ref',async()=>{
+ const cwd=mkdtempSync(join(tmpdir(),'streams-docs-no-ref-')),cli=childCli(cwd,'native');
+ try {
+  let catalog=context();catalog.session.id=sessionId('host','pi','native');catalog.sessions=[structuredClone(catalog.session)];
+  catalog.stream.goal_mode='manual';
+  catalog.checkouts=[{repository:'repo',checkout_id:'checkout',root:'/repo'}];catalog.document_locations=[];
+  const initial=structuredClone(catalog),requests=[],candidate={repository:'repo',path:'docs/card-preferences-and-control.md',description:'Card preferences and lifecycle'};
+  let generations=0;
+  const saved=await runReport({kind:'report',force:true},{
+   signal:new AbortController().signal,automaticEnrollment:true,operationId:randomUUID,
+   capture:async()=>({native:'native',cwd:'/repo',evidence:{messages:[{role:'user',content:'Use docs/card-preferences-and-control.md to explain card settings',timestamp:0}],leafId:null},catalog:structuredClone(catalog),valid:()=>true,attached:async()=>true}),
+   generate:async request=>{
+    generations++;const payload=buildInferencePayload(request),input=JSON.parse(payload.messages.at(-1).content);
+    assert.equal(input.catalog.session.checkout,null);assert.deepEqual(input.catalog.checkouts,initial.checkouts);
+    assert.deepEqual(payload.tools[0].parameters.properties.document_additions.items.required,['repository','path','description']);
+    assert.match(payload.systemPrompt,/Do not omit a relevant document solely because its ref is unknown/);
+    return parseInferenceResponse(request,{content:[{type:'toolCall',name:'record_card',arguments:{changes:{state:'Explaining card settings'},document_additions:[candidate]}}]},payload);
+   },
+   apply:async request=>{requests.push(request);const projected=await cli.preview({catalog,action:'apply',request});catalog=projected.catalog;return projected.receipt;},
+   enroll:assert.fail,receipt:()=>{},notice:assert.fail,
+  });
+  assert.equal(saved,true);assert.equal(generations,1);assert.equal(requests.length,2);
+  assert.equal(catalog.session.checkout,null);assert.equal(catalog.session.state,'Explaining card settings');
+  assert.deepEqual(catalog.stream.documents,[{...candidate,source_session_id:initial.session.id}]);
+  assert.deepEqual(catalog.checkouts,initial.checkouts);
+ } finally {await cli.stop();rmSync(cwd,{recursive:true,force:true});}
 });
 const proposedDocument={repository:'repo',ref:'main',path:'docs/design.md',description:'Design rationale'};
 test('only Session reporting can propose separate add-only documents, not provenance or replacement fields',()=>{
@@ -665,6 +699,8 @@ test('reference validation rejects unknown repos, absolute/traversal paths, malf
  assert.throws(()=>validateReferences('issues',[{url:'https://example.com/1',description:''},{url:'https://example.com/1',description:'duplicate'}],stream),/Duplicate/);
  validateReferences('documents',[{repository:'repo',ref:'main',path:'docs/plan.md',description:'Plan',commit:'commit:known'}],stream);
  for(const commit of ['', ' ', 42, false])assert.throws(()=>validateReferences('documents',[{repository:'repo',ref:'main',path:'docs/plan.md',description:'Plan',commit}],stream),/commit/);
+ for(const ref of [undefined,null,'topic'])validateReferences('documents',[{repository:'repo',ref,path:'docs/plan.md',description:'Plan'}],stream);
+ for(const ref of ['', ' ', 42, false])assert.throws(()=>validateReferences('documents',[{repository:'repo',ref,path:'docs/plan.md',description:'Plan'}],stream),/ref/);
  assert.throws(()=>validateReferences('documents',[{repository:'repo',ref:'main',path:'docs/plan.md',description:'Plan'},{repository:'repo',ref:'other',path:'docs/plan.md',description:'Other',commit:'commit:other'}],stream),/Duplicate/);
 });
 test('discussion composer preserves unsent text across close/reopen without model requests',async()=>{
