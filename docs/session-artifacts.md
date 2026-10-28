@@ -103,9 +103,12 @@ Stream lists will include outputs of Sessions that have since moved away.
 
 ## Use the child for Pi and cards
 
-The card will show its bound Session's outputs in its current Stream by name and
-description, taken from the Session record. Opening will use a Streams-owned
-read-only view with the same exact-target and stale-shortcut protections as
+The card will show its bound Session's outputs in its current Stream, taken from
+the Session record. Artifact shortcut letters will be green, names normal and
+descriptions dim. Up to 3 artifacts will show descriptions; larger lists will
+show only names in columns that fit the pane. Documents and artifacts will pack
+separately so long document paths do not waste artifact space. Opening will use
+a Streams-owned read-only view with the same exact-target and stale-shortcut protections as
 document entries. An editor must not become another writer of artifact storage.
 Moving a Session will change the card's current Stream scope; complete references
 will still address older outputs.

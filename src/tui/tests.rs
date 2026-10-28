@@ -332,6 +332,130 @@ fn artifacts_render_from_session_metadata_with_exact_fresh_shortcuts() {
 }
 
 #[test]
+fn artifact_styles_do_not_interpret_slashes_in_descriptions_as_paths() {
+    let mut snapshot = snapshot();
+    snapshot.records.session.artifacts.insert(
+        snapshot.records.stream.id.clone(),
+        vec![
+            crate::artifacts::ArtifactEntry {
+                name: "brief.md".into(),
+                description: "Use artifacts instead of /tmp files".into(),
+            },
+            crate::artifacts::ArtifactEntry {
+                name: "evidence.md".into(),
+                description: "Startup evidence without a slash".into(),
+            },
+        ],
+    );
+    let rendered = super::render::render(Some(&snapshot), Rect::new(0, 0, 160, 20), None);
+    let text = lines(&rendered.buffer);
+    let position = |needle: &str| {
+        text.iter()
+            .enumerate()
+            .find_map(|(y, line)| line.find(needle).map(|x| (x as u16, y as u16)))
+            .unwrap_or_else(|| panic!("Missing {needle:?} in {text:?}"))
+    };
+    for key in ["[b]", "[c]"] {
+        let (x, y) = position(key);
+        for dx in 0..3 {
+            assert_eq!(rendered.buffer[(x + dx, y)].fg, Color::Green);
+        }
+    }
+    for name in ["brief.md", "evidence.md"] {
+        let (x, y) = position(name);
+        for dx in 0..name.len() as u16 {
+            assert_eq!(rendered.buffer[(x + dx, y)].fg, Color::Reset);
+            assert!(
+                !rendered.buffer[(x + dx, y)]
+                    .modifier
+                    .intersects(Modifier::DIM | Modifier::BOLD)
+            );
+        }
+    }
+    for description in [
+        "Use artifacts instead of /tmp files",
+        "Startup evidence without a slash",
+    ] {
+        let (x, y) = position(description);
+        for dx in 0..description.len() as u16 {
+            assert!(
+                rendered.buffer[(x + dx, y)]
+                    .modifier
+                    .contains(Modifier::DIM)
+            );
+        }
+    }
+    let (x, y) = position("[a]");
+    assert_eq!(rendered.buffer[(x, y)].fg, Color::Cyan);
+    let (x, y) = position("docs/design.md");
+    assert!(rendered.buffer[(x, y)].modifier.contains(Modifier::DIM));
+    assert!(!rendered.buffer[(x + 5, y)].modifier.contains(Modifier::DIM));
+    assert!(!text.join("\n").contains("Artifact "));
+}
+
+#[test]
+fn artifact_descriptions_depend_on_current_stream_count_and_names_pack_in_columns() {
+    for count in [1, 3, 4, 7] {
+        let mut snapshot = snapshot();
+        snapshot.records.session.artifacts.insert(
+            snapshot.records.stream.id.clone(),
+            (0..count)
+                .map(|i| crate::artifacts::ArtifactEntry {
+                    name: format!("file{i}.md"),
+                    description: format!("Detail {i}"),
+                })
+                .collect(),
+        );
+        snapshot
+            .records
+            .session
+            .previous_stream_ids
+            .push("former-stream".into());
+        snapshot.records.session.artifacts.insert(
+            "former-stream".into(),
+            (0..4)
+                .map(|i| crate::artifacts::ArtifactEntry {
+                    name: format!("old{i}.md"),
+                    description: "Old output".into(),
+                })
+                .collect(),
+        );
+        for width in [16, 40, 120] {
+            let rendered = super::render::render(Some(&snapshot), Rect::new(0, 0, width, 30), None);
+            let text = lines(&rendered.buffer);
+            let joined = text.join("\n");
+            assert!(!joined.contains("old0.md"));
+            assert_eq!(rendered.documents.len(), count + 1);
+            for i in 0..count {
+                assert!(joined.contains(&format!("file{i}.md")));
+                if width >= 40 || count > 3 {
+                    assert_eq!(joined.contains(&format!("Detail {i}")), count <= 3);
+                }
+                let key = super::render::DOCUMENT_KEYS.chars().nth(i + 1).unwrap();
+                let Target::Artifact(artifact) = &rendered.documents[&key] else {
+                    panic!("Wrong target")
+                };
+                assert_eq!(artifact.key.name, format!("file{i}.md"));
+            }
+            if count > 3 && width >= 40 {
+                assert!(text.iter().any(|line| line.contains("file0.md")
+                    && line.contains("file1.md")
+                    && line.contains("file2.md")));
+                assert!(
+                    text.iter()
+                        .filter(|line| line.contains("docs/"))
+                        .all(|line| !line.contains("file0.md"))
+                );
+            }
+            assert!(
+                text.iter()
+                    .all(|line| UnicodeWidthStr::width(line.as_str()) <= width as usize)
+            );
+        }
+    }
+}
+
+#[test]
 fn frame_actions_expire_at_refresh_start_not_completion() {
     let mut view = view(snapshot());
     let frame = view.paint(Rect::new(0, 0, 100, 12)).clone();

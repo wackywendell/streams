@@ -19,6 +19,7 @@ pub(super) const DOCUMENT_KEYS: &str = "abcdefghijklmnoprstuvwxyz";
 const DIM: Style = Style::new().add_modifier(Modifier::DIM);
 const BOLD: Style = Style::new().add_modifier(Modifier::BOLD);
 const CYAN: Style = Style::new().fg(Color::Cyan);
+const GREEN: Style = Style::new().fg(Color::Green);
 
 pub(super) fn plain(text: &str) -> String {
     text.chars()
@@ -349,42 +350,47 @@ pub(super) fn render(
     };
     let mut rows = Vec::new();
     if let Some(snapshot) = snapshot.filter(|_| content_height > 0) {
-        let mut entries = document_entries(snapshot);
-        for artifact in crate::artifacts::summaries(snapshot.session(), &snapshot.stream().id) {
-            let key = DOCUMENT_KEYS.chars().nth(entries.len());
+        let documents = document_entries(snapshot);
+        let artifacts = crate::artifacts::summaries(snapshot.session(), &snapshot.stream().id);
+        let descriptions = artifacts.len() <= 3;
+        let mut entries = Vec::new();
+        for artifact in artifacts {
+            let key = DOCUMENT_KEYS.chars().nth(documents.len() + entries.len());
+            let label = if descriptions {
+                format!("{}: {}", artifact.key.name, artifact.description)
+            } else {
+                artifact.key.name.clone()
+            };
             entries.push(Entry {
-                label: plain(&format!(
-                    "Artifact {}: {}",
-                    artifact.key.name, artifact.description
-                )),
+                label: plain(&label),
                 target: Target::Artifact(Box::new(artifact)),
                 key,
             });
         }
-        let lengths: Vec<_> = entries
-            .iter()
-            .map(|e| cells(&e.label) + if e.key.is_some() { 4 } else { 0 })
-            .collect();
-        let mut columns = 1;
-        let mut widths = vec![width];
-        for count in (2..=entries.len().min((width + 2) / 2)).rev() {
-            let mut candidate = vec![0; count];
-            for (i, &length) in lengths.iter().enumerate() {
-                candidate[i % count] = candidate[i % count].max(length);
+        let mut references = Vec::new();
+        for entries in [documents, entries] {
+            let lengths: Vec<_> = entries
+                .iter()
+                .map(|e| cells(&e.label) + if e.key.is_some() { 4 } else { 0 })
+                .collect();
+            let mut columns = 1;
+            let mut widths = vec![width];
+            for count in (2..=entries.len().min((width + 2) / 2)).rev() {
+                let mut candidate = vec![0; count];
+                for (i, &length) in lengths.iter().enumerate() {
+                    candidate[i % count] = candidate[i % count].max(length);
+                }
+                if candidate.iter().sum::<usize>() + 2 * (count - 1) <= width {
+                    columns = count;
+                    widths = candidate;
+                    break;
+                }
             }
-            if candidate.iter().sum::<usize>() + 2 * (count - 1) <= width {
-                columns = count;
-                widths = candidate;
-                break;
-            }
-        }
-        let mut references: Vec<Row> = entries
-            .chunks(columns)
-            .map(|entries| Row::Documents {
+            references.extend(entries.chunks(columns).map(|entries| Row::Documents {
                 entries: entries.to_vec(),
                 widths: widths.clone(),
-            })
-            .collect();
+            }));
+        }
         for (index, (link, pr)) in snapshot
             .stream()
             .issues
@@ -594,17 +600,33 @@ pub(super) fn render(
                     } else {
                         ""
                     };
-                    let path = fit(&entry.label, available - cells(&key_label) - space.len());
-                    let slash = boundary(&path, path.rfind('/').map_or(0, |i| i + 1));
+                    let label = fit(&entry.label, available - cells(&key_label) - space.len());
+                    let (key_style, split, leading, trailing) =
+                        if let Target::Artifact(artifact) = &entry.target {
+                            (
+                                GREEN,
+                                artifact.key.name.len().min(label.len()),
+                                Style::new(),
+                                DIM,
+                            )
+                        } else {
+                            (
+                                CYAN,
+                                label.rfind('/').map_or(0, |i| i + 1),
+                                DIM,
+                                Style::new(),
+                            )
+                        };
+                    let split = boundary(&label, split);
                     if !key.is_empty() && key_label == key {
                         result.documents.insert(entry.key.unwrap(), entry.target);
                     }
-                    painted = offset + cells(&key_label) + space.len() + cells(&path);
+                    painted = offset + cells(&key_label) + space.len() + cells(&label);
                     spans.extend([
-                        Span::styled(key_label, CYAN),
+                        Span::styled(key_label, key_style),
                         Span::raw(space),
-                        Span::styled(path[..slash].to_owned(), DIM),
-                        Span::raw(path[slash..].to_owned()),
+                        Span::styled(label[..split].to_owned(), leading),
+                        Span::styled(label[split..].to_owned(), trailing),
                     ]);
                     offset += widths[column] + 2;
                 }

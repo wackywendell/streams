@@ -234,7 +234,7 @@ fn real_card_activation_launches_a_persistent_artifact_reader() {
         Some("assessment output\n"),
     );
     let mut card = f.spawn();
-    card.until(|card| card.screen().contains("Artifact assessment.md"));
+    card.until(|card| card.screen().contains("[a] assessment.md: Findings"));
     card.send(b"a");
     card.until(|_| {
         f.native
