@@ -11,7 +11,7 @@ import { debugCommand } from "./debug.ts";
 import { executeLab } from "./lab.ts";
 import { registerLabTools } from "./lab-tools.ts";
 import { registerArtifactTool } from "./artifacts.ts";
-import { SessionScope, captureInputs } from "./session-scope.ts";
+import { SessionScope, captureInputs, hasConversation } from "./session-scope.ts";
 import { editRequest } from "./core.ts";
 import { namingCompletions, parseNamingEdit, saveNamingEdit, savePiNameEdit } from "./naming.ts";
 import { loadSettings, saveSettings, settingsDialog } from "./settings.ts";
@@ -64,7 +64,18 @@ export default function registerWorkCard(pi: ExtensionAPI, options: Options = {}
   const fence = scope.fence();
   return child = options.child?.(ctx) ?? new StreamsChild({sessionId:ctx.sessionManager.getSessionId(), cwd:ctx.cwd, env:{...process.env}, warning:message => {if (fence.live()) warning(message);}});
  };
- const cli = (ctx: ExtensionContext) => options.cli ?? new StreamCli(ctx.cwd, sessionChild(ctx).run);
+ const cli = (ctx: ExtensionContext) => {
+  if (options.cli) return options.cli;
+  const run = sessionChild(ctx).run, fence = scope.fence();
+  return new StreamCli(ctx.cwd, async (request, options) => {
+   if (request.kind === "context" || request.kind === "enroll") {
+    if (!fence.current()) throw Error("Session changed before catalog context");
+    await native?.start();
+    if (!fence.current()) throw Error("Session changed before catalog context");
+   }
+   return run(request, options);
+  });
+ };
  const receipt = (value: Receipt, quiet = false) => {
   const text = receiptText(value), hasWarning = receiptHasWarning(value);
   // Receipts do not enter model context or count as fresh user work.
@@ -79,7 +90,7 @@ export default function registerWorkCard(pi: ExtensionAPI, options: Options = {}
   statusTimer.unref?.();
  };
  const reporter = new Reporter({
-  scope, cli, settings, logging, infer: options.infer, notice: warning, receipt,
+  scope, cli, settings, logging, prepare: () => native?.start(), infer: options.infer, notice: warning, receipt,
   activity: (text, completed) => {
    clearStatusTimer();
    if (text) scope.context?.ui.setStatus("stream-reporting", `Streams · ${text}`);
@@ -160,6 +171,7 @@ export default function registerWorkCard(pi: ExtensionAPI, options: Options = {}
  }
  async function attach(ctx: ExtensionContext, args: {streamId?: string; title?: string; reason?: string}) {
   scope.use(ctx);
+  if (!hasConversation(ctx.sessionManager)) throw Error("Start a conversation before attaching a work card.");
   const before = await cli(ctx).context(ctx.sessionManager.getSessionId());
   if (before.session) {return {status: "already-bound; membership moves/forks are not implemented", stream_id: before.session.stream_id};}
   return reporter.exclusive((signal) => chooseInitial(ctx, cli(ctx), args, receipt, signal));
@@ -312,7 +324,10 @@ export default function registerWorkCard(pi: ExtensionAPI, options: Options = {}
   native = new NativeController({pi, ctx, current: () => scope.context, factory:options.native, warning,
    child:options.cli ? undefined : sessionChild(ctx)});
   const starting = native.start();
-  if (starting) {await starting;if (!fence.live()) return;}
+  if (starting) {
+   try {await starting;} catch(error) {if (fence.live()) warning(error);}
+   if (!fence.live()) return;
+  }
   await sync(ctx, "start");
  });
  pi.on("session_info_changed", async (event, ctx) => {

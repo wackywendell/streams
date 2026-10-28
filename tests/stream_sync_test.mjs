@@ -22,7 +22,7 @@ function context() {
 function hooks(cli, infer = () => assert.fail('lifecycle sync must not invoke a model'), settings = defaults) {
  const handlers=new Map(), warnings=[], entries=[];
  registerWorkCard({on:(name,fn)=>handlers.set(name,fn),registerCommand:()=>{},registerTool:()=>{},registerShortcut:()=>{},appendEntry:(type,value)=>entries.push({type,value})}, {cli,infer,settings});
- const ctx={cwd:'/repo',sessionManager:{getSessionId:()=> 'native',getLeafId:()=>null,getBranch:()=>[],buildSessionProjection:()=>({messages:[]})},ui:{notify:(text,level)=>warnings.push({text,level}),setStatus:()=>{}}};
+ const ctx={cwd:'/repo',sessionManager:{getSessionId:()=> 'native',getLeafId:()=>null,getBranch:()=>[],buildSessionProjection:()=>({messages:[{role:'user',content:'Build work cards',timestamp:0}]})},ui:{notify:(text,level)=>warnings.push({text,level}),setStatus:()=>{}}};
  return {handlers,ctx,warnings,entries};
 }
 

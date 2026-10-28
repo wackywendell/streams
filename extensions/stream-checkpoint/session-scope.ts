@@ -3,6 +3,10 @@ import { checkpointContext } from "./agent.ts";
 import type { ReportingSettings } from "./settings.ts";
 import type { StreamCli } from "./streams.ts";
 
+export function hasConversation(manager: ExtensionContext["sessionManager"]): boolean {
+ return manager.buildSessionProjection().messages.some(message => ["user", "assistant", "compactionSummary", "branchSummary"].includes(message.role));
+}
+
 export type SessionFence = {signal: AbortSignal; current(): boolean; live(): boolean};
 /** Tree changes cancel inference; only start/shutdown retire transport outcomes. */
 export class SessionScope {

@@ -6,11 +6,11 @@ import { runReport } from "./report-workflow.ts";
 import type { ResetTarget } from "./report-workflow.ts";
 export type { ResetTarget } from "./report-workflow.ts";
 import type { Receipt, StreamCli } from "./streams.ts";
-import { SessionScope, captureInputs } from "./session-scope.ts";
+import { SessionScope, captureInputs, hasConversation } from "./session-scope.ts";
 import type { SessionFence } from "./session-scope.ts";
 import type { ReportingSettings } from "./settings.ts";
 
-type Options = {scope?: SessionScope; cli(ctx: ExtensionContext): StreamCli; settings(): ReportingSettings; infer?: typeof modelInfer; logging?(): InferenceLogOptions | undefined; notice(text: string): void; receipt(value: Receipt, quiet?: boolean): void; activity?(text?: string, completed?: boolean): void};
+type Options = {scope?: SessionScope; prepare?(): Promise<void> | undefined; cli(ctx: ExtensionContext): StreamCli; settings(): ReportingSettings; infer?: typeof modelInfer; logging?(): InferenceLogOptions | undefined; notice(text: string): void; receipt(value: Receipt, quiet?: boolean): void; activity?(text?: string, completed?: boolean): void};
 type Pending = {ctx: ExtensionContext; force: boolean; instructions?: string; reset?: boolean; auto?: boolean; target?: ResetTarget};
 export class Reporter {
  readonly scope: SessionScope;
@@ -72,6 +72,13 @@ export class Reporter {
   }
  }
  private async report({ctx, force, instructions, reset, auto, target = "all"}: Pending, fence: SessionFence): Promise<boolean> {
+  if (!fence.current()) return false;
+  if (!hasConversation(ctx.sessionManager)) {
+   if (force) this.options.notice("Start a conversation before reporting a work card.");
+   return false;
+  }
+  await this.options.prepare?.();
+  if (!fence.current()) return false;
   const cli = this.options.cli(ctx), generate = this.options.infer ?? modelInfer;
   return runReport(reset ? {kind: "reset", target, auto: Boolean(auto), instructions} : {kind: "report", force, instructions}, {
    signal: fence.signal, operationId: randomUUID, automaticEnrollment: this.options.settings().enrollment === "automatic",

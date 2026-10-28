@@ -1262,6 +1262,106 @@ fn workspace_markers_select_the_existing_stream_for_unenrolled_lifecycle_and_enr
 }
 
 #[test]
+fn fresh_pi_defers_observation_until_its_transcript_exists_and_keeps_the_workspace_target() {
+    for early_startup in [true, false] {
+        let f = NativeFixture::new();
+        let id = uuid::Uuid::new_v4().to_string();
+        let transcript = f.fixture.directory.path().join("fresh-pi.jsonl");
+        for key in ["panes", "agents"] {
+            f.snapshot.lock().unwrap()[key][0]["agent_session"] =
+                json!({"agent":"pi","kind":"path","value":transcript});
+        }
+        let mut child = Transport::start(f.command(), &id);
+        assert_eq!(child.next(), json!({"type":"ready","protocol":2}));
+        if early_startup {
+            child.request(1, json!({"kind":"session_started"}));
+            let failed = child.response(1);
+            assert_eq!(failed["outcome"]["status"], "error", "{failed}");
+            assert!(
+                failed["outcome"]["error"]["message"]
+                    .as_str()
+                    .unwrap()
+                    .contains("No such file")
+            );
+            f.server
+                .emit(json!({"event":"pane_updated","data":{"type":"pane_updated",
+                "pane":{"pane_id":"pane","tab_id":"tab","workspace_id":"workspace"}}}));
+            let warning = child.next();
+            assert_eq!(warning["type"], "warning", "{warning}");
+            assert!(
+                warning["message"]
+                    .as_str()
+                    .unwrap()
+                    .contains("No such file")
+            );
+            child.request(2, json!({"kind":"context"}));
+            assert!(child.response(2)["outcome"]["result"]["stream"].is_null());
+        }
+        fs::write(
+            &transcript,
+            json!({"type":"session","id":id}).to_string() + "\n",
+        )
+        .unwrap();
+        if !early_startup {
+            child.request(3, json!({"kind":"session_started"}));
+            let started = child.response(3);
+            assert_eq!(
+                started["outcome"]["result"]["reason"], "not_enrolled",
+                "{started}"
+            );
+        }
+        let stream_id = f.session["stream_id"].as_str().unwrap();
+        let source = f.fixture.ok(
+            &["agent", "context", "--harness", "pi", "--session-id", &id],
+            None,
+        )["catalog_source"]
+            .clone();
+        let mut request = json!({"version":2,"operation_id":"fresh-enrollment","catalog_source":source,
+            "harness":"pi","harness_session_id":id,"actor":"automatic",
+            "cwd":f.fixture.directory.path(),"session":{"title":"Fresh conversation"}});
+        if early_startup {
+            request["stream"] = json!({"title":"Wrong proposal"});
+            child.request(4, json!({"kind":"enroll","request":request}));
+            let refused = child.response(4);
+            assert_eq!(refused["outcome"]["status"], "error", "{refused}");
+            assert!(
+                refused["outcome"]["error"]["message"]
+                    .as_str()
+                    .unwrap()
+                    .contains("captured enrollment target was not changed")
+            );
+        } else {
+            child.request(4, json!({"kind":"context"}));
+            let captured = child.response(4);
+            assert_eq!(captured["outcome"]["result"]["stream"]["id"], stream_id);
+            request["stream_id"] = json!(stream_id);
+            child.request(5, json!({"kind":"enroll","request":request}));
+            let enrolled = child.response(5);
+            assert_eq!(enrolled["outcome"]["status"], "success", "{enrolled}");
+            assert_eq!(
+                enrolled["outcome"]["result"]["session"]["stream_id"],
+                stream_id
+            );
+        }
+        child.request(6, json!({"kind":"context"}));
+        let current = child.response(6);
+        assert_eq!(current["outcome"]["result"]["stream"]["id"], stream_id);
+        assert_eq!(
+            current["outcome"]["result"]["session"].is_null(),
+            early_startup
+        );
+        assert_eq!(
+            f.fixture.ok(&["list"], None)["streams"]
+                .as_array()
+                .unwrap()
+                .len(),
+            1
+        );
+        assert_eq!(child.finish(), (0, String::new()));
+    }
+}
+
+#[test]
 fn lifecycle_subscription_failure_is_a_domain_error_and_catalog_remains_available() {
     let f = NativeFixture::new();
     f.rejected.store(true, Ordering::Release);

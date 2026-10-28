@@ -1,5 +1,6 @@
 import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent";
 import type { StreamsChild } from "./child.ts";
+import { hasConversation } from "./session-scope.ts";
 
 export type NativeAdapter = {
  start(signal: AbortSignal): Promise<void>;
@@ -37,18 +38,20 @@ export class NativeController {
  };
  start(): Promise<void> | undefined {
   if (!this.eligible()) return;
+  const ctx = this.options.current?.() ?? this.options.ctx;
+  if (!this.startup && !hasConversation(ctx.sessionManager)) return;
   return this.startup ??= (async () => {
    this.assertCurrent();
-   this.adapter = (this.options.factory ?? loadNative)({pi:this.options.pi, ctx:this.options.ctx, sessionId:this.sessionId, cwd:this.cwd, env:{...this.env}, child:this.options.child, assertCurrent:this.assertCurrent, warning:this.options.warning});
+   this.adapter = (this.options.factory ?? loadNative)({pi:this.options.pi, ctx, sessionId:this.sessionId, cwd:this.cwd, env:{...this.env}, child:this.options.child, assertCurrent:this.assertCurrent, warning:this.options.warning});
    const adapter = await this.adapter;this.assertCurrent();
    await adapter.start(this.controller.signal);this.assertCurrent();
-  })().catch(error => {if (!this.controller.signal.aborted) this.options.warning(String(error));});
+  })();
  }
  async ready(): Promise<void> {
-  if (!this.eligible() || !this.startup) throw Error("Native work cards require session startup in an interactive Pi Herdr pane.");
-  await this.startup;this.assertCurrent();
-  if (!this.adapter) throw Error("Native work-card startup did not initialize; reload required");
-  await this.adapter;this.assertCurrent();
+  if (!this.eligible()) throw Error("Native work cards require session startup in an interactive Pi Herdr pane.");
+  const starting = this.start();
+  if (!starting) throw Error("Start a conversation before using a native work card.");
+  await starting;this.assertCurrent();
  }
  private async action(kind: "open" | "close"): Promise<unknown> {
   await this.ready();
@@ -61,5 +64,5 @@ export class NativeController {
   this.controller.abort();
   this.retirement ??= this.adapter?.then(adapter => adapter.dispose()).catch(() => {});
  }
- async idle(): Promise<void> {await this.startup;await this.retirement;}
+ async idle(): Promise<void> {await this.startup?.catch(() => {});await this.retirement;}
 }

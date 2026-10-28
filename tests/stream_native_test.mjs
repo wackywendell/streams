@@ -1,6 +1,10 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
 import { randomUUID } from 'node:crypto';
+import { existsSync, mkdtempSync, rmSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
+import { SessionManager } from '@earendil-works/pi-coding-agent';
 import { createJiti } from 'jiti';
 const jiti=createJiti(import.meta.url);
 const {NativeController}=await jiti.import('../extensions/stream-checkpoint/native.ts');
@@ -16,9 +20,10 @@ function environment(t,changes={}) {
  t.after(()=>{for(const [key,value] of Object.entries(previous)) {if(value===undefined)delete process.env[key];else process.env[key]=value;}});
 }
 function fixture(t,options={}) {
- const id=randomUUID(),requests=[],notices=[],listeners=new Set(),entries=[];
+ const id=options.manager?.getSessionId()??randomUUID(),requests=[],notices=[],listeners=new Set(),entries=[];
+ const messages=options.empty?[]:[{role:'user',content:'Build work cards',timestamp:0}];
  let name,disposed=0,loads=0,loaded;
- const ctx={hasUI:true,mode:'tui',cwd:'/repo',sessionManager:{getSessionId:()=>id,getLeafId:()=> 'leaf',getBranch:()=>[{id:'leaf'}],buildSessionProjection:()=>({messages:[]})},ui:{notify:text=>notices.push(text),setStatus:()=>{},select:async()=> 'Close'}};
+ const ctx={hasUI:true,mode:'tui',cwd:'/repo',sessionManager:options.manager??{getSessionId:()=>id,getLeafId:()=> 'leaf',getBranch:()=>[{id:'leaf'}],buildSessionProjection:()=>({messages})},ui:{notify:text=>notices.push(text),setStatus:()=>{},select:async()=> 'Close'}};
  const pi={getSessionName:()=>name,setSessionName:value=>{name=value;entries.push({value});},appendEntry:()=>{}};
  const child={subscribe:listener=>{listeners.add(listener);return()=>listeners.delete(listener);},stop:async()=>{disposed++;},run:async(request,runOptions)=>{
   requests.push(structuredClone(request));
@@ -28,8 +33,24 @@ function fixture(t,options={}) {
  const factory=async input=>{loads++;loaded=input;return loadRustNative(input);};
  const controller=new NativeController({pi,ctx,child,factory,warning:text=>notices.push(text)});
  t.after(async()=>{controller.stop();await controller.idle();});
- return {id,ctx,pi,child,controller,requests,notices,entries,factory,loads:()=>loads,loaded:()=>loaded,name:()=>name,disposed:()=>disposed,view:desired_pi_name=>{for(const listener of listeners)listener({desired_pi_name});}};
+ return {id,ctx,pi,child,controller,requests,notices,entries,messages,factory,loads:()=>loads,loaded:()=>loaded,name:()=>name,disposed:()=>disposed,view:desired_pi_name=>{for(const listener of listeners)listener({desired_pi_name});}};
 }
+test('empty Pi metadata does not start native work; the first persisted message starts it once',async t=>{
+ environment(t);const directory=mkdtempSync(join(tmpdir(),'streams-empty-pi-'));t.after(()=>rmSync(directory,{recursive:true,force:true}));
+ const manager=SessionManager.create(directory,directory),f=fixture(t,{manager});
+ manager.appendCustomEntry('startup-metadata',{ready:true});
+ assert.equal(existsSync(manager.getSessionFile()),false);
+ assert.equal(f.controller.start(),undefined);assert.equal(f.controller.start(),undefined);
+ assert.deepEqual(f.requests,[]);assert.equal(f.loads(),0);assert.deepEqual(f.notices,[]);
+ await assert.rejects(f.controller.ready(),/Start a conversation/);assert.deepEqual(f.requests,[]);
+ manager.appendMessage({role:'user',content:'Build work cards',timestamp:0});
+ assert.equal(existsSync(manager.getSessionFile()),true);
+ await f.controller.ready();await f.controller.start();assert.deepEqual(f.requests,[{kind:'session_started'}]);
+});
+for(const role of ['compactionSummary','branchSummary'])test(`resumed ${role} history starts native work`,async t=>{
+ environment(t);const f=fixture(t,{empty:true});f.messages.push({role,summary:'Earlier work',timestamp:0});
+ await f.controller.start();assert.deepEqual(f.requests,[{kind:'session_started'}]);
+});
 test('construction is inert; startup sends only session_started and explicit actions send one typed intent each',async t=>{
  environment(t);const f=fixture(t);await turn();assert.deepEqual(f.requests,[]);assert.equal(f.loads(),0);
  await f.controller.start();await f.controller.start();await f.controller.idle();
@@ -51,18 +72,25 @@ for(const reason of ['outside_herdr','not_enrolled'])test(`inactive ${reason} li
  environment(t);const f=fixture(t,{run:async request=>request.kind==='session_started'?{status:'success',result:{native:'inactive',reason}}:{status:'error',error:{kind:'inactive',message:'No active native owner'}}});
  await f.controller.start();assert.deepEqual(f.notices,[]);await assert.rejects(f.controller.open(),error=>error.kind==='inactive');assert.deepEqual(f.requests.map(value=>value.kind),['session_started','open_card']);
 });
-test('startup failures warn; explicit errors preserve their kind and are never retried',async t=>{
+test('startup failure rejects every dependent action without retrying or sending explicit effects',async t=>{
  environment(t);const f=fixture(t,{run:async()=>({status:'error',error:{kind:'native-context-changed',message:'Origin not proved'}})});
- await f.controller.start();assert.match(f.notices[0],/Origin not proved/);
- await assert.rejects(f.controller.close(),error=>error.kind==='native-context-changed');await turn();assert.deepEqual(f.requests.map(value=>value.kind),['session_started','close_card']);
+ await assert.rejects(f.controller.start(),error=>error.kind==='native-context-changed');
+ await assert.rejects(f.controller.close(),error=>error.kind==='native-context-changed');await turn();assert.deepEqual(f.requests.map(value=>value.kind),['session_started']);
 });
 test('failed startup before adapter assignment reports a lifecycle error rather than dereferencing undefined',async t=>{
- environment(t);const f=fixture(t);process.env.HERDR_PANE_ID='changed';await f.controller.start();process.env.HERDR_PANE_ID='pane';
- await assert.rejects(f.controller.open(),/startup did not initialize/);assert.deepEqual(f.requests,[]);
+ environment(t);const f=fixture(t);process.env.HERDR_PANE_ID='changed';await assert.rejects(f.controller.start(),/environment changed/);process.env.HERDR_PANE_ID='pane';
+ await assert.rejects(f.controller.open(),/environment changed/);assert.deepEqual(f.requests,[]);
 });
 test('an explicit open rejects automatic-only suppression instead of reporting a pane open',async t=>{
  environment(t);const f=fixture(t,{run:async()=>({status:'success',result:{native:'active',display:'suppressed'}})});
  await f.controller.start();await assert.rejects(f.controller.open(),/display acknowledgement/);assert.equal(f.requests.length,2);
+});
+test('deferred startup reads the current context and empty close has action-neutral wording',async t=>{
+ environment(t);const f=fixture(t,{empty:true});let current=f.ctx;
+ const controller=new NativeController({pi:f.pi,ctx:f.ctx,current:()=>current,child:f.child,factory:f.factory,warning:assert.fail});t.after(async()=>{controller.stop();await controller.idle();});
+ await assert.rejects(controller.close(),error=>/Start a conversation/.test(error.message)&&!error.message.includes('opening'));
+ current={...f.ctx,sessionManager:{...f.ctx.sessionManager,buildSessionProjection:()=>({messages:[{role:'user',content:'New work',timestamp:0}]})}};
+ await controller.start();assert.deepEqual(f.requests,[{kind:'session_started'}]);
 });
 test('the child, not TypeScript, serializes explicit actions',async t=>{
  environment(t);let release;const f=fixture(t,{run:async request=>{
@@ -93,22 +121,27 @@ for(const change of ['pane','endpoint','cwd','session','cargo-target'])test(`cha
 });
 test('shutdown cancels a pending native request but never sends close or final capture',async t=>{
  environment(t);let signal,release;const f=fixture(t,{run:async(_request,options)=>{signal=options.signal;await new Promise(resolve=>release=resolve);return {status:'success',result:{native:'active',display:'opened'}};}});
- const starting=f.controller.start();await until(()=>!!release);f.controller.stop();assert.equal(signal.aborted,true);release();await starting;await f.controller.idle();assert.deepEqual(f.notices,[]);assert.deepEqual(f.requests,[{kind:'session_started'}]);
+ const starting=f.controller.start();await until(()=>!!release);f.controller.stop();assert.equal(signal.aborted,true);release();await assert.rejects(starting,/aborted/);await f.controller.idle();assert.deepEqual(f.notices,[]);assert.deepEqual(f.requests,[{kind:'session_started'}]);
 });
 function paneFixture(t,options={}) {
- const handlers=new Map(),commands=new Map(),steps=[],inferences=[];
+ const handlers=new Map(),commands=new Map(),tools=new Map(),steps=[],inferences=[],enrollments=[];
  const catalog={catalog_source:'source-a',host_id:'host',stream:null,session:null,sessions:[],title_defaults:{stream:'automatic',session:'automatic'}};
  let preference='inherit';
- const f=fixture(t,{run:async request=>{
+ const f=fixture(t,{empty:options.empty,run:async request=>{
+  if(options.realClient && ['context','sync','enroll','apply'].includes(request.kind))return {status:'success',result:await cli[request.kind](request.request)};
   steps.push(request.kind);
-  if(request.kind==='session_started')return {status:'success',result:catalog.session?{native:'active',display:'suppressed'}:{native:'inactive',reason:'not_enrolled'}};
+  if(request.kind==='session_started'){
+   if(f.messages.length)await options.beforeStart?.();
+   if(options.workspaceStream)catalog.stream=structuredClone(options.workspaceStream);
+   return {status:'success',result:catalog.session?{native:'active',display:'suppressed'}:{native:'inactive',reason:'not_enrolled'}};
+  }
   preference=request.kind==='close_card'?'manual':'automatic';
   if(!catalog.session)return {status:'error',error:{kind:'runtime',message:'Card preference saved; native card effects require an enrolled Session'}};
   return {status:'success',result:request.kind==='close_card'?{closed:true}:{display:'opened'}};
  }});
  const attach=()=>{
   catalog.stream={id:'effort',title:'Work',title_mode:'automatic',goal:'Goal',goal_mode:'automatic',goal_short:null,status:'active',archived:false,owner:{host_id:'host'},repositories:{},issues:[],prs:[],documents:[]};
-  catalog.session={id:f.id,host_id:'host',stream_id:'effort',harness:'pi',harness_session_id:f.id,title:'Contribution',title_mode:'automatic',status:'active',recap:'',state:'',remaining:'',checkout:null};
+  catalog.session={id:f.id,host_id:'host',stream_id:'effort',harness:'pi',harness_session_id:f.id,title:'Contribution',title_mode:'automatic',status:'active',recap:'',state:'',state_short:null,remaining:'',checkout:null};
   catalog.sessions=[catalog.session];
  };
  if(options.attached)attach();
@@ -116,7 +149,7 @@ function paneFixture(t,options={}) {
   context:async()=>structuredClone(catalog),
   sync:async()=>({local:'unchanged',sharing:'local-only',domain:null}),
   enroll:async request=>{
-   steps.push('enroll');
+   steps.push('enroll');enrollments.push(structuredClone(request));
    if(options.rejectEnrollment)return {saves:[{operation_id:request.operation_id,save:{local:'repair-required',sharing:'local-only',domain:null}}]};
    attach();return {stream:catalog.stream,session:catalog.session,saves:[{operation_id:request.operation_id,save:{local:'persisted',sharing:'local-only',domain:{outcome:'changes'}}}]};
   },
@@ -125,14 +158,74 @@ function paneFixture(t,options={}) {
    return {operation_id:request.operation_id,save:{local:'persisted',sharing:'local-only',domain:{outcome:'changes'}}};
   },
  };
- register({...f.pi,on:(key,value)=>handlers.set(key,value),registerCommand:(key,value)=>commands.set(key,value),registerTool:()=>{}},
-  {cli,native:input=>f.factory({...input,child:f.child}),settings:{...defaults,...options.settings},infer:async(ctx,request,signal)=>{
+ register({...f.pi,on:(key,value)=>handlers.set(key,value),registerCommand:(key,value)=>commands.set(key,value),registerTool:tool=>tools.set(tool.name,tool)},
+  {...(options.realClient?{child:()=>f.child}:{cli}),native:input=>f.factory({...input,child:f.child}),settings:{...defaults,...options.settings},infer:async(ctx,request,signal)=>{
    inferences.push(request.type);if(options.infer)await options.infer(ctx,request,signal);
    return request.type==='enroll'?{meaningful:true,stream:{title:'Work'},session:{title:'Contribution'}}:{changes:request.type==='session'?{state:'Reported'}:{goal:'Refined'}};
   }});
  t.after(()=>handlers.get('session_shutdown')({},f.ctx));
- return {...f,handlers,steps,inferences,catalog,preference:()=>preference,start:()=>handlers.get('session_start')({},f.ctx),run:(args='pane')=>commands.get('streams').handler(args,f.ctx)};
+ return {...f,handlers,tools,steps,inferences,enrollments,catalog,preference:()=>preference,start:()=>handlers.get('session_start')({},f.ctx),run:(args='pane')=>commands.get('streams').handler(args,f.ctx)};
 }
+test('empty startup and explicit reports do no native or model work',async t=>{
+ environment(t);const f=paneFixture(t,{empty:true});await f.start();await f.run('report');
+ await until(()=>f.notices.length>0);
+ assert.deepEqual(f.steps,[]);assert.deepEqual(f.inferences,[]);assert.equal(f.preference(),'inherit');
+ assert.match(f.notices.at(-1),/Start a conversation/);
+ await f.run();assert.deepEqual(f.steps,[]);assert.deepEqual(f.inferences,[]);assert.match(f.notices.at(-1),/Start a conversation/);
+});
+test('first report waits for native startup and captures the workspace Stream before enrollment',async t=>{
+ environment(t);let release;
+ const stream={id:'effort',title:'Work',title_mode:'automatic',goal:'Goal',goal_mode:'automatic',goal_short:null,status:'active',archived:false,owner:{host_id:'host'},repositories:{},issues:[],prs:[],documents:[]};
+ const f=paneFixture(t,{empty:true,workspaceStream:stream,beforeStart:()=>new Promise(resolve=>release=resolve),infer:async(_ctx,request)=>{
+  if(request.type==='enroll')assert.deepEqual(request.catalog.stream,stream);
+ }});
+ await f.start();assert.deepEqual(f.steps,[]);
+ f.messages.push({role:'user',content:'Build work cards',timestamp:0});
+ f.handlers.get('agent_end')({messages:[{role:'assistant',stopReason:'stop'}]},f.ctx);
+ await until(()=>!!release);assert.deepEqual(f.inferences,[]);
+ release();await until(()=>f.steps.includes('apply-stream'));
+ assert.deepEqual(f.steps,['session_started','enroll','apply-session','apply-stream']);
+ assert.equal(f.enrollments.length,1);assert.equal(f.enrollments[0].stream_id,'effort');assert.equal(Object.hasOwn(f.enrollments[0],'stream'),false);
+ assert.deepEqual(f.notices,[]);
+ await f.run();assert.equal(f.steps.filter(step=>step==='session_started').length,1);
+});
+for(const operation of ['read','select','create','attach'])test(`first ${operation} initializes native context even with reporting and enrollment manual`,async t=>{
+ environment(t);
+ const stream={id:'effort',title:'Work',title_mode:'automatic',goal:'Goal',goal_mode:'automatic',goal_short:null,status:'active',archived:false,owner:{host_id:'host'},repositories:{},issues:[],prs:[],documents:[]};
+ const f=paneFixture(t,{empty:true,realClient:true,workspaceStream:stream,settings:{reporting:'manual',enrollment:'manual'}});
+ f.ctx.ui.editor=async(_title,initial)=>initial||'Contribution';f.ctx.ui.confirm=async()=>true;
+ await f.start();assert.deepEqual(f.steps,[]);
+ if(operation==='attach') {await f.run('attach');assert.match(f.notices.at(-1),/Start a conversation/);assert.deepEqual(f.enrollments,[]);}
+ f.messages.push({role:'user',content:'Build work cards',timestamp:0});
+ if(operation==='read') {
+  const value=await f.tools.get('stream_read').execute('read',{},undefined,undefined,f.ctx);assert.deepEqual(value.details.stream,stream);
+ } else if(operation==='attach')await f.run('attach');
+ else if(operation==='select')await f.tools.get('select_stream').execute('select',{stream_id:'effort',reason:'Continue'},undefined,undefined,f.ctx);
+ else await assert.rejects(f.tools.get('create_stream').execute('create',{title:'Conflicting',reason:'Continue'},undefined,undefined,f.ctx),/already associated/);
+ assert.equal(f.steps.filter(step=>step==='session_started').length,1);assert.deepEqual(f.inferences,[]);
+ if(['select','attach'].includes(operation)) {assert.equal(f.enrollments.length,1);assert.equal(f.enrollments[0].stream_id,'effort');}
+ else assert.deepEqual(f.enrollments,[]);
+});
+test('failed deferred startup blocks report inference and manual reads until reload',async t=>{
+ environment(t);const f=paneFixture(t,{empty:true,realClient:true,beforeStart:()=>{throw Error('Origin not proved');}});
+ await f.start();f.messages.push({role:'user',content:'Build work cards',timestamp:0});
+ await f.run('report');await until(()=>f.notices.some(text=>text.includes('Origin not proved')));
+ await assert.rejects(f.tools.get('stream_read').execute('read',{},undefined,undefined,f.ctx),/Origin not proved/);
+ assert.deepEqual(f.inferences,[]);assert.deepEqual(f.enrollments,[]);assert.deepEqual(f.steps,['session_started']);
+});
+test('a tree change during manual read startup prevents its context request',async t=>{
+ environment(t);let release;const f=paneFixture(t,{empty:true,realClient:true,beforeStart:()=>new Promise(resolve=>release=resolve)});
+ await f.start();f.messages.push({role:'user',content:'Build work cards',timestamp:0});
+ const reading=f.tools.get('stream_read').execute('read',{},undefined,undefined,f.ctx);await until(()=>!!release);
+ f.handlers.get('session_tree')({},f.ctx);release();await assert.rejects(reading,/Session changed/);
+ assert.deepEqual(f.requests.map(request=>request.kind),['sync','session_started']);
+});
+test('a tree change during deferred startup prevents reporting from the old branch',async t=>{
+ environment(t);let release;const f=paneFixture(t,{empty:true,beforeStart:()=>new Promise(resolve=>release=resolve)});
+ await f.start();f.messages.push({role:'user',content:'Build work cards',timestamp:0});
+ await f.run('report');await until(()=>!!release);f.handlers.get('session_tree')({},f.ctx);release();
+ await turn();await turn();assert.deepEqual(f.inferences,[]);assert.deepEqual(f.steps,['session_started']);
+});
 for(const reporting of ['automatic','manual'])test(`unenrolled pane reports then opens with ${reporting} background reporting`,async t=>{
  environment(t);const f=paneFixture(t,{settings:{reporting}});await f.start();
  assert.equal(f.catalog.session,null);assert.equal(f.preference(),'inherit');assert.deepEqual(f.inferences,[]);

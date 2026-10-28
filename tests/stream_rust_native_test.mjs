@@ -28,7 +28,7 @@ function lifetime(t, directory, extra={}) {
 }
 function piContext(directory,id) {
  const entries=[];let name;
- const ctx={hasUI:true,mode:'tui',cwd:directory,sessionManager:{getSessionId:()=>id,getEntries:()=>entries}};
+ const ctx={hasUI:true,mode:'tui',cwd:directory,sessionManager:{getSessionId:()=>id,getEntries:()=>entries,buildSessionProjection:()=>({messages:[{role:'user',content:'Build work cards',timestamp:0}]})}};
  const pi={getSessionName:()=>name,setSessionName:value=>{name=value;entries.push({id:randomUUID(),type:'session_info',name:value});},appendEntry:(customType,data)=>entries.push({type:'custom',customType,data})};
  return {pi,ctx,entries,name:()=>name};
 }

@@ -32,6 +32,16 @@ The child will save the preference before completing a close request. The card's
 
 The socket will be scoped to the same conversation as the child, with a stable endpoint across child restarts so an existing card can still submit `q`. A process lock will exclude simultaneous endpoint owners; stale socket replacement will happen only under that lock. This is endpoint lifetime exclusion, not a launch journal or a new daemon.
 
+## Empty Pi conversations
+
+Pi reserves a transcript path at startup but creates the file only when it persists a user or assistant message. Startup metadata alone leaves the file absent. Verifying that path during native startup can therefore warn before the user has started any work. A failed native observation also leaves enrollment without the workspace's Stream, so a helper can propose a conflicting new effort.
+
+An empty conversation will not start native observation or generate a report. Once conversation history exists, context reads and enrollment await native startup at the shared Pi client boundary. Reports also await startup before capturing their evidence. This applies to manual commands and tools as well as automatic reporting, so each receives the workspace's existing Stream, if any. An explicit report, attachment or card request while the conversation is empty will explain that the user must start a conversation first. Settings and catalog synchronization remain available. Resumed conversations, including compacted history, will retain startup behavior.
+
+Failed native startup rejects dependent context reads, enrollment and reports instead of treating a missing workspace target as authoritative. The failure remains latched until reload; no automatic retry or partial-startup recovery is added.
+
+This changes when startup runs, not identity or membership authority. File-based native identity verification and conflicting enrollment-target refusal remain unchanged. No new identity channel, readiness record or retry is needed: the first conversation message makes the existing path usable.
+
 ## Show the boundaries in tests
 
 Scripted fake-Herdr scenarios will cover outside attachment, unchanged startup behaviour, manual/global/inherited policies, unrelated attachments, binding-change opening and repeated refreshes. They will demonstrate that explicit opening re-enables automatic mode, explicit close and `q` persist manual mode, and restart/resume uses the saved preference. Real terminal tests will distinguish `q` from signals and verify that unavailable control does not prevent quitting. Preference and endpoint tests will cover separate conversations, malformed input, failed saves and endpoint ownership/restart without live catalog or Herdr access.
