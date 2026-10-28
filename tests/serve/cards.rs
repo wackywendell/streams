@@ -219,6 +219,45 @@ impl CardProcess {
 }
 
 #[test]
+fn real_card_activation_launches_a_persistent_artifact_reader() {
+    let f = CardFixture::new();
+    f.native.fixture.ok(
+        &[
+            "artifact",
+            "write",
+            "assessment.md",
+            "--session-id",
+            f.native.session["id"].as_str().unwrap(),
+            "--description",
+            "Findings",
+        ],
+        Some("assessment output\n"),
+    );
+    let mut card = f.spawn();
+    card.until(|card| card.screen().contains("Artifact assessment.md"));
+    card.send(b"a");
+    card.until(|_| {
+        f.native
+            .server
+            .methods()
+            .iter()
+            .any(|method| method == "tab.focus")
+    });
+    {
+        let mut viewers = f.native.viewers.lock().unwrap();
+        assert_eq!(viewers.len(), 1);
+        let viewer = &mut viewers[0];
+        viewer.until(|viewer| {
+            viewer.screen().contains("assessment output") && viewer.screen().contains("(END)")
+        });
+        viewer.send(b"q");
+        assert!(viewer.finish().success());
+    }
+    card.send(b"q");
+    card.finish(true);
+}
+
+#[test]
 fn real_card_process() {
     let Some(paths) = std::env::var_os("STREAMS_TEST_CARD_PROCESS") else {
         return;

@@ -103,12 +103,6 @@ impl NativeCardEngine {
         if self.config.tab_naming && first && differs {
             self.rename("tab", &editor.pane.tab_id, title.clone())?;
         }
-        self.call(
-            "tab.focus",
-            json!({"tab_id":editor.pane.tab_id}),
-            "ok",
-            true,
-        )?;
-        Ok(())
+        self.focus_tab(&editor.pane.tab_id)
     }
 }

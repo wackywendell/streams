@@ -33,6 +33,7 @@ struct NativeFixture {
     rejected: Arc<AtomicBool>,
     fail_next_snapshot: Arc<AtomicBool>,
     snapshot_gate: Arc<Mutex<Option<PendingSnapshot>>>,
+    viewers: Arc<Mutex<Vec<crate::support::pty::Pty>>>,
     session: Value,
     id: String,
     _socket_directory: tempfile::TempDir,
@@ -69,11 +70,13 @@ impl NativeFixture {
         let rejected = Arc::new(AtomicBool::new(false));
         let fail_next_snapshot = Arc::new(AtomicBool::new(false));
         let snapshot_gate = Arc::new(Mutex::new(None::<PendingSnapshot>));
+        let viewers = Arc::new(Mutex::new(Vec::new()));
         let server = FakeHerdr::start(&socket, {
             let snapshot = snapshot.clone();
             let rejected = rejected.clone();
             let fail_next_snapshot = fail_next_snapshot.clone();
             let snapshot_gate = snapshot_gate.clone();
+            let viewers = viewers.clone();
             move |method, params| match method {
                 "events.subscribe" if rejected.load(Ordering::Acquire) => {
                     Reply::Error(json!({"code":"denied","message":"fixture subscription denied"}))
@@ -130,6 +133,54 @@ impl NativeFixture {
                         "plugin_id":"streams-rust-work-cards","enabled":true,
                         "plugin_root":root,"manifest_path":root.join("streams-rust-herdr-plugin.toml")
                     }]}))
+                }
+                "plugin.pane.open" if params["entrypoint"] == "artifact" => {
+                    let mut command = Command::new("/bin/sh");
+                    command
+                        .arg(concat!(
+                            env!("CARGO_MANIFEST_DIR"),
+                            "/integrations/herdr-work-cards/bin/open-artifact.sh"
+                        ))
+                        .current_dir(params["cwd"].as_str().unwrap())
+                        .env_clear()
+                        .env("TERM", "xterm-256color")
+                        .envs(
+                            params["env"]
+                                .as_object()
+                                .unwrap()
+                                .iter()
+                                .map(|(key, value)| (key, value.as_str().unwrap())),
+                        );
+                    viewers
+                        .lock()
+                        .unwrap()
+                        .push(crate::support::pty::Pty::spawn(command, false));
+                    let mut snapshot = snapshot.lock().unwrap();
+                    let pane = json!({"pane_id":"artifact", "terminal_id":"artifact-terminal",
+                        "workspace_id":params["workspace_id"], "tab_id":"artifact-tab", "cwd":params["cwd"], "tokens":{}});
+                    snapshot["panes"].as_array_mut().unwrap().push(pane.clone());
+                    snapshot["tabs"]
+                        .as_array_mut()
+                        .unwrap()
+                        .push(json!({"workspace_id":params["workspace_id"],
+                        "tab_id":"artifact-tab", "number":2, "label":"Session output"}));
+                    snapshot["layouts"]
+                        .as_array_mut()
+                        .unwrap()
+                        .push(json!({"workspace_id":params["workspace_id"],
+                        "tab_id":"artifact-tab", "panes":[{"pane_id":"artifact"}]}));
+                    Reply::Result(json!({"type":"plugin_pane_opened","plugin_pane":{
+                        "plugin_id":"streams-rust-work-cards","entrypoint":"artifact","pane":pane}}))
+                }
+                "tab.focus" => {
+                    let snapshot = snapshot.lock().unwrap();
+                    let tab = snapshot["tabs"]
+                        .as_array()
+                        .unwrap()
+                        .iter()
+                        .find(|tab| tab["tab_id"] == params["tab_id"])
+                        .unwrap();
+                    Reply::Result(json!({"type":"tab_info","tab":tab}))
                 }
                 "plugin.pane.open" => {
                     let launch: streams::runtime::native_cards::LaunchedCardContext =
@@ -235,6 +286,7 @@ impl NativeFixture {
             rejected,
             fail_next_snapshot,
             snapshot_gate,
+            viewers,
             session,
             id,
             _socket_directory: directory,

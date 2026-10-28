@@ -1,4 +1,5 @@
 mod artifacts;
+mod documents;
 
 use super::*;
 use crate::{
@@ -159,6 +160,10 @@ impl World {
                 }
                 self.changes.push(resource);
                 Reply::Result(json!({"type":"ok"}))
+            }
+            "tab.focus" => {
+                let tab = self.row("tab", params["tab_id"].as_str().unwrap()).clone();
+                Reply::Result(json!({"type":"tab_info","tab":tab}))
             }
             "workspace.rename" | "tab.rename" | "pane.rename" => {
                 let kind = method.split('.').next().unwrap();

@@ -40,12 +40,6 @@ impl NativeCardEngine {
         if self.config.tab_naming {
             self.rename("tab", &viewer.pane.tab_id, target.key.name.clone())?;
         }
-        self.call(
-            "tab.focus",
-            json!({"tab_id":viewer.pane.tab_id}),
-            "ok",
-            true,
-        )?;
-        Ok(())
+        self.focus_tab(&viewer.pane.tab_id)
     }
 }

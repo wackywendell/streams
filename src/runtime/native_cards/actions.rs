@@ -180,6 +180,13 @@ impl NativeCardEngine {
         self.display = Some(pane);
         Ok(())
     }
+    pub(super) fn focus_tab(&mut self, id: &str) -> Result<()> {
+        let reply = self.call("tab.focus", json!({"tab_id":id}), "tab_info", true)?;
+        if reply["tab"]["tab_id"] != id {
+            return Err(self.refuse("focus acknowledgement differs; the tab may have changed"));
+        }
+        Ok(())
+    }
     pub(super) fn rename(&mut self, kind: &str, id: &str, title: String) -> Result<()> {
         config::validate_title(&title)?;
         let (method, result, id_field) = match kind {

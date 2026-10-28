@@ -55,7 +55,7 @@ fn target(engine: &NativeCardEngine) -> ArtifactSummary {
 
 #[test]
 fn artifact_open_is_read_only_fresh_and_never_retried_after_lost_reply() {
-    for lost_reply in [false, true] {
+    for (lost_reply, wrong_focus) in [(false, false), (true, false), (false, true)] {
         let f = Fixture::new();
         let world = f.world.clone();
         let plugin = f.directory.path().canonicalize().unwrap();
@@ -103,7 +103,11 @@ fn artifact_open_is_read_only_fresh_and_never_retried_after_lost_reply() {
                     }
                     "tab.focus" => {
                         assert_eq!(params["tab_id"], format!("viewer-tab-{}", world.created));
-                        Reply::Result(json!({"type":"ok"}))
+                        let mut tab = world.row("tab", params["tab_id"].as_str().unwrap()).clone();
+                        if wrong_focus {
+                            tab["tab_id"] = json!("unrelated");
+                        }
+                        Reply::Result(json!({"type":"tab_info","tab":tab}))
                     }
                     _ => world.reply(method, params, &plugin),
                 }
@@ -117,9 +121,12 @@ fn artifact_open_is_read_only_fresh_and_never_retried_after_lost_reply() {
         let client = HerdrClient::connect(env, 1.0).unwrap();
         let mut first = engine(&f, client.clone());
         let output = target(&first);
-        assert_eq!(first.open_artifact(&output).is_ok(), !lost_reply);
+        assert_eq!(
+            first.open_artifact(&output).is_ok(),
+            !lost_reply && !wrong_focus
+        );
         assert_eq!(f.world.lock().unwrap().created, 1);
-        if !lost_reply {
+        if !lost_reply && !wrong_focus {
             let mut second = engine(&f, client);
             second.open_artifact(&output).unwrap();
             assert_eq!(f.world.lock().unwrap().created, 2);
