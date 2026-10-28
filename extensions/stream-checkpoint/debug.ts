@@ -77,7 +77,7 @@ export async function debugCommand(input: string, ctx: ExtensionContext, client:
  }
  if (!ctx.modelRegistry.find(model.provider, model.id)) throw Error("Replay model is unavailable; no fallback was used");
  const count = capture.samples.filter(sample => sample.evidence && !sample.unavailable).length;
- if (!await ctx.ui.confirm("Run model inference on frozen samples?", `${count} available conversations using ${model.provider}/${model.id}. Each may run enrollment, session and effort helpers. Normal provider requests/costs apply. Results stay local; real cards, sessions, names and layout are not changed.`, {signal})) return;
+ if (!await ctx.ui.confirm("Run model inference on frozen samples?", `${count} available conversations using ${model.provider}/${model.id}. Each may run enrollment, Session and Stream helpers. Normal provider requests/costs apply. Results stay local; real cards, sessions, names and layout are not changed.`, {signal})) return;
  current();
  ctx.ui.setStatus("stream-debug", "Streams debug · Replaying…");
  try {

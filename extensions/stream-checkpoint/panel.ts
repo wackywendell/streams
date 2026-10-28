@@ -88,39 +88,35 @@ export async function openCard(ctx: ExtensionContext, cli: StreamCli, state: Car
   if (!catalog.stream) {ctx.ui.notify("No attached work card. Use select_stream or create_stream for initial attachment.", "info");return;}
   const stream = catalog.stream, session = catalog.session;
   const actionItems: SelectItem[] = [
-   {value: "Report now", label: "Report now", description: "Summarize recent conversation turns into the work card"},
-   {value: "Reset generated fields", label: "Reset generated fields", description: "Regenerate both session and effort fields"},
-   {value: "Re-enable automatic naming & reset", label: "Re-enable automatic naming & reset", description: "Make title and goal generation automatic, then regenerate"},
-   {value: "Discuss live card", label: "Discuss live card", description: "Chat with the reporting helper to refine fields"},
-   ...(session ? [
-    {value: "Reset this session only", label: "Reset this session only", description: "Regenerate only this tab's title, recap, status, and remaining work"},
-    {value: "Re-enable session auto-naming & reset", label: "Re-enable session auto-naming & reset", description: "Make this session's title generation automatic, then regenerate"},
-   ] : []),
-   {value: "Reset whole effort only", label: "Reset whole effort only", description: "Regenerate only the shared effort title and goal"},
-   {value: "Re-enable effort auto-naming & reset", label: "Re-enable effort auto-naming & reset", description: "Make effort title and goal generation automatic, then regenerate"},
-   {value: "Whole effort — edit fields", label: "Whole effort — edit fields", description: "Switch to the Stream tab to edit shared effort fields"},
-   ...(session ? [
-    {value: "This session — edit fields", label: "This session — edit fields", description: "Switch to the Session tab to edit this tab's fields"},
-    {value: "Finish this session", label: "Finish this session", description: "Mark this tab's contribution status as done"},
-   ] : []),
-   {value: "Finish whole effort", label: "Finish whole effort", description: "Mark the shared effort status as done"},
-   {value: stream.archived ? "Restore effort" : "Archive effort", label: stream.archived ? "Restore effort" : "Archive effort", description: stream.archived ? "Unarchive this effort" : "Hide this effort from default active lists"},
-   {value: "Reporting & Herdr settings", label: "Reporting & Herdr settings", description: "Configure automatic reporting cadence, model, and naming"},
-   {value: "Close", label: "Close", description: "Close this dialog (Esc)"},
+   {value: "report", label: "Report", description: "Summarize recent conversation turns into the work card"},
+   {value: "discuss", label: "Discuss…", description: "Chat with the reporting helper to refine fields"},
+   {value: "reset:all", label: "Reset Stream and Session…", description: "Choose how to regenerate both records' automatic fields"},
+   {value: "settings", label: "Settings…", description: "Configure automatic reporting cadence, model, and naming"},
+   {value: "close", label: "Close", description: "Close this dialog (Esc)"},
   ];
-  const streamFields = fields.stream.filter((f) => !(f === "goal_short" && stream.goal === null));
+  const streamFields = fields.stream.filter((f) => f !== "archived" && !(f === "goal_short" && stream.goal === null));
   const streamItems: SelectItem[] = streamFields.map((field) => ({
    value: `field:stream:${field}`,
-   label: `${field}${state.edits.has(`stream:${field}`) ? " *" : ""}`,
+   label: `${field}…${state.edits.has(`stream:${field}`) ? " *" : ""}`,
    description: `${formatFieldPreview((stream as any)[field])}${state.edits.has(`stream:${field}`) ? " · retained unsaved edit" : ""}`,
   }));
+  streamItems.push(
+   {value: "reset:stream", label: "Reset…", description: "Regenerate only the Stream's automatic fields"},
+   {value: "finish:stream", label: "Finish…", description: "Mark the Stream as done; Sessions remain unchanged"},
+   {value: "archive", label: `${stream.archived ? "Restore…" : "Archive…"}${state.edits.has("stream:archived") ? " *" : ""}`, description: state.edits.has("stream:archived") ? "Retained unsaved archive edit" : stream.archived ? "Unarchive this Stream" : "Hide this Stream from default active lists"},
+  );
   const sessionItems: SelectItem[] = session ? fields.session.map((field) => ({
    value: `field:session:${field}`,
-   label: `${field}${state.edits.has(`session:${field}`) ? " *" : ""}`,
+   label: `${field}…${state.edits.has(`session:${field}`) ? " *" : ""}`,
    description: `${formatFieldPreview((session as any)[field])}${state.edits.has(`session:${field}`) ? " · retained unsaved edit" : ""}`,
   })) : [{value: "noop", label: "Not yet enrolled", description: "Run /streams attach or /streams report to enroll this session"}];
-  const rows = actionItems.map((item) => item.value);
-  const action = ctx.ui.custom ? await ctx.ui.custom<string | undefined>((tui, theme, _keys, done) => {
+  if (session) sessionItems.push(
+   {value: "reset:session", label: "Reset…", description: "Regenerate only this Session's automatic fields"},
+   {value: "finish:session", label: "Finish…", description: "Mark this Session as done; the Stream remains unchanged"},
+  );
+  const fallbackItems = [...actionItems, ...streamItems.map(item => ({...item, label: `Stream · ${item.label}`})), ...sessionItems.map(item => ({...item, label: `Session · ${item.label}`}))];
+  let action: string | undefined;
+  if (ctx.ui.custom) action = await ctx.ui.custom<string | undefined>((tui, theme, _keys, done) => {
    const topBorder = new DynamicBorder((text) => theme.fg("border", text));
    const bottomBorder = new DynamicBorder((text) => theme.fg("border", text));
    const tabOrder: ("actions" | "stream" | "session")[] = ["actions", "stream", "session"];
@@ -131,11 +127,7 @@ export async function openCard(ctx: ExtensionContext, cli: StreamCli, state: Car
     list = new SelectList(items, Math.max(4, Math.min(12, tui.terminal.rows - 14)), getSelectListTheme());
     list.setSelectedIndex(Math.min(selectedByTab[activeTab], Math.max(0, items.length - 1)));
     list.onSelectionChange = (item) => {selectedByTab[activeTab] = Math.max(0, items.findIndex((i) => i.value === item.value));};
-    list.onSelect = (item) => {
-     if (item.value === "Whole effort — edit fields") {activeTab = "stream";buildList();tui.requestRender();return;}
-     if (item.value === "This session — edit fields") {activeTab = "session";buildList();tui.requestRender();return;}
-     done(item.value);
-    };
+    list.onSelect = (item) => done(item.value);
     list.onCancel = () => done(undefined);
    };
    buildList();
@@ -159,15 +151,15 @@ export async function openCard(ctx: ExtensionContext, cli: StreamCli, state: Car
      const section = (text: string) => theme.fg("accent", theme.bold(text));
      const line = (text: string, limit = 2) => wrapTextWithAnsi(clean(text), Math.max(10, width - 2)).slice(0, limit).map((l) => ` ${l}`);
      const tabLabel = (id: "actions" | "stream" | "session", title: string) =>
-      activeTab === id ? theme.fg("accent", theme.bold(`[ ${title} ]`)) : theme.fg("muted", `  ${title}  `);
+      activeTab === id ? theme.fg("accent", theme.bold(`[ ${title} ]`)) : theme.fg("muted", title);
      const tabBar = truncateToWidth(
-      ` ${tabLabel("actions", "1: Actions")} ${tabLabel("stream", "2: Stream (Whole Effort)")} ${tabLabel("session", "3: Session (This Tab)")}   ${theme.fg("dim", "Tab/←→/1-3 switch · Esc close")}`,
+      ` ${tabLabel("actions", "1: Actions")} ${tabLabel("stream", "2: Stream")} ${tabLabel("session", "3: Session")}   ${theme.fg("dim", "Tab/←→/1-3 switch · Esc close")}`,
       width,
      );
      const summary = [
-      ` ${section("Whole effort")} · ${clean(stream.title)} ${theme.fg("muted", `[${stream.status}${stream.archived ? " · archived" : ""} · title:${stream.title_mode} · goal:${stream.goal_mode}]`)}`,
+      ` ${section("Stream")} · ${clean(stream.title)} ${theme.fg("muted", `[${stream.status}${stream.archived ? " · archived" : ""} · title:${stream.title_mode} · goal:${stream.goal_mode}]`)}`,
       ...line(`Goal: ${stream.goal ?? "—"}`, 2),
-      ` ${section("This session")} · ${clean(session?.title ?? "Not yet enrolled")} ${session ? theme.fg("muted", `[${session.status} · title:${session.title_mode}]`) : ""}`,
+      ` ${section("Session")} · ${clean(session?.title ?? "Not yet enrolled")} ${session ? theme.fg("muted", `[${session.status} · title:${session.title_mode}]`) : ""}`,
       ...(session ? [
        ...line(`Session: ${session.recap || "—"}`, 2),
        ...line(`Status: ${session.state || "—"}`, 2),
@@ -187,33 +179,37 @@ export async function openCard(ctx: ExtensionContext, cli: StreamCli, state: Car
      ];
     },
    };
-  }) : await ctx.ui.select("Work card", rows);
-  if (!action || action === "Close") return;
+  });
+  else {
+   const selected = await ctx.ui.select("Work card", fallbackItems.map(item => item.label));
+   action = fallbackItems.find(item => item.label === selected)?.value;
+  }
+  if (!action || action === "close") return;
   if (action === "noop") continue;
   if (action.startsWith("field:")) {
    const [, kind, field] = action.split(":") as [string, "stream" | "session", string];
    await editField(ctx, cli, catalog, kind, field, state, actions.receipt);
    continue;
   }
-  if (action === "Discuss live card") {await actions.discuss();continue;}
-  if (action === "Reset generated fields" || action === "Re-enable automatic naming & reset") {actions.reset?.(action === "Re-enable automatic naming & reset", "all");return;}
-  if (action === "Reset this session only" || action === "Re-enable session auto-naming & reset") {actions.reset?.(action === "Re-enable session auto-naming & reset", "session");return;}
-  if (action === "Reset whole effort only" || action === "Re-enable effort auto-naming & reset") {actions.reset?.(action === "Re-enable effort auto-naming & reset", "stream");return;}
-  if (action === "Reporting & Herdr settings") {await actions.settings();continue;}
-  if (action === "Report now") {actions.report();return;}
-  let kind: "stream" | "session" = action.startsWith("This session") || action === "Finish this session" ? "session" : "stream";
-  if (action.startsWith("Finish")) {
-   if (!await ctx.ui.confirm(action, kind === "session" ? "Finish only this contribution; the effort remains unchanged?" : "Mark the entire effort done? Other contributions are not automatically finished.")) continue;
+  if (action === "discuss") {await actions.discuss();continue;}
+  if (action.startsWith("reset:")) {
+   const target = action.split(":")[1] as "all" | "stream" | "session";
+   const mode = await ctx.ui.select(`Reset ${target === "all" ? "Stream and Session" : target === "stream" ? "Stream" : "Session"} · regenerate automatic fields`, ["Preserve naming modes", "Restore automatic naming"]);
+   if (!mode) continue;
+   actions.reset?.(mode === "Restore automatic naming", target);return;
+  }
+  if (action === "settings") {await actions.settings();continue;}
+  if (action === "report") {actions.report();return;}
+  if (action.startsWith("finish:")) {
+   const kind = action.split(":")[1] as "stream" | "session";
+   if (!await ctx.ui.confirm(kind === "session" ? "Finish Session?" : "Finish Stream?", kind === "session" ? "Finish only this Session; the Stream remains unchanged?" : "Mark the Stream done? Other Sessions are not automatically finished.")) continue;
    const edit = new FieldEdit(kind, catalog, "status");edit.value = "done";
    try {await edit.save(cli, actions.receipt);} catch(error) {state.edits.set(`${kind}:status`, edit);ctx.ui.notify(String(error), "error");}
-  } else if (action === "Archive effort" || action === "Restore effort") {
-   if (!await ctx.ui.confirm(action, "Change the whole effort archive flag?")) continue;
-   const edit = new FieldEdit("stream", catalog, "archived");edit.value = !catalog.stream.archived;
+  } else if (action === "archive") {
+   if (state.edits.has("stream:archived")) {await editField(ctx, cli, catalog, "stream", "archived", state, actions.receipt);continue;}
+   if (!await ctx.ui.confirm(stream.archived ? "Restore Stream?" : "Archive Stream?", stream.archived ? "Show this Stream in default active lists?" : "Hide this Stream from default active lists?")) continue;
+   const edit = new FieldEdit("stream", catalog, "archived");edit.value = !stream.archived;
    try {await edit.save(cli, actions.receipt);} catch(error) {state.edits.set("stream:archived", edit);ctx.ui.notify(String(error), "error");}
-  } else {
-   const options = fields[kind].filter((field) => field !== "archived" && !(kind === "stream" && field === "goal_short" && catalog.stream!.goal === null));
-   const field = await ctx.ui.select(`${kind === "stream" ? "Whole effort" : "This session"} · IDs, owner and membership are read-only`, options.map((field) => `${field}: ${JSON.stringify((catalog[kind] as any)[field])}${state.edits.has(`${kind}:${field}`) ? " · retained input" : ""}`));
-   if (field) await editField(ctx, cli, catalog, kind, field.split(":")[0], state, actions.receipt);
   }
  }
 }

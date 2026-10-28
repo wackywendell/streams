@@ -163,7 +163,7 @@ export default function registerWorkCard(pi: ExtensionAPI, options: Options = {}
   panelOpen = true;
   try {
    const catalog = await cli(ctx).context(ctx.sessionManager.getSessionId());
-   if (!catalog.stream) {ctx.ui.notify("Streams — No work card attached. Use /streams attach to choose or create an effort, or start meaningful work for automatic enrollment.", "info");return;}
+   if (!catalog.stream) {ctx.ui.notify("Streams — No work card attached. Use /streams attach to choose or create a Stream, or start meaningful work for automatic enrollment.", "info");return;}
    const key = JSON.stringify([ctx.sessionManager.getSessionId(), catalog.catalog_source, catalog.stream.id]);
    let state = states.get(key);if (!state) {state = {discussion: {input: "", messages: []}, edits: new Map()};states.set(key, state);}
    await openCard(ctx, cli(ctx), state, {receipt, discuss: () => discussion(ctx, state!), settings: () => configure(ctx), report: () => reporter.request(ctx), reset: (auto, target) => reporter.reset(ctx, auto, target)});
@@ -177,7 +177,7 @@ export default function registerWorkCard(pi: ExtensionAPI, options: Options = {}
   return reporter.exclusive((signal) => chooseInitial(ctx, cli(ctx), args, receipt, signal));
  }
  pi.registerCommand("streams", {
-  description: "Open the work card, report or reset progress, configure reporting, attach a card, or open/close its native pane",
+  description: "Open the Stream and Session panel",
   getArgumentCompletions: (prefix) => {
    if (prefix === "debug" || prefix.startsWith("debug ")) {
     if (!settings().debug_commands) return null;
@@ -205,7 +205,7 @@ export default function registerWorkCard(pi: ExtensionAPI, options: Options = {}
       if (i === words.length - 1) return choices((scope.context?.modelRegistry?.getAvailable() ?? []).map(model => ({label: `${model.provider}/${model.id}`, description: "Replay with this available model"})));
       if (words[++i].startsWith("--")) return null;
      }
-     if (flag === "--reset" && i === words.length - 1 && !partial.startsWith("-")) return choices([{label: "session", description: "Reset session fields"}, {label: "stream", description: "Reset effort fields"}, {label: "all", description: "Reset both session and effort fields"}]);
+     if (flag === "--reset" && i === words.length - 1 && !partial.startsWith("-")) return choices([{label: "session", description: "Reset Session fields"}, {label: "stream", description: "Reset Stream fields"}, {label: "all", description: "Reset Stream and Session fields"}]);
      if (flag === "--reset" && ["session", "stream", "all"].includes(words[i + 1])) i++;
     }
     if (partial && !partial.startsWith("-")) return null;
@@ -222,16 +222,19 @@ export default function registerWorkCard(pi: ExtensionAPI, options: Options = {}
      {value: "reset --auto", label: "--auto", description: "Re-enable automatic naming and reset"},
      {value: "reset session", label: "session", description: "Reset only this session's fields"},
      {value: "reset session --auto", label: "session --auto", description: "Re-enable session auto-naming & reset"},
-     {value: "reset stream", label: "stream", description: "Reset only the effort's fields"},
-     {value: "reset stream --auto", label: "stream --auto", description: "Re-enable effort auto-naming & reset"},
-     {value: "reset all", label: "all", description: "Reset both session and effort fields"},
+     {value: "reset stream", label: "stream", description: "Reset only the Stream's fields"},
+     {value: "reset stream --auto", label: "stream --auto", description: "Re-enable Stream auto-naming & reset"},
+     {value: "reset all", label: "all", description: "Reset Stream and Session fields"},
      {value: "reset all --auto", label: "all --auto", description: "Re-enable all auto-naming and reset"},
     ].filter((item) => item.label.startsWith(rest));
     return resetItems.length ? resetItems : null;
    }
+   if (prefix.startsWith("pane ")) {
+    return "close".startsWith(prefix.slice(5)) ? [{value: "pane close", label: "close", description: "Close the native pane"}] : null;
+   }
    if (/\s/.test(prefix)) return null;
    const matches = [
-    {value: "card", label: "card", description: "Open the work card panel"},
+    {value: "card", label: "card", description: "Open the Stream and Session panel"},
     {value: "report", label: "report", description: "Save a progress update"},
     {value: "name", label: "name", description: "Set and protect a saved title"},
     {value: "title-mode", label: "title-mode", description: "Change title generation policy"},
@@ -312,8 +315,8 @@ export default function registerWorkCard(pi: ExtensionAPI, options: Options = {}
  registerArtifactTool(pi, ctx => {scope.use(ctx);return cli(ctx);});
  pi.registerTool({name: "stream_read", label: "Read work card", description: "Read typed durable catalog state and recorded contributions from persisted local records. No fetch, scratch notes or pending drafts.", parameters: Type.Object({}), async execute(_id, _args, _signal, _update, ctx) {scope.use(ctx);const catalog = await cli(ctx).context(ctx.sessionManager.getSessionId());return result(catalog);}});
  pi.registerTool({name: "checkpoint", label: "Report work card", description: "Request an immediate durable progress report. Local saves and publication are separate; this is not an approval draft.", parameters: Type.Object({instructions: Type.Optional(Type.String())}), async execute(_id, args, _signal, _update, ctx) {scope.use(ctx);settings();reporter.request(ctx, true, args.instructions);return result({status: "report-requested"});}});
- pi.registerTool({name: "select_stream", label: "Attach initial effort", description: "Ask the user to attach this unbound Pi conversation to an exact catalog stream ID. An enrolled conversation cannot switch; membership moves/forks are not implemented.", parameters: Type.Object({stream_id: Type.Optional(Type.String()), reason: Type.String()}), async execute(_id, args, _signal, _update, ctx) {return result(await attach(ctx, {streamId: args.stream_id, reason: args.reason}));}});
- pi.registerTool({name: "create_stream", label: "Create initial effort", description: "Ask the user to create an initial durable effort and enroll this conversation. Never switches existing membership or launches workspaces.", parameters: Type.Object({title: Type.String(), reason: Type.String()}), async execute(_id, args, _signal, _update, ctx) {return result(await attach(ctx, args));}});
+ pi.registerTool({name: "select_stream", label: "Attach initial Stream", description: "Ask the user to attach this unbound Pi conversation to an exact catalog stream ID. An enrolled conversation cannot switch; membership moves/forks are not implemented.", parameters: Type.Object({stream_id: Type.Optional(Type.String()), reason: Type.String()}), async execute(_id, args, _signal, _update, ctx) {return result(await attach(ctx, {streamId: args.stream_id, reason: args.reason}));}});
+ pi.registerTool({name: "create_stream", label: "Create initial Stream", description: "Ask the user to create an initial durable Stream and enroll this conversation. Never switches existing membership or launches workspaces.", parameters: Type.Object({title: Type.String(), reason: Type.String()}), async execute(_id, args, _signal, _update, ctx) {return result(await attach(ctx, args));}});
  pi.on("session_start", async (_event, ctx) => {
   clearStatusTimer();ctx.ui.setStatus?.("stream-debug", undefined);
   const retired = retireNative(), previousChild = child;child = undefined;shutdown = undefined;scope.reset(ctx);

@@ -56,7 +56,7 @@ export async function settingsDialog(ctx: ExtensionContext, settings: ReportingS
   })),
   {id: "pi_name_edits", label: "Pi name edits", currentValue: value.pi_name_edits ? "enabled" : "disabled", description: "Save changed Pi /name edits as manual Session titles. Independent of outgoing Pi synchronization. Unbound chats stay native-only; equal names do not pin.", values: ["enabled", "disabled"]},
   ...(nativePath ? Object.entries({
-   workspace_naming: ["Herdr workspace naming", "Mirror the saved effort title in Herdr. While enabled, replaces direct workspace renames; disable for an independent frontend name."],
+   workspace_naming: ["Herdr workspace naming", "Mirror the saved Stream title in Herdr. While enabled, replaces direct workspace renames; disable for an independent frontend name."],
    tab_naming: ["Herdr tab naming", "Mirror saved Session titles in agent tabs and document identities in editor tabs. While enabled, replaces direct tab renames."],
    session_naming: ["Pi session naming", "Mirror the saved Session title in Pi. Turning this off stops Streams from changing Pi's displayed name, but does not disable incoming Pi name edits."],
   }).map(([id, [label, description]]) => ({id, description, label, currentValue: native[id] === false ? "disabled" : "enabled", values: ["enabled", "disabled"]})) : []),

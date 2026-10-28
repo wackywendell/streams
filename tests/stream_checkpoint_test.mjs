@@ -440,7 +440,7 @@ test('all settings explain their effects and leave description room on short ter
     'Default for Stream titles in inherit mode.',
     'Default for Session titles in inherit mode.',
     'Save changed Pi /name edits as manual Session titles.',
-    "Mirror the saved effort title in Herdr.",
+    "Mirror the saved Stream title in Herdr.",
     "Mirror saved Session titles in agent tabs",
     "Mirror the saved Session title in Pi.",
    ]) {
@@ -830,16 +830,16 @@ test('bound chooser never lists or switches, and live card offers no switch/crea
  const ctx={hasUI:true,sessionManager:{getSessionId:()=> 'native'},ui:{select:async(title,rows)=>{calls.push({title,rows});return 'Close';}}};
  assert.match((await chooseInitial(ctx,cli,{title:'Another'},()=>assert.fail())).status,/already-bound/);
  await openCard(ctx,cli,{discussion:{input:'',messages:[]},edits:new Map()},{receipt:()=>{},discuss:()=>assert.fail(),settings:()=>assert.fail(),report:()=>assert.fail()});
- assert.ok(calls[0].rows.includes('Finish this session'));assert.ok(calls[0].rows.includes('Finish whole effort'));
+ assert.ok(calls[0].rows.includes('Session · Finish…'));assert.ok(calls[0].rows.includes('Stream · Finish…'));
  assert.ok(calls[0].rows.every(row=>! /switch|create|attach/i.test(row)));
 });
 for(const intent of ['reply','automatic','user'])test(`card discussion ${intent} has typed intent and no redundant confirmation`,async()=>{
- const handlers=new Map(),receipts=[],writes=[],history=[];let openPanel,submitted=false;const menu=['Discuss live card','Close'];
+ const handlers=new Map(),receipts=[],writes=[],history=[];let openPanel,submitted=false;const menu=['Discuss…','Close'];
  const visible=context();visible.sessions.push({...session,id:'sibling',host_id:'other-host'});
  const cli={sync:localSync,context:async()=>structuredClone(visible),apply:async req=>{writes.push(req);return {operation_id:req.operation_id,save:{local:'persisted',sharing:'local-only',domain:{outcome:'changes'}}};}};
  const edit=intent==='reply'?undefined:{kind:'stream',actor:intent,changes:intent==='user'?{status:'parked'}:{goal:'Current descriptive goal'}};
  registerWorkCard({on:(name,fn)=>handlers.set(name,fn),registerCommand:(_name,options)=>{openPanel=ctx=>options.handler('card',ctx);},registerTool:()=>{},registerShortcut:()=>assert.fail('no shortcuts'),appendEntry:(type,value)=>receipts.push({type,value})},{settings:{...defaults,reporting:'manual'},cli,infer:async(_ctx,req)=>{assert.equal(req.type,'discussion');assert.match(req.discussion.at(-1).text,/card question/);return {reply:'Discussed without assuming extra intent',...(edit?{edit}:{})};}});
- const ctx={mode:'tui',hasUI:true,cwd:'/repo',sessionManager:{getSessionId:()=> 'native',getLeafId:()=> 'leaf',getBranch:()=>[{id:'leaf'}],buildSessionProjection:()=>({messages:[]})},ui:{select:async()=>menu.shift(),confirm:()=>assert.fail('explicit direction needs no second confirmation'),notify:()=>{},setStatus:()=>{},custom:async factory=>new Promise(resolve=>{const component=factory({terminal:{rows:30},requestRender(){}},{fg:(_color,text)=>text,bold:text=>text},{},resolve);if(component.render(80).join("\n").includes("Whole effort")){const action=menu.shift();if(action==="Discuss live card"){for(let i=0;i<3;i++)component.handleInput("\x1b[B");component.handleInput("\r");}else component.handleInput("\x1b");return;}history.push(component.render(80).join('\n'));if(!submitted){submitted=true;component.handleInput('card question');component.handleInput('\r');}else component.handleInput('\x1b');})}};
+ const ctx={mode:'tui',hasUI:true,cwd:'/repo',sessionManager:{getSessionId:()=> 'native',getLeafId:()=> 'leaf',getBranch:()=>[{id:'leaf'}],buildSessionProjection:()=>({messages:[]})},ui:{select:async()=>menu.shift(),confirm:()=>assert.fail('explicit direction needs no second confirmation'),notify:()=>{},setStatus:()=>{},custom:async factory=>new Promise(resolve=>{const component=factory({terminal:{rows:30},requestRender(){}},{fg:(_color,text)=>text,bold:text=>text},{},resolve);if(component.render(80).join("\n").includes("1: Actions")){const action=menu.shift();if(action==="Discuss…"){component.handleInput("\x1b[B");component.handleInput("\r");}else component.handleInput("\x1b");return;}history.push(component.render(80).join('\n'));if(!submitted){submitted=true;component.handleInput('card question');component.handleInput('\r');}else component.handleInput('\x1b');})}};
  await handlers.get('session_start')({},ctx);await openPanel(ctx);
  assert.equal(writes.length,intent==='reply'?0:1);assert.match(history.at(-1),/Discussed without assuming extra intent/);
  if(intent!=='reply'){assert.equal(writes[0].actor,intent);assert.equal(writes[0].catalog_source,'source-a');assert.equal(Object.hasOwn(writes[0],'ownership_token'),false);assert.equal(receipts.length,1);assert.equal(writes[0].before.status,'active');assert.deepEqual(writes[0].inputs.map(input=>input.record.id),intent==='automatic'?['session']:[]);}
@@ -862,7 +862,7 @@ for(const failure of ['throw','abort','invalid','branch','cwd','source','attachm
   if(failure==='shutdown') {await handlers.get('session_shutdown')({}, {...ctx});assert.equal(signal.aborted,true);throw Error('Aborted on shutdown');}
   return failure==='invalid'?{reply:42}:{reply:'Unexpected committed reply',edit:{kind:'session',actor:'automatic',changes:{state:'Must not write'}}};
  }});
- const ctx={mode:'tui',hasUI:true,cwd:'/repo',sessionManager:{getSessionId:()=> 'native',getLeafId:()=>leaf,getBranch:()=>[{id:leaf}],buildSessionProjection:()=>({messages:[]})},ui:{select:async()=>menuCount++%2===0?'Discuss live card':'Close',notify:text=>notices.push(text),setStatus:()=>{},custom:async factory=>new Promise(resolve=>{const component=factory({terminal:{rows:30},requestRender(){}},{fg:(_color,text)=>text,bold:text=>text},{},resolve);if(component.render(100).join("\n").includes("Whole effort")){if(menuCount++%2===0){for(let i=0;i<3;i++)component.handleInput("\x1b[B");component.handleInput("\r");}else component.handleInput("\x1b");return;}renders.push(component.render(100).join('\n'));if(!submitted){submitted=true;component.handleInput('retry question');component.handleInput('\r');}else component.handleInput('\x1b');})}};
+ const ctx={mode:'tui',hasUI:true,cwd:'/repo',sessionManager:{getSessionId:()=> 'native',getLeafId:()=>leaf,getBranch:()=>[{id:leaf}],buildSessionProjection:()=>({messages:[]})},ui:{select:async()=>menuCount++%2===0?'Discuss…':'Close',notify:text=>notices.push(text),setStatus:()=>{},custom:async factory=>new Promise(resolve=>{const component=factory({terminal:{rows:30},requestRender(){}},{fg:(_color,text)=>text,bold:text=>text},{},resolve);if(component.render(100).join("\n").includes("1: Actions")){if(menuCount++%2===0){component.handleInput("\x1b[B");component.handleInput("\r");}else component.handleInput("\x1b");return;}renders.push(component.render(100).join('\n'));if(!submitted){submitted=true;component.handleInput('retry question');component.handleInput('\r');}else component.handleInput('\x1b');})}};
  await handlers.get('session_start')({},ctx);await openPanel(ctx);
  assert.equal(receipts.length,saveFailure?1:0);
  if(saveFailure)assert.ok(notices.some(text=>text.includes('input and save receipt retained')));
@@ -955,10 +955,22 @@ test('debug completion descends into children and replay flags without treating 
  for(const prefix of ['debug','debug ','debug c','debug replay ','debug replay --reset s'])assert.equal(disabled(prefix),null);
  assert.ok(disabled('').every(item=>item.value!=='debug'));
 });
+test('streams command hint reaches Pi slash completion and fits beside its label',async()=>{
+ const {CombinedAutocompleteProvider,SelectList}=await import('@earendil-works/pi-tui');
+ const {getSelectListTheme}=await import('@earendil-works/pi-coding-agent');
+ const command=commandFixture().commands.get('streams');
+ assert.equal(command.description,'Open the Stream and Session panel');
+ const provider=new CombinedAutocompleteProvider([{name:'streams',...command}],'/tmp');
+ const suggestions=await provider.getSuggestions(['/strea'],0,6,{signal:new AbortController().signal});
+ assert.equal(suggestions.items.length,1);
+ assert.equal(suggestions.items[0].description,command.description);
+ const rendered=new SelectList(suggestions.items,5,getSelectListTheme()).render(70).join('\n').replace(/\x1b\[[0-9;]*m/g,'');
+ assert.match(rendered,/streams.*Open the Stream and Session panel/);
+});
 test('streams completes subcommand prefixes with short descriptions but never report instructions or extra arguments',async()=>{
  const complete=commandFixture().commands.get('streams').getArgumentCompletions;
  const items=[
-  {value:'card',label:'card',description:'Open the work card panel'},
+  {value:'card',label:'card',description:'Open the Stream and Session panel'},
   {value:'report',label:'report',description:'Save a progress update'},
   {value:'name',label:'name',description:'Set and protect a saved title'},
   {value:'title-mode',label:'title-mode',description:'Change title generation policy'},
@@ -973,7 +985,9 @@ test('streams completes subcommand prefixes with short descriptions but never re
  assert.deepEqual(await complete('reset --a'),[{value:'reset --auto',label:'--auto',description:'Re-enable automatic naming and reset'}]);
  assert.equal((await complete('reset ')).length,7);
  assert.deepEqual(await complete('reset session '),[{value:'reset session --auto',label:'session --auto',description:'Re-enable session auto-naming & reset'}]);
- for(const prefix of ['unknown','report ','report settings','report\nattach','settings ','attach effort','reset extra'])assert.equal(await complete(prefix),null);
+ for(const prefix of ['pane ','pane c','pane close'])assert.deepEqual(await complete(prefix),[{value:'pane close',label:'close',description:'Close the native pane'}]);
+ for(const prefix of ['reset ','reset stream ','reset all ','name ','title-mode '])for(const item of await complete(prefix)){assert.ok(item.description);assert.doesNotMatch(item.description,/effort/i);}
+ for(const prefix of ['unknown','report ','report settings','report\nattach','settings ','attach effort','reset extra','pane other','pane close '])assert.equal(await complete(prefix),null);
 });
 for(const [args,instructions] of [['report',undefined],['  report  Keep the caveat\nand settings detail  ','Keep the caveat\nand settings detail']])test(`streams reports explicitly with ${JSON.stringify(args)}`,async()=>{
  const f=commandFixture();await f.run(args);await until(()=>f.activity.length===2);
@@ -1192,8 +1206,8 @@ test('retained invalid short goal is blocked before CLI and archive has one conf
  const edit=new FieldEdit('stream',catalog,'goal_short');edit.value='No source goal';state.edits.set('stream:goal_short',edit);let menus=0;
  await editField({ui:{select:async(title)=>{if(menus++===0)return 'Save field';assert.match(title,/goal/i);return 'Keep input and close';},notify:()=>{}}},{apply:()=>assert.fail('invalid short must be local validation')},catalog,'stream','goal_short',state,()=>{});
  assert.equal(edit.value,'No source goal');assert.match(edit.error,/goal/);
- const actions=['Whole effort — edit fields',undefined,'Archive effort','Close'];let confirmations=0,writes=0;
- await openCard({sessionManager:{getSessionId:()=> 'native'},ui:{select:async(title,rows)=>{if(title.includes('IDs, owner'))assert.ok(rows.every(row=>!row.startsWith('goal_short:')));return actions.shift();},confirm:async()=>{confirmations++;return true;},notify:()=>{}}},{context:async()=>catalog,apply:async req=>{writes++;assert.deepEqual(req.changes,{archived:true});return {save:{local:'persisted',sharing:'local-only',domain:{outcome:'changes'}}};}},state,{receipt:()=>{},discuss:()=>{},settings:()=>{},report:()=>{}});
+ const actions=['Stream · Archive…','Close'];let confirmations=0,writes=0;
+ await openCard({sessionManager:{getSessionId:()=> 'native'},ui:{select:async(title,rows)=>{assert.ok(rows.every(row=>!row.startsWith('Stream · goal_short')));return actions.shift();},confirm:async()=>{confirmations++;return true;},notify:()=>{}}},{context:async()=>catalog,apply:async req=>{writes++;assert.deepEqual(req.changes,{archived:true});return {save:{local:'persisted',sharing:'local-only',domain:{outcome:'changes'}}};}},state,{receipt:()=>{},discuss:()=>{},settings:()=>{},report:()=>{}});
  assert.equal(confirmations,1);assert.equal(writes,1);
 });
 test('invalid reference rows survive validation and failed Save without forcing the editor again',async()=>{
@@ -1293,7 +1307,7 @@ test('failed manual field edit can rebase onto updated live catalog and save ret
 });
 test('receiptText formats human-readable summaries on success and background reports show Updated in the status bar without chat spam',async()=>{
  assert.equal(receiptText({operation_id:'op',save:{local:'persisted',sharing:'local-only',domain:{outcome:'changes'}},session:{...session,title:'Card UX',state:'Detailed state',state_short:'UX fixes deployed'}}),'Work card updated (Card UX): UX fixes deployed');
- assert.equal(receiptText({operation_id:'op',save:{local:'persisted',sharing:'local-only',domain:{outcome:'changes'}},stream:{...stream,title:'Streams',goal:'Full goal',goal_short:'Compact goal'}}),'Work card effort updated (Streams): Compact goal');
+ assert.equal(receiptText({operation_id:'op',save:{local:'persisted',sharing:'local-only',domain:{outcome:'changes'}},stream:{...stream,title:'Streams',goal:'Full goal',goal_short:'Compact goal'}}),'Work card Stream updated (Streams): Compact goal');
  assert.equal(receiptText({operation_id:'op',save:{local:'unchanged',sharing:'local-only',domain:{outcome:'no-change'}}}),'Work card up to date (no changes)');
  const handlers=new Map(),notices=[],statuses=[];const catalog=context();
  registerWorkCard({on:(name,fn)=>handlers.set(name,fn),registerCommand:()=>{},registerTool:()=>{},registerShortcut:()=>{},appendEntry:()=>{}},{
@@ -1337,12 +1351,94 @@ test('openCard renders 3-tab Pi TUI (Actions, Stream, Session) and edits fields 
   },
  };
  await openCard(ctx,{context:async()=>live,apply:async req=>{saved.push(req);return {operation_id:req.operation_id,save:{local:'persisted',sharing:'local-only',domain:{outcome:'changes'}}};}},state,{receipt:()=>{},discuss:assert.fail,settings:assert.fail,report:assert.fail});
- assert.match(renders[0],/\[ 1: Actions \].*2: Stream \(Whole Effort\).*3: Session \(This Tab\)/);
- assert.match(renders[1],/\[ 2: Stream \(Whole Effort\) \]/);
- assert.match(renders[2],/\[ 3: Session \(This Tab\) \]/);
+ assert.match(renders[0],/\[ 1: Actions \].*2: Stream.*3: Session/);
+ assert.match(renders[1],/\[ 2: Stream \]/);
+ assert.match(renders[2],/\[ 3: Session \]/);
+ assert.match(renders[0],/Reset Stream and Session…/);
+ assert.doesNotMatch(renders[0],/Finish…|Archive…|edit fields/);
+ assert.match(renders[1],/Reset…[\s\S]*Finish…[\s\S]*Archive…/);
+ assert.match(renders[2],/Reset…[\s\S]*Finish…/);
+ assert.doesNotMatch(renders[2],/Archive…|Restore…/);
+ for(const rendered of renders)assert.doesNotMatch(rendered,/Whole [Ee]ffort|This [Tt]ab|archived…|⟳/);
  assert.equal(saved.length,2);
  assert.deepEqual(saved[0].changes,{title:'Work (edited)'});
  assert.deepEqual(saved[1].changes,{title:'Session (edited)'});
+});
+
+function selectCardRow(component,tab,label) {
+ component.handleInput(tab);
+ for(let i=0;i<30;i++) {
+  if(component.render(140).map(line=>line.replace(/\x1b\[[0-9;]*m/g,'')).some(line=>line.startsWith(`→ ${label} `)||line===`→ ${label}`)){component.handleInput('\r');return;}
+  component.handleInput('\x1b[B');
+ }
+ assert.fail(`Missing ${label} on tab ${tab}`);
+}
+test('panel keeps all tabs and continuation labels within narrow terminal widths',async()=>{
+ const {visibleWidth}=await import('@earendil-works/pi-tui');
+ const ctx={sessionManager:{getSessionId:()=> 'native'},ui:{notify:assert.fail,custom:async factory=>new Promise(resolve=>{
+  const component=factory({terminal:{rows:22},requestRender(){}},{fg:(_c,t)=>t,bold:t=>t},{},resolve);
+  for(const tab of ['1','2','3'])for(const width of [40,60,80]) {
+   component.handleInput(tab);const lines=component.render(width);
+   assert.ok(lines.every(line=>visibleWidth(line)<=width),`${tab} at ${width}`);
+   assert.match(lines.join('\n'),tab==='1'?/\[ 1: Actions \]/:tab==='2'?/\[ 2: Stream \]/:/\[ 3: Session \]/);
+  }
+  component.handleInput('\x1b');
+ })}};
+ await openCard(ctx,{context:async()=>context(),apply:assert.fail},{discussion:{input:'',messages:[]},edits:new Map()},{receipt:assert.fail,discuss:assert.fail,settings:assert.fail,report:assert.fail});
+});
+for(const [tab,target] of [['1','all'],['2','stream'],['3','session']])for(const mode of ['Preserve naming modes','Restore automatic naming',undefined])test(`panel Reset ${target} with ${mode??'cancel'} is scoped and explicit`,async()=>{
+ const resets=[];let opened=0;
+ const label=target==='all'?'Reset Stream and Session…':'Reset…';
+ const ctx={sessionManager:{getSessionId:()=> 'native'},ui:{
+  notify:assert.fail,
+  select:async(title,choices)=>{assert.match(title,new RegExp(`Reset ${target==='all'?'Stream and Session':target==='stream'?'Stream':'Session'} ·`));assert.deepEqual(choices,['Preserve naming modes','Restore automatic naming']);return mode;},
+  custom:async factory=>new Promise(resolve=>{
+   const component=factory({terminal:{rows:36},requestRender(){}},{fg:(_c,t)=>t,bold:t=>t},{},resolve);
+   if(opened++===0)selectCardRow(component,tab,label);
+   else {assert.ok(component.render(140).map(line=>line.replace(/\x1b\[[0-9;]*m/g,'')).some(line=>line.startsWith(`→ ${label} `)),'cancel preserves tab and selected row');component.handleInput('\x1b');}
+  }),
+ }};
+ await openCard(ctx,{context:async()=>context(),apply:assert.fail},{discussion:{input:'',messages:[]},edits:new Map()},{receipt:assert.fail,discuss:assert.fail,settings:assert.fail,report:assert.fail,reset:(auto,target)=>resets.push({auto,target})});
+ assert.deepEqual(resets,mode?[{auto:mode==='Restore automatic naming',target}]:[]);
+ assert.equal(opened,mode?1:2);
+});
+for(const [tab,kind] of [['2','stream'],['3','session']])for(const confirmed of [true,false])test(`panel Finish ${kind} ${confirmed?'saves':'cancels'} only that record`,async()=>{
+ const saved=[],confirmations=[];let opened=0;
+ const ctx={sessionManager:{getSessionId:()=> 'native'},ui:{notify:assert.fail,
+  confirm:async(title,body)=>{confirmations.push({title,body});return confirmed;},
+  custom:async factory=>new Promise(resolve=>{const component=factory({terminal:{rows:36},requestRender(){}},{fg:(_c,t)=>t,bold:t=>t},{},resolve);if(opened++===0)selectCardRow(component,tab,'Finish…');else component.handleInput('\x1b');}),
+ }};
+ await openCard(ctx,{context:async()=>context(),apply:async req=>{saved.push(req);return {save:{local:'persisted',sharing:'local-only',domain:{outcome:'changes'}}};}},{discussion:{input:'',messages:[]},edits:new Map()},{receipt:()=>{},discuss:assert.fail,settings:assert.fail,report:assert.fail});
+ assert.equal(confirmations.length,1);assert.equal(confirmations[0].title,kind==='stream'?'Finish Stream?':'Finish Session?');
+ assert.doesNotMatch(confirmations[0].body,/effort/i);
+ assert.deepEqual(saved.map(req=>({kind:req.kind,changes:req.changes})),confirmed?[{kind,changes:{status:'done'}}]:[]);
+});
+for(const archived of [true,false])test(`panel ${archived?'Restore':'Archive'} is only on Stream and has one confirmation`,async()=>{
+ const catalog=context();catalog.stream.archived=archived;
+ const saved=[];let opened=0,confirmed=0;
+ const ctx={sessionManager:{getSessionId:()=> 'native'},ui:{notify:assert.fail,
+  confirm:async title=>{confirmed++;assert.equal(title,archived?'Restore Stream?':'Archive Stream?');return true;},
+  custom:async factory=>new Promise(resolve=>{const component=factory({terminal:{rows:36},requestRender(){}},{fg:(_c,t)=>t,bold:t=>t},{},resolve);if(opened++===0)selectCardRow(component,'2',archived?'Restore…':'Archive…');else component.handleInput('\x1b');}),
+ }};
+ await openCard(ctx,{context:async()=>catalog,apply:async req=>{saved.push(req);return {save:{local:'persisted',sharing:'local-only',domain:{outcome:'changes'}}};}},{discussion:{input:'',messages:[]},edits:new Map()},{receipt:()=>{},discuss:assert.fail,settings:assert.fail,report:assert.fail});
+ assert.equal(confirmed,1);assert.deepEqual(saved.map(req=>({kind:req.kind,changes:req.changes})),[{kind:'stream',changes:{archived:!archived}}]);
+});
+test('archive failures remain reachable without a duplicate archive field',async()=>{
+ const state={discussion:{input:'',messages:[]},edits:new Map()},choices=['Stream · Archive…','Stream · Archive… *','Discard input','Close'];let confirmations=0,writes=0;
+ const ctx={sessionManager:{getSessionId:()=> 'native'},ui:{notify:()=>{},confirm:async()=>{confirmations++;return true;},select:async(_title,rows)=>{
+  assert.ok(rows.every(row=>!row.startsWith('Stream · archived')));
+  const choice=choices.shift();assert.ok(rows.includes(choice),choice);return choice;
+ }}};
+ await openCard(ctx,{context:async()=>context(),apply:async()=>{writes++;throw Error('Save failed');}},state,{receipt:assert.fail,discuss:assert.fail,settings:assert.fail,report:assert.fail});
+ assert.equal(confirmations,1);assert.equal(writes,1);assert.equal(state.edits.size,0);assert.deepEqual(choices,[]);
+});
+test('unenrolled Session tab has no Session actions',async()=>{
+ const catalog=context();catalog.session=null;catalog.sessions=[];
+ const ctx={sessionManager:{getSessionId:()=> 'native'},ui:{notify:assert.fail,custom:async factory=>new Promise(resolve=>{
+  const component=factory({terminal:{rows:36},requestRender(){}},{fg:(_c,t)=>t,bold:t=>t},{},resolve);
+  component.handleInput('3');const rendered=component.render(100).join('\n');assert.match(rendered,/Not yet enrolled/);assert.doesNotMatch(rendered,/Reset…|Finish…/);component.handleInput('\x1b');
+ })}};
+ await openCard(ctx,{context:async()=>catalog,apply:assert.fail},{discussion:{input:'',messages:[]},edits:new Map()},{receipt:assert.fail,discuss:assert.fail,settings:assert.fail,report:assert.fail});
 });
 
 test('record-local v2 edits capture defaults and only the addressed automatic Stream dependency', () => {

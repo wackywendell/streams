@@ -7,7 +7,7 @@ export async function chooseInitial(ctx: ExtensionContext, cli: StreamCli, optio
  const native = ctx.sessionManager.getSessionId();
  const before = await cli.context(native);
  if (before.session) return {status: "already-bound; membership moves/forks are not implemented", stream_id: before.session.stream_id};
- if (before.stream && (options.title || options.streamId && options.streamId !== before.stream.id)) throw Error("Caller workspace is already associated with an effort. Membership moves/forks are not implemented; initial enrollment cannot switch it.");
+ if (before.stream && (options.title || options.streamId && options.streamId !== before.stream.id)) throw Error("Caller workspace is already associated with a Stream. Membership moves/forks are not implemented; initial enrollment cannot switch it.");
  if (!ctx.hasUI) throw Error("Initial enrollment needs an interactive UI");
  let streamId = before.stream?.id ?? options.streamId;
  let title = options.title;
@@ -15,14 +15,14 @@ export async function chooseInitial(ctx: ExtensionContext, cli: StreamCli, optio
   const streams = (await cli.list()).filter(stream => stream.owner.host_id === before.host_id);
   if (streamId && !streams.some((stream) => stream.id === streamId)) throw Error("Pass an exact catalog stream ID from streams list --json");
   const rows = streams.map((stream) => `${stream.id} · ${stream.title}`);
-  const chosen = title ? "Create effort" : await ctx.ui.select(`Initial work card attachment${options.reason ? `\n${options.reason}` : ""}`, [...(streamId ? rows.filter((row) => row.startsWith(`${streamId} ·`)) : rows), "Create effort", "Cancel"]);
+  const chosen = title ? "Create…" : await ctx.ui.select(`Initial work card attachment${options.reason ? `\n${options.reason}` : ""}`, [...(streamId ? rows.filter((row) => row.startsWith(`${streamId} ·`)) : rows), "Create…", "Cancel"]);
   if (!chosen || chosen === "Cancel" || signal?.aborted) return {status: "cancelled"};
-  if (chosen === "Create effort") {
-   title = await ctx.ui.editor("New effort title", title ?? "");if (!title?.trim()) return {status: "cancelled"};streamId = undefined;
+  if (chosen === "Create…") {
+   title = await ctx.ui.editor("Stream title", title ?? "");if (!title?.trim()) return {status: "cancelled"};streamId = undefined;
   } else streamId = streams.find((stream) => chosen === `${stream.id} · ${stream.title}`)!.id;
  }
  const sessionTitle = await ctx.ui.editor("This session title", "Pi contribution");if (!sessionTitle?.trim() || signal?.aborted) return {status: "cancelled"};
- if (!await ctx.ui.confirm("Enroll this conversation?", `Effort: ${title ?? streamId}\nSession: ${sessionTitle}\nMembership cannot be switched through this card.`)) return {status: "cancelled"};
+ if (!await ctx.ui.confirm("Enroll this conversation?", `Stream: ${title ?? streamId}\nSession: ${sessionTitle}\nMembership cannot be switched through this card.`)) return {status: "cancelled"};
  if (ctx.sessionManager.getSessionId() !== native || signal?.aborted) return {status: "cancelled"};
  const value = await cli.enroll({version: 2, catalog_source: before.catalog_source, operation_id: randomUUID(), harness: "pi", harness_session_id: native, ...(streamId ? {stream_id: streamId} : {stream: {title}}), session: {title: sessionTitle}, actor: "user", cwd: ctx.cwd});
  receipt(value);

@@ -99,7 +99,7 @@ test('Naming descriptions explain effective policy, initial titles and both Pi n
  f.ui.custom=async factory=>{
   const component=factory({terminal:{rows:16},requestRender(){}},theme,{},()=>{});
   for(let i=0;i<6;i++)component.handleInput(down);component.handleInput(enter);
-  for(const expected of [/Default for Stream titles in inherit mode/,/Default for Session titles in inherit mode/,/Save changed Pi \/name edits as manual Session titles/,/Mirror the saved effort title/,/Mirror saved Session titles/,/Mirror the saved Session title in Pi/]) {
+  for(const expected of [/Default for Stream titles in inherit mode/,/Default for Session titles in inherit mode/,/Save changed Pi \/name edits as manual Session titles/,/Mirror the saved Stream title/,/Mirror saved Session titles/,/Mirror the saved Session title in Pi/]) {
    const lines=component.render(100),text=stripVTControlCharacters(lines.join('\n'));assert.ok(lines.length<=16,text);assert.match(text,expected);
    if(expected.source.startsWith('Default')) {assert.match(text,/Does not change explicit/);assert.match(text,/Enrollment may still create an initial title/);}
    component.handleInput(down);

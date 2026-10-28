@@ -24,7 +24,7 @@ export function namingCompletions(prefix: string): {value: string; label: string
  const [, command, rest] = match, selector = /^(session|stream) +/.exec(rest);
  const partial = selector ? rest.slice(selector[0].length) : rest;
  if (/\s/.test(partial)) return null;
- const targets = [{label: "session", description: "This conversation's saved title"}, {label: "stream", description: "The whole effort's saved title"}];
+ const targets = [{label: "session", description: "This conversation's saved title"}, {label: "stream", description: "The Stream's saved title"}];
  const modes = titleModes.map(label => ({label, description: label === "inherit" ? "Follow the global title default" : label === "manual" ? "Protect the saved title from generation" : "Allow future title generation"}));
  const choices = [...(!selector ? targets : []), ...(command === "title-mode" ? modes : [])];
  const matches = choices.filter(item => item.label.startsWith(partial)).map(item => ({...item, value: `${command} ${selector?.[0] ?? ""}${item.label}`}));

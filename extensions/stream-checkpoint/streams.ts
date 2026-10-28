@@ -102,7 +102,7 @@ export function receiptText(value: Receipt): string {
  }
  if (value.stream) {
   const summary = value.stream.goal_short || value.stream.goal;
-  return `Work card effort updated (${value.stream.title})${summary ? `: ${summary}` : ""}`;
+  return `Work card Stream updated (${value.stream.title})${summary ? `: ${summary}` : ""}`;
  }
  return "Work card updated";
 }
