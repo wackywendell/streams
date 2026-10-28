@@ -597,9 +597,9 @@ test('report prompts separate contribution state from whole-effort purpose witho
   const ctx={model:{contextWindow:100000},modelRegistry:{complete:async(_model,payload)=>{prompts[type]=payload.systemPrompt;return {stopReason:'toolUse',content:[{type:'toolCall',name:'record_card',arguments:answer}]};}}};
   assert.deepEqual(await infer(ctx,{type,catalog:context(),messages:[]},new AbortController().signal),answer);
  }
- assert.match(prompts.session,/in one short sentence/);assert.match(prompts.session,/empty string when none remains/);
+ assert.match(prompts.session,/in one short sentence/);assert.match(prompts.session,/empty string if Status already covers the next step or no work remains/);
  assert.match(prompts.session,/work inherited from or performed by other sessions/);
- assert.match(prompts.stream,/relatively stable purpose/);assert.match(prompts.stream,/saved goal and the addressed Session contribution/);assert.match(prompts.stream,/supplied Sessions are not a complete roster/);
+ assert.match(prompts.stream,/whole effort's enduring user purpose/);assert.match(prompts.stream,/saved goal is the baseline/);assert.match(prompts.stream,/supplied Sessions are not a complete roster/);
  assert.doesNotMatch(prompts.stream,/actor user|update session.status|10–18 words/);
  assert.doesNotMatch(prompts.session,/actor user|In discussion answer/);
  assert.equal(prompts.enroll,prompts.discussion);assert.notEqual(prompts.stream,prompts.enroll);

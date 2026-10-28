@@ -84,13 +84,19 @@ test('report prompts prefer current tasks, enduring responsibilities and actiona
  assert.match(sessionPrompt,/Do not confuse a request or a plan with work already completed/);
  assert.match(sessionPrompt,/continuing responsibility, not its latest task/);
  assert.match(sessionPrompt,/Keep recognizable titles that already fit/);
- assert.match(sessionPrompt,/cumulative scope and main outcomes/);
- assert.match(sessionPrompt,/rewrite it only when the scope or main outcome changes/);
- assert.match(sessionPrompt,/what this session is doing right now/);
+ assert.match(sessionPrompt,/what this Session is for and its main result/);
+ assert.match(sessionPrompt,/one short sentence of roughly 12 words/);
+ assert.match(sessionPrompt,/Do not put instructions or next-action lists here/);
+ assert.match(sessionPrompt,/never "This session"/);
+ assert.match(sessionPrompt,/shorten an overlong recap even if its facts have not changed/);
+ assert.match(sessionPrompt,/concrete current position of the work/);
+ assert.match(sessionPrompt,/not first-person narration/);
  assert.match(sessionPrompt,/Produce recap_short, state_short and remaining_short alongside their full text/);
  assert.match(sessionPrompt,/prefer 1–2 words, shorter is better/);
  assert.match(sessionPrompt,/preferably fewer than 20 characters, always fewer than 25/);
- assert.match(sessionPrompt,/Remaining names ONE concrete next action or decision/);
+ assert.match(sessionPrompt,/Remaining: ONE concrete next action or decision not already stated in Status/);
+ assert.match(sessionPrompt,/empty string if Status already covers the next step/);
+ assert.match(sessionPrompt,/Empty Remaining does not mean the Session is done/);
  assert.match(sessionPrompt,/roughly 12 words/);
  assert.match(sessionPrompt,/Name the action and its target/);
  assert.match(sessionPrompt,/done only when no newer accepted task remains/);
@@ -99,9 +105,27 @@ test('report prompts prefer current tasks, enduring responsibilities and actiona
  const streamPrompt=buildInferencePayload({type:'stream',catalog,messages:[]}).systemPrompt;
  assert.match(streamPrompt,/Prefer the established project name/);
  assert.match(streamPrompt,/Keep a fitting title when only progress or wording changes/);
+ assert.match(streamPrompt,/Keep a fitting goal unchanged when a Session starts, finishes or changes topic/);
+ assert.match(streamPrompt,/Do not append that Session's subject, feature, milestone or verification work/);
+ assert.match(streamPrompt,/do not reconstruct it from a Session's topic/);
  assert.doesNotMatch(streamPrompt,/Final editing rules|Remaining names/);
  assert.deepEqual(catalog,before);
  assert.deepEqual(parseInferenceResponse({type:'session',catalog,messages:[]},response({changes:{}})),{changes:{}});
+});
+test('Session text schema describes distinct rows without changing constraints or empty-next-step semantics',()=>{
+ const request={type:'session',catalog:context(),messages:[]},payload=buildInferencePayload(request);
+ const fields=payload.tools[0].parameters.properties.changes.properties;
+ assert.match(fields.recap.description,/purpose and main result.*roughly 12 words/);
+ assert.match(fields.state.description,/done or underway.*immediate wait or blocker/);
+ assert.match(fields.remaining.description,/not already stated in Status/);
+ for(const name of ['recap_short','state_short','remaining_short']) {
+  assert.equal(fields[name].anyOf[0].maxLength,24);
+  assert.match(fields[name].description,/at most 24 characters.*Null/);
+ }
+ const streamFields=buildInferencePayload({type:'stream',catalog:context(),messages:[]}).tools[0].parameters.properties.changes.properties;
+ assert.match(streamFields.goal.description,/whole effort's enduring user purpose/);
+ const changes={status:'waiting',remaining:'',remaining_short:null};
+ assert.deepEqual(parseInferenceResponse(request,response({changes}),payload),{changes});
 });
 test('a done card retains later task evidence and can report resumed work',()=>{
  const catalog=context();catalog.session.status='done';catalog.session.state='Proof wiring integrated';catalog.session.remaining='';
