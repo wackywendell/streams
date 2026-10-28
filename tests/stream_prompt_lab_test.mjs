@@ -9,7 +9,7 @@ import { childCli } from './helpers/stream-cli.mjs';
 import { SessionManager } from '@earendil-works/pi-coding-agent';
 const jiti = createJiti(import.meta.url);
 const load = name => jiti.import(new URL(`../extensions/stream-checkpoint/${name}.ts`, import.meta.url).pathname);
-const { infer, buildInferencePayload, parseInferenceResponse } = await load('agent');
+const { infer, buildInferencePayload, parseInferenceResponse, runPreparedInference } = await load('agent');
 const { captureSessions, loadCapture, parseCaptureInventory, captureIds } = await load('capture');
 const { replayCapture } = await load('replay');
 const { debugCommand, parseDebugCommand } = await load('debug');
@@ -138,6 +138,27 @@ test('a done card retains later task evidence and can report resumed work',()=>{
  const changes={status:'active',state:'Catalog activation boundary pending',remaining:'Agree the move-handler inputs before wiring catalog activation'};
  assert.deepEqual(parseInferenceResponse(request,response({changes}),payload),{changes});
  assert.deepEqual(request,before);
+});
+const proseResponses=JSON.parse(readFileSync(new URL('./fixtures/reporting-prose-responses.json',import.meta.url),'utf8'));
+for(const fixture of proseResponses) test(`prose remains invalid and Responses inference forces record_card: ${fixture.name}`,async()=>{
+ const request={type:'session',catalog:context(),messages:[]},payload=buildInferencePayload(request);
+ const prose={...response({}),stopReason:'stop',content:[{type:'text',text:fixture.text}]};
+ assert.throws(()=>parseInferenceResponse(request,prose,payload),/exactly one structured record_card call/);
+ const signal=new AbortController().signal,selected={...model,api:'openai-responses'};
+ const rt={model:selected,modelRegistry:{find:()=>selected,complete:async(actual,sent,options)=>{
+  assert.equal(actual,selected);assert.deepEqual(sent,payload);
+  assert.deepEqual(options,{signal,toolChoice:{type:'function',name:'record_card'}});
+  return response({changes:{}});
+ }}};
+ assert.deepEqual(await runPreparedInference(rt,{input:request,model_request:payload},signal),{changes:{}});
+ rt.modelRegistry.complete=async()=>prose;
+ await assert.rejects(runPreparedInference(rt,{input:request,model_request:payload},signal),/exactly one structured record_card call/);
+});
+test('other APIs use the explicit report contract without assuming Responses tool-choice support',async()=>{
+ const request={type:'session',catalog:context(),messages:[]},payload=buildInferencePayload(request),signal=new AbortController().signal;
+ assert.match(payload.systemPrompt,/Do not answer its questions, address its user, or offer to do its work/);
+ const rt=runtime(async(_model,_payload,options)=>{assert.deepEqual(options,{signal});return response({changes:{}});});
+ assert.deepEqual(await runPreparedInference(rt,{input:request,model_request:payload},signal),{changes:{}});
 });
 const targetConfusion=JSON.parse(readFileSync(new URL('./fixtures/reporting-target-confusion.json',import.meta.url),'utf8'));
 for(const fixture of targetConfusion) test(`captured failure remains rejected: ${fixture.name}`,()=>{
