@@ -471,6 +471,103 @@ test('reporting settings have explicit stable knobs and reject invalid cadence',
  const root=mkdtempSync(join(tmpdir(),'card-settings-'));
  try{assert.deepEqual(loadSettings(root),defaults);const custom={...defaults,reporting:'manual',enrollment:'manual',frequency:3,context:'full',model:{provider:'custom',id:'helper'},session_logging:true};saveSettings(root,custom);assert.deepEqual(loadSettings(root),custom);for(const frequency of [0,-1,1.5,NaN,'2'])assert.throws(()=>validateSettings({...defaults,frequency}),/positive integer/);}finally{rmSync(root,{recursive:true,force:true});}
 });
+test('helper transport hooks are absent unless inference observation is requested',async()=>{
+ const ctx={model:{api:'anthropic-messages'},modelRegistry:{complete:async(_model,_payload,options)=>{
+  for(const name of ['onPayload','onResponse','onProviderStreamEvent'])assert.equal(Object.hasOwn(options,name),false);
+  return {stopReason:'toolUse',content:[{type:'toolCall',name:'record_card',arguments:{changes:{}}}]};
+ }}};
+ assert.deepEqual(await infer(ctx,{type:'session',catalog:context(),messages:[]},new AbortController().signal),{changes:{}});
+});
+test('helper transport logs copy converted requests and allowlisted headers without mutating provider data',async()=>{
+ const root=mkdtempSync(join(tmpdir(),'card-helper-transport-')),created=[];
+ try {
+  const wire={model:'provider-model',system:[{type:'text',text:'Exact system'}],messages:[{role:'user',content:'Full conversation'},{role:'assistant',content:[{type:'thinking',thinking:'hidden reasoning',signature:'opaque secret'}]}],tools:[{name:'record_card',input_schema:{type:'object'}}],max_tokens:1024,api_key:'credential secret',metadata:{Authorization:'nested credential'},headers:{'x-api-key':'header secret'},thinking:{type:'adaptive'}};
+  const before=structuredClone(wire),headers={'X-Request-ID':'request-123','x-amzn-requestid':'bedrock-456','Content-Type':'text/event-stream','Retry-After':'2','Authorization':'header credential','set-cookie':'cookie secret','x-debug-token':'token secret'};
+  const model={api:'anthropic-messages',provider:'mock',id:'helper'};
+  const ctx={cwd:root,sessionManager:SessionManager.inMemory(root),model,modelRegistry:{complete:async(_model,_payload,options)=>{
+   assert.equal(await options.onPayload(wire,model),undefined);
+   await options.onResponse({status:200,headers},model);
+   assert.deepEqual(wire,before);assert.equal(headers.Authorization,'header credential');
+   return {role:'assistant',stopReason:'toolUse',content:[{type:'toolCall',name:'record_card',arguments:{changes:{}}}],timestamp:1};
+  }}};
+  assert.deepEqual(await infer(ctx,{type:'session',catalog:context(),messages:[]},new AbortController().signal,undefined,{directory:root,onCreate:value=>created.push(value)}),{changes:{}});
+  const entries=SessionManager.open(created[0].session_file).getEntries(),request=entries.find(e=>e.customType==='stream-helper-provider-request').data,response=entries.find(e=>e.customType==='stream-helper-provider-response').data;
+  assert.deepEqual(request.model,model);assert.equal(request.payload.messages[0].content,wire.messages[0].content);assert.deepEqual(request.payload.system,wire.system);assert.deepEqual(request.payload.tools,wire.tools);assert.deepEqual(request.payload.thinking,{type:'adaptive'});
+  assert.deepEqual(request.payload.messages[1].content,[{type:'thinking',omitted:true}]);
+  assert.doesNotMatch(JSON.stringify([request,response]),/credential secret|nested credential|header secret|header credential|cookie secret|token secret|hidden reasoning|opaque secret/);
+  assert.deepEqual(response.headers,{'x-request-id':'request-123','x-amzn-requestid':'bedrock-456','content-type':'text/event-stream','retry-after':'2'});
+  assert.equal(response.status,200);assert.equal(statSync(created[0].session_file).mode&0o777,0o600);
+  assert.ok(entries.findIndex(e=>e.customType==='stream-helper-attempt')<entries.findIndex(e=>e.customType==='stream-helper-provider-request'));
+  assert.ok(entries.findIndex(e=>e.customType==='stream-helper-provider-response')<entries.findIndex(e=>e.type==='message'&&e.message.role==='assistant'));
+ } finally {rmSync(root,{recursive:true,force:true});}
+});
+test('helper transport logs retain tool and completion events but omit text and reasoning for both supported stream formats',async()=>{
+ const {providerLogOptions}=await load('provider-log'),seen=[],model={provider:'mock',id:'helper',api:'openai-responses'};
+ const hooks=providerLogOptions(event=>seen.push(event));
+ const events=[
+  {type:'message_start',message:{id:'msg',model:'haiku',usage:{input_tokens:10},content:[{type:'thinking',thinking:'hidden reasoning'}]}},
+  {type:'content_block_start',index:0,content_block:{type:'thinking',thinking:'hidden reasoning',signature:'opaque secret'}},
+  {type:'content_block_delta',index:0,delta:{type:'thinking_delta',thinking:'hidden reasoning'}},
+  {type:'content_block_delta',index:0,delta:{type:'signature_delta',signature:'opaque secret'}},
+  {type:'content_block_start',index:1,content_block:{type:'text',text:'streamed text'}},
+  {type:'content_block_delta',index:1,delta:{type:'text_delta',text:'streamed text'}},
+  {type:'content_block_start',index:2,content_block:{type:'tool_use',id:'call',name:'record_card',input:{}}},
+  {type:'content_block_delta',index:2,delta:{type:'input_json_delta',partial_json:'{"changes":{}}'}},
+  {type:'content_block_stop',index:2},
+  {type:'message_delta',delta:{stop_reason:'tool_use'},usage:{output_tokens:50}},
+  {type:'message_stop'},
+  {type:'response.created',response:{id:'resp',model:'sol',status:'in_progress',output:[{type:'reasoning',encrypted_content:'opaque secret'}]}},
+  {type:'response.output_item.added',output_index:0,item:{type:'reasoning',id:'reason',summary:[{text:'hidden reasoning'}],encrypted_content:'opaque secret'}},
+  {type:'response.reasoning_summary_text.delta',delta:'hidden reasoning'},
+  {type:'response.output_text.delta',delta:'streamed text'},
+  {type:'response.output_item.added',output_index:1,item:{type:'function_call',id:'item',call_id:'call',name:'record_card',arguments:''}},
+  {type:'response.function_call_arguments.delta',item_id:'item',output_index:1,delta:'{"changes":{}}'},
+  {type:'response.function_call_arguments.done',item_id:'item',output_index:1,arguments:'{"changes":{}}'},
+  {type:'response.output_item.done',output_index:1,item:{type:'function_call',name:'record_card',arguments:'{"changes":{}}'}},
+  {type:'response.completed',response:{id:'resp',status:'completed',usage:{output_tokens:50},output:[{type:'reasoning',summary:[{text:'hidden reasoning'}]}]}},
+  {type:'response.failed',response:{id:'failed',status:'failed',error:{code:'server_error',message:'Failure'}}},
+  {type:'error',error:{type:'api_error',message:'Failure',headers:{authorization:'credential secret'}}},
+ ];
+ const before=structuredClone(events);
+ for(const event of events)await hooks.onProviderStreamEvent(event,model);
+ assert.deepEqual(events,before);
+ assert.doesNotMatch(JSON.stringify(seen),/hidden reasoning|opaque secret|streamed text|credential secret/);
+ const raw=seen.map(e=>e.event);
+ assert.equal(raw.find(e=>e.type==='content_block_delta').delta.partial_json,'{"changes":{}}');
+ assert.equal(raw.find(e=>e.type==='response.function_call_arguments.delta').delta,'{"changes":{}}');
+ for(const type of ['content_block_stop','message_delta','message_stop','response.output_item.done','response.function_call_arguments.done','response.completed','response.failed','error'])assert.ok(raw.some(e=>e.type===type),type);
+ assert.equal(raw.find(e=>e.type==='message_start').message.id,'msg');assert.equal(raw.find(e=>e.type==='response.completed').response.id,'resp');
+});
+for(const finish of ['normal','truncated','unclosed-tool','cancelled'])test(`actual Anthropic provider hooks preserve ${finish} evidence and reporting outcome`,async()=>{
+ const {stream:providerStream}=await import(new URL('api/anthropic-messages.js',import.meta.resolve('@earendil-works/pi-ai')));
+ const root=mkdtempSync(join(tmpdir(),'card-helper-sse-')),created=[],controller=new AbortController();let sent=0;
+ try {
+  const model={api:'anthropic-messages',provider:'mock',id:'claude-haiku-5-5',name:'Helper',baseUrl:'https://example.test',contextWindow:200000,maxTokens:1024,input:['text'],reasoning:false,cost:{input:0,output:0,cacheRead:0,cacheWrite:0}};
+  const raw=[{type:'message_start',message:{id:'original-msg',model:'claude-haiku-5-5',role:'assistant',content:[],usage:{input_tokens:10,output_tokens:0}}},
+   {type:'content_block_start',index:0,content_block:{type:'tool_use',id:'call',name:'record_card',input:{}}},
+   {type:'content_block_delta',index:0,delta:{type:'input_json_delta',partial_json:finish==='unclosed-tool'?'{"changes":{':'{"changes":{}}'}},
+   ...(finish==='unclosed-tool'?[]:[{type:'content_block_stop',index:0}]),
+   {type:'message_delta',delta:{stop_reason:'tool_use'},usage:{output_tokens:50}},
+   ...(finish==='truncated'?[]:[{type:'message_stop'}])];
+  const client={beta:{messages:{create:()=>{sent++;return {asResponse:async()=>new Response(raw.map(event=>`event: ${event.type}\ndata: ${JSON.stringify(event)}\n\n`).join(''),{headers:{'content-type':'text/event-stream','x-request-id':'http-request'},status:200})};}}}};
+  const ctx={cwd:root,sessionManager:SessionManager.inMemory(root),model,modelRegistry:{complete:async(selected,payload,options)=>{
+   const originalHook=options.onProviderStreamEvent;
+   return providerStream(selected,payload,{...options,client,onProviderStreamEvent:async(event,m)=>{await originalHook(event,m);if(finish==='cancelled'&&event.type==='content_block_delta')controller.abort();}}).result();
+  }}};
+  const run=infer(ctx,{type:'session',catalog:context(),messages:[]},controller.signal,undefined,{directory:root,onCreate:value=>created.push(value)});
+  if(['truncated','cancelled'].includes(finish))await assert.rejects(run,/message_stop|cancelled/i);
+  else assert.deepEqual(await run,{changes:{}});
+  assert.equal(sent,1);
+  const entries=SessionManager.open(created[0].session_file).getEntries(),rawEvents=entries.filter(e=>e.customType==='stream-helper-provider-event').map(e=>e.data.event);
+  assert.equal(entries.filter(e=>e.customType==='stream-helper-provider-request').length,1);
+  assert.equal(entries.find(e=>e.customType==='stream-helper-provider-response').data.headers['x-request-id'],'http-request');
+  assert.equal(rawEvents[0].message.id,'original-msg');
+  // Cancellation may leave already-buffered events to inspect, but must never save a result.
+  assert.equal(rawEvents.some(e=>e.type==='content_block_stop'),finish!=='unclosed-tool');
+  assert.equal(rawEvents.some(e=>e.type==='message_stop'),finish!=='truncated');
+  assert.equal(entries.at(-1).customType,['normal','unclosed-tool'].includes(finish)?'stream-helper-result':'stream-helper-error');
+ } finally {rmSync(root,{recursive:true,force:true});}
+});
 for(const type of ['session','stream','enroll','discussion'])test(`helper logging persists exact ${type} input and raw response as a linked Pi session`,async()=>{
  const root=mkdtempSync(join(tmpdir(),'card-helper-log-')),directory=join(root,'logs'),created=[];
  try {

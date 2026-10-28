@@ -1,5 +1,6 @@
 import { convertToLlm, estimateTokens } from "@earendil-works/pi-coding-agent";
 import { helperSessionLogger } from "./helper-log.ts";
+import { providerLogOptions, type ProviderLogEvent } from "./provider-log.ts";
 export { helperSessionLogger } from "./helper-log.ts";
 import { setTimeout } from "node:timers/promises";
 import { Type } from "typebox";
@@ -201,7 +202,7 @@ export function parseInferenceResponse<T extends Inference>(request: T, response
 }
 export type InferenceRuntime = {model: ExtensionContext["model"]; modelRegistry: Pick<ExtensionContext["modelRegistry"], "find" | "complete">};
 export type ModelSelection = {provider: string; id: string};
-export type InferenceEvent =
+export type InferenceEvent = ProviderLogEvent
  | {type: "request"; request: Inference; payload: InferencePayload; model: ModelSelection}
  | {type: "attempt"; attempt: number}
  | {type: "attempt-error"; attempt: number; error: string}
@@ -235,7 +236,7 @@ export async function runPreparedInference<T extends Inference>(runtime: Inferen
  observe?.({type: "request", request, payload, model: {provider: model.provider, id: model.id}});
  try {
   assertContextFits(model, payload.systemPrompt + JSON.stringify(payload.tools[0].parameters), payload.messages);
-  const options = model.api === "openai-responses" ? {signal, toolChoice: {type: "function" as const, name: "record_card"}} : {signal};
+  const options = {signal, ...(model.api === "openai-responses" ? {toolChoice: {type: "function" as const, name: "record_card"}} : {}), ...(observe ? providerLogOptions(observe) : {})};
   const response = await completeWithRetry(() => runtime.modelRegistry.complete(model, structuredClone(payload), options), signal, observe);
   if (signal.aborted || response.stopReason === "aborted") throw Error("Reporting cancelled");
   const result = parseInferenceResponse(request, response, payload);

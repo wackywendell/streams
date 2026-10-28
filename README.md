@@ -172,6 +172,14 @@ The menu refreshes on action or reopen, not while waiting for a selection. Discu
 
 When testing, keep the CLI and extension from the same checkout, use isolated XDG/agent directories and do not also load the published scratch-based extension. Restart running Pi sessions after updating the extension; existing processes retain their previously loaded code. The [bundled skill](skills/streams/SKILL.md) covers record semantics and guarded reporting from other harnesses.
 
+### Helper transport diagnostics
+
+Enable “Helper session logging” under Debug in `/streams settings` to save private JSONL logs in `$PI_CODING_AGENT_DIR/stream-reporting-sessions`. It defaults to disabled and is independent of “Debug commands”. Logs retain the application input, normalized SDK response, parsed result or error, and application retry attempts.
+
+When the provider exposes SDK hooks, `stream-helper-provider-request` records its converted request body and model identity; `stream-helper-provider-response` records HTTP status and allowlisted request-ID, trace, retry and content-type headers. `stream-helper-provider-event` records Anthropic Messages and OpenAI Responses tool arguments and completion boundaries before SDK normalization. Compare these entries with the normalized response to distinguish an empty report from a missing tool-block close or an interrupted stream. Unsupported adapters may omit hooks; absent entries do not prove that no request or event occurred. These are parsed provider events, not a raw HTTP capture or evidence of what happened inside a gateway.
+
+Transport entries omit credential-shaped fields, opaque reasoning and streamed text/thinking content. The existing application inputs and normalized responses remain unchanged. Logs still contain private conversation and generated card text: inspect them before sharing. Logging does not change prompts, model selection, retries, empty-delta validity or save rules. Disabling it stops new logs without deleting existing files.
+
 ### Frozen report experiments
 
 Enable “Debug commands” in `/streams settings` to capture full conversation samples, prepare a helper request and rerun its saved input without changing live cards:
