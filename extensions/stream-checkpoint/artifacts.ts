@@ -11,7 +11,7 @@ export function registerArtifactTool(pi: ExtensionAPI, client: (ctx: ExtensionCo
   parameters: Type.Object({
    action: Type.Union([Type.Literal("write"), Type.Literal("read"), Type.Literal("list"), Type.Literal("delete")]),
    name: Type.Optional(Type.String({description: "Write filename: 1–64 lowercase ASCII letters, digits, dots, underscores or hyphens; start with a letter/digit."})),
-   description: Type.Optional(Type.String({description: "Required for write: one line, at most 240 characters."})),
+   description: Type.Optional(Type.String({description: "Required for write: one short line, at most 240 characters. Help a teammate who knows the project but has not read this conversation decide whether to open it. Briefly name the subject and useful contents or main finding. Prefer meaning over provenance: leave revision identifiers, model names and process history inside the artifact unless they are its subject."})),
    text: Type.Optional(Type.String({description: "Inline write content; mutually exclusive with file."})),
    file: Type.Optional(Type.String({description: "Source file path for Rust to read, relative to the Session cwd or absolute."})),
    reference: Type.Optional(Type.String({description: "Complete host/stream/session/name reference for read/delete."})),

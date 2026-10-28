@@ -79,6 +79,12 @@ and otherwise contain lowercase letters, digits, dots, underscores or hyphens.
 Slashes and traversal names will be refused. A required, single-line description
 of at most 240 characters will explain what the output contains.
 
+Descriptions should help a project teammate decide whether to open an artifact
+without reading the producing conversation. Name the subject and useful contents
+or main finding. Keep revision identifiers, model names and process history in
+the content unless they are its subject. For example, use "Review of the compact
+artifact layout", not a reviewer name and revision range.
+
 A name will be unique within its producing Stream and Session. Write will create
 or update that name. There will be no separate create-only operation, runtime
 revision browser or artifact-version API. Git history, when configured, remains

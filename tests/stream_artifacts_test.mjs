@@ -32,6 +32,16 @@ test('artifact tool routes text and file paths through a fake child without read
  assert.match(f.tool.description, /Do not use for design docs, PR descriptions, progress reports/);
 });
 
+test('artifact description guidance orients readers rather than recounting provenance', () => {
+ const guidance = fixture().tool.parameters.properties.description.description;
+ assert.match(guidance, /one short line, at most 240 characters/);
+ assert.match(guidance, /teammate who knows the project but has not read this conversation/);
+ assert.match(guidance, /subject and useful contents or main finding/);
+ assert.match(guidance, /Prefer meaning over provenance/);
+ assert.match(guidance, /revision identifiers, model names and process history/);
+ assert.match(guidance, /unless they are its subject/);
+});
+
 test('artifact reads use bounded child pages and preserve complete references', async () => {
  const f = fixture(() => ({artifact:{reference:'foreign/stream/session/assessment.md'},content:'assessment',next_offset:10,total_bytes:20}));
  const result = await f.invoke({action:'read', reference:'foreign/stream/session/assessment.md'});
