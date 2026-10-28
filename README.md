@@ -151,7 +151,7 @@ The checkout's Pi extension maintains catalog records instead of generating scra
 - `/streams report` requests a report now, not a draft awaiting Apply. Use `/streams report [instructions]` to give reporting direction. Explicit reporting can enroll an unbound conversation. `/streams reset [--auto]` regenerates automatic fields (and with `--auto`, restores automatic title/goal modes before inference). The model-callable `checkpoint` tool remains unchanged.
 - `/streams attach` offers initial selection or creation; attached conversations cannot switch efforts.
 - `/streams settings` controls reporting, enrollment, response frequency, context, model and Herdr startup. Its Naming submenu separates title-generation defaults, incoming Pi name edits and outgoing frontend synchronization. Manual reporting disables background requests, not explicit commands.
-- `/streams pane` opens the native Herdr card; `/streams pane close` closes only its display. Neither requests a report or changes membership.
+- `/streams pane` opens the native Herdr card; `/streams pane close` closes only its display. An enrolled conversation opens without reporting. An unenrolled conversation with automatic enrollment reports once before opening; manual enrollment requires `/streams attach`.
 - Tab completes `card`, `report`, `name`, `title-mode`, `reset`, `settings`, `attach` and `pane`. Unknown subcommands or invalid management arguments show usage without reporting or saving. Free-text instructions must follow `report`.
 
 Settings live in `$PI_CODING_AGENT_DIR/stream-reporting.json`, defaulting to `~/.pi/agent/stream-reporting.json`. The defaults are:
