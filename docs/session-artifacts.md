@@ -76,8 +76,10 @@ record. Existing Session-save receipts must not duplicate artifact contents.
 Artifacts will accept UTF-8 text, including Markdown, up to 1 MiB of content.
 Names will be 1 to 64 ASCII characters, start with a lowercase letter or digit,
 and otherwise contain lowercase letters, digits, dots, underscores or hyphens.
-Slashes and traversal names will be refused. A required, single-line description
-of at most 240 characters will explain what the output contains.
+Slashes and traversal names will be refused. Prefer short filenames naming the
+subject or result. Do not add `artifact-` merely to label the storage kind;
+the tool and card already provide that context. A required, single-line
+description of at most 240 characters will explain what the output contains.
 
 Descriptions should help a project teammate decide whether to open an artifact
 without reading the producing conversation. Name the subject and useful contents
@@ -111,11 +113,12 @@ Stream lists will include outputs of Sessions that have since moved away.
 
 The card will show its bound Session's outputs in its current Stream, taken from
 the Session record. Artifact shortcut letters will be green, names normal and
-descriptions dim. Up to 3 artifacts will show descriptions; larger lists will
-show only names in columns that fit the pane. Documents and artifacts will pack
-separately so long document paths do not waste artifact space. Opening will use
-a Streams-owned read-only view with the same exact-target and stale-shortcut protections as
-document entries. An editor must not become another writer of artifact storage.
+descriptions dim. When all artifact rows fit alongside the progress, documents
+and links, each artifact will get one row with its description shortened to the
+available width. Otherwise artifacts will show only names in columns. Documents
+and compact artifacts will remain separate groups with shared column widths.
+Opening will use a Streams-owned read-only view with the same exact-target and
+stale-shortcut protections as document entries. An editor must not become another writer of artifact storage.
 Moving a Session will change the card's current Stream scope; complete references
 will still address older outputs.
 

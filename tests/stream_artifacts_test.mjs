@@ -32,6 +32,14 @@ test('artifact tool routes text and file paths through a fake child without read
  assert.match(f.tool.description, /Do not use for design docs, PR descriptions, progress reports/);
 });
 
+test('artifact filename guidance favors short subjects without rewriting literal names', async () => {
+ const f = fixture(), guidance = f.tool.parameters.properties.name.description;
+ assert.match(guidance, /short filename naming the subject or result/);
+ assert.match(guidance, /Do not add artifact- merely to label the storage kind/);
+ await f.invoke({action:'write',name:'artifact-review.md',description:'Review of artifact storage',text:'Findings'});
+ assert.equal(f.requests[0].request.request.name, 'artifact-review.md');
+});
+
 test('artifact description guidance orients readers rather than recounting provenance', () => {
  const guidance = fixture().tool.parameters.properties.description.description;
  assert.match(guidance, /one short line, at most 240 characters/);

@@ -394,7 +394,7 @@ fn artifact_styles_do_not_interpret_slashes_in_descriptions_as_paths() {
 }
 
 #[test]
-fn artifact_descriptions_depend_on_current_stream_count_and_names_pack_in_columns() {
+fn artifact_descriptions_use_available_height_instead_of_a_count_cutoff() {
     for count in [1, 3, 4, 7] {
         let mut snapshot = snapshot();
         snapshot.records.session.artifacts.insert(
@@ -428,8 +428,8 @@ fn artifact_descriptions_depend_on_current_stream_count_and_names_pack_in_column
             assert_eq!(rendered.documents.len(), count + 1);
             for i in 0..count {
                 assert!(joined.contains(&format!("file{i}.md")));
-                if width >= 40 || count > 3 {
-                    assert_eq!(joined.contains(&format!("Detail {i}")), count <= 3);
+                if width >= 40 {
+                    assert!(joined.contains(&format!("Detail {i}")));
                 }
                 let key = super::render::DOCUMENT_KEYS.chars().nth(i + 1).unwrap();
                 let Target::Artifact(artifact) = &rendered.documents[&key] else {
@@ -437,21 +437,102 @@ fn artifact_descriptions_depend_on_current_stream_count_and_names_pack_in_column
                 };
                 assert_eq!(artifact.key.name, format!("file{i}.md"));
             }
-            if count > 3 && width >= 40 {
-                assert!(text.iter().any(|line| line.contains("file0.md")
-                    && line.contains("file1.md")
-                    && line.contains("file2.md")));
-                assert!(
-                    text.iter()
-                        .filter(|line| line.contains("docs/"))
-                        .all(|line| !line.contains("file0.md"))
-                );
-            }
+            assert_eq!(
+                text.iter().filter(|line| line.contains("file")).count(),
+                count
+            );
             assert!(
                 text.iter()
                     .all(|line| UnicodeWidthStr::width(line.as_str()) <= width as usize)
             );
         }
+    }
+}
+
+#[test]
+fn artifacts_switch_to_aligned_name_columns_only_when_description_rows_do_not_fit() {
+    let mut snapshot = snapshot();
+    snapshot.records.stream.goal = Some("Goal".into());
+    snapshot.records.session.recap.clear();
+    snapshot.records.session.state.clear();
+    snapshot.records.session.remaining.clear();
+    snapshot.records.stream.issues.clear();
+    snapshot.records.stream.prs.clear();
+    snapshot
+        .records
+        .stream
+        .documents
+        .push(Document::new("lib", "topic", "docs/longer-guide.md", "Guide", None).unwrap());
+    snapshot.context.documents.push(DocumentLocation {
+        repository: "lib".into(),
+        path: "docs/longer-guide.md".into(),
+        location: ResolvedDocument::File {
+            selection: CheckoutSelection {
+                checkout_id: "lib".into(),
+                root: "/code/library".into(),
+            },
+            file: "/code/library/docs/longer-guide.md".into(),
+        },
+    });
+    snapshot.records.session.artifacts.insert(
+        snapshot.records.stream.id.clone(),
+        (0..4)
+            .map(|i| crate::artifacts::ArtifactEntry {
+                name: format!("file{i}.md"),
+                description: format!("Detail {i}: {}", "long description ".repeat(6)),
+            })
+            .collect(),
+    );
+    for (height, notice, descriptions) in [
+        (6, None, true),
+        (5, None, false),
+        (3, None, false),
+        (7, None, true),
+        (6, Some("Diagnostic"), false),
+    ] {
+        let rendered = super::render::render(Some(&snapshot), Rect::new(0, 0, 100, height), notice);
+        let text = lines(&rendered.buffer);
+        let joined = text.join("\n");
+        assert!(text[0].contains("Goal"));
+        assert!(!joined.contains("more; enlarge"));
+        assert_eq!(rendered.documents.len(), 6);
+        for i in 0..4 {
+            assert!(joined.contains(&format!("file{i}.md")));
+            assert_eq!(
+                joined.contains(&format!("Detail {i}")),
+                descriptions,
+                "{height}, {notice:?}: {text:?}"
+            );
+        }
+        if descriptions {
+            assert_eq!(text.iter().filter(|line| line.contains("file")).count(), 4);
+            assert!(joined.contains('…'));
+        } else {
+            let column = |key| text.iter().find_map(|line| line.find(key)).unwrap();
+            assert_eq!(column("[a]"), column("[c]"));
+            assert_eq!(column("[b]"), column("[d]"));
+            assert!(
+                text.iter()
+                    .any(|line| line.contains("file0.md") && line.contains("file3.md"))
+            );
+        }
+    }
+    snapshot.records.session.recap = "Contribution".into();
+    snapshot.records.session.state = "Current position".into();
+    snapshot.records.session.remaining = "Next action".into();
+    for (height, descriptions) in [(7, false), (10, true)] {
+        let rendered = super::render::render(Some(&snapshot), Rect::new(0, 0, 100, height), None);
+        let text = lines(&rendered.buffer).join("\n");
+        for row in [
+            "Goal",
+            "Session: Contribution",
+            "Status: Current position",
+            "Remaining: Next action",
+        ] {
+            assert!(text.contains(row));
+        }
+        assert_eq!(text.contains("Detail 0"), descriptions);
+        assert!(!text.contains("more; enlarge"));
     }
 }
 
