@@ -733,7 +733,10 @@ test('report prompts separate contribution state from whole-effort purpose witho
  assert.match(prompts.stream,/whole effort's enduring user purpose/);assert.match(prompts.stream,/saved goal is the baseline/);assert.match(prompts.stream,/supplied Sessions are not a complete roster/);
  assert.doesNotMatch(prompts.stream,/actor user|update session.status|10–18 words/);
  assert.doesNotMatch(prompts.session,/actor user|In discussion answer/);
- assert.equal(prompts.enroll,prompts.discussion);assert.notEqual(prompts.stream,prompts.enroll);
+ assert.doesNotMatch(prompts.enroll,/session\.status|stream\.status|For session reports|In discussion|actor user/);
+ assert.match(prompts.enroll,/session contains only title/);assert.match(prompts.enroll,/stream contains only title, goal and goal_short/);
+ assert.match(prompts.enroll,/Greetings alone are not meaningful work/);assert.match(prompts.enroll,/short, recognizable handles/);
+ assert.notEqual(prompts.enroll,prompts.discussion);assert.notEqual(prompts.stream,prompts.enroll);
  for(const type of ['session','stream'])assert.match(prompts[type],/allowed field names directly inside changes/);
 });
 test('inference prompt requires short handles rather than work descriptions',async()=>{
@@ -804,6 +807,17 @@ test('discussion composer preserves unsent text across close/reopen without mode
  const state={input:'',messages:[{role:'assistant',text:'Previous discussion'}]};const renders=[];let first=true;
  const ctx={ui:{custom:async factory=>new Promise(resolve=>{const component=factory({terminal:{rows:30},requestRender(){}},{fg:(_color,text)=>text},{},resolve);component.focused=true;if(first){component.handleInput('unsent question');first=false;}renders.push(component.render(80).join('\n'));component.handleInput('\x1b');})}};
  await compose(ctx,state);assert.equal(state.input,'unsent question');await compose(ctx,state);assert.match(renders[1],/unsent question/);assert.match(renders[1],/Previous discussion/);
+});
+test('enrollment rejects the recorded session.status response before any catalog write',async()=>{
+ const catalog=context();catalog.session=null;catalog.sessions=[];
+ const raw={content:[{type:'toolCall',name:'record_card',arguments:{meaningful:true,session:{title:'EGM Docs',status:'active'}}}]};
+ const capture={native:'native',cwd:'/fixture',catalog,evidence:{messages:[],leafId:null},valid:()=>true,attached:async()=>true};
+ await assert.rejects(runReport({kind:'report',force:false},{
+  signal:new AbortController().signal,automaticEnrollment:true,operationId:()=> 'enrollment',capture:async()=>capture,
+  generate:async request=>parseInferenceResponse(request,raw),
+  enroll:()=>assert.fail('invalid enrollment must not reach Rust'),apply:()=>assert.fail('invalid enrollment must not write reports'),
+  receipt:()=>assert.fail('invalid enrollment has no receipt'),notice:assert.fail,
+ }),/invalid structured card fields; nothing was saved/);
 });
 test('background enrollment waits for meaningful work and reuses associated stream before session exists',async()=>{
  for(const meaningful of [false,true]){

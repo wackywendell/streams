@@ -51,6 +51,34 @@ test('pure payload construction and strict parsing share schemas without mutatin
  assert.equal(raw.content[0].arguments.changes.status,'active');
  assert.throws(()=>parseInferenceResponse({type:'session',catalog:context(),messages:[]},response({changes:{session_state:'wrong alias'}})),/invalid structured/);
 });
+test('enrollment accepts only title proposals and optional effort goals',()=>{
+ const catalog=context();catalog.session=null;catalog.sessions=[];
+ const request={type:'enroll',catalog,messages:[]},payload=buildInferencePayload(request);
+ for(const answer of [
+  {meaningful:false},
+  {meaningful:true,session:{title:'EGM Docs'}},
+  {meaningful:true,stream:{title:'Dotfiles'},session:{title:'EGM Docs'}},
+  {meaningful:true,stream:{title:'Dotfiles',goal:'Document the environment',goal_short:'Documentation'},session:{title:'EGM Docs'}},
+ ]) assert.deepEqual(parseInferenceResponse(request,response(answer),payload),answer);
+ for(const [kind,fields] of [
+  ['session',{status:'active'}],
+  ['session',{state:'Work underway'}],
+  ['session',{unexpected:'extra'}],
+  ['stream',{status:'active'}],
+  ['stream',{unexpected:'extra'}],
+ ]) {
+  const answer={meaningful:true,session:{title:'EGM Docs'}};
+  answer[kind]={...(kind==='stream'?{title:'Dotfiles'}:answer.session),...fields};
+  const raw=response(answer),before=structuredClone(raw);
+  assert.throws(()=>parseInferenceResponse(request,raw,payload),error=>{
+   assert.match(String(error),/invalid structured card fields; nothing was saved/);
+   assert.ok(String(error).includes(kind),String(error));
+   assert.ok(String(error).includes(Object.keys(fields)[0]),String(error));
+   return true;
+  });
+  assert.deepEqual(raw,before);
+ }
+});
 test('stream preparation uses only the addressed contribution without claiming a complete roster',()=>{
  const catalog=context(),sibling={...session,id:'sibling',title:'Other lane',state:'Independent contribution'};
  catalog.sessions=[{...catalog.session,state:'Stale target'},sibling];catalog.session.state='Latest target';
