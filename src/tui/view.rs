@@ -1,7 +1,7 @@
 use std::collections::BTreeMap;
 
+use crate::model::Reference;
 use ratatui::{buffer::Buffer, layout::Rect};
-use url::Url;
 use uuid::Uuid;
 
 use super::{CardSnapshot, DocumentTarget, Scope, render};
@@ -36,7 +36,7 @@ pub struct RefreshToken {
 pub enum Target {
     Document(Box<DocumentTarget>),
     Artifact(Box<crate::artifacts::ArtifactSummary>),
-    Link(Url),
+    Link(Box<Reference>),
 }
 
 /// An exact target captured against the geometry and scope of a visible current frame.
@@ -258,7 +258,7 @@ impl CardView {
                     area,
                     action: CapturedAction {
                         frame: identity.clone(),
-                        target: Target::Link(url),
+                        target: Target::Link(Box::new(url)),
                     },
                 })
                 .collect()

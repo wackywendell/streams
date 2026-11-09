@@ -2,7 +2,7 @@ use std::path::Path;
 
 use serde::Serialize;
 use serde_json::{Map, Value};
-use streams::model::{Document, Link, Repository, Session, Stream};
+use streams::model::{Repository, Session, Stream};
 
 use super::CliError;
 use super::args::{SessionFields, StreamFields};
@@ -46,88 +46,6 @@ pub(super) fn stream(
         changes.insert("repositories".into(), serde_json::to_value(repositories)?);
     }
 
-    let mut documents = current.documents.clone();
-    if !input.add_document.is_empty() || !input.remove_document.is_empty() {
-        documents.retain(|item| {
-            !input
-                .remove_document
-                .chunks_exact(2)
-                .any(|arguments| item.identity() == (arguments[0].as_str(), arguments[1].as_str()))
-        });
-        for arguments in input.add_document.chunks_exact(4) {
-            let item = Document::new(
-                &arguments[0],
-                &arguments[1],
-                &arguments[2],
-                &arguments[3],
-                None,
-            )?;
-            match documents
-                .iter()
-                .find(|old| old.identity() == item.identity())
-            {
-                Some(old) if old != &item => {
-                    return Err(CliError::message(
-                        "document exists with different contents; remove and add it explicitly",
-                    ));
-                }
-                Some(_) => {}
-                None => documents.push(item),
-            }
-        }
-    }
-
-    links(
-        &mut changes,
-        "issues",
-        "issue",
-        &current.issues,
-        &input.add_issue,
-        &input.remove_issue,
-    )?;
-    links(
-        &mut changes,
-        "prs",
-        "pr",
-        &current.prs,
-        &input.add_pr,
-        &input.remove_pr,
-    )?;
-
-    type ProvenanceField = fn(&mut Document) -> &mut Option<String>;
-    let provenance: [(&[String], ProvenanceField); 2] = [
-        (&input.document_commit, |document| &mut document.commit),
-        (&input.document_session, |document| {
-            &mut document.source_session_id
-        }),
-    ];
-    for (updates, field) in provenance {
-        for arguments in updates.chunks_exact(3) {
-            let repository = &arguments[0];
-            let path = &arguments[1];
-            let item = documents
-                .iter_mut()
-                .find(|item| item.identity() == (repository.as_str(), path.as_str()))
-                .ok_or_else(|| {
-                    CliError::message(format!(
-                        "no document matches repository/path: {repository}:{path}"
-                    ))
-                })?;
-            *field(item) = Some(arguments[2].clone());
-            item.validate()?;
-        }
-    }
-    if [
-        &input.add_document,
-        &input.remove_document,
-        &input.document_commit,
-        &input.document_session,
-    ]
-    .iter()
-    .any(|values| !values.is_empty())
-    {
-        changes.insert("documents".into(), serde_json::to_value(&documents)?);
-    }
     Ok(changes)
 }
 
@@ -231,38 +149,6 @@ fn optional(
     if let Some(value) = value {
         changes.insert(name.into(), serde_json::to_value(value)?);
     }
-    Ok(())
-}
-
-fn links(
-    changes: &mut Map<String, Value>,
-    field: &str,
-    singular: &str,
-    current: &[Link],
-    additions: &[String],
-    removals: &[String],
-) -> Result<(), CliError> {
-    if additions.is_empty() && removals.is_empty() {
-        return Ok(());
-    }
-    let mut values: Vec<Link> = current
-        .iter()
-        .filter(|item| !removals.contains(&item.url))
-        .cloned()
-        .collect();
-    for arguments in additions.chunks_exact(2) {
-        let item = Link::new(&arguments[0], &arguments[1])?;
-        match values.iter().find(|old| old.url == item.url) {
-            Some(old) if old != &item => {
-                return Err(CliError::message(format!(
-                    "{singular} exists with different contents; remove and add it explicitly"
-                )));
-            }
-            Some(_) => {}
-            None => values.push(item),
-        }
-    }
-    changes.insert(field.into(), serde_json::to_value(values)?);
     Ok(())
 }
 
@@ -444,147 +330,26 @@ mod tests {
     }
 
     #[test]
-    fn link_removals_precede_additions_and_duplicates_preserve_order() {
+    fn ordinary_stream_fields_preserve_references() {
         let mut current = current_stream();
-        current.issues = vec![
-            Link::new("one", "old").unwrap(),
-            Link::new("two", "keep").unwrap(),
-        ];
-        let mut input = StreamFields {
-            add_issue: strings(&["one", "new"]),
-            ..Default::default()
-        };
-        assert!(stream(&current, &input, &mut no_read).is_err());
-        input.remove_issue = strings(&["one", "absent"]);
-        input.add_issue = strings(&["one", "new", "one", "new", "three", "added"]);
-        input.add_pr = strings(&["pr", "description", "pr", "description"]);
-        let changes = stream(&current, &input, &mut no_read).unwrap();
-        assert_eq!(
-            changes["issues"],
-            json!([{"url": "two", "description": "keep"}, {"url": "one", "description": "new"}, {"url": "three", "description": "added"}])
-        );
-        assert_eq!(
-            changes["prs"],
-            json!([{"url": "pr", "description": "description"}])
-        );
-    }
-
-    #[test]
-    fn document_identity_and_provenance_follow_collection_order() {
-        let mut current = current_stream();
-        current.documents =
-            vec![Document::new("repo", "main", "doc.md", "old", Some("commit".into())).unwrap()];
-        let mut input = StreamFields {
-            add_document: strings(&["repo", "main", "doc.md", "old"]),
-            ..Default::default()
-        };
-        // Even otherwise identical additions may not silently discard provenance.
-        assert!(stream(&current, &input, &mut no_read).is_err());
-        input.remove_document = strings(&["repo", "doc.md"]);
-        input.add_document = strings(&[
-            "repo", "branch", "doc.md", "new", "repo", "branch", "doc.md", "new",
-        ]);
-        input.document_commit = strings(&[
-            "repo",
-            "doc.md",
-            "first-sha",
-            "repo",
-            "doc.md",
-            "latest-sha",
-        ]);
-        input.document_session = strings(&[
-            "repo",
-            "doc.md",
-            "first-session",
-            "repo",
-            "doc.md",
-            "source-session",
-        ]);
-        let changes = stream(&current, &input, &mut no_read).unwrap();
-        assert_eq!(
-            changes["documents"],
-            json!([{"repository": "repo", "ref": "branch", "path": "doc.md", "description": "new", "commit": "latest-sha", "source_session_id": "source-session"}])
-        );
-        assert_eq!(current.documents[0].commit.as_deref(), Some("commit"));
-    }
-
-    #[test]
-    fn provenance_requires_known_document_and_valid_commit() {
-        let mut input = StreamFields {
-            document_commit: strings(&["repo", "missing", "commit"]),
-            ..Default::default()
-        };
-        let error = stream(&current_stream(), &input, &mut no_read).unwrap_err();
-        assert!(
-            error
-                .to_string()
-                .contains("no document matches repository/path: repo:missing")
-        );
-        input.add_document = strings(&["repo", "main", "missing", ""]);
-        input.document_commit[2] = "".into();
-        assert!(stream(&current_stream(), &input, &mut no_read).is_err());
-    }
-
-    #[test]
-    fn new_provenance_requires_exact_existing_identity_and_valid_text() {
-        let mut current = current_stream();
-        current
-            .documents
-            .push(Document::new("repo", "main", "doc", "", None).unwrap());
-        for field in ["commit", "source_session_id"] {
-            for (repository, path, value, valid) in [
-                ("repo", "doc", "known", true),
-                ("other", "doc", "known", false),
-                ("repo", "other", "known", false),
-                ("repo", "doc", "", false),
-                ("repo", "doc", " \n", false),
-                ("repo", "doc", "bad\u{0}text", false),
-            ] {
-                let mut input = StreamFields::default();
-                let updates = strings(&[repository, path, value]);
-                if field == "commit" {
-                    input.document_commit = updates;
-                } else {
-                    input.document_session = updates;
-                }
-                let result = stream(&current, &input, &mut no_read);
-                assert_eq!(
-                    result.is_ok(),
-                    valid,
-                    "{field}: {repository}:{path} {value:?}"
-                );
-                if valid {
-                    let changes = result.unwrap();
-                    assert_eq!(changes["documents"][0][field], "known");
-                    assert_eq!(changes["documents"][0]["ref"], "main");
-                }
-                assert_eq!(current.documents[0].commit, None);
-                assert_eq!(current.documents[0].source_session_id, None);
-            }
-        }
-    }
-
-    #[test]
-    fn unchanged_provenance_survives_other_document_changes() {
-        let mut current = current_stream();
-        let mut original = Document::new(
-            "repo",
-            "main",
-            "original",
-            "keep",
-            Some("latest-sha".into()),
-        )
-        .unwrap();
-        original.source_session_id = Some("source-session".into());
-        current.documents.push(original.clone());
+        current.references.push(serde_json::from_value(json!({
+            "name":"Plan", "purpose":"Guide work", "role":"brief", "state":"active",
+            "target":{"kind":"document","repository_url":"git@example.test:tools","path":"plan.md"},
+            "revision":"original"
+        })).unwrap());
+        let references = current.references.clone();
         let input = StreamFields {
-            add_document: strings(&["repo", "other", "new", "added"]),
+            goal: Some("Updated goal".into()),
+            add_repository: strings(&["tools", "git@example.test:tools"]),
             ..Default::default()
         };
         let changes = stream(&current, &input, &mut no_read).unwrap();
         assert_eq!(
-            changes["documents"][0],
-            serde_json::to_value(original).unwrap()
+            Value::Object(changes),
+            json!({
+                "goal":"Updated goal", "repositories":{"tools":{"url":"git@example.test:tools"}}
+            })
         );
+        assert_eq!(current.references, references);
     }
 }

@@ -183,6 +183,23 @@ pub(super) fn finish_record(
         ok,
     );
     output.accepted_save = ok;
+    if let Some(rows) = output.value["save"]["domain"]["reference_results"].as_array() {
+        for row in rows {
+            if matches!(row["outcome"].as_str(), Some("conflict" | "superseded")) {
+                output.notices.push(format!(
+                    "Reference not applied: {}; {}",
+                    super::references::safe_reference_json(
+                        &serde_json::from_value::<streams::model::ResourceKey>(row["key"].clone())
+                            .expect("typed reference result key")
+                    ),
+                    super::references::reference_text(row["reason"].as_str().unwrap_or_default()),
+                ));
+            }
+        }
+        if !output.notices.is_empty() {
+            output.code = 2;
+        }
+    }
     output
 }
 

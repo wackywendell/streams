@@ -52,7 +52,7 @@ function transcript(root,id) {
 
 test('production replay invokes real Rust preview for ordered reports without opening poisoned configuration',async()=>isolated(async(root,clientFor)=>{
  const id='00000000-0000-4000-8000-000000000001';
- const stream={id:'effort',title:'Work',title_mode:'automatic',goal:'Old goal',goal_short:null,goal_mode:'automatic',status:'active',archived:false,owner:{host_id:'host'},repositories:{},issues:[],prs:[],documents:[]};
+ const stream={id:'effort',title:'Work',title_mode:'automatic',goal:'Old goal',goal_short:null,goal_mode:'automatic',status:'active',archived:false,owner:{host_id:'host'},repositories:{},references:[]};
  const session={id:sessionId('host','pi',id),host_id:'host',stream_id:stream.id,harness:'pi',harness_session_id:id,title:'Lane',title_mode:'automatic',status:'active',state:'Old state',state_short:null,remaining:'Old remaining',checkout:null};
  const catalog={catalog_source:'frozen-source',host_id:'host',stream,session,sessions:[session],title_defaults:{stream:'automatic',session:'automatic'}};
  const file=transcript(root,id);
@@ -74,6 +74,23 @@ test('production replay invokes real Rust preview for ordered reports without op
  assert.deepEqual(files(join(root,'config')),before);assert.equal(readdirSync(root).includes('data'),false);assert.equal(readdirSync(root).includes('state'),false);
 }));
 
+test('partial reference replay retains refused restoration and applies an independent update deterministically',async()=>isolated(async(root,clientFor)=>{
+ const id='00000000-0000-4000-8000-000000000004',file=transcript(root,id);
+ const dropped={name:'Retired',purpose:'Old purpose',role:'dependency',state:'dropped',target:{kind:'link',url:'https://example.org/retired'},revision:'old-dropped'};
+ const current={name:'Brief',purpose:'Original purpose',role:'brief',state:'active',target:{kind:'issue',url:'https://example.org/brief'},revision:'old-brief'};
+ const stream={id:'effort',title:'Work',title_mode:'manual',goal:'Goal',goal_short:null,goal_mode:'manual',status:'active',archived:false,owner:{host_id:'host'},repositories:{},references:[dropped,current]};
+ const session={id:sessionId('host','pi',id),host_id:'host',stream_id:stream.id,harness:'pi',harness_session_id:id,title:'Lane',title_mode:'automatic',status:'active',state:'Old',state_short:null,remaining:'',checkout:null};
+ const catalog={catalog_source:'frozen-source',host_id:'host',stream,session,sessions:[session],title_defaults:{stream:'automatic',session:'automatic'},checkouts:[],document_locations:[]};
+ const {capture}=captureSessions({version:1,host_id:'host',streams:[stream],workspaces:[],topology_error:null,target:{kind:'stream',id:stream.id,title:stream.title},samples:[{host_id:'host',harness:'pi',native_session_id:id,open:false,locations:[],catalog,transcript_file:file,unavailable:null}],unsupported:[]},join(root,'private'));
+ const {revision:_dropRevision,...restore}=dropped,{revision:_briefRevision,...update}=current;restore.state='active';update.purpose='Updated purpose';
+ const client=clientFor(id),execute=()=>replayCapture(capture,join(root,'private'),runtime(()=>response({changes:{},reference_proposals:[restore,update]})),model,{kind:'report',force:true},(input,signal)=>client.preview(input,signal),new AbortController().signal);
+ const first=(await execute()).run.samples[0],second=(await execute()).run.samples[0];
+ assert.equal(first.status,'completed',first.error);assert.deepEqual(first.after.stream.references,second.after.stream.references);
+ assert.deepEqual(first.after.stream.references[0],dropped);assert.equal(first.after.stream.references[1].purpose,'Updated purpose');
+ const rows=first.receipts[0].save.domain.reference_results;assert.deepEqual(rows.map(row=>row.outcome),['superseded','changes']);
+ assert.ok(first.notices.some(text=>text.includes('Reference not applied:')));assert.ok(first.notices.every(text=>!text.startsWith('Reference added:')&&!text.startsWith('Reference dropped:')));
+ assert.equal(readdirSync(root).includes('data'),false);assert.equal(readdirSync(root).includes('state'),false);
+}));
 test('unattached setup uses real Rust enrollment preview before reporting',async()=>isolated(async(root,clientFor)=>{
  const id='00000000-0000-4000-8000-000000000002', file=transcript(root,id);
  const catalog={catalog_source:'frozen-source',host_id:'host',stream:null,session:null,sessions:[],title_defaults:{stream:'automatic',session:'automatic'}};

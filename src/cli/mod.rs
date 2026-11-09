@@ -12,6 +12,7 @@ mod enrollment;
 mod fields;
 #[cfg(test)]
 mod native_tests;
+mod references;
 mod serve;
 mod sessions;
 mod settings;
@@ -692,6 +693,7 @@ impl App {
                 catalog::check(&opened, reference.as_deref())
             }
             Command::Sync => self.sync_records(),
+            Command::Reference { command } => self.reference_cli(command),
             Command::Artifact { command } => self.artifact_cli(command),
             Command::Session { command } => self.session(command),
             Command::Checkout { command } => self.checkout(command),
@@ -807,13 +809,16 @@ impl App {
             (None, None) => CaptureTarget::Inventory,
             _ => return Err(CliError::message("select a stream or workspace, not both")),
         };
+        let registry = self.registry(opened.host().as_str())?;
+        let locations = DirectoryBindings::new(state.root(), registry.clone());
         Ok(Output::value(agent::capture_inputs(
             &opened,
             native,
             target,
             settings.naming,
-            &DirectoryBindings::new(state.root(), self.registry(opened.host().as_str())?),
+            &locations,
             &ConversationRoots::from_environment()?,
+            |stream, session| documents::context(&registry, &locations, stream, session),
         )?))
     }
 

@@ -2,15 +2,29 @@ export type Status = 'active' | 'waiting' | 'blocked' | 'parked' | 'done';
 export type Mode = 'automatic' | 'manual';
 export type TitleMode = Mode | 'inherit';
 export type TitleDefaults = { stream: Mode; session: Mode };
-export type Link = { url: string; description: string };
-export type Document = {
-  repository: string; ref?: string | null; path: string; description: string;
+export type ReferenceRole = 'deliverable' | 'dependency' | 'brief' | 'background';
+export type ReferenceState = 'active' | 'fulfilled' | 'dropped';
+export type RepositoryDocument = {
+  repository_url: string; path: string; ref?: string | null;
   commit?: string | null; source_session_id?: string | null;
 };
+export type ReferenceTarget =
+  | ({kind: 'document'} & RepositoryDocument)
+  | {kind: 'pr'; url: string}
+  | {kind: 'issue'; url: string}
+  | {kind: 'link'; url: string};
+export type ResourceKey =
+  | {kind: 'document'; repository_url: string; path: string}
+  | {kind: 'url'; url: string};
+export type ReferenceValue = {
+  name: string; purpose: string; role: ReferenceRole; state: ReferenceState; target: ReferenceTarget;
+};
+export type Reference = ReferenceValue & {revision: string};
+
 export type StreamWire = {
   id: string; title: string; title_mode: TitleMode; goal: string | null; goal_short: string | null;
   goal_mode: Mode; status: Status; archived: boolean; owner: { host_id: string };
-  repositories: Record<string, { url: string }>; documents: Document[]; issues: Link[]; prs: Link[];
+  repositories: Record<string, { url: string }>; references: Reference[];
 };
 export type SessionWire = {
   id: string; host_id: string; stream_id: string; harness: string; harness_session_id: string;
@@ -19,34 +33,100 @@ export type SessionWire = {
   title: string; title_mode: TitleMode; status: Status;
   recap?: string; recap_short?: string | null;
   state: string; state_short: string | null; remaining: string; remaining_short?: string | null;
-  checkout: { repository: string; repository_url: string; ref: string; directory_within_checkout: string } | null;
+  checkout: { repository: string; repository_url?: string | null; ref: string; directory_within_checkout: string } | null;
 };
 export type LocalContext = {
   catalog_source: string; host_id: string; stream: StreamWire | null; session: SessionWire | null;
   sessions: SessionWire[]; title_defaults: TitleDefaults;
+  checkouts?: unknown[]; document_locations?: unknown[];
 };
 
 const object = (value: unknown): value is Record<string, unknown> => !!value && typeof value === 'object' && !Array.isArray(value);
 const text = (value: unknown): value is string => typeof value === 'string' && !value.includes('\0');
 const identity = (value: unknown): value is string => text(value) && value.trim().length > 0;
 const nullableText = (value: unknown) => value === null || text(value);
-const provenance = (value: unknown) => value === undefined || value === null || identity(value);
 const mode = (value: unknown): value is Mode => value === 'automatic' || value === 'manual';
 const titleMode = (value: unknown): value is TitleMode => mode(value) || value === 'inherit';
 const status = (value: unknown): value is Status => typeof value === 'string' && ['active', 'waiting', 'blocked', 'parked', 'done'].includes(value);
-const link = (value: unknown): value is Link => object(value) && text(value.url) && text(value.description);
+
+export function isReferenceText(value: unknown): value is string {
+  return typeof value === 'string'
+    && !value.includes('\0')
+    && !/[\ud800-\udfff]/u.test(value)
+    && /[^\u0009-\u000d\u0020\u0085\u00a0\u1680\u2000-\u200a\u2028\u2029\u202f\u205f\u3000]/u.test(value);
+}
+
+const onlyFields = (value: Record<string, unknown>, fields: readonly string[]) =>
+  Object.keys(value).every(key => fields.includes(key));
+const referencePath = (value: unknown): value is string => isReferenceText(value)
+  && !value.startsWith('/') && !/^[a-z]:/i.test(value) && !value.includes('\\') && !value.split('/').includes('..');
+const recoveryText = (value: unknown) => value === undefined || value === null || isReferenceText(value);
+
+export function referenceUrl(value: string): URL | undefined {
+  if (!isReferenceText(value) || /[\\\p{White_Space}\p{Cc}\p{Cf}]/u.test(value)) return undefined;
+  try {
+    if (/[\p{Cc}\p{Cf}]/u.test(decodeURIComponent(value))) return undefined;
+    const url = new URL(value);
+    return ['http:', 'https:'].includes(url.protocol) && url.host && !url.username && !url.password ? url : undefined;
+  } catch {
+    return undefined;
+  }
+}
+
+export function isRepositoryDocument(value: unknown): value is RepositoryDocument {
+  return object(value) && onlyFields(value, ['repository_url', 'path', 'ref', 'commit', 'source_session_id'])
+    && isReferenceText(value.repository_url) && referencePath(value.path)
+    && recoveryText(value.ref) && recoveryText(value.commit) && recoveryText(value.source_session_id);
+}
+
+export function isReferenceTarget(value: unknown): value is ReferenceTarget {
+  if (!object(value)) return false;
+  if (value.kind === 'document') {
+    const {kind, ...document} = value;
+    return isRepositoryDocument(document);
+  }
+  return ['pr', 'issue', 'link'].includes(value.kind as string) && onlyFields(value, ['kind', 'url'])
+    && isReferenceText(value.url) && !!referenceUrl(value.url);
+}
+
+export function resourceKey(target: ReferenceTarget): ResourceKey {
+  return target.kind === 'document'
+    ? {kind: 'document', repository_url: target.repository_url, path: target.path}
+    : {kind: 'url', url: target.url};
+}
+
+export function isResourceKey(value: unknown): value is ResourceKey {
+  if (!object(value)) return false;
+  return value.kind === 'document'
+    ? onlyFields(value, ['kind', 'repository_url', 'path']) && isReferenceText(value.repository_url) && referencePath(value.path)
+    : value.kind === 'url' && onlyFields(value, ['kind', 'url']) && isReferenceText(value.url) && !!referenceUrl(value.url);
+}
+
+const referenceFields = ['name', 'purpose', 'role', 'state', 'target'];
+const referenceValueFields = (value: Record<string, unknown>) => isReferenceText(value.name) && isReferenceText(value.purpose)
+  && ['deliverable', 'dependency', 'brief', 'background'].includes(value.role as string)
+  && ['active', 'fulfilled', 'dropped'].includes(value.state as string) && isReferenceTarget(value.target);
+
+export function isReferenceValue(value: unknown): value is ReferenceValue {
+  return object(value) && onlyFields(value, referenceFields) && referenceValueFields(value);
+}
+
+export function isReference(value: unknown): value is Reference {
+  return object(value) && onlyFields(value, [...referenceFields, 'revision']) && referenceValueFields(value)
+    && isReferenceText(value.revision);
+}
 
 export function isStream(value: unknown): value is StreamWire {
   if (!object(value) || !identity(value.id) || !text(value.title) || !titleMode(value.title_mode)
     || !nullableText(value.goal) || !nullableText(value.goal_short) || !mode(value.goal_mode)
     || !status(value.status) || typeof value.archived !== 'boolean' || !object(value.owner) || !identity(value.owner.host_id)
     || !object(value.repositories) || !Object.entries(value.repositories).every(([alias, repo]) => identity(alias) && object(repo) && identity(repo.url))
-    || !Array.isArray(value.documents) || !value.documents.every(doc => object(doc)
-      && [doc.repository, doc.path].every(identity) && provenance(doc.ref) && text(doc.description)
-      && provenance(doc.commit) && provenance(doc.source_session_id)
-      && Object.hasOwn(value.repositories as object, doc.repository as string))
-    || !Array.isArray(value.issues) || !value.issues.every(link) || !Array.isArray(value.prs) || !value.prs.every(link)) return false;
-  return new Set(value.documents.map(doc => JSON.stringify([doc.repository, doc.path]))).size === value.documents.length;
+    || ['documents', 'issues', 'prs'].some(key => Object.hasOwn(value, key))
+    || !Array.isArray(value.references) || !value.references.every(isReference)) return false;
+  return new Set(value.references.map(ref => {
+    const key = resourceKey(ref.target);
+    return JSON.stringify(key.kind === 'url' ? ['url', key.url] : ['document', key.repository_url, key.path]);
+  })).size === value.references.length;
 }
 
 export function isSession(value: unknown): value is SessionWire {
@@ -65,7 +145,7 @@ export function isSession(value: unknown): value is SessionWire {
       && new Set(entries.map(entry => entry.name)).size === entries.length))
     && (value.checkout === null || object(value.checkout)
       && identity(value.checkout.repository) && identity(value.checkout.ref) && text(value.checkout.directory_within_checkout)
-      && identity(value.checkout.repository_url));
+      && (value.checkout.repository_url === undefined || value.checkout.repository_url === null || identity(value.checkout.repository_url)));
 }
 
 export function parseLocalContext(value: unknown): LocalContext & Record<string, unknown> {

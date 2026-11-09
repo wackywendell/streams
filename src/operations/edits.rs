@@ -9,7 +9,7 @@ use temper_jit::table::{EvalContext, TransitionTable};
 
 use super::{
     Actor, Reconciliation, agent_field_allowed, apply_changes, copy_field, field_eq, field_policy,
-    filter_automatic_changes, merge_additive, record_field_names, text_group_guards,
+    filter_automatic_changes, record_field_names, text_group_guards,
 };
 use crate::model::{
     NamingMode, Record, Session, Stream, TitleDefaults, TitleMode, ValidationError, check_text,
@@ -601,46 +601,6 @@ fn apply_user_fields(
                 copy_field(&mut candidate, after, field);
             }
             continue;
-        }
-        if let (
-            Record::Stream(base),
-            Record::Stream(desired),
-            Record::Stream(actual),
-            Record::Stream(target),
-        ) = (before, after, current, &mut candidate)
-        {
-            match field {
-                "documents" => {
-                    if let Some(merged) = merge_additive(
-                        &base.documents,
-                        &desired.documents,
-                        &actual.documents,
-                        |a, b| a.identity() == b.identity(),
-                    ) {
-                        target.documents = merged;
-                        continue;
-                    }
-                }
-                "issues" => {
-                    if let Some(merged) =
-                        merge_additive(&base.issues, &desired.issues, &actual.issues, |a, b| {
-                            a.url == b.url
-                        })
-                    {
-                        target.issues = merged;
-                        continue;
-                    }
-                }
-                "prs" => {
-                    if let Some(merged) =
-                        merge_additive(&base.prs, &desired.prs, &actual.prs, |a, b| a.url == b.url)
-                    {
-                        target.prs = merged;
-                        continue;
-                    }
-                }
-                _ => {}
-            }
         }
         conflicts.push(field);
     }

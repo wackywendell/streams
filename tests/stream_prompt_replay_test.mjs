@@ -18,7 +18,7 @@ const { StreamCli } = await load('streams');
 const { defaults } = await load('settings');
 const { helperSessionLogger } = await load('helper-log');
 const model = {provider:'fake', id:'chosen', contextWindow:100000};
-const stream = {id:'effort', title:'Work', title_mode:'automatic', goal:'Old goal', goal_short:'Old', goal_mode:'automatic', status:'active', archived:false, owner:{host_id:'host'}, repositories:{}, issues:[], prs:[], documents:[]};
+const stream = {id:'effort', title:'Work', title_mode:'automatic', goal:'Old goal', goal_short:'Old', goal_mode:'automatic', status:'active', archived:false, owner:{host_id:'host'}, repositories:{}, references:[]};
 const session = {id:sessionId('host','pi','native'),host_id:'host',stream_id:'effort',harness:'pi',harness_session_id:'native',title:'Lane',title_mode:'automatic',status:'active',state:'Old state',state_short:'Old',remaining:'Old remaining',checkout:null};
 const catalog = native => {
  const card = {...session,id:sessionId('host','pi',native),harness_session_id:native};
@@ -120,6 +120,29 @@ for(const auto of [false,true]) test(`reset respects manual fields unless explic
  assert.equal(writes.filter(input=>input.request.actor==='user').length,auto?2:0);
 }));
 
+test('reset replay uses frozen successful and unavailable location hints',async()=>temporary(async root=>{
+ const {inventory}=setup(root),catalog=inventory.samples[0].catalog;
+ catalog.checkouts=[{repository_url:'repo',checkout_id:'checkout',root:'/work'}];
+ catalog.document_locations=[{repository_url:'repo',path:'plan',checkout_id:'checkout',root:'/work',kind:'local',file:'/work/plan',error:null},{repository_url:'repo',path:'missing',checkout_id:null,root:null,kind:null,file:null,error:'Unavailable'}];
+ const expected=structuredClone({checkouts:catalog.checkouts,document_locations:catalog.document_locations});
+ const {capture}=captureSessions(inventory,join(root,'frozen-hints'));catalog.checkouts=[];catalog.document_locations=[];
+ const seen=[];const {run}=await replayCapture(capture,join(root,'frozen-hints'),runtime(async payload=>{const input=taskInput(payload);seen.push(input);return response({changes:{}});}),model,{kind:'reset',target:'session',auto:false},previewFixture(),new AbortController().signal);
+ assert.equal(run.samples[0].status,'completed');assert.deepEqual(seen[0].catalog.checkouts,expected.checkouts);assert.deepEqual(seen[0].catalog.document_locations,expected.document_locations);
+ assert.deepEqual(run.samples[0].before.checkouts,expected.checkouts);assert.deepEqual(run.samples[0].after.document_locations,expected.document_locations);
+}));
+test('partial reference replay completes with attention and full receipt, without add/drop notices',async()=>temporary(async root=>{
+ const {inventory}=setup(root),base=inventory.samples[0].catalog;
+ const dropped={name:'Retired',purpose:'Old',role:'dependency',state:'dropped',target:{kind:'link',url:'https://example.org/retired'},revision:'r1'};
+ const active={name:'Brief',purpose:'Old',role:'brief',state:'active',target:{kind:'issue',url:'https://example.org/brief'},revision:'r2'};
+ base.stream.references=[dropped,active];base.stream.title_mode='manual';base.stream.goal_mode='manual';
+ const {revision:_old,...restore}=dropped,{revision:_current,...update}=active;restore.state='active';update.purpose='Updated';
+ const {capture}=captureSessions(inventory,join(root,'partial'));
+ const preview=async input=>{const rows=input.request.changes.reference_changes,next=structuredClone(input.catalog);next.stream.references[1]={...update,revision:input.request.operation_id};return {catalog:next,receipt:{operation_id:input.request.operation_id,simulated:true,save:{local:'unchanged',domain:{outcome:'changes',reference_results:[{key:rows[0].key,action:'restore',outcome:'superseded',reason:'reference is Dropped; explicit restoration is required'},{key:rows[1].key,action:'update',outcome:'changes',reason:''}]}}}};};
+ const {run}=await replayCapture(capture,join(root,'partial'),runtime(async()=>response({changes:{},reference_proposals:[restore,update]})),model,{kind:'report',force:true},preview,new AbortController().signal);
+ const sample=run.samples[0];assert.equal(sample.status,'completed',sample.error);assert.equal(sample.after.stream.references[1].purpose,'Updated');
+ assert.deepEqual(sample.receipts[0].save.domain.reference_results.map(row=>row.outcome),['superseded','changes']);
+ assert.ok(sample.notices.some(text=>text.includes('Reference not applied:')));assert.ok(sample.notices.every(text=>!text.startsWith('Reference added:')&&!text.startsWith('Reference dropped:')));
+}));
 test('unattached trials simulate enrollment before ordered reporting and keep unavailable samples listed',async()=>temporary(async root=>{
  const {inventory}=setup(root,['native','missing']);
  const base=inventory.samples[0].catalog;base.stream=null;base.session=null;base.sessions=[];

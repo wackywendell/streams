@@ -30,16 +30,21 @@ above the Session recap, current Status and Remaining blocks. Omit empty text
 sections and keep lifecycle status distinct from native presence. Spare rows create
 quiet section breaks rather than pushing content off-screen for labels or the close hint.
 
-Documents use a responsive row-major grid. Prefer full paths before truncating a
-single column. Shortcut assignment stays stable across column layouts, but can
-change when references change. Only fully painted shortcuts are active; a resize
-or refresh invalidates old actions before new input can use them. Truncation and
-display labels must never change the opaque target.
+References appear in Document, PR, Issue and Link groups, preserving saved order
+within each group. A header shows saved name, role and state; wrapped purpose
+follows it. Fulfilled entries stay visible. Dropped entries have no normal-card
+row, action or overflow count.
 
-HTTP links use the terminal client's link gesture. Displayed issue/PR numbers are
-not removal identities. Keep exact URLs and full descriptions in records. This
-editor-first navigation avoids an agent-feedback channel that could accidentally
-address a replacement conversation; annotation integrations remain out of scope.
+Document letters and URL row numbers identify painted entries. Each block reserves
+a header and purpose row before spare purpose lines are allocated. The card keeps
+the longest prefix of whole blocks that fits and counts omitted entries once.
+A complete painted document key remains active when its descriptive text is
+clipped. A resize or refresh invalidates old actions before new input can use them.
+
+HTTP links use the terminal client's link gesture. Activation compares the full
+saved Reference, including revision and relationship fields, with current records
+before parsing its exact URL for the browser. Display labels and parsed URL
+spelling supply no identity. Annotation integrations remain out of scope.
 
 Resizing paints the current snapshot without waiting for I/O. That snapshot is
 display data, not authority to mutate or open something. Native and record events
@@ -58,10 +63,15 @@ rewriting each Session. The viewing Session's selection wins for that repository
 explicit defaults can supply other repositories. Missing or unbound selections
 remain visible errors, not permission to choose another checkout.
 
-A document identifies a Stream repository alias and relative path. Its optional
-commit and source Session are provenance, not a pin to old contents. The current
-card resolves only working files: it has no active source/revision chooser.
-A missing local file never deletes the portable reference.
+A document identifies its exact repository URL and portable relative path.
+Optional ref, commit and source Session hints support explicit recovery.
+The card opens current working files, including local edits. Missing files or
+unavailable checkout mappings leave the portable relationship intact.
+
+Display hints include established URLs from the viewing Session's registered
+checkout before any document is saved. A missing selection or valid plain directory
+permits explicit repository defaults; broken explicit selections remain unavailable.
+Diagnostic captures freeze the same hint arrays for deterministic replay.
 
 Before opening, revalidate the painted reference, viewing scope, selected root and
 canonical regular file. Reject traversal and escaping symlinks. Reuse an observed

@@ -1,6 +1,5 @@
 use std::collections::BTreeMap;
 
-use percent_encoding::percent_decode_str;
 use ratatui::{
     buffer::Buffer,
     layout::Rect,
@@ -14,6 +13,7 @@ use unicode_width::UnicodeWidthStr;
 use url::Url;
 
 use super::{CardSnapshot, Target};
+use crate::model::{Reference, ReferenceRole, ReferenceState, ReferenceTarget};
 
 pub(super) const DOCUMENT_KEYS: &str = "abcdefghijklmnoprstuvwxyz";
 const DIM: Style = Style::new().add_modifier(Modifier::DIM);
@@ -133,64 +133,8 @@ pub(super) fn buffer_line(buffer: &Buffer, y: u16) -> String {
 }
 
 pub(super) fn web_url(value: &str) -> Option<Url> {
-    if value.chars().any(|c| {
-        c.is_whitespace()
-            || c == '\\'
-            || matches!(
-                get_general_category(c),
-                GeneralCategory::Control | GeneralCategory::Format
-            )
-    }) {
-        return None;
-    }
-    // decodeURIComponent rejects malformed escapes and invalid UTF-8; percent_decode
-    // deliberately does not reject malformed escapes, so check the escape shape first.
-    let bytes = value.as_bytes();
-    for (i, &byte) in bytes.iter().enumerate() {
-        if byte == b'%'
-            && !(bytes.get(i + 1).is_some_and(u8::is_ascii_hexdigit)
-                && bytes.get(i + 2).is_some_and(u8::is_ascii_hexdigit))
-        {
-            return None;
-        }
-    }
-    let decoded = percent_decode_str(value).decode_utf8().ok()?;
-    if decoded.chars().any(|c| {
-        matches!(
-            get_general_category(c),
-            GeneralCategory::Control | GeneralCategory::Format
-        )
-    }) {
-        return None;
-    }
-    let url = Url::parse(value).ok()?;
-    (matches!(url.scheme(), "http" | "https") && url.host_str().is_some()).then_some(url)
+    crate::model::reference_url(value)
 }
-fn artifact_number(url: &Url, pr: bool) -> Option<&str> {
-    let parts: Vec<_> = url.path_segments()?.collect();
-    let kind = if pr { "merge_requests" } else { "issues" };
-    let index = if parts.len() >= 4
-        && !parts[0].is_empty()
-        && !parts[1].is_empty()
-        && (parts[2] == "issues" && !pr || pr && matches!(parts[2], "pull" | "pulls"))
-    {
-        2
-    } else {
-        // GitLab permits nested groups and suffix paths after the artifact number.
-        let project_end = parts.windows(2).position(|pair| pair == ["-", kind])?;
-        if project_end == 0 || parts[..project_end].iter().any(|part| part.is_empty()) {
-            return None;
-        }
-        project_end + 1
-    };
-    if parts[index] != kind && !(pr && matches!(parts[index], "pull" | "pulls")) {
-        return None;
-    }
-    let number = *parts.get(index + 1)?;
-    (!number.starts_with('0') && !number.is_empty() && number.bytes().all(|b| b.is_ascii_digit()))
-        .then_some(number)
-}
-
 #[derive(Clone)]
 struct Entry {
     label: String,
@@ -212,7 +156,7 @@ enum Row {
     },
     Link {
         label: String,
-        url: Option<Url>,
+        reference: Option<Reference>,
         index: usize,
     },
 }
@@ -228,101 +172,107 @@ impl Row {
 pub(super) struct Rendering {
     pub buffer: Buffer,
     pub documents: BTreeMap<char, Target>,
-    pub links: Vec<(usize, Url, Rect)>,
+    pub links: Vec<(usize, Reference, Rect)>,
 }
 
-fn root_labels(roots: &[&str]) -> Vec<String> {
-    let parts: Vec<_> = roots
+struct ReferenceBlock {
+    header: Row,
+    purpose: Vec<String>,
+}
+
+fn reference_blocks(snapshot: &CardSnapshot, width: usize) -> Vec<ReferenceBlock> {
+    let visible: Vec<_> = snapshot
+        .stream()
+        .references
         .iter()
-        .map(|root| {
-            root.split('/')
-                .filter(|s| !s.is_empty())
-                .collect::<Vec<_>>()
+        .filter(|r| r.state != ReferenceState::Dropped)
+        .collect();
+    let repositories: std::collections::BTreeSet<_> = visible
+        .iter()
+        .filter_map(|r| match &r.target {
+            ReferenceTarget::Document(d) => Some(&d.repository_url),
+            _ => None,
         })
         .collect();
-    let mut depths = vec![1; roots.len()];
-    loop {
-        let labels: Vec<_> = parts
-            .iter()
-            .zip(&depths)
-            .zip(roots)
-            .map(|((parts, &depth), root)| {
-                if depth > parts.len() {
-                    root.to_string()
-                } else {
-                    parts[parts.len() - depth..].join("/")
-                }
-            })
-            .collect();
-        let collisions: Vec<_> = (0..roots.len())
-            .filter(|&i| (0..roots.len()).any(|j| i != j && labels[i] == labels[j]))
-            .collect();
-        if collisions.is_empty() {
-            return labels;
-        }
-        for i in collisions {
-            depths[i] += 1;
-        }
-    }
-}
-
-fn document_entries(snapshot: &CardSnapshot) -> Vec<Entry> {
-    let mut roots = Vec::new();
-    for binding in &snapshot.context.checkouts {
-        let root = binding
-            .selection
-            .root
-            .to_str()
-            .expect("validated UTF-8 checkout");
-        if !roots.contains(&root) {
-            roots.push(root);
-        }
-    }
-    let labels = root_labels(&roots);
-    snapshot
-        .stream()
-        .documents
-        .iter()
-        .enumerate()
-        .map(|(index, doc)| {
-            let target = snapshot.target(doc);
-            let root = target.location.selection().and_then(|s| s.root.to_str());
-            let qualifier = if snapshot.stream().repositories.len() > 1 || roots.len() > 1 {
-                if let Some(root) = root {
-                    let label = &labels[roots
-                        .iter()
-                        .position(|&r| r == root)
-                        .expect("validated binding")];
-                    if snapshot.context.checkouts.iter().any(|b| {
-                        b.repository != doc.repository && b.selection.root.to_str() == Some(root)
-                    }) {
-                        format!("{}:{label}", doc.repository)
-                    } else {
-                        label.clone()
-                    }
-                } else {
-                    doc.repository.clone()
-                }
-            } else {
-                String::new()
+    let viewing_url = snapshot
+        .session()
+        .checkout
+        .as_ref()
+        .and_then(|c| c.repository_url.as_deref());
+    let mut blocks = Vec::new();
+    let mut document_index = 0;
+    let mut url_index = 0;
+    for group in 0..4 {
+        for reference in &visible {
+            let (kind, order) = match &reference.target {
+                ReferenceTarget::Document(_) => ("Document", 0),
+                ReferenceTarget::Pr { .. } => ("PR", 1),
+                ReferenceTarget::Issue { .. } => ("Issue", 2),
+                ReferenceTarget::Link { .. } => ("Link", 3),
             };
-            let qualifier = if qualifier.is_empty() || qualifier == "/" {
-                String::new()
-            } else {
-                qualifier + "/"
-            };
-            let added = doc
-                .commit
-                .as_deref()
-                .map(|s| format!(" (added {})", s.chars().take(8).collect::<String>()))
-                .unwrap_or_default();
-            Entry {
-                label: plain(&format!("{qualifier}{}{added}", doc.path)),
-                target: Target::Document(Box::new(target)),
-                key: DOCUMENT_KEYS.chars().nth(index),
+            if order != group {
+                continue;
             }
-        })
-        .collect()
+            let role = match reference.role {
+                ReferenceRole::Deliverable => "Deliverable",
+                ReferenceRole::Dependency => "Dependency",
+                ReferenceRole::Brief => "Brief",
+                ReferenceRole::Background => "Background",
+            };
+            let state = match reference.state {
+                ReferenceState::Active => "Active",
+                ReferenceState::Fulfilled => "Fulfilled",
+                ReferenceState::Dropped => unreachable!(),
+            };
+            let qualifier = match &reference.target {
+                ReferenceTarget::Document(d)
+                    if repositories.len() > 1 || viewing_url != Some(d.repository_url.as_str()) =>
+                {
+                    format!(" ({})", d.repository_url)
+                }
+                _ => String::new(),
+            };
+            let label = plain(&format!(
+                "{kind} {}{qualifier} · {role} · {state}",
+                reference.name
+            ));
+            let header = match &reference.target {
+                ReferenceTarget::Document(_) => {
+                    let key = DOCUMENT_KEYS.chars().nth(document_index);
+                    document_index += 1;
+                    Row::Documents {
+                        entries: vec![Entry {
+                            label,
+                            key,
+                            target: Target::Document(Box::new(snapshot.target(reference))),
+                        }],
+                        widths: vec![width],
+                    }
+                }
+                ReferenceTarget::Pr { url }
+                | ReferenceTarget::Issue { url }
+                | ReferenceTarget::Link { url } => {
+                    url_index += 1;
+                    Row::Link {
+                        label: format!("[{url_index}] {label}"),
+                        reference: web_url(url).map(|_| (*reference).clone()),
+                        index: url_index,
+                    }
+                }
+            };
+            let purpose_text = plain(&reference.purpose);
+            let mut purpose = wrap(
+                &purpose_text,
+                width.saturating_sub(4).max(1),
+                purpose_text.len().saturating_add(1).min(u16::MAX as usize),
+            );
+            if purpose.is_empty() {
+                purpose.push(String::new());
+            }
+            blocks.push(ReferenceBlock { header, purpose });
+        }
+    }
+    blocks
 }
 
 pub(super) fn render(
@@ -350,11 +300,20 @@ pub(super) fn render(
     };
     let mut rows = Vec::new();
     if let Some(snapshot) = snapshot.filter(|_| content_height > 0) {
-        let documents = document_entries(snapshot);
+        let blocks = reference_blocks(snapshot, width);
+        let document_count = snapshot
+            .stream()
+            .references
+            .iter()
+            .filter(|r| {
+                r.state != ReferenceState::Dropped
+                    && matches!(r.target, ReferenceTarget::Document(_))
+            })
+            .count();
         let artifacts = crate::artifacts::summaries(snapshot.session(), &snapshot.stream().id);
         let mut entries = Vec::new();
         for artifact in artifacts {
-            let key = DOCUMENT_KEYS.chars().nth(documents.len() + entries.len());
+            let key = DOCUMENT_KEYS.chars().nth(document_count + entries.len());
             entries.push(Entry {
                 label: plain(&artifact.key.name),
                 target: Target::Artifact(Box::new(artifact)),
@@ -363,13 +322,11 @@ pub(super) fn render(
         }
         let mut columns = 1;
         let mut widths = vec![width];
-        for count in (2..=documents.len().max(entries.len()).min((width + 2) / 2)).rev() {
+        for count in (2..=entries.len().min((width + 2) / 2)).rev() {
             let mut candidate = vec![0; count];
-            for group in [&documents, &entries] {
-                for (i, entry) in group.iter().enumerate() {
-                    let length = cells(&entry.label) + if entry.key.is_some() { 4 } else { 0 };
-                    candidate[i % count] = candidate[i % count].max(length);
-                }
+            for (i, entry) in entries.iter().enumerate() {
+                let length = cells(&entry.label) + if entry.key.is_some() { 4 } else { 0 };
+                candidate[i % count] = candidate[i % count].max(length);
             }
             if candidate.iter().sum::<usize>() + 2 * (count - 1) <= width {
                 columns = count;
@@ -377,41 +334,7 @@ pub(super) fn render(
                 break;
             }
         }
-        let artifact_start = documents.len().div_ceil(columns);
-        let artifact_rows = artifact_start..artifact_start + entries.len().div_ceil(columns);
-        let mut references = Vec::new();
-        for group in [&documents, &entries] {
-            references.extend(group.chunks(columns).map(|entries| Row::Documents {
-                entries: entries.to_vec(),
-                widths: widths.clone(),
-            }));
-        }
-        for (index, (link, pr)) in snapshot
-            .stream()
-            .issues
-            .iter()
-            .map(|l| (l, false))
-            .chain(snapshot.stream().prs.iter().map(|l| (l, true)))
-            .enumerate()
-        {
-            let url = web_url(&link.url);
-            let number = url
-                .as_ref()
-                .and_then(|url| artifact_number(url, pr))
-                .map(|n| format!(" #{n}"))
-                .unwrap_or_default();
-            let kind = if pr { "PR" } else { "Issue" };
-            let description = if link.description.is_empty() {
-                &link.url
-            } else {
-                &link.description
-            };
-            references.push(Row::Link {
-                label: plain(&format!("[{}] {kind}{number}: {description}", index + 1)),
-                url,
-                index: index + 1,
-            });
-        }
+        let minimum_height = blocks.len() * 2 + entries.len().div_ceil(columns);
         let status = snapshot.session().status;
         let (symbol, style) = match status {
             crate::model::Status::Active => ("●", CYAN),
@@ -438,19 +361,17 @@ pub(super) fn render(
                 sections.push((label, body, false));
             }
         }
-        let mut budget = if references.is_empty() || content_height < 2 {
+        let mut budget = if minimum_height == 0 || content_height < 2 {
             content_height
         } else {
-            content_height.div_ceil(2).min(
-                content_height
-                    .saturating_sub(references.len().min(2))
-                    .max(1),
-            )
+            content_height
+                .div_ceil(2)
+                .min(content_height.saturating_sub(minimum_height.min(2)).max(1))
         };
         budget = budget.max(
             sections
                 .len()
-                .min(content_height.saturating_sub(references.len().min(2))),
+                .min(content_height.saturating_sub(minimum_height.min(2))),
         );
         let mut goal_end = 0;
         let mut work_end = 0;
@@ -520,11 +441,12 @@ pub(super) fn render(
             }
         }
         let slots = content_height - rows.len();
-        // Descriptions use spare rows without shortening the progress above.
-        if references.len() - artifact_rows.len() + entries.len() <= slots {
-            references.splice(
-                artifact_rows,
-                entries.into_iter().map(|mut entry| {
+        // Select whole minimum blocks before assigning purpose continuation.
+        let descriptions = blocks.len() * 2 + entries.len() <= slots;
+        let artifact_rows: Vec<_> = if descriptions {
+            entries
+                .into_iter()
+                .map(|mut entry| {
                     if let Target::Artifact(artifact) = &entry.target {
                         entry.label =
                             plain(&format!("{}: {}", artifact.key.name, artifact.description));
@@ -533,14 +455,50 @@ pub(super) fn render(
                         entries: vec![entry],
                         widths: vec![width],
                     }
-                }),
-            );
+                })
+                .collect()
+        } else {
+            entries
+                .chunks(columns)
+                .map(|entries| Row::Documents {
+                    entries: entries.to_vec(),
+                    widths: widths.clone(),
+                })
+                .collect()
+        };
+        let minimum = blocks.len() * 2 + artifact_rows.len();
+        let available = slots.saturating_sub(usize::from(minimum > slots));
+        let selected_references = blocks.len().min(available / 2);
+        let selected_artifacts = if selected_references == blocks.len() {
+            artifact_rows.len().min(available - selected_references * 2)
+        } else {
+            0
+        };
+        let mut spare = available - selected_references * 2 - selected_artifacts;
+        let hidden = blocks.len() - selected_references
+            + artifact_rows[selected_artifacts..]
+                .iter()
+                .map(Row::items)
+                .sum::<usize>();
+        for block in blocks.into_iter().take(selected_references) {
+            rows.push(block.header);
+            let count = block.purpose.len().min(1 + spare);
+            spare -= count - 1;
+            let truncated = count < block.purpose.len();
+            for (index, mut purpose) in block.purpose.into_iter().take(count).enumerate() {
+                if truncated && index + 1 == count {
+                    purpose = prefix(&purpose, width.saturating_sub(4).max(1).saturating_sub(1))
+                        .trim_end()
+                        .to_owned()
+                        + "…";
+                }
+                rows.push(Row::Text(
+                    format!("{}{purpose}", " ".repeat(width.min(4))),
+                    Style::new(),
+                ));
+            }
         }
-        let visible = references
-            .len()
-            .min(slots.saturating_sub(usize::from(references.len() > slots)));
-        let hidden = references[visible..].iter().map(Row::items).sum::<usize>();
-        rows.extend(references.into_iter().take(visible));
+        rows.extend(artifact_rows.into_iter().take(selected_artifacts));
         if hidden > 0 && rows.len() < content_height {
             rows.push(Row::Text(format!("… {hidden} more; enlarge pane"), DIM));
         }
@@ -621,12 +579,7 @@ pub(super) fn render(
                                 DIM,
                             )
                         } else {
-                            (
-                                CYAN,
-                                label.rfind('/').map_or(0, |i| i + 1),
-                                DIM,
-                                Style::new(),
-                            )
+                            (CYAN, 0, CYAN, CYAN)
                         };
                     let split = boundary(&label, split);
                     if !key.is_empty() && key_label == key {
@@ -642,14 +595,20 @@ pub(super) fn render(
                     offset += widths[column] + 2;
                 }
             }
-            Row::Link { label, url, index } => {
+            Row::Link {
+                label,
+                reference,
+                index,
+            } => {
                 let text = fit(&label, room);
                 if !text.is_empty()
-                    && let Some(url) = url
+                    && let Some(reference) = reference
                 {
-                    result
-                        .links
-                        .push((index, url, Rect::new(area.x, y, cells(&text) as u16, 1)));
+                    result.links.push((
+                        index,
+                        reference,
+                        Rect::new(area.x, y, cells(&text) as u16, 1),
+                    ));
                 }
                 spans.push(Span::styled(text, CYAN));
             }

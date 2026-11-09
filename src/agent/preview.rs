@@ -146,6 +146,7 @@ fn simulated(domain: Value) -> Value {
 fn apply(snapshot: &mut Snapshot, source: &str) -> Result<Value, ValidationError> {
     snapshot.require_local()?;
     let update = parse_record_update(source, &snapshot.source, snapshot.defaults)?;
+    let mut reference_domain = None;
     let decision = match &update.edit {
         CapturedEdit::Session(edit) => {
             let current = snapshot
@@ -179,7 +180,7 @@ fn apply(snapshot: &mut Snapshot, source: &str) -> Result<Value, ValidationError
             }
             edit.apply(current, snapshot.session.as_ref(), snapshot.defaults.stream)
         }
-        CapturedEdit::Documents(edit) => {
+        CapturedEdit::References(edit) => {
             let current = snapshot
                 .stream
                 .as_ref()
@@ -187,13 +188,18 @@ fn apply(snapshot: &mut Snapshot, source: &str) -> Result<Value, ValidationError
                 .ok_or_else(|| {
                     ValidationError::new("captured target does not match supplied context")
                 })?;
-            edit.apply(current, snapshot.session.as_ref())
+            let result = edit.apply(current, snapshot.session.as_ref())?;
+            reference_domain = Some(Value::Object(result.domain()));
+            result.reconciliation
         }
     };
-    let save = simulated(
-        json!({"operation_id":update.operation_id(),"outcome":decision.outcome(),
-        "conflicts":decision.conflicts(),"reason":decision.reason()}),
-    );
+    let is_reference = reference_domain.is_some();
+    let mut domain = reference_domain.unwrap_or_else(|| {
+        json!({"outcome":decision.outcome(),
+        "conflicts":decision.conflicts(),"reason":decision.reason()})
+    });
+    domain["operation_id"] = json!(update.operation_id());
+    let save = simulated(domain);
     match decision {
         Reconciliation::Changes { record, .. } => match *record {
             Record::Session(session) => snapshot.session = Some(session),
@@ -202,13 +208,15 @@ fn apply(snapshot: &mut Snapshot, source: &str) -> Result<Value, ValidationError
         },
         Reconciliation::NoChange { .. } => {}
         Reconciliation::Conflict { reason, .. } | Reconciliation::Superseded { reason, .. } => {
-            return Err(ValidationError::new(reason));
+            if !is_reference {
+                return Err(ValidationError::new(reason));
+            }
         }
     }
     let mut receipt = json!({"simulated":true,"local":"unchanged","operation_id":update.operation_id(),"save":save});
     match &update.edit {
         CapturedEdit::Session(_) => receipt["session"] = json!(snapshot.session),
-        CapturedEdit::Stream(_) | CapturedEdit::Documents(_) => {
+        CapturedEdit::Stream(_) | CapturedEdit::References(_) => {
             receipt["stream"] = json!(snapshot.stream)
         }
     }

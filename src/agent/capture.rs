@@ -198,6 +198,7 @@ pub fn capture_inputs(
     defaults: TitleDefaults,
     locations: &DirectoryBindings,
     roots: &ConversationRoots,
+    document_hints: impl Fn(&Stream, &Session) -> Value,
 ) -> Result<Value, ValidationError> {
     let host = opened.host().as_str();
     check_text(opened.source_id(), "catalog_source", false)?;
@@ -355,7 +356,14 @@ pub fn capture_inputs(
             (None,Some("no retained exact transcript locator; enroll the conversation before replaying".into()))
         };
         let locations: Vec<_> = agents.iter().map(|agent| json!({"workspace_id":agent.agent.workspace_id,"tab_id":agent.agent.tab_id,"pane_id":agent.agent.pane_id,"terminal_id":agent.agent.terminal_id})).collect();
-        samples.push(json!({"host_id":host,"harness":"pi","native_session_id":id,"open":true,"locations":locations,"catalog":context,"transcript_file":transcript,"unavailable":unavailable}));
+        let hints = match (&context.stream, &context.session) {
+            (Some(stream), Some(session)) => document_hints(stream, session),
+            _ => json!({"checkouts":[],"document_locations":[]}),
+        };
+        let mut catalog = serde_json::to_value(&context).expect("typed capture context");
+        catalog["checkouts"] = hints["checkouts"].clone();
+        catalog["document_locations"] = hints["document_locations"].clone();
+        samples.push(json!({"host_id":host,"harness":"pi","native_session_id":id,"open":true,"locations":locations,"catalog":catalog,"transcript_file":transcript,"unavailable":unavailable}));
     }
     result["samples"] = json!(samples);
     result["unsupported"] = json!(unsupported);

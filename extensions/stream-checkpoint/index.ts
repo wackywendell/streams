@@ -12,7 +12,7 @@ import { executeLab } from "./lab.ts";
 import { registerLabTools } from "./lab-tools.ts";
 import { registerArtifactTool } from "./artifacts.ts";
 import { SessionScope, captureInputs, hasConversation } from "./session-scope.ts";
-import { editRequest } from "./core.ts";
+import { editRequest, ReferenceEdit, referenceRequest, referenceSelector } from "./core.ts";
 import { namingCompletions, parseNamingEdit, saveNamingEdit, savePiNameEdit } from "./naming.ts";
 import { loadSettings, saveSettings, settingsDialog } from "./settings.ts";
 import type { ReportingSettings } from "./settings.ts";
@@ -90,7 +90,8 @@ export default function registerWorkCard(pi: ExtensionAPI, options: Options = {}
   statusTimer.unref?.();
  };
  const reporter = new Reporter({
-  scope, cli, settings, logging, prepare: () => native?.start(), infer: options.infer, notice: warning, receipt,
+  scope, cli, settings, logging, prepare: () => native?.start(), infer: options.infer,
+  notice: (text, level) => scope.context?.ui.notify(`Streams — ${text}`, level ?? "warning"), receipt,
   activity: (text, completed) => {
    clearStatusTimer();
    if (text) scope.context?.ui.setStatus("stream-reporting", `Streams · ${text}`);
@@ -140,11 +141,22 @@ export default function registerWorkCard(pi: ExtensionAPI, options: Options = {}
      if (!capture.valid()) return;
      if (typeof response.reply !== "string") throw Error("Discussion model did not return a typed reply");
      const edit = response.edit;
-     const request = edit ? editRequest(catalog, edit.kind, edit.changes, edit.actor, operation) : undefined;
+     if (edit?.kind === "references" && state.referenceEdits?.size) throw Error("Finish or discard retained reference edits before applying discussion reference changes.");
+     const request = !edit ? undefined : edit.kind === "references" ? referenceRequest(catalog, edit.actor, edit.changes, operation) : editRequest(catalog, edit.kind, edit.changes, edit.actor, operation);
      if (!await capture.attached()) return;
      if (request) {
       const value = await client.apply(request);
-      if (fence.live()) receipt(value);
+      if (fence.live()) {
+       receipt(value);
+       if (edit?.kind === "references") {
+        const saves = value.saves?.map(item => item.save) ?? (value.save ? [value.save] : []);
+        for (const save of saves) for (const row of save.domain?.reference_results ?? []) {
+         if (row.outcome !== "conflict" && row.outcome !== "superseded") continue;
+         const draft = edit.changes.find(item => referenceSelector(item.key) === referenceSelector(row.key));
+         if (draft) (state.referenceEdits ??= new Map()).set(referenceSelector(draft.key), new ReferenceEdit(catalog, draft.key, edit.actor, draft.desired));
+        }
+       }
+      }
       if (!capture.valid()) return;
       if (!receiptCanContinue(value)) throw Error("Discussion edit did not complete; input and save receipt retained. Inspect save and publication outcomes before another write.");
      }

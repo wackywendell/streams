@@ -7,7 +7,7 @@ use serde::{Serialize, de::DeserializeOwned};
 use serde_json::json;
 use streams::{
     codec::record_from_data,
-    model::{NamingMode, RecordKind, Status, TitleMode},
+    model::{NamingMode, RecordKind, ReferenceRole, ReferenceState, Status, TitleMode},
     operations::{Actor, DomainOutcome},
     runtime::conversations::{Harness, NativeIdentityKind},
     sync::outcomes::{LocalStatus, SharingStatus},
@@ -81,6 +81,21 @@ fn domain_enums_have_one_strict_wire_spelling() {
 }
 
 #[test]
+fn reference_roles_and_states_have_one_strict_wire_spelling() {
+    roundtrip(&[
+        (ReferenceRole::Deliverable, "deliverable"),
+        (ReferenceRole::Dependency, "dependency"),
+        (ReferenceRole::Brief, "brief"),
+        (ReferenceRole::Background, "background"),
+    ]);
+    roundtrip(&[
+        (ReferenceState::Active, "active"),
+        (ReferenceState::Fulfilled, "fulfilled"),
+        (ReferenceState::Dropped, "dropped"),
+    ]);
+}
+
+#[test]
 fn native_enums_require_string_wire_values() {
     roundtrip(&[
         (Harness::Pi, "pi"),
@@ -121,8 +136,7 @@ fn invalid_enum_fields_are_rejected_at_record_decode() {
             json!(true),
             json!(10),
         ] {
-            let mut wire =
-                json!({"id": "work", "title": "Work", "goal": null, "owner": {"host_id": "host"}});
+            let mut wire = json!({"id": "work", "title": "Work", "goal": null, "owner": {"host_id": "host"}, "references":[]});
             wire[field] = invalid;
             assert!(
                 record_from_data(RecordKind::Stream, &wire).is_err(),

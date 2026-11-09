@@ -563,225 +563,700 @@ fn manual_stream_edit_has_no_session_dependency_even_after_membership_changes() 
     );
 }
 
-fn document_wire(before: &Stream, paths: &[&str]) -> Value {
-    json!({"version":2,"title_default":"automatic","catalog_source":"source","operation_id":"documents","kind":"stream","actor":"automatic","before":before,"changes":{"document_additions":paths.iter().map(|path| json!({"repository":"repo","ref":"main","path":path,"description":"Design"})).collect::<Vec<_>>()},"inputs":[{"kind":"session","record":session()}]})
+fn reference_value(url: &str) -> Value {
+    json!({"name":"Design","purpose":"Guide work","role":"brief","state":"active",
+        "target":{"kind":"link","url":url}})
 }
-fn document_stream() -> Stream {
-    let mut stream = stream("a");
-    stream.repositories.insert(
-        "repo".into(),
-        streams::model::Repository::new("https://example.test/repo").unwrap(),
-    );
-    stream
+fn reference(url: &str, revision: &str) -> streams::model::Reference {
+    let mut value = reference_value(url);
+    value["revision"] = json!(revision);
+    serde_json::from_value(value).unwrap()
+}
+fn reference_wire(before: &Stream, actor: &str, changes: Value) -> Value {
+    json!({"version":2,"title_default":"automatic","catalog_source":"source","operation_id":"references","kind":"stream","actor":actor,"before":before,
+        "changes":{"reference_changes":changes},
+        "inputs":if actor=="automatic" {json!([{"kind":"session","record":session()}])} else {json!([])}})
+}
+fn set_row(url: &str, desired: Value) -> Value {
+    json!({"key":{"kind":"url","url":url},"desired":desired,"next_revision":"references"})
+}
+fn doc_row() -> Value {
+    json!({"key":{"kind":"document","repository_url":"git@example.test:repo","path":"docs/design.md"},
+        "desired":{"name":"Design","purpose":"Guide work","role":"brief","state":"active",
+            "target":{"kind":"document","repository_url":"git@example.test:repo","path":"docs/design.md"}},
+        "next_revision":"references"})
+}
+fn saved_stream(save: &streams::storage::records::RecordSave) -> Stream {
+    let Record::Stream(stream) = &save.current.record else {
+        unreachable!()
+    };
+    stream.clone()
 }
 
 #[test]
-fn document_additions_persist_without_a_ref_or_portable_session_checkout() {
-    for null in [false, true] {
-        let directory = tempfile::tempdir().unwrap();
-        let store = setup(directory.path());
-        let before = document_stream();
-        put_with_id(&store, Record::Stream(before.clone()), "before");
-        assert!(session().checkout.is_none());
-        let mut request = document_wire(&before, &["docs/design.md"]);
-        if null {
-            request["changes"]["document_additions"][0]["ref"] = Value::Null;
-        } else {
-            request["changes"]["document_additions"][0]
-                .as_object_mut()
-                .unwrap()
-                .remove("ref");
+fn reference_documents_assign_and_preserve_recovery_without_aliases() {
+    for explicit in [false, true] {
+        for matching_checkout in [false, true] {
+            let directory = tempfile::tempdir().unwrap();
+            let store = setup(directory.path());
+            let before = stream("a");
+            let mut captured = session();
+            if matching_checkout {
+                let mut checkout =
+                    streams::model::Checkout::new("repo", "checkout-ref", ".").unwrap();
+                checkout.repository_url = Some("git@example.test:repo".into());
+                captured.checkout = Some(checkout);
+            }
+            put_with_id(&store, Record::Session(captured.clone()), "checkout");
+            let mut row = doc_row();
+            if explicit {
+                row["desired"]["target"]["ref"] = json!("explicit");
+            }
+            let mut request = reference_wire(&before, "automatic", json!([row]));
+            request["inputs"][0]["record"] = json!(captured);
+            let saved = update(&store, &request);
+            let current = saved_stream(&saved);
+            let streams::model::ReferenceTarget::Document(document) = &current.references[0].target
+            else {
+                unreachable!()
+            };
+            assert_eq!(
+                document.r#ref.as_deref(),
+                if explicit {
+                    Some("explicit")
+                } else if matching_checkout {
+                    Some("checkout-ref")
+                } else {
+                    None
+                }
+            );
+            assert_eq!(document.commit, None);
+            assert_eq!(
+                document.source_session_id.as_deref(),
+                Some(session().id.as_str())
+            );
+            let mut before = current.clone();
+            let streams::model::ReferenceTarget::Document(document) =
+                &mut before.references[0].target
+            else {
+                unreachable!()
+            };
+            document.commit = Some("verified".into());
+            document.source_session_id = None;
+            let preserved_ref = document.r#ref.clone();
+            put_with_id(&store, Record::Stream(before.clone()), "recovery");
+            let mut row = doc_row();
+            row["desired"]["purpose"] = json!("Changed purpose");
+            row["next_revision"] = json!("update-document");
+            let mut request = reference_wire(&before, "automatic", json!([row]));
+            request["operation_id"] = json!("update-document");
+            request["inputs"][0]["record"] = json!(captured);
+            let next = saved_stream(&update(&store, &request));
+            let streams::model::ReferenceTarget::Document(next) = &next.references[0].target else {
+                unreachable!()
+            };
+            assert_eq!(next.commit.as_deref(), Some("verified"));
+            assert_eq!(next.source_session_id, None);
+            assert_eq!(next.r#ref, preserved_ref);
         }
-        let saved = update(&store, &request);
-        let Record::Stream(stream) = &saved.current.record else {
-            unreachable!()
-        };
-        assert_eq!(stream.documents[0].r#ref, None);
-        assert_eq!(stream.documents[0].path, "docs/design.md");
-        assert_eq!(
-            stream.documents[0].source_session_id.as_deref(),
-            Some(session().id.as_str())
-        );
-        let retried = update(&store, &request);
-        assert!(retried.repeated);
-        assert_eq!(retried.current.record, saved.current.record);
     }
 }
 
 #[test]
-fn document_additions_preserve_current_links_and_ignore_unrelated_session_progress() {
+fn partial_reference_save_preserves_stale_and_dropped_rows_and_accepts_independent_changes() {
     let directory = tempfile::tempdir().unwrap();
     let store = setup(directory.path());
-    let before = document_stream();
-    put_with_id(&store, Record::Stream(before.clone()), "before");
-    let request = document_wire(&before, &["docs/new.md", "docs/new.md"]);
-    // The report's own Session save and another Session's reading-list additions are independent.
+    let mut before = stream("a");
+    before.references = vec![
+        reference("https://example.test/a", "old"),
+        reference("https://example.test/dropped", "drop"),
+    ];
+    before.references[1].state = streams::model::ReferenceState::Dropped;
+    let mut current = before.clone();
+    current.references[0].purpose = "Outside edit with unchanged token".into();
+    current
+        .references
+        .push(reference("https://example.test/unrelated", "outside"));
+    put_with_id(&store, Record::Stream(current.clone()), "current");
     update(
         &store,
         &wire("progress", &session(), "automatic", "Working"),
     );
-    let mut current = before.clone();
-    current.documents.push(
-        streams::model::Document::new(
-            "repo",
-            "other",
-            "docs/concurrent.md",
-            "Keep",
-            Some("commit".into()),
-        )
-        .unwrap(),
-    );
-    put_with_id(&store, Record::Stream(current.clone()), "current");
-    let events = Arc::new(Mutex::new(Vec::new()));
-    let observed = events.clone();
-    let store = store.with_io_observer(move |event| observed.lock().unwrap().push(event));
-    let result = update(&store, &request);
-    let Record::Stream(saved) = &result.current.record else {
-        unreachable!()
-    };
-    assert_eq!(saved.documents.len(), 2);
-    assert_eq!(saved.documents[0], current.documents[0]);
-    assert_eq!(saved.documents[1].path, "docs/new.md");
-    assert_eq!(
-        saved.documents[1].source_session_id.as_deref(),
-        Some(session().id.as_str())
-    );
-    assert_eq!(saved.documents[1].commit, None);
-    let target = RecordAddress::new("host", RecordKind::Stream, "a").unwrap();
-    let dependency = RecordAddress::new("host", RecordKind::Session, session().id).unwrap();
-    assert_eq!(
-        record_io::accesses(&events.lock().unwrap()),
-        vec![
-            RecordIoEvent::Lock(directory.path().join(".catalog.lock")),
-            RecordIoEvent::Read(directory.path().join(".catalog-local/records.json")),
-            RecordIoEvent::Read(
-                directory
-                    .path()
-                    .join(relative_record_path(&target).unwrap())
+    let request = reference_wire(
+        &before,
+        "automatic",
+        json!([
+            set_row(
+                "https://example.test/a",
+                reference_value("https://example.test/a")
             ),
-            RecordIoEvent::Read(
-                directory
-                    .path()
-                    .join(relative_record_path(&dependency).unwrap())
+            set_row(
+                "https://example.test/dropped",
+                reference_value("https://example.test/dropped")
             ),
-        ]
-    );
-    let writes = record_io::writes(&events.lock().unwrap());
-    assert_eq!(writes.len(), 1);
-    assert_eq!(
-        writes[0].0,
-        directory
-            .path()
-            .join(relative_record_path(&target).unwrap())
-    );
-    assert!(update(&store, &request).repeated);
-    let mut fresh = request.clone();
-    fresh["operation_id"] = json!("documents-again");
-    assert_eq!(update(&store, &fresh).outcome["outcome"], "no-change");
-}
-
-#[test]
-fn document_additions_do_not_restore_removed_links_or_overwrite_a_concurrent_description() {
-    let directory = tempfile::tempdir().unwrap();
-    let store = setup(directory.path());
-    let mut before = document_stream();
-    before.documents.push(
-        streams::model::Document::new("repo", "old", "docs/removed.md", "Old", None).unwrap(),
-    );
-    let request = document_wire(&before, &["docs/removed.md", "docs/new.md"]);
-    let mut current = document_stream();
-    current.documents.push(
-        streams::model::Document::new(
-            "repo",
-            "manual",
-            "docs/new.md",
-            "Human description",
-            Some("verified".into()),
-        )
-        .unwrap(),
-    );
-    put_with_id(&store, Record::Stream(current.clone()), "current");
-    let result = update(&store, &request);
-    assert_eq!(result.outcome["outcome"], "no-change");
-    assert_eq!(result.current.record, Record::Stream(current));
-}
-
-#[test]
-fn document_additions_reject_moves_including_return_to_the_original_stream() {
-    for returned in [false, true] {
-        let directory = tempfile::tempdir().unwrap();
-        let store = setup(directory.path());
-        let before = document_stream();
-        put_with_id(&store, Record::Stream(before.clone()), "before");
-        let request = document_wire(&before, &["docs/new.md"]);
-        move_session_observed(
-            &store,
-            "move",
-            &MoveIntent::new("host", "pi", "native", "b").unwrap(),
-        )
-        .unwrap();
-        if returned {
-            move_session_observed(
-                &store,
-                "return",
-                &MoveIntent::new("host", "pi", "native", "a").unwrap(),
+            set_row(
+                "https://example.test/new",
+                reference_value("https://example.test/new")
             )
-            .unwrap();
+        ]),
+    );
+    let first = update(&store, &request);
+    assert_eq!(first.outcome["outcome"], "changes");
+    assert_eq!(first.outcome["conflicts"], json!([]));
+    assert_eq!(first.outcome["reason"], "");
+    let rows = &first.outcome["reference_results"];
+    assert_eq!(rows[0]["outcome"], "superseded");
+    assert_eq!(rows[0]["reason"], "reference changed since capture");
+    assert_eq!(rows[1]["outcome"], "superseded");
+    assert_eq!(rows[1]["action"], "restore");
+    assert_eq!(rows[2]["outcome"], "changes");
+    assert_eq!(rows[2]["action"], "add");
+    let saved = saved_stream(&first);
+    assert_eq!(saved.references[..3], current.references);
+    assert_eq!(saved.references[3].revision, "references");
+    let replay = update(&store, &request);
+    assert!(replay.repeated);
+    assert_eq!(replay.outcome, first.outcome);
+}
+
+#[test]
+fn reference_roles_states_kind_changes_and_noops_follow_saved_revisions() {
+    for role in ["deliverable", "dependency", "brief", "background"] {
+        for state in ["active", "fulfilled", "dropped"] {
+            let directory = tempfile::tempdir().unwrap();
+            let store = setup(directory.path());
+            let mut desired = reference_value("https://example.test/item");
+            desired["role"] = json!(role);
+            desired["state"] = json!(state);
+            desired["target"]["kind"] = json!("issue");
+            let add = reference_wire(
+                &stream("a"),
+                "automatic",
+                json!([set_row("https://example.test/item", desired.clone())]),
+            );
+            let before = saved_stream(&update(&store, &add));
+            assert_eq!(
+                serde_json::to_value(before.references[0].role).unwrap(),
+                role
+            );
+            assert_eq!(
+                serde_json::to_value(before.references[0].state).unwrap(),
+                state
+            );
+            let mut request = reference_wire(
+                &before,
+                "automatic",
+                json!([set_row("https://example.test/item", desired.clone())]),
+            );
+            request["operation_id"] = json!("next");
+            request["changes"]["reference_changes"][0]["next_revision"] = json!("next");
+            let result = update(&store, &request);
+            assert_eq!(result.outcome["outcome"], "no-change");
+            assert_eq!(saved_stream(&result).references[0].revision, "references");
+            desired["target"]["kind"] = json!("pr");
+            request["operation_id"] = json!("classify");
+            request["changes"]["reference_changes"][0]["next_revision"] = json!("classify");
+            request["changes"]["reference_changes"][0]["desired"] = desired;
+            assert_eq!(update(&store, &request).outcome["outcome"], "changes");
         }
-        let result = update(&store, &request);
-        assert_eq!(result.outcome["outcome"], "superseded");
-        assert_eq!(result.current.record, Record::Stream(before));
     }
 }
 
 #[test]
-fn document_additions_refuse_changed_repository_bindings_and_invalid_authority() {
+fn user_correction_conflicts_at_occupied_destination_but_saves_independent_delete() {
     let directory = tempfile::tempdir().unwrap();
     let store = setup(directory.path());
-    let before = document_stream();
-    let valid = document_wire(&before, &["docs/new.md"]);
-    let mut current = before.clone();
-    current.repositories.insert(
-        "repo".into(),
-        streams::model::Repository::new("https://example.test/elsewhere").unwrap(),
+    let mut before = stream("a");
+    before.references = vec![
+        reference("https://example.test/a", "a"),
+        reference("https://example.test/b", "b"),
+        reference("https://example.test/c", "c"),
+    ];
+    put_with_id(&store, Record::Stream(before.clone()), "current");
+    let request = reference_wire(
+        &before,
+        "user",
+        json!([
+            set_row("https://example.test/a",reference_value("https://example.test/b")),
+            {"key":{"kind":"url","url":"https://example.test/c"},"desired":null}
+        ]),
     );
-    put_with_id(&store, Record::Stream(current.clone()), "current");
-    assert_eq!(update(&store, &valid).outcome["outcome"], "superseded");
+    let result = update(&store, &request);
+    assert_eq!(result.outcome["outcome"], "changes");
+    assert_eq!(
+        result.outcome["reference_results"][0]["reason"],
+        "replacement target already exists"
+    );
+    assert_eq!(
+        result.outcome["reference_results"][0]["outcome"],
+        "conflict"
+    );
+    assert_eq!(result.outcome["reference_results"][1]["action"], "delete");
+    assert_eq!(saved_stream(&result).references, before.references[..2]);
+    let correction = reference_wire(
+        &before,
+        "user",
+        json!([set_row(
+            "https://example.test/a",
+            reference_value("https://example.test/new")
+        )]),
+    );
+    let mut correction = correction;
+    correction["operation_id"] = json!("correction");
+    correction["changes"]["reference_changes"][0]["next_revision"] = json!("correction");
+    let result = update(&store, &correction);
+    assert_eq!(result.outcome["outcome"], "changes");
+    assert_eq!(
+        saved_stream(&result).references[0].target.key(),
+        reference("https://example.test/new", "x").target.key()
+    );
+}
+
+#[test]
+fn reference_session_and_stream_guards_cover_move_revisit_native_identity_and_owner() {
+    for kind in ["move", "revisit", "native", "missing", "owner", "identity"] {
+        let directory = tempfile::tempdir().unwrap();
+        let store = setup(directory.path());
+        let before = stream("a");
+        let request = reference_wire(&before, "automatic", json!([doc_row()]));
+        match kind {
+            "move" | "revisit" => {
+                move_session_observed(
+                    &store,
+                    "move",
+                    &MoveIntent::new("host", "pi", "native", "b").unwrap(),
+                )
+                .unwrap();
+                if kind == "revisit" {
+                    move_session_observed(
+                        &store,
+                        "back",
+                        &MoveIntent::new("host", "pi", "native", "a").unwrap(),
+                    )
+                    .unwrap();
+                }
+            }
+            "missing" => {
+                let address = RecordAddress::for_record(&Record::Session(session()));
+                std::fs::remove_file(
+                    directory
+                        .path()
+                        .join(relative_record_path(&address).unwrap()),
+                )
+                .unwrap();
+            }
+            _ => {}
+        }
+        if matches!(kind, "owner" | "identity" | "native") {
+            let edit = streams::operations::references::ReferenceChanges::new(
+                "references",
+                &before,
+                streams::operations::Actor::Automatic,
+                Some(&session()),
+                vec![
+                    streams::operations::references::ReferenceChange::Automatic {
+                        key: streams::model::ResourceKey::Url {
+                            url: "https://example.test/a".into(),
+                        },
+                        desired: streams::operations::references::AutomaticReferenceValue {
+                            name: "A".into(),
+                            purpose: "Work".into(),
+                            role: streams::model::ReferenceRole::Brief,
+                            state: streams::model::ReferenceState::Active,
+                            target:
+                                streams::operations::references::AutomaticReferenceTarget::Link {
+                                    url: "https://example.test/a".into(),
+                                },
+                        },
+                        next_revision: "references".into(),
+                    },
+                ],
+            )
+            .unwrap();
+            let mut current = before.clone();
+            let mut current_session = session();
+            match kind {
+                "owner" => current.owner_host_id = "other".into(),
+                "identity" => current.id = "other".into(),
+                // The store rejects inconsistent Session keys before domain apply; inject the
+                // changed native identity directly at the pure boundary instead.
+                "native" => current_session.harness_session_id = "other".into(),
+                _ => unreachable!(),
+            }
+            let result = edit.apply(&current, Some(&current_session)).unwrap();
+            assert_eq!(result.domain()["outcome"], "superseded");
+            assert_eq!(result.domain()["conflicts"], json!(["inputs"]));
+        } else {
+            let result = update(&store, &request);
+            assert_eq!(result.outcome["outcome"], "superseded", "{kind}");
+            assert_eq!(result.outcome["conflicts"], json!(["inputs"]));
+            assert_eq!(saved_stream(&result), before);
+        }
+    }
+}
+
+#[test]
+fn captured_mutations_never_recreate_deleted_or_recreated_rows_but_absent_additions_rediscover() {
+    for actor in ["automatic", "user"] {
+        for current_kind in ["deleted", "recreated", "changed-token"] {
+            let directory = tempfile::tempdir().unwrap();
+            let store = setup(directory.path());
+            let mut before = stream("a");
+            before
+                .references
+                .push(reference("https://example.test/a", "original"));
+            let mut desired = reference_value("https://example.test/a");
+            desired["purpose"] = json!("Captured change");
+            let request = reference_wire(
+                &before,
+                actor,
+                json!([set_row("https://example.test/a", desired)]),
+            );
+            let mut current = before.clone();
+            if current_kind == "deleted" {
+                current.references.clear();
+            } else {
+                current.references[0].revision = "recreated-or-ABA".into();
+            }
+            put_with_id(&store, Record::Stream(current.clone()), "outside");
+            let result = update(&store, &request);
+            assert_eq!(
+                result.outcome["outcome"],
+                if actor == "automatic" {
+                    "superseded"
+                } else {
+                    "conflict"
+                }
+            );
+            assert_eq!(saved_stream(&result), current);
+            assert_eq!(result.outcome["conflicts"], json!(["references"]));
+        }
+        let directory = tempfile::tempdir().unwrap();
+        let store = setup(directory.path());
+        let before = stream("a");
+        let request = reference_wire(
+            &before,
+            actor,
+            json!([set_row(
+                "https://example.test/a",
+                reference_value("https://example.test/a")
+            )]),
+        );
+        // Permanent deletion leaves no suppression ledger, even for an old capture.
+        let mut temporary = before.clone();
+        temporary
+            .references
+            .push(reference("https://example.test/a", "temporary"));
+        put_with_id(&store, Record::Stream(temporary), "create-temporary");
+        put_with_id(&store, Record::Stream(before), "permanent-delete");
+        assert_eq!(update(&store, &request).outcome["outcome"], "changes");
+    }
+}
+
+#[test]
+fn correction_old_selector_cannot_reach_the_new_target_and_user_can_restore_dropped() {
+    let directory = tempfile::tempdir().unwrap();
+    let store = setup(directory.path());
+    let mut before = stream("a");
+    before
+        .references
+        .push(reference("https://example.test/a", "original"));
+    let request = reference_wire(
+        &before,
+        "automatic",
+        json!([set_row(
+            "https://example.test/a",
+            reference_value("https://example.test/a")
+        )]),
+    );
+    let mut corrected = before.clone();
+    corrected.references[0].target = streams::model::ReferenceTarget::Link {
+        url: "https://example.test/b".into(),
+    };
+    corrected.references[0].revision = "correction".into();
+    corrected.references[0].state = streams::model::ReferenceState::Dropped;
+    put_with_id(&store, Record::Stream(corrected.clone()), "correction");
+    let result = update(&store, &request);
+    assert_eq!(
+        result.outcome["reference_results"][0]["reason"],
+        "reference no longer exists"
+    );
+    assert_eq!(saved_stream(&result), corrected);
+    let mut desired = reference_value("https://example.test/b");
+    desired["state"] = json!("fulfilled");
+    let mut restore = reference_wire(
+        &corrected,
+        "user",
+        json!([set_row("https://example.test/b", desired)]),
+    );
+    restore["operation_id"] = json!("restore");
+    restore["changes"]["reference_changes"][0]["next_revision"] = json!("restore");
+    let result = update(&store, &restore);
+    assert_eq!(result.outcome["reference_results"][0]["action"], "restore");
+    assert_eq!(
+        saved_stream(&result).references[0].state,
+        streams::model::ReferenceState::Fulfilled
+    );
+}
+
+#[test]
+fn reference_raw_parser_rejects_authority_presence_overlap_and_old_list_payloads() {
+    let valid = reference_wire(&stream("a"), "automatic", json!([doc_row()]));
+    assert!(parse_record_update(&valid.to_string(), "source", TitleDefaults::default()).is_ok());
     let mut invalids = Vec::new();
     for (field, value) in [
-        ("repository", json!("unknown")),
-        ("path", json!("/tmp/report.md")),
-        ("path", json!("../escape.md")),
-        ("source_session_id", json!("other")),
-        ("commit", json!("guessed")),
+        ("commit", Value::Null),
+        ("source_session_id", Value::Null),
+        ("ref", Value::Null),
+        ("ref", json!("")),
+        ("extra", json!(true)),
+        ("path", json!("../escape")),
+        ("repository_url", json!("\u{85}")),
     ] {
+        let mut value_wire = valid.clone();
+        value_wire["changes"]["reference_changes"][0]["desired"]["target"][field] = value;
+        invalids.push(value_wire);
+    }
+    for field in ["key", "desired", "next_revision"] {
         let mut invalid = valid.clone();
-        invalid["changes"]["document_additions"][0][field] = value;
+        invalid["changes"]["reference_changes"][0]
+            .as_object_mut()
+            .unwrap()
+            .remove(field);
+        invalids.push(invalid);
+    }
+    for desired in [Value::Null, json!([])] {
+        let mut invalid = valid.clone();
+        invalid["changes"]["reference_changes"][0]["desired"] = desired;
+        invalids.push(invalid);
+    }
+    for changes in [json!([]), Value::Null, json!([doc_row(), doc_row()])] {
+        let mut invalid = valid.clone();
+        invalid["changes"]["reference_changes"] = changes;
         invalids.push(invalid);
     }
     for (field, value) in [
-        ("actor", json!("user")),
+        ("actor", json!("native")),
         ("inputs", json!([])),
-        (
-            "inputs",
-            json!([{"kind":"session","record":session()},{"kind":"session","record":session()}]),
-        ),
+        ("changes", json!({"references":[]})),
+        ("changes", json!({"documents":[]})),
+        ("changes", json!({"issues":[]})),
+        ("changes", json!({"prs":[]})),
+        ("changes", json!({"document_additions":[]})),
     ] {
         let mut invalid = valid.clone();
         invalid[field] = value;
         invalids.push(invalid);
     }
-    let mut mixed = valid.clone();
-    mixed["changes"]["goal"] = json!("Mixed operation");
-    invalids.push(mixed);
-    let mut replacement = valid.clone();
-    replacement["changes"] = json!({"documents":[]});
-    invalids.push(replacement);
+    let mut invalid = valid.clone();
+    invalid["changes"]["goal"] = json!("mixed");
+    invalids.push(invalid);
+    let mut invalid = valid.clone();
+    invalid["changes"]["reference_changes"][0]["next_revision"] = json!("wrong");
+    invalids.push(invalid);
+    let mut invalid = valid.clone();
+    invalid["changes"]["reference_changes"][0]["key"]["path"] = json!("different");
+    invalids.push(invalid);
+    let mut invalid = valid.clone();
+    invalid["actor"] = json!("user");
+    invalids.push(invalid);
+    let mut deletion = valid.clone();
+    deletion["changes"]["reference_changes"][0]["desired"] = Value::Null;
+    deletion["changes"]["reference_changes"][0]
+        .as_object_mut()
+        .unwrap()
+        .remove("next_revision");
+    invalids.push(deletion);
     for invalid in invalids {
         assert!(
             parse_record_update(&invalid.to_string(), "source", TitleDefaults::default()).is_err(),
             "{invalid}"
         );
+    }
+    // User nullable recovery fields are allowed only after dispatch by actor.
+    let mut user = valid.clone();
+    user["actor"] = json!("user");
+    user["inputs"] = json!([]);
+    user["changes"]["reference_changes"][0]["desired"]["target"]["ref"] = Value::Null;
+    assert!(parse_record_update(&user.to_string(), "source", TitleDefaults::default()).is_ok());
+    let mut before = stream("a");
+    before
+        .references
+        .push(reference("https://example.test/a", "captured"));
+    let deletion = reference_wire(
+        &before,
+        "user",
+        json!([{"key":{"kind":"url","url":"https://example.test/a"},"desired":null}]),
+    );
+    assert!(parse_record_update(&deletion.to_string(), "source", TitleDefaults::default()).is_ok());
+    let mut invalid = deletion.clone();
+    invalid["changes"]["reference_changes"][0]["next_revision"] = json!("references");
+    assert!(parse_record_update(&invalid.to_string(), "source", TitleDefaults::default()).is_err());
+}
+
+#[test]
+fn reference_constructor_rejects_overlap_reused_revisions_and_foreign_captures() {
+    use streams::{
+        model::ResourceKey,
+        operations::{
+            Actor,
+            references::{
+                AutomaticReferenceTarget, AutomaticReferenceValue, ReferenceChange,
+                ReferenceChanges,
+            },
+        },
+    };
+    let mut before = stream("a");
+    before.references = vec![reference("https://example.test/a", "captured")];
+    let user = |old: &str, new: &str, revision: &str| ReferenceChange::UserSet {
+        key: ResourceKey::Url { url: old.into() },
+        desired: reference(new, "unused").value(),
+        next_revision: revision.into(),
+    };
+    for changes in [
+        vec![user(
+            "https://example.test/a",
+            "https://example.test/b",
+            "captured",
+        )],
+        vec![
+            user("https://example.test/a", "https://example.test/b", "next"),
+            user("https://example.test/b", "https://example.test/b", "next"),
+        ],
+        vec![
+            user("https://example.test/a", "https://example.test/c", "next"),
+            user("https://example.test/b", "https://example.test/c", "next"),
+        ],
+        vec![user(
+            "https://example.test/b",
+            "https://example.test/c",
+            "next",
+        )],
+        vec![ReferenceChange::UserDelete {
+            key: ResourceKey::Url {
+                url: "https://example.test/absent".into(),
+            },
+        }],
+    ] {
+        let id = if matches!(&changes[0], ReferenceChange::UserSet {next_revision,..} if next_revision=="captured")
+        {
+            "captured"
+        } else {
+            "next"
+        };
+        assert!(ReferenceChanges::new(id, &before, Actor::User, None, changes).is_err());
+    }
+    let automatic = || ReferenceChange::Automatic {
+        key: ResourceKey::Url {
+            url: "https://example.test/a".into(),
+        },
+        desired: AutomaticReferenceValue {
+            name: "Name".into(),
+            purpose: "Purpose".into(),
+            role: streams::model::ReferenceRole::Brief,
+            state: streams::model::ReferenceState::Active,
+            target: AutomaticReferenceTarget::Link {
+                url: "https://example.test/a".into(),
+            },
+        },
+        next_revision: "next".into(),
+    };
+    assert!(ReferenceChanges::new("next", &before, Actor::User, None, vec![automatic()]).is_err());
+    assert!(
+        ReferenceChanges::new(
+            "next",
+            &before,
+            Actor::Automatic,
+            Some(&session()),
+            vec![user(
+                "https://example.test/a",
+                "https://example.test/a",
+                "next"
+            )]
+        )
+        .is_err()
+    );
+    assert!(
+        ReferenceChanges::new("next", &before, Actor::Native, None, vec![automatic()]).is_err()
+    );
+    for field in ["host", "stream"] {
+        let mut captured = session();
+        if field == "host" {
+            captured.host_id = "foreign".into();
+        } else {
+            captured.stream_id = "other".into();
+        }
+        assert!(
+            ReferenceChanges::new(
+                "next",
+                &before,
+                Actor::Automatic,
+                Some(&captured),
+                vec![automatic()]
+            )
+            .is_err()
+        );
+    }
+}
+
+#[test]
+fn reference_io_budgets_are_record_local_with_malformed_unrelated_records() {
+    for size in [0, 64] {
+        for actor in ["automatic", "user"] {
+            let directory = tempfile::tempdir().unwrap();
+            let root = directory.path();
+            let store = setup(root);
+            for index in 0..size {
+                std::fs::write(
+                    root.join(format!("hosts/host/streams/unrelated-{index}.yaml")),
+                    "malformed unrelated record",
+                )
+                .unwrap();
+            }
+            let stream_path = root.join(
+                relative_record_path(&RecordAddress::for_record(&Record::Stream(stream("a"))))
+                    .unwrap(),
+            );
+            let session_path = root.join(
+                relative_record_path(&RecordAddress::for_record(&Record::Session(session())))
+                    .unwrap(),
+            );
+            let marker = root.join(".catalog-local/records.json");
+            let expected_bytes = std::fs::metadata(&marker).unwrap().len()
+                + std::fs::metadata(&stream_path).unwrap().len()
+                + if actor == "automatic" {
+                    std::fs::metadata(&session_path).unwrap().len()
+                } else {
+                    0
+                };
+            let events = Arc::new(Mutex::new(Vec::new()));
+            let observed = events.clone();
+            let store = store.with_io_observer(move |event| observed.lock().unwrap().push(event));
+            let request = reference_wire(&stream("a"), actor, json!([doc_row()]));
+            update(&store, &request);
+            let trace = events.lock().unwrap().clone();
+            let mut expected = vec![
+                RecordIoEvent::Lock(root.join(".catalog.lock")),
+                RecordIoEvent::Read(marker.clone()),
+                RecordIoEvent::Read(stream_path.clone()),
+            ];
+            if actor == "automatic" {
+                expected.push(RecordIoEvent::Read(session_path));
+            }
+            assert_eq!(record_io::accesses(&trace), expected);
+            assert_eq!(record_io::bytes_read(&trace), expected_bytes as usize);
+            let written = std::fs::metadata(&stream_path).unwrap().len() as usize;
+            assert_eq!(record_io::writes(&trace), [(stream_path.clone(), written)]);
+            events.lock().unwrap().clear();
+            assert!(update(&store, &request).repeated);
+            let trace = events.lock().unwrap().clone();
+            assert_eq!(record_io::accesses(&trace), expected[..3]);
+            assert_eq!(
+                record_io::bytes_read(&trace),
+                std::fs::metadata(marker).unwrap().len() as usize + written
+            );
+            assert!(record_io::writes(&trace).is_empty());
+        }
     }
 }
 

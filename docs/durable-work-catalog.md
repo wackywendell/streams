@@ -50,23 +50,28 @@ repositories:
   streams:
     url: https://github.com/wackywendell/streams
 
-documents:
-  - repository: streams
-    ref: lifecycle-design
-    path: docs/durable-work-catalog.md
-    description: Lifecycle and data-model decisions
-    commit: immutable-commit-id
-    source_session_id: bc26a2a9-d12f-59cc-9a80-b9efbf910ff1
-
-issues: []
-prs: []
+references:
+  - name: Catalog model
+    purpose: Define lifecycle and data-model decisions
+    role: brief
+    state: active
+    target:
+      kind: document
+      repository_url: https://github.com/wackywendell/streams
+      path: docs/durable-work-catalog.md
+      ref: lifecycle-design
+      commit: immutable-commit-id
+      source_session_id: bc26a2a9-d12f-59cc-9a80-b9efbf910ff1
+    revision: reference-operation-id
 ```
 
 The naming modes distinguish automatic text from protected manual choices. `goal` describes the intended outcome and may be null while that outcome is unspecified. In that case `goal_short` is also null; creation must not invent placeholder text. An overall progress view can be assembled from session descriptions and reference documents when needed, rather than maintained as another record. Scope not assigned to a session belongs in the goal or a referenced plan.
 
-Repository aliases belong to the stream. A document's identity is its repository alias and relative path. Its optional `ref` is a recovery branch or bookmark, not part of its identity or a navigation pin. An unknown ref stays absent; it must not prevent a repository/path link or opening the current file. Optional `commit` records the latest known immutable document revision, not its creation time. `source_session_id` identifies the Session whose checkout supplies the origin fallback. Unknown or uncommitted-only provenance remains absent.
+Repository aliases configure the Stream's repositories. Document references identify an exact repository URL and portable relative path. PR, Issue and Link share exact URL identity. Name, purpose, role, state and recovery metadata remain outside that identity. Each Stream holds one relationship per exact resource key, with a revision token guarding captured edits.
 
-Two references to the same repository/path cannot become different documents by naming different refs. Issue and PR references contain URLs and descriptions. Missing local checkouts must not erase references. Non-repository work may have an empty repository map.
+Optional ref, commit and source Session hints support explicit document recovery. Missing hints, files or local checkout mappings leave the saved reference intact. Non-repository work may have an empty repository map.
+
+Roles describe Deliverable, Dependency, Brief and Background relationships. Active and Fulfilled references remain visible; Dropped retains identity and blocks automatic restoration. Delete forgets a relationship and permits rediscovery. The [reference contract](stream-references.md) defines those meanings and their conservative conversation-evidence rules. Runtime accepts the required references array and rejects former collection fields.
 
 ### Session record
 
@@ -118,7 +123,7 @@ Portable `checkout` can be null, especially after automatic enrollment. When sup
 | `session.remaining` | agent `remaining` | Remaining work in the card |
 | `session.remaining_short` | `strm_remaining_short` | Optional Pi-pane sidebar hint |
 | `session.status` | agent `status` | Agent status indicator |
-| Stream document, issue and PR references | workspace references | Card links, resolved through local checkout bindings |
+| Stream references | workspace references | Non-Dropped Document, PR, Issue and Link rows, resolved through explicit checkout bindings |
 
 The short fields are optional display derivatives. Each condenses only its matching full text. Generate them alongside those descriptions, not through separate per-surface inference. Prefer 1–2 words, shorter is better, preferably fewer than 20 characters and always fewer than 25. Report parsing caps generated hints at 24 Unicode characters; stored overlong hints remain readable but are not projected. Regenerate or clear a short field when its own source changes. The short workspace description is purpose, not aggregate progress.
 

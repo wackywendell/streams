@@ -9,7 +9,7 @@ import { digest, privateDirectory, privateWrite, sourceFiles } from "./capture.t
 import type { Capture } from "./capture.ts";
 import { runReport } from "./report-workflow.ts";
 import type { ReportAction } from "./report-workflow.ts";
-import { receiptCanContinue, receiptText, type LocalContext, type Receipt } from "./streams.ts";
+import { receiptCanContinue, receiptHasWarning, receiptText, type LocalContext, type Receipt } from "./streams.ts";
 
 export type Preview = (input: {catalog: LocalContext; action: "apply" | "enroll"; request: unknown}, signal: AbortSignal) => Promise<{catalog: LocalContext; receipt: Receipt}>;
 type ReplayTask = {task: Inference["type"]; input_file: string; request_id?: string; status: "running" | "parsed" | "failed"; model?: ModelSelection; prompt_hash?: string; helper_file?: string; raw_response?: AssistantMessage; result?: Inferred; error?: string};
@@ -60,7 +60,7 @@ export async function replayCapture(capture: Capture, root: string, runtime: Inf
      capture: async () => ({native: sample.native_session_id, cwd: sample.cwd!, evidence: structuredClone(sample.evidence!), catalog: structuredClone(catalog), valid: () => !signal.aborted, attached: async () => !signal.aborted}),
      generate,
      apply: request => project("apply", request), enroll: request => project("enroll", request),
-     receipt: receipt => {result.receipts.push({...receipt, simulated: true} as Receipt);}, notice: text => {result.notices.push(text);},
+     receipt: receipt => {const saved = {...receipt, simulated:true} as Receipt;result.receipts.push(saved);if (receiptHasWarning(saved)) result.notices.push(receiptText(saved));}, notice: text => {result.notices.push(text);},
     });
     const refused = result.receipts.find(receipt => !receiptCanContinue(receipt));
     if (refused) throw Error(`Simulated save refused: ${receiptText(refused)}`);

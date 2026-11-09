@@ -16,6 +16,115 @@ use streams::{
 };
 
 #[test]
+fn reference_partial_receipt_replays_after_deletion_and_refuses_changed_intent() {
+    use streams::{
+        application::save_user_references,
+        model::{
+            Reference, ReferenceRole, ReferenceState, ReferenceTarget, ReferenceValue,
+            TitleDefaults,
+        },
+        operations::references::ReferenceChange,
+    };
+    let directory = tempfile::tempdir().unwrap();
+    let root = directory.path();
+    let store = YamlRecordStore::new(root, "host").unwrap();
+    store.initialize().unwrap();
+    let value = |url: &str| ReferenceValue {
+        name: "Reference".into(),
+        purpose: "Guide work".into(),
+        role: ReferenceRole::Brief,
+        state: ReferenceState::Active,
+        target: ReferenceTarget::Link { url: url.into() },
+    };
+    let a = Reference::new(value("https://example.test/a"), "a").unwrap();
+    let b = Reference::new(value("https://example.test/b"), "b").unwrap();
+    let mut before = Stream::new("stream", "Stream", None, "host").unwrap();
+    before.references = vec![a.clone(), b.clone()];
+    let mut current = before.clone();
+    current.references[0].purpose = "Newer purpose".into();
+    let record = Record::Stream(current.clone());
+    let address = RecordAddress::for_record(&record);
+    let request = RecordRequest::new(address.clone(), "setup", &json!({"record":record})).unwrap();
+    store
+        .save::<StorageError>(&request, |_, _| {
+            Ok(RecordChange {
+                record,
+                outcome: Map::new(),
+            })
+        })
+        .unwrap();
+    let changes = vec![
+        ReferenceChange::UserSet {
+            key: a.target.key(),
+            desired: value("https://example.test/a"),
+            next_revision: "partial".into(),
+        },
+        ReferenceChange::UserDelete {
+            key: b.target.key(),
+        },
+    ];
+    let first = save_user_references(
+        &store,
+        "partial",
+        &before,
+        changes.clone(),
+        TitleDefaults::default(),
+    )
+    .unwrap();
+    assert_eq!(first.outcome["outcome"], "changes");
+    assert_eq!(first.outcome["reference_results"][0]["outcome"], "conflict");
+    assert_eq!(first.outcome["reference_results"][1]["outcome"], "changes");
+    let Record::Stream(after) = &first.current.record else {
+        unreachable!()
+    };
+    assert_eq!(after.references, [current.references[0].clone()]);
+    let delete = vec![ReferenceChange::UserDelete {
+        key: a.target.key(),
+    }];
+    let deleted =
+        save_user_references(&store, "delete", after, delete, TitleDefaults::default()).unwrap();
+    let events = Arc::new(Mutex::new(Vec::new()));
+    let observed = events.clone();
+    let store = store.with_io_observer(move |event| observed.lock().unwrap().push(event));
+    let retry = save_user_references(
+        &store,
+        "partial",
+        &before,
+        changes.clone(),
+        TitleDefaults::default(),
+    )
+    .unwrap();
+    assert!(retry.repeated);
+    assert_eq!(retry.current, deleted.current);
+    assert_eq!(retry.outcome, first.outcome);
+    let trace = events.lock().unwrap().clone();
+    assert_eq!(
+        record_io::accesses(&trace),
+        [
+            RecordIoEvent::Lock(root.join(".catalog.lock")),
+            RecordIoEvent::Read(root.join(".catalog-local/records.json")),
+            RecordIoEvent::Read(root.join(relative_record_path(&address).unwrap())),
+        ]
+    );
+    assert!(record_io::writes(&trace).is_empty());
+    let mut changed = changes;
+    let ReferenceChange::UserSet { desired, .. } = &mut changed[0] else {
+        unreachable!()
+    };
+    desired.purpose = "Different intent".into();
+    assert!(
+        save_user_references(
+            &store,
+            "partial",
+            &before,
+            changed,
+            TitleDefaults::default()
+        )
+        .is_err()
+    );
+}
+
+#[test]
 fn public_observer_names_actual_session_stream_and_fixed_file_reads() {
     let directory = tempfile::tempdir().unwrap();
     let root = directory.path();

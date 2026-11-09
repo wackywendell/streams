@@ -4,10 +4,11 @@ use super::Result;
 use crate::{
     agent::{RecordUpdate, record_update::CapturedEdit},
     codec::record_to_data,
-    model::{Record, RecordKind, TitleDefaults, ValidationError},
+    model::{Record, RecordKind, Stream, TitleDefaults, ValidationError},
     operations::{
         Actor, Reconciliation,
         edits::{SessionEdit, StreamEdit},
+        references::{ReferenceChange, ReferenceChanges},
     },
     storage::records::{RecordAddress, RecordChange, RecordRequest, RecordSave, RecordStore},
 };
@@ -50,11 +51,19 @@ pub fn save_record_update(store: &impl RecordStore, update: &RecordUpdate) -> Re
                 };
                 edit.apply(stream, session, update.title_defaults.stream)
             }
-            (CapturedEdit::Documents(edit), Record::Stream(stream)) => {
-                let captured = edit.captured_session();
-                let address =
-                    RecordAddress::new(&captured.host_id, RecordKind::Session, &captured.id)?;
-                let session = reader.read(&address)?;
+            (CapturedEdit::References(edit), Record::Stream(stream)) => {
+                let session = edit
+                    .captured_session()
+                    .map(|captured| {
+                        let address = RecordAddress::new(
+                            &captured.host_id,
+                            RecordKind::Session,
+                            &captured.id,
+                        )?;
+                        reader.read(&address)
+                    })
+                    .transpose()?
+                    .flatten();
                 let session = match &session {
                     Some(read) => {
                         let Record::Session(session) = &read.record else {
@@ -64,7 +73,11 @@ pub fn save_record_update(store: &impl RecordStore, update: &RecordUpdate) -> Re
                     }
                     None => None,
                 };
-                edit.apply(stream, session)
+                let result = edit.apply(stream, session)?;
+                let outcome = result.domain();
+                let mut change = change(&target.record, result.reconciliation);
+                change.outcome = outcome;
+                return Ok(change);
             }
             _ => return Err(ValidationError::new("captured edit target kind changed").into()),
         };
@@ -116,6 +129,32 @@ pub fn save_user_edit(
         &RecordUpdate {
             request,
             edit,
+            title_defaults: defaults,
+        },
+    )
+}
+
+/// Explicit user reference intent has only its Stream target, never a Session dependency.
+pub fn save_user_references(
+    store: &impl RecordStore,
+    operation_id: &str,
+    before: &Stream,
+    changes: Vec<ReferenceChange>,
+    defaults: TitleDefaults,
+) -> Result<RecordSave> {
+    let before_record = Record::Stream(before.clone());
+    let request = RecordRequest::new(
+        RecordAddress::for_record(&before_record),
+        operation_id,
+        &serde_json::json!({"command":"user-references", "before":record_to_data(&before_record),
+            "changes":changes,"title_default":defaults.stream}),
+    )?;
+    let edit = ReferenceChanges::new(operation_id, before, Actor::User, None, changes)?;
+    save_record_update(
+        store,
+        &RecordUpdate {
+            request,
+            edit: CapturedEdit::References(edit),
             title_defaults: defaults,
         },
     )

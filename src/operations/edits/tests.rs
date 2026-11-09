@@ -1,5 +1,5 @@
 use super::*;
-use crate::model::{Link, Status};
+use crate::model::Status;
 use crate::operations::DomainOutcome;
 use serde_json::json;
 
@@ -358,26 +358,29 @@ fn user_mode_changes_do_not_generate_a_new_title_and_ignore_default_drift() {
 }
 
 #[test]
-fn human_reference_additions_merge_without_replacing_concurrent_rows() {
-    let before = stream("a");
-    let edit = StreamEdit::new(
-        "add",
-        &before,
-        &changes(json!({"issues":[{"url":"https://example.com/new", "description":"new"}]})),
-        Actor::User,
-        None,
-        NamingMode::Automatic,
-    )
-    .unwrap();
-    let mut current = before.clone();
-    current
-        .issues
-        .push(Link::new("https://example.com/concurrent", "current").unwrap());
-    let Record::Stream(after) = changed(edit.apply(&current, None, NamingMode::Automatic)) else {
-        unreachable!()
-    };
-    assert_eq!(after.issues[0], current.issues[0]);
-    assert_eq!(after.issues[1].url, "https://example.com/new");
+fn ordinary_edits_reject_reference_collections() {
+    for actor in [Actor::User, Actor::Automatic] {
+        for field in [
+            "references",
+            "documents",
+            "issues",
+            "prs",
+            "reference_changes",
+        ] {
+            assert!(
+                StreamEdit::new(
+                    "edit",
+                    &stream("a"),
+                    &changes(json!({field:[]})),
+                    actor,
+                    (actor == Actor::Automatic).then(session),
+                    NamingMode::Automatic,
+                )
+                .is_err(),
+                "{actor:?} {field}"
+            );
+        }
+    }
 }
 
 #[test]

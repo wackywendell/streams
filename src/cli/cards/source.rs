@@ -104,7 +104,7 @@ impl ApplicationSource {
             .checkouts
             .into_iter()
             .map(|checkout| CheckoutBinding {
-                repository: checkout.repository,
+                repository_url: checkout.repository_url,
                 selection: CheckoutSelection {
                     checkout_id: checkout.checkout_id,
                     root: checkout.root,
@@ -140,7 +140,7 @@ impl ApplicationSource {
                     _ => return Err(CliError::message("invalid application document location")),
                 };
                 Ok(DocumentLocation {
-                    repository: location.repository,
+                    repository_url: location.repository_url,
                     path: location.path,
                     location: value,
                 })
@@ -159,19 +159,22 @@ impl ApplicationSource {
                 "document is not available in the selected checkout",
             ));
         };
+        let document = target
+            .document()
+            .ok_or_else(|| CliError::message("document reference required"))?;
         let checkout = self
             .app
             .registry(self.records.host().as_str())?
             .get(&selection.checkout_id)?;
         if checkout.directory != selection.root
-            || !checkout.repository_urls.contains(&target.repository_url)
+            || !checkout.repository_urls.contains(&document.repository_url)
             || std::fs::canonicalize(&selection.root)? != selection.root
         {
             return Err(CliError::message(
                 "selected checkout root or repository binding changed",
             ));
         }
-        let file = checkout.document(&target.document.path)?;
+        let file = checkout.document(&document.path)?;
         if &file != expected
             || !std::fs::metadata(&file)?.is_file()
             || std::fs::canonicalize(&file)? != file
@@ -229,14 +232,14 @@ struct Documents {
 #[derive(Deserialize)]
 #[serde(deny_unknown_fields)]
 struct Checkout {
-    repository: String,
+    repository_url: String,
     checkout_id: String,
     root: PathBuf,
 }
 #[derive(Deserialize)]
 #[serde(deny_unknown_fields)]
 struct Location {
-    repository: String,
+    repository_url: String,
     path: String,
     checkout_id: Option<String>,
     root: Option<PathBuf>,

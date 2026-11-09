@@ -9,8 +9,11 @@ impl NativeCardEngine {
                 "document viewing scope changed; redraw before opening",
             ));
         }
+        let document = target
+            .document()
+            .ok_or_else(|| invalid("document reference required"))?;
         if card
-            .document_target(&target.document.repository, &target.document.path)
+            .document_target(&document.repository_url, &document.path)
             .as_ref()
             != Some(target)
         {
@@ -91,7 +94,7 @@ impl NativeCardEngine {
             (editor, true)
         };
         let first = created || self.snapshot.first_pane(&editor);
-        let title = &target.document.path;
+        let title = &document.path;
         let differs = self
             .snapshot
             .topology()

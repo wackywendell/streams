@@ -38,7 +38,9 @@ The panel separates “Whole effort” from “This session”. The editor uses 
 
 Changing a title or goal protects it as manual text. Show that protection beside the field, with an explicit way to return it to automatic management. Submit only dirty fields; opening or saving an unchanged form must not turn automatic text into manual text or erase compact derivatives. Background reports can refresh clean fields while dirty fields retain their captured base. Invalid or stale edits keep their input and show an actionable error.
 
-Scope reference editing to issue/PR URL-and-description rows and documents whose repository is chosen from existing aliases. Document paths must be relative; URLs and required fields are validated before save. Repository identity changes remain CLI operations rather than a nested free-form table.
+The Stream tab's References manager includes every saved state. It edits names, purposes, roles, kinds, targets and document recovery fields. Documents use direct repository URLs and portable relative paths. Ordinary edits preserve Dropped state; explicit Restore chooses Active or Fulfilled, and Delete confirms that reporting may rediscover the resource.
+
+Each exact selector retains its original capture and unsaved input. Reopening resumes it, including after source deletion. Retained-only rows remain independently inspectable and discardable; explicit reapply refreshes the capture and reconfirms deletion or restoration. A retained manual-add form remains separate from saved rows. Discussion reference batches require an empty retained-edit map, and partial results retain every unapplied row.
 
 A direct edit is user intent. User-directed lifecycle edits are permitted, but background inference must never park, finish or archive an effort. Chat may discuss uncertainty without changing records. Separate a conversational reply, an automatic description refresh and an explicitly requested user edit; do not treat every chat turn as permission for management changes.
 
@@ -65,6 +67,8 @@ automatic Stream edits name their single captured Session. Pure apply separately
 checks conversation-local fields and Stream membership/history. Pi owns live
 branch admission. Omit protected fields before constructing an automatic edit so
 a manual title does not discard otherwise valid progress.
+
+A Session inference also proposes references from retained conversation evidence. Save valid progress first, then validate and apply reference intent using the same original capture. Clear additions, updates and drops are automatic; uncertainty is omitted, and restoration and deletion require user direction. A later reference refusal preserves saved progress and stops without retrying. Independent reference changes may save alongside refused rows; complete receipts retain those outcomes.
 
 Generate existing-session progress and stream metadata as separate target-scoped requests, capturing each request's inputs before its inference. This costs an additional model request when both need updating, but avoids making one write invalidate another operation from the same inference. Do not remove real input dependencies or substitute post-inference snapshots to make a stale operation apply. Initial enrollment may save a newly inferred stream and its session together as ordered, separately receipted saves.
 

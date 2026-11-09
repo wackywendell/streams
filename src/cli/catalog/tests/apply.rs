@@ -137,6 +137,91 @@ fn captured_apply_is_target_local_and_retains_the_original_decision_without_publ
     }
 }
 
+#[test]
+fn partial_reference_conflict_keeps_the_accepted_record_receipt_and_safe_diagnostics() {
+    let f = Fixture::new();
+    let mut stream = Stream::new("partial", "Partial", None, f.opened.host().as_str()).unwrap();
+    stream.references.push(serde_json::from_value(json!({
+        "name":"Original", "purpose":"Guide work", "role":"brief", "state":"active",
+        "target":{"kind":"document","repository_url":"repo\u{202e}","path":"plan.md"},"revision":"captured"
+    })).unwrap());
+    application::create_record(
+        f.opened.records(),
+        "create-partial",
+        &Record::Stream(stream.clone()),
+    )
+    .unwrap();
+    let mut desired = stream.references[0].value();
+    desired.purpose = "Newer purpose".into();
+    application::save_user_references(
+        f.opened.records(),
+        "outside",
+        &stream,
+        vec![streams::operations::references::ReferenceChange::UserSet {
+            key: stream.references[0].target.key(),
+            desired,
+            next_revision: "outside".into(),
+        }],
+        TitleDefaults::default(),
+    )
+    .unwrap();
+    let captured = json!({
+        "version":2,"operation_id":"partial-save","catalog_source":"logical-source",
+        "actor":"user","kind":"stream","before":record_to_data(&Record::Stream(stream)),
+        "changes":{"reference_changes":[
+            {"key":{"kind":"document","repository_url":"repo\u{202e}","path":"plan.md"},
+             "desired":{"name":"Stale","purpose":"Stale purpose","role":"brief","state":"active","target":{"kind":"document","repository_url":"repo\u{202e}","path":"plan.md"}},"next_revision":"partial-save"},
+            {"key":{"kind":"url","url":"https://example.test/new"},
+             "desired":{"name":"Added","purpose":"Deliver work","role":"deliverable","state":"active","target":{"kind":"pr","url":"https://example.test/new"}},"next_revision":"partial-save"}
+        ]},"title_default":"automatic","inputs":[]
+    });
+    let output = apply(
+        f.opened.records(),
+        &captured.to_string(),
+        "logical-source",
+        TitleDefaults::default(),
+    )
+    .unwrap();
+    assert_eq!(output.code, 2);
+    assert!(output.accepted_save);
+    assert_eq!(output.value["save"]["local"], "persisted");
+    assert_eq!(output.value["save"]["domain"]["outcome"], "changes");
+    assert_eq!(
+        output.value["save"]["domain"]["reference_results"][0]["outcome"],
+        "conflict"
+    );
+    assert_eq!(
+        output.value["save"]["domain"]["reference_results"][1]["outcome"],
+        "changes"
+    );
+    assert_eq!(
+        output.value["stream"]["references"][0]["purpose"],
+        "Newer purpose"
+    );
+    assert_eq!(output.value["stream"]["references"][1]["name"], "Added");
+    assert_eq!(
+        output.notices,
+        vec![
+            "Reference not applied: {\"kind\":\"document\",\"repository_url\":\"repo\\u202e\",\"path\":\"plan.md\"}; reference changed since capture"
+        ]
+    );
+    let repeated = apply(
+        f.opened.records(),
+        &captured.to_string(),
+        "logical-source",
+        TitleDefaults::default(),
+    )
+    .unwrap();
+    assert_eq!(repeated.code, 2);
+    assert!(repeated.accepted_save);
+    assert_eq!(repeated.value["save"]["local"], "unchanged");
+    assert_eq!(
+        repeated.value["save"]["domain"],
+        output.value["save"]["domain"]
+    );
+    assert_eq!(repeated.notices, output.notices);
+}
+
 struct FailedWrite(bool);
 impl RecordStore for FailedWrite {
     fn with_reader<T, E: From<StorageError>>(

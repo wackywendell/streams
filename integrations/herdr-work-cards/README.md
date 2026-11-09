@@ -6,7 +6,7 @@ The source was imported with its original history through `e7d74ce22f95893fa8eed
 
 ## Saved records and native ownership
 
-The card shows the shared Stream goal, documents, issues and pull requests alongside the viewing Session's title, status, current state and remaining work. It reads these through the Streams CLI, not scratch notes or standalone Work Cards YAML files.
+The card shows the shared Stream goal and non-Dropped Document, PR, Issue and Link references alongside the viewing Session's title, status, current state and remaining work. Reference headers show saved names, roles and states, followed by purpose text. It reads these through the Streams CLI, not scratch notes or standalone Work Cards YAML files.
 
 Each card is scoped to a catalog, host, Session and native Pi conversation. The Session supplies current Stream membership. Native effects use current observed pane, tab and workspace identity, not stored attestation. Missing or contradictory identity stops affected actions rather than guessing from labels.
 
@@ -38,7 +38,7 @@ The terminal pane subscribes to native and saved-record changes and reflows on r
 
 Streams owns repository identities, document references and host-local checkout registrations. Register checkouts through the CLI; the card does not discover roots from Git remotes or choose an arbitrary directory.
 
-A document opens from the viewing Session's resolved working checkout, including local edits. A recorded commit and source Session are provenance, not navigation pins. The current card does not offer alternate source or revision choices. The adapter checks the selected binding and canonical file before opening. Missing mappings, missing files and paths escaping the checkout fail visibly; they do not remove the shared reference.
+A document uses its saved exact repository URL and relative path to open the viewing Session's resolved working file, including local edits. Recovery hints remain available for explicit recovery. The adapter rechecks the complete saved Reference, selected binding and canonical file before opening. Missing mappings, missing files and paths escaping the checkout fail visibly; they leave the shared reference intact. URL activation also compares the full saved Reference before applying the shared HTTP(S) safety policy.
 
 `document_command` is a trusted command prefix. It falls back to `$EDITOR`, then `less`. Do not copy untrusted document, record or model text into executable configuration.
 

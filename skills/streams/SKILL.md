@@ -32,6 +32,10 @@ Both local-only and Git catalogs require explicit `streams init`. If setup is mi
 | Create and open a workspace | `streams start "Title"` |
 | Edit explicit fields | `streams update STREAM_ID --title "Title"` |
 | Clear a goal | `streams update STREAM_ID --clear-goal` |
+| Inspect every reference state | `streams reference list STREAM_ID --json` |
+| Drop a reference | `streams reference drop STREAM_ID --url URL` |
+| Restore a dropped reference | `streams reference restore STREAM_ID --url URL --state active` |
+| Forget a reference | `streams reference delete STREAM_ID --url URL --confirm` |
 | Attach an existing conversation | `streams session attach STREAM_ID --harness pi --session-id NATIVE_ID --title "Contribution"` |
 | Inspect a contribution | `streams session show SESSION_RECORD_ID --json` |
 | Make an explicit session edit | `streams session update SESSION_RECORD_ID --status done` |
@@ -40,7 +44,7 @@ Both local-only and Git catalogs require explicit `streams init`. If setup is mi
 | Resume a recorded conversation | `streams resume STREAM_ID --session SESSION_RECORD_ID` |
 | Publish pending local work | `streams sync --json` |
 
-Use `--help` for each command's flags. `list` searches literal title/goal substrings, not a query language. References resolve exact IDs first, then exact titles or unique title substrings; UUID prefixes are not supported. Report ambiguity rather than choosing a candidate. Store and reuse exact IDs once resolved.
+Use `--help` for each command's flags. `list` searches literal title/goal substrings, not a query language. Stream selectors resolve exact IDs first, then exact titles or unique title substrings; UUID prefixes are not supported. Report ambiguity rather than choosing a candidate. Store and reuse exact IDs once resolved.
 
 `show` defaults to YAML; `--json` exposes the same logical records. Ordinary reads are local. Explicit `--refresh` runs sync before reading and can publish local changes; it is not a remote-only display projection. Generated reports use captured persisted records.
 
@@ -66,7 +70,13 @@ For `status`, describe recorded state without contacting external systems unless
 
 ## References and runtime
 
-Keep issues and PRs as HTTP(S) URLs with concise descriptions. Documents name an existing repository alias, a portable branch/bookmark/ref and a repository-relative path. Absolute checkout directories and native workspace identities stay host-local. Repository identity edits use `streams update`, not the card's reference-row editor.
+References carry a name, purpose, role (`deliverable`, `dependency`, `brief` or `background`) and state (`active`, `fulfilled` or `dropped`). A document uses an exact repository URL and portable relative path, with optional recovery hints. PR, Issue and Link share exact HTTP(S) URL identity. Preserve supplied spelling and reuse an established saved identity when the conversation recognises an equivalent resource.
+
+Infer additions, updates and drops only from clear retained conversation evidence of identity and relevance to the whole effort. Omit uncertain relationships. Attempted file paths establish activity; they cannot establish file existence. Keep the configured trimmed/full evidence boundary and omit useful URLs available only in discarded tool output.
+
+Drop retains identity and blocks automatic restoration. Delete forgets it and allows rediscovery, including through an in-flight report. User direction is required for deletion and restoration. Reference fulfillment or external merge state never finishes a Stream. Missing checkout mappings leave saved references intact.
+
+Use `streams reference add/edit/drop/restore/delete` for explicit reference actions, with document selectors `--repository-url=URL --path=PATH` or web selectors `--url=URL`. Add requires kind, name, purpose and role. List all states through `streams reference list`. Preserve exact machine values and decode unsafe `selector-json` output before passing separate process arguments. Absolute checkout directories and native workspace identities stay host-local; repository configuration remains a separate `streams update` action.
 
 Herdr `open` discovers active same-host Sessions and opens missing conversations in separate tabs. Already-observed running Sessions stay where they are. `--session` selects one conversation explicitly, including inactive work. There is no saved arrangement or layout restoration. `resume` replaces the invoking terminal with one verified saved conversation. `--current` means the invoking session/workspace's explicit association, never global GUI focus or a guessed title/cwd match. Do not move focus for routine reporting.
 

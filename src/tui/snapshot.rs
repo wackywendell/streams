@@ -1,7 +1,10 @@
 use std::collections::BTreeSet;
 use std::path::{Component, Path, PathBuf};
 
-use crate::model::{Document, Session, Stream, ValidationError, check_text};
+use crate::model::{
+    Reference, ReferenceState, ReferenceTarget, RepositoryDocument, Session, Stream,
+    ValidationError, check_text,
+};
 
 /// Exact viewing contribution and catalog identity, not a native ownership witness.
 #[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
@@ -40,10 +43,10 @@ pub struct CheckoutSelection {
     pub root: PathBuf,
 }
 
-/// Repository alias and the viewing session's selected checkout.
+/// Exact repository URL and the viewing session's selected checkout.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct CheckoutBinding {
-    pub repository: String,
+    pub repository_url: String,
     pub selection: CheckoutSelection,
 }
 
@@ -92,7 +95,7 @@ impl ResolvedDocument {
 /// Exactly one supplied location per stream document identity.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct DocumentLocation {
-    pub repository: String,
+    pub repository_url: String,
     pub path: String,
     pub location: ResolvedDocument,
 }
@@ -145,13 +148,6 @@ impl CardRecords {
                 "Viewing session belongs to another stream",
             ));
         }
-        if let Some(checkout) = &session.checkout
-            && checkout.repository_url.is_none()
-        {
-            return Err(ValidationError::new(
-                "Viewing session checkout has no repository URL",
-            ));
-        }
         for value in [
             &catalog_source,
             &owner.pane_id,
@@ -188,12 +184,15 @@ impl CardRecords {
         &self.owner
     }
     /// Reuse the painter's URL policy when validating an external action.
-    pub fn contains_link(&self, url: &url::Url) -> bool {
-        self.stream
-            .issues
-            .iter()
-            .chain(&self.stream.prs)
-            .any(|link| super::render::web_url(&link.url).as_ref() == Some(url))
+    pub fn contains_link(&self, reference: &Reference) -> bool {
+        reference.state != ReferenceState::Dropped
+            && match &reference.target {
+                ReferenceTarget::Pr { url }
+                | ReferenceTarget::Issue { url }
+                | ReferenceTarget::Link { url } => super::render::web_url(url).is_some(),
+                ReferenceTarget::Document(_) => false,
+            }
+            && self.stream.references.contains(reference)
     }
 }
 
@@ -217,36 +216,42 @@ impl CardSnapshot {
         let mut bindings = BTreeSet::new();
         for binding in &checkouts {
             check_text(&binding.selection.checkout_id, "checkout identity", false)?;
-            if !stream.repositories.contains_key(&binding.repository)
-                || !absolute(&binding.selection.root)
-                || !bindings.insert((&binding.repository, &binding.selection.checkout_id))
-            {
+            check_text(&binding.repository_url, "repository URL", false)?;
+            if !absolute(&binding.selection.root) || !bindings.insert(&binding.repository_url) {
                 return Err(ValidationError::new(
                     "Invalid or duplicate display checkout binding",
                 ));
             }
         }
-        if documents.len() != stream.documents.len() {
+        let visible_documents: Vec<_> = stream
+            .references
+            .iter()
+            .filter(|r| r.state != ReferenceState::Dropped)
+            .filter_map(|r| match &r.target {
+                ReferenceTarget::Document(d) => Some(d),
+                _ => None,
+            })
+            .collect();
+        if documents.len() != visible_documents.len() {
             return Err(ValidationError::new(
                 "Exactly one app location is required per document",
             ));
         }
         let mut identities = BTreeSet::new();
         for location in &documents {
-            if !identities.insert((&location.repository, &location.path))
-                || !stream
-                    .documents
-                    .iter()
-                    .any(|doc| doc.repository == location.repository && doc.path == location.path)
+            if !identities.insert((&location.repository_url, &location.path))
+                || !visible_documents.iter().any(|doc| {
+                    doc.repository_url == location.repository_url && doc.path == location.path
+                })
             {
                 return Err(ValidationError::new(
                     "Unknown or duplicate app document location",
                 ));
             }
             if let Some(selection) = location.location.selection()
-                && !checkouts
-                    .iter()
-                    .any(|b| b.repository == location.repository && b.selection == *selection)
+                && !checkouts.iter().any(|b| {
+                    b.repository_url == location.repository_url && b.selection == *selection
+                })
             {
                 return Err(ValidationError::new(
                     "App location has no matching checkout binding",
@@ -290,33 +295,41 @@ impl CardSnapshot {
     pub fn session(&self) -> &Session {
         self.records.session()
     }
-    pub fn contains_link(&self, url: &url::Url) -> bool {
-        self.records.contains_link(url)
+    pub fn contains_link(&self, reference: &Reference) -> bool {
+        self.records.contains_link(reference)
     }
     pub fn owner(&self) -> &NativeOwnerObservation {
         self.records.owner()
     }
-    pub fn document_target(&self, repository: &str, path: &str) -> Option<DocumentTarget> {
+    pub fn document_target(&self, repository_url: &str, path: &str) -> Option<DocumentTarget> {
         self.records
             .stream
-            .documents
+            .references
             .iter()
-            .find(|document| document.repository == repository && document.path == path)
-            .map(|document| self.target(document))
+            .filter(|reference| reference.state != ReferenceState::Dropped)
+            .find(|reference| match &reference.target {
+                ReferenceTarget::Document(document) => {
+                    document.repository_url == repository_url && document.path == path
+                }
+                _ => false,
+            })
+            .map(|reference| self.target(reference))
     }
 
-    pub(super) fn target(&self, document: &Document) -> DocumentTarget {
+    pub(super) fn target(&self, reference: &Reference) -> DocumentTarget {
+        let ReferenceTarget::Document(document) = &reference.target else {
+            panic!("document reference required")
+        };
         let location = self
             .context
             .documents
             .iter()
-            .find(|l| l.repository == document.repository && l.path == document.path)
+            .find(|l| l.repository_url == document.repository_url && l.path == document.path)
             .expect("snapshot construction checks complete locations");
         DocumentTarget {
             scope: self.scope().clone(),
             owner: self.owner().clone(),
-            document: document.clone(),
-            repository_url: self.stream().repositories[&document.repository].url.clone(),
+            reference: reference.clone(),
             location: location.location.clone(),
         }
     }
@@ -327,8 +340,7 @@ impl CardSnapshot {
 pub struct DocumentTarget {
     pub scope: Scope,
     pub owner: NativeOwnerObservation,
-    pub document: Document,
-    pub repository_url: String,
+    pub reference: Reference,
     pub location: ResolvedDocument,
 }
 
@@ -343,6 +355,12 @@ pub struct EditorIdentity {
 }
 
 impl DocumentTarget {
+    pub fn document(&self) -> Option<&RepositoryDocument> {
+        match &self.reference.target {
+            ReferenceTarget::Document(document) => Some(document),
+            _ => None,
+        }
+    }
     /// Returns only the app-observed identity, not permission to open or reuse an editor.
     pub fn editor_identity(&self) -> Result<EditorIdentity, &DocumentProblem> {
         match &self.location {

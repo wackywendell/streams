@@ -1,6 +1,6 @@
 # streams
 
-Streams keeps a personal catalog of ongoing work. Each stream has a stable identity, an optional goal, a work status and links to project documents. Sessions describe their own scope and achievements, current status and remaining work. Plans and design decisions stay in project repositories, not in scratch notes.
+Streams keeps a personal catalog of ongoing work. Each stream has a stable identity, an optional goal, a work status and references to documents, PRs, issues and other useful material. Sessions describe their own scope and achievements, current status and remaining work. Plans and design decisions stay in project repositories, not in scratch notes.
 
 This checkout includes the catalog CLI, Pi work-card extension and bundled agent skill. Published `v0.1.0` packages still use the scratch workflow; do not mix those packages with this CLI.
 
@@ -51,7 +51,7 @@ Initialization requires an empty catalog. Select `none` or `git` transport when
 creating it; initialization does not adopt an existing repository or convert old
 records. The alpha switch uses the [manual shutdown and backup
 checklist](docs/record-local-operations.md), followed by fresh initialization and
-re-enrollment. There is no runtime legacy reader or built reset component.
+re-enrollment. The shared reference format requires a fresh catalog and, when sharing, a fresh compatible destination. Follow the [offline activation steps](docs/stream-reference-implementation.md#offline-activation) before using the new binary with live data.
 
 Saving a record is local. Publication is a separate transport operation, so a
 network failure cannot turn an accepted local save into a failed save.
@@ -72,7 +72,7 @@ streams check
 
 Search is a case-insensitive literal substring of the title or goal. It has no operators or query language. Repeat `--status` to select several statuses. `list` excludes archived streams unless you use `--archived` or `--all`.
 
-References accept an exact ID, an exact title or a unique title substring. IDs take precedence; UUID prefixes are not supported. Ambiguous references fail and report candidate IDs; they never select the first result.
+Stream selectors accept an exact ID, an exact title or a unique title substring. IDs take precedence; UUID prefixes are not supported. Ambiguous references fail and report candidate IDs; they never select the first result.
 
 `show` prints the complete logical stream and its sessions as YAML. `--json` gives the same structure. `check` validates saved records and relationships. It does not require saved conversations to be running or probe remote branches.
 
@@ -84,12 +84,6 @@ streams update STREAM_ID --goal-file ./goal.txt
 streams update STREAM_ID --clear-goal
 streams update STREAM_ID --status parked
 streams update STREAM_ID --add-repository streams https://github.com/wackywendell/streams
-streams update STREAM_ID --add-document streams lifecycle-design docs/design.md "Design decisions"
-streams update STREAM_ID --document-commit streams docs/design.md COMMIT_ID
-streams update STREAM_ID --document-session streams docs/design.md SESSION_ID
-streams update STREAM_ID --remove-document streams docs/design.md
-streams update STREAM_ID --add-issue https://example.org/issues/42 "Tracking issue"
-streams update STREAM_ID --add-pr https://example.org/pulls/43 "Implementation"
 streams archive STREAM_ID
 streams restore STREAM_ID
 ```
@@ -98,9 +92,30 @@ Statuses are `active`, `waiting`, `blocked`, `parked` and `done`. Archive contro
 
 Setting a title or goal makes that field manual. Use `--title-mode automatic` or `--goal-mode automatic` to allow future automatic refinement. Compact summaries clear when their source text changes.
 
-References use repository aliases, remote branch or bookmark names, and repository-relative paths. Absolute checkout paths stay local. Collection flags are repeatable. Use the corresponding `--remove-*` flag to remove an entry; replacing an existing entry requires removing and adding it explicitly. Run `streams update --help` for argument shapes.
+Repository aliases configure the effort's repositories and checkout commands. Reference management uses the separate command family below.
 
 Omitted fields stay unchanged. `--clear-goal` removes a goal. Text-file flags read UTF-8; use `-` for stdin. Only one field can consume stdin per command.
+
+## Manage references
+
+Each reference has a name, purpose, role and state. Roles are `deliverable`, `dependency`, `brief` and `background`; states are `active`, `fulfilled` and `dropped`. Targets are documents, PRs, issues or links.
+
+```sh
+streams reference add STREAM_ID --kind document --repository-url https://example.org/tools --path docs/design.md --name Design --purpose 'Guide implementation' --role brief --ref lifecycle-design
+streams reference add STREAM_ID --kind pr --url https://example.org/tools/pull/43 --name Implementation --purpose 'Deliver the change' --role deliverable
+streams reference list STREAM_ID
+streams reference list STREAM_ID --json
+streams reference edit STREAM_ID --url https://example.org/tools/pull/43 --purpose 'Merge and deploy the change'
+streams reference drop STREAM_ID --url https://example.org/tools/pull/43
+streams reference restore STREAM_ID --url https://example.org/tools/pull/43 --state active
+streams reference delete STREAM_ID --url https://example.org/tools/pull/43 --confirm
+```
+
+Document identity is the exact repository URL and portable relative path. PR, Issue and Link share exact URL identity. Recovery ref, commit and source Session hints remain optional. References stay saved when local files or checkout mappings are unavailable.
+
+Drop keeps the identity and prevents automatic restoration. Delete forgets it and allows reporting to rediscover it, including through a report already underway. Fulfilled references remain visible; Dropped entries are available in the manager and CLI list. Explicit restoration chooses Active or Fulfilled.
+
+Plain list output supplies exact selector flags. Unsafe document selectors appear as `selector-json` data requiring JSON decoding; machine output preserves every value. See `streams reference --help` and the [implementation contract](docs/stream-reference-implementation.md#cli-entry-points) for correction flags and recovery-field clearing.
 
 ## Record session progress
 
@@ -146,6 +161,7 @@ The checkout's Pi extension maintains catalog records instead of generating scra
 
 - `/streams` or `/streams card` opens the card without running a model. Edit labelled fields, choose valid statuses and manage reference rows. Whole-effort actions are separate from session actions; IDs, ownership and membership are read-only.
 - Editing a title or goal makes it manual. Titles can return to automatic or inherit the global default; goals use automatic or manual. Invalid or conflicting edits retain their input; unchanged fields are not submitted.
+- The Stream tab's References manager edits names, purposes, kinds, roles, states and targets. Retained input remains separately inspectable after conflicts or source deletion. Explicit reapply uses a fresh capture and asks before restoring a Dropped row.
 - `/streams name [session|stream] <name>` saves and protects a title, including unchanged text. The default target is Session. `/streams title-mode [session|stream] automatic|manual|inherit` changes policy without generating a new title.
 - Card discussion can answer without edits, refresh descriptions, or carry out an explicitly requested edit. User direction is approval; uncertain intent produces a question rather than a management action.
 - `/streams report` requests a report now, not a draft awaiting Apply. Use `/streams report [instructions]` to give reporting direction. Explicit reporting can enroll an unbound conversation. `/streams reset [--auto]` regenerates automatic fields (and with `--auto`, restores automatic title/goal modes before inference). The model-callable `checkpoint` tool remains unchanged.
@@ -165,6 +181,8 @@ Add `"model": {"provider": "PROVIDER", "id": "MODEL_ID"}` to select a helper mod
 The Naming submenu saves Stream and Session title-generation defaults through the Rust configuration API (`naming.stream` and `naming.session`). They live in `$XDG_CONFIG_HOME/streams/config.json`, normally `~/.config/streams/config.json`, not `stream-reporting.json`. Defaults affect records in `inherit` mode, not explicit automatic or manual modes. Enrollment may still create an initial title under a manual default. Changing a default does not run inference or rename a frontend.
 
 Pi's built-in `/name` imports a different name as a manual Session title when Pi name edits are enabled. Matching names are ignored; use `/streams name session <name>` to pin one. Unbound conversations stay native-only. Incoming edits and outgoing Pi synchronization are independent: disable both to keep the names separate. A rare late projection echo can be imported as manual; see the [name-ownership decision](docs/name-ownership.md#native-pi-name).
+
+Session inference can propose reference additions, updates and drops alongside progress. Progress saves first, then references use the original capture; a reference refusal preserves saved progress and stops later inference without retrying. Reference state describes this effort's relationship to the resource and does not change external tickets or Stream lifecycle.
 
 Session progress and effort metadata use separate inferences, so updating both takes two helper requests. Reports preserve captured records, ownership and conversation-lineage guards. They may update session status, but cannot park, finish or archive the whole effort. Historical conversation is evidence, not fresh verification of files or remote services.
 

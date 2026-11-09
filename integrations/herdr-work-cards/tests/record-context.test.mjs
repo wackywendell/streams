@@ -1,10 +1,13 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
-import { isSession, parseLocalContext } from '../dist/streams-context.js';
+import {
+  isReference, isReferenceTarget, isReferenceText, isReferenceValue, isRepositoryDocument,
+  isResourceKey, isSession, isStream, parseLocalContext, referenceUrl, resourceKey,
+} from '../dist/streams-context.js';
 
 const stream = {
   id:'effort', title:'Streams', title_mode:'inherit', goal:null, goal_short:null, goal_mode:'automatic',
-  status:'active', archived:false, owner:{host_id:'host'}, repositories:{}, documents:[], issues:[], prs:[],
+  status:'active', archived:false, owner:{host_id:'host'}, repositories:{}, references:[],
 };
 const session = {
   id:'ab441ac4-d600-5fd6-babf-fc43ab65623d', host_id:'host', stream_id:'effort', harness:'pi', harness_session_id:'native',
@@ -40,10 +43,135 @@ test('addressed context rejects a roster and inconsistent host, membership or na
   assert.doesNotThrow(() => parseLocalContext(foreign));
 });
 
-test('checkout wire requires its independent repository URL', () => {
+
+const reference = () => ({
+  name:'Reference', purpose:'Define acceptance', role:'brief', state:'active',
+  target:{kind:'link', url:'https://EXAMPLE.test/brief'}, revision:'replay:capture:0:1',
+});
+
+test('standalone references preserve exact values, roles, states and resource keys', () => {
+  for (const kind of ['pr', 'issue', 'link', 'document']) {
+    const value = reference();
+    value.target = kind === 'document'
+      ? {kind, repository_url:'git@example.test:tools', path:'docs/design.md'}
+      : {kind, url:'https://EXAMPLE.test/item'};
+    const original = structuredClone(value);
+    for (const role of ['deliverable', 'dependency', 'brief', 'background']) {
+      for (const state of ['active', 'fulfilled', 'dropped']) {
+        assert.equal(isReference({...value, role, state}), true);
+      }
+    }
+    assert.equal(isReference(value), true);
+    assert.deepEqual(value, original);
+    const key = resourceKey(value.target);
+    assert.equal(isResourceKey(key), true);
+    if (kind === 'document') {
+      assert.deepEqual(resourceKey({...value.target, ref:'topic', commit:'new', source_session_id:'source'}), key);
+    } else {
+      for (const other of ['pr', 'issue', 'link']) {
+        assert.deepEqual(resourceKey({...value.target, kind:other}), key);
+      }
+      assert.notDeepEqual(resourceKey({...value.target, url:'https://example.test/item'}), key);
+    }
+    const {revision, ...desired} = value;
+    assert.equal(isReferenceValue(desired), true);
+    assert.equal(isReferenceValue(value), false);
+    assert.equal(isReference({...value, extra:true}), false);
+    assert.equal(isResourceKey({...key, extra:true}), false);
+    assert.equal(isReference({...value, target:{...value.target, extra:true}}), false);
+    for (const field of ['name', 'purpose', 'role', 'state', 'target', 'revision']) {
+      const invalid = structuredClone(value);
+      delete invalid[field];
+      assert.equal(isReference(invalid), false, field);
+    }
+    assert.equal(isReference({...value, role:'Brief'}), false);
+    assert.equal(isReference({...value, state:'unknown'}), false);
+    assert.equal(isReferenceTarget({...value.target, kind:'unknown'}), false);
+  }
+});
+
+test('reference text matches Rust whitespace and Unicode scalar validity without trimming', () => {
+  for (const text of ['\ufeff', '😀', 'leading\nnewline', "--value='exact'", '\u001b']) {
+    assert.equal(isReferenceText(text), true, JSON.stringify(text));
+    for (const field of ['name', 'purpose', 'revision']) {
+      const value = {...reference(), [field]:text};
+      assert.equal(isReference(value), true, field);
+      assert.equal(value[field], text);
+    }
+  }
+  for (const text of ['', ' \n', '\u0085', '\u00a0\u3000', 'bad\0text', '\ud800', '\udfff', 'bad\ud800text']) {
+    assert.equal(isReferenceText(text), false, JSON.stringify(text));
+    for (const field of ['name', 'purpose', 'revision']) {
+      assert.equal(isReference({...reference(), [field]:text}), false, field);
+    }
+  }
+  for (const value of [null, undefined, 1, true, [], {}]) assert.equal(isReferenceText(value), false);
+});
+
+test('repository documents have portable paths and optional nullable recovery context', () => {
+  const document = {repository_url:'git@example.test:tools', path:'docs/design.md'};
+  assert.equal(isRepositoryDocument(document), true);
+  assert.equal(isRepositoryDocument({...document, description:'old relationship'}), false);
+  for (const field of ['ref', 'commit', 'source_session_id']) {
+    for (const value of [undefined, null, 'established', '\ufeff', '😀']) {
+      assert.equal(isRepositoryDocument({...document, [field]:value}), true);
+    }
+    for (const value of ['', ' \n', '\u0085', 'bad\0text', '\ud800', '\udfff', 42]) {
+      assert.equal(isRepositoryDocument({...document, [field]:value}), false, field);
+    }
+  }
+  for (const path of ['/absolute', 'C:drive', 'docs\\file', '../parent', 'docs/../file', '', '\u0085']) {
+    assert.equal(isRepositoryDocument({...document, path}), false, path);
+    assert.equal(isResourceKey({kind:'document', ...document, path}), false, path);
+  }
+  for (const field of ['repository_url', 'path']) {
+    for (const text of ['\ufeff', '😀', 'exact\ntext']) {
+      assert.equal(isRepositoryDocument({...document, [field]:text}), true);
+    }
+    for (const text of ['', '\u0085', '\0', '\ud800', '\udfff']) {
+      assert.equal(isRepositoryDocument({...document, [field]:text}), false);
+    }
+  }
+});
+
+test('reference web targets share raw and decoded safety without normalising keys', () => {
+  for (const url of [
+    'https://EXAMPLE.test/path', 'http://localhost:8080/a%20b', 'https://[::1]/',
+    'https://example.test/%F0%9F%98%80',
+  ]) {
+    assert.ok(referenceUrl(url), url);
+    assert.equal(isReference({...reference(), target:{kind:'link', url}}), true);
+    assert.deepEqual(resourceKey({kind:'link', url}), {kind:'url', url});
+  }
+  for (const url of [
+    'file:///tmp/doc', 'javascript:alert(1)', 'https://', 'https://user@example.test',
+    'https://user:secret@example.test', 'https://:secret@example.test', 'https://example.test/a b',
+    'https://example.test/\\path', 'https://example.test/\u0085', 'https://example.test/\ufeff',
+    'https://example.test/%', 'https://example.test/%0', 'https://example.test/%gg',
+    'https://example.test/%FF', 'https://example.test/%ED%A0%80', 'https://example.test/%00',
+    'https://example.test/%1b', 'https://example.test/%E2%80%AE',
+  ]) {
+    assert.equal(referenceUrl(url), undefined, url);
+    assert.equal(isResourceKey({kind:'url', url}), false, url);
+    for (const kind of ['pr', 'issue', 'link']) assert.equal(isReferenceTarget({kind, url}), false, url);
+  }
+});
+
+test('Stream requires references and rejects old fields and duplicate exact keys', () => {
+  assert.equal(isStream(stream), true);
+  const {references, ...missing} = stream;
+  assert.equal(isStream(missing), false);
+  for (const field of ['documents', 'issues', 'prs']) assert.equal(isStream({...stream, [field]:[]}), false);
+  const a = reference();
+  assert.equal(isStream({...stream, references:[a, {...a, target:{kind:'pr', url:a.target.url}}]}), false);
+  assert.equal(isStream({...stream, references:[a, {...a, target:{kind:'pr', url:'https://example.test/brief'}}]}), true);
+  const doc = {...a, target:{kind:'document', repository_url:'repo', path:'plan', ref:'one'}};
+  assert.equal(isStream({...stream, references:[doc, {...doc, target:{...doc.target, ref:'two'}}]}), false);
+});
+
+test('checkout wire permits absent repository URL without guessing it', () => {
   const checkout = {repository:'repo', repository_url:'https://example.test/repo', ref:'main', directory_within_checkout:'.'};
   assert.equal(isSession({...session, checkout}), true);
-  for (const repository_url of [undefined, null, '', '  ']) {
-    assert.equal(isSession({...session, checkout:{...checkout, repository_url}}), false);
-  }
+  for (const repository_url of [undefined, null]) assert.equal(isSession({...session, checkout:{...checkout, repository_url}}), true);
+  for (const repository_url of ['', '  ']) assert.equal(isSession({...session, checkout:{...checkout, repository_url}}), false);
 });

@@ -40,11 +40,11 @@ fn snapshot(read: usize) -> CardSnapshot {
                 workspace_id: "w".into(),
             },
             checkouts: vec![CheckoutBinding {
-                repository: "lib".into(),
+                repository_url: "https://example.com/lib".into(),
                 selection: selection.clone(),
             }],
             documents: vec![DocumentLocation {
-                repository: "lib".into(),
+                repository_url: "https://example.com/lib".into(),
                 path: "docs/design.md".into(),
                 location: ResolvedDocument::File {
                     selection,
@@ -120,7 +120,7 @@ impl PaneHost for Host {
                 assert_eq!(
                     **document,
                     self.snapshot
-                        .document_target("lib", "docs/design.md")
+                        .document_target("https://example.com/lib", "docs/design.md")
                         .unwrap()
                 );
                 self.event("document:lib:docs/design.md");
@@ -218,7 +218,7 @@ fn result(root: &Path) -> Result<(), String> {
 fn ready(pty: &mut Pty) {
     pty.until(|p| {
         let screen = p.screen();
-        screen.contains("[a] docs/design.md")
+        screen.contains("[a] Document Design")
             && screen.contains("[q] close")
             && !screen.contains("Refreshing")
     });
@@ -372,7 +372,7 @@ fn refresh_clears_failure_notice_and_clipped_documents_cannot_activate() {
     pty.send(b"\x12");
     pty.until(|p| {
         events(root.path()).matches("read\n").count() == 3
-            && p.screen().contains("docs/design.md")
+            && p.screen().contains("Document Design")
             && !p.screen().contains("Refreshing")
             && !p.screen().contains("Activation failed")
     });
@@ -389,7 +389,7 @@ fn refresh_clears_failure_notice_and_clipped_documents_cannot_activate() {
             .lines()
             .nth(1)
             .is_some_and(|line| line.contains("[q] close"))
-            && !p.screen().contains("docs/design.md")
+            && !p.screen().contains("Document Design")
     });
     pty.send(b"aq");
     finish(&mut pty, root.path());

@@ -16,7 +16,7 @@ const { debugCommand, parseDebugCommand } = await load('debug');
 const { StreamCli } = await load('streams');
 const { defaults } = await load('settings');
 const { default: extension } = await load('index');
-const stream = {id:'effort',title:'Work',title_mode:'manual',goal:'Original goal',goal_short:'Old goal',goal_mode:'automatic',status:'active',archived:false,owner:{host_id:'host'},repositories:{},issues:[],prs:[],documents:[]};
+const stream = {id:'effort',title:'Work',title_mode:'manual',goal:'Original goal',goal_short:'Old goal',goal_mode:'automatic',status:'active',archived:false,owner:{host_id:'host'},repositories:{},references:[]};
 const session = {id:sessionId('host','pi','native'),host_id:'host',stream_id:'effort',harness:'pi',harness_session_id:'native',title:'Lane',title_mode:'automatic',status:'active',state:'Original state',state_short:'Old state',remaining:'Next',checkout:null};
 const context = () => structuredClone({catalog_source:'source',host_id:'host',stream,session,sessions:[session],title_defaults:{stream:'automatic',session:'automatic'}});
 const response = args => ({role:'assistant',api:'openai-responses',provider:'test',model:'model',timestamp:1,stopReason:'toolUse',usage:{input:0,output:0,cacheRead:0,cacheWrite:0,totalTokens:0,cost:{input:0,output:0,cacheRead:0,cacheWrite:0,total:0}},content:[{type:'toolCall',id:'record',name:'record_card',arguments:args}]});
@@ -50,6 +50,13 @@ test('pure payload construction and strict parsing share schemas without mutatin
  });
  assert.equal(raw.content[0].arguments.changes.status,'active');
  assert.throws(()=>parseInferenceResponse({type:'session',catalog:context(),messages:[]},response({changes:{session_state:'wrong alias'}})),/invalid structured/);
+});
+test('session reset payload keeps captured empty and unavailable hints',()=>{
+ const catalog=context();catalog.checkouts=[];catalog.document_locations=[{repository_url:'repo',path:'missing',checkout_id:null,root:null,kind:null,file:null,error:'Unavailable'}];
+ const before=structuredClone(catalog),payload=buildInferencePayload({type:'session',catalog,messages:[],reset:true});
+ const visible=JSON.parse(payload.messages.at(-1).content).catalog;
+ assert.deepEqual(visible.checkouts,[]);assert.deepEqual(visible.document_locations,before.document_locations);assert.deepEqual(visible.stream.references,[]);
+ catalog.document_locations.length=0;assert.equal(visible.document_locations.length,1);
 });
 test('enrollment accepts only title proposals and optional effort goals',()=>{
  const catalog=context();catalog.session=null;catalog.sessions=[];
@@ -91,16 +98,34 @@ test('stream preparation uses only the addressed contribution without claiming a
  catalog.sessions=[sibling];
  assert.deepEqual(JSON.parse(buildInferencePayload(request).messages[0].content).catalog.sessions,[catalog.session]);
 });
-test('report prompts name one write target and its exact automatic fields',()=>{
+test('report prompts separate Session progress and reference proposals from Stream metadata',()=>{
  for(const [kind,label] of [['stream','Stream'],['session','Session']]) for(const manual of [false,true]) {
   const catalog=context();
   if(manual) {catalog[kind].title_mode='manual';if(kind==='stream')catalog.stream.goal_mode='manual';}
   const payload=buildInferencePayload({type:kind,catalog,messages:[]});
   const allowed=Object.keys(payload.tools[0].parameters.properties.changes.properties);
-  assert.ok(payload.systemPrompt.includes(`Update only the ${label} card.`));
-  assert.ok(payload.systemPrompt.includes(`Allowed fields in changes: ${JSON.stringify(allowed)}.`));
-  assert.match(payload.systemPrompt,/other catalog records are read-only evidence/);
-  assert.match(payload.systemPrompt,/Never use stream_ or session_ prefixes/);
+  assert.match(payload.systemPrompt,/Use unprefixed field names directly inside changes/);
+  assert.doesNotMatch(payload.systemPrompt,/Call record_card exactly once with/);
+  if(kind==='session') {
+   assert.match(payload.systemPrompt,/Assess two independent tasks in one record_card call/);
+   assert.ok(payload.systemPrompt.includes(`Allowed Session fields in changes: ${JSON.stringify(allowed)}.`));
+   assert.match(payload.systemPrompt,/never put Stream fields there/);
+   assert.match(payload.systemPrompt,/captured Stream is the baseline for reference_proposals/);
+   assert.match(payload.systemPrompt,/Evaluate references even when progress needs no changes/);
+   assert.match(payload.systemPrompt,/propose the reference rather than merely putting its capture or verification in Remaining/);
+   assert.match(payload.systemPrompt,/Use established repository identities from catalog.checkouts or saved references/);
+   assert.match(payload.systemPrompt,/opening hints, not a list of permitted new references/);
+   assert.match(payload.systemPrompt,/Return reference_proposals: \[\] when no reference changes are supported/);
+   assert.doesNotMatch(payload.systemPrompt,/Update only the Session card|other catalog records are read-only evidence/);
+   assert.ok(payload.tools[0].parameters.properties.reference_proposals);
+   assert.equal(Object.hasOwn(payload.tools[0].parameters.properties.changes.properties,'references'),false);
+  } else {
+   assert.ok(payload.systemPrompt.includes(`Update only the ${label} card.`));
+   assert.ok(payload.systemPrompt.includes(`Allowed fields in changes: ${JSON.stringify(allowed)}.`));
+   assert.match(payload.systemPrompt,/other catalog records are read-only evidence/);
+   assert.match(payload.systemPrompt,/Never use stream_ or session_ prefixes/);
+   assert.equal(Object.hasOwn(payload.tools[0].parameters.properties,'reference_proposals'),false);
+  }
   if(manual)assert.ok(!allowed.includes('title'));
  }
 });
@@ -129,7 +154,7 @@ test('report prompts prefer current tasks, enduring responsibilities and actiona
  assert.match(sessionPrompt,/Name the action and its target/);
  assert.match(sessionPrompt,/done only when no newer accepted task remains/);
  assert.match(sessionPrompt,/Keep genuine uncertainty and blockers/);
- assert.ok(sessionPrompt.indexOf('Final editing rules')>sessionPrompt.indexOf('Update only the Session card'));
+ assert.ok(sessionPrompt.indexOf('Final editing rules')>sessionPrompt.indexOf('Assess two independent tasks'));
  const streamPrompt=buildInferencePayload({type:'stream',catalog,messages:[]}).systemPrompt;
  assert.match(streamPrompt,/Prefer the established project name/);
  assert.match(streamPrompt,/Keep a fitting title when only progress or wording changes/);

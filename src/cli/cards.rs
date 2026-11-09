@@ -287,19 +287,21 @@ fn activate(
     match target {
         ViewTarget::Document(document) => engine.open_document(document).map_err(|e| e.to_string()),
         ViewTarget::Artifact(artifact) => engine.open_artifact(artifact).map_err(|e| e.to_string()),
-        ViewTarget::Link(url) => {
+        ViewTarget::Link(reference) => {
             engine
                 .client()
                 .check_subscription()
                 .map_err(|error| error.to_string())?;
-            if !snapshot.contains_link(url)
-                || !fresh.contains_link(url)
-                || !matches!(url.scheme(), "https" | "http")
-                || !url.username().is_empty()
-                || url.password().is_some()
-            {
+            if !snapshot.contains_link(reference) || !fresh.contains_link(reference) {
                 return Err("unsafe browser URL".into());
             }
+            let raw = match &reference.target {
+                streams::model::ReferenceTarget::Pr { url }
+                | streams::model::ReferenceTarget::Issue { url }
+                | streams::model::ReferenceTarget::Link { url } => url,
+                _ => return Err("browser action requires a URL reference".into()),
+            };
+            let url = streams::model::reference_url(raw).ok_or("unsafe browser URL")?;
             let env = environment
                 .iter()
                 .filter(|(key, _)| {

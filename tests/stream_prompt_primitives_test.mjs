@@ -13,7 +13,7 @@ const response=changes=>({role:'assistant',api:'openai-responses',provider:'test
 const runtime=complete=>({model,modelRegistry:{find:(p,id)=>p===model.provider&&id===model.id?model:undefined,complete}});
 function fixture(){
  const directory=mkdtempSync(join(tmpdir(),'streams-primitives-')),root=join(directory,'debug'),manager=SessionManager.inMemory(directory,{id:'native'});
- const stream={id:'effort',title:'Work',title_mode:'automatic',goal:'Goal',goal_short:null,goal_mode:'automatic',status:'active',archived:false,owner:{host_id:'host'},repositories:{},issues:[],prs:[],documents:[]};
+ const stream={id:'effort',title:'Work',title_mode:'automatic',goal:'Goal',goal_short:null,goal_mode:'automatic',status:'active',archived:false,owner:{host_id:'host'},repositories:{},references:[]};
  const session={id:sessionId('host','pi','native'),host_id:'host',stream_id:'effort',harness:'pi',harness_session_id:'native',title:'Lane',title_mode:'automatic',status:'active',state:'Before',state_short:null,remaining:'Next',checkout:null};
  const catalog={catalog_source:'source',host_id:'host',stream,session,sessions:[session],title_defaults:{stream:'automatic',session:'automatic'}};
  manager.appendMessage({role:'user',content:[{type:'text',text:'Synthetic evidence'},{type:'image',data:'AA==',mimeType:'image/png'}],timestamp:1});
@@ -41,6 +41,18 @@ test('one full recording prepares independently trimmed/full requests and plain 
   assert.deepEqual(f.capture,original);assert.equal(a.trim,true);assert.equal(full.trim,false);
   assert.throws(()=>prepare(f.capture,task,'   '),/prompt override/);assert.throws(()=>prepare(f.capture,{sample:99,type:'session'}),/sample index/);
   const legacy={...f.capture,context_mode:'trimmed'};assert.throws(()=>prepare(legacy,task,undefined,false),/older capture/);assert.ok(prepare(legacy,task));
+ }finally{f.dispose();}
+});
+test('session reset preparation freezes supplied checkout and document hints',()=>{
+ const f=fixture();try {
+  const sample=f.inventory.samples[0].catalog;
+  sample.checkouts=[{repository_url:'repo',checkout_id:'checkout',root:'/work'}];
+  sample.document_locations=[{repository_url:'repo',path:'plan',checkout_id:'checkout',root:'/work',kind:'local',file:'/work/plan',error:null},{repository_url:'repo',path:'missing',checkout_id:null,root:null,kind:null,file:null,error:'Unavailable'}];
+  const frozen=captureSessions(f.inventory,f.root,f.manager).capture, prepared=prepare(frozen,{sample:0,type:'session',reset:true});
+  const input=JSON.parse(prepared.model_request.messages.at(-1).content).catalog;
+  assert.deepEqual(input.checkouts,sample.checkouts);assert.deepEqual(input.document_locations,sample.document_locations);
+  sample.checkouts.length=0;sample.document_locations.length=0;
+  assert.equal(input.checkouts.length,1);assert.equal(prepared.input.catalog.document_locations.length,2);
  }finally{f.dispose();}
 });
 test('saved requests round-trip, use exact rendered input across reruns, and retain raw invalid responses',async()=>{

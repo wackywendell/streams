@@ -3,7 +3,7 @@ use std::path::PathBuf;
 use clap::{ArgAction, ArgGroup, Args, Parser, Subcommand};
 use streams::config::{ConfigKey, Strategy};
 use streams::frontend::FrontendRequest;
-use streams::model::{NamingMode, Status, TitleMode};
+use streams::model::{NamingMode, ReferenceRole, ReferenceState, Status, TitleMode};
 use streams::runtime::conversations::Harness;
 
 #[derive(Debug, Parser)]
@@ -156,6 +156,11 @@ pub(super) enum Command {
         reference: Option<String>,
     },
     Sync,
+    /// Inspect and manage the effort's reference relationships.
+    Reference {
+        #[command(subcommand)]
+        command: ReferenceCommand,
+    },
     /// Store or read named Session outputs in the catalog.
     Artifact {
         #[command(subcommand)]
@@ -173,6 +178,112 @@ pub(super) enum Command {
         #[command(subcommand)]
         command: AgentCommand,
     },
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, clap::ValueEnum)]
+pub(super) enum ReferenceKind {
+    Document,
+    Pr,
+    Issue,
+    Link,
+}
+
+#[derive(Debug, Subcommand)]
+pub(super) enum ReferenceCommand {
+    List {
+        stream: String,
+    },
+    Add {
+        stream: String,
+        #[command(flatten)]
+        target: ReferenceSelector,
+        #[command(flatten)]
+        fields: ReferenceFields,
+    },
+    Edit {
+        stream: String,
+        #[command(flatten)]
+        selector: ReferenceSelector,
+        #[command(flatten)]
+        fields: ReferenceFields,
+    },
+    Drop {
+        stream: String,
+        #[command(flatten)]
+        selector: ReferenceSelector,
+    },
+    Restore {
+        stream: String,
+        #[command(flatten)]
+        selector: ReferenceSelector,
+        #[arg(long)]
+        state: ReferenceState,
+    },
+    Delete {
+        stream: String,
+        #[command(flatten)]
+        selector: ReferenceSelector,
+        #[arg(long)]
+        confirm: bool,
+    },
+}
+
+#[derive(Debug, Default, Args)]
+#[group(required = true, multiple = true)]
+pub(super) struct ReferenceSelector {
+    #[arg(long, allow_hyphen_values = true, conflicts_with_all = ["repository_url", "path"])]
+    pub(super) url: Option<String>,
+    #[arg(
+        long,
+        allow_hyphen_values = true,
+        requires = "path",
+        conflicts_with = "url"
+    )]
+    pub(super) repository_url: Option<String>,
+    #[arg(
+        long,
+        allow_hyphen_values = true,
+        requires = "repository_url",
+        conflicts_with = "url"
+    )]
+    pub(super) path: Option<String>,
+}
+
+#[derive(Debug, Default, Args)]
+#[group(skip)]
+pub(super) struct ReferenceFields {
+    #[arg(long, allow_hyphen_values = true)]
+    pub(super) name: Option<String>,
+    #[arg(long, allow_hyphen_values = true)]
+    pub(super) purpose: Option<String>,
+    #[arg(long)]
+    pub(super) kind: Option<ReferenceKind>,
+    #[arg(long)]
+    pub(super) role: Option<ReferenceRole>,
+    #[arg(long)]
+    pub(super) state: Option<ReferenceState>,
+    #[arg(long = "ref", allow_hyphen_values = true, conflicts_with = "clear_ref")]
+    pub(super) r#ref: Option<String>,
+    #[arg(long, allow_hyphen_values = true, conflicts_with = "clear_commit")]
+    pub(super) commit: Option<String>,
+    #[arg(
+        long,
+        allow_hyphen_values = true,
+        conflicts_with = "clear_source_session"
+    )]
+    pub(super) source_session: Option<String>,
+    #[arg(long)]
+    pub(super) clear_ref: bool,
+    #[arg(long)]
+    pub(super) clear_commit: bool,
+    #[arg(long)]
+    pub(super) clear_source_session: bool,
+    #[arg(long, allow_hyphen_values = true)]
+    pub(super) target_url: Option<String>,
+    #[arg(long, allow_hyphen_values = true, requires = "target_path")]
+    pub(super) target_repository_url: Option<String>,
+    #[arg(long, allow_hyphen_values = true, requires = "target_repository_url")]
+    pub(super) target_path: Option<String>,
 }
 
 #[derive(Debug, Subcommand)]
@@ -362,22 +473,6 @@ pub(super) struct StreamFields {
     pub(super) add_repository: Vec<String>,
     #[arg(long, action = ArgAction::Append, value_name = "ALIAS")]
     pub(super) remove_repository: Vec<String>,
-    #[arg(long, num_args = 4, action = ArgAction::Append, value_names = ["REPOSITORY", "REF", "PATH", "DESCRIPTION"])]
-    pub(super) add_document: Vec<String>,
-    #[arg(long, num_args = 2, action = ArgAction::Append, value_names = ["REPOSITORY", "PATH"])]
-    pub(super) remove_document: Vec<String>,
-    #[arg(long, num_args = 3, action = ArgAction::Append, value_names = ["REPOSITORY", "PATH", "COMMIT"])]
-    pub(super) document_commit: Vec<String>,
-    #[arg(long, num_args = 3, action = ArgAction::Append, value_names = ["REPOSITORY", "PATH", "SESSION_ID"])]
-    pub(super) document_session: Vec<String>,
-    #[arg(long, num_args = 2, action = ArgAction::Append, value_names = ["URL", "DESCRIPTION"])]
-    pub(super) add_issue: Vec<String>,
-    #[arg(long, action = ArgAction::Append, value_name = "URL")]
-    pub(super) remove_issue: Vec<String>,
-    #[arg(long, num_args = 2, action = ArgAction::Append, value_names = ["URL", "DESCRIPTION"])]
-    pub(super) add_pr: Vec<String>,
-    #[arg(long, action = ArgAction::Append, value_name = "URL")]
-    pub(super) remove_pr: Vec<String>,
 }
 
 #[derive(Debug, Default, Args)]
@@ -607,32 +702,283 @@ mod tests {
     }
 
     #[test]
-    fn document_provenance_flags_preserve_repeated_groups() {
+    fn retired_reference_collection_flags_are_rejected() {
+        for command in ["create", "update"] {
+            for flag in [
+                "--add-document",
+                "--remove-document",
+                "--document-commit",
+                "--document-session",
+                "--add-issue",
+                "--remove-issue",
+                "--add-pr",
+                "--remove-pr",
+            ] {
+                assert!(
+                    parse(&[command, "work", flag, "url", "description"]).is_err(),
+                    "{flag}"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn reference_selectors_and_recovery_flags_have_exact_grammar() {
+        for arguments in [
+            vec![
+                "reference",
+                "edit",
+                "work",
+                "--url",
+                "https://example.test/item",
+                "--name",
+                "one",
+                "--name",
+                "two",
+            ],
+            vec!["reference", "drop", "work"],
+            vec!["reference", "drop", "work", "--repository-url", "repo"],
+            vec!["reference", "drop", "work", "--path", "doc"],
+            vec![
+                "reference",
+                "drop",
+                "work",
+                "--url",
+                "https://example.test/item",
+                "--repository-url",
+                "repo",
+                "--path",
+                "doc",
+            ],
+            vec![
+                "reference",
+                "edit",
+                "work",
+                "--url",
+                "https://example.test/item",
+                "--target-path",
+                "doc",
+            ],
+            vec![
+                "reference",
+                "edit",
+                "work",
+                "--url",
+                "https://example.test/item",
+                "--target-repository-url",
+                "repo",
+            ],
+            vec![
+                "reference",
+                "edit",
+                "work",
+                "--url",
+                "https://example.test/item",
+                "--ref",
+                "one",
+                "--clear-ref",
+            ],
+            vec![
+                "reference",
+                "edit",
+                "work",
+                "--url",
+                "https://example.test/item",
+                "--commit",
+                "one",
+                "--clear-commit",
+            ],
+            vec![
+                "reference",
+                "edit",
+                "work",
+                "--url",
+                "https://example.test/item",
+                "--source-session",
+                "one",
+                "--clear-source-session",
+            ],
+            vec![
+                "reference",
+                "restore",
+                "work",
+                "--url",
+                "https://example.test/item",
+            ],
+            vec![
+                "reference",
+                "edit",
+                "work",
+                "--url",
+                "https://example.test/item",
+                "--kind",
+                "PR",
+            ],
+            vec![
+                "reference",
+                "edit",
+                "work",
+                "--url",
+                "https://example.test/item",
+                "--role",
+                "Brief",
+            ],
+            vec![
+                "reference",
+                "edit",
+                "work",
+                "--url",
+                "https://example.test/item",
+                "--state",
+                "Active",
+            ],
+        ] {
+            assert!(parse(&arguments).is_err(), "{arguments:?}");
+        }
+        for flag in [
+            "--url",
+            "--name",
+            "--purpose",
+            "--kind",
+            "--role",
+            "--state",
+            "--ref",
+            "--commit",
+            "--source-session",
+            "--target-url",
+        ] {
+            let value = match flag {
+                "--kind" => "pr",
+                "--role" => "brief",
+                "--state" => "active",
+                _ => "https://example.test/item",
+            };
+            let mut arguments = vec!["reference", "edit", "work"];
+            if flag != "--url" {
+                arguments.extend(["--url", "https://example.test/item"]);
+            }
+            arguments.extend([flag, value, flag, value]);
+            assert!(parse(&arguments).is_err(), "{flag}");
+        }
         let parsed = parse(&[
-            "update",
+            "reference",
+            "edit",
             "work",
-            "--document-commit",
-            "repo",
-            "doc",
-            "first",
-            "--document-commit",
-            "repo",
-            "doc",
-            "latest",
-            "--document-session",
-            "repo",
-            "doc",
-            "source",
+            "--repository-url=--",
+            "--path",
+            "--",
+            "--name",
+            "-name",
+            "--purpose",
+            "--",
+            "--ref",
+            "-ref",
+            "--commit",
+            "-commit",
+            "--source-session",
+            "-source",
+            "--target-repository-url",
+            "-repo",
+            "--target-path",
+            "-path",
         ])
         .unwrap();
-        let Command::Update { fields, .. } = parsed.command else {
-            panic!("expected update");
+        let Command::Reference {
+            command: ReferenceCommand::Edit {
+                selector, fields, ..
+            },
+        } = parsed.command
+        else {
+            panic!("edit")
         };
-        assert_eq!(
-            fields.document_commit,
-            ["repo", "doc", "first", "repo", "doc", "latest"]
-        );
-        assert_eq!(fields.document_session, ["repo", "doc", "source"]);
+        assert_eq!(selector.path.as_deref(), Some("--"));
+        assert_eq!(fields.name.as_deref(), Some("-name"));
+        assert_eq!(fields.purpose.as_deref(), Some("--"));
+        assert_eq!(fields.r#ref.as_deref(), Some("-ref"));
+        assert_eq!(fields.target_path.as_deref(), Some("-path"));
+    }
+
+    #[test]
+    fn every_reference_flag_is_single_use() {
+        for (flag, value) in [
+            ("--repository-url", "repo"),
+            ("--path", "doc"),
+            ("--name", "Name"),
+            ("--purpose", "Purpose"),
+            ("--kind", "document"),
+            ("--role", "brief"),
+            ("--state", "active"),
+            ("--ref", "topic"),
+            ("--commit", "commit"),
+            ("--source-session", "source"),
+            ("--target-url", "https://example.test/item"),
+            ("--target-repository-url", "other"),
+            ("--target-path", "other.md"),
+        ] {
+            let mut arguments = vec![
+                "reference",
+                "edit",
+                "work",
+                "--repository-url",
+                "repo",
+                "--path",
+                "doc",
+            ];
+            if flag == "--target-repository-url" {
+                arguments.extend(["--target-path", "other.md"]);
+            }
+            if flag == "--target-path" {
+                arguments.extend(["--target-repository-url", "other"]);
+            }
+            arguments.extend([flag, value, flag, value]);
+            assert_eq!(
+                parse(&arguments).unwrap_err().kind(),
+                clap::error::ErrorKind::ArgumentConflict,
+                "{flag}"
+            );
+        }
+        for flag in ["--clear-ref", "--clear-commit", "--clear-source-session"] {
+            assert_eq!(
+                parse(&[
+                    "reference",
+                    "edit",
+                    "work",
+                    "--url",
+                    "https://example.test/item",
+                    flag,
+                    flag
+                ])
+                .unwrap_err()
+                .kind(),
+                clap::error::ErrorKind::ArgumentConflict,
+                "{flag}"
+            );
+        }
+        for arguments in [
+            vec![
+                "reference",
+                "drop",
+                "work",
+                "--url",
+                "https://example.test/item",
+                "--url",
+                "https://example.test/item",
+            ],
+            vec![
+                "reference",
+                "delete",
+                "work",
+                "--url",
+                "https://example.test/item",
+                "--confirm",
+                "--confirm",
+            ],
+        ] {
+            assert_eq!(
+                parse(&arguments).unwrap_err().kind(),
+                clap::error::ErrorKind::ArgumentConflict
+            );
+        }
     }
 
     #[test]

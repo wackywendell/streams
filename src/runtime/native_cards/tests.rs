@@ -448,8 +448,11 @@ fn opening_a_document_rereads_display_inputs_and_refuses_a_removed_reference() {
     let target = DocumentTarget {
         scope: engine.card.scope().clone(),
         owner: engine.card.owner().clone(),
-        document: crate::model::Document::new("repo", "main", "removed.md", "", None).unwrap(),
-        repository_url: "repository".into(),
+        reference: serde_json::from_value(json!({
+            "name":"Removed","purpose":"Guide the work","role":"brief","state":"active",
+            "target":{"kind":"document","repository_url":"repository","path":"removed.md","ref":"main"},
+            "revision":"fixture"
+        })).unwrap(),
         location: crate::tui::ResolvedDocument::Unavailable {
             selection: None,
             problem: crate::tui::DocumentProblem::MissingCheckout,

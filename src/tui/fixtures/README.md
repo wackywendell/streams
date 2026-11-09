@@ -1,9 +1,12 @@
 # Active Streams renderer fixtures
 
-`active-renderer.json` preserves 140 deterministic outputs from the retired
-JavaScript `renderStreamsCard` implementation. Rust tests reuse its input snapshots;
-`card-text-renderer.json` records the current Rust layout, visible document keys
-and links. It also covers recap blocks, lifecycle markers and empty text.
+`active-renderer.json` preserves 134 safe-input outputs from the retired
+JavaScript `renderStreamsCard` implementation. Its snapshots use the current
+reference schema with deterministic revision tokens. Six unsafe URL inputs moved
+to codec rejection tests; repository history retains their original outputs.
+`card-text-renderer.json` records 150 current Rust layouts, visible document keys
+and links, including 16 progress and lifecycle variants. Its historical fields
+retain the original renderer outputs.
 
 The original renderer, tests and `extract.mjs` remain in revision `fd744307`.
 Reproduce them in a separate workspace at that revision, not from the current Rust
@@ -15,10 +18,10 @@ Cases come from the active `streams-view`, `streams-documents`, `quiet-view` and
 characters, CJK, emoji modifiers, regional indicators and ZWJ input; zero/tiny
 viewports; footer-clipped and offscreen shortcuts; row-major document grids;
 multiline summaries; overflow item counts; distinguishing checkout ancestors;
-shared-root aliases and unbound references; commit provenance; missing document,
-missing checkout and ambiguous binding errors; duplicate link names; artifact
-numbering, link ordering, exact URLs and unsafe URL rejection; empty and failed
-frames. Rust reducer tests cover refresh-in-progress/stale frames, superseded
+direct repository URLs and unbound references; recovery provenance; missing
+document, missing checkout and ambiguous binding errors; duplicate names;
+reference grouping, roles and states; link ordering, exact URLs and unsafe URL
+rejection; empty and failed frames. Rust reducer tests cover refresh-in-progress/stale frames, superseded
 reads, scope changes, geometry changes and captured-target invalidation.
 
 The fixture boundary alone uses serde DTOs. Production rendering consumes the
@@ -61,12 +64,14 @@ queuing asynchronous resize paints. Refreshing snapshots may be repainted, but
 have no actionable documents or links. Failed reads display no stale content.
 Every new paint and notice change invalidates old action captures. Check
 `is_current` after each await in an action path, then separately obtain native
-ownership and filesystem evidence. Numeric issue/PR labels remain inert as
-keyboard shortcuts. The renderer returns typed URLs and regions, not OSC8 bytes;
-the future terminal adapter must implement guarded link gestures.
+ownership and filesystem evidence. Numeric URL labels remain inert as keyboard
+shortcuts. The renderer returns complete saved References and hit regions.
+The terminal adapter guards link gestures with fresh full-reference comparisons.
 
-Document targets retain repository URL, recovery ref, provenance, viewing scope,
-owner observation, checkout ID, root, app-resolved file or visible error. Editor
+Document targets retain their complete saved Reference, viewing scope,
+owner observation, checkout ID, root, app-resolved file or visible error.
+Dropped entries produce no normal-card action or overflow count. Revision,
+relationship or target changes invalidate the painted reference. Editor
 identity retains catalog source, host, checkout lifetime and canonical file. It
 is not a reuse authorization: the native layer must also verify viewing Session,
 workspace, editor tuple, canonical containment, root identity and current file

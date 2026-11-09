@@ -2,7 +2,7 @@ import assert from 'node:assert/strict';
 import test from 'node:test';
 import { createJiti } from 'jiti';
 const jiti = createJiti(import.meta.url);
-const { StreamCli, receiptCanContinue, receiptHasWarning, resultNeedsAttention } = await jiti.import('../extensions/stream-checkpoint/streams.ts');
+const { StreamCli, receiptCanContinue, receiptHasUnappliedReferences, receiptHasWarning, receiptText, referenceText, resultNeedsAttention, safeReferenceJson } = await jiti.import('../extensions/stream-checkpoint/streams.ts');
 const { FieldEdit } = await jiti.import('../extensions/stream-checkpoint/core.ts');
 const save = {local:'committed',sharing:'pending',domain:{outcome:'changes'}};
 const publication = {local:'unchanged',sharing:'confirmed',domain:null};
@@ -41,6 +41,39 @@ test('wire parsing rejects unknown outcomes and ambiguous receipt shapes', async
  const cli = new StreamCli('/unused',async()=>{calls++;return {status:'success',result:retained};});
  assert.deepEqual(await cli.apply({operation_id:'edit'}),retained);
  assert.equal(calls,1);
+});
+
+test('partial reference receipts preserve acceptance and expose safe diagnostics', async () => {
+ const key = {kind:'document',repository_url:'repo\u200d',path:'docs/\nplan.md'};
+ const rows = [
+  {key,action:'update',outcome:'superseded',reason:'changed\u001b[31m'},
+  {key:{kind:'url',url:'https://example.org/new'},action:'add',outcome:'changes',reason:''},
+ ];
+ const partial = {operation_id:'op\n1',save:{...save,domain:{outcome:'changes',reference_results:rows}}};
+ assert.equal(receiptCanContinue(partial),true);
+ assert.equal(receiptHasUnappliedReferences(partial),true);
+ assert.equal(resultNeedsAttention(partial.save),true);
+ assert.equal(receiptHasWarning(partial),true);
+ const diagnostic = `Reference not applied: ${safeReferenceJson(key)}; ${referenceText(rows[0].reason)}`;
+ assert.match(receiptText(partial),/^"op\\n1": changes; local=committed; sharing=pending\n/);
+ assert.ok(receiptText(partial).includes(diagnostic));
+ assert.equal(receiptText({...partial,warnings:[diagnostic]}).split(diagnostic).length,2);
+ assert.equal(receiptCanContinue({...partial,save:{...partial.save,local:'uncertain'}}),false);
+ assert.equal(receiptHasWarning({...partial,publication:{...publication,sharing:'failed'}}),true);
+ assert.deepEqual(JSON.parse(safeReferenceJson(key)),key);
+ assert.equal(referenceText('ordinary 🐟'),'ordinary 🐟');
+ assert.equal(referenceText('a\u{e0001}b'),'"a\\udb40\\udc01b"');
+ const cli = new StreamCli('/unused',async()=>({status:'success',result:partial}));
+ assert.deepEqual(await cli.apply({operation_id:'edit'}),partial);
+});
+
+test('reference receipt rows require the exact shape', async () => {
+ const valid = {key:{kind:'url',url:'https://example.org/a'},action:'update',outcome:'conflict',reason:'changed'};
+ for (const rows of [null, {}, [{...valid,extra:true}], [{...valid,key:{...valid.key,extra:true}}], [{...valid,action:'changed'}], [{...valid,outcome:'unknown'}], [{...valid,reason:null}]]) {
+  const value = {...receipt,save:{...save,domain:{outcome:'changes',reference_results:rows}}};
+  const cli = new StreamCli('/unused',async()=>({status:'success',result:value}));
+  await assert.rejects(cli.apply({operation_id:'edit'}));
+ }
 });
 
 test('field editing retains input and its receipt when publication needs repair', async () => {

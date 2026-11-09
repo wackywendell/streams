@@ -125,6 +125,7 @@ impl Fixture {
             TitleDefaults::default(),
             &self.locations(),
             &self.roots,
+            |_, _| json!({"checkouts":[],"document_locations":[]}),
         )
         .unwrap()
     }
@@ -206,6 +207,7 @@ fn exact_capture_reads_only_its_target_and_observed_native_keys_at_zero_or_64_un
             TitleDefaults::default(),
             &f.locations(),
             &f.roots,
+            |_, _| json!({"checkouts":[],"document_locations":[]}),
         )
         .unwrap();
         assert_eq!(result["samples"].as_array().unwrap().len(), 1);
@@ -400,7 +402,8 @@ fn diagnostic_inventory_is_explicit_and_targets_do_not_use_title_resolution_or_l
                 target,
                 TitleDefaults::default(),
                 &f.locations(),
-                &f.roots
+                &f.roots,
+                |_, _| json!({"checkouts":[],"document_locations":[]}),
             )
             .is_err()
         );
@@ -412,9 +415,72 @@ fn diagnostic_inventory_is_explicit_and_targets_do_not_use_title_resolution_or_l
         TitleDefaults::default(),
         &f.locations(),
         &f.roots,
+        |_, _| json!({"checkouts":[],"document_locations":[]}),
     )
     .unwrap();
     assert_eq!(unavailable["samples"], json!([]));
     assert_eq!(unavailable["topology_error"], "native unavailable");
     assert!(!f.state.root().exists());
+}
+
+#[test]
+fn capture_calls_shared_hints_once_per_typed_sample_and_freezes_every_payload() {
+    use std::cell::RefCell;
+    let f = Fixture::new();
+    let first = f.session("first", "effort");
+    let second = f.session("second", "other");
+    let snapshot = f.snapshot(
+        vec![
+            ("workspace", native("id", json!("first"))),
+            ("workspace", native("id", json!("second"))),
+            ("workspace", native("id", json!("missing"))),
+        ],
+        true,
+    );
+    let successful = json!({"checkouts":[{"repository_url":"repository","checkout_id":"checkout","root":"/work"}],
+        "document_locations":[{"repository_url":"repository","path":"plan.md","checkout_id":"checkout","root":"/work","kind":"local","file":"/work/plan.md","error":null}]});
+    let unavailable = json!({"checkouts":[],"document_locations":[{"repository_url":"other","path":"missing.md","checkout_id":null,"root":null,"kind":null,"file":null,"error":"no checkout"}]});
+    let calls = RefCell::new(Vec::new());
+    let result = capture_inputs(
+        &f.opened,
+        Ok(&snapshot),
+        CaptureTarget::Workspace("workspace"),
+        TitleDefaults::default(),
+        &f.locations(),
+        &f.roots,
+        |stream, session| {
+            calls
+                .borrow_mut()
+                .push((stream.id.clone(), session.id.clone()));
+            if session.id == first.id {
+                successful.clone()
+            } else {
+                unavailable.clone()
+            }
+        },
+    )
+    .unwrap();
+    assert_eq!(
+        *calls.borrow(),
+        vec![("effort".into(), first.id), ("other".into(), second.id)]
+    );
+    for (id, expected) in [("first", &successful), ("second", &unavailable)] {
+        for field in ["checkouts", "document_locations"] {
+            assert_eq!(sample(&result, id)["catalog"][field], expected[field]);
+        }
+    }
+    for field in ["checkouts", "document_locations"] {
+        assert_eq!(sample(&result, "missing")["catalog"][field], json!([]));
+    }
+    let inventory = capture_inputs(
+        &f.opened,
+        Ok(&snapshot),
+        CaptureTarget::Inventory,
+        TitleDefaults::default(),
+        &f.locations(),
+        &f.roots,
+        |_, _| panic!("inventory must not acquire hints"),
+    )
+    .unwrap();
+    assert!(inventory.get("samples").is_none());
 }
