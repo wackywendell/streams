@@ -284,6 +284,30 @@ impl RegisteredSources {
         self.running.get(conversation).cloned().unwrap_or_default()
     }
 }
+impl crate::integration::ExecutionSnapshot for RegisteredSources {
+    fn presence(
+        &self,
+        conversation: &crate::integration::ConversationId,
+    ) -> crate::integration::Presence {
+        RegisteredSources::presence(self, conversation)
+    }
+    fn verified_terminals(
+        &self,
+        conversation: &crate::integration::ConversationId,
+    ) -> Vec<NativeRef> {
+        RegisteredSources::verified_terminals(self, conversation)
+    }
+    fn stream_terminals(&self, _: &str) -> crate::integration::Access<Vec<NativeRef>> {
+        crate::integration::Access::Unavailable {
+            reason: "Stream routing was not inspected".into(),
+        }
+    }
+    fn foreground_conversation(&self, _: &NativeRef) -> crate::integration::ForegroundConversation {
+        crate::integration::ForegroundConversation::Unknown {
+            reason: "foreground context was not inspected".into(),
+        }
+    }
+}
 
 const ASSOCIATION_BYTES: usize = 1024 * 1024;
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -793,8 +817,10 @@ impl crate::integration::ExecutionSnapshot for HcForeground {
     fn verified_terminals(&self, _: &crate::integration::ConversationId) -> Vec<NativeRef> {
         vec![]
     }
-    fn stream_terminals(&self, _: &str) -> Vec<NativeRef> {
-        vec![]
+    fn stream_terminals(&self, _: &str) -> crate::integration::Access<Vec<NativeRef>> {
+        crate::integration::Access::Unavailable {
+            reason: "Stream routing was not inspected".into(),
+        }
     }
     fn foreground_conversation(
         &self,

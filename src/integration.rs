@@ -341,7 +341,7 @@ pub enum ForegroundConversation {
 pub trait ExecutionSnapshot {
     fn presence(&self, conversation: &ConversationId) -> Presence;
     fn verified_terminals(&self, conversation: &ConversationId) -> Vec<NativeRef>;
-    fn stream_terminals(&self, stream: &str) -> Vec<NativeRef>;
+    fn stream_terminals(&self, stream: &str) -> Access<Vec<NativeRef>>;
     fn foreground_conversation(&self, terminal: &NativeRef) -> ForegroundConversation;
 }
 pub trait PresentationSnapshot {

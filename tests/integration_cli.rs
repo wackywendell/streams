@@ -28,7 +28,7 @@ impl ExecutionSnapshot for PointOnlyExecution {
     fn verified_terminals(&self, _: &ConversationId) -> Vec<NativeRef> {
         panic!("sidebar must not inspect global execution")
     }
-    fn stream_terminals(&self, _: &str) -> Vec<NativeRef> {
+    fn stream_terminals(&self, _: &str) -> Access<Vec<NativeRef>> {
         panic!("sidebar must not inspect global execution")
     }
     fn foreground_conversation(&self, terminal: &NativeRef) -> ForegroundConversation {

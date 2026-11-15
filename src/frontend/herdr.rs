@@ -113,16 +113,23 @@ impl crate::integration::ExecutionSnapshot for HerdrWorkExecution<'_> {
             _ => vec![],
         }
     }
-    fn stream_terminals(&self, stream: &str) -> Vec<crate::integration::NativeRef> {
+    fn stream_terminals(
+        &self,
+        stream: &str,
+    ) -> crate::integration::Access<Vec<crate::integration::NativeRef>> {
+        use crate::integration::Access;
         if stream != self.stream {
-            return vec![];
+            return Access::Unavailable {
+                reason: "Stream routing was not inspected".into(),
+            };
         }
         let tokens = crate::runtime::native_markers::stream_tokens(
             &self.scope.catalog,
             &self.scope.host,
             stream,
         );
-        self.snapshot
+        let value = self
+            .snapshot
             .topology()
             .panes
             .iter()
@@ -140,7 +147,8 @@ impl crate::integration::ExecutionSnapshot for HerdrWorkExecution<'_> {
                 endpoint: self.endpoint.clone(),
                 key: pane.pane.id.clone(),
             })
-            .collect()
+            .collect();
+        Access::Available { value }
     }
     fn foreground_conversation(
         &self,

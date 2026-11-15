@@ -33,7 +33,7 @@ impl ExecutionSnapshot for Facts {
     fn verified_terminals(&self, _: &ConversationId) -> Vec<NativeRef> {
         panic!("classification does not request extra inspection")
     }
-    fn stream_terminals(&self, _: &str) -> Vec<NativeRef> {
+    fn stream_terminals(&self, _: &str) -> Access<Vec<NativeRef>> {
         panic!("classification does not select unrelated work")
     }
     fn foreground_conversation(&self, _: &NativeRef) -> ForegroundConversation {
@@ -582,7 +582,13 @@ fn herdr_work_evidence_preserves_id_and_path_matching_without_foreground_authori
         evidence.presence(&conversation("unrequested")),
         Presence::Unknown { .. }
     ));
-    assert_eq!(evidence.stream_terminals("work").len(), 3);
+    let Access::Available {
+        value: work_terminals,
+    } = evidence.stream_terminals("work")
+    else {
+        panic!("Herdr work routing was inspected")
+    };
+    assert_eq!(work_terminals.len(), 3);
     let empty_query = snapshot.work_execution(endpoint.clone(), scope.clone(), "work", &[]);
     assert_eq!(
         empty_query.stream_terminals("work"),
@@ -597,8 +603,14 @@ fn herdr_work_evidence_preserves_id_and_path_matching_without_foreground_authori
         "work",
         &wanted,
     );
-    assert!(foreign.stream_terminals("work").is_empty());
-    assert!(evidence.stream_terminals("other").is_empty());
+    assert_eq!(
+        foreign.stream_terminals("work"),
+        Access::Available { value: vec![] }
+    );
+    assert!(matches!(
+        evidence.stream_terminals("other"),
+        Access::Unavailable { .. }
+    ));
     assert!(matches!(
         evidence.foreground_conversation(&terminal("ta")),
         ForegroundConversation::Unknown { .. }

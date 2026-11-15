@@ -873,7 +873,10 @@ fn execution_inspects_only_registered_sources_on_the_selected_core() {
     use std::{cell::Cell, io};
     use streams::{
         frontend::hc::processes::{ProcessKey, ProcessObservation, ProcessObserver},
-        integration::{ConversationId, Presence},
+        integration::{
+            Access, ConversationId, ExecutionSnapshot, LaunchLimit, NonEmpty, OpeningMode,
+            OpeningSupport, Placement, Presence, SessionOpenResult, classify_open,
+        },
         runtime::hc::{PiSourceClaim, RegisteredSources, labels::source_key},
     };
     struct Processes {
@@ -964,6 +967,43 @@ fn execution_inspects_only_registered_sources_on_the_selected_core() {
         }),
         Presence::Unknown { .. }
     ));
+    let support = OpeningSupport {
+        harnesses: NonEmpty::new("pi".into(), []),
+        mode: OpeningMode::ReuseObserved,
+        launch_limit: LaunchLimit::Many,
+        placement: Placement::Independent,
+    };
+    let wanted = vec![
+        ("running".into(), conversation.clone()),
+        (
+            "new".into(),
+            ConversationId {
+                harness: "pi".into(),
+                native_id: "other".into(),
+            },
+        ),
+    ];
+    let (launches, results) =
+        classify_open(&support, &wanted, Access::Available { value: &execution }).unwrap();
+    assert_eq!(launches, vec!["new"]);
+    assert!(matches!(
+        results["running"],
+        SessionOpenResult::AlreadyRunning { .. }
+    ));
+    assert!(matches!(
+        execution.stream_terminals("work"),
+        Access::Unavailable { .. }
+    ));
+    let (launches, results) = classify_open(
+        &support,
+        &wanted,
+        Access::Unavailable {
+            reason: "unavailable".into(),
+        },
+    )
+    .unwrap();
+    assert!(launches.is_empty());
+    assert_eq!(results.len(), 2);
     drop(operation);
     assert_eq!(core.finish().len(), 2);
     let before = processes.calls.get();
