@@ -191,8 +191,10 @@ pub fn registered_foreground(
 /// A complete point-validated view of registered sources on one core. It does not
 /// discover unregistered Pi processes or supply Stream placement evidence.
 pub struct RegisteredSources {
+    endpoint: EndpointId,
     running: BTreeMap<crate::integration::ConversationId, Vec<NativeRef>>,
     routing: crate::integration::Access<Vec<WorkRoute>>,
+    placement_hints: BTreeSet<String>,
 }
 
 struct WorkRoute {
@@ -230,6 +232,7 @@ impl RegisteredSources {
         let mut running: BTreeMap<_, Vec<NativeRef>> = BTreeMap::new();
         let mut routes = Vec::new();
         let mut routing_available = true;
+        let mut placement_hints = BTreeSet::new();
         for value in terminals {
             let address = value
                 .get("address")
@@ -250,6 +253,11 @@ impl RegisteredSources {
                 serde_json::from_value(value.clone()).map_err(|_| unavailable())?;
             if terminal.state != "live" || !seen_terminals.insert(address.to_owned()) {
                 return Err(unavailable());
+            }
+            if terminal.labels.contains_key("herdr.space")
+                || terminal.labels.contains_key("herdr.tab")
+            {
+                placement_hints.insert(address.to_owned());
             }
             if let Some(label) = terminal.labels.get("streams.work") {
                 let route = crate::codec::load_json(label)
@@ -310,7 +318,12 @@ impl RegisteredSources {
                 reason: "Stream routing is unavailable".into(),
             }
         };
-        Ok(Self { running, routing })
+        Ok(Self {
+            endpoint: endpoint.clone(),
+            running,
+            routing,
+            placement_hints,
+        })
     }
     pub fn for_scope(self, scope: WorkScope) -> Result<HcWorkExecution, FrontendError> {
         scope
@@ -368,6 +381,37 @@ impl crate::integration::ExecutionSnapshot for RegisteredSources {
         crate::integration::ForegroundConversation::Unknown {
             reason: "foreground context was not inspected".into(),
         }
+    }
+}
+
+impl HcWorkExecution {
+    /// Select only verified requested conversations with neither published nor pending placement.
+    pub fn unplaced_selected(
+        &self,
+        conversations: &[crate::integration::ConversationId],
+        presentation: &HcPresentation,
+    ) -> Result<Vec<NativeRef>, FrontendError> {
+        use crate::integration::{Presence, PresentationSnapshot};
+        if self.scope != presentation.scope
+            || self.sources.endpoint != presentation.published.endpoint
+        {
+            return Err(invalid("work and presentation observations do not match"));
+        }
+        let mut seen = BTreeSet::new();
+        let mut selected = Vec::new();
+        for conversation in conversations {
+            if let Presence::Running { locations } = self.sources.presence(conversation) {
+                for terminal in locations.into_vec() {
+                    if !self.sources.placement_hints.contains(&terminal.key)
+                        && presentation.space_for_terminal(&terminal).is_none()
+                        && seen.insert(terminal.key.clone())
+                    {
+                        selected.push(terminal);
+                    }
+                }
+            }
+        }
+        Ok(selected)
     }
 }
 

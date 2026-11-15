@@ -1004,6 +1004,69 @@ fn execution_inspects_only_registered_sources_on_the_selected_core() {
     .unwrap();
     assert!(launches.is_empty());
     assert_eq!(results.len(), 2);
+    let presentation = |layout: Value, view_scope: WorkScope| {
+        streams::runtime::hc::HcPresentation::new(
+            view_scope,
+            AssociationSnapshot::decode(endpoint.clone(), 0, Value::Null).unwrap(),
+            PublishedLayout::decode(endpoint.clone(), layout).unwrap(),
+            None,
+        )
+        .unwrap()
+    };
+    let empty_layout = presentation(json!({"spaces":[]}), scope());
+    let placed_layout = presentation(
+        json!({"spaces":[{"id":"space","tabs":[{"id":"tab","root":{"type":"block","content":{"terminal":"t1"}}}]}]}),
+        scope(),
+    );
+    let execution = execution.for_scope(scope()).unwrap();
+    assert_eq!(
+        execution
+            .unplaced_selected(&[conversation.clone(), conversation.clone()], &empty_layout)
+            .unwrap(),
+        vec![reference("t1")]
+    );
+    assert!(
+        execution
+            .unplaced_selected(std::slice::from_ref(&conversation), &placed_layout)
+            .unwrap()
+            .is_empty()
+    );
+    assert!(
+        execution
+            .unplaced_selected(
+                &[ConversationId {
+                    harness: "pi".into(),
+                    native_id: "other".into()
+                }],
+                &empty_layout
+            )
+            .unwrap()
+            .is_empty()
+    );
+    let other_scope = WorkScope {
+        host: "other".into(),
+        ..scope()
+    };
+    assert!(
+        execution
+            .unplaced_selected(
+                std::slice::from_ref(&conversation),
+                &presentation(json!({"spaces":[]}), other_scope)
+            )
+            .is_err()
+    );
+    let mut pending = local.clone();
+    pending["labels"]["herdr.space"] = json!("pending-space");
+    let pending = RegisteredSources::decode(&endpoint, json!({"terminals":[pending]}), &processes)
+        .unwrap()
+        .for_scope(scope())
+        .unwrap();
+    assert!(
+        pending
+            .unplaced_selected(std::slice::from_ref(&conversation), &empty_layout)
+            .unwrap()
+            .is_empty()
+    );
     drop(operation);
     assert_eq!(core.finish().len(), 2);
     let before = processes.calls.get();
