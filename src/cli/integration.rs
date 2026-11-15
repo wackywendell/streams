@@ -1,4 +1,4 @@
-//! A bounded saved-read boundary. Native requests stay unavailable until hc is admitted.
+//! A bounded owner boundary for saved reads and admitted hc actions.
 use super::*;
 use streams::integration::{ModBody, ModReply, ModRequest, ModResult, WireError, WireResult};
 
@@ -192,6 +192,18 @@ impl App {
                     })
                 }
                 ModBody::Act { action } => match action.as_ref() {
+                    streams::integration::ModAction::OpenWork { request: open } => {
+                        let value = self.integration_open_work(
+                            &records,
+                            &facade,
+                            &request.endpoint,
+                            open,
+                            &mut verified_endpoint,
+                        )?;
+                        Ok(ModResult::WorkOpened {
+                            value: Box::new(value),
+                        })
+                    }
                     streams::integration::ModAction::OpenReference {
                         reference: streams::integration::Reference::Link { stream, link },
                         context,
@@ -216,5 +228,131 @@ impl App {
             warnings: vec![],
         };
         Ok(Output::plain(Value::Null, reply.encode()?))
+    }
+
+    fn integration_open_work(
+        &self,
+        records: &application::OpenedRecords,
+        facade: &application::integration::Streams<'_>,
+        endpoint: &frontend::EndpointId,
+        request: &streams::integration::OpenRequest,
+        verified_endpoint: &mut Option<frontend::EndpointId>,
+    ) -> std::result::Result<streams::integration::OpenReport, WireError> {
+        use streams::{
+            integration::{Access, ConversationId, SessionOpenResult, complete_open},
+            runtime::{
+                conversations::ConversationRoots,
+                hc::{HcOperation, open::OpenContext},
+                workspace::{SelectedConversation, WorkspaceRuntime},
+            },
+        };
+        if request.cwd.is_some() {
+            return Err(WireError::unavailable(
+                "desktop opening cannot supply an owner directory",
+            ));
+        }
+        let (stream, sessions) = facade
+            .select_open(&request.stream, &request.sessions)
+            .map_err(|_| WireError::unavailable("selected work is unavailable"))?;
+        let locations = self
+            .locations(records.root(), &facade.scope().host)
+            .map_err(|_| WireError::unavailable("owner locations are unavailable"))?;
+        let mut locator_failures = std::collections::BTreeSet::new();
+        let locators: Vec<_> = sessions
+            .iter()
+            .map(
+                |session| match locations.transcript_file(&stream.id, &session.id) {
+                    Ok(path) => path,
+                    Err(_) => {
+                        locator_failures.insert(session.id.clone());
+                        None
+                    }
+                },
+            )
+            .collect();
+        let selected: Vec<_> = sessions
+            .iter()
+            .zip(&locators)
+            .map(|(session, locator)| SelectedConversation {
+                session,
+                locator: locator.as_deref(),
+            })
+            .collect();
+        let conversations: Vec<_> = sessions.iter().map(ConversationId::from).collect();
+        let socket = frontend::hc::HcEndpoint::resolve(&self.environment, &self.cwd)
+            .map_err(|_| WireError::unavailable("hc connection is unavailable"))?;
+        let client = frontend::hc::HcClient::connect(socket.clone(), Some(endpoint), 30.0, None)
+            .map_err(|_| WireError::unavailable("hc connection is unavailable"))?;
+        *verified_endpoint = Some(client.endpoint().clone());
+        let mut operation = HcOperation::new(client);
+        let execution = if operation.supports("terminal.list") {
+            frontend::hc::processes::OwnerProcesses::new()
+                .ok()
+                .and_then(|observer| {
+                    operation
+                        .registered_sources(&observer)
+                        .ok()?
+                        .for_scope(facade.scope().clone())
+                        .ok()
+                })
+        } else {
+            None
+        };
+        let presentation = if operation.supports("doc.get") {
+            operation.presentation(facade.scope(), None).ok()
+        } else {
+            None
+        };
+        let roots = ConversationRoots::default();
+        let runtime = WorkspaceRuntime::new(
+            &facade.scope().host,
+            &locations,
+            None,
+            &facade.scope().catalog,
+            &roots,
+            &self.environment,
+        );
+        let (plan, mut outcomes) = runtime
+            .prepare_hc_open(
+                &std::sync::atomic::AtomicBool::new(false),
+                &stream,
+                &selected,
+                None,
+                execution.as_ref().map_or_else(
+                    || Access::Unavailable {
+                        reason: "hc Pi presence is unavailable".into(),
+                    },
+                    |value| Access::Available { value },
+                ),
+                presentation.as_ref().map_or_else(
+                    || Access::Unavailable {
+                        reason: "hc presentation is unavailable".into(),
+                    },
+                    |value| Access::Available { value },
+                ),
+            )
+            .map_err(|_| WireError::unavailable("work opening could not be prepared"))?;
+        for id in locator_failures {
+            if matches!(outcomes.get(&id), Some(SessionOpenResult::Skipped { .. })) {
+                outcomes.insert(
+                    id,
+                    SessionOpenResult::Skipped {
+                        reason: "saved Session locator is unavailable".into(),
+                    },
+                );
+            }
+        }
+        let effects = operation.execute_prepared_open(
+            &plan,
+            OpenContext {
+                scope: facade.scope(),
+                socket: &socket,
+                environment: &self.environment,
+                selected: &conversations,
+                execution: execution.as_ref(),
+                presentation: presentation.as_ref(),
+            },
+        );
+        Ok(complete_open(plan, effects, outcomes))
     }
 }

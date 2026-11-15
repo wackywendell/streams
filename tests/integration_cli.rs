@@ -5,6 +5,176 @@ fn fixtures() -> Value {
     serde_json::from_str(include_str!("fixtures/integration_v1.json")).unwrap()
 }
 
+#[test]
+fn owner_open_work_selects_admitted_sessions_and_keeps_paths_off_the_reply() {
+    use std::{
+        io::{BufRead, BufReader, Read, Write},
+        os::unix::{fs::PermissionsExt, net::UnixListener},
+        thread,
+        time::Duration,
+    };
+    use streams::runtime::{CheckoutRegistry, DirectoryBindings, state::RuntimeState};
+    let fixture = SavedFixture::new();
+    let root = fixture._directory.path().canonicalize().unwrap();
+    let host = fixture.records.host().as_str();
+    let registry = CheckoutRegistry::new(fixture.config.checkout_state_dir(), host).unwrap();
+    let state = RuntimeState::new(
+        fixture
+            .config
+            .runtime_state_dir_for(fixture.records.root())
+            .unwrap(),
+        host,
+    )
+    .unwrap();
+    let locations = DirectoryBindings::new(state.root(), registry);
+    let session = &fixture.sessions[0];
+    locations
+        .remember("work", &root, Some(&session.id), false, None, None)
+        .unwrap();
+    let transcript = root.join("private-session.jsonl");
+    std::fs::write(&transcript, "{\"type\":\"session\",\"id\":\"one\"}\n").unwrap();
+    locations
+        .remember_transcript("work", &session.id, &transcript)
+        .unwrap();
+    let program = root.join("pi");
+    std::fs::write(&program, "#!/bin/sh\nexit 0\n").unwrap();
+    std::fs::set_permissions(&program, std::fs::Permissions::from_mode(0o755)).unwrap();
+    let body = json!({"kind":"act","action":{"kind":"open_work","request":{"stream":"work","sessions":{"kind":"only","value":[session.id]},"cwd":null}}});
+    for presentation in [true, false] {
+        let socket_dir = tempfile::Builder::new()
+            .prefix("hc-cli-")
+            .tempdir_in("/tmp")
+            .unwrap();
+        let path = socket_dir.path().join("s");
+        let listener = UnixListener::bind(&path).unwrap();
+        let owner_cwd = root.clone();
+        let owner_program = program.clone();
+        let owner_transcript = transcript.clone();
+        let server = thread::spawn(move || {
+            let mut reader = BufReader::new(listener.accept().unwrap().0);
+            reader
+                .get_ref()
+                .set_read_timeout(Some(Duration::from_secs(10)))
+                .unwrap();
+            let read = |reader: &mut BufReader<std::os::unix::net::UnixStream>| {
+                let mut line = String::new();
+                assert!(reader.read_line(&mut line).unwrap() > 0);
+                serde_json::from_str::<Value>(&line).unwrap()
+            };
+            let hello = read(&mut reader);
+            writeln!(reader.get_mut(),"{}",json!({"jsonrpc":"2.0","id":hello["id"],"result":{"generation":1,"framed":false,"core":{"id":"core"},"methods":["hello","terminal.list","terminal.run","doc.get","doc.set"]}})).unwrap();
+            let list = read(&mut reader);
+            assert_eq!(list["method"], "terminal.list");
+            writeln!(
+                reader.get_mut(),
+                "{}",
+                json!({"jsonrpc":"2.0","id":list["id"],"result":{"terminals":[]}})
+            )
+            .unwrap();
+            let associations = read(&mut reader);
+            assert_eq!(associations["params"]["name"], "streams");
+            writeln!(
+                reader.get_mut(),
+                "{}",
+                json!({"jsonrpc":"2.0","id":associations["id"],"result":{"version":0,"value":null}})
+            )
+            .unwrap();
+            let layout = read(&mut reader);
+            assert_eq!(layout["params"]["name"], "herdr-app");
+            let value = if presentation {
+                json!({"spaces":[]})
+            } else {
+                json!(42)
+            };
+            writeln!(
+                reader.get_mut(),
+                "{}",
+                json!({"jsonrpc":"2.0","id":layout["id"],"result":{"version":1,"value":value}})
+            )
+            .unwrap();
+            let run = read(&mut reader);
+            assert_eq!(run["method"], "terminal.run");
+            let params = &run["params"];
+            assert_eq!(params["cwd"], owner_cwd.to_str().unwrap());
+            assert_eq!(params["argv"][0], owner_program.to_str().unwrap());
+            assert!(
+                params["argv"]
+                    .as_array()
+                    .unwrap()
+                    .iter()
+                    .any(|value| value == owner_transcript.to_str().unwrap())
+            );
+            assert!(params["labels"].get("streams.work").is_some());
+            let space = params["labels"]["herdr.space"].as_str().unwrap();
+            writeln!(reader.get_mut(),"{}",json!({"jsonrpc":"2.0","id":run["id"],"result":{"address":"t1","state":"live","pid":123,"argv":params["argv"],"cwd":params["cwd"],"parent":null,"labels":params["labels"]}})).unwrap();
+            if presentation {
+                let get = read(&mut reader);
+                assert_eq!(get["params"]["name"], "herdr-app");
+                writeln!(reader.get_mut(),"{}",json!({"jsonrpc":"2.0","id":get["id"],"result":{"version":2,"value":{"spaces":[{"id":space}]}}})).unwrap();
+                let set = read(&mut reader);
+                assert_eq!(set["method"], "doc.set");
+                assert_eq!(set["params"]["version"], 0);
+                writeln!(
+                    reader.get_mut(),
+                    "{}",
+                    json!({"jsonrpc":"2.0","id":set["id"],"result":{"version":1}})
+                )
+                .unwrap();
+            }
+            let mut rest = Vec::new();
+            reader.read_to_end(&mut rest).unwrap();
+            assert!(rest.is_empty());
+        });
+        let mut envelope = fixture.envelope(body.clone());
+        envelope["endpoint"] = json!("core");
+        let output = fixture
+            .command()
+            .env("HC_SOCKET", &path)
+            .env("PATH", &root)
+            .args([
+                "integration",
+                "request",
+                "--request-json",
+                &envelope.to_string(),
+            ])
+            .output()
+            .unwrap();
+        assert!(
+            output.status.success(),
+            "{}",
+            String::from_utf8_lossy(&output.stderr)
+        );
+        let raw = String::from_utf8(output.stdout).unwrap();
+        assert!(!raw.contains(root.to_str().unwrap()));
+        assert!(!raw.contains("private-session.jsonl"));
+        let reply: Value = serde_json::from_str(&raw).unwrap();
+        assert_eq!(reply["verified_endpoint"], "core");
+        let report = &reply["result"]["ok"]["value"];
+        assert_eq!(report["sessions"][&session.id]["kind"], "launched");
+        assert_eq!(report["sessions"].as_object().unwrap().len(), 1);
+        assert_eq!(
+            report["presentation"]["space"]["kind"],
+            if presentation { "known" } else { "requested" }
+        );
+        assert_eq!(
+            report["presentation"]["state"]["kind"],
+            if presentation {
+                "complete"
+            } else {
+                "unavailable"
+            }
+        );
+        server.join().unwrap();
+    }
+    let mut path_request = fixture.envelope(body);
+    path_request["body"]["action"]["request"]["cwd"] = json!("/private-owner-path");
+    let output = fixture.invoke(&path_request.to_string(), false);
+    assert!(output.status.success());
+    let reply: String = String::from_utf8(output.stdout).unwrap();
+    assert!(!reply.contains("/private-owner-path"));
+    assert!(reply.contains("desktop opening cannot supply an owner directory"));
+}
+
 fn saved_presentation(scope: &WorkScope) -> streams::runtime::hc::HcPresentation {
     use streams::{
         frontend::EndpointId,

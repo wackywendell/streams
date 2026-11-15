@@ -818,6 +818,9 @@ impl HcOperation {
     pub fn endpoint(&self) -> &EndpointId {
         self.client.endpoint()
     }
+    pub fn supports(&self, method: &str) -> bool {
+        self.client.supports(method)
+    }
     pub fn foreground(
         &mut self,
         terminal: &NativeRef,
