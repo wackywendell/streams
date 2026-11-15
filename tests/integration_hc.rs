@@ -1403,6 +1403,9 @@ fn prepared_hc_terminal_start_keeps_exact_inputs_and_never_replays() {
         "finished",
         "rejected",
         "pending",
+        "wrong-argv",
+        "wrong-cwd",
+        "has-parent",
         "malformed",
         "lost",
     ] {
@@ -1455,15 +1458,22 @@ fn prepared_hc_terminal_start_keeps_exact_inputs_and_never_replays() {
             if mode == "lost" {
                 return;
             }
-            let reply = match mode {
-                "confirmed" => json!({"address":"t7","state":"live","pid":123,"labels":labels}),
+            let mut reply = json!({"address":"t7","state":"live","pid":123,"labels":labels,"argv":expected["argv"],"cwd":expected["cwd"],"parent":null});
+            match mode {
                 "finished" => {
-                    json!({"address":"t7","state":"finished","reason":"exited","exit_code":0,"labels":labels})
+                    reply["state"] = json!("finished");
+                    reply["reason"] = json!("exited");
+                    reply["exit_code"] = json!(0);
                 }
                 "pending" => {
-                    json!({"address":"t7","state":"live","pid":null,"reason":"spawn_pending","labels":labels})
+                    reply["pid"] = Value::Null;
+                    reply["reason"] = json!("spawn_pending");
                 }
-                _ => json!({"address":"t7","state":"live","pid":123,"labels":{}}),
+                "wrong-argv" => reply["argv"] = json!(["different"]),
+                "wrong-cwd" => reply["cwd"] = json!("/different"),
+                "has-parent" => reply["parent"] = json!("t0"),
+                "malformed" => reply["labels"] = json!({}),
+                _ => {}
             };
             let envelope = if mode == "rejected" {
                 json!({"jsonrpc":"2.0","id":request["id"],"error":{"code":-32602,"message":"private details","data":{"kind":"invalid_params"}}})

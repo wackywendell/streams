@@ -291,7 +291,13 @@ impl HcOperation {
                     },
                     _ => false,
                 };
+                let exact = value.get("cwd") == params.get("cwd")
+                    && params
+                        .get("argv")
+                        .is_none_or(|argv| value.get("argv") == Some(argv))
+                    && value.get("parent").is_none_or(Value::is_null);
                 let confirmed = started
+                    && exact
                     && address.is_some()
                     && labels.is_some_and(|labels| {
                         expected
