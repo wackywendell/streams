@@ -169,6 +169,113 @@ impl SavedFixture {
 }
 
 #[test]
+fn work_selection_uses_exact_members_or_active_local_sessions() {
+    use std::sync::{Arc, Mutex};
+    use streams::{
+        application::{self, integration::Streams},
+        model::{Record, Session, Status},
+        yaml_store::records::RecordIoEvent,
+    };
+    let fixture = SavedFixture::new();
+    let host = fixture.records.host().as_str();
+    let mut done = Session::new(
+        Session::id_for(host, "pi", "done"),
+        host,
+        "work",
+        "pi",
+        "done",
+        "Done",
+    )
+    .unwrap();
+    done.status = Status::Done;
+    application::create_record(
+        fixture.records.records(),
+        "done",
+        &Record::Session(done.clone()),
+    )
+    .unwrap();
+    let events = Arc::new(Mutex::new(Vec::new()));
+    let observed = events.clone();
+    let records = application::open_records_observed(&fixture.config, move |event| {
+        observed.lock().unwrap().push(event)
+    })
+    .unwrap();
+    events.lock().unwrap().clear();
+    let facade = Streams::new(&records);
+    let one = fixture.sessions[0].id.clone();
+    let two = fixture.sessions[1].id.clone();
+    let (_, selected) = facade
+        .select_open(
+            "work",
+            &SessionSelection::Only {
+                value: NonEmpty::new(two.clone(), [one.clone(), done.id.clone()]),
+            },
+        )
+        .unwrap();
+    assert_eq!(
+        selected
+            .iter()
+            .map(|session| session.id.as_str())
+            .collect::<Vec<_>>(),
+        vec![two.as_str(), one.as_str(), done.id.as_str()]
+    );
+    assert!(
+        events
+            .lock()
+            .unwrap()
+            .iter()
+            .all(|event| !matches!(event, RecordIoEvent::List(_) | RecordIoEvent::Written(..)))
+    );
+    let (_, active) = facade
+        .select_open("work", &SessionSelection::AllEligible)
+        .unwrap();
+    let mut expected = vec![one.clone(), two.clone()];
+    expected.sort();
+    assert_eq!(
+        active
+            .into_iter()
+            .map(|session| session.id)
+            .collect::<Vec<_>>(),
+        expected
+    );
+    assert!(
+        facade
+            .select_open(
+                "work",
+                &SessionSelection::Only {
+                    value: NonEmpty::new(one.clone(), [one])
+                }
+            )
+            .is_err()
+    );
+    assert!(
+        facade
+            .select_open(
+                "work",
+                &SessionSelection::Only {
+                    value: NonEmpty::new(fixture.sessions[2].id.clone(), [])
+                }
+            )
+            .is_err()
+    );
+    assert!(
+        facade
+            .select_open(
+                "work",
+                &SessionSelection::Only {
+                    value: NonEmpty::new("missing".into(), [])
+                }
+            )
+            .is_err()
+    );
+    assert!(
+        facade
+            .select_open("missing", &SessionSelection::AllEligible)
+            .is_err()
+    );
+}
+
+#[test]
 fn saved_batch_shares_host_decodes_and_producer_lists_with_standalone_artifact_parity() {
     use std::{
         fs,

@@ -46,6 +46,64 @@ impl<'a> Streams<'a> {
             .with_reader(|reader| self.stream(reader, id))
     }
 
+    /// Select current local work before native observation or effects.
+    pub fn select_open(
+        &self,
+        stream_id: &str,
+        selection: &crate::integration::SessionSelection,
+    ) -> Result<(Stream, Vec<Session>)> {
+        use crate::integration::SessionSelection;
+        let stream = self.require_stream(stream_id)?;
+        let sessions = match selection {
+            SessionSelection::AllEligible => {
+                let mut sessions: Vec<_> = self
+                    .records
+                    .host_sessions()?
+                    .into_iter()
+                    .filter_map(|value| {
+                        let Record::Session(session) = value.record else {
+                            unreachable!("Session partition")
+                        };
+                        (session.stream_id == stream.id
+                            && session.status == crate::model::Status::Active)
+                            .then_some(session)
+                    })
+                    .collect();
+                sessions.sort_by(|left, right| left.id.cmp(&right.id));
+                sessions
+            }
+            SessionSelection::Only { value } => {
+                self.records
+                    .records()
+                    .with_reader(|reader| -> Result<Vec<Session>> {
+                        let mut seen = std::collections::BTreeSet::new();
+                        value
+                            .as_slice()
+                            .iter()
+                            .map(|id| {
+                                if !seen.insert(id) {
+                                    return Err(
+                                        ValidationError::new("duplicate selected Session").into()
+                                    );
+                                }
+                                let session = self.session(reader, id)?.ok_or_else(|| {
+                                    ValidationError::new("selected Session is unavailable")
+                                })?;
+                                if session.stream_id != stream.id {
+                                    return Err(ValidationError::new(
+                                        "selected Session is not a current Stream member",
+                                    )
+                                    .into());
+                                }
+                                Ok(session)
+                            })
+                            .collect()
+                    })?
+            }
+        };
+        Ok((stream, sessions))
+    }
+
     pub fn companion_settings(
         &self,
         config: &crate::config::Config,
