@@ -23,14 +23,11 @@ pub struct PiSourceClaim {
     pub helper: crate::frontend::hc::processes::ProcessKey,
 }
 
-/// Validate a single claim against the retained terminal root and fresh owner facts.
-/// This does not classify the SDK launcher, establish claim uniqueness or prove absence.
-pub fn verify_claim_route(
+fn decode_claim(
     label_key: &str,
     label_value: &str,
     endpoint: &EndpointId,
     terminal_root_pid: u32,
-    observer: &dyn crate::frontend::hc::processes::ProcessObserver,
 ) -> Result<PiSourceClaim, FrontendError> {
     let unavailable = || invalid("Pi source route is unavailable");
     let value = crate::codec::load_json(label_value).map_err(|_| unavailable())?;
@@ -40,6 +37,8 @@ pub fn verify_claim_route(
         || claim.conversation.harness != "pi"
         || crate::model::check_text(&claim.conversation.native_id, "conversation", false).is_err()
         || claim.terminal_root.pid != terminal_root_pid
+        || claim.helper.pid == claim.sdk.pid
+        || claim.helper.pid == claim.terminal_root.pid
         || labels::source_key(&claim.helper).map_err(|_| unavailable())? != label_key
     {
         return Err(unavailable());
@@ -50,6 +49,20 @@ pub fn verify_claim_route(
             return Err(unavailable());
         }
     }
+    Ok(claim)
+}
+
+/// Validate a single claim against the retained terminal root and fresh owner facts.
+/// This does not classify the SDK launcher, establish claim uniqueness or prove absence.
+pub fn verify_claim_route(
+    label_key: &str,
+    label_value: &str,
+    endpoint: &EndpointId,
+    terminal_root_pid: u32,
+    observer: &dyn crate::frontend::hc::processes::ProcessObserver,
+) -> Result<PiSourceClaim, FrontendError> {
+    let unavailable = || invalid("Pi source route is unavailable");
+    let claim = decode_claim(label_key, label_value, endpoint, terminal_root_pid)?;
     let mut observed = BTreeMap::new();
     let helper = observer
         .observe(claim.helper.pid)
@@ -140,6 +153,14 @@ pub fn registered_foreground(
     let mut sdk_keys = BTreeSet::new();
     let mut current = None;
     for (key, value) in claims {
+        let Ok(candidate) = decode_claim(key, value, &terminal.endpoint, root) else {
+            return unknown();
+        };
+        match observer.exited(&candidate.helper) {
+            Ok(true) => continue,
+            Ok(false) => {}
+            Err(_) => return unknown(),
+        }
         let Ok(claim) = verify_claim_route(key, value, &terminal.endpoint, root, observer) else {
             return unknown();
         };

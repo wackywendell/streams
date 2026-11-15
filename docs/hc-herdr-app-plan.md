@@ -20,7 +20,7 @@ This decision replaces the host-wide Pi census, launch-profile classification an
 | Shared Rust workflows | Scoped types, saved views, prepared launch/effect results, shared document and artifact validation, lifecycle/projection policy and Herdr/cmux cutovers | Complete facade-level hc opening, resumption and lifecycle orchestration |
 | Owner CLI protocol | Strict version-1 requests and replies, 16 KiB requests, 4 MiB replies and saved-read batching | Native frame reads and launch/navigation effects |
 | hc connection | Owner-local socket resolution against the captured operation directory, permanent-core verification, one retained operation connection and typed failure evidence | Process admission, subscriptions and general frontend activation |
-| Pi source route | Owner point observation of PID, kernel start, parent, process group and stopped state; strict claim-key and ancestry checks | Native claim publication and retirement, work opening and complete claim handling |
+| Pi source route | Owner point observation of PID, kernel start, parent, process group and stopped state; strict claim-key and ancestry checks; positively exited helpers do not obscure a live replacement | Native claim publication and retirement, work opening and complete claim handling |
 | Space associations | Checked publication and association snapshots, manual `bind-space`, one retained-version conditional write and explicit uncertainty | Association completion as part of launch, adoption, enrollment and moves |
 | Sidebar reads | Saved Stream data, current same-host pinned membership and point inspection of registered in-space Follow candidates | Live Pi registration and transition acceptance |
 | Navigation | Secure owner `view-document` pager, shared artifact pager and fresh saved-link validation with a typed browser handoff | Native placement of pagers and desktop browser dispatch |
@@ -86,7 +86,7 @@ Does the published claim continue to identify the active conversation through or
 
 ### Registered source liveness
 
-Can supported owner hosts reliably verify the registered helper, SDK and terminal root during process changes and permission failures? macOS and Linux need different point observations. Verify that an exited helper is distinguishable from an observation failure, that PID reuse cannot revive a stale source and that a malformed or competing registered source produces a clear result. An unregistered Pi remains outside this check.
+Can supported owner hosts reliably verify the registered helper, SDK and terminal root during process changes and permission failures? macOS and Linux need different point observations. The point reader treats a different observed process key or a kernel ESRCH as exit evidence; other observation failures remain unavailable. Focused fixtures cover a replacement and a reaped child, but supported live transitions and permission failures still need acceptance. Verify that PID reuse cannot revive a stale source and that a malformed or competing registered source produces a clear result. An unregistered Pi remains outside this check.
 
 ### App closure and remote placement
 

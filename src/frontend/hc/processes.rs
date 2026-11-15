@@ -54,6 +54,17 @@ pub struct ProcessObservation {
 /// Implementations must report observation gaps as errors, never as absence.
 pub trait ProcessObserver {
     fn observe(&self, pid: u32) -> io::Result<ProcessObservation>;
+
+    /// A different observed process proves that this particular process has exited.
+    fn exited(&self, key: &ProcessKey) -> io::Result<bool> {
+        key.validate()?;
+        let observed = self.observe(key.pid)?;
+        observed.key.validate()?;
+        if observed.key.pid != key.pid {
+            return Err(unavailable());
+        }
+        Ok(observed.key != *key)
+    }
 }
 
 pub struct OwnerProcesses {
@@ -77,6 +88,28 @@ impl ProcessObserver for OwnerProcesses {
             return Err(unavailable());
         }
         observe_process(&self.boot, pid)
+    }
+
+    fn exited(&self, key: &ProcessKey) -> io::Result<bool> {
+        key.validate()?;
+        if key.boot != self.boot {
+            return Ok(true);
+        }
+        match self.observe(key.pid) {
+            Ok(observed) => Ok(observed.key != *key),
+            Err(error) => {
+                // An observation gap alone is not evidence of exit. ESRCH from
+                // the kernel's point check is; EPERM and all other errors are not.
+                if key.pid <= i32::MAX as u32
+                    && unsafe { libc::kill(key.pid as i32, 0) } == -1
+                    && io::Error::last_os_error().raw_os_error() == Some(libc::ESRCH)
+                {
+                    Ok(true)
+                } else {
+                    Err(error)
+                }
+            }
+        }
     }
 }
 
@@ -290,6 +323,54 @@ mod tests {
             assert!(parse_linux_stat(BOOT, 23, &value).is_err());
         }
         assert!(parse_linux_stat(BOOT, 24, &stat("S", "100")).is_err());
+    }
+
+    #[test]
+    fn exit_evidence_distinguishes_reuse_and_observation_gaps() {
+        struct Fake(Option<ProcessObservation>);
+        impl ProcessObserver for Fake {
+            fn observe(&self, _: u32) -> io::Result<ProcessObservation> {
+                self.0
+                    .clone()
+                    .ok_or_else(|| io::Error::other("observation unavailable"))
+            }
+        }
+        let key = ProcessKey {
+            boot: BOOT.into(),
+            pid: 42,
+            started: "linux:10".into(),
+        };
+        let observed = ProcessObservation {
+            key: key.clone(),
+            parent_pid: 1,
+            process_group: 42,
+            stopped: false,
+        };
+        assert!(!Fake(Some(observed.clone())).exited(&key).unwrap());
+        let reused = ProcessObservation {
+            key: ProcessKey {
+                started: "linux:11".into(),
+                ..key.clone()
+            },
+            ..observed
+        };
+        assert!(Fake(Some(reused)).exited(&key).unwrap());
+        assert!(Fake(None).exited(&key).is_err());
+        assert!(Fake(None).exited(&ProcessKey { pid: 0, ..key }).is_err());
+    }
+
+    #[test]
+    fn owner_reports_a_reaped_child_as_exited() {
+        let observer = OwnerProcesses::new().unwrap();
+        let mut child = std::process::Command::new("/bin/sleep")
+            .arg("30")
+            .spawn()
+            .unwrap();
+        let key = observer.observe(child.id()).unwrap().key;
+        assert!(!observer.exited(&key).unwrap());
+        child.kill().unwrap();
+        child.wait().unwrap();
+        assert!(observer.exited(&key).unwrap());
     }
 
     #[test]

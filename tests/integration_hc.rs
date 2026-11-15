@@ -513,6 +513,143 @@ fn source_route_requires_stable_exact_process_keys_and_terminal_ancestry() {
 }
 
 #[test]
+fn stale_source_requires_positive_helper_exit_evidence() {
+    use std::io;
+    use streams::{
+        frontend::hc::processes::{ProcessKey, ProcessObservation, ProcessObserver},
+        integration::{ConversationId, ForegroundConversation},
+        runtime::hc::{PiSourceClaim, labels::source_key, registered_foreground},
+    };
+    struct Processes {
+        rows: BTreeMap<u32, ProcessObservation>,
+        exited: Option<bool>,
+    }
+    impl ProcessObserver for Processes {
+        fn observe(&self, pid: u32) -> io::Result<ProcessObservation> {
+            self.rows
+                .get(&pid)
+                .cloned()
+                .ok_or_else(|| io::Error::other("unavailable"))
+        }
+        fn exited(&self, key: &ProcessKey) -> io::Result<bool> {
+            if key.pid == 40 {
+                self.exited.ok_or_else(|| io::Error::other("unavailable"))
+            } else {
+                Ok(self.observe(key.pid)?.key != *key)
+            }
+        }
+    }
+    let key = |pid| ProcessKey {
+        boot: "08f95cf6-6657-40c4-b5b9-6ee493d934ab".into(),
+        pid,
+        started: format!("linux:{pid}"),
+    };
+    let endpoint = EndpointId("core".into());
+    let terminal = NativeRef {
+        adapter: FrontendId::hc(),
+        endpoint: endpoint.clone(),
+        key: "t1".into(),
+    };
+    let claim = PiSourceClaim {
+        version: 1,
+        endpoint,
+        conversation: ConversationId {
+            harness: "pi".into(),
+            native_id: "old".into(),
+        },
+        terminal_root: key(10),
+        sdk: key(30),
+        helper: key(40),
+    };
+    let replacement = PiSourceClaim {
+        conversation: ConversationId {
+            harness: "pi".into(),
+            native_id: "new".into(),
+        },
+        helper: key(41),
+        ..claim.clone()
+    };
+    let rows: BTreeMap<_, _> = [(10, 1), (30, 10), (41, 30)]
+        .into_iter()
+        .map(|(pid, parent_pid)| {
+            (
+                pid,
+                ProcessObservation {
+                    key: key(pid),
+                    parent_pid,
+                    process_group: 10,
+                    stopped: false,
+                },
+            )
+        })
+        .collect();
+    let labels = json!({source_key(&claim.helper).unwrap():serde_json::to_string(&claim).unwrap(), source_key(&replacement.helper).unwrap():serde_json::to_string(&replacement).unwrap()});
+    let native = |labels| json!({"address":"t1","state":"live","pid":10,"labels":labels,"foreground":{"pid":10}});
+    assert_eq!(
+        registered_foreground(
+            &terminal,
+            native(labels.clone()),
+            &Processes {
+                rows: rows.clone(),
+                exited: Some(true)
+            }
+        ),
+        ForegroundConversation::Current(replacement.conversation)
+    );
+    assert!(matches!(
+        registered_foreground(
+            &terminal,
+            native(labels.clone()),
+            &Processes {
+                rows: rows.clone(),
+                exited: None
+            }
+        ),
+        ForegroundConversation::Unknown { .. }
+    ));
+    assert!(matches!(
+        registered_foreground(
+            &terminal,
+            native(labels),
+            &Processes {
+                rows: rows.clone(),
+                exited: Some(false)
+            }
+        ),
+        ForegroundConversation::Unknown { .. }
+    ));
+    let malformed = json!({source_key(&claim.helper).unwrap():"not-json"});
+    assert!(matches!(
+        registered_foreground(
+            &terminal,
+            native(malformed),
+            &Processes {
+                rows: rows.clone(),
+                exited: Some(true)
+            }
+        ),
+        ForegroundConversation::Unknown { .. }
+    ));
+    let impossible = PiSourceClaim {
+        sdk: claim.helper.clone(),
+        ..claim.clone()
+    };
+    let malformed =
+        json!({source_key(&claim.helper).unwrap():serde_json::to_string(&impossible).unwrap()});
+    assert!(matches!(
+        registered_foreground(
+            &terminal,
+            native(malformed),
+            &Processes {
+                rows,
+                exited: Some(true)
+            }
+        ),
+        ForegroundConversation::Unknown { .. }
+    ));
+}
+
+#[test]
 fn registered_foreground_reads_only_the_requested_terminal() {
     use streams::{
         frontend::hc::processes::{ProcessObservation, ProcessObserver},
