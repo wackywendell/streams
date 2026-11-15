@@ -230,10 +230,10 @@ The current native card opens the viewing Session's resolved working file, inclu
 ## Open or resume work
 
 ```sh
-streams config set frontend.mode herdr  # auto, herdr, cmux or none
+streams config set frontend.mode herdr  # auto, hc, herdr, cmux or none
 streams frontend get --json
-streams start "New effort" --frontend herdr
-streams open STREAM_ID --frontend herdr
+streams start "New effort" --frontend hc
+streams open STREAM_ID --frontend hc
 streams open STREAM_ID --session SESSION_RECORD_ID --cwd ~/code/project
 streams resume STREAM_ID --session SESSION_RECORD_ID
 streams open --current
@@ -242,13 +242,17 @@ streams resume --current
 
 `start` creates a stream and opens it. If opening fails, the stream remains saved and the result reports its ID. Retry `open` with that ID instead of creating another stream.
 
-Herdr `open` discovers active same-host Sessions and opens missing conversations in separate tabs in an observed or new Stream workspace. Already-observed running Sessions stay where they are and their locations are reported. `--session` explicitly selects one conversation, including inactive work. No tab order, pane geometry or saved arrangement is restored. Existing tabs and agents are never closed automatically.
+In `hc` and `herdr-app`, `open` inspects registered Pi sources (`streams.pi.*`) on the selected core, adopts unplaced running terminals into the Stream's space, starts missing Pi 1.5.2 conversations (or a work shell when a Stream has no Sessions yet), and associates the space in the `streams` document when published. In Herdr, `open` discovers active same-host Sessions and opens missing conversations in separate tabs in an observed or new Stream workspace. Already-observed running Sessions stay where they are and their locations are reported. `--session` explicitly selects one conversation, including inactive work. No tab order, pane geometry or saved arrangement is restored. Existing tabs and agents are never closed automatically.
 
 `resume` replaces the current terminal process with one recorded Pi, Codex or Claude conversation. Multiple eligible Sessions require `--session`; it does not reconstruct or focus a workspace. Both paths refuse a duplicate live conversation and validate saved files. Missing or ambiguous files are reported, not replaced with fresh conversations. CMUX supports single-session opening, not multi-Session reopening.
 
-`--current` uses the invoking Session or workspace's explicit association. It never infers a Stream from a title, working directory or another client's GUI focus. `--frontend` chooses an adapter independently of the target. Native reuse uses one current observation. A failed or lost reply warns and stops; no saved attempt is replayed. Rare duplicate workspaces, editors or conversations can require manual cleanup.
+`--current` uses the invoking Session or workspace's explicit association (`HC_TERMINAL_ID` in `hc`, or Herdr workspace metadata). It never infers a Stream from a title, working directory or another client's GUI focus. `--frontend` chooses an adapter independently of the target. Native reuse uses one current observation. A failed or lost reply warns and stops; no saved attempt is replayed. Rare duplicate workspaces, editors or conversations can require manual cleanup.
 
 An explicit `--cwd` updates the selected session's local directory mapping, including on resume and workspace reuse. Reusing a workspace does not change an existing terminal's working directory.
+
+### Native `herdr-app` mod
+
+The `herdr-app` integration lives under [`integrations/herdr-app`](integrations/herdr-app) and renders the Streams sidebar panel, the single 30 px pane header strip for enrolled Pi terminals, and the Session detail popup. It calls the owner CLI (`streams integration describe --frontend hc` and `streams integration request --request-json <json>`), batches active sidebar and visible frame selections into one request per context or save-notice change, and opens saved Document and Artifact references in ephemeral `hc` viewer terminals (`no_parent: true`, `rm: true`). See the [hc and herdr-app implementation plan](docs/hc-herdr-app-plan.md) and [baseline design](docs/hc-herdr-app-design.md) for setup and rollback steps.
 
 Local directories and native bindings live under `$XDG_STATE_HOME/streams/catalogs/<catalog-path-hash>`, not in the shared catalog. The default state root is `~/.local/state`. Opening requires the Stream's immutable host to match this host. Ownership handover and cross-host Session reattachment are unsupported.
 
