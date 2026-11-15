@@ -46,7 +46,7 @@ impl FakeCore {
                 .set_read_timeout(Some(std::time::Duration::from_secs(5)))
                 .unwrap();
             let mut reader = BufReader::new(stream);
-            let steps=std::iter::once(Step("hello",json!({"generation":1,"framed":false}),Reply::Value(json!({"generation":1,"framed":false,"core":{"id":"core"},"methods":["hello","doc.get","doc.set","terminal.get"]})))).chain(steps);
+            let steps=std::iter::once(Step("hello",json!({"generation":1,"framed":false}),Reply::Value(json!({"generation":1,"framed":false,"core":{"id":"core"},"methods":["hello","doc.get","doc.set","terminal.get","terminal.label"]})))).chain(steps);
             for (index, Step(method, params, reply)) in steps.enumerate() {
                 let mut line = String::new();
                 assert_ne!(reader.read_line(&mut line).unwrap(), 0, "missing {method}");
@@ -647,6 +647,147 @@ fn stale_source_requires_positive_helper_exit_evidence() {
         ),
         ForegroundConversation::Unknown { .. }
     ));
+}
+
+#[test]
+fn source_registration_and_retirement_touch_only_the_helper_key() {
+    use streams::{
+        frontend::hc::processes::{ProcessKey, ProcessObservation, ProcessObserver},
+        integration::ConversationId,
+        runtime::hc::{PiSourceClaim, labels::source_key, sources::SourceRegistration},
+    };
+    #[derive(Clone)]
+    struct Processes(BTreeMap<u32, ProcessObservation>);
+    impl ProcessObserver for Processes {
+        fn observe(&self, pid: u32) -> std::io::Result<ProcessObservation> {
+            self.0
+                .get(&pid)
+                .cloned()
+                .ok_or_else(|| std::io::Error::other("unavailable"))
+        }
+    }
+    let key = |pid| ProcessKey {
+        boot: "08f95cf6-6657-40c4-b5b9-6ee493d934ab".into(),
+        pid,
+        started: format!("linux:{pid}"),
+    };
+    let processes = Processes(
+        [(10, 1), (30, 10), (40, 30)]
+            .into_iter()
+            .map(|(pid, parent_pid)| {
+                (
+                    pid,
+                    ProcessObservation {
+                        key: key(pid),
+                        parent_pid,
+                        process_group: 10,
+                        stopped: false,
+                    },
+                )
+            })
+            .collect(),
+    );
+    let conversation = ConversationId {
+        harness: "pi".into(),
+        native_id: "session".into(),
+    };
+    let claim = PiSourceClaim {
+        version: 1,
+        endpoint: EndpointId("core".into()),
+        conversation: conversation.clone(),
+        terminal_root: key(10),
+        sdk: key(30),
+        helper: key(40),
+    };
+    let label = source_key(&claim.helper).unwrap();
+    let value = serde_json::to_string(&claim).unwrap();
+    let terminal = |labels| json!({"address":"t1","state":"live","pid":10,"labels":labels});
+    let core = FakeCore::new(vec![
+        Step(
+            "terminal.get",
+            json!({"terminal":"hint"}),
+            Reply::Value(terminal(json!({"other":"preserved"}))),
+        ),
+        Step(
+            "terminal.label",
+            json!({"terminal":"t1","labels":{label.clone():value.clone()}}),
+            Reply::Value(terminal(
+                json!({"other":"preserved",label.clone():value.clone()}),
+            )),
+        ),
+        Step(
+            "terminal.label",
+            json!({"terminal":"t1","labels":{label.clone():""}}),
+            Reply::Value(terminal(
+                json!({"other":"preserved","streams.pi.replacement":"replacement"}),
+            )),
+        ),
+    ]);
+    let socket = HcEndpoint::resolve(
+        &BTreeMap::from([("HC_SOCKET".into(), core.socket.display().to_string())]),
+        core.socket.parent().unwrap(),
+    )
+    .unwrap();
+    let mut client =
+        HcClient::connect(socket, Some(&EndpointId("core".into())), 5.0, None).unwrap();
+    let Effect::Applied { value: source } = SourceRegistration::register(
+        &mut client,
+        "hint",
+        conversation.clone(),
+        30,
+        40,
+        &processes,
+    ) else {
+        panic!("registration failed")
+    };
+    assert!(matches!(source.retire(&mut client), Effect::Applied { .. }));
+    drop(client);
+    assert_eq!(core.finish().len(), 4);
+
+    let mut wrong = processes.clone();
+    wrong.0.get_mut(&40).unwrap().parent_pid = 10;
+    let core = FakeCore::new(vec![Step(
+        "terminal.get",
+        json!({"terminal":"hint"}),
+        Reply::Value(terminal(json!({}))),
+    )]);
+    let socket = HcEndpoint::resolve(
+        &BTreeMap::from([("HC_SOCKET".into(), core.socket.display().to_string())]),
+        core.socket.parent().unwrap(),
+    )
+    .unwrap();
+    let mut client = HcClient::connect(socket, None, 5.0, None).unwrap();
+    assert!(matches!(
+        SourceRegistration::register(&mut client, "hint", conversation.clone(), 30, 40, &wrong),
+        Effect::NotApplied { .. }
+    ));
+    drop(client);
+    assert_eq!(core.finish().len(), 2);
+
+    let core = FakeCore::new(vec![
+        Step(
+            "terminal.get",
+            json!({"terminal":"hint"}),
+            Reply::Value(terminal(json!({}))),
+        ),
+        Step(
+            "terminal.label",
+            json!({"terminal":"t1","labels":{label:value}}),
+            Reply::Lost,
+        ),
+    ]);
+    let socket = HcEndpoint::resolve(
+        &BTreeMap::from([("HC_SOCKET".into(), core.socket.display().to_string())]),
+        core.socket.parent().unwrap(),
+    )
+    .unwrap();
+    let mut client = HcClient::connect(socket, None, 5.0, None).unwrap();
+    assert!(matches!(
+        SourceRegistration::register(&mut client, "hint", conversation, 30, 40, &processes),
+        Effect::Uncertain { .. }
+    ));
+    drop(client);
+    assert_eq!(core.finish().len(), 3);
 }
 
 #[test]

@@ -1,5 +1,6 @@
 //! Core-owned association snapshots and one-write changes; the app owns layout.
 pub mod labels;
+pub mod sources;
 use crate::{
     frontend::{
         CommandEvidence, CommandOutcome, EndpointId, FrontendError, FrontendId, NativeRequest,
