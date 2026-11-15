@@ -188,6 +188,180 @@ impl App {
         Ok(MetadataSelection { stream, snapshot })
     }
 
+    fn open_hc_runtime(
+        &self,
+        opened: &application::OpenedRecords,
+        stream: &Stream,
+        sessions: &[Session],
+        cwd: Option<&Path>,
+        retained: Option<(
+            streams::runtime::hc::HcPresentation,
+            streams::frontend::hc::HcEndpoint,
+            streams::runtime::hc::HcOperation,
+        )>,
+    ) -> Result<(Value, bool)> {
+        use streams::{
+            integration::{Access, ConversationId, SessionOpenResult, WorkScope, complete_open},
+            runtime::hc::{
+                HcOperation,
+                open::{OpenContext, hc_needs_attention},
+            },
+        };
+        let locations = self.locations(opened.root(), opened.host().as_str())?;
+        let roots = ConversationRoots::from_environment()?;
+        let scope = WorkScope {
+            catalog: opened.source_id().into(),
+            host: opened.host().as_str().into(),
+        };
+        let (presentation, socket, mut operation) = match retained {
+            Some((presentation, socket, operation)) => (Some(presentation), socket, operation),
+            None => {
+                let socket =
+                    streams::frontend::hc::HcEndpoint::resolve(&self.environment, &self.cwd)
+                        .map_err(|error| CliError::message(error.message))?;
+                let client =
+                    streams::frontend::hc::HcClient::connect(socket.clone(), None, 30.0, None)
+                        .map_err(|error| CliError::message(error.message))?;
+                (None, socket, HcOperation::new(client))
+            }
+        };
+        let execution = if operation.supports("terminal.list") {
+            streams::frontend::hc::processes::OwnerProcesses::new()
+                .ok()
+                .and_then(|observer| {
+                    operation
+                        .registered_sources(&observer)
+                        .ok()?
+                        .for_scope(scope.clone())
+                        .ok()
+                })
+        } else {
+            None
+        };
+        let presentation = match presentation {
+            Some(presentation) => Some(presentation),
+            None if operation.supports("doc.get") => operation.presentation(&scope, None).ok(),
+            None => None,
+        };
+        let mut locator_failures = std::collections::BTreeSet::new();
+        let locators: Vec<_> = sessions
+            .iter()
+            .map(
+                |session| match locations.transcript_file(&stream.id, &session.id) {
+                    Ok(path) => path,
+                    Err(_) => {
+                        locator_failures.insert(session.id.clone());
+                        None
+                    }
+                },
+            )
+            .collect();
+        let selected: Vec<_> = sessions
+            .iter()
+            .zip(&locators)
+            .map(|(session, locator)| SelectedConversation {
+                session,
+                locator: locator.as_deref(),
+            })
+            .collect();
+        let conversations: Vec<_> = sessions.iter().map(ConversationId::from).collect();
+        let runtime = WorkspaceRuntime::new(
+            opened.host().as_str(),
+            &locations,
+            None,
+            opened.source_id(),
+            &roots,
+            &self.environment,
+        );
+        let (plan, mut outcomes) = runtime.prepare_hc_open(
+            &AtomicBool::new(false),
+            stream,
+            &selected,
+            cwd,
+            execution.as_ref().map_or_else(
+                || Access::Unavailable {
+                    reason: "hc Pi presence is unavailable".into(),
+                },
+                |value| Access::Available { value },
+            ),
+            presentation.as_ref().map_or_else(
+                || Access::Unavailable {
+                    reason: "hc presentation is unavailable".into(),
+                },
+                |value| Access::Available { value },
+            ),
+        )?;
+        for id in locator_failures {
+            if matches!(outcomes.get(&id), Some(SessionOpenResult::Skipped { .. })) {
+                outcomes.insert(
+                    id,
+                    SessionOpenResult::Skipped {
+                        reason: "saved Session locator is unavailable".into(),
+                    },
+                );
+            }
+        }
+        let effects = operation.execute_prepared_open(
+            &plan,
+            OpenContext {
+                scope: &scope,
+                socket: &socket,
+                environment: &self.environment,
+                selected: &conversations,
+                execution: execution.as_ref(),
+                presentation: presentation.as_ref(),
+            },
+        );
+        let report = complete_open(plan, effects, outcomes);
+        let needs_attention = hc_needs_attention(&scope, &report);
+        let ok = needs_attention.is_empty();
+        Ok((
+            json!({"backend":"hc","report":report,"needs_attention":needs_attention}),
+            ok,
+        ))
+    }
+
+    fn hc_metadata_target(
+        &self,
+        opened: &application::OpenedRecords,
+    ) -> Result<(
+        Stream,
+        streams::runtime::hc::HcPresentation,
+        streams::frontend::hc::HcEndpoint,
+        streams::runtime::hc::HcOperation,
+    )> {
+        use streams::integration::{PresentationSnapshot, WorkScope};
+        let caller = self
+            .environment
+            .get("HC_TERMINAL_ID")
+            .map(String::as_str)
+            .filter(|value| !value.is_empty() && !value.contains('/'))
+            .ok_or_else(|| {
+                CliError::message("hc --current requires HC_TERMINAL_ID or an explicit reference")
+            })?;
+        let scope = WorkScope {
+            catalog: opened.source_id().into(),
+            host: opened.host().as_str().into(),
+        };
+        let socket = streams::frontend::hc::HcEndpoint::resolve(&self.environment, &self.cwd)
+            .map_err(|error| CliError::message(error.message))?;
+        let client = streams::frontend::hc::HcClient::connect(socket.clone(), None, 30.0, None)
+            .map_err(|error| CliError::message(error.message))?;
+        let mut operation = streams::runtime::hc::HcOperation::new(client);
+        let presentation = operation
+            .presentation_for_caller(&scope, Some(caller))
+            .map_err(|error| CliError::message(error.message))?;
+        let space = presentation.caller_space().ok_or_else(|| {
+            CliError::message("calling space is not published in the layout; supply a reference")
+        })?;
+        let id = presentation.stream_for_space(&space).ok_or_else(|| {
+            CliError::message("calling workspace has no Stream marker; supply a reference")
+        })?;
+        let stream = exact_stream(opened, &id)?;
+        require_local(opened, &stream)?;
+        Ok((stream, presentation, socket, operation))
+    }
+
     pub(super) fn create_stream(
         &self,
         title: String,
@@ -212,36 +386,42 @@ impl App {
             return Ok(output);
         }
         let stream = current.expect("accepted creation returns its actual Stream");
-        let completion = (|| -> Result<Option<runtime::workspace::OpenResult>> {
+        let completion = (|| -> Result<Option<(Value, bool)>> {
             let directory = self.path(cwd.as_deref().unwrap_or(&self.cwd))?;
             let locations = self.locations(opened.root(), opened.host().as_str())?;
             locations.remember(&stream.id, &directory, None, false, None, None)?;
             let Creation::Workspace(requested) = creation else {
                 return Ok(None);
             };
-            let frontend = self.native_frontend(&self.selection(requested)?, 30.0)?;
+            let selection = self.selection(requested)?;
+            if selection.resolved.as_ref() == Some(&FrontendId::hc()) {
+                return Ok(Some(self.open_hc_runtime(
+                    &opened,
+                    &stream,
+                    &[],
+                    Some(&directory),
+                    None,
+                )?));
+            }
             let roots = ConversationRoots::from_environment()?;
+            let frontend = self.native_frontend(&selection, 30.0)?;
             let cancelled = AtomicBool::new(false);
-            Ok(Some(
-                WorkspaceRuntime::new(
-                    opened.host().as_str(),
-                    &locations,
-                    frontend.as_ref(),
-                    opened.source_id(),
-                    &roots,
-                    &self.environment,
-                )
-                .open(&cancelled, &stream, &[], Some(&directory), None)?,
-            ))
+            let result = WorkspaceRuntime::new(
+                opened.host().as_str(),
+                &locations,
+                frontend.as_ref(),
+                opened.source_id(),
+                &roots,
+                &self.environment,
+            )
+            .open(&cancelled, &stream, &[], Some(&directory), None)?;
+            let ok = result.needs_attention.is_empty();
+            Ok(Some((json!(result), ok)))
         })();
         match completion {
-            Ok(Some(result)) => {
-                output.code = if result.needs_attention.is_empty() {
-                    0
-                } else {
-                    2
-                };
-                output.value["runtime"] = json!(result);
+            Ok(Some((result, ok))) => {
+                output.code = if ok { 0 } else { 2 };
+                output.value["runtime"] = result;
             }
             Ok(None) => {}
             Err(error) => {
@@ -289,6 +469,28 @@ impl App {
         }
         let selection =
             frontend::resolve_frontend(settings.frontend, target.frontend, &self.environment)?;
+        let cwd = cwd.as_deref().map(|path| self.path(path)).transpose()?;
+        if selection.resolved.as_ref() == Some(&FrontendId::hc()) {
+            let hc_target = explicit
+                .is_none()
+                .then(|| self.hc_metadata_target(&opened))
+                .transpose()?;
+            let (stream, retained) = match (explicit, hc_target) {
+                (Some(stream), None) => (stream, None),
+                (None, Some((stream, presentation, socket, operation))) => {
+                    (stream, Some((presentation, socket, operation)))
+                }
+                _ => unreachable!("explicit or hc metadata target"),
+            };
+            let sessions = selected_sessions(&opened, &stream, &session, inventory.as_deref())?;
+            let (runtime, ok) =
+                self.open_hc_runtime(&opened, &stream, &sessions, cwd.as_deref(), retained)?;
+            let mut output = Output::value(json!({"stream_id":stream.id,"runtime":runtime}));
+            output.code = if ok { 0 } else { 2 };
+            return Ok(output);
+        }
+        let locations = self.locations(opened.root(), opened.host().as_str())?;
+        let roots = ConversationRoots::from_environment()?;
         let frontend = self.native_frontend(&selection, 30.0)?;
         let cancelled = AtomicBool::new(false);
         let metadata = explicit
@@ -300,7 +502,6 @@ impl App {
             .unwrap_or_else(|| &metadata.as_ref().expect("metadata target").stream);
         let observed = metadata.as_ref().map(|selected| &selected.snapshot);
         let sessions = selected_sessions(&opened, stream, &session, inventory.as_deref())?;
-        let locations = self.locations(opened.root(), opened.host().as_str())?;
         let bindings = sessions
             .iter()
             .map(|session| locations.transcript_file(&stream.id, &session.id))
@@ -313,8 +514,6 @@ impl App {
                 locator: binding.as_deref(),
             })
             .collect::<Vec<_>>();
-        let roots = ConversationRoots::from_environment()?;
-        let cwd = cwd.as_deref().map(|path| self.path(path)).transpose()?;
         let result = WorkspaceRuntime::new(
             opened.host().as_str(),
             &locations,
@@ -370,12 +569,19 @@ impl App {
         } else {
             None
         };
-        let metadata = explicit
-            .is_none()
+        let hc_target = (explicit.is_none() && use_hc)
+            .then(|| self.hc_metadata_target(&opened))
+            .transpose()?;
+        let (hc_stream, mut hc_operation) = match hc_target {
+            Some((stream, _, _, operation)) => (Some(stream), Some(operation)),
+            None => (None, None),
+        };
+        let metadata = (explicit.is_none() && hc_stream.is_none())
             .then(|| self.metadata_workspace_target(&opened, frontend.as_ref()))
             .transpose()?;
         let stream = explicit
             .as_ref()
+            .or(hc_stream.as_ref())
             .unwrap_or_else(|| &metadata.as_ref().expect("metadata target").stream);
         let observed = metadata.as_ref().map(|selected| &selected.snapshot);
         let sessions = selected_sessions(&opened, stream, &session, inventory.as_deref())?;
@@ -394,13 +600,20 @@ impl App {
             }
         };
         if use_hc && session.harness == "pi" {
-            let socket = streams::frontend::hc::HcEndpoint::resolve(&self.environment, &self.cwd)
-                .map_err(|_| CliError::message("hc Pi presence is unavailable"))?;
-            let client = streams::frontend::hc::HcClient::connect(socket, None, 30.0, None)
-                .map_err(|_| CliError::message("hc Pi presence is unavailable"))?;
+            let mut operation = match hc_operation.take() {
+                Some(operation) => operation,
+                None => {
+                    let socket =
+                        streams::frontend::hc::HcEndpoint::resolve(&self.environment, &self.cwd)
+                            .map_err(|_| CliError::message("hc Pi presence is unavailable"))?;
+                    let client = streams::frontend::hc::HcClient::connect(socket, None, 30.0, None)
+                        .map_err(|_| CliError::message("hc Pi presence is unavailable"))?;
+                    streams::runtime::hc::HcOperation::new(client)
+                }
+            };
             let observer = streams::frontend::hc::processes::OwnerProcesses::new()
                 .map_err(|_| CliError::message("hc Pi presence is unavailable"))?;
-            let sources = streams::runtime::hc::HcOperation::new(client)
+            let sources = operation
                 .registered_sources(&observer)
                 .map_err(|_| CliError::message("hc Pi presence is unavailable"))?;
             match sources.presence(&streams::integration::ConversationId::from(session)) {

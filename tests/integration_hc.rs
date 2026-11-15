@@ -2128,6 +2128,49 @@ fn hc_open_effects_keep_execution_and_placement_outcomes_independent() {
         drop(operation);
         server.join().unwrap();
     }
+    let stale = row("gone");
+    let present = HcPresentation::new(
+        scope(),
+        AssociationSnapshot::decode(EndpointId("core".into()), 4, document(vec![stale])).unwrap(),
+        PublishedLayout::decode(EndpointId("core".into()), json!({"spaces":[]})).unwrap(),
+        None,
+    )
+    .unwrap();
+    let core = FakeCore::new(vec![Step(
+        "doc.set",
+        json!({"name":"streams","version":4,"value":document(vec![])}),
+        Reply::Value(json!({"version":5})),
+    )]);
+    let socket = HcEndpoint::resolve(
+        &BTreeMap::from([("HC_SOCKET".into(), core.socket.display().to_string())]),
+        &cwd,
+    )
+    .unwrap();
+    let mut operation = core.operation();
+    let effects = operation.execute_prepared_open(
+        &PreparedOpen {
+            stream: "work".into(),
+            space: SpaceDecision::None,
+            launches: vec![],
+            adopt: vec![],
+            focus: true,
+        },
+        OpenContext {
+            scope: &scope(),
+            socket: &socket,
+            environment: &caller,
+            selected: &[],
+            execution: None,
+            presentation: Some(&present),
+        },
+    );
+    assert_eq!(effects.presentation.space, SpaceEvidence::None);
+    assert!(matches!(
+        effects.presentation.state,
+        PresentationState::Incomplete { .. }
+    ));
+    drop(operation);
+    assert_eq!(core.finish().len(), 2);
 }
 
 #[test]

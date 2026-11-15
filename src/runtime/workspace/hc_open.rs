@@ -144,6 +144,43 @@ impl WorkspaceRuntime<'_> {
                 cwd: self.directory(stream, None, cwd)?,
             });
         }
+        let directory = match launches.first() {
+            Some(LaunchItem::Conversation(launch)) => Some(launch.cwd().to_path_buf()),
+            Some(LaunchItem::Shell { cwd }) => Some(cwd.clone()),
+            None if existing.is_some() || !adopt.is_empty() || cwd.is_some() => {
+                Some(self.directory(
+                    stream,
+                    sessions.first().map(|selected| selected.session),
+                    cwd,
+                )?)
+            }
+            None => None,
+        };
+        let reused = existing.is_some();
+        if reused
+            && launches.is_empty()
+            && cwd.is_some()
+            && let Some(directory) = &directory
+        {
+            self.remember(
+                stream,
+                sessions.first().map(|selected| selected.session),
+                directory,
+                false,
+            )?;
+        }
+        for launch in &launches {
+            if let LaunchItem::Conversation(launch) = launch
+                && let Some(selected) = sessions
+                    .iter()
+                    .find(|selected| selected.session.id == launch.session())
+            {
+                self.remember(stream, Some(selected.session), launch.cwd(), cwd.is_none())?;
+            }
+        }
+        if !reused && let Some(directory) = &directory {
+            self.remember(stream, None, directory, cwd.is_none())?;
+        }
         let space = if let Some(space) = existing {
             SpaceDecision::Reuse { space }
         } else if matches!(presentation, Access::Unavailable { .. }) {
@@ -157,18 +194,9 @@ impl WorkspaceRuntime<'_> {
         } else if launches.is_empty() && adopt.is_empty() {
             SpaceDecision::None
         } else {
-            let directory = match launches.first() {
-                Some(LaunchItem::Conversation(launch)) => launch.cwd().to_path_buf(),
-                Some(LaunchItem::Shell { cwd }) => cwd.clone(),
-                None => self.directory(
-                    stream,
-                    sessions.first().map(|selected| selected.session),
-                    cwd,
-                )?,
-            };
             SpaceDecision::Create {
                 title: stream.title.clone(),
-                cwd: directory,
+                cwd: directory.expect("create requires a launch or adoption directory"),
             }
         };
         Ok((

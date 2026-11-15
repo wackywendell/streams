@@ -147,6 +147,36 @@ fn selection_preserves_auto_none_explicit_and_override_policy() {
     ]);
     assert!(resolve_frontend(FrontendMode::Auto, None, &both).is_err());
     assert!(resolve_frontend(FrontendMode::Auto, Some(FrontendRequest::Auto), &both).is_err());
+    assert!(
+        resolve_frontend(
+            FrontendMode::Auto,
+            None,
+            &context(&[("CMUX_WORKSPACE_ID", "c1"), ("HC_TERMINAL_ID", "t1")])
+        )
+        .is_err()
+    );
+    assert!(
+        resolve_frontend(
+            FrontendMode::Auto,
+            None,
+            &context(&[
+                ("HERDR_ENV", "1"),
+                ("HERDR_PANE_ID", "w1:p1"),
+                ("HC_TERMINAL_ID", "t1")
+            ])
+        )
+        .is_err()
+    );
+    assert_eq!(
+        resolve_frontend(
+            FrontendMode::Auto,
+            None,
+            &context(&[("HC_SOCKET", "/tmp/hc.sock"), ("HC_SESSION", "default")])
+        )
+        .unwrap()
+        .resolved,
+        None
+    );
     for values in [
         vec![("HERDR_ENV", "1")],
         vec![("HERDR_PANE_ID", "w1:p1")],
@@ -192,6 +222,7 @@ fn selection_preserves_auto_none_explicit_and_override_policy() {
             vec![("HERDR_ENV", "1"), ("HERDR_PANE_ID", "w1:p1")],
             FrontendId::herdr(),
         ),
+        (vec![("HC_TERMINAL_ID", "t1")], FrontendId::hc()),
     ] {
         assert_eq!(
             resolve_frontend(FrontendMode::Auto, None, &context(&values))

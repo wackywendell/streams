@@ -392,34 +392,11 @@ impl App {
         configured: &FrontendMode,
         requested: Option<&FrontendRequest>,
     ) -> Result<bool> {
-        let context = |name: &str| {
-            self.environment
-                .get(name)
-                .is_some_and(|value| !value.is_empty())
-        };
-        let mode = match requested {
-            Some(FrontendRequest::Explicit(id)) => FrontendMode::Explicit(id.clone()),
-            _ => configured.clone(),
-        };
-        Ok(match mode {
-            FrontendMode::None => false,
-            FrontendMode::Explicit(id) => id == frontend::FrontendId::hc(),
-            FrontendMode::Auto if context("HC_TERMINAL_ID") => {
-                if context("CMUX_WORKSPACE_ID")
-                    || self
-                        .environment
-                        .get("HERDR_ENV")
-                        .is_some_and(|value| value == "1")
-                    || context("HERDR_PANE_ID")
-                {
-                    return Err(CliError::message(
-                        "conflicting native caller contexts; choose an explicit frontend",
-                    ));
-                }
-                true
-            }
-            FrontendMode::Auto => false,
-        })
+        Ok(
+            frontend::resolve_frontend(configured.clone(), requested.cloned(), &self.environment)?
+                .resolved
+                == Some(frontend::FrontendId::hc()),
+        )
     }
     fn selection(&self, requested: Option<FrontendRequest>) -> Result<FrontendSelection> {
         Ok(frontend::resolve_frontend(
@@ -490,6 +467,41 @@ impl App {
             return Ok(id.to_owned());
         }
         let selection = frontend::resolve_frontend(configured, requested, &self.environment)?;
+        if selection.resolved.as_ref() == Some(&frontend::FrontendId::hc()) {
+            use streams::integration::{PresentationSnapshot, WorkScope};
+            let caller = self
+                .environment
+                .get("HC_TERMINAL_ID")
+                .map(String::as_str)
+                .filter(|value| !value.is_empty() && !value.contains('/'))
+                .ok_or_else(|| {
+                    CliError::message(
+                        "hc --current requires HC_TERMINAL_ID or an explicit reference",
+                    )
+                })?;
+            let scope = WorkScope {
+                catalog: catalog_source.into(),
+                host: host.into(),
+            };
+            let socket = frontend::hc::HcEndpoint::resolve(&self.environment, &self.cwd)
+                .map_err(|error| CliError::message(error.message))?;
+            let client = frontend::hc::HcClient::connect(socket, None, 30.0, None)
+                .map_err(|error| CliError::message(error.message))?;
+            let mut operation = runtime::hc::HcOperation::new(client);
+            let presentation = operation
+                .presentation_for_caller(&scope, Some(caller))
+                .map_err(|error| CliError::message(error.message))?;
+            let space = presentation.caller_space().ok_or_else(|| {
+                CliError::message(
+                    "calling space is not published in the layout; pass an explicit reference",
+                )
+            })?;
+            return presentation.stream_for_space(&space).ok_or_else(|| {
+                CliError::message(
+                    "calling workspace has no Stream selector; pass an explicit reference",
+                )
+            });
+        }
         let connection = self.native_frontend(&selection, 30.0)?;
         let client = connection
             .as_ref()

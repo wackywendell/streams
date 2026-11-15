@@ -194,8 +194,8 @@ pub struct FrontendSelection {
 pub enum FrontendSelectionError {
     #[error("incomplete Herdr caller context; expected HERDR_ENV=1 and HERDR_PANE_ID")]
     IncompleteHerdr,
-    #[error("both CMUX and Herdr caller contexts are present; choose an explicit frontend")]
-    Ambiguous([FrontendId; 2]),
+    #[error("multiple native caller contexts are present; choose an explicit frontend")]
+    Ambiguous(Vec<FrontendId>),
 }
 
 /// Pure Python-compatible selection policy; explicit modes bypass auto detection.
@@ -217,21 +217,24 @@ pub fn resolve_frontend(
                 .is_some_and(|v| !v.is_empty());
             let herdr = context.get("HERDR_ENV").is_some_and(|v| v == "1");
             let pane = context.get("HERDR_PANE_ID").is_some_and(|v| !v.is_empty());
+            let hc = context.get("HC_TERMINAL_ID").is_some_and(|v| !v.is_empty());
             if herdr != pane {
                 return Err(FrontendSelectionError::IncompleteHerdr);
             }
-            if cmux && herdr {
-                return Err(FrontendSelectionError::Ambiguous([
-                    FrontendId::cmux(),
-                    FrontendId::herdr(),
-                ]));
-            }
+            let mut active = Vec::new();
             if cmux {
-                Some(FrontendId::cmux())
-            } else if herdr {
-                Some(FrontendId::herdr())
-            } else {
-                None
+                active.push(FrontendId::cmux());
+            }
+            if herdr {
+                active.push(FrontendId::herdr());
+            }
+            if hc {
+                active.push(FrontendId::hc());
+            }
+            match active.len() {
+                0 => None,
+                1 => active.into_iter().next(),
+                _ => return Err(FrontendSelectionError::Ambiguous(active)),
             }
         }
     };

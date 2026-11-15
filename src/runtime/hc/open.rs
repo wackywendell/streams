@@ -73,9 +73,15 @@ impl HcOperation {
                 SpaceDecision::Unavailable { .. } => PresentationState::Unavailable {
                     reason: "hc presentation is unavailable".into(),
                 },
-                _ => PresentationState::Incomplete {
-                    reason: "no terminal can carry a new placement".into(),
-                },
+                _ => {
+                    if let Some(snapshot) = context.presentation {
+                        let _ =
+                            self.finish_associations(&snapshot.before, &snapshot.published, None);
+                    }
+                    PresentationState::Incomplete {
+                        reason: "no terminal can carry a new placement".into(),
+                    }
+                }
             };
             return OpenEffects {
                 launches: vec![],
@@ -170,11 +176,21 @@ impl HcOperation {
             adoptions.push(effect);
         }
         let presentation = if !requested {
+            let state = match context.presentation {
+                Some(snapshot) if !uncertain => {
+                    match self.finish_associations(&snapshot.before, &snapshot.published, None) {
+                        Effect::Applied { .. } => PresentationState::Complete,
+                        Effect::NotApplied { reason } => PresentationState::Incomplete { reason },
+                        Effect::Uncertain { reason } => PresentationState::Uncertain { reason },
+                    }
+                }
+                _ => PresentationState::Complete,
+            };
             PresentationResult {
                 space: SpaceEvidence::Known {
                     value: space.clone(),
                 },
-                state: PresentationState::Complete,
+                state,
             }
         } else if !attempted {
             PresentationResult {
@@ -261,4 +277,102 @@ fn rejected(plan: &PreparedOpen, reason: &str) -> OpenEffects {
         },
         viewer_actions: vec![],
     }
+}
+
+pub fn hc_needs_attention(
+    scope: &WorkScope,
+    report: &crate::integration::OpenReport,
+) -> Vec<String> {
+    use crate::integration::{OpenReport, SessionOpenResult, ViewerAction};
+    let OpenReport {
+        stream,
+        sessions,
+        adoptions,
+        initial_shell,
+        presentation,
+        viewer_actions,
+    } = report;
+    let mut attention = Vec::new();
+    for (id, result) in sessions {
+        match result {
+            SessionOpenResult::AlreadyRunning { .. } | SessionOpenResult::Launched { .. } => {}
+            SessionOpenResult::Skipped { reason } | SessionOpenResult::Uncertain { reason } => {
+                attention.push(format!("Session {id}: {reason}"));
+            }
+        }
+    }
+    for adoption in adoptions {
+        match &adoption.result {
+            Effect::Applied { .. } => {}
+            Effect::NotApplied { reason } | Effect::Uncertain { reason } => {
+                attention.push(format!("adoption of {}: {reason}", adoption.terminal.key));
+            }
+        }
+    }
+    if let Some(effect) = initial_shell {
+        match effect {
+            Effect::Applied { .. } => {}
+            Effect::NotApplied { reason } | Effect::Uncertain { reason } => {
+                attention.push(format!("initial shell: {reason}"));
+            }
+        }
+    }
+    match &presentation.state {
+        PresentationState::Complete => {}
+        PresentationState::Unsupported => {
+            attention.push("presentation is unsupported".into());
+        }
+        PresentationState::Incomplete { reason }
+        | PresentationState::Unavailable { reason }
+        | PresentationState::Uncertain { reason } => match &presentation.space {
+            SpaceEvidence::None => attention.push(format!("presentation: {reason}")),
+            SpaceEvidence::Requested { value } | SpaceEvidence::Known { value } => {
+                let space_json = serde_json::to_string(value).unwrap_or_default();
+                let scope_json = serde_json::to_string(scope).unwrap_or_default();
+                attention.push(format!(
+                    "presentation for space {}: {reason}; after publication run: streams integration bind-space --space-ref {} --stream {} --scope-json {}",
+                    value.key,
+                    shell_quote(&space_json),
+                    shell_quote(stream),
+                    shell_quote(&scope_json)
+                ));
+            }
+        },
+    }
+    for action in viewer_actions {
+        match action {
+            ViewerAction::SelectSpace { space } => {
+                attention.push(format!(
+                    "desktop action pending: select space {}",
+                    space.key
+                ));
+            }
+            ViewerAction::FocusTerminal { terminal } => {
+                attention.push(format!(
+                    "desktop action pending: focus terminal {}",
+                    terminal.key
+                ));
+            }
+            ViewerAction::RenameSpace { space, .. } => {
+                attention.push(format!(
+                    "desktop action pending: rename space {}",
+                    space.key
+                ));
+            }
+            ViewerAction::RenameTab { tab, .. } => {
+                attention.push(format!("desktop action pending: rename tab {}", tab.key));
+            }
+            ViewerAction::OpenUrl { url } => {
+                attention.push(format!(
+                    "desktop action pending: open {}",
+                    url.as_url().as_str()
+                ));
+            }
+        }
+    }
+    attention
+}
+
+fn shell_quote(value: &str) -> String {
+    format!("'{}'", value.replace('\'', "'\\''"))
 }

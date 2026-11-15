@@ -175,6 +175,226 @@ fn owner_open_work_selects_admitted_sessions_and_keeps_paths_off_the_reply() {
     assert!(reply.contains("desktop opening cannot supply an owner directory"));
 }
 
+#[test]
+fn hc_public_open_and_start_preserve_runtime_shapes_and_current_lookup() {
+    use std::{
+        io::{BufRead, BufReader, Read, Write},
+        os::unix::{fs::PermissionsExt, net::UnixListener},
+        thread,
+        time::Duration,
+    };
+    use streams::runtime::{CheckoutRegistry, DirectoryBindings, state::RuntimeState};
+    let fixture = SavedFixture::new();
+    let root = fixture._directory.path().canonicalize().unwrap();
+    let host = fixture.records.host().as_str();
+    let scope = WorkScope {
+        catalog: fixture.records.source_id().into(),
+        host: host.into(),
+    };
+    let registry = CheckoutRegistry::new(fixture.config.checkout_state_dir(), host).unwrap();
+    let state = RuntimeState::new(
+        fixture
+            .config
+            .runtime_state_dir_for(fixture.records.root())
+            .unwrap(),
+        host,
+    )
+    .unwrap();
+    let locations = DirectoryBindings::new(state.root(), registry);
+    let session = &fixture.sessions[0];
+    locations
+        .remember("work", &root, Some(&session.id), false, None, None)
+        .unwrap();
+    locations
+        .remember("empty", &root, None, false, None, None)
+        .unwrap();
+    let transcript = root.join("one.jsonl");
+    std::fs::write(&transcript, "{\"type\":\"session\",\"id\":\"one\"}\n").unwrap();
+    locations
+        .remember_transcript("work", &session.id, &transcript)
+        .unwrap();
+    let program = root.join("pi");
+    std::fs::write(&program, "#!/bin/sh\nexit 0\n").unwrap();
+    std::fs::set_permissions(&program, std::fs::Permissions::from_mode(0o755)).unwrap();
+
+    for case in ["none", "requested", "known", "current-shell"] {
+        let socket_dir = tempfile::Builder::new()
+            .prefix("hc-public-open-")
+            .tempdir_in("/tmp")
+            .unwrap();
+        let path = socket_dir.path().join("s");
+        let listener = UnixListener::bind(&path).unwrap();
+        let scope_for_server = scope.clone();
+        let server = thread::spawn(move || {
+            let mut reader = BufReader::new(listener.accept().unwrap().0);
+            reader
+                .get_ref()
+                .set_read_timeout(Some(Duration::from_secs(10)))
+                .unwrap();
+            let read = |reader: &mut BufReader<std::os::unix::net::UnixStream>| {
+                let mut line = String::new();
+                assert!(reader.read_line(&mut line).unwrap() > 0);
+                serde_json::from_str::<Value>(&line).unwrap()
+            };
+            let hello = read(&mut reader);
+            writeln!(reader.get_mut(),"{}",json!({"jsonrpc":"2.0","id":hello["id"],"result":{"generation":1,"framed":false,"core":{"id":"core"},"methods":["hello","terminal.list","terminal.run","doc.get","doc.set"]}})).unwrap();
+            if case == "current-shell" {
+                let associations = read(&mut reader);
+                assert_eq!(associations["params"]["name"], "streams");
+                writeln!(reader.get_mut(),"{}",json!({"jsonrpc":"2.0","id":associations["id"],"result":{"version":2,"value":{"version":1,"spaces":{"space-work":{"scope":scope_for_server,"stream":"work","space":{"adapter":"hc","endpoint":"core","key":"space-work"}}}}}})).unwrap();
+                let layout = read(&mut reader);
+                assert_eq!(layout["params"]["name"], "herdr-app");
+                writeln!(reader.get_mut(),"{}",json!({"jsonrpc":"2.0","id":layout["id"],"result":{"version":3,"value":{"spaces":[{"id":"space-work","tabs":[{"id":"tab-1","root":{"type":"block","content":{"terminal":"t-caller"}}}]}]}}})).unwrap();
+                let list = read(&mut reader);
+                assert_eq!(list["method"], "terminal.list");
+                writeln!(
+                    reader.get_mut(),
+                    "{}",
+                    json!({"jsonrpc":"2.0","id":list["id"],"result":{"terminals":[]}})
+                )
+                .unwrap();
+                let run = read(&mut reader);
+                assert_eq!(run["method"], "terminal.run");
+                let params = &run["params"];
+                assert_eq!(params["labels"]["herdr.space"], "space-work");
+                writeln!(reader.get_mut(),"{}",json!({"jsonrpc":"2.0","id":run["id"],"result":{"address":"t1","state":"live","pid":123,"argv":params["argv"],"cwd":params["cwd"],"parent":null,"labels":params["labels"]}})).unwrap();
+            } else {
+                let list = read(&mut reader);
+                assert_eq!(list["method"], "terminal.list");
+                writeln!(
+                    reader.get_mut(),
+                    "{}",
+                    json!({"jsonrpc":"2.0","id":list["id"],"result":{"terminals":[]}})
+                )
+                .unwrap();
+                let associations = read(&mut reader);
+                assert_eq!(associations["params"]["name"], "streams");
+                writeln!(reader.get_mut(),"{}",json!({"jsonrpc":"2.0","id":associations["id"],"result":{"version":0,"value":null}})).unwrap();
+                let layout = read(&mut reader);
+                assert_eq!(layout["params"]["name"], "herdr-app");
+                writeln!(reader.get_mut(),"{}",json!({"jsonrpc":"2.0","id":layout["id"],"result":{"version":1,"value":{"spaces":[]}}})).unwrap();
+                if case != "none" {
+                    let run = read(&mut reader);
+                    assert_eq!(run["method"], "terminal.run");
+                    let params = &run["params"];
+                    let space = params["labels"]["herdr.space"].as_str().unwrap();
+                    writeln!(reader.get_mut(),"{}",json!({"jsonrpc":"2.0","id":run["id"],"result":{"address":"t1","state":"live","pid":123,"argv":params["argv"],"cwd":params["cwd"],"parent":null,"labels":params["labels"]}})).unwrap();
+                    let get = read(&mut reader);
+                    assert_eq!(get["params"]["name"], "herdr-app");
+                    let published = if case == "known" {
+                        json!({"spaces":[{"id":space}]})
+                    } else {
+                        json!({"spaces":[]})
+                    };
+                    writeln!(reader.get_mut(),"{}",json!({"jsonrpc":"2.0","id":get["id"],"result":{"version":2,"value":published}})).unwrap();
+                    if case == "known" {
+                        let set = read(&mut reader);
+                        assert_eq!(set["method"], "doc.set");
+                        writeln!(
+                            reader.get_mut(),
+                            "{}",
+                            json!({"jsonrpc":"2.0","id":set["id"],"result":{"version":1}})
+                        )
+                        .unwrap();
+                    }
+                }
+            }
+            let mut rest = Vec::new();
+            reader.read_to_end(&mut rest).unwrap();
+            assert!(rest.is_empty());
+        });
+        let mut command = fixture.command();
+        command.env("HC_SOCKET", &path).env("PATH", &root);
+        if case == "current-shell" {
+            let target = format!("{host}/{}", session.id);
+            command.env("HC_TERMINAL_ID", "t-caller").args([
+                "open",
+                "--current",
+                "--session-key",
+                &target,
+                "--json",
+            ]);
+        } else {
+            let target = format!(
+                "{host}/{}",
+                if case == "none" {
+                    &fixture.sessions[1].id
+                } else {
+                    &session.id
+                }
+            );
+            command.env("STREAMS_STREAM_ID", "work").args([
+                "open",
+                "--current",
+                "--session-key",
+                &target,
+                "--frontend",
+                "hc",
+                "--json",
+            ]);
+        }
+        let output = command.output().unwrap();
+        assert_eq!(output.status.code(), Some(2));
+        let value: Value = serde_json::from_slice(&output.stdout).unwrap();
+        assert_eq!(value["runtime"]["backend"], "hc", "{case}: {value}");
+        let report = &value["runtime"]["report"];
+        let attention = value["runtime"]["needs_attention"].as_array().unwrap();
+        match case {
+            "none" => {
+                assert_eq!(report["presentation"]["space"]["kind"], "none");
+                assert!(
+                    attention
+                        .iter()
+                        .any(|item| item.as_str().unwrap().contains("Session"))
+                );
+            }
+            "requested" => {
+                assert_eq!(report["presentation"]["space"]["kind"], "requested");
+                assert!(attention.iter().any(|item| {
+                    item.as_str()
+                        .unwrap()
+                        .contains("streams integration bind-space --space-ref")
+                }));
+            }
+            "known" => {
+                assert_eq!(report["presentation"]["space"]["kind"], "known");
+                assert_eq!(report["presentation"]["state"]["kind"], "complete");
+                assert!(
+                    attention
+                        .iter()
+                        .any(|item| item.as_str().unwrap().contains("select space"))
+                );
+            }
+            _ => {
+                assert_eq!(value["stream_id"], "work");
+                assert_eq!(
+                    report["presentation"]["space"]["value"]["key"],
+                    "space-work"
+                );
+            }
+        }
+        server.join().unwrap();
+    }
+
+    let missing_socket = root.join("missing.sock");
+    let output = fixture
+        .command()
+        .env("HC_SOCKET", &missing_socket)
+        .args([
+            "start",
+            "Saved with hc failure",
+            "--frontend",
+            "hc",
+            "--json",
+        ])
+        .output()
+        .unwrap();
+    assert_eq!(output.status.code(), Some(2));
+    let saved: Value = serde_json::from_slice(&output.stdout).unwrap();
+    assert_eq!(saved["save"]["local"], "persisted");
+    assert!(saved["completion_error"]["message"].is_string());
+}
+
 fn saved_presentation(scope: &WorkScope) -> streams::runtime::hc::HcPresentation {
     use streams::{
         frontend::EndpointId,

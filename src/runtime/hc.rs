@@ -1217,6 +1217,26 @@ impl HcOperation {
         let (before, published) = self.snapshots()?;
         HcPresentation::new(scope.clone(), before, published, caller)
     }
+    pub fn presentation_for_caller(
+        &mut self,
+        scope: &WorkScope,
+        caller_terminal: Option<&str>,
+    ) -> Result<HcPresentation, FrontendError> {
+        let (before, published) = self.snapshots()?;
+        let caller = caller_terminal
+            .filter(|id| !id.is_empty() && !id.contains('/'))
+            .map(|id| NativeRef {
+                adapter: FrontendId::hc(),
+                endpoint: published.endpoint.clone(),
+                key: id.into(),
+            });
+        let mut presentation = HcPresentation::new(scope.clone(), before, published, None)?;
+        if let Some(terminal) = caller {
+            use crate::integration::PresentationSnapshot;
+            presentation.caller = presentation.space_for_terminal(&terminal);
+        }
+        Ok(presentation)
+    }
 }
 
 fn invalid(message: impl Into<String>) -> FrontendError {
