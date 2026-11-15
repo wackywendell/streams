@@ -356,8 +356,10 @@ impl App {
             require_local(&opened, stream)?;
         }
         // Resume executes here; observed reuse is best effort, without discovery.
-        let use_herdr = matches!(&settings.frontend, FrontendMode::Explicit(id) if *id == FrontendId::herdr())
-            || self.environment.get("HERDR_ENV").map(String::as_str) == Some("1");
+        let use_hc = self.hc_selected(&settings.frontend, target.frontend.as_ref())?;
+        let use_herdr = !use_hc
+            && (matches!(&settings.frontend, FrontendMode::Explicit(id) if *id == FrontendId::herdr())
+                || self.environment.get("HERDR_ENV").map(String::as_str) == Some("1"));
         let frontend = if use_herdr {
             Some(BuiltinFrontend::connect(
                 &FrontendId::herdr(),
@@ -391,6 +393,28 @@ impl App {
                 });
             }
         };
+        if use_hc && session.harness == "pi" {
+            let socket = streams::frontend::hc::HcEndpoint::resolve(&self.environment, &self.cwd)
+                .map_err(|_| CliError::message("hc Pi presence is unavailable"))?;
+            let client = streams::frontend::hc::HcClient::connect(socket, None, 30.0, None)
+                .map_err(|_| CliError::message("hc Pi presence is unavailable"))?;
+            let observer = streams::frontend::hc::processes::OwnerProcesses::new()
+                .map_err(|_| CliError::message("hc Pi presence is unavailable"))?;
+            let sources = streams::runtime::hc::HcOperation::new(client)
+                .registered_sources(&observer)
+                .map_err(|_| CliError::message("hc Pi presence is unavailable"))?;
+            match sources.presence(&streams::integration::ConversationId::from(session)) {
+                streams::integration::Presence::Absent => {}
+                streams::integration::Presence::Running { .. } => {
+                    return Err(CliError::message(
+                        "conversation is already observed running; left in place",
+                    ));
+                }
+                streams::integration::Presence::Unknown { .. } => {
+                    return Err(CliError::message("hc Pi presence is unavailable"));
+                }
+            }
+        }
         let locations = self.locations(opened.root(), opened.host().as_str())?;
         let locator = locations.transcript_file(&stream.id, &session.id)?;
         let selected = SelectedConversation {

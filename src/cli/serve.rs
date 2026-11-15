@@ -101,34 +101,6 @@ impl HcSource {
     }
 }
 
-fn hc_selected(app: &App) -> Result<bool> {
-    use streams::frontend::{FrontendId, FrontendMode};
-    let context = |name: &str| {
-        app.environment
-            .get(name)
-            .is_some_and(|value| !value.is_empty())
-    };
-    Ok(match app.config.load()?.frontend {
-        FrontendMode::None => false,
-        FrontendMode::Explicit(id) => id == FrontendId::hc(),
-        FrontendMode::Auto if context("HC_TERMINAL_ID") => {
-            if context("CMUX_WORKSPACE_ID")
-                || app
-                    .environment
-                    .get("HERDR_ENV")
-                    .is_some_and(|value| value == "1")
-                || context("HERDR_PANE_ID")
-            {
-                return Err(CliError::message(
-                    "conflicting native caller contexts; choose an explicit frontend",
-                ));
-            }
-            true
-        }
-        FrontendMode::Auto => false,
-    })
-}
-
 struct Server {
     session_id: String,
     sdk_pid: Option<u32>,
@@ -255,7 +227,7 @@ impl Server {
                     | Request::Attach {}
                     | Request::OpenCard {}
                     | Request::CloseCard {}
-            ) && hc_selected(&app)?
+            ) && app.hc_selected(&app.config.load()?.frontend, None)?
             {
                 if pi_context.is_none() {
                     return Err(CliError::message("hc Pi request context is unavailable"));

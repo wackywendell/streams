@@ -387,6 +387,40 @@ impl App {
             herdr: None,
         })
     }
+    fn hc_selected(
+        &self,
+        configured: &FrontendMode,
+        requested: Option<&FrontendRequest>,
+    ) -> Result<bool> {
+        let context = |name: &str| {
+            self.environment
+                .get(name)
+                .is_some_and(|value| !value.is_empty())
+        };
+        let mode = match requested {
+            Some(FrontendRequest::Explicit(id)) => FrontendMode::Explicit(id.clone()),
+            _ => configured.clone(),
+        };
+        Ok(match mode {
+            FrontendMode::None => false,
+            FrontendMode::Explicit(id) => id == frontend::FrontendId::hc(),
+            FrontendMode::Auto if context("HC_TERMINAL_ID") => {
+                if context("CMUX_WORKSPACE_ID")
+                    || self
+                        .environment
+                        .get("HERDR_ENV")
+                        .is_some_and(|value| value == "1")
+                    || context("HERDR_PANE_ID")
+                {
+                    return Err(CliError::message(
+                        "conflicting native caller contexts; choose an explicit frontend",
+                    ));
+                }
+                true
+            }
+            FrontendMode::Auto => false,
+        })
+    }
     fn selection(&self, requested: Option<FrontendRequest>) -> Result<FrontendSelection> {
         Ok(frontend::resolve_frontend(
             self.config.load()?.frontend,

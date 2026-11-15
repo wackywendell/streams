@@ -506,6 +506,271 @@ fn describe_verifies_the_configured_core_without_caller_context_or_writes() {
 }
 
 #[test]
+fn hc_resume_checks_registered_presence_before_replacing_the_process() {
+    use std::{
+        fs,
+        io::{BufRead, BufReader, Read, Write},
+        os::unix::{fs::PermissionsExt, net::UnixListener},
+        thread,
+    };
+    use streams::{
+        frontend::{
+            EndpointId,
+            hc::processes::{OwnerProcesses, ProcessObserver},
+        },
+        integration::ConversationId,
+        runtime::{
+            CheckoutRegistry, DirectoryBindings,
+            hc::{PiSourceClaim, labels::source_key},
+            state::RuntimeState,
+        },
+    };
+    let fixture = SavedFixture::new();
+    let session = &fixture.sessions[0];
+    let root = fixture._directory.path().canonicalize().unwrap();
+    let transcript = root.join("exact.jsonl");
+    fs::write(&transcript, "{\"type\":\"session\",\"id\":\"one\"}\n").unwrap();
+    let bin = root.join("bin");
+    fs::create_dir(&bin).unwrap();
+    let program = bin.join("pi");
+    fs::write(&program, "#!/bin/sh\nprintf '%s|%s|%s|%s' \"$1\" \"$2\" \"$STREAMS_STREAM_ID\" \"$HC_TERMINAL_ID\"\n").unwrap();
+    fs::set_permissions(&program, fs::Permissions::from_mode(0o755)).unwrap();
+    let host = fixture.records.host().as_str();
+    let registry = CheckoutRegistry::new(fixture.config.checkout_state_dir(), host).unwrap();
+    let state = RuntimeState::new(
+        fixture
+            .config
+            .runtime_state_dir_for(fixture.records.root())
+            .unwrap(),
+        host,
+    )
+    .unwrap();
+    let locations = DirectoryBindings::new(state.root(), registry);
+    locations
+        .remember("work", &root, Some(&session.id), false, None, None)
+        .unwrap();
+    locations
+        .remember_transcript("work", &session.id, &transcript)
+        .unwrap();
+    let observer = OwnerProcesses::new().unwrap();
+    let helper = observer.observe(std::process::id()).unwrap();
+    let sdk = observer.observe(helper.parent_pid).unwrap();
+    let claim = PiSourceClaim {
+        version: 1,
+        endpoint: EndpointId("core".into()),
+        conversation: ConversationId::from(session),
+        terminal_root: sdk.key.clone(),
+        sdk: sdk.key,
+        helper: helper.key,
+    };
+    let label = source_key(&claim.helper).unwrap();
+    let other_claim = PiSourceClaim {
+        conversation: ConversationId {
+            harness: "pi".into(),
+            native_id: "other".into(),
+        },
+        ..claim.clone()
+    };
+    for (labels, frontend, expected) in [
+        (json!({}), "hc", "launched"),
+        (
+            json!({label.clone():serde_json::to_string(&other_claim).unwrap()}),
+            "auto",
+            "launched",
+        ),
+        (
+            json!({label.clone():serde_json::to_string(&claim).unwrap()}),
+            "hc",
+            "already observed running",
+        ),
+        (
+            json!({"streams.pi.invalid":"broken"}),
+            "hc",
+            "hc Pi presence is unavailable",
+        ),
+    ] {
+        let directory = tempfile::Builder::new()
+            .prefix("hc-resume-")
+            .tempdir_in("/tmp")
+            .unwrap();
+        let socket = directory.path().join("s");
+        let listener = UnixListener::bind(&socket).unwrap();
+        let root_pid = claim.terminal_root.pid;
+        let server = thread::spawn(move || {
+            use std::os::fd::AsRawFd;
+            let mut fd = libc::pollfd {
+                fd: listener.as_raw_fd(),
+                events: libc::POLLIN,
+                revents: 0,
+            };
+            assert_eq!(
+                unsafe { libc::poll(&mut fd, 1, 5000) },
+                1,
+                "resume did not connect"
+            );
+            let mut reader = BufReader::new(listener.accept().unwrap().0);
+            reader
+                .get_ref()
+                .set_read_timeout(Some(std::time::Duration::from_secs(5)))
+                .unwrap();
+            for (method, reply) in [
+                (
+                    "hello",
+                    json!({"generation":1,"framed":false,"core":{"id":"core"},"methods":["hello","terminal.list"]}),
+                ),
+                (
+                    "terminal.list",
+                    json!({"terminals":[{"address":"t1","state":"live","pid":root_pid,"labels":labels}]}),
+                ),
+            ] {
+                let mut line = String::new();
+                reader.read_line(&mut line).unwrap();
+                let request: Value = serde_json::from_str(&line).unwrap();
+                assert_eq!(request["method"], method);
+                writeln!(
+                    reader.get_mut(),
+                    "{}",
+                    json!({"jsonrpc":"2.0","id":request["id"],"result":reply})
+                )
+                .unwrap();
+            }
+            let mut extra = Vec::new();
+            reader.read_to_end(&mut extra).unwrap();
+            assert!(
+                extra.is_empty(),
+                "resume presence inspection makes no native mutations"
+            );
+        });
+        let output = fixture
+            .command()
+            .env("HC_SOCKET", &socket)
+            .env("HC_TERMINAL_ID", "caller")
+            .env("STREAMS_STREAM_ID", "work")
+            .env("PATH", &bin)
+            .args([
+                "resume",
+                "--current",
+                "--session-key",
+                &format!("{host}/{}", session.id),
+                "--frontend",
+                frontend,
+            ])
+            .output()
+            .unwrap();
+        assert!(
+            server.join().is_ok(),
+            "resume failed before completing hc inspection: {}",
+            String::from_utf8_lossy(&output.stderr)
+        );
+        if expected == "launched" {
+            assert!(
+                output.status.success(),
+                "{}",
+                String::from_utf8_lossy(&output.stderr)
+            );
+            assert_eq!(
+                String::from_utf8_lossy(&output.stdout),
+                format!("--session|{}|work|caller", transcript.display())
+            );
+        } else {
+            assert!(!output.status.success());
+            assert!(
+                String::from_utf8_lossy(&output.stderr).contains(expected),
+                "{}",
+                String::from_utf8_lossy(&output.stderr)
+            );
+            assert!(output.stdout.is_empty());
+        }
+    }
+    let unavailable = fixture
+        .command()
+        .env("HC_SOCKET", root.join("missing.sock"))
+        .env("HC_TERMINAL_ID", "caller")
+        .env("STREAMS_STREAM_ID", "work")
+        .env("PATH", &bin)
+        .args([
+            "resume",
+            "--current",
+            "--session-key",
+            &format!("{host}/{}", session.id),
+            "--frontend",
+            "hc",
+        ])
+        .output()
+        .unwrap();
+    assert!(!unavailable.status.success());
+    assert!(String::from_utf8_lossy(&unavailable.stderr).contains("hc Pi presence is unavailable"));
+    assert!(unavailable.stdout.is_empty());
+
+    for (harness, native, header, argument) in [
+        (
+            "codex",
+            "codex-one",
+            "{\"type\":\"session_meta\",\"payload\":{\"id\":\"codex-one\"}}\n",
+            "resume",
+        ),
+        (
+            "claude",
+            "claude-one",
+            "{\"sessionId\":\"claude-one\"}\n",
+            "--resume",
+        ),
+    ] {
+        let other = streams::model::Session::new(
+            streams::model::Session::id_for(host, harness, native),
+            host,
+            "work",
+            harness,
+            native,
+            native,
+        )
+        .unwrap();
+        streams::application::create_record(
+            fixture.records.records(),
+            native,
+            &streams::model::Record::Session(other.clone()),
+        )
+        .unwrap();
+        let path = root.join(format!("{native}.jsonl"));
+        fs::write(&path, header).unwrap();
+        locations
+            .remember("work", &root, Some(&other.id), false, None, None)
+            .unwrap();
+        locations
+            .remember_transcript("work", &other.id, &path)
+            .unwrap();
+        let executable = bin.join(harness);
+        fs::write(&executable, "#!/bin/sh\nprintf '%s|%s|%s|%s' \"$1\" \"$2\" \"$STREAMS_STREAM_ID\" \"$HC_TERMINAL_ID\"\n").unwrap();
+        fs::set_permissions(&executable, fs::Permissions::from_mode(0o755)).unwrap();
+        let output = fixture
+            .command()
+            .env("HC_SOCKET", root.join("missing.sock"))
+            .env("HC_TERMINAL_ID", "caller")
+            .env("STREAMS_STREAM_ID", "work")
+            .env("PATH", &bin)
+            .args([
+                "resume",
+                "--current",
+                "--session-key",
+                &format!("{host}/{}", other.id),
+                "--frontend",
+                "hc",
+            ])
+            .output()
+            .unwrap();
+        assert!(
+            output.status.success(),
+            "{}",
+            String::from_utf8_lossy(&output.stderr)
+        );
+        assert_eq!(
+            String::from_utf8_lossy(&output.stdout),
+            format!("{argument}|{native}|work|caller")
+        );
+    }
+}
+
+#[test]
 fn document_cli_resolves_saved_keys_and_pipes_only_owner_bytes_to_the_secure_pager() {
     use std::{fs, os::unix::fs::PermissionsExt, process::Command};
     use streams::runtime::{CheckoutRegistry, DirectoryBindings};
