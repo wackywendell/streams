@@ -142,6 +142,108 @@ fn read_steps(version: u64, associations: Value, layout: Value) -> Vec<Step> {
 }
 
 #[test]
+fn requested_space_is_bound_only_after_fresh_publication_evidence() {
+    use streams::integration::{PresentationState, SpaceEvidence};
+    for case in [
+        "absent",
+        "malformed",
+        "lost-read",
+        "accepted",
+        "occupied",
+        "conflict",
+        "lost-write",
+        "bad-ack",
+    ] {
+        let mut occupied = row("target");
+        occupied.stream = "other".into();
+        let before = AssociationSnapshot::decode(
+            EndpointId("core".into()),
+            7,
+            if case == "occupied" {
+                document(vec![occupied])
+            } else {
+                Value::Null
+            },
+        )
+        .unwrap();
+        let layout = match case {
+            "absent" => json!({"spaces":[]}),
+            "malformed" => json!({"spaces":"bad"}),
+            _ => json!({"spaces":[{"id":"target"}]}),
+        };
+        let mut steps = vec![Step(
+            "doc.get",
+            json!({"name":"herdr-app"}),
+            if case == "lost-read" {
+                Reply::Lost
+            } else {
+                Reply::Value(json!({"version":22,"value":layout}))
+            },
+        )];
+        if matches!(case, "accepted" | "conflict" | "lost-write" | "bad-ack") {
+            let reply = match case {
+                "accepted" => Reply::Value(json!({"version":8})),
+                "conflict" => Reply::Reject("conflict"),
+                "lost-write" => Reply::Lost,
+                _ => Reply::Value(json!({"version":9})),
+            };
+            steps.push(Step(
+                "doc.set",
+                json!({"name":"streams","version":7,"value":document(vec![row("target")])}),
+                reply,
+            ));
+        }
+        let core = FakeCore::new(steps);
+        let mut operation = core.operation();
+        let result =
+            operation.finish_requested_space(&before, &scope(), "work", &reference("target"));
+        if matches!(case, "absent" | "malformed" | "lost-read") {
+            assert_eq!(
+                result.space,
+                SpaceEvidence::Requested {
+                    value: reference("target")
+                }
+            );
+        } else {
+            assert_eq!(
+                result.space,
+                SpaceEvidence::Known {
+                    value: reference("target")
+                }
+            );
+        }
+        match case {
+            "accepted" => assert_eq!(result.state, PresentationState::Complete),
+            "absent" | "occupied" | "conflict" => {
+                assert!(matches!(result.state, PresentationState::Incomplete { .. }))
+            }
+            "malformed" | "lost-read" => assert!(matches!(
+                result.state,
+                PresentationState::Unavailable { .. }
+            )),
+            _ => assert!(matches!(result.state, PresentationState::Uncertain { .. })),
+        }
+        assert!(!format!("{result:?}").contains("owner-private"));
+        drop(operation);
+        core.finish();
+    }
+    let core = FakeCore::new(vec![]);
+    let mut operation = core.operation();
+    let before = AssociationSnapshot::decode(EndpointId("core".into()), 0, Value::Null).unwrap();
+    let mut remote = reference("target");
+    remote.endpoint = EndpointId("other-core".into());
+    let result = operation.finish_requested_space(&before, &scope(), "work", &remote);
+    assert_eq!(result.space, SpaceEvidence::None);
+    assert!(matches!(
+        result.state,
+        PresentationState::Unavailable { .. }
+    ));
+    assert!(operation.commands.is_empty());
+    drop(operation);
+    assert_eq!(core.finish().len(), 1);
+}
+
+#[test]
 fn binding_retains_one_version_and_commits_cleanup_and_binding_in_one_write() {
     let stale = row("gone");
     let mut foreign = row("other");

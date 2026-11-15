@@ -845,6 +845,73 @@ impl HcOperation {
             .map_err(|error| self.error(error.message))?;
         Ok((before, published))
     }
+    /// Check one requested placement once before using the retained association version.
+    pub fn finish_requested_space(
+        &mut self,
+        before: &AssociationSnapshot,
+        scope: &WorkScope,
+        stream: &str,
+        space: &NativeRef,
+    ) -> crate::integration::PresentationResult {
+        use crate::integration::{PresentationResult, PresentationState, SpaceEvidence};
+        let unavailable = |reason: &str| PresentationResult {
+            space: SpaceEvidence::Requested {
+                value: space.clone(),
+            },
+            state: PresentationState::Unavailable {
+                reason: reason.into(),
+            },
+        };
+        if scope.validate().is_err()
+            || crate::model::check_text(stream, "Stream", false).is_err()
+            || space.validate().is_err()
+            || space.adapter != FrontendId::hc()
+            || space.key.contains('/')
+            || space.endpoint != *self.endpoint()
+            || before.endpoint != *self.endpoint()
+        {
+            return PresentationResult {
+                space: SpaceEvidence::None,
+                state: PresentationState::Unavailable {
+                    reason: "hc placement does not match this operation".into(),
+                },
+            };
+        }
+        let published = match self
+            .document("herdr-app")
+            .and_then(|(_, value)| PublishedLayout::decode(self.endpoint().clone(), value))
+        {
+            Ok(layout) => layout,
+            Err(_) => return unavailable("hc layout is unavailable"),
+        };
+        if !published.space_keys.contains(&space.key) {
+            return PresentationResult {
+                space: SpaceEvidence::Requested {
+                    value: space.clone(),
+                },
+                state: PresentationState::Incomplete {
+                    reason: "hc space is not yet published".into(),
+                },
+            };
+        }
+        let wanted = SpaceAssociation {
+            scope: scope.clone(),
+            stream: stream.into(),
+            space: space.clone(),
+        };
+        let state = match self.finish_associations(before, &published, Some(&wanted)) {
+            Effect::Applied { .. } => PresentationState::Complete,
+            Effect::NotApplied { reason } => PresentationState::Incomplete { reason },
+            Effect::Uncertain { reason } => PresentationState::Uncertain { reason },
+        };
+        PresentationResult {
+            space: SpaceEvidence::Known {
+                value: space.clone(),
+            },
+            state,
+        }
+    }
+
     pub fn finish_associations(
         &mut self,
         before: &AssociationSnapshot,
