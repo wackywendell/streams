@@ -47,6 +47,7 @@ const SHUTDOWN_GRACE: Duration = Duration::from_secs(5);
 
 struct Server {
     session_id: String,
+    sdk_pid: Option<u32>,
     output: SharedOutput,
     app: Mutex<Option<App>>,
     active: Mutex<BTreeMap<u64, Arc<AtomicBool>>>,
@@ -271,7 +272,11 @@ fn read_input(server: Arc<Server>) {
                         flag.store(true, Ordering::Release);
                     }
                 }
-                ClientFrame::Request { id, request } => {
+                ClientFrame::Request {
+                    id,
+                    request,
+                    pi_context,
+                } => {
                     if !seen.insert(id.get()) {
                         return Err(CliError::message("request ID reused"));
                     }
@@ -280,6 +285,19 @@ fn read_input(server: Arc<Server>) {
                         .lock()
                         .map_err(|error| CliError::message(error.to_string()))?
                         .insert(id.get(), Arc::new(AtomicBool::new(false)));
+                    if let Some(context) = &pi_context
+                        && (server.sdk_pid.is_none_or(|pid| pid == 0)
+                            || context.conversation.harness != "pi"
+                            || context.conversation.native_id != server.session_id)
+                    {
+                        server.respond(
+                            id,
+                            Err(CliError::message(
+                                "Pi request context does not match this helper",
+                            )),
+                        )?;
+                        continue;
+                    }
                     if native_queue(&request) {
                         server
                             .sender
@@ -364,12 +382,13 @@ fn native_worker(
     Ok(())
 }
 
-pub(super) fn run(session_id: String, plugin_root: PathBuf) -> Result<()> {
+pub(super) fn run(session_id: String, sdk_pid: Option<u32>, plugin_root: PathBuf) -> Result<()> {
     let output = Arc::new(Mutex::new(Some(std::io::stdout())));
     send(&output, &ServerFrame::Ready { protocol: Version2 })?;
     let (sender, receiver) = mpsc::channel();
     let server = Arc::new(Server {
         session_id,
+        sdk_pid,
         output,
         app: Mutex::new(None),
         active: Mutex::new(BTreeMap::new()),

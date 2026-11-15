@@ -1,4 +1,5 @@
 export type DomainObject = Record<string, unknown>;
+export type PiRequestContext = {conversation: {harness: "pi"; native_id: string}; session_file: string | null};
 export type TitleDefault = "automatic" | "manual";
 export type CardMode = "inherit" | "automatic" | "manual";
 export type CardSettings = {global: TitleDefault; session: CardMode; effective: TitleDefault};

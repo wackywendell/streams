@@ -56,6 +56,29 @@ fn title_defaults_have_closed_targets_and_resolved_modes_without_native_proofs()
 }
 
 #[test]
+fn pi_request_context_requires_an_exact_conversation_and_nullable_file() {
+    let context = json!({"conversation":{"harness":"pi","native_id":"chosen"},"session_file":null});
+    let frame = json!({"type":"request","id":1,"request":{"kind":"context"},"pi_context":context});
+    assert_eq!(
+        serde_json::to_value(decode_client(&frame.to_string()).unwrap()).unwrap(),
+        frame
+    );
+    for invalid in [
+        json!({"conversation":{"harness":"pi","native_id":"chosen"}}),
+        json!({"conversation":{"harness":"pi","native_id":"chosen"},"session_file":7}),
+        json!({"conversation":{"harness":"pi","native_id":"chosen","extra":true},"session_file":null}),
+    ] {
+        assert!(
+            decode_client(
+                &json!({"type":"request","id":1,"request":{"kind":"context"},"pi_context":invalid})
+                    .to_string()
+            )
+            .is_err()
+        );
+    }
+}
+
+#[test]
 fn request_ids_are_positive_javascript_safe_integers() {
     for id in [1, 9_007_199_254_740_991] {
         assert_eq!(RequestId::new(id).unwrap().get(), id);

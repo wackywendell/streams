@@ -59,8 +59,15 @@ pub fn request(path: &Path, request: Request) -> Result<Outcome> {
     stream.set_read_timeout(Some(CONTROL_TIMEOUT))?;
     stream.set_write_timeout(Some(CONTROL_TIMEOUT))?;
     let id = RequestId::new(1).expect("fixed valid request ID");
-    serde_json::to_writer(&mut stream, &ClientFrame::Request { id, request })
-        .map_err(|error| invalid(error.to_string()))?;
+    serde_json::to_writer(
+        &mut stream,
+        &ClientFrame::Request {
+            id,
+            request,
+            pi_context: None,
+        },
+    )
+    .map_err(|error| invalid(error.to_string()))?;
     stream.write_all(b"\n")?;
     let mut line = String::new();
     BufReader::new(stream.take(MAX_CONTROL_FRAME)).read_line(&mut line)?;

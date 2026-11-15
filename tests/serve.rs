@@ -118,9 +118,16 @@ struct Transport {
     frames: Receiver<Result<Value, String>>,
 }
 impl Transport {
-    fn start(mut command: Command, session: &str) -> Self {
+    fn start(command: Command, session: &str) -> Self {
+        Self::start_with_sdk(command, session, None)
+    }
+    fn start_with_sdk(mut command: Command, session: &str, sdk_pid: Option<u32>) -> Self {
+        command.args(["serve", "--session-id", session]);
+        if let Some(pid) = sdk_pid {
+            command.args(["--sdk-pid", &pid.to_string()]);
+        }
         let mut child = command
-            .args(["serve", "--session-id", session, "--plugin-root"])
+            .arg("--plugin-root")
             .arg(concat!(
                 env!("CARGO_MANIFEST_DIR"),
                 "/integrations/herdr-work-cards"
@@ -209,6 +216,25 @@ fn typed_handshake_catalog_results_and_eof_drain() {
     assert_eq!(child.response(2)["outcome"]["result"], expected);
     assert_eq!(child.finish(), (0, String::new()));
     assert!(child.frames.try_recv().is_err());
+}
+
+#[test]
+fn pi_context_is_bound_to_the_helper_and_does_not_retarget_requests() {
+    let f = Fixture::new();
+    let mut child = Transport::start_with_sdk(f.command(), "pi-session", Some(std::process::id()));
+    assert_eq!(child.next(), json!({"type":"ready","protocol":2}));
+    let context = |id| json!({"conversation":{"harness":"pi","native_id":id},"session_file":null});
+    child.send(json!({"type":"request","id":1,"request":{"kind":"list_streams"},"pi_context":context("other")}));
+    assert_eq!(child.response(1)["outcome"]["status"], "error");
+    child.send(json!({"type":"request","id":2,"request":{"kind":"list_streams"},"pi_context":context("pi-session")}));
+    assert_eq!(child.response(2)["outcome"]["status"], "success");
+    assert_eq!(child.finish(), (0, String::new()));
+    let mut legacy = f.start();
+    legacy.send(json!({"type":"request","id":1,"request":{"kind":"list_streams"},"pi_context":context("pi-session")}));
+    assert_eq!(legacy.response(1)["outcome"]["status"], "error");
+    legacy.request(2, json!({"kind":"list_streams"}));
+    assert_eq!(legacy.response(2)["outcome"]["status"], "success");
+    assert_eq!(legacy.finish(), (0, String::new()));
 }
 
 #[test]

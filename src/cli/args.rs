@@ -82,6 +82,8 @@ pub(super) enum Command {
         #[arg(long)]
         session_id: String,
         #[arg(long)]
+        sdk_pid: Option<u32>,
+        #[arg(long)]
         plugin_root: PathBuf,
     },
     /// Inspect and replay private, frozen helper requests without live catalog writes.

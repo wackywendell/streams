@@ -254,10 +254,11 @@ pub(super) fn run() -> ExitCode {
     }
     if let Command::Serve {
         session_id,
+        sdk_pid,
         plugin_root,
     } = parsed.command
     {
-        return match serve::run(session_id, plugin_root) {
+        return match serve::run(session_id, sdk_pid, plugin_root) {
             Ok(()) => ExitCode::SUCCESS,
             Err(error) => {
                 eprintln!("streams serve: {error}");

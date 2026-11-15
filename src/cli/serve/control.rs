@@ -44,6 +44,7 @@ impl Control {
                                     request:
                                         request @ (Request::CardSettings {}
                                         | Request::SetCardMode { .. }),
+                                    pi_context: None,
                                 } => Ok((id, request)),
                                 _ => Err(CliError::message(
                                     "card control accepts only preference requests",

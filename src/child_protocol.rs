@@ -100,8 +100,23 @@ impl From<Version2> for u8 {
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(tag = "type", rename_all = "snake_case", deny_unknown_fields)]
 pub enum ClientFrame {
-    Request { id: RequestId, request: Request },
-    Cancel { id: RequestId },
+    Request {
+        id: RequestId,
+        request: Request,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        pi_context: Option<Box<PiRequestContext>>,
+    },
+    Cancel {
+        id: RequestId,
+    },
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct PiRequestContext {
+    pub conversation: crate::integration::ConversationId,
+    #[serde(deserialize_with = "codec::required_nullable")]
+    pub session_file: Option<std::path::PathBuf>,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]

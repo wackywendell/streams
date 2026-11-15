@@ -1,7 +1,7 @@
 import { spawn } from "node:child_process";
 import { fileURLToPath } from "node:url";
 import { resolveStreamsBin } from "../../integrations/herdr-work-cards/src/streams-bin.ts";
-import { decodeServerFrame, type ChildOutcome, type ChildView, type Runner } from "./child-protocol.ts";
+import { decodeServerFrame, type ChildOutcome, type ChildView, type PiRequestContext, type Runner } from "./child-protocol.ts";
 
 type Pending = {resolve: (value: ChildOutcome) => void; reject: (error: Error) => void};
 const pluginRoot = fileURLToPath(new URL("../../integrations/herdr-work-cards", import.meta.url));
@@ -18,7 +18,7 @@ export class StreamsChild {
  private listeners = new Set<(view: ChildView) => void>();
  private closing?: Promise<void>;
  private closed?: Promise<void>;
- constructor(private readonly options: {sessionId: string; cwd: string; env?: NodeJS.ProcessEnv; warning: (message: string) => void; spawn?: typeof spawn}) {}
+ constructor(private readonly options: {sessionId: string; cwd: string; env?: NodeJS.ProcessEnv; piContext?: () => PiRequestContext; warning: (message: string) => void; spawn?: typeof spawn}) {}
  subscribe(listener: (view: ChildView) => void): () => void {this.listeners.add(listener);return () => {this.listeners.delete(listener);};}
  private restart(error: Error): void {
   this.ready = undefined;
@@ -40,7 +40,7 @@ export class StreamsChild {
   let child: ReturnType<typeof spawn>;
   try {
    const env = this.options.env ?? process.env, binary = resolveStreamsBin(env);
-   child = (this.options.spawn ?? spawn)(binary, ["serve", "--session-id", this.options.sessionId, "--plugin-root", pluginRoot],
+   child = (this.options.spawn ?? spawn)(binary, ["serve", "--session-id", this.options.sessionId, "--sdk-pid", String(process.pid), "--plugin-root", pluginRoot],
     {cwd:this.options.cwd, env:{...env, STREAMS_BIN_PATH:binary}, stdio:["pipe", "pipe", "pipe"]});
   } catch (error) {
    reject(error as Error);this.restart(error as Error);return result;
@@ -77,7 +77,8 @@ export class StreamsChild {
       if (!(native.native === "active" && !Object.hasOwn(native, "display") || native.native === "inactive" && ["outside_herdr", "not_enrolled"].includes(native.reason as string))) warn("Invalid Streams child attach acknowledgement");
       if (outcome.status === "saved_with_warnings") for (const warning of outcome.warnings) warn(warning);
      }});
-     this.send({type:"request", id, request:{kind:"attach"}});
+     const pi_context = this.options.piContext?.();
+     this.send({type:"request", id, request:{kind:"attach"}, ...(pi_context ? {pi_context} : {})});
     }
     resolve();return;
    }
@@ -121,7 +122,7 @@ export class StreamsChild {
  }
  readonly run: Runner = async (request, options) => {
   const signal = options?.signal;signal?.throwIfAborted();
-  const intent = structuredClone(request);
+  const intent = structuredClone(request), pi_context = this.options.piContext?.();
   if (intent.kind === "session_started" || intent.kind === "attach") this.nativeEnabled = true;
   let id: number | undefined, timer: ReturnType<typeof setTimeout> | undefined;
   let abort!: () => void;
@@ -142,7 +143,7 @@ export class StreamsChild {
    if (this.stopped || child !== this.process || ready !== this.ready) throw Error("Streams child lifetime ended before request dispatch");
    const response = new Promise<ChildOutcome>((resolve, reject) => {
     id = ++this.nextId;this.pending.set(id, {resolve, reject});
-    this.send({type:"request", id, request:intent});
+    this.send({type:"request", id, request:intent, ...(pi_context ? {pi_context} : {})});
    });
    return await Promise.race([response, cancellation]);
   } finally {clearTimeout(timer);signal?.removeEventListener("abort", abort);}

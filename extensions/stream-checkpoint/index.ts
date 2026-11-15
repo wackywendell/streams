@@ -59,7 +59,9 @@ export default function registerWorkCard(pi: ExtensionAPI, options: Options = {}
  const states = new Map<string, CardState>();
  const warning = (error: unknown) => {scope.context?.ui.notify(`Streams — ${error instanceof Error ? error.message : String(error)}`, "warning");};
  const current = (state: PiContextState, ctx: ExtensionContext) => holder.current === state && !state.retired && ctx.sessionManager.getSessionId() === state.conversation.native_id;
- const sessionChild = (ctx: ExtensionContext, state: PiContextState) => state.helper ??= options.child?.(ctx) ?? new StreamsChild({sessionId:state.conversation.native_id, cwd:ctx.cwd, env:{...process.env}, warning:message => {if (current(state, ctx)) warning(message);}});
+ const sessionChild = (ctx: ExtensionContext, state: PiContextState) => state.helper ??= options.child?.(ctx) ?? new StreamsChild({sessionId:state.conversation.native_id, cwd:ctx.cwd, env:{...process.env},
+  piContext: ctx.hasUI && ctx.mode === "tui" && process.env.HC_TERMINAL_ID ? () => ({conversation:state.conversation, session_file:state.session_file}) : undefined,
+  warning:message => {if (current(state, ctx)) warning(message);}});
  function useContext(ctx: ExtensionContext, restart = false): PiContextState {
   const id = ctx.sessionManager.getSessionId(), file = ctx.sessionManager.getSessionFile?.() ?? null;
   if (owned && (holder.current && holder.current !== owned || !restart && owned.retired && id === owned.conversation.native_id)) throw Error("Streams extension retired; Session changed");

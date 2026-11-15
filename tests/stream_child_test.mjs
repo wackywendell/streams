@@ -12,7 +12,7 @@ const {defaults}=await jiti.import('../extensions/stream-checkpoint/settings.ts'
 const wire=JSON.parse(readFileSync(new URL('./fixtures/pi-child-v2.json',import.meta.url),'utf8'));
 const tick=()=>new Promise(resolve=>setImmediate(resolve));
 function respond(child,id,result={},warnings) {child.emitMessage({type:'response',id,outcome:warnings?{status:'saved_with_warnings',result,warnings}:{status:'success',result}});}
-function fixture(t, sessionId='pi-session', env={}) {
+function fixture(t, sessionId='pi-session', env={}, piContext) {
  const children=[],launches=[],warnings=[];
  const spawn=(binary,argv,options)=>{
   const child=new EventEmitter(),messages=[];
@@ -22,7 +22,7 @@ function fixture(t, sessionId='pi-session', env={}) {
   child.messages=messages;child.emitMessage=value=>child.stdout.write(JSON.stringify(value)+'\n');
   launches.push({binary,argv,options});children.push(child);return child;
  };
- const manager=new StreamsChild({sessionId,cwd:'/tmp',env:{STREAMS_BIN_PATH:process.execPath,...env},warning:text=>warnings.push(text),spawn});
+ const manager=new StreamsChild({sessionId,cwd:'/tmp',env:{STREAMS_BIN_PATH:process.execPath,...env},piContext,warning:text=>warnings.push(text),spawn});
  t.after(async()=>{const stopped=manager.stop();for(const child of children)child.emit('close',0);await stopped;});
  const ready=async()=>{
   const started=manager.start(),child=children.at(-1);
@@ -47,7 +47,7 @@ test('every shared typed request is sent unchanged, without argv or serialized s
 test('one launch, exact envelope, ready gating and out-of-order typed outcomes',async t=>{
  const f=fixture(t),first=f.manager.run({kind:'context'}),child=f.children[0];
  await tick();assert.deepEqual(child.messages,[]);
- assert.deepEqual(f.launches[0].argv.slice(0,3),['serve','--session-id','pi-session']);assert.equal(f.launches[0].options.cwd,'/tmp');
+ assert.deepEqual(f.launches[0].argv.slice(0,5),['serve','--session-id','pi-session','--sdk-pid',String(process.pid)]);assert.equal(f.launches[0].options.cwd,'/tmp');
  assert.equal(f.launches[0].options.env.STREAMS_BIN_PATH,f.launches[0].binary);
  child.emitMessage({type:'ready',protocol:2});await tick();
  const second=f.manager.run({kind:'apply',request:{captured:true}});await tick();
@@ -62,6 +62,13 @@ test('typed intent is captured before readiness and is not retargeted by later c
  const pending=f.manager.run(intent);intent.request.before.id='destination';intent.request.inputs[0].record.id='new dependency';
  const child=await f.ready();await tick();assert.deepEqual(child.messages[0].request,{kind:'apply',request:{before:{id:'captured'},inputs:[{record:{id:'dependency'}}]}});
  respond(child,child.messages[0].id);await pending;
+});
+test('hc request context is captured before readiness and reattach uses the current file',async t=>{
+ let file=null;const context=()=>({conversation:{harness:'pi',native_id:'pi-session'},session_file:file});
+ const f=fixture(t,'pi-session',{},context),pending=f.manager.run({kind:'session_started'});file='/saved.jsonl';
+ const child=await f.ready();await tick();assert.deepEqual(child.messages[0].pi_context,{conversation:{harness:'pi',native_id:'pi-session'},session_file:null});
+ respond(child,child.messages[0].id,{native:'active',display:'suppressed'});await pending;child.emit('close',1);
+ const replacement=await f.ready();assert.deepEqual(replacement.messages[0].pi_context,context());
 });
 test('structured domain errors preserve kind and message without a process-style code',async t=>{
  const f=fixture(t),child=await f.ready(),pending=f.manager.run({kind:'open_card'});await tick();
