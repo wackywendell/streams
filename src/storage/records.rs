@@ -124,6 +124,7 @@ pub trait RecordReader {
 /// Explicit human discovery, inspection and sync, separate from a point reader's capability.
 pub trait RecordInventory {
     fn inventory(&self) -> Result<Vec<RecordRead>, StorageError>;
+    fn host_sessions(&self, host: &str) -> Result<Vec<RecordRead>, StorageError>;
 }
 
 /// Serialization belongs to the adapter. No action manages a multi-file transaction.

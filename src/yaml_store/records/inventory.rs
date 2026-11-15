@@ -186,6 +186,41 @@ impl YamlRecordStore {
 }
 
 impl RecordInventory for YamlRecordStore {
+    fn host_sessions(&self, host: &str) -> Result<Vec<RecordRead>, StorageError> {
+        let _scope = self.scope(false)?;
+        let sample = RecordAddress::new(host, RecordKind::Session, "entry")?;
+        let relative = relative_record_path(&sample)?;
+        super::check_parents(&self.root, &relative)?;
+        let directory = self
+            .root
+            .join(relative.parent().expect("Session partition"));
+        ensure_directory(&directory, false)?;
+        self.observe(RecordIoEvent::List(directory.clone()));
+        let entries = match fs::read_dir(&directory) {
+            Ok(entries) => entries,
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(vec![]),
+            Err(error) => return Err(invalid(error)),
+        };
+        let mut records = Vec::new();
+        for entry in entries {
+            let entry = entry.map_err(invalid)?;
+            if !entry.file_type().map_err(invalid)?.is_file() {
+                return Err(invalid("Session inventory entry must be a regular record"));
+            }
+            let path = entry.path();
+            let relative = path
+                .strip_prefix(&self.root)
+                .expect("Session partition is under catalog");
+            let address = address_from_relative_path(relative)?;
+            let bytes = self
+                .read_named(relative)?
+                .ok_or_else(|| invalid("Session disappeared during inspection"))?;
+            records.push(decode_record(&address, &bytes)?);
+        }
+        records.sort_by(|left, right| left.record.key().id().cmp(right.record.key().id()));
+        Ok(records)
+    }
+
     fn inventory(&self) -> Result<Vec<RecordRead>, StorageError> {
         let _scope = self.scope(false)?;
         decode_record_tree(&self.read_locked_tree()?)

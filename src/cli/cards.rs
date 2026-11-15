@@ -292,12 +292,11 @@ fn activate(
                 .client()
                 .check_subscription()
                 .map_err(|error| error.to_string())?;
-            if !snapshot.contains_link(url)
-                || !fresh.contains_link(url)
-                || !matches!(url.scheme(), "https" | "http")
-                || !url.username().is_empty()
-                || url.password().is_some()
-            {
+            let url: streams::web_url::SafeHttpUrl = url
+                .as_str()
+                .parse()
+                .map_err(|_| "unsafe browser URL".to_owned())?;
+            if !snapshot.contains_link(url.as_url()) || !fresh.contains_link(url.as_url()) {
                 return Err("unsafe browser URL".into());
             }
             let env = environment
@@ -323,7 +322,7 @@ fn activate(
                         "xdg-open"
                     }
                     .into(),
-                    args: vec![url.as_str().into()],
+                    args: vec![url.as_url().as_str().into()],
                     cwd: None,
                     input: None,
                     env,

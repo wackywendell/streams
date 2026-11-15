@@ -45,7 +45,38 @@ pub(super) struct SessionSelection {
 }
 
 #[derive(Debug, Subcommand)]
+pub(super) enum IntegrationCommand {
+    BindSpace {
+        #[arg(long)]
+        space_ref: String,
+        #[arg(long)]
+        stream: String,
+        #[arg(long)]
+        scope_json: String,
+    },
+    ViewDocument {
+        #[arg(long)]
+        scope_json: String,
+        #[arg(long)]
+        reference_json: String,
+    },
+    Describe {
+        #[arg(long)]
+        frontend: FrontendRequest,
+    },
+    Request {
+        #[arg(long)]
+        request_json: String,
+    },
+}
+
+#[derive(Debug, Subcommand)]
 pub(super) enum Command {
+    /// Read saved work through the bounded version-1 integration protocol.
+    Integration {
+        #[command(subcommand)]
+        command: IntegrationCommand,
+    },
     /// Serve typed protocol-2 requests for one Pi session over stdio.
     Serve {
         #[arg(long)]

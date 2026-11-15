@@ -1019,7 +1019,10 @@ fn card_preferences_and_the_control_endpoint_survive_close_refresh_and_child_res
         &config,
         records.root(),
         records.host().as_str(),
-        &f.id,
+        &streams::integration::ConversationId {
+            harness: "pi".into(),
+            native_id: f.id.clone(),
+        },
     )
     .unwrap();
     fs::remove_file(store.path()).unwrap();

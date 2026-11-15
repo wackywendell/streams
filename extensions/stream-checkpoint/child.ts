@@ -17,10 +17,11 @@ export class StreamsChild {
  private pending = new Map<number, Pending>();
  private listeners = new Set<(view: ChildView) => void>();
  private closing?: Promise<void>;
+ private closed?: Promise<void>;
  constructor(private readonly options: {sessionId: string; cwd: string; env?: NodeJS.ProcessEnv; warning: (message: string) => void; spawn?: typeof spawn}) {}
  subscribe(listener: (view: ChildView) => void): () => void {this.listeners.add(listener);return () => {this.listeners.delete(listener);};}
  private restart(error: Error): void {
-  this.process = undefined;this.ready = undefined;
+  this.ready = undefined;
   if (this.stopped) return;
   if (!this.restarted) {
    this.restarted = true;this.options.warning(`Streams child failed: ${error.message}. Restarting once.`);
@@ -45,13 +46,15 @@ export class StreamsChild {
    reject(error as Error);this.restart(error as Error);return result;
   }
   this.process = child;
-  let first = true, buffer = "", failed = false;
+  let resolveClose!: () => void;
+  this.closed = new Promise(resolve => {resolveClose = resolve;});
+  let first = true, buffer = "", failed = false, failure: Error | undefined;
   const fail = (error: Error) => {
    if (failed || this.process !== child) return;
-   failed = true;clearTimeout(timer);reject(error);
+   failed = true;failure = error;clearTimeout(timer);reject(error);
    for (const request of this.pending.values()) request.reject(error);
    this.pending.clear();
-   child.kill("SIGKILL");this.restart(error);
+   child.kill("SIGKILL");
   };
   const timer = setTimeout(() => fail(Error("Streams child ready handshake timed out")), 10_000);
   const message = (line: string) => {
@@ -101,12 +104,14 @@ export class StreamsChild {
   child.stderr!.resume();
   child.stdin!.on("error", fail);child.on("error", fail);
   child.on("close", (code, signal) => {
-   if (this.stopped && this.process === child) {
-    clearTimeout(timer);const error = Error("Streams child shut down");reject(error);
-    for (const request of this.pending.values()) request.reject(error);
-    this.pending.clear();return;
-   }
-   fail(Error(`Streams child exited (${signal ?? code})`));
+   resolveClose();
+   if (this.process !== child) return;
+   clearTimeout(timer);this.process = undefined;this.closed = undefined;
+   const error = failure ?? Error(this.stopped ? "Streams child shut down" : `Streams child exited (${signal ?? code})`);
+   reject(error);
+   for (const request of this.pending.values()) request.reject(error);
+   this.pending.clear();
+   this.restart(error);
   });
   return result;
  }
@@ -147,7 +152,7 @@ export class StreamsChild {
   this.stopped = true;this.listeners.clear();
   const child = this.process;
   if (!child) return Promise.resolve();
-  this.closing = new Promise(resolve => {child.once("close", () => {this.process = undefined;resolve();});});
+  this.closing = this.closed!;
   child.stdin!.end();return this.closing;
  }
 }

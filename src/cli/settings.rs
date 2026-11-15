@@ -6,19 +6,21 @@ impl App {
     pub(super) fn conversation_card_settings(
         &self,
         records: &application::OpenedRecords,
-        native_id: &str,
+        conversation: &streams::integration::ConversationId,
     ) -> Result<streams::runtime::card_settings::CardSettings> {
-        Ok(streams::runtime::card_settings::CardSettings::new(
-            &self.config,
-            records.root(),
-            records.host().as_str(),
-            native_id,
-        )?)
+        Ok(application::integration::Streams::new(records)
+            .companion_settings(&self.config, conversation)?)
     }
     pub(super) fn card_settings(&self, native_id: &str) -> Result<Output> {
         let records = application::open_records(&self.config)?;
         let session = self
-            .conversation_card_settings(&records, native_id)?
+            .conversation_card_settings(
+                &records,
+                &streams::integration::ConversationId {
+                    harness: "pi".into(),
+                    native_id: native_id.into(),
+                },
+            )?
             .mode()?;
         let global = self.config.load()?.card_auto_open;
         Ok(Output::value(
@@ -45,8 +47,14 @@ impl App {
             }
             CardTarget::Session => {
                 let records = application::open_records(&self.config)?;
-                self.conversation_card_settings(&records, native_id)?
-                    .set(mode)?;
+                self.conversation_card_settings(
+                    &records,
+                    &streams::integration::ConversationId {
+                        harness: "pi".into(),
+                        native_id: native_id.into(),
+                    },
+                )?
+                .set(mode)?;
             }
         }
         self.card_settings(native_id)

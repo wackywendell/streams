@@ -34,6 +34,14 @@ struct NativeWorkspace {
 }
 
 impl CmuxClient {
+    pub fn opening_support(&self) -> crate::integration::OpeningSupport {
+        use crate::integration::{LaunchLimit, OpeningMode, OpeningSupport, Placement};
+        OpeningSupport::known_harnesses(
+            OpeningMode::CreateOnly,
+            LaunchLimit::One,
+            Placement::RequiresSpace,
+        )
+    }
     /// Captures caller context once. Inventory is read only on explicit operations.
     pub fn connect(
         runner: Arc<dyn ProcessRunner>,
@@ -83,6 +91,15 @@ impl CmuxClient {
         request: &CreateWorkspace,
         session_command: Option<&str>,
     ) -> Result<Workspace, FrontendError> {
+        self.create_session_with_focus(request, session_command, true)
+    }
+
+    fn create_session_with_focus(
+        &self,
+        request: &CreateWorkspace,
+        session_command: Option<&str>,
+        focus: bool,
+    ) -> Result<Workspace, FrontendError> {
         let environment = launch_args(request)?;
         let cwd = request
             .cwd
@@ -99,7 +116,7 @@ impl CmuxClient {
             cwd,
         ]);
         command.extend(environment);
-        command.extend(args(&["--focus", "true"]));
+        command.extend(args(&["--focus", if focus { "true" } else { "false" }]));
         if let Some(session_command) = session_command {
             nonempty(session_command, "CMUX session command")?;
             command.extend(["--command".into(), session_command.into()]);
@@ -113,6 +130,80 @@ impl CmuxClient {
             title: request.title.clone(),
             cwd: cwd.into(),
         })
+    }
+
+    /// CMUX submits its single prepared command together with workspace creation.
+    pub fn execute_prepared_open(
+        &self,
+        plan: &crate::integration::PreparedOpen,
+        environment: &BTreeMap<String, String>,
+        cancelled: &std::sync::atomic::AtomicBool,
+    ) -> PreparedOpenOutcome {
+        use crate::integration::*;
+        let mut effects = unattempted_open(plan);
+        let result = (|| -> Result<(), FrontendError> {
+            if plan.launches.len() > 1 || !plan.adopt.is_empty() {
+                return Err(FrontendError::invalid(
+                    "CMUX supports one prepared launch and no adoption",
+                ));
+            }
+            let SpaceDecision::Create { title, cwd } = &plan.space else {
+                return Err(FrontendError::invalid("CMUX requires a new workspace"));
+            };
+            if cancelled.load(std::sync::atomic::Ordering::Acquire) {
+                return Err(FrontendError::invalid("native operation cancelled"));
+            }
+            let launch = plan.launches.first();
+            let (cwd, environment, command) = match launch {
+                Some(LaunchItem::Conversation(launch)) => (
+                    launch.cwd(),
+                    launch.environment(),
+                    Some(launch.command().command_text()),
+                ),
+                Some(LaunchItem::Shell { cwd }) => (cwd.as_path(), environment, None),
+                None => (cwd.as_path(), environment, None),
+            };
+            let workspace = self
+                .create_session_with_focus(
+                    &CreateWorkspace {
+                        title: title.clone(),
+                        cwd: cwd.to_path_buf(),
+                        environment: environment.clone(),
+                    },
+                    command.as_deref(),
+                    plan.focus,
+                )
+                .inspect_err(|error| {
+                    effects.presentation.state = failed_presentation(error);
+                    if launch.is_some() {
+                        effects.launches[0] = failed_launch(error);
+                    }
+                })?;
+            let location = NativeRef {
+                adapter: self.frontend_id(),
+                endpoint: self.endpoint_id(),
+                key: workspace.reference.native_id,
+            };
+            effects.presentation = PresentationResult {
+                space: SpaceEvidence::Known {
+                    value: location.clone(),
+                },
+                state: PresentationState::Complete,
+            };
+            if launch.is_some() {
+                effects.launches[0] = Effect::Applied { value: location };
+            }
+            Ok(())
+        })();
+        if let Err(error) = &result
+            && let PresentationState::Incomplete { reason } = &mut effects.presentation.state
+        {
+            reason.clone_from(&error.message);
+        }
+        PreparedOpenOutcome {
+            effects,
+            error: result.err(),
+        }
     }
 
     fn reference(&self, id: String) -> WorkspaceRef {

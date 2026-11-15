@@ -19,6 +19,7 @@ use streams::{
         HerdrClient, HerdrNativeSnapshot,
         events::{EventFilter, EventKind, HerdrEvent, SubscriptionCancel, SubscriptionUpdate},
     },
+    integration::LifecycleEvent,
     model::{Record, Stream},
     operations::membership::MoveIntent,
     runtime::{
@@ -124,9 +125,13 @@ impl Controller {
             self.records = Some(records);
         }
         if self.control.is_none() {
-            let preferences = self
-                .app
-                .conversation_card_settings(self.records.as_ref().unwrap(), &self.session_id)?;
+            let preferences = self.app.conversation_card_settings(
+                self.records.as_ref().unwrap(),
+                &streams::integration::ConversationId {
+                    harness: "pi".into(),
+                    native_id: self.session_id.clone(),
+                },
+            )?;
             let control = super::control::Control::start(preferences.path(), self.sender.clone())?;
             self.app.environment.insert(
                 "STREAMS_CARD_CONTROL_SOCKET".into(),
@@ -218,7 +223,13 @@ impl Controller {
         }
         config = config.with_auto_open(
             self.app
-                .conversation_card_settings(&records, &self.session_id)?
+                .conversation_card_settings(
+                    &records,
+                    &streams::integration::ConversationId {
+                        harness: "pi".into(),
+                        native_id: self.session_id.clone(),
+                    },
+                )?
                 .mode()?
                 .resolve(settings.card_auto_open),
         );
@@ -497,14 +508,15 @@ impl Controller {
                 json!({"display":cards::display_name(engine.open_display(OpenMode::Explicit)?)})
             }
             Request::SessionStarted {} => {
-                engine.project()?;
-                json!({"native":"active","display":cards::display_name(engine.open_display(OpenMode::Automatic)?)})
+                let report = engine.lifecycle(LifecycleEvent::Started)?;
+                json!({"native":"active","display":report.projection.companion})
             }
             Request::Attach {} => {
-                engine.project()?;
-                if newly_bound {
-                    engine.open_display(OpenMode::Automatic)?;
-                }
+                engine.lifecycle(if newly_bound {
+                    LifecycleEvent::NewlyBound
+                } else {
+                    LifecycleEvent::Reattached
+                })?;
                 json!({"native":"active"})
             }
             _ => unreachable!("native lifecycle request"),
@@ -525,9 +537,10 @@ impl Controller {
         if pass.context.session.is_some() {
             let newly_bound = pass.newly_bound;
             let mut engine = self.engine(pass, cancelled)?;
-            engine.project()?;
             if newly_bound {
-                engine.open_display(OpenMode::Automatic)?;
+                engine.lifecycle(LifecycleEvent::NewlyBound)?;
+            } else {
+                engine.project()?;
             }
             self.watch_engine(&engine);
         }

@@ -2,9 +2,11 @@
 
 use super::FrontendError;
 use serde_json::{Value, json};
-use std::io::{self, BufRead, BufReader, Write};
+#[cfg(test)]
+use std::io::BufRead;
+use std::io::{self, BufReader, Write};
 use std::os::unix::net::UnixStream;
-use std::path::{Path, PathBuf};
+use std::path::PathBuf;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::{Duration, Instant};
 
@@ -95,8 +97,13 @@ impl SocketClient {
         frame: &mut Vec<u8>,
     ) -> Result<(BufReader<UnixStream>, String), FrontendError> {
         let deadline = Instant::now() + self.timeout;
-        let mut stream =
-            connect(&self.path, deadline, self.cancellation.as_ref()).map_err(socket_error)?;
+        let mut stream = super::super::socket_io::connect(
+            &self.path,
+            deadline,
+            self.cancellation.as_ref(),
+            "Herdr",
+        )
+        .map_err(socket_error)?;
         let id = self.sequence.fetch_add(1, Ordering::Relaxed).to_string();
         let request = json!({"id":id,"method":method,"params":params});
         let mut bytes =
@@ -167,148 +174,12 @@ fn read_frame_into(
     frame: &mut Vec<u8>,
     cancellation: Option<&crate::cancellation::Cancellation>,
 ) -> io::Result<()> {
-    loop {
-        if let Some(cancellation) = cancellation {
-            cancellation.check()?;
-        }
-        if let Some(deadline) = deadline
-            && reader.buffer().is_empty()
-        {
-            use std::os::fd::AsRawFd;
-            wait(
-                reader.get_ref().as_raw_fd(),
-                libc::POLLIN,
-                deadline,
-                cancellation,
-            )?;
-        }
-        let buffer = match reader.fill_buf() {
-            Ok(buffer) => buffer,
-            Err(error) if error.kind() == io::ErrorKind::Interrupted => continue,
-            Err(error) => return Err(error),
-        };
-        if buffer.is_empty() {
-            return Err(io::Error::new(
-                io::ErrorKind::UnexpectedEof,
-                "Herdr socket closed before a complete frame",
-            ));
-        }
-        let length = buffer
-            .iter()
-            .position(|v| *v == b'\n')
-            .map(|i| i + 1)
-            .unwrap_or(buffer.len());
-        if frame.len() + length > MAX_FRAME {
-            return Err(io::Error::new(
-                io::ErrorKind::InvalidData,
-                "Herdr frame exceeds 16 MiB",
-            ));
-        }
-        let complete = buffer[length - 1] == b'\n';
-        frame.extend_from_slice(&buffer[..length]);
-        reader.consume(length);
-        if complete {
-            return Ok(());
-        }
-    }
-}
-
-// A full local listen backlog can block connect too. Use a nonblocking socket
-// and wait within the same absolute deadline, including interrupted polls.
-fn connect(
-    path: &Path,
-    deadline: Instant,
-    cancellation: Option<&crate::cancellation::Cancellation>,
-) -> io::Result<UnixStream> {
-    if let Some(cancellation) = cancellation {
-        cancellation.check()?;
-    }
-    use std::os::fd::{AsRawFd, FromRawFd, OwnedFd};
-    use std::os::unix::ffi::OsStrExt;
-    let bytes = path.as_os_str().as_bytes();
-    let mut address: libc::sockaddr_un = unsafe { std::mem::zeroed() };
-    if bytes.contains(&0) || bytes.len() >= address.sun_path.len() {
-        return Err(io::Error::new(
-            io::ErrorKind::InvalidInput,
-            "invalid Herdr socket path",
-        ));
-    }
-    address.sun_family = libc::AF_UNIX as _;
-    for (target, byte) in address.sun_path.iter_mut().zip(bytes) {
-        *target = *byte as _;
-    }
-    let fd = unsafe { libc::socket(libc::AF_UNIX, libc::SOCK_STREAM, 0) };
-    if fd < 0 {
-        return Err(io::Error::last_os_error());
-    }
-    let fd = unsafe { OwnedFd::from_raw_fd(fd) };
-    let stream = UnixStream::from(fd);
-    stream.set_nonblocking(true)?;
-    let result = unsafe {
-        libc::connect(
-            stream.as_raw_fd(),
-            &address as *const _ as *const libc::sockaddr,
-            std::mem::size_of_val(&address) as _,
-        )
-    };
-    if result < 0 {
-        let error = io::Error::last_os_error();
-        if !matches!(error.raw_os_error(), Some(libc::EINPROGRESS | libc::EINTR)) {
-            return Err(error);
-        }
-        wait(stream.as_raw_fd(), libc::POLLOUT, deadline, cancellation)?;
-        if let Some(error) = stream.take_error()? {
-            return Err(error);
-        }
-    }
-    stream.set_nonblocking(false)?;
-    Ok(stream)
-}
-
-fn wait(
-    fd: std::os::fd::RawFd,
-    events: libc::c_short,
-    deadline: Instant,
-    cancellation: Option<&crate::cancellation::Cancellation>,
-) -> io::Result<()> {
-    let mut descriptors = [
-        libc::pollfd {
-            fd,
-            events,
-            revents: 0,
-        },
-        libc::pollfd {
-            fd: cancellation.map_or(-1, |cancel| cancel.descriptor()),
-            events: libc::POLLIN,
-            revents: 0,
-        },
-    ];
-    loop {
-        if let Some(cancellation) = cancellation {
-            cancellation.check()?;
-        }
-        let duration = remaining(deadline).map_err(io::Error::other)?;
-        let millis = duration.as_millis().saturating_add(1).min(i32::MAX as u128) as i32;
-        match unsafe { libc::poll(descriptors.as_mut_ptr(), descriptors.len() as _, millis) } {
-            -1 => {
-                let error = io::Error::last_os_error();
-                if error.kind() == io::ErrorKind::Interrupted {
-                    continue;
-                }
-                return Err(error);
-            }
-            0 => {
-                return Err(io::Error::new(
-                    io::ErrorKind::TimedOut,
-                    "Herdr request timed out",
-                ));
-            }
-            _ => {
-                if let Some(cancellation) = cancellation {
-                    cancellation.check()?;
-                }
-                return Ok(());
-            }
-        }
-    }
+    super::super::socket_io::read_frame_into(
+        reader,
+        deadline,
+        frame,
+        cancellation,
+        "Herdr",
+        MAX_FRAME,
+    )
 }

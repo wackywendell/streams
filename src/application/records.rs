@@ -34,6 +34,10 @@ impl OpenedRecords {
     pub fn artifacts(&self) -> &impl crate::artifacts::ArtifactStore {
         &self.records
     }
+    /// Inspect only this admitted host's direct Session partition.
+    pub fn host_sessions(&self) -> Result<Vec<RecordRead>> {
+        Ok(self.records.host_sessions(self.host.as_str())?)
+    }
     /// Explicit human discovery/inspection only; ordinary commands use `records()`.
     pub fn inventory(&self) -> Result<Vec<RecordRead>> {
         Ok(self.records.inventory()?)

@@ -10,8 +10,10 @@ mod debug;
 mod documents;
 mod enrollment;
 mod fields;
+mod integration;
 #[cfg(test)]
 mod native_tests;
+mod pager;
 mod serve;
 mod sessions;
 mod settings;
@@ -189,6 +191,11 @@ fn execute(command: Command, input: Input, json: bool) -> Result<Output> {
         } if json => Err(CliError::message(
             "native pane is interactive and does not support --json",
         )),
+        Command::Integration {
+            command: args::IntegrationCommand::ViewDocument { .. },
+        } if json => Err(CliError::message(
+            "integration view-document is interactive and does not support --json",
+        )),
         Command::Artifact {
             command: args::ArtifactCommand::View { .. },
         } if json => Err(CliError::message(
@@ -197,6 +204,15 @@ fn execute(command: Command, input: Input, json: bool) -> Result<Output> {
         Command::Agent {
             command: AgentCommand::Preview,
         } => preview(&input),
+        command @ Command::Integration {
+            command:
+                args::IntegrationCommand::Request { .. } | args::IntegrationCommand::Describe { .. },
+        } => {
+            let mut app = App::new()
+                .map_err(|_| CliError::message("integration configuration is unavailable"))?;
+            app.input = input;
+            app.execute(command)
+        }
         command => {
             let mut app = App::new()?;
             app.input = input;
@@ -211,7 +227,7 @@ pub(super) fn run() -> ExitCode {
         .iter()
         .take_while(|arg| *arg != "--")
         .any(|arg| arg == "--json");
-    let parsed = match args::Cli::try_parse_from(argv) {
+    let mut parsed = match args::Cli::try_parse_from(argv) {
         Ok(parsed) => parsed,
         Err(error) => {
             let code = error.exit_code() as u8;
@@ -227,6 +243,15 @@ pub(super) fn run() -> ExitCode {
             return ExitCode::from(code);
         }
     };
+    if matches!(
+        &parsed.command,
+        Command::Integration {
+            command: args::IntegrationCommand::Request { .. }
+                | args::IntegrationCommand::Describe { .. }
+        }
+    ) {
+        parsed.json = false; // This protocol owns stdout, including its failure framing.
+    }
     if let Command::Serve {
         session_id,
         plugin_root,
@@ -323,6 +348,9 @@ impl App {
             "HERDR_BIN_PATH",
             "HERDR_SOCKET_PATH",
             "HERDR_SESSION",
+            "HC_SOCKET",
+            "HC_SESSION",
+            "HC_TERMINAL_ID",
             "PI_CODING_AGENT_DIR",
             "PI_OFFLINE",
             "CODEX_HOME",
@@ -572,6 +600,27 @@ impl App {
     }
     fn execute(&self, command: Command) -> Result<Output> {
         match command {
+            Command::Integration {
+                command:
+                    args::IntegrationCommand::BindSpace {
+                        space_ref,
+                        stream,
+                        scope_json,
+                    },
+            } => self.integration_bind_space(&space_ref, &stream, &scope_json),
+            Command::Integration {
+                command:
+                    args::IntegrationCommand::ViewDocument {
+                        scope_json,
+                        reference_json,
+                    },
+            } => self.integration_view_document(&scope_json, &reference_json),
+            Command::Integration {
+                command: args::IntegrationCommand::Describe { frontend },
+            } => self.integration_describe(frontend),
+            Command::Integration {
+                command: args::IntegrationCommand::Request { request_json },
+            } => self.integration_request(&request_json),
             Command::Serve { .. } => Err(CliError::UnsupportedCommand(
                 "nested serve is not supported".into(),
             )),

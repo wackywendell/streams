@@ -1,0 +1,1469 @@
+use serde_json::{Value, json};
+use streams::integration::*;
+
+fn fixtures() -> Value {
+    serde_json::from_str(include_str!("fixtures/integration_v1.json")).unwrap()
+}
+
+fn saved_presentation(scope: &WorkScope) -> streams::runtime::hc::HcPresentation {
+    use streams::{
+        frontend::EndpointId,
+        runtime::hc::{AssociationSnapshot, HcPresentation, PublishedLayout},
+    };
+    let endpoint = EndpointId("core".into());
+    let before=AssociationSnapshot::decode(endpoint.clone(),7,json!({"version":1,"spaces":{"target":{"scope":scope,"stream":"work","space":{"adapter":"hc","endpoint":"core","key":"target"}}}})).unwrap();
+    let layout=PublishedLayout::decode(endpoint,json!({"spaces":[{"id":"target","tabs":[{"id":"tab","root":{"type":"block","content":{"terminal":"t1"}}}]},{"id":"outside","tabs":[{"id":"other-tab","root":{"type":"block","content":{"terminal":"t2"}}}]}]})).unwrap();
+    HcPresentation::new(scope.clone(), before, layout, None).unwrap()
+}
+
+enum PointOnlyExecution {
+    Current(&'static str),
+    NotApplicable,
+    Unknown,
+}
+impl ExecutionSnapshot for PointOnlyExecution {
+    fn presence(&self, _: &ConversationId) -> Presence {
+        panic!("sidebar must not inspect global presence")
+    }
+    fn verified_terminals(&self, _: &ConversationId) -> Vec<NativeRef> {
+        panic!("sidebar must not inspect global execution")
+    }
+    fn stream_terminals(&self, _: &str) -> Vec<NativeRef> {
+        panic!("sidebar must not inspect global execution")
+    }
+    fn foreground_conversation(&self, terminal: &NativeRef) -> ForegroundConversation {
+        assert_eq!(terminal.key, "t1", "inspect only the in-space candidate");
+        match self {
+            Self::Current(native) => ForegroundConversation::Current(ConversationId {
+                harness: "pi".into(),
+                native_id: (*native).into(),
+            }),
+            Self::NotApplicable => ForegroundConversation::NotApplicable,
+            Self::Unknown => ForegroundConversation::Unknown {
+                reason: "foreground evidence is unavailable".into(),
+            },
+        }
+    }
+}
+
+struct SavedFixture {
+    _directory: tempfile::TempDir,
+    config: streams::config::Config,
+    records: streams::application::OpenedRecords,
+    sessions: Vec<streams::model::Session>,
+}
+impl SavedFixture {
+    fn command(&self) -> std::process::Command {
+        let root = self._directory.path().canonicalize().unwrap();
+        let mut command = std::process::Command::new(env!("CARGO_BIN_EXE_streams"));
+        command
+            .env_clear()
+            .env("HOME", &root)
+            .env("PATH", std::env::var_os("PATH").unwrap_or_default())
+            .current_dir(root);
+        command
+    }
+    fn envelope(&self, body: Value) -> Value {
+        json!({"version":1,"scope":{"catalog":self.records.source_id(),"host":self.records.host().as_str()},"endpoint":"unconnected-core","body":body})
+    }
+    fn invoke(&self, request: &str, global_json: bool) -> std::process::Output {
+        let mut command = self.command();
+        if global_json {
+            command.arg("--json");
+        }
+        command
+            .args(["integration", "request", "--request-json", request])
+            .output()
+            .unwrap()
+    }
+    fn new() -> Self {
+        use streams::{
+            application,
+            artifacts::ArtifactEntry,
+            config::{Config, Strategy},
+            model::{Record, Session, Stream},
+        };
+        let directory = tempfile::tempdir().unwrap();
+        let root = directory.path().canonicalize().unwrap();
+        let config = Config::new(
+            &std::collections::BTreeMap::from([("HOME".into(), root.to_str().unwrap().into())]),
+            &root,
+        )
+        .unwrap();
+        let records =
+            application::initialize_records(&config, Strategy::None, None, "main").unwrap();
+        let host = records.host().as_str();
+        for id in ["work", "next", "empty"] {
+            let mut stream = Stream::new(id, id, None, host).unwrap();
+            if id == "work" {
+                stream.goal = Some("Saved full goal".into());
+                stream.goal_short = Some("Saved short goal".into());
+                stream.repositories.insert(
+                    "source".into(),
+                    streams::model::Repository::new("https://example.test/source.git").unwrap(),
+                );
+                stream.documents = ["z.md", "a.md"]
+                    .into_iter()
+                    .map(|path| {
+                        streams::model::Document::new(
+                            "source",
+                            "saved-ref",
+                            path,
+                            format!("Saved {path}"),
+                            Some("saved-commit".into()),
+                        )
+                        .unwrap()
+                    })
+                    .collect();
+                stream.issues.push(streams::model::Link {
+                    url: "https://example.test/shared".into(),
+                    description: "Saved issue".into(),
+                });
+                stream.prs.push(streams::model::Link {
+                    url: "https://example.test/shared".into(),
+                    description: "Saved PR".into(),
+                });
+            }
+            application::create_record(records.records(), id, &Record::Stream(stream)).unwrap();
+        }
+        let mut sessions = vec![];
+        for (native, title) in [("one", "Straße"), ("two", "STRASSE"), ("moved", "Moved")] {
+            let mut session = Session::new(
+                Session::id_for(host, "pi", native),
+                host,
+                "work",
+                "pi",
+                native,
+                title,
+            )
+            .unwrap();
+            session.recap = format!("Saved recap for {native}");
+            session.artifacts.insert(
+                "work".into(),
+                vec![ArtifactEntry {
+                    name: "result.md".into(),
+                    description: "Saved output".into(),
+                }],
+            );
+            application::create_record(
+                records.records(),
+                native,
+                &Record::Session(session.clone()),
+            )
+            .unwrap();
+            sessions.push(session);
+        }
+        application::move_session_observed(
+            records.records(),
+            "move",
+            &streams::operations::membership::MoveIntent::new(host, "pi", "moved", "next").unwrap(),
+        )
+        .unwrap();
+        Self {
+            _directory: directory,
+            config,
+            records,
+            sessions,
+        }
+    }
+}
+
+#[test]
+fn saved_batch_shares_host_decodes_and_producer_lists_with_standalone_artifact_parity() {
+    use std::{
+        fs,
+        sync::{Arc, Mutex},
+    };
+    use streams::{
+        application::{self, integration::Streams},
+        yaml_store::{encode_component, records::RecordIoEvent},
+    };
+    let fixture = SavedFixture::new();
+    let host = fixture.records.host().as_str();
+    let partition = fixture
+        .records
+        .root()
+        .join("hosts")
+        .join(encode_component(host));
+    let producer = |id: &str| {
+        partition
+            .join("streams/work/artifacts")
+            .join(encode_component(id))
+    };
+    for session in [&fixture.sessions[0], &fixture.sessions[2]] {
+        fs::create_dir_all(producer(&session.id)).unwrap();
+    }
+    fs::create_dir_all(producer("leftover-without-record")).unwrap();
+    let foreign = fixture.records.root().join("hosts/other/conversations");
+    fs::create_dir_all(&foreign).unwrap();
+    fs::write(foreign.join("broken.yaml"), "not a record").unwrap();
+    fs::write(partition.join("streams/unrequested.yaml"), "not a record").unwrap();
+    let events = Arc::new(Mutex::new(vec![]));
+    let observed = events.clone();
+    let records = application::open_records_observed(&fixture.config, move |event| {
+        observed.lock().unwrap().push(event)
+    })
+    .unwrap();
+    events.lock().unwrap().clear();
+    let facade = Streams::new(&records);
+    let native = saved_presentation(facade.scope());
+    let replies = facade
+        .read_views(
+            &[
+                ViewSelection::SavedStream {
+                    stream: "work".into(),
+                },
+                ViewSelection::SavedStream {
+                    stream: "next".into(),
+                },
+                ViewSelection::SavedStream {
+                    stream: "work".into(),
+                },
+                ViewSelection::SavedSession {
+                    session: fixture.sessions[2].id.clone(),
+                },
+                ViewSelection::Sidebar {
+                    space: NativeRef {
+                        adapter: streams::frontend::FrontendId::hc(),
+                        endpoint: streams::frontend::EndpointId("core".into()),
+                        key: "target".into(),
+                    },
+                    viewing: ViewingChoice::Pinned {
+                        session: fixture.sessions[0].id.clone(),
+                    },
+                },
+            ],
+            Access::Available { value: &native },
+            Access::Unsupported,
+        )
+        .unwrap();
+    let WireResult::Ok(ModReadValue::Stream { value: work }) = &replies[0] else {
+        panic!("{replies:?}");
+    };
+    assert_eq!(work.title, "work");
+    assert_eq!(work.goal.as_deref(), Some("Saved full goal"));
+    assert_eq!(work.goal_short.as_deref(), Some("Saved short goal"));
+    assert_eq!(
+        work.documents
+            .iter()
+            .map(|document| document.key.path.as_str())
+            .collect::<Vec<_>>(),
+        ["z.md", "a.md"]
+    );
+    assert_eq!(work.documents[0].description, "Saved z.md");
+    assert_eq!(
+        work.links
+            .iter()
+            .map(|link| link.key.kind)
+            .collect::<Vec<_>>(),
+        [LinkKind::Issue, LinkKind::Pr]
+    );
+    assert_eq!(
+        work.links[0].key.url, work.links[1].key.url,
+        "kind preserves separate saved references for the same URI"
+    );
+    assert_eq!(work.links[0].description, "Saved issue");
+    assert_eq!(work.links[1].description, "Saved PR");
+    let mut expected_members = vec![
+        fixture.sessions[0].id.clone(),
+        fixture.sessions[1].id.clone(),
+    ];
+    expected_members.sort();
+    assert_eq!(
+        work.sessions
+            .iter()
+            .map(|session| session.id.clone())
+            .collect::<Vec<_>>(),
+        expected_members
+    );
+    let flat: Vec<_> = work
+        .artifacts
+        .iter()
+        .flat_map(|group| group.entries.iter().cloned())
+        .collect();
+    assert_eq!(
+        flat,
+        application::artifacts::list_stream_artifacts(fixture.records.artifacts(), host, "work")
+            .unwrap()
+    );
+    assert_eq!(
+        flat.len(),
+        2,
+        "missing directories and unattached leftovers contribute nothing"
+    );
+    assert!(
+        flat.iter()
+            .any(|entry| entry.key.session == fixture.sessions[2].id && entry.key.stream == "work")
+    );
+    assert!(
+        matches!(&replies[3],WireResult::Ok(ModReadValue::Session {value}) if value.stream=="next")
+    );
+    assert!(
+        matches!(&replies[4],WireResult::Ok(ModReadValue::Sidebar{value:SidebarContext::Associated{viewing_session:ViewingSession::Selected{session},..}}) if session==&fixture.sessions[0].id)
+    );
+    let events = events.lock().unwrap();
+    assert_eq!(
+        events
+            .iter()
+            .filter(|event| matches!(event, RecordIoEvent::List(_)))
+            .count(),
+        3,
+        "one host partition and two producer directories"
+    );
+    assert_eq!(events.iter().filter(|event|matches!(event,RecordIoEvent::Read(path) if path.parent()==Some(partition.join("conversations").as_path()))).count(),3,"each Session decoded once, including the addressed Session");
+    assert!(!events.iter().any(|event|matches!(event,RecordIoEvent::Read(path) if path.components().any(|part|part.as_os_str()=="artifacts"))),"no artifact content reads");
+}
+
+#[test]
+fn saved_batch_distinguishes_empty_unavailable_and_a_broken_host_partition() {
+    use streams::application::integration::Streams;
+    let fixture = SavedFixture::new();
+    let facade = Streams::new(&fixture.records);
+    let empty = facade.read_stream("empty").unwrap();
+    assert!(empty.view.sessions.is_empty());
+    assert!(empty.view.artifacts.is_empty());
+    assert!(facade.read_stream("missing").is_err());
+    let partition = fixture
+        .records
+        .root()
+        .join("hosts")
+        .join(streams::yaml_store::encode_component(
+            fixture.records.host().as_str(),
+        ))
+        .join("conversations");
+    std::fs::write(partition.join("broken.yaml"), "not a record").unwrap();
+    let values = facade
+        .read_saved_views(&[
+            ViewSelection::SavedStream {
+                stream: "work".into(),
+            },
+            ViewSelection::SavedSession {
+                session: fixture.sessions[0].id.clone(),
+            },
+        ])
+        .unwrap();
+    assert!(matches!(&values[0], WireResult::Error(_)));
+    assert!(
+        matches!(&values[1], WireResult::Ok(ModReadValue::Session { .. })),
+        "an addressed read remains independent from unrelated corrupt Sessions"
+    );
+}
+
+#[test]
+fn saved_cli_owns_stdout_and_needs_no_native_endpoint_with_or_without_global_json() {
+    let fixture = SavedFixture::new();
+    let request=fixture.envelope(json!({"kind":"read","selections":[
+        {"kind":"saved_stream","stream":"work"},{"kind":"saved_session","session":fixture.sessions[0].id},
+        {"kind":"saved_stream","stream":"empty"},{"kind":"saved_session","session":"missing"}]}));
+    for global in [false, true] {
+        let output = fixture.invoke(&request.to_string(), global);
+        assert!(
+            output.status.success(),
+            "{}",
+            String::from_utf8_lossy(&output.stderr)
+        );
+        assert!(output.stderr.is_empty());
+        let text = String::from_utf8(output.stdout).unwrap();
+        assert_eq!(
+            text.lines().count(),
+            1,
+            "one JSON reply, not a global --json wrapper"
+        );
+        let reply = ModReply::decode(&text).unwrap();
+        assert_eq!(reply.scope.catalog, fixture.records.source_id());
+        assert_eq!(reply.endpoint.0, "unconnected-core");
+        assert!(reply.verified_endpoint.is_none());
+        assert!(reply.viewer_projection.is_empty());
+        let WireResult::Ok(ModResult::Read {
+            values,
+            notification_key,
+        }) = reply.result
+        else {
+            panic!("read reply");
+        };
+        assert_eq!(notification_key, reply.scope.notification_key());
+        assert!(
+            matches!(&values[0],WireResult::Ok(ModReadValue::Stream {value}) if value.sessions.len()==2)
+        );
+        assert!(
+            matches!(&values[1],WireResult::Ok(ModReadValue::Session {value}) if value.recap==fixture.sessions[0].recap)
+        );
+        assert!(
+            matches!(&values[2],WireResult::Ok(ModReadValue::Stream {value}) if value.sessions.is_empty())
+        );
+        assert!(matches!(&values[3],WireResult::Error(WireError {kind,..}) if kind=="unavailable"));
+    }
+}
+
+#[test]
+fn saved_cli_refuses_wrong_scope_and_disabled_native_requests_without_effects() {
+    let fixture = SavedFixture::new();
+    let body = json!({"kind":"read","selections":[{"kind":"saved_stream","stream":"work"}]});
+    for field in ["catalog", "host"] {
+        let mut request = fixture.envelope(body.clone());
+        request["scope"][field] = json!("wrong");
+        let output = fixture.invoke(&request.to_string(), true);
+        assert!(output.status.success());
+        let reply = ModReply::decode(std::str::from_utf8(&output.stdout).unwrap()).unwrap();
+        assert!(
+            matches!(reply.result,WireResult::Error(WireError {kind,..}) if kind=="unavailable")
+        );
+        assert!(reply.verified_endpoint.is_none());
+    }
+    for body in [
+        fixtures()["requests"][1]["body"].clone(),
+        fixtures()["requests"][3]["body"].clone(),
+        fixtures()["requests"][5]["body"].clone(),
+    ] {
+        let output = fixture.invoke(&fixture.envelope(body).to_string(), false);
+        assert!(output.status.success());
+        let reply = ModReply::decode(std::str::from_utf8(&output.stdout).unwrap()).unwrap();
+        match reply.result {
+            WireResult::Error(error) => assert_eq!(error.kind, "unavailable"),
+            WireResult::Ok(ModResult::Read { values, .. }) => assert!(
+                values
+                    .iter()
+                    .all(|value| matches!(value, WireResult::Error(_)))
+            ),
+            _ => panic!("no native action is enabled"),
+        }
+        assert!(reply.verified_endpoint.is_none());
+        assert!(reply.viewer_projection.is_empty());
+    }
+}
+
+#[test]
+fn describe_verifies_the_configured_core_without_caller_context_or_writes() {
+    use std::{
+        io::{BufRead, BufReader, Read, Write},
+        os::unix::net::UnixListener,
+        thread,
+    };
+    let fixture = SavedFixture::new();
+    for global in [false, true] {
+        let directory = tempfile::Builder::new()
+            .prefix("hc-describe-")
+            .tempdir_in("/tmp")
+            .unwrap();
+        let socket = directory.path().join("s");
+        let listener = UnixListener::bind(&socket).unwrap();
+        let server = thread::spawn(move || {
+            let (stream, _) = listener.accept().unwrap();
+            stream
+                .set_read_timeout(Some(std::time::Duration::from_secs(2)))
+                .unwrap();
+            let mut reader = BufReader::new(stream);
+            let mut line = String::new();
+            reader.read_line(&mut line).unwrap();
+            let request: Value = serde_json::from_str(&line).unwrap();
+            assert_eq!(request["method"], "hello");
+            assert_eq!(request["params"], json!({"generation":1,"framed":false}));
+            writeln!(reader.get_mut(),"{}",json!({"jsonrpc":"2.0","id":request["id"],"result":{"generation":1,"framed":false,"core":{"id":"permanent-core","name":"Not authority"},"methods":["hello"]}})).unwrap();
+            let mut extra = Vec::new();
+            reader.read_to_end(&mut extra).unwrap();
+            assert!(extra.is_empty(), "describe performs no native writes");
+        });
+        let mut command = fixture.command();
+        command.env("HC_SOCKET", &socket);
+        if global {
+            command.arg("--json");
+        }
+        let output = command
+            .args(["integration", "describe", "--frontend", "hc"])
+            .output()
+            .unwrap();
+        assert!(
+            output.status.success(),
+            "{}",
+            String::from_utf8_lossy(&output.stderr)
+        );
+        assert!(output.stderr.is_empty());
+        let text = std::str::from_utf8(&output.stdout).unwrap();
+        assert_eq!(text.lines().count(), 1);
+        let scope = streams::application::integration::Streams::new(&fixture.records)
+            .scope()
+            .clone();
+        assert_eq!(
+            serde_json::from_str::<Value>(text).unwrap(),
+            json!({"version":1,"scope":scope,"endpoint":"permanent-core","notification_key":scope.notification_key()})
+        );
+        server.join().unwrap();
+    }
+    for frontend in ["auto", "herdr", "cmux"] {
+        let output = fixture
+            .command()
+            .args(["--json", "integration", "describe", "--frontend", frontend])
+            .output()
+            .unwrap();
+        assert!(!output.status.success());
+        assert!(output.stdout.is_empty());
+        assert!(!output.stderr.is_empty());
+    }
+}
+
+#[test]
+fn document_cli_resolves_saved_keys_and_pipes_only_owner_bytes_to_the_secure_pager() {
+    use std::{fs, os::unix::fs::PermissionsExt, process::Command};
+    use streams::runtime::{CheckoutRegistry, DirectoryBindings};
+    let fixture = SavedFixture::new();
+    let root = fixture._directory.path().canonicalize().unwrap();
+    let repository = root.join("repo");
+    fs::create_dir(&repository).unwrap();
+    assert!(
+        Command::new("git")
+            .args(["init", "--quiet"])
+            .arg(&repository)
+            .status()
+            .unwrap()
+            .success()
+    );
+    fs::write(repository.join("z.md"), "Owner working document\n").unwrap();
+    let host = fixture.records.host().as_str();
+    let url = "https://example.test/source.git";
+    let registry = CheckoutRegistry::new(fixture.config.checkout_state_dir(), host).unwrap();
+    let checkout = registry.register(&repository, Some(url)).unwrap();
+    let state = streams::runtime::state::RuntimeState::new(
+        fixture
+            .config
+            .runtime_state_dir_for(fixture.records.root())
+            .unwrap(),
+        host,
+    )
+    .unwrap();
+    let locations = DirectoryBindings::new(state.root(), registry);
+    locations
+        .remember(
+            "work",
+            &repository,
+            Some(&fixture.sessions[0].id),
+            false,
+            Some(url),
+            Some(&checkout.id),
+        )
+        .unwrap();
+    let scope = streams::application::integration::Streams::new(&fixture.records)
+        .scope()
+        .clone();
+    let reference = Reference::Document {
+        stream: "work".into(),
+        document: DocumentKey {
+            repository: "source".into(),
+            path: "z.md".into(),
+        },
+        viewing_session: fixture.sessions[0].id.clone(),
+    };
+    let bin = root.join("bin");
+    fs::create_dir(&bin).unwrap();
+    let pager = bin.join("less");
+    let marker = root.join("pager-invocations");
+    fs::write(&pager,"#!/bin/sh\nset -eu\n[ \"$LESSSECURE\" = 1 ]\n[ -z \"$LESS\" ]\n[ -z \"${LESSOPEN+x}\" ]\n[ -z \"${LESSCLOSE+x}\" ]\n[ \"$#\" = 1 ]\n[ \"$1\" = -- ]\nprintf 'called\\n' >> \"$FAKE_LESS_MARKER\"\nwhile IFS= read -r line; do printf '%s\\n' \"$line\"; done\nprintf 'document viewer done\\n'\n").unwrap();
+    fs::set_permissions(&pager, fs::Permissions::from_mode(0o700)).unwrap();
+    let command = |scope: &WorkScope| {
+        let mut command = fixture.command();
+        command
+            .args([
+                "integration",
+                "view-document",
+                "--scope-json",
+                &serde_json::to_string(scope).unwrap(),
+                "--reference-json",
+                &serde_json::to_string(&reference).unwrap(),
+            ])
+            .env(
+                "PATH",
+                format!(
+                    "{}:{}",
+                    bin.display(),
+                    std::env::var("PATH").unwrap_or_default()
+                ),
+            )
+            .env("FAKE_LESS_MARKER", &marker)
+            .env("LESS", "unsafe")
+            .env("LESSOPEN", "unsafe")
+            .env("LESSCLOSE", "unsafe");
+        command
+    };
+    let mut terminal = crate::support::pty::Pty::spawn(command(&scope), false);
+    terminal.until(|terminal| terminal.screen().contains("document viewer done"));
+    assert!(terminal.screen().contains("Owner working document"));
+    assert!(terminal.finish().success());
+    assert_eq!(fs::read_to_string(&marker).unwrap(), "called\n");
+    let mut wrong = scope.clone();
+    wrong.host = "wrong-host".into();
+    let mut terminal = crate::support::pty::Pty::spawn(command(&wrong), false);
+    terminal.until(|terminal| terminal.screen().contains("does not match"));
+    drop(terminal);
+    streams::application::move_session_observed(
+        fixture.records.records(),
+        "move-viewer",
+        &streams::operations::membership::MoveIntent::new(host, "pi", "one", "next").unwrap(),
+    )
+    .unwrap();
+    let mut terminal = crate::support::pty::Pty::spawn(command(&scope), false);
+    terminal.until(|terminal| terminal.screen().contains("not a current member"));
+    drop(terminal);
+    assert_eq!(
+        fs::read_to_string(&marker).unwrap(),
+        "called\n",
+        "invalid scope/context never starts the pager"
+    );
+}
+
+#[test]
+fn document_cli_rejects_json_mode_non_document_references_and_client_paths() {
+    let fixture = SavedFixture::new();
+    let scope = fixture.envelope(json!({}))["scope"].to_string();
+    for (global, reference) in [
+        (
+            true,
+            json!({"kind":"document","stream":"work","document":{"repository":"source","path":"z.md"},"viewing_session":fixture.sessions[0].id}),
+        ),
+        (
+            false,
+            json!({"kind":"document","path":"/unchecked/client/path"}),
+        ),
+        (
+            false,
+            json!({"kind":"link","stream":"work","link":{"kind":"issue","url":"https://example.test/shared"}}),
+        ),
+    ] {
+        let mut command = fixture.command();
+        if global {
+            command.arg("--json");
+        }
+        let output = command
+            .args([
+                "integration",
+                "view-document",
+                "--scope-json",
+                &scope,
+                "--reference-json",
+                &reference.to_string(),
+            ])
+            .output()
+            .unwrap();
+        assert!(!output.status.success());
+        if global {
+            assert!(
+                String::from_utf8(output.stdout)
+                    .unwrap()
+                    .contains("does not support --json")
+            );
+        } else {
+            assert!(output.stdout.is_empty());
+            assert!(!output.stderr.is_empty());
+        }
+    }
+}
+
+#[test]
+fn describe_and_request_do_not_expose_private_configuration_failures() {
+    let fixture = SavedFixture::new();
+    let marker = "private-owner-configuration-content";
+    std::fs::write(
+        fixture.config.config_path(),
+        json!({(marker):{}}).to_string(),
+    )
+    .unwrap();
+    for global in [false, true] {
+        let mut command = fixture.command();
+        if global {
+            command.arg("--json");
+        }
+        let output = command
+            .args(["integration", "describe", "--frontend", "hc"])
+            .output()
+            .unwrap();
+        assert!(!output.status.success());
+        assert!(output.stdout.is_empty());
+        assert!(!String::from_utf8_lossy(&output.stderr).contains(marker));
+        let output = fixture.invoke(
+            &fixture
+                .envelope(
+                    json!({"kind":"read","selections":[{"kind":"saved_stream","stream":"work"}]}),
+                )
+                .to_string(),
+            global,
+        );
+        assert!(output.status.success());
+        assert!(output.stderr.is_empty());
+        assert!(!String::from_utf8_lossy(&output.stdout).contains(marker));
+        let reply = ModReply::decode(std::str::from_utf8(&output.stdout).unwrap()).unwrap();
+        assert!(matches!(reply.result, WireResult::Error(_)));
+    }
+}
+
+#[test]
+fn link_actions_revalidate_saved_kind_and_url_without_native_or_owner_path_disclosure() {
+    use streams::{
+        application,
+        model::{Link, Record, Stream, TitleDefaults},
+    };
+    let fixture = SavedFixture::new();
+    let mut stream =
+        Stream::new("link-only", "Links", None, fixture.records.host().as_str()).unwrap();
+    let urls = [
+        "https://example.test/issue-only",
+        "https://owner-secret:secret@example.test/",
+        "javascript:alert(1)",
+        "file:///owner-private/file",
+    ];
+    stream.issues = urls
+        .iter()
+        .map(|url| Link::new(*url, "").unwrap())
+        .collect();
+    application::create_record(
+        fixture.records.records(),
+        "create-links",
+        &Record::Stream(stream.clone()),
+    )
+    .unwrap();
+    let socket = fixture._directory.path().join("no-native.socket");
+    let listener = std::os::unix::net::UnixListener::bind(&socket).unwrap();
+    listener.set_nonblocking(true).unwrap();
+    let invoke = |stream: &str, kind: &str, url: &str, context: Value, global: bool| {
+        let request=fixture.envelope(json!({"kind":"act","action":{"kind":"open_reference","reference":{"kind":"link","stream":stream,"link":{"kind":kind,"url":url}},"context":context,"at":null}}));
+        let mut command = fixture.command();
+        command.env("HC_SOCKET", &socket);
+        if global {
+            command.arg("--json");
+        }
+        let output = command
+            .args([
+                "integration",
+                "request",
+                "--request-json",
+                &request.to_string(),
+            ])
+            .output()
+            .unwrap();
+        assert!(
+            output.status.success(),
+            "{}",
+            String::from_utf8_lossy(&output.stderr)
+        );
+        assert!(output.stderr.is_empty());
+        let value: Value = serde_json::from_slice(&output.stdout).unwrap();
+        assert_eq!(value["verified_endpoint"], Value::Null);
+        assert_eq!(value["endpoint"], "unconnected-core");
+        assert_eq!(value["viewer_projection"], json!([]));
+        assert_eq!(value["result"]["ok"]["kind"], "reference_opened");
+        assert_eq!(value["result"]["ok"]["value"]["known"], json!([]));
+        assert!(
+            matches!(listener.accept(),Err(error) if error.kind()==std::io::ErrorKind::WouldBlock),
+            "links require no native connection"
+        );
+        value["result"]["ok"]["value"]["result"].clone()
+    };
+    for global in [false, true] {
+        for (stream, kind, url, allowed) in [
+            ("work", "issue", "https://example.test/shared", true),
+            ("work", "pr", "https://example.test/shared", true),
+            ("link-only", "issue", urls[0], true),
+            ("link-only", "pr", urls[0], false),
+            ("missing", "issue", urls[0], false),
+            ("work", "issue", "https://example.test/removed", false),
+            ("link-only", "issue", urls[1], false),
+            ("link-only", "issue", urls[2], false),
+            ("link-only", "issue", urls[3], false),
+        ] {
+            let result = invoke(stream, kind, url, json!({"kind":"explicit"}), global);
+            if allowed {
+                assert_eq!(
+                    result,
+                    json!({"kind":"needs_viewer","value":[{"kind":"open_url","url":url}]})
+                );
+            } else {
+                assert_eq!(result["kind"], "not_applied");
+                assert!(!result.to_string().contains(url));
+            }
+        }
+        let result = invoke(
+            "work",
+            "issue",
+            "https://example.test/shared",
+            json!({"kind":"follow_frame","terminal":{"adapter":"hc","endpoint":"core","key":"t1"},"expected_session":fixture.sessions[0].id}),
+            global,
+        );
+        assert_eq!(
+            result["kind"], "not_applied",
+            "unverified frames cannot turn into explicit activations"
+        );
+    }
+    application::save_user_edit(
+        fixture.records.records(),
+        "remove-painted-link",
+        &Record::Stream(stream),
+        json!({"issues":[]}).as_object().unwrap(),
+        TitleDefaults::default(),
+    )
+    .unwrap();
+    assert_eq!(
+        invoke(
+            "link-only",
+            "issue",
+            urls[0],
+            json!({"kind":"explicit"}),
+            false
+        )["kind"],
+        "not_applied",
+        "activation rereads after a painted reference was removed"
+    );
+}
+
+#[test]
+fn shared_sidebar_policy_uses_only_point_foreground_and_keeps_inactive_pinned_members() {
+    use streams::{
+        application,
+        model::{Record, Session, Status},
+    };
+    let fixture = SavedFixture::new();
+    let facade = application::integration::Streams::new(&fixture.records);
+    let native = saved_presentation(facade.scope());
+    let mut inactive = Session::new(
+        Session::id_for(&facade.scope().host, "pi", "inactive"),
+        &facade.scope().host,
+        "work",
+        "pi",
+        "inactive",
+        "Inactive",
+    )
+    .unwrap();
+    inactive.status = Status::Done;
+    application::create_record(
+        fixture.records.records(),
+        "inactive-member",
+        &Record::Session(inactive.clone()),
+    )
+    .unwrap();
+    let resource = |key: &str| NativeRef {
+        adapter: streams::frontend::FrontendId::hc(),
+        endpoint: streams::frontend::EndpointId("core".into()),
+        key: key.into(),
+    };
+    for (execution, expected) in [
+        (PointOnlyExecution::Current("one"), "selected"),
+        (PointOnlyExecution::Current("moved"), "none"),
+        (PointOnlyExecution::Current("unenrolled"), "none"),
+        (PointOnlyExecution::NotApplicable, "none"),
+        (PointOnlyExecution::Unknown, "unavailable"),
+    ] {
+        let selections = [
+            ViewingChoice::Follow {
+                last_agent: Some(resource("t1")),
+            },
+            ViewingChoice::Follow { last_agent: None },
+            ViewingChoice::Follow {
+                last_agent: Some(resource("t2")),
+            },
+            ViewingChoice::Pinned {
+                session: inactive.id.clone(),
+            },
+            ViewingChoice::Pinned {
+                session: fixture.sessions[2].id.clone(),
+            },
+        ]
+        .into_iter()
+        .map(|viewing| ViewSelection::Sidebar {
+            space: resource("target"),
+            viewing,
+        })
+        .collect::<Vec<_>>();
+        let replies = facade
+            .read_views(
+                &selections,
+                Access::Available { value: &native },
+                Access::Available { value: &execution },
+            )
+            .unwrap();
+        for (index, expected) in [expected, "none", "none", "selected", "unavailable"]
+            .iter()
+            .enumerate()
+        {
+            let WireResult::Ok(ModReadValue::Sidebar {
+                value:
+                    SidebarContext::Associated {
+                        stream,
+                        viewing_session,
+                    },
+            }) = &replies[index]
+            else {
+                panic!("{:?}", replies[index])
+            };
+            assert_eq!(stream.id, "work");
+            assert_eq!(
+                serde_json::to_value(viewing_session).unwrap()["kind"],
+                *expected
+            );
+        }
+        assert!(
+            matches!(&replies[3],WireResult::Ok(ModReadValue::Sidebar{value:SidebarContext::Associated{viewing_session:ViewingSession::Selected{session},..}}) if session==&inactive.id)
+        );
+    }
+}
+
+#[test]
+fn native_sidebar_reads_use_one_context_snapshot_and_keep_saved_data_when_follow_is_unavailable() {
+    use crate::integration_hc::{FakeCore, Reply, Step};
+    let fixture = SavedFixture::new();
+    let scope = streams::application::integration::Streams::new(&fixture.records)
+        .scope()
+        .clone();
+    let resource = |key: &str| NativeRef {
+        adapter: streams::frontend::FrontendId::hc(),
+        endpoint: streams::frontend::EndpointId("core".into()),
+        key: key.into(),
+    };
+    let row = |key: &str| streams::runtime::hc::SpaceAssociation {
+        scope: scope.clone(),
+        stream: "work".into(),
+        space: resource(key),
+    };
+    let mut foreign = row("foreign");
+    foreign.scope.host = "another-host".into();
+    let associations = json!({"version":1,"spaces":{"target":row("target"),"stale":row("stale"),"foreign":foreign}});
+    let layout = json!({"spaces":[{"id":"target","tabs":[{"id":"tab","root":{"type":"block","content":{"terminal":"t1"}}}]},{"id":"outside","tabs":[{"id":"other-tab","root":{"type":"block","content":{"terminal":"t2"}}}]},{"id":"empty"},{"id":"foreign"}]});
+    let sidebar = |space: NativeRef, viewing: Value| json!({"kind":"sidebar","space":space,"viewing":viewing});
+    let follow = |candidate: Option<NativeRef>| json!({"kind":"follow","last_agent":candidate});
+    let pinned = |id: &str| json!({"kind":"pinned","session":id});
+    let mut wrong = resource("target");
+    wrong.endpoint.0 = "wrong-core".into();
+    let mut request=fixture.envelope(json!({"kind":"read","selections":[{"kind":"saved_stream","stream":"work"},sidebar(resource("target"),follow(None)),sidebar(resource("target"),pinned(&fixture.sessions[0].id)),sidebar(resource("target"),pinned(&fixture.sessions[2].id)),sidebar(resource("target"),pinned("missing")),sidebar(resource("target"),follow(Some(resource("t1")))),sidebar(resource("target"),follow(Some(resource("t2")))),sidebar(resource("empty"),follow(None)),sidebar(resource("stale"),follow(None)),sidebar(resource("foreign"),follow(None)),sidebar(wrong,follow(None)),{"kind":"frame","terminal":resource("t1")}] }));
+    request["endpoint"] = json!("core");
+    for global_json in [false, true] {
+        let core = FakeCore::new(vec![
+            Step(
+                "doc.get",
+                json!({"name":"streams"}),
+                Reply::Value(json!({"version":7,"value":associations})),
+            ),
+            Step(
+                "doc.get",
+                json!({"name":"herdr-app"}),
+                Reply::Value(json!({"version":90,"value":layout})),
+            ),
+        ]);
+        let mut command = fixture.command();
+        command.env("HC_SOCKET", &core.socket);
+        if global_json {
+            command.arg("--json");
+        }
+        let output = command
+            .args([
+                "integration",
+                "request",
+                "--request-json",
+                &request.to_string(),
+            ])
+            .output()
+            .unwrap();
+        assert!(
+            output.status.success(),
+            "{}",
+            String::from_utf8_lossy(&output.stderr)
+        );
+        assert!(output.stderr.is_empty());
+        let reply = ModReply::decode(std::str::from_utf8(&output.stdout).unwrap()).unwrap();
+        assert_eq!(
+            reply.verified_endpoint,
+            Some(streams::frontend::EndpointId("core".into()))
+        );
+        assert!(reply.viewer_projection.is_empty());
+        assert!(reply.warnings.is_empty());
+        let WireResult::Ok(ModResult::Read { values, .. }) = reply.result else {
+            panic!("read reply")
+        };
+        let values = serde_json::to_value(values).unwrap();
+        assert_eq!(values[0]["ok"]["kind"], "stream");
+        let associated = &values[1]["ok"]["value"];
+        assert_eq!(associated["kind"], "associated");
+        assert_eq!(associated["stream"]["goal"], "Saved full goal");
+        assert_eq!(associated["viewing_session"]["kind"], "none");
+        assert_eq!(
+            values[2]["ok"]["value"]["viewing_session"],
+            json!({"kind":"selected","session":fixture.sessions[0].id})
+        );
+        for index in [3, 4, 5] {
+            assert_eq!(values[index]["ok"]["value"]["kind"], "associated");
+            assert_eq!(
+                values[index]["ok"]["value"]["viewing_session"]["kind"],
+                "unavailable"
+            );
+            assert_eq!(values[index]["ok"]["value"]["stream"], associated["stream"]);
+        }
+        assert_eq!(values[6]["ok"]["value"]["viewing_session"]["kind"], "none");
+        for index in [7, 9] {
+            assert_eq!(values[index]["ok"]["value"]["kind"], "unassociated");
+        }
+        for index in [8, 10] {
+            assert_eq!(values[index]["ok"]["value"]["kind"], "unavailable");
+        }
+        assert!(
+            values[11].get("error").is_some(),
+            "frame execution remains explicitly unavailable"
+        );
+        assert_eq!(
+            core.finish().len(),
+            3,
+            "no terminal, process, label, mutation or presentation calls"
+        );
+    }
+}
+
+#[test]
+fn unavailable_native_sidebar_context_does_not_break_independent_saved_reads_or_claim_empty_context()
+ {
+    use crate::integration_hc::{FakeCore, Reply, Step};
+    let fixture = SavedFixture::new();
+    for case in ["wrong-endpoint", "bad-associations", "bad-layout"] {
+        let steps = match case {
+            "wrong-endpoint" => vec![],
+            "bad-associations" => vec![Step(
+                "doc.get",
+                json!({"name":"streams"}),
+                Reply::Value(json!({"version":1,"value":{"version":2,"spaces":{}}})),
+            )],
+            _ => vec![
+                Step(
+                    "doc.get",
+                    json!({"name":"streams"}),
+                    Reply::Value(json!({"version":0,"value":null})),
+                ),
+                Step(
+                    "doc.get",
+                    json!({"name":"herdr-app"}),
+                    Reply::Value(json!({"version":1,"value":{"spaces":null}})),
+                ),
+            ],
+        };
+        let core = FakeCore::new(steps);
+        let mut request=fixture.envelope(json!({"kind":"read","selections":[{"kind":"saved_stream","stream":"work"},{"kind":"sidebar","space":{"adapter":"hc","endpoint":"core","key":"target"},"viewing":{"kind":"follow","last_agent":null}}]}));
+        if case != "wrong-endpoint" {
+            request["endpoint"] = json!("core");
+        }
+        let output = fixture
+            .command()
+            .env("HC_SOCKET", &core.socket)
+            .args([
+                "integration",
+                "request",
+                "--request-json",
+                &request.to_string(),
+            ])
+            .output()
+            .unwrap();
+        assert!(output.status.success());
+        assert!(output.stderr.is_empty());
+        let reply: Value = serde_json::from_slice(&output.stdout).unwrap();
+        assert_eq!(
+            reply["verified_endpoint"].is_null(),
+            case == "wrong-endpoint"
+        );
+        assert_eq!(reply["result"]["ok"]["values"][0]["ok"]["kind"], "stream");
+        assert_eq!(
+            reply["result"]["ok"]["values"][1]["error"]["kind"],
+            "unavailable"
+        );
+        assert_eq!(
+            core.finish().len(),
+            match case {
+                "wrong-endpoint" => 1,
+                "bad-associations" => 2,
+                _ => 3,
+            }
+        );
+    }
+}
+
+#[test]
+fn bind_space_uses_only_the_saved_stream_and_one_verified_native_write() {
+    use crate::integration_hc::{FakeCore, Reply, Step};
+    let fixture = SavedFixture::new();
+    let scope = streams::application::integration::Streams::new(&fixture.records)
+        .scope()
+        .clone();
+    let space = NativeRef {
+        adapter: streams::frontend::FrontendId::hc(),
+        endpoint: streams::frontend::EndpointId("core".into()),
+        key: "target".into(),
+    };
+    let wanted = streams::runtime::hc::SpaceAssociation {
+        scope: scope.clone(),
+        stream: "work".into(),
+        space: space.clone(),
+    };
+    let partition = fixture
+        .records
+        .root()
+        .join("hosts")
+        .join(streams::yaml_store::encode_component(&scope.host))
+        .join("conversations");
+    std::fs::write(partition.join("unrelated-broken.yaml"), "not a record").unwrap();
+    for case in ["accepted", "conflict", "lost", "unpublished"] {
+        let layout = if case == "unpublished" {
+            json!({})
+        } else {
+            json!({"spaces":[{"id":"target"}]})
+        };
+        let mut steps = vec![
+            Step(
+                "doc.get",
+                json!({"name":"streams"}),
+                Reply::Value(json!({"version":7,"value":null})),
+            ),
+            Step(
+                "doc.get",
+                json!({"name":"herdr-app"}),
+                Reply::Value(json!({"version":90,"value":layout})),
+            ),
+        ];
+        if case != "unpublished" {
+            let reply = match case {
+                "accepted" => Reply::Value(json!({"version":8})),
+                "conflict" => Reply::Reject("conflict"),
+                _ => Reply::Lost,
+            };
+            steps.push(Step("doc.set",json!({"name":"streams","version":7,"value":{"version":1,"spaces":{"target":wanted}}}),reply));
+        }
+        let core = FakeCore::new(steps);
+        let output = fixture
+            .command()
+            .env("HC_SOCKET", &core.socket)
+            .args([
+                "--json",
+                "integration",
+                "bind-space",
+                "--space-ref",
+                &serde_json::to_string(&space).unwrap(),
+                "--scope-json",
+                &serde_json::to_string(&scope).unwrap(),
+                "--stream",
+                "work",
+            ])
+            .output()
+            .unwrap();
+        assert_eq!(
+            output.status.code(),
+            Some(if case == "accepted" { 0 } else { 2 }),
+            "{}",
+            String::from_utf8_lossy(&output.stderr)
+        );
+        assert!(output.stderr.is_empty());
+        let result: Value = serde_json::from_slice(&output.stdout).unwrap();
+        assert_eq!(
+            result["requested_space"],
+            serde_json::to_value(&space).unwrap()
+        );
+        assert_eq!(
+            result["association"]["kind"],
+            match case {
+                "accepted" => "applied",
+                "lost" => "uncertain",
+                _ => "not_applied",
+            }
+        );
+        assert_eq!(
+            core.finish().len(),
+            if case == "unpublished" { 3 } else { 4 }
+        );
+    }
+    let core = FakeCore::new(vec![]);
+    let mut wrong = space.clone();
+    wrong.endpoint.0 = "wrong-core".into();
+    let output = fixture
+        .command()
+        .env("HC_SOCKET", &core.socket)
+        .args([
+            "--json",
+            "integration",
+            "bind-space",
+            "--space-ref",
+            &serde_json::to_string(&wrong).unwrap(),
+            "--scope-json",
+            &serde_json::to_string(&scope).unwrap(),
+            "--stream",
+            "work",
+        ])
+        .output()
+        .unwrap();
+    assert!(!output.status.success());
+    assert_eq!(core.finish().len(), 1, "wrong endpoint stops at hello");
+    for (stream, host) in [("missing", scope.host.as_str()), ("work", "wrong-host")] {
+        let mut wrong = scope.clone();
+        wrong.host = host.into();
+        let output = fixture
+            .command()
+            .env("HC_SOCKET", "/missing/native/socket")
+            .args([
+                "--json",
+                "integration",
+                "bind-space",
+                "--space-ref",
+                &serde_json::to_string(&space).unwrap(),
+                "--scope-json",
+                &serde_json::to_string(&wrong).unwrap(),
+                "--stream",
+                stream,
+            ])
+            .output()
+            .unwrap();
+        assert!(!output.status.success());
+        assert!(
+            !String::from_utf8_lossy(&output.stdout).contains("hc socket:"),
+            "saved admission precedes native connection"
+        );
+    }
+}
+
+#[test]
+fn invalid_cli_envelopes_have_stderr_and_no_fabricated_json_reply() {
+    let fixture = SavedFixture::new();
+    for text in [
+        "not JSON".to_owned(),
+        " ".repeat(MOD_REQUEST_BYTES + 1),
+        "{}".into(),
+    ] {
+        for global in [false, true] {
+            let output = fixture.invoke(&text, global);
+            assert!(!output.status.success());
+            assert!(output.stdout.is_empty());
+            assert!(!output.stderr.is_empty());
+        }
+    }
+}
+
+#[test]
+fn session_only_batch_has_no_directory_inventory_or_artifact_reads() {
+    use std::sync::{Arc, Mutex};
+    use streams::{
+        application::{self, integration::Streams},
+        yaml_store::records::RecordIoEvent,
+    };
+    let fixture = SavedFixture::new();
+    let events = Arc::new(Mutex::new(vec![]));
+    let observed = events.clone();
+    let records = application::open_records_observed(&fixture.config, move |event| {
+        observed.lock().unwrap().push(event)
+    })
+    .unwrap();
+    events.lock().unwrap().clear();
+    let selection = ViewSelection::SavedSession {
+        session: fixture.sessions[0].id.clone(),
+    };
+    let values = Streams::new(&records)
+        .read_saved_views(&[selection.clone(), selection])
+        .unwrap();
+    assert!(
+        values
+            .iter()
+            .all(|value| matches!(value, WireResult::Ok(ModReadValue::Session { .. })))
+    );
+    let events = events.lock().unwrap();
+    assert!(
+        !events
+            .iter()
+            .any(|event| matches!(event, RecordIoEvent::List(_)))
+    );
+    assert_eq!(
+        events
+            .iter()
+            .filter(|event| matches!(event, RecordIoEvent::Read(_)))
+            .count(),
+        2,
+        "one format check and one addressed Session for both selections"
+    );
+}
+
+#[test]
+fn malformed_or_non_directory_producers_fail_only_the_affected_stream() {
+    use streams::application::integration::Streams;
+    for directory in [false, true] {
+        let fixture = SavedFixture::new();
+        let parent = fixture
+            .records
+            .root()
+            .join("hosts")
+            .join(streams::yaml_store::encode_component(
+                fixture.records.host().as_str(),
+            ))
+            .join("streams/work/artifacts");
+        std::fs::create_dir_all(&parent).unwrap();
+        if directory {
+            std::fs::create_dir(parent.join("invalid%")).unwrap();
+        } else {
+            std::fs::write(parent.join("not-a-directory"), "ignored content").unwrap();
+        }
+        let values = Streams::new(&fixture.records)
+            .read_saved_views(&[
+                ViewSelection::SavedStream {
+                    stream: "work".into(),
+                },
+                ViewSelection::SavedStream {
+                    stream: "empty".into(),
+                },
+            ])
+            .unwrap();
+        assert!(matches!(&values[0], WireResult::Error(_)));
+        assert!(matches!(
+            &values[1],
+            WireResult::Ok(ModReadValue::Stream { .. })
+        ));
+    }
+}
+
+#[test]
+fn an_unreadable_producer_directory_is_unavailable_not_empty() {
+    use std::os::unix::fs::PermissionsExt;
+    if unsafe { libc::geteuid() } == 0 {
+        return;
+    }
+    let fixture = SavedFixture::new();
+    let directory = fixture
+        .records
+        .root()
+        .join("hosts")
+        .join(streams::yaml_store::encode_component(
+            fixture.records.host().as_str(),
+        ))
+        .join("streams/work/artifacts");
+    std::fs::create_dir_all(&directory).unwrap();
+    std::fs::set_permissions(&directory, std::fs::Permissions::from_mode(0o0)).unwrap();
+    let result =
+        streams::application::integration::Streams::new(&fixture.records).read_stream("work");
+    std::fs::set_permissions(directory, std::fs::Permissions::from_mode(0o700)).unwrap();
+    assert!(result.is_err());
+}
+
+#[test]
+fn oversized_cli_reply_fails_before_any_stdout_is_written() {
+    use streams::{
+        application,
+        model::{Record, Session},
+    };
+    let fixture = SavedFixture::new();
+    let host = fixture.records.host().as_str();
+    let mut session = Session::new(
+        Session::id_for(host, "pi", "large"),
+        host,
+        "work",
+        "pi",
+        "large",
+        "Large saved record",
+    )
+    .unwrap();
+    session.recap = "x".repeat(600_000);
+    application::create_record(
+        fixture.records.records(),
+        "large",
+        &Record::Session(session.clone()),
+    )
+    .unwrap();
+    let selection = json!({"kind":"saved_session","session":session.id});
+    let request = fixture.envelope(json!({"kind":"read","selections":vec![selection;9]}));
+    let output = fixture.invoke(&request.to_string(), true);
+    assert!(!output.status.success());
+    assert!(output.stdout.is_empty());
+    assert!(String::from_utf8_lossy(&output.stderr).contains("exceeds 4 MiB"));
+}
+
+#[test]
+fn reply_limit_includes_the_cli_newline() {
+    let mut reply = ModReply::decode(&fixtures()["replies"][0].to_string()).unwrap();
+    let size = reply.encode().unwrap().len();
+    reply
+        .warnings
+        .push("x".repeat(MOD_REPLY_BYTES - 1 - size - 2));
+    let encoded = reply.encode().unwrap();
+    assert_eq!(encoded.len() + 1, MOD_REPLY_BYTES);
+    assert!(ModReply::decode(&(encoded + "\n")).is_ok());
+    reply.warnings[0].push('x');
+    assert!(reply.encode().is_err());
+}
+
+#[test]
+fn version_one_fixtures_have_exact_request_and_reply_shapes() {
+    let fixture = fixtures();
+    for data in fixture["requests"].as_array().unwrap() {
+        let decoded = ModRequest::decode(&data.to_string()).unwrap();
+        assert_eq!(serde_json::to_value(decoded).unwrap(), *data);
+    }
+    for data in fixture["replies"].as_array().unwrap() {
+        let decoded = ModReply::decode(&data.to_string()).unwrap();
+        assert_eq!(serde_json::to_value(&decoded).unwrap(), *data);
+        assert_eq!(
+            serde_json::from_str::<Value>(&decoded.encode().unwrap()).unwrap(),
+            *data
+        );
+    }
+    assert_eq!(
+        WorkScope {
+            catalog: "catalog".into(),
+            host: "host".into()
+        }
+        .notification_key(),
+        "streams.saved.ac2a86c465bdcd578f259810f69d9a156bc4e03eb8d37cb0d4cbec57fb42a6b5"
+    );
+}
+
+#[test]
+fn wire_rejects_unknown_omitted_duplicate_positional_and_multiple_result_fields() {
+    let fixture = fixtures();
+    let request = &fixture["requests"][0];
+    for broken in [
+        {
+            let mut data = request.clone();
+            data["version"] = json!(2);
+            data
+        },
+        {
+            let mut data = request.clone();
+            data["extra"] = json!(true);
+            data
+        },
+        {
+            let mut data = request.clone();
+            data["scope"] = json!(["catalog", "host"]);
+            data
+        },
+        {
+            let mut data = request.clone();
+            data["body"]["selections"] = json!([]);
+            data
+        },
+        {
+            let mut data = request.clone();
+            data["body"]["selections"][0]["extra"] = json!(true);
+            data
+        },
+    ] {
+        assert!(ModRequest::decode(&broken.to_string()).is_err(), "{broken}");
+    }
+    let encoded = request.to_string();
+    assert!(
+        ModRequest::decode(&encoded.replacen("\"version\":1", "\"version\":1,\"version\":1", 1))
+            .is_err()
+    );
+    assert!(ModRequest::decode(&(encoded + " {} ")).is_err());
+    let mut action = fixture["requests"][2].clone();
+    action["body"]["action"]
+        .as_object_mut()
+        .unwrap()
+        .remove("at");
+    assert!(ModRequest::decode(&action.to_string()).is_err());
+    for field in ["verified_endpoint", "viewer_projection", "warnings"] {
+        let mut data = fixture["replies"][0].clone();
+        data.as_object_mut().unwrap().remove(field);
+        assert!(ModReply::decode(&data.to_string()).is_err(), "{field}");
+    }
+    let mut data = fixture["replies"][0].clone();
+    data["result"]["error"] = json!({"kind":"unavailable","message":"second branch"});
+    assert!(ModReply::decode(&data.to_string()).is_err());
+}
+
+#[test]
+fn request_and_reply_byte_limits_fail_without_partial_output() {
+    assert!(ModRequest::decode(&" ".repeat(MOD_REQUEST_BYTES + 1)).is_err());
+    let mut reply = ModReply::decode(&fixtures()["replies"][0].to_string()).unwrap();
+    reply.warnings.push("x".repeat(MOD_REPLY_BYTES));
+    assert!(reply.encode().is_err());
+}

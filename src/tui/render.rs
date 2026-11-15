@@ -1,6 +1,5 @@
 use std::collections::BTreeMap;
 
-use percent_encoding::percent_decode_str;
 use ratatui::{
     buffer::Buffer,
     layout::Rect,
@@ -133,38 +132,7 @@ pub(super) fn buffer_line(buffer: &Buffer, y: u16) -> String {
 }
 
 pub(super) fn web_url(value: &str) -> Option<Url> {
-    if value.chars().any(|c| {
-        c.is_whitespace()
-            || c == '\\'
-            || matches!(
-                get_general_category(c),
-                GeneralCategory::Control | GeneralCategory::Format
-            )
-    }) {
-        return None;
-    }
-    // decodeURIComponent rejects malformed escapes and invalid UTF-8; percent_decode
-    // deliberately does not reject malformed escapes, so check the escape shape first.
-    let bytes = value.as_bytes();
-    for (i, &byte) in bytes.iter().enumerate() {
-        if byte == b'%'
-            && !(bytes.get(i + 1).is_some_and(u8::is_ascii_hexdigit)
-                && bytes.get(i + 2).is_some_and(u8::is_ascii_hexdigit))
-        {
-            return None;
-        }
-    }
-    let decoded = percent_decode_str(value).decode_utf8().ok()?;
-    if decoded.chars().any(|c| {
-        matches!(
-            get_general_category(c),
-            GeneralCategory::Control | GeneralCategory::Format
-        )
-    }) {
-        return None;
-    }
-    let url = Url::parse(value).ok()?;
-    (matches!(url.scheme(), "http" | "https") && url.host_str().is_some()).then_some(url)
+    crate::web_url::parse_web_url(value)
 }
 fn artifact_number(url: &Url, pr: bool) -> Option<&str> {
     let parts: Vec<_> = url.path_segments()?.collect();

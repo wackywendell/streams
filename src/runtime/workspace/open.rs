@@ -70,11 +70,46 @@ impl WorkspaceRuntime<'_> {
                         .all(|(key, value)| observed.get(key) == Some(value))
                 })
         });
+        use crate::integration::{
+            Access, ConversationId, SessionOpenResult, WantedConversation, classify_open,
+        };
+        let wanted: Vec<_> = sessions
+            .iter()
+            .map(|selected| WantedConversation {
+                conversation: ConversationId::from(selected.session),
+                locator: selected.locator.map(Path::to_path_buf),
+            })
+            .collect();
+        let requested: Vec<_> = sessions
+            .iter()
+            .zip(&wanted)
+            .map(|(selected, wanted)| (selected.session.id.clone(), wanted.conversation.clone()))
+            .collect();
+        let scope = crate::integration::WorkScope {
+            catalog: self.catalog_source.into(),
+            host: self.host_id.into(),
+        };
+        let execution = snapshot.work_execution(
+            client.endpoint().identity(),
+            scope.clone(),
+            &stream.id,
+            &wanted,
+        );
+        let (_, mut classified) = classify_open(
+            &client.opening_support(),
+            &requested,
+            Access::Available { value: &execution },
+        )?;
+        let mut outcomes = classified.clone();
         let mut launches = Vec::new();
         let mut skipped = Vec::new();
         for selected in sessions {
-            let live = running(snapshot, selected);
-            if !live.is_empty() {
+            let classification = classified.remove(&selected.session.id);
+            if matches!(
+                classification,
+                Some(SessionOpenResult::AlreadyRunning { .. })
+            ) {
+                let live = running(snapshot, selected);
                 let locations = live
                     .iter()
                     .map(|agent| {
@@ -88,6 +123,17 @@ impl WorkspaceRuntime<'_> {
                 });
                 continue;
             }
+            match classification {
+                Some(SessionOpenResult::Skipped { reason }) => {
+                    skipped.push(SkippedSession {
+                        session_id: selected.session.id.clone(),
+                        reason,
+                    });
+                    continue;
+                }
+                None => {}
+                _ => unreachable!("pure classification only reuses or skips"),
+            }
             let prepared = (|| {
                 let locator = selected
                     .locator
@@ -99,28 +145,19 @@ impl WorkspaceRuntime<'_> {
             })();
             match prepared {
                 Ok(launch) => launches.push(launch),
-                Err(error) => skipped.push(SkippedSession {
-                    session_id: selected.session.id.clone(),
-                    reason: error.to_string(),
-                }),
+                Err(error) => {
+                    outcomes.insert(
+                        selected.session.id.clone(),
+                        SessionOpenResult::Skipped {
+                            reason: error.to_string(),
+                        },
+                    );
+                    skipped.push(SkippedSession {
+                        session_id: selected.session.id.clone(),
+                        reason: error.to_string(),
+                    });
+                }
             }
-        }
-        if let Some(workspace) = existing.filter(|_| launches.is_empty()) {
-            if cwd.is_some() {
-                let selected = sessions.first().map(|selected| selected.session);
-                self.remember(
-                    stream,
-                    selected,
-                    &self.directory(stream, selected, cwd)?,
-                    false,
-                )?;
-            }
-            check_cancelled(cancelled)?;
-            client.focus(&self.reference(&workspace.id)?)?;
-            let mut result = self.result(stream, &workspace.id, None, true)?;
-            result.unavailable = skipped.clone();
-            result.skipped = skipped;
-            return Ok(result);
         }
         let directory = match launches.first() {
             Some((_, _, directory)) => directory.clone(),
@@ -130,63 +167,82 @@ impl WorkspaceRuntime<'_> {
                 cwd,
             )?,
         };
-        let environment = native_environment(&stream.id, self.environment)?;
+        let reused = existing.is_some();
+        let environment = if reused && launches.is_empty() {
+            if cwd.is_some() {
+                self.remember(
+                    stream,
+                    sessions.first().map(|selected| selected.session),
+                    &directory,
+                    false,
+                )?;
+            }
+            BTreeMap::new()
+        } else {
+            native_environment(&stream.id, self.environment)?
+        };
         for (session, _, directory) in &launches {
             self.remember(stream, Some(session), directory, cwd.is_none())?;
         }
-        let mut root = None;
-        let workspace = match existing {
-            Some(workspace) => workspace.id.clone(),
-            None => {
-                self.remember(stream, None, &directory, cwd.is_none())?;
-                check_cancelled(cancelled)?;
-                let created = client.create_native(&CreateWorkspace {
-                    title: stream.title.clone(),
-                    cwd: directory,
-                    environment: environment.clone(),
-                })?;
-                check_cancelled(cancelled)?;
-                client.card_request(
-                    "workspace.report_metadata",
-                    serde_json::json!({
-                        "workspace_id":created.workspace.reference.native_id,
-                        "source":"streams", "tokens":tokens,
-                    }),
-                    Some("ok"),
-                    true,
-                )?;
-                root = Some((created.tab, created.root_pane));
-                created.workspace.reference.native_id
-            }
-        };
-        let mut restored = Vec::new();
-        for (session, command, directory) in launches {
-            check_cancelled(cancelled)?;
-            let (_, pane) = match root.take() {
-                Some(root) => root,
-                None => client.create_tab(
-                    &self.reference(&workspace)?,
-                    &directory,
-                    &environment,
-                    None,
-                )?,
-            };
-            check_cancelled(cancelled)?;
-            let name = format!(
-                "streams-{}",
-                &uuid::Uuid::new_v4().simple().to_string()[..24]
-            );
-            client.start_agent(
-                &pane,
-                &name,
-                command.harness().as_ref(),
-                &command.argv()[1..],
-            )?;
-            restored.push(session.id.clone());
+        if !reused {
+            self.remember(stream, None, &directory, cwd.is_none())?;
         }
-        check_cancelled(cancelled)?;
-        client.focus(&self.reference(&workspace)?)?;
-        let mut result = self.result(stream, &workspace, None, existing.is_some())?;
+        use crate::integration::{
+            LaunchItem, NativeRef, PreparedOpen, SpaceDecision, SpaceEvidence, VerifiedLaunch,
+            complete_open,
+        };
+        let restored = launches
+            .iter()
+            .map(|(session, _, _)| session.id.clone())
+            .collect();
+        let mut launches: Vec<_> = launches
+            .into_iter()
+            .map(|(session, command, directory)| {
+                LaunchItem::Conversation(VerifiedLaunch::from_verified(
+                    session,
+                    command,
+                    directory,
+                    environment.clone(),
+                ))
+            })
+            .collect();
+        if sessions.is_empty() && !reused {
+            launches.push(LaunchItem::Shell {
+                cwd: directory.clone(),
+            });
+        }
+        let space = match existing {
+            Some(workspace) => {
+                let reference = self.reference(&workspace.id)?;
+                SpaceDecision::Reuse {
+                    space: NativeRef {
+                        adapter: reference.frontend,
+                        endpoint: reference.endpoint,
+                        key: reference.native_id,
+                    },
+                }
+            }
+            None => SpaceDecision::Create {
+                title: stream.title.clone(),
+                cwd: directory,
+            },
+        };
+        let plan = PreparedOpen {
+            stream: stream.id.clone(),
+            space,
+            launches,
+            adopt: vec![],
+            focus: true,
+        };
+        let submitted = client.execute_prepared_open(&plan, &scope, &environment, cancelled);
+        let report = complete_open(plan, submitted.effects, outcomes);
+        if let Some(error) = submitted.error {
+            return Err(error.into());
+        }
+        let SpaceEvidence::Known { value: workspace } = report.presentation.space else {
+            return Err(invalid("Herdr did not confirm a workspace"));
+        };
+        let mut result = self.result(stream, &workspace.key, None, reused)?;
         result.restored = restored;
         result.unavailable = skipped.clone();
         result.skipped = skipped;
@@ -208,6 +264,25 @@ impl WorkspaceRuntime<'_> {
         let BuiltinFrontend::Cmux(client) = self.frontend()? else {
             unreachable!("selected CMUX")
         };
+        let requested: Vec<_> = sessions
+            .iter()
+            .map(|selected| {
+                (
+                    selected.session.id.clone(),
+                    crate::integration::ConversationId::from(selected.session),
+                )
+            })
+            .collect();
+        let (_, classified) = crate::integration::classify_open(
+            &client.opening_support(),
+            &requested,
+            crate::integration::Access::Unsupported,
+        )?;
+        if let Some(crate::integration::SessionOpenResult::Skipped { reason }) =
+            classified.into_values().next()
+        {
+            return Err(invalid(reason));
+        }
         let selected = sessions.first();
         let command = selected
             .map(|selected| {
@@ -227,23 +302,44 @@ impl WorkspaceRuntime<'_> {
             &directory,
             cwd.is_none(),
         )?;
-        check_cancelled(cancelled)?;
-        // CMUX has no observable Stream marker. Create explicitly rather than
-        // remembering an address or inferring a match from its title.
-        let workspace = client.create_session(
-            &CreateWorkspace {
+        let environment = native_environment(&stream.id, self.environment)?;
+        use crate::integration::{
+            LaunchItem, PreparedOpen, SpaceDecision, SpaceEvidence, VerifiedLaunch, complete_open,
+        };
+        let launches = match (selected, command) {
+            (Some(selected), Some(command)) => {
+                vec![LaunchItem::Conversation(VerifiedLaunch::from_verified(
+                    selected.session,
+                    command,
+                    directory.clone(),
+                    environment.clone(),
+                ))]
+            }
+            _ => vec![LaunchItem::Shell {
+                cwd: directory.clone(),
+            }],
+        };
+        let plan = PreparedOpen {
+            stream: stream.id.clone(),
+            space: SpaceDecision::Create {
                 title: stream.title.clone(),
                 cwd: directory,
-                environment: native_environment(&stream.id, self.environment)?,
             },
-            command
-                .as_ref()
-                .map(|command| command.command_text())
-                .as_deref(),
-        )?;
+            launches,
+            adopt: vec![],
+            focus: true,
+        };
+        let submitted = client.execute_prepared_open(&plan, &environment, cancelled);
+        let report = complete_open(plan, submitted.effects, BTreeMap::new());
+        if let Some(error) = submitted.error {
+            return Err(error.into());
+        }
+        let SpaceEvidence::Known { value: workspace } = report.presentation.space else {
+            return Err(invalid("CMUX did not confirm a workspace"));
+        };
         let mut result = self.result(
             stream,
-            &workspace.reference.native_id,
+            &workspace.key,
             selected.map(|selected| selected.session.id.as_str()),
             false,
         )?;

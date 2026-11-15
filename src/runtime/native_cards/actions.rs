@@ -166,6 +166,9 @@ impl NativeCardEngine {
         else {
             return Ok(());
         };
+        self.follow_observed_display(card)
+    }
+    pub(super) fn follow_observed_display(&mut self, card: HerdrInventoryPane) -> Result<()> {
         let reply = self.call("pane.move", json!({"pane_id":card.pane.id,"destination":{"type":"tab",
             "tab_id":self.owner_pane.pane.tab_id,"target_pane_id":self.owner_pane.pane.id,"split":"down"},"focus":false}), "pane_move", true)?;
         let pane = pane(&reply["move_result"]["pane"])?;

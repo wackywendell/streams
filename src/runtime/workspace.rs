@@ -18,7 +18,7 @@ use super::{
 };
 use crate::{
     frontend::{
-        CreateWorkspace, FrontendId, WorkspaceFrontend, WorkspaceRef,
+        FrontendId, WorkspaceRef,
         herdr::{HerdrAgent, HerdrNativeSnapshot},
     },
     model::{Session, Stream},
@@ -180,24 +180,10 @@ fn running<'a>(
     snapshot: &'a HerdrNativeSnapshot,
     selected: &SelectedConversation<'_>,
 ) -> Vec<&'a HerdrAgent> {
-    snapshot
-        .topology()
-        .agents
-        .iter()
-        .filter(|agent| {
-            let metadata = &agent.native["agent_session"];
-            agent.native["agent"] == selected.session.harness
-                && metadata["agent"] == selected.session.harness
-                && match metadata["kind"].as_str() {
-                    Some("id") => metadata["value"] == selected.session.harness_session_id,
-                    Some("path") => selected
-                        .locator
-                        .and_then(Path::to_str)
-                        .is_some_and(|path| metadata["value"] == path),
-                    _ => false,
-                }
-        })
-        .collect()
+    snapshot.matching_agents(&crate::integration::WantedConversation {
+        conversation: crate::integration::ConversationId::from(selected.session),
+        locator: selected.locator.map(Path::to_path_buf),
+    })
 }
 
 fn check_cancelled(cancelled: &AtomicBool) -> Result<()> {

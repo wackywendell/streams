@@ -55,9 +55,9 @@ test('startup awaits sync; shutdown is awaited, best effort and idempotent witho
 });
 
 test('a late lifecycle failure cannot notify or append into a replacement conversation',async()=>{
- let finish, calls=0;
- const f=hooks({sync:async()=>++calls===1?new Promise(resolve=>finish=resolve):local});
- const previous=f.handlers.get('session_start')({},f.ctx);
+ let finish, calls=0,entered;const started=new Promise(resolve=>entered=resolve);
+ const f=hooks({sync:async()=>{if(++calls!==1)return local;entered();return new Promise(resolve=>finish=resolve);}});
+ const previous=f.handlers.get('session_start')({},f.ctx);await started;
  const next={...f.ctx,sessionManager:{getSessionId:()=> 'replacement'}};
  await f.handlers.get('session_start')({},next);
  finish({...local,sharing:'failed',detail:'old startup failed'});await previous;
@@ -77,12 +77,12 @@ test('shutdown cancels in-flight inference, never adds a summary, and retains sy
 
 test('shutdown retires a pending startup before awaiting its own diagnostic result',async()=>{
  for(const reject of [false,true]) {
-  let finishStart,finishShutdown,calls=0;
+  let finishStart,finishShutdown,calls=0,entered;const started=new Promise(resolve=>entered=resolve);
   const f=hooks({sync:()=>new Promise((resolve,rejectStart)=>{
-   if(++calls===1)finishStart=()=>reject?rejectStart(Error('stale start error')):resolve({...local,sharing:'failed',detail:'stale start result'});
+   if(++calls===1){finishStart=()=>reject?rejectStart(Error('stale start error')):resolve({...local,sharing:'failed',detail:'stale start result'});entered();}
    else finishShutdown=resolve;
   })});
-  const start=f.handlers.get('session_start')({},f.ctx);
+  const start=f.handlers.get('session_start')({},f.ctx);await started;
   const shutdown=f.handlers.get('session_shutdown')({}, {...f.ctx});
   finishStart();await start;assert.deepEqual(f.entries,[]);assert.deepEqual(f.warnings,[]);
   finishShutdown({...local,sharing:'blocked',detail:'current shutdown result'});await shutdown;
@@ -97,8 +97,9 @@ test('a replacement startup retires an old shutdown completion but tree changes 
  const next={...f.ctx,sessionManager:{...f.ctx.sessionManager,getSessionId:()=> 'next'}};
  await f.handlers.get('session_start')({},next);
  finish({...local,sharing:'failed'});await shutdown;assert.deepEqual(f.entries,[]);
- let complete;const g=hooks({sync:()=>new Promise(resolve=>complete=resolve)});
- const start=g.handlers.get('session_start')({},g.ctx);
+ let complete,entered;const started=new Promise(resolve=>entered=resolve);
+ const g=hooks({sync:()=>new Promise(resolve=>{complete=resolve;entered();})});
+ const start=g.handlers.get('session_start')({},g.ctx);await started;
  g.handlers.get('session_tree')({}, {...g.ctx});complete({...local,sharing:'failed',detail:'live transport failure'});await start;
  assert.equal(g.entries.length,1);assert.match(g.warnings[0].text,/live transport failure/);
 });

@@ -23,6 +23,281 @@ use std::sync::{
     atomic::{AtomicBool, Ordering},
 };
 
+/// Work-query evidence from one retained Herdr snapshot; no foreground check is implied.
+pub struct HerdrWorkExecution<'a> {
+    snapshot: &'a HerdrNativeSnapshot,
+    endpoint: EndpointId,
+    scope: crate::integration::WorkScope,
+    stream: &'a str,
+    wanted: &'a [crate::integration::WantedConversation],
+}
+impl HerdrNativeSnapshot {
+    pub fn work_execution<'a>(
+        &'a self,
+        endpoint: EndpointId,
+        scope: crate::integration::WorkScope,
+        stream: &'a str,
+        wanted: &'a [crate::integration::WantedConversation],
+    ) -> HerdrWorkExecution<'a> {
+        HerdrWorkExecution {
+            snapshot: self,
+            endpoint,
+            scope,
+            stream,
+            wanted,
+        }
+    }
+    pub fn matching_agents<'a>(
+        &'a self,
+        wanted: &crate::integration::WantedConversation,
+    ) -> Vec<&'a HerdrAgent> {
+        self.topology()
+            .agents
+            .iter()
+            .filter(|agent| {
+                let metadata = &agent.native["agent_session"];
+                agent.native["agent"] == wanted.conversation.harness
+                    && metadata["agent"] == wanted.conversation.harness
+                    && match metadata["kind"].as_str() {
+                        Some("id") => metadata["value"] == wanted.conversation.native_id,
+                        Some("path") => wanted
+                            .locator
+                            .as_deref()
+                            .and_then(std::path::Path::to_str)
+                            .is_some_and(|path| metadata["value"] == path),
+                        _ => false,
+                    }
+            })
+            .collect()
+    }
+}
+impl crate::integration::ExecutionSnapshot for HerdrWorkExecution<'_> {
+    fn presence(
+        &self,
+        conversation: &crate::integration::ConversationId,
+    ) -> crate::integration::Presence {
+        use crate::integration::{NativeRef, NonEmpty, Presence};
+        let Some(wanted) = self
+            .wanted
+            .iter()
+            .find(|wanted| &wanted.conversation == conversation)
+        else {
+            return Presence::Unknown {
+                reason: "conversation was not part of the retained work query".into(),
+            };
+        };
+        let locations: Vec<_> = self
+            .snapshot
+            .matching_agents(wanted)
+            .into_iter()
+            .map(|agent| NativeRef {
+                adapter: FrontendId("herdr".into()),
+                endpoint: self.endpoint.clone(),
+                key: agent.pane_id.clone(),
+            })
+            .collect();
+        if locations.is_empty() {
+            Presence::Absent
+        } else {
+            Presence::Running {
+                locations: NonEmpty::try_from(locations).expect("observed locations are nonempty"),
+            }
+        }
+    }
+    fn verified_terminals(
+        &self,
+        conversation: &crate::integration::ConversationId,
+    ) -> Vec<crate::integration::NativeRef> {
+        match self.presence(conversation) {
+            crate::integration::Presence::Running { locations } => locations.into_vec(),
+            _ => vec![],
+        }
+    }
+    fn stream_terminals(&self, stream: &str) -> Vec<crate::integration::NativeRef> {
+        if stream != self.stream {
+            return vec![];
+        }
+        let tokens = crate::runtime::native_markers::stream_tokens(
+            &self.scope.catalog,
+            &self.scope.host,
+            stream,
+        );
+        self.snapshot
+            .topology()
+            .panes
+            .iter()
+            .filter(|pane| {
+                self.snapshot
+                    .workspace_tokens(&pane.pane.workspace_id)
+                    .is_some_and(|observed| {
+                        tokens
+                            .iter()
+                            .all(|(key, value)| observed.get(key) == Some(value))
+                    })
+            })
+            .map(|pane| crate::integration::NativeRef {
+                adapter: FrontendId("herdr".into()),
+                endpoint: self.endpoint.clone(),
+                key: pane.pane.id.clone(),
+            })
+            .collect()
+    }
+    fn foreground_conversation(
+        &self,
+        _: &crate::integration::NativeRef,
+    ) -> crate::integration::ForegroundConversation {
+        crate::integration::ForegroundConversation::Unknown {
+            reason: "foreground was not inspected by this work query".into(),
+        }
+    }
+}
+
+impl HerdrClient {
+    /// Apply prepared inputs only: no catalog reads, directory selection or native discovery.
+    /// Herdr uses pane IDs as portable terminal locations, including replies without terminal_id.
+    pub fn execute_prepared_open(
+        &self,
+        plan: &crate::integration::PreparedOpen,
+        scope: &crate::integration::WorkScope,
+        environment: &BTreeMap<String, String>,
+        cancelled: &AtomicBool,
+    ) -> PreparedOpenOutcome {
+        use crate::integration::*;
+        let mut effects = unattempted_open(plan);
+        let check = || {
+            if cancelled.load(Ordering::Acquire) {
+                Err(FrontendError::invalid("native operation cancelled"))
+            } else {
+                Ok(())
+            }
+        };
+        let reference = |key: &str| NativeRef {
+            adapter: self.frontend_id(),
+            endpoint: self.endpoint_id(),
+            key: key.into(),
+        };
+        let result = (|| -> Result<(), FrontendError> {
+            if !plan.adopt.is_empty() {
+                return Err(FrontendError::invalid("Herdr adoption is unsupported"));
+            }
+            let mut root = None;
+            let workspace = match &plan.space {
+                SpaceDecision::Reuse { space } => {
+                    let workspace = WorkspaceRef {
+                        frontend: space.adapter.clone(),
+                        endpoint: space.endpoint.clone(),
+                        native_id: space.key.clone(),
+                    };
+                    super::check_ref(self, &workspace)?;
+                    effects.presentation.space = SpaceEvidence::Known {
+                        value: space.clone(),
+                    };
+                    workspace
+                }
+                SpaceDecision::Create { title, cwd } => {
+                    let (initial_cwd, initial_environment) = match plan.launches.first() {
+                        Some(LaunchItem::Conversation(launch)) => {
+                            (launch.cwd(), launch.environment())
+                        }
+                        Some(LaunchItem::Shell { cwd }) => (cwd.as_path(), environment),
+                        None => (cwd.as_path(), environment),
+                    };
+                    if initial_cwd != cwd {
+                        return Err(FrontendError::invalid(
+                            "Herdr root cwd differs from the prepared launch",
+                        ));
+                    }
+                    check()?;
+                    let created = self
+                        .create_native_with_focus(
+                            &CreateWorkspace {
+                                title: title.clone(),
+                                cwd: cwd.clone(),
+                                environment: initial_environment.clone(),
+                            },
+                            plan.focus,
+                        )
+                        .inspect_err(|error| {
+                            effects.presentation.state = failed_presentation(error)
+                        })?;
+                    let workspace = created.workspace.reference;
+                    effects.presentation.space = SpaceEvidence::Known {
+                        value: reference(&workspace.native_id),
+                    };
+                    if matches!(plan.launches.first(), Some(LaunchItem::Shell { .. })) {
+                        effects.launches[0] = Effect::Applied {
+                            value: reference(&created.root_pane.id),
+                        };
+                    }
+                    root = Some(created.root_pane);
+                    check()?;
+                    self.card_request("workspace.report_metadata", json!({"workspace_id":workspace.native_id,
+                        "source":"streams", "tokens":crate::runtime::native_markers::stream_tokens(&scope.catalog, &scope.host, &plan.stream)}),
+                        Some("ok"), true).inspect_err(|error| effects.presentation.state = failed_presentation(error))?;
+                    workspace
+                }
+                SpaceDecision::None => {
+                    effects.presentation.state = PresentationState::Complete;
+                    return Ok(());
+                }
+                SpaceDecision::Unavailable { reason } => {
+                    return Err(FrontendError::invalid(reason));
+                }
+            };
+            for (index, launch) in plan.launches.iter().enumerate() {
+                check()?;
+                let (cwd, environment) = match launch {
+                    LaunchItem::Conversation(launch) => (launch.cwd(), launch.environment()),
+                    LaunchItem::Shell { cwd } => (cwd.as_path(), environment),
+                };
+                let pane = match root.take() {
+                    Some(pane) => pane,
+                    None => {
+                        self.create_tab(&workspace, cwd, environment, None)
+                            .inspect_err(|error| {
+                                effects.presentation.state = failed_presentation(error)
+                            })?
+                            .1
+                    }
+                };
+                check()?;
+                if let LaunchItem::Conversation(launch) = launch {
+                    let name = format!(
+                        "streams-{}",
+                        &uuid::Uuid::new_v4().simple().to_string()[..24]
+                    );
+                    self.start_agent(
+                        &pane,
+                        &name,
+                        launch.command().harness().as_ref(),
+                        &launch.command().argv()[1..],
+                    )
+                    .inspect_err(|error| effects.launches[index] = failed_launch(error))?;
+                }
+                effects.launches[index] = Effect::Applied {
+                    value: reference(&pane.id),
+                };
+            }
+            check()?;
+            if plan.focus {
+                self.focus(&workspace)
+                    .inspect_err(|error| effects.presentation.state = failed_presentation(error))?;
+            }
+            effects.presentation.state = PresentationState::Complete;
+            Ok(())
+        })();
+        if let Err(error) = &result
+            && let PresentationState::Incomplete { reason } = &mut effects.presentation.state
+        {
+            reason.clone_from(&error.message);
+        }
+        PreparedOpenOutcome {
+            effects,
+            error: result.err(),
+        }
+    }
+}
+
 /// The server's reported socket and optional native session namespace.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct HerdrEndpoint {
@@ -149,6 +424,14 @@ pub struct HerdrClient {
 }
 
 impl HerdrClient {
+    pub fn opening_support(&self) -> crate::integration::OpeningSupport {
+        use crate::integration::{LaunchLimit, OpeningMode, OpeningSupport, Placement};
+        OpeningSupport::known_harnesses(
+            OpeningMode::ReuseObserved,
+            LaunchLimit::Many,
+            Placement::RequiresSpace,
+        )
+    }
     /// The single protocol check rejects incompatible servers without
     /// updating or restarting them, and pins the endpoint for this process.
     pub fn connect(context: BTreeMap<String, String>, timeout: f64) -> Result<Self, FrontendError> {
@@ -423,13 +706,21 @@ impl HerdrClient {
         &self,
         request: &CreateWorkspace,
     ) -> Result<HerdrCreatedWorkspace, FrontendError> {
+        self.create_native_with_focus(request, true)
+    }
+
+    fn create_native_with_focus(
+        &self,
+        request: &CreateWorkspace,
+        focus: bool,
+    ) -> Result<HerdrCreatedWorkspace, FrontendError> {
         launch_args(request)?;
         let cwd = request
             .cwd
             .to_str()
             .ok_or_else(|| FrontendError::invalid("Herdr cwd is not UTF-8"))?;
         let params =
-            json!({"cwd":cwd,"label":request.title,"env":request.environment,"focus":true});
+            json!({"cwd":cwd,"label":request.title,"env":request.environment,"focus":focus});
         let mut op = Operation::default();
         let result = self.result(
             &mut op,

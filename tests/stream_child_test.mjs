@@ -133,7 +133,7 @@ for(const message of [
  {type:'response',id:1,code:0,value:{},notices:[]}, {type:'ready',protocol:2},
 ])test(`malformed protocol terminates the child: ${JSON.stringify(message)}`,async t=>{
  const f=fixture(t),child=await f.ready();if(typeof message==='string')child.stdout.write(message+'\n');else child.emitMessage(message);
- assert.equal(child.killed,true);assert.equal(f.launches.length,2);await f.ready();
+ assert.equal(child.killed,true);assert.equal(f.launches.length,1,'replacement waits for actual close');await tick();assert.equal(f.launches.length,2);await f.ready();
 });
 test('ready then malformed framing cannot dispatch a stale write into the replacement',async t=>{
  const f=fixture(t),request=f.manager.run({kind:'apply',request:{}});

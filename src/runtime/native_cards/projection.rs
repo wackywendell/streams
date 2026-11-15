@@ -22,9 +22,114 @@ impl Default for NameReport {
     }
 }
 
+enum ProjectionAction {
+    Metadata {
+        kind: &'static str,
+        id: String,
+        values: BTreeMap<String, Option<String>>,
+    },
+    Rename {
+        kind: &'static str,
+        id: String,
+        title: String,
+    },
+    Follow(HerdrInventoryPane),
+}
+struct CardProjection {
+    actions: Vec<ProjectionAction>,
+    report: NameReport,
+}
+
 impl NativeCardEngine {
+    pub fn lifecycle(
+        &mut self,
+        event: crate::integration::LifecycleEvent,
+    ) -> Result<crate::integration::LifecycleReport> {
+        use crate::integration::{
+            CompanionDisposition, CompanionIntent, InactiveReason, LifecycleEvent, LifecycleReport,
+            NativeStatus, ProjectionResult,
+        };
+        if event == LifecycleEvent::Stopping {
+            return Ok(LifecycleReport {
+                native: NativeStatus::Inactive {
+                    reason: InactiveReason::Stopped,
+                },
+                projection: ProjectionResult {
+                    companion: None,
+                    desired_pi_name: None,
+                    warnings: vec![],
+                },
+            });
+        }
+        let intent = event.companion_intent(self.config.startup_automatic());
+        let desired = self.desired_projection(intent);
+        let plan = self.prepare_projection(&desired)?;
+        self.apply_card_projection(plan)?;
+        let companion = if intent == CompanionIntent::Show {
+            Some(match self.open_display(OpenMode::Explicit)? {
+                DisplayOutcome::Opened => CompanionDisposition::Opened,
+                DisplayOutcome::Existing => CompanionDisposition::Existing,
+                DisplayOutcome::Suppressed => CompanionDisposition::Suppressed,
+            })
+        } else if matches!(event, LifecycleEvent::Started | LifecycleEvent::NewlyBound) {
+            Some(if self.display.is_some() {
+                CompanionDisposition::Existing
+            } else {
+                CompanionDisposition::Suppressed
+            })
+        } else {
+            None
+        };
+        Ok(LifecycleReport {
+            native: NativeStatus::Active,
+            projection: ProjectionResult {
+                companion,
+                desired_pi_name: self
+                    .config
+                    .session_naming()
+                    .then(|| self.card.session().title.clone()),
+                warnings: vec![],
+            },
+        })
+    }
+
     pub fn project(&mut self) -> Result<NameReport> {
-        let owner = self.owner_pane.clone();
+        let desired = self.desired_projection(crate::integration::CompanionIntent::Keep);
+        let plan = self.prepare_projection(&desired)?;
+        self.apply_card_projection(plan)
+    }
+
+    fn desired_projection(
+        &self,
+        companion: crate::integration::CompanionIntent,
+    ) -> crate::integration::DesiredProjection {
+        use crate::frontend::WorkspaceFrontend;
+        use crate::integration::{AssociationIntent, DesiredProjection, NativeRef};
+        let space = NativeRef {
+            adapter: self.client.frontend_id(),
+            endpoint: self.client.endpoint_id(),
+            key: self.owner_pane.pane.workspace_id.clone(),
+        };
+        DesiredProjection::for_session(
+            self.card.stream(),
+            self.card.session(),
+            space.clone(),
+            AssociationIntent::Bind { space },
+            self.config.workspace_naming,
+            self.config.tab_naming,
+            companion,
+        )
+    }
+
+    fn prepare_projection(
+        &self,
+        desired: &crate::integration::DesiredProjection,
+    ) -> Result<CardProjection> {
+        use crate::integration::{AssociationIntent, NameIntent};
+        let [session] = desired.sessions.as_slice() else {
+            return Err(invalid("card projection requires one Session"));
+        };
+        let owner = &self.owner_pane;
         let workspace = self
             .snapshot
             .topology()
@@ -39,13 +144,10 @@ impl NativeCardEngine {
             .iter()
             .find(|tab| tab.id == owner.pane.tab_id)
             .expect("located tab");
-        let workspace_title = self.card.stream().title.clone();
-        let session_title = self.card.session().title.clone();
-        let card_title = self.card_caption();
         let association = stream_tokens(
             &self.card.scope().catalog_source,
             &self.card.scope().host_id,
-            &self.card.scope().stream_id,
+            &desired.stream,
         );
         let current = self
             .snapshot
@@ -59,14 +161,18 @@ impl NativeCardEngine {
                 "workspace markers name another Stream, catalog or host",
             ));
         }
+        let binding = match &desired.association {
+            AssociationIntent::Keep => BTreeMap::new(),
+            AssociationIntent::Bind { .. } => association,
+        };
         let workspace_values = changed(
             current,
-            association
+            binding
                 .into_iter()
                 .map(|(key, value)| (key, Some(value)))
                 .chain([(
                     "strm_goal_short".into(),
-                    compact(self.card.stream().goal_short.as_deref()),
+                    compact(desired.stream_display.goal_short.as_deref()),
                 )]),
         );
         let session_values = changed(
@@ -74,92 +180,115 @@ impl NativeCardEngine {
                 .pane_tokens(&owner.pane.id)
                 .expect("Pi tokens"),
             [
-                (
-                    "strm_status".into(),
-                    Some(self.card.session().status.to_string()),
-                ),
+                ("strm_status".into(), Some(session.view.status.to_string())),
                 (
                     "strm_recap_short".into(),
-                    compact(self.card.session().recap_short.as_deref()),
+                    compact(session.view.recap_short.as_deref()),
                 ),
                 (
                     "strm_state_short".into(),
-                    compact(self.card.session().state_short.as_deref()),
+                    compact(session.view.state_short.as_deref()),
                 ),
                 (
                     "strm_remaining_short".into(),
-                    compact(self.card.session().remaining_short.as_deref()),
+                    compact(session.view.remaining_short.as_deref()),
                 ),
             ],
         );
         let report = NameReport {
-            workspace: if !self.config.workspace_naming {
-                NameOutcome::Disabled
-            } else if workspace.label == workspace_title {
-                NameOutcome::Unchanged
-            } else {
-                NameOutcome::Renamed
+            workspace: match &desired.stream_name {
+                NameIntent::LeaveUnchanged => NameOutcome::Disabled,
+                NameIntent::Set(title) if workspace.label == *title => NameOutcome::Unchanged,
+                NameIntent::Set(_) => NameOutcome::Renamed,
             },
-            tab: if !self.config.tab_naming {
-                NameOutcome::Disabled
-            } else if !self.snapshot.first_pane(&owner) {
-                NameOutcome::NotFirst
-            } else if tab.label.as_deref() == Some(&session_title) {
-                NameOutcome::Unchanged
-            } else {
-                NameOutcome::Renamed
+            tab: match &session.name {
+                NameIntent::LeaveUnchanged => NameOutcome::Disabled,
+                NameIntent::Set(_) if !self.snapshot.first_pane(owner) => NameOutcome::NotFirst,
+                NameIntent::Set(title) if tab.label.as_deref() == Some(title.as_str()) => {
+                    NameOutcome::Unchanged
+                }
+                NameIntent::Set(_) => NameOutcome::Renamed,
             },
         };
-        let caption = self
-            .display
-            .as_ref()
-            .filter(|pane| self.snapshot.pane_label(&pane.pane.id) != Some(&card_title))
-            .cloned();
-        if report.workspace == NameOutcome::Renamed {
-            config::validate_title(&workspace_title)?;
-        }
-        if caption.is_some() {
-            config::validate_title(&card_title)?;
-        }
-        if report.tab == NameOutcome::Renamed {
-            config::validate_title(&session_title)?;
-        }
-        // The complete comparison above is pure. Checked replies complete these
-        // actions; there are no confirmation reads or remembered projections.
+        let mut actions = vec![];
         for (kind, id, values) in [
             ("workspace", &owner.pane.workspace_id, workspace_values),
             ("pane", &owner.pane.id, session_values),
         ] {
             if !values.is_empty() {
-                self.call(
-                    if kind == "workspace" {
-                        "workspace.report_metadata"
-                    } else {
-                        "pane.report_metadata"
-                    },
-                    json!({format!("{kind}_id"):id,"source":"streams","tokens":values}),
-                    "ok",
-                    true,
-                )?;
+                actions.push(ProjectionAction::Metadata {
+                    kind,
+                    id: id.clone(),
+                    values,
+                });
             }
         }
-        if report.workspace == NameOutcome::Renamed {
-            self.rename(
-                "workspace",
-                &owner.pane.workspace_id,
-                workspace_title.clone(),
-            )?;
+        if let NameIntent::Set(title) = &desired.stream_name
+            && report.workspace == NameOutcome::Renamed
+        {
+            config::validate_title(title)?;
+            actions.push(ProjectionAction::Rename {
+                kind: "workspace",
+                id: owner.pane.workspace_id.clone(),
+                title: title.clone(),
+            });
         }
-        if report.tab == NameOutcome::Renamed {
-            self.rename("tab", &owner.pane.tab_id, session_title)?;
+        if let NameIntent::Set(title) = &session.name
+            && report.tab == NameOutcome::Renamed
+        {
+            config::validate_title(title)?;
+            actions.push(ProjectionAction::Rename {
+                kind: "tab",
+                id: owner.pane.tab_id.clone(),
+                title: title.clone(),
+            });
         }
-        if let Some(card) = caption {
-            self.rename("pane", &card.pane.id, card_title)?;
+        let caption = format!("{}: {}", desired.stream_display.title, session.view.title);
+        if let Some(card) = self
+            .display
+            .as_ref()
+            .filter(|card| self.snapshot.pane_label(&card.pane.id) != Some(caption.as_str()))
+        {
+            config::validate_title(&caption)?;
+            actions.push(ProjectionAction::Rename {
+                kind: "pane",
+                id: card.pane.id.clone(),
+                title: caption,
+            });
         }
-        self.follow_display()?;
-        Ok(report)
+        if let Some(card) = self
+            .display
+            .as_ref()
+            .filter(|card| card.pane.tab_id != owner.pane.tab_id)
+        {
+            actions.push(ProjectionAction::Follow(card.clone()));
+        }
+        Ok(CardProjection { actions, report })
+    }
+
+    fn apply_card_projection(&mut self, plan: CardProjection) -> Result<NameReport> {
+        for action in plan.actions {
+            match action {
+                ProjectionAction::Metadata { kind, id, values } => {
+                    self.call(
+                        if kind == "workspace" {
+                            "workspace.report_metadata"
+                        } else {
+                            "pane.report_metadata"
+                        },
+                        json!({format!("{kind}_id"):id,"source":"streams","tokens":values}),
+                        "ok",
+                        true,
+                    )?;
+                }
+                ProjectionAction::Rename { kind, id, title } => self.rename(kind, &id, title)?,
+                ProjectionAction::Follow(card) => self.follow_observed_display(card)?,
+            }
+        }
+        Ok(plan.report)
     }
 }
+
 fn changed(
     current: &Tokens,
     desired: impl IntoIterator<Item = (String, Option<String>)>,

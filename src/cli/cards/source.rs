@@ -41,37 +41,34 @@ impl ApplicationSource {
         &mut self,
         owner: &streams::frontend::herdr::HerdrInventoryPane,
     ) -> Result<CardRecords> {
-        let context = match self.context.take() {
-            Some(context) => context,
+        let missing = || CliError::message("native card requires an enrolled exact Pi Session");
+        let (stream, session, catalog_source) = match self.context.take() {
+            Some(context) => {
+                let (stream, session) = context.stream.zip(context.session).ok_or_else(missing)?;
+                (stream, session, context.catalog_source)
+            }
             None => {
-                let settings = self.app.config.load()?;
-                if settings.catalog_root != self.records.root() {
+                if self.app.config.load()?.catalog_root != self.records.root() {
                     return Err(CliError::message(
                         "catalog root setting changed during card read",
                     ));
                 }
-                self.app.context_from_records(
-                    &self.records,
-                    streams::agent::ContextRequest {
-                        harness: Harness::Pi,
-                        native_id: &self.native_session_id,
-                        stream_id: None,
-                        environment_stream_id: None,
-                        workspace_stream_id: None,
-                    },
-                    settings.naming,
-                )?
+                let application = application::integration::Streams::new(&self.records);
+                let (stream, session) = application
+                    .conversation_records(&streams::integration::ConversationId {
+                        harness: Harness::Pi.to_string(),
+                        native_id: self.native_session_id.clone(),
+                    })?
+                    .ok_or_else(missing)?;
+                (stream, session, application.scope().catalog.clone())
             }
         };
-        let (stream, session) = context.stream.zip(context.session).ok_or_else(|| {
-            CliError::message("native card requires an enrolled exact Pi Session")
-        })?;
         let owner = NativeOwnerObservation {
             pane_id: owner.pane.id.clone(),
             tab_id: owner.pane.tab_id.clone(),
             workspace_id: owner.pane.workspace_id.clone(),
         };
-        let records = CardRecords::new(stream, session, context.catalog_source, owner)
+        let records = CardRecords::new(stream, session, catalog_source, owner)
             .map_err(|error| CliError::message(error.to_string()))?;
         if self
             .expected_scope
@@ -159,34 +156,52 @@ impl ApplicationSource {
                 "document is not available in the selected checkout",
             ));
         };
-        let checkout = self
-            .app
-            .registry(self.records.host().as_str())?
-            .get(&selection.checkout_id)?;
-        if checkout.directory != selection.root
-            || !checkout.repository_urls.contains(&target.repository_url)
-            || std::fs::canonicalize(&selection.root)? != selection.root
-        {
-            return Err(CliError::message(
-                "selected checkout root or repository binding changed",
-            ));
-        }
-        let file = checkout.document(&target.document.path)?;
-        if &file != expected
-            || !std::fs::metadata(&file)?.is_file()
-            || std::fs::canonicalize(&file)? != file
-            || std::fs::canonicalize(&selection.root)? != selection.root
+        let facade = application::integration::Streams::admit(
+            &self.records,
+            &streams::integration::WorkScope {
+                catalog: target.scope.catalog_source.clone(),
+                host: target.scope.host_id.clone(),
+            },
+        )?;
+        let resolved = facade.resolve_saved_reference(
+            &streams::integration::Reference::Document {
+                stream: target.scope.stream_id.clone(),
+                document: streams::integration::DocumentKey {
+                    repository: target.document.repository.clone(),
+                    path: target.document.path.clone(),
+                },
+                viewing_session: target.scope.session_id.clone(),
+            },
+            &self.app.registry(self.records.host().as_str())?,
+            &self
+                .app
+                .locations(self.records.root(), self.records.host().as_str())?,
+        )?;
+        let streams::integration::ResolvedTarget::Document {
+            path: file,
+            checkout_id,
+            checkout_root,
+            ..
+        } = resolved
+        else {
+            unreachable!("document resolution");
+        };
+        if checkout_id != selection.checkout_id
+            || checkout_root != selection.root
+            || &file != expected
         {
             return Err(CliError::message(
                 "app-resolved document or checkout changed during resolution",
             ));
         }
-        let identity = target
-            .editor_identity()
-            .map_err(|e| CliError::message(e.to_string()))?;
         Ok(ResolvedEditor {
-            root: selection.root.clone(),
-            identity,
+            root: checkout_root,
+            identity: streams::tui::EditorIdentity {
+                catalog_source: facade.scope().catalog.clone(),
+                host_id: facade.scope().host.clone(),
+                checkout_id,
+                file,
+            },
         })
     }
 }

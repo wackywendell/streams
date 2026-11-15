@@ -59,6 +59,14 @@ run = "node --test tests/stream_child_test.mjs"
 description = "Run Pi native lifecycle and child counting tests without Rust"
 run = "node --test tests/stream_native_test.mjs tests/stream_child_test.mjs"
 
+[tasks."test:pi:hc-context"]
+description = "Exercise Pi Session state and helper retirement without native I/O"
+run = "node --test tests/stream_hc_lifecycle_test.mjs"
+
+[tasks."test:pi:hc-runtime"]
+description = "Opt-in selected Pi SDK runtime check; requires STREAMS_PI_SDK_ENTRY"
+run = "node --test tests/stream_hc_sdk_runtime_test.mjs"
+
 [tasks."test:pi:sync"]
 description = "Run isolated Pi catalog sync acceptance"
 depends = ["build"]

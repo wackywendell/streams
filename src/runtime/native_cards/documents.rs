@@ -35,6 +35,11 @@ impl NativeCardEngine {
         {
             return Err(invalid("document or checkout changed during resolution"));
         }
+        self.open_resolved_document(&target.document.path, resolved)
+    }
+
+    /// Native effects for an owner-resolved target; no saved-reference lookup.
+    pub fn open_resolved_document(&mut self, title: &str, resolved: ResolvedEditor) -> Result<()> {
         let key = json_digest(&(
             &resolved.identity.catalog_source,
             &resolved.identity.host_id,
@@ -91,17 +96,16 @@ impl NativeCardEngine {
             (editor, true)
         };
         let first = created || self.snapshot.first_pane(&editor);
-        let title = &target.document.path;
         let differs = self
             .snapshot
             .topology()
             .tabs
             .iter()
             .find(|tab| tab.id == editor.pane.tab_id)
-            .and_then(|tab| tab.label.as_ref())
+            .and_then(|tab| tab.label.as_deref())
             != Some(title);
         if self.config.tab_naming && first && differs {
-            self.rename("tab", &editor.pane.tab_id, title.clone())?;
+            self.rename("tab", &editor.pane.tab_id, title.into())?;
         }
         self.focus_tab(&editor.pane.tab_id)
     }

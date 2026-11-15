@@ -36,32 +36,36 @@ impl WorkspaceRuntime<'_> {
             self.remember(stream, Some(selected.session), &directory, false)?;
         }
         Ok(ResumeCommand {
-            stream_id: stream.id.clone(),
-            command,
-            cwd: directory,
+            launch: crate::integration::VerifiedLaunch::from_verified(
+                selected.session,
+                command,
+                directory,
+                BTreeMap::from([("STREAMS_STREAM_ID".into(), stream.id.clone())]),
+            ),
         })
     }
 }
 
 /// Prepared exact launch inputs. No saved native address or launch-history guard.
 pub struct ResumeCommand {
-    stream_id: String,
-    command: SessionCommand,
-    cwd: PathBuf,
+    launch: crate::integration::VerifiedLaunch,
 }
 impl ResumeCommand {
     pub fn command(&self) -> &SessionCommand {
-        &self.command
+        self.launch.command()
     }
     pub fn cwd(&self) -> &Path {
-        &self.cwd
+        self.launch.cwd()
+    }
+    pub fn into_verified(self) -> crate::integration::VerifiedLaunch {
+        self.launch
     }
     pub fn exec(self) -> Result<std::convert::Infallible> {
         use std::os::unix::process::CommandExt;
-        let error = std::process::Command::new(&self.command.argv()[0])
-            .args(&self.command.argv()[1..])
-            .current_dir(&self.cwd)
-            .env("STREAMS_STREAM_ID", &self.stream_id)
+        let error = std::process::Command::new(&self.launch.command().argv()[0])
+            .args(&self.launch.command().argv()[1..])
+            .current_dir(self.launch.cwd())
+            .envs(self.launch.environment())
             .exec();
         Err(error.into())
     }

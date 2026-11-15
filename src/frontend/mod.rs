@@ -5,7 +5,9 @@
 //! install plugins or retry uncertain effects.
 
 pub mod cmux;
+pub mod hc;
 pub mod herdr;
+mod socket_io;
 mod transport;
 
 use std::collections::BTreeMap;
@@ -14,7 +16,9 @@ use std::path::PathBuf;
 pub use transport::{CommandEvidence, CommandOutcome, FrontendError, NativeRequest};
 
 /// Extensible frontend identity. Third-party adapters may use their own IDs.
-#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash, serde::Serialize)]
+#[derive(
+    Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash, serde::Serialize, serde::Deserialize,
+)]
 #[serde(transparent)]
 pub struct FrontendId(pub String);
 
@@ -25,10 +29,14 @@ impl FrontendId {
     pub fn herdr() -> Self {
         Self("herdr".into())
     }
+    pub fn hc() -> Self {
+        Self("hc".into())
+    }
 }
 
 /// Adapter-defined endpoint identity; equality is exact, not GUI focus.
-#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+#[derive(Debug, Clone, PartialEq, Eq, Hash, serde::Serialize, serde::Deserialize)]
+#[serde(transparent)]
 pub struct EndpointId(pub String);
 
 /// A host-native workspace identity, valid only at the recorded endpoint.
@@ -45,6 +53,72 @@ pub struct Workspace {
     pub reference: WorkspaceRef,
     pub title: String,
     pub cwd: String,
+}
+
+/// One prepared submission. Legacy callers retain their established error response;
+/// the shared effects still describe accepted work and every unattempted input.
+pub struct PreparedOpenOutcome {
+    pub effects: crate::integration::OpenEffects,
+    pub error: Option<FrontendError>,
+}
+fn unattempted_open(plan: &crate::integration::PreparedOpen) -> crate::integration::OpenEffects {
+    use crate::integration::*;
+    OpenEffects {
+        launches: plan
+            .launches
+            .iter()
+            .map(|_| Effect::NotApplied {
+                reason: "not attempted after an earlier failure".into(),
+            })
+            .collect(),
+        adoptions: plan
+            .adopt
+            .iter()
+            .map(|terminal| AdoptionEffect {
+                terminal: terminal.clone(),
+                result: Effect::NotApplied {
+                    reason: "adoption is unsupported by this adapter".into(),
+                },
+            })
+            .collect(),
+        presentation: PresentationResult {
+            space: SpaceEvidence::None,
+            state: PresentationState::Incomplete {
+                reason: "opening did not complete".into(),
+            },
+        },
+        viewer_actions: vec![],
+    }
+}
+fn uncertain(error: &FrontendError) -> bool {
+    error
+        .commands
+        .iter()
+        .any(|command| command.outcome == CommandOutcome::Uncertain)
+}
+fn failed_launch(
+    error: &FrontendError,
+) -> crate::integration::Effect<crate::integration::NativeRef> {
+    if uncertain(error) {
+        crate::integration::Effect::Uncertain {
+            reason: error.message.clone(),
+        }
+    } else {
+        crate::integration::Effect::NotApplied {
+            reason: error.message.clone(),
+        }
+    }
+}
+fn failed_presentation(error: &FrontendError) -> crate::integration::PresentationState {
+    if uncertain(error) {
+        crate::integration::PresentationState::Uncertain {
+            reason: error.message.clone(),
+        }
+    } else {
+        crate::integration::PresentationState::Incomplete {
+            reason: error.message.clone(),
+        }
+    }
 }
 
 /// Creates a shell workspace only. Session launch belongs to the runtime.

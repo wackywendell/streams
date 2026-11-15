@@ -1,5 +1,5 @@
 use super::args::ArtifactCommand;
-use super::{App, CliError, Output, Result, application, json};
+use super::{App, CliError, Output, Result, application, json, runtime};
 use streams::{
     artifacts::{ArtifactKey, ArtifactRequest},
     model::Session,
@@ -209,10 +209,7 @@ impl App {
     }
 
     fn artifact_view(&self, reference: &str) -> Result<Output> {
-        use std::{
-            io::{IsTerminal, Write},
-            process::{Command, Stdio},
-        };
+        use std::io::IsTerminal;
         if !std::io::stdout().is_terminal() {
             return Err(CliError::message(
                 "artifact view requires a terminal; use artifact read for stdout",
@@ -230,31 +227,9 @@ impl App {
             opened.artifacts(),
             &ArtifactKey::parse(reference)?,
         )?;
-        // A secure pager receives bytes, never a writable catalog filename.
-        let mut pager = Command::new("less")
-            .arg("--")
-            .env("LESSSECURE", "1")
-            .env("LESS", "")
-            .env_remove("LESSOPEN")
-            .env_remove("LESSCLOSE")
-            .stdin(Stdio::piped())
-            .spawn()?;
-        let written = pager
-            .stdin
-            .take()
-            .expect("piped pager input")
-            .write_all(output.content.as_bytes());
-        let status = pager.wait()?;
-        if !status.success() {
-            return Err(CliError::message(format!(
-                "artifact viewer exited with {status}"
-            )));
-        }
-        if let Err(error) = written
-            && error.kind() != std::io::ErrorKind::BrokenPipe
-        {
-            return Err(error.into());
-        }
+        let program = runtime::launch::resolve_executable("less", &self.environment, &self.cwd)
+            .map_err(|error| CliError::message(error.to_string()))?;
+        super::pager::show(&program, output.content.as_bytes(), "artifact")?;
         Ok(Output::plain(json!({"viewed":reference}), String::new()))
     }
 }

@@ -2,6 +2,7 @@
 use super::*;
 use crate::{
     config::{CardMode, Config},
+    integration::ConversationId,
     model::Session,
 };
 use std::path::PathBuf;
@@ -16,16 +17,25 @@ pub struct CardSettings {
     path: PathBuf,
 }
 impl CardSettings {
-    pub fn new(config: &Config, catalog: &Path, host: &str, native_id: &str) -> Result<Self> {
+    pub fn new(
+        config: &Config,
+        catalog: &Path,
+        host: &str,
+        conversation: &ConversationId,
+    ) -> Result<Self> {
         text(host)?;
-        text(native_id)?;
+        text(&conversation.harness)?;
+        text(&conversation.native_id)?;
         Ok(Self {
             path: config
                 .runtime_state_dir_for(catalog)
                 .map_err(|error| invalid(error.to_string()))?
                 .join(host)
                 .join("card-settings")
-                .join(format!("{}.json", Session::id_for(host, "pi", native_id))),
+                .join(format!(
+                    "{}.json",
+                    Session::id_for(host, &conversation.harness, &conversation.native_id)
+                )),
         })
     }
     pub fn path(&self) -> &Path {
@@ -56,7 +66,16 @@ mod tests {
         )
         .unwrap();
         let store = |catalog: &str, native: &str| {
-            CardSettings::new(&config, &home.path().join(catalog), "host", native).unwrap()
+            CardSettings::new(
+                &config,
+                &home.path().join(catalog),
+                "host",
+                &ConversationId {
+                    harness: "pi".into(),
+                    native_id: native.into(),
+                },
+            )
+            .unwrap()
         };
         let first = store("catalog", "one");
         assert_eq!(first.mode().unwrap(), CardMode::Inherit);
@@ -65,6 +84,18 @@ mod tests {
         assert_eq!(store("catalog", "one").mode().unwrap(), CardMode::Manual);
         assert_eq!(store("catalog", "two").mode().unwrap(), CardMode::Inherit);
         assert_eq!(store("other", "one").mode().unwrap(), CardMode::Inherit);
+        let codex = CardSettings::new(
+            &config,
+            &home.path().join("catalog"),
+            "host",
+            &ConversationId {
+                harness: "codex".into(),
+                native_id: "one".into(),
+            },
+        )
+        .unwrap();
+        assert_ne!(first.path(), codex.path());
+        assert_eq!(codex.mode().unwrap(), CardMode::Inherit);
         first.set(CardMode::Automatic).unwrap();
         assert_eq!(first.mode().unwrap(), CardMode::Automatic);
         first.set(CardMode::Inherit).unwrap();

@@ -24,7 +24,14 @@ import { NativeController } from "./native.ts";
 import { StreamsChild } from "./child.ts";
 import type { NativeFactory } from "./native.ts";
 
-type Options = {agentDir?: string; cli?: StreamCli; infer?: typeof infer; settings?: ReportingSettings; native?: NativeFactory; child?: (ctx: ExtensionContext) => StreamsChild};
+type PiContextState = {
+ conversation: {harness: "pi"; native_id: string}; generation: number; session_file: string | null;
+ helper?: StreamsChild; ready: Promise<void>; retired: boolean; retire(): Promise<void>;
+};
+export type PiContextHolder = {generation: number; current?: PiContextState; retirement?: Promise<void>};
+const contextKey = Symbol.for("streams.pi.context");
+const processContext = ((globalThis as typeof globalThis & {[contextKey]?: PiContextHolder})[contextKey] ??= {generation:0});
+type Options = {agentDir?: string; cli?: StreamCli; infer?: typeof infer; settings?: ReportingSettings; native?: NativeFactory; child?: (ctx: ExtensionContext) => StreamsChild; contextState?: PiContextHolder};
 const result = (details: unknown) => ({content: [{type: "text" as const, text: JSON.stringify(details)}], details});
 function parseResetArgs(instructions: string): {auto: boolean; target: "all" | "session" | "stream"} | null {
  if (!instructions) return {auto: false, target: "all"};
@@ -45,37 +52,64 @@ export default function registerWorkCard(pi: ExtensionAPI, options: Options = {}
  let panelOpen = false;
  let shutdown: Promise<void> | undefined;
  let native: NativeController | undefined;
- let child: StreamsChild | undefined;
- let nativeRetirement: Promise<void> | undefined;
+ const holder: PiContextHolder = options.contextState ?? (options.cli || options.child || options.native ? {generation:0} : processContext);
+ let owned: PiContextState | undefined;
  let statusTimer: ReturnType<typeof setTimeout> | undefined;
  const clearStatusTimer = () => {if (statusTimer) {clearTimeout(statusTimer);statusTimer = undefined;}};
- function retireNative(): Promise<void> | undefined {
-  const previous = native;native = undefined;
-  if (previous) {
-   previous.stop();
-   nativeRetirement = Promise.all([nativeRetirement, previous.idle()]).then(() => {});
-  }
-  return nativeRetirement;
- }
  const states = new Map<string, CardState>();
  const warning = (error: unknown) => {scope.context?.ui.notify(`Streams — ${error instanceof Error ? error.message : String(error)}`, "warning");};
- const sessionChild = (ctx: ExtensionContext) => {
-  if (child) return child;
-  const fence = scope.fence();
-  return child = options.child?.(ctx) ?? new StreamsChild({sessionId:ctx.sessionManager.getSessionId(), cwd:ctx.cwd, env:{...process.env}, warning:message => {if (fence.live()) warning(message);}});
- };
- const cli = (ctx: ExtensionContext) => {
+ const current = (state: PiContextState, ctx: ExtensionContext) => holder.current === state && !state.retired && ctx.sessionManager.getSessionId() === state.conversation.native_id;
+ const sessionChild = (ctx: ExtensionContext, state: PiContextState) => state.helper ??= options.child?.(ctx) ?? new StreamsChild({sessionId:state.conversation.native_id, cwd:ctx.cwd, env:{...process.env}, warning:message => {if (current(state, ctx)) warning(message);}});
+ function useContext(ctx: ExtensionContext, restart = false): PiContextState {
+  const id = ctx.sessionManager.getSessionId(), file = ctx.sessionManager.getSessionFile?.() ?? null;
+  if (owned && (holder.current && holder.current !== owned || !restart && owned.retired && id === owned.conversation.native_id)) throw Error("Streams extension retired; Session changed");
+  if (!restart && owned && current(owned, ctx)) {
+   owned.session_file = file;scope.use(ctx);return owned;
+  }
+  const previous = holder.current;
+  if (owned && owned.conversation.native_id !== id) states.clear();
+  let retirement: Promise<void> | undefined;
+  const state: PiContextState = {conversation:{harness:"pi",native_id:id}, generation:++holder.generation, session_file:file, ready:Promise.resolve(), retired:false,
+   retire: () => {
+    if (retirement) return retirement;
+    state.retired = true;
+    const controller = native;native = undefined;
+    controller?.stop();clearStatusTimer();panelOpen = false;scope.reset(scope.context ?? ctx, true);
+    return retirement = (async () => {
+     try {await controller?.idle();} finally {await state.helper?.stop();state.helper = undefined;}
+    })();
+   },
+  };
+  holder.current = state;owned = state;
+  holder.retirement = Promise.all([holder.retirement, previous?.retire()]).then(() => {});
+  scope.reset(ctx);shutdown = undefined;
+  state.ready = holder.retirement.then(async () => {
+   if (!current(state, ctx)) return;
+   native = new NativeController({pi, ctx, current: () => current(state, ctx) ? scope.context : undefined, factory:options.native, warning,
+    child:options.cli ? undefined : sessionChild(ctx, state)});
+   try {await native.start();} catch(error) {if (current(state, ctx)) warning(error);}
+  });
+  void state.ready.catch(() => {});
+  return state;
+ }
+ const clientFor = (ctx: ExtensionContext, state: PiContextState) => {
   if (options.cli) return options.cli;
-  const run = sessionChild(ctx).run, fence = scope.fence();
+  const fence = scope.fence();
   return new StreamCli(ctx.cwd, async (request, options) => {
+   if (!current(state, ctx)) throw Error("Session changed before Streams request");
+   await state.ready;
+   if (!current(state, ctx)) throw Error("Session changed before Streams request");
    if (request.kind === "context" || request.kind === "enroll") {
     if (!fence.current()) throw Error("Session changed before catalog context");
     await native?.start();
     if (!fence.current()) throw Error("Session changed before catalog context");
    }
-   return run(request, options);
+   const outcome = await sessionChild(ctx, state).run(request, options);
+   if (!current(state, ctx)) throw Error("Session changed before Streams result");
+   return outcome;
   });
  };
+ const cli = (ctx: ExtensionContext) => clientFor(ctx, useContext(ctx));
  const receipt = (value: Receipt, quiet = false) => {
   const text = receiptText(value), hasWarning = receiptHasWarning(value);
   // Receipts do not enter model context or count as fresh user work.
@@ -98,12 +132,12 @@ export default function registerWorkCard(pi: ExtensionAPI, options: Options = {}
    else scope.context?.ui.setStatus("stream-reporting", undefined);
   },
  });
- async function sync(ctx: ExtensionContext, event: "start" | "shutdown"): Promise<void> {
+ async function sync(ctx: ExtensionContext, event: "start" | "shutdown", state: PiContextState): Promise<void> {
   const fence = scope.fence();
   let failure: {event: string; result?: unknown; error?: string} | undefined;
   let message: string | undefined;
   try {
-   const value = await cli(ctx).sync();
+   const value = await clientFor(ctx, state).sync();
    if (resultNeedsAttention(value)) failure = {event, result: value};
   } catch (error) {failure = {event, error: String(error)};message = error instanceof Error ? error.message : String(error);}
   if (failure && fence.live()) {
@@ -157,20 +191,22 @@ export default function registerWorkCard(pi: ExtensionAPI, options: Options = {}
   }
  }
  async function show(ctx: ExtensionContext): Promise<void> {
-  scope.use(ctx);
+  useContext(ctx);
+  const fence = scope.fence();
   if (!ctx.hasUI || ctx.mode !== "tui") {warning("The work card panel requires the interactive Pi terminal");return;}
   if (panelOpen) return;
   panelOpen = true;
   try {
    const catalog = await cli(ctx).context(ctx.sessionManager.getSessionId());
+   if (!fence.current()) return;
    if (!catalog.stream) {ctx.ui.notify("Streams — No work card attached. Use /streams attach to choose or create a Stream, or start meaningful work for automatic enrollment.", "info");return;}
    const key = JSON.stringify([ctx.sessionManager.getSessionId(), catalog.catalog_source, catalog.stream.id]);
    let state = states.get(key);if (!state) {state = {discussion: {input: "", messages: []}, edits: new Map()};states.set(key, state);}
    await openCard(ctx, cli(ctx), state, {receipt, discuss: () => discussion(ctx, state!), settings: () => configure(ctx), report: () => reporter.request(ctx), reset: (auto, target) => reporter.reset(ctx, auto, target)});
-  } catch(error) {warning(error);} finally {panelOpen = false;}
+  } catch(error) {if (fence.live()) warning(error);} finally {if (fence.live()) panelOpen = false;}
  }
  async function attach(ctx: ExtensionContext, args: {streamId?: string; title?: string; reason?: string}) {
-  scope.use(ctx);
+  useContext(ctx);
   if (!hasConversation(ctx.sessionManager)) throw Error("Start a conversation before attaching a work card.");
   const before = await cli(ctx).context(ctx.sessionManager.getSessionId());
   if (before.session) {return {status: "already-bound; membership moves/forks are not implemented", stream_id: before.session.stream_id};}
@@ -247,7 +283,7 @@ export default function registerWorkCard(pi: ExtensionAPI, options: Options = {}
    return matches.length ? matches : null;
   },
   handler: async (args, ctx) => {
-   scope.use(ctx);
+   useContext(ctx);
    const paneFence = scope.fence();
    const input = args.trim(), command = input.split(/\s+/, 1)[0], instructions = input.slice(command.length).trim();
    const resetParsed = command === "reset" ? parseResetArgs(instructions) : null;
@@ -309,33 +345,23 @@ export default function registerWorkCard(pi: ExtensionAPI, options: Options = {}
   },
  });
  registerLabTools(pi, {enabled: () => settings().debug_commands, execute: (operation, signal, ctx) => {
-  scope.use(ctx);
+  useContext(ctx);
   return reporter.exclusive(lifecycle => executeLab(operation, {root: join(agentDir, "stream-debug"), client: cli(ctx), runtime: ctx, current: ctx.sessionManager, helperRoot: join(agentDir, "stream-reporting-sessions")}, AbortSignal.any([signal, lifecycle])));
  }});
- registerArtifactTool(pi, ctx => {scope.use(ctx);return cli(ctx);});
- pi.registerTool({name: "stream_read", label: "Read work card", description: "Read typed durable catalog state and recorded contributions from persisted local records. No fetch, scratch notes or pending drafts.", parameters: Type.Object({}), async execute(_id, _args, _signal, _update, ctx) {scope.use(ctx);const catalog = await cli(ctx).context(ctx.sessionManager.getSessionId());return result(catalog);}});
- pi.registerTool({name: "checkpoint", label: "Report work card", description: "Request an immediate durable progress report. Local saves and publication are separate; this is not an approval draft.", parameters: Type.Object({instructions: Type.Optional(Type.String())}), async execute(_id, args, _signal, _update, ctx) {scope.use(ctx);settings();reporter.request(ctx, true, args.instructions);return result({status: "report-requested"});}});
+ registerArtifactTool(pi, ctx => {useContext(ctx);return cli(ctx);});
+ pi.registerTool({name: "stream_read", label: "Read work card", description: "Read typed durable catalog state and recorded contributions from persisted local records. No fetch, scratch notes or pending drafts.", parameters: Type.Object({}), async execute(_id, _args, _signal, _update, ctx) {useContext(ctx);const catalog = await cli(ctx).context(ctx.sessionManager.getSessionId());return result(catalog);}});
+ pi.registerTool({name: "checkpoint", label: "Report work card", description: "Request an immediate durable progress report. Local saves and publication are separate; this is not an approval draft.", parameters: Type.Object({instructions: Type.Optional(Type.String())}), async execute(_id, args, _signal, _update, ctx) {useContext(ctx);settings();reporter.request(ctx, true, args.instructions);return result({status: "report-requested"});}});
  pi.registerTool({name: "select_stream", label: "Attach initial Stream", description: "Ask the user to attach this unbound Pi conversation to an exact catalog stream ID. An enrolled conversation cannot switch; membership moves/forks are not implemented.", parameters: Type.Object({stream_id: Type.Optional(Type.String()), reason: Type.String()}), async execute(_id, args, _signal, _update, ctx) {return result(await attach(ctx, {streamId: args.stream_id, reason: args.reason}));}});
  pi.registerTool({name: "create_stream", label: "Create initial Stream", description: "Ask the user to create an initial durable Stream and enroll this conversation. Never switches existing membership or launches workspaces.", parameters: Type.Object({title: Type.String(), reason: Type.String()}), async execute(_id, args, _signal, _update, ctx) {return result(await attach(ctx, args));}});
  pi.on("session_start", async (_event, ctx) => {
   clearStatusTimer();ctx.ui.setStatus?.("stream-debug", undefined);
-  const retired = retireNative(), previousChild = child;child = undefined;shutdown = undefined;scope.reset(ctx);
-  const fence = scope.fence();
-  if (retired) await retired;
-  if (previousChild) await previousChild.stop();
-  if (!fence.current()) return;
-  native = new NativeController({pi, ctx, current: () => scope.context, factory:options.native, warning,
-   child:options.cli ? undefined : sessionChild(ctx)});
-  const starting = native.start();
-  if (starting) {
-   try {await starting;} catch(error) {if (fence.live()) warning(error);}
-   if (!fence.live()) return;
-  }
-  await sync(ctx, "start");
+  const state = useContext(ctx, true);
+  await state.ready;
+  if (current(state, ctx)) await sync(ctx, "start", state);
  });
  pi.on("session_info_changed", async (event, ctx) => {
-  if (scope.stopped || !event.name?.trim()) return;
-  scope.use(ctx);
+  if (!event.name?.trim()) return;
+  useContext(ctx);
   const fence = scope.fence();
   try {
    if (!settings().pi_name_edits) return;
@@ -346,21 +372,22 @@ export default function registerWorkCard(pi: ExtensionAPI, options: Options = {}
   } catch(error) {if (fence.current()) warning(`Pi name changed, but its Streams edit failed: ${String(error)}`);}
  });
  pi.on("agent_end", (event, ctx) => {
-  if (scope.stopped) return;
-  scope.use(ctx);
+  if (owned && holder.current !== owned) return;
+  useContext(ctx);
   if (!event.messages.some((message) => message.role === "assistant" && ["stop", "length"].includes(message.stopReason))) return;
   try {reporter.response(ctx);} catch(error) {warning(error);}
  });
- pi.on("session_tree", (_event, ctx) => {clearStatusTimer();ctx.ui.setStatus?.("stream-debug", undefined);scope.invalidate();});
+ pi.on("session_tree", (_event, ctx) => {if (owned && holder.current !== owned) return;useContext(ctx);clearStatusTimer();ctx.ui.setStatus?.("stream-debug", undefined);scope.invalidate();});
  pi.on("session_shutdown", (_event, ctx) => shutdown ??= (async () => {
+  const state = owned;
+  if (!state || !current(state, ctx)) return;
   clearStatusTimer();ctx.ui.setStatus?.("stream-debug", undefined);
-  const retired = retireNative();
-  scope.reset(ctx, true);
-  const fence = scope.fence();
+  native?.stop();scope.reset(ctx, true);
   // Flush already-saved catalog changes only, never infer a final summary.
-  const synchronization = sync(ctx, "shutdown"), retiringChild = child;
-  await Promise.all([synchronization, retired]);
-  await retiringChild?.stop();
-  if (fence.live()) {child = undefined;scope.context = undefined;}
+  try {await sync(ctx, "shutdown", state);} finally {
+   holder.retirement = state.retire();
+   await holder.retirement;
+   if (holder.current === state) {holder.current = undefined;scope.context = undefined;}
+  }
  })());
 }
