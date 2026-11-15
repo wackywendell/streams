@@ -678,7 +678,7 @@ fn source_registration_and_retirement_touch_only_the_helper_key() {
         started: format!("linux:{pid}"),
     };
     let processes = Processes(
-        [(10, 1), (30, 10), (40, 30), (41, 30)]
+        [(10, 1), (30, 10), (31, 10), (40, 30), (41, 30), (44, 31)]
             .into_iter()
             .map(|(pid, parent_pid)| {
                 (
@@ -756,8 +756,10 @@ fn source_registration_and_retirement_touch_only_the_helper_key() {
         (42, false, true),
         (43, false, false),
         (42, true, false),
+        (44, false, true),
     ] {
         let previous = PiSourceClaim {
+            sdk: if pid == 44 { key(31) } else { key(30) },
             helper: key(pid),
             ..claim.clone()
         };
