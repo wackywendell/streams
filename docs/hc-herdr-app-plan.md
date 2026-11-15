@@ -1,0 +1,106 @@
+# Remaining hc and herdr-app work
+
+The [integration design](hc-herdr-app-design.md) defines the target behavior. Commit `17043fa` contains a tested implementation checkpoint. Full native support remains incomplete. This plan separates that checkpoint, the remaining delivery work and the evidence still needed for acceptance.
+
+The author authorized staged code, documentation and tests. Installation, live catalog or layout changes, and live local or remote acceptance require separate authorization. New hc support targets Pi 1.5.2. Existing Herdr and cmux behavior and existing Claude and Codex saved-conversation behavior must remain supported.
+
+## Implemented checkpoint
+
+| Area | Implemented behavior | Remaining boundary |
+| --- | --- | --- |
+| Pi Session ownership | Process-scoped identity and generation checks, obsolete-result rejection, same-ID draft retention and helper close-before-replacement | Native claims and their accuracy through live Pi transitions |
+| Shared Rust workflows | Scoped types, saved views, prepared launch/effect results, shared document and artifact validation, lifecycle/projection policy and Herdr/cmux cutovers | Complete facade-level hc opening, resumption and lifecycle orchestration |
+| Owner CLI protocol | Strict version-1 requests and replies, 16 KiB requests, 4 MiB replies and saved-read batching | Native frame reads and launch/navigation effects |
+| hc connection | Owner-local socket resolution, permanent-core verification, one retained operation connection and typed failure evidence | Process admission, subscriptions and general frontend activation |
+| Space associations | Checked publication and association snapshots, manual `bind-space`, one retained-version conditional write and explicit uncertainty | Association completion as part of launch, adoption, enrollment and moves |
+| Sidebar reads | Saved Stream data, current same-host pinned membership and no-agent/out-of-space Follow | In-space Follow needs verified foreground identity |
+| Navigation | Secure owner `view-document` pager, shared artifact pager and fresh saved-link validation with a typed browser handoff | Native placement of pagers and desktop browser dispatch |
+
+The [owner dispatcher](../src/cli/integration.rs), [shared facade](../src/application/integration.rs), [hc transport](../src/frontend/hc.rs) and [association adapter](../src/runtime/hc.rs) implement these boundaries. The [CLI contracts](../tests/integration_cli.rs) and [hc contracts](../tests/integration_hc.rs) distinguish unavailable behavior from empty context and partial completion.
+
+The checkpoint passed the complete serial test task, including 195 library tests, 55 binary tests, 316 contracts and 5 verification tests. It also passed 406 Pi tests, 29 Herdr boundary tests, 3 replay tests and 19 native Rust tests. Separate fixtures passed 13 Pi lifecycle tests and 2 selected Pi 1.5.2 runtime tests. Clippy, formatting and document checks passed. These results establish the exercised fixture and regression behavior. Live publication across Pi transitions and native application behavior remain unaccepted.
+
+## Finish the native adapter
+
+This is the remainder of implementation stage 3. Its exact file boundaries and test groups remain in the design's [staged delivery plan](hc-herdr-app-design.md#staged-delivery-and-file-boundaries).
+
+1. Implement injected owner-process observation on macOS and Linux. Bound work-presence inspection to 65,536 entries and 4 MiB of normalized metadata. Retain exact boot, PID and kernel-start identity, parent relationships, process groups and stopped state. Space-only reads perform no census. Follow inspects its supplied terminal candidate.
+2. Verify supported standalone Pi launch profiles and helper-owned source claims. Labels and process existence supply hints; a verified live publication supplies the conversation identity. An unresolved possible interactive Pi blocks otherwise-absent replacements. Positive Running evidence remains usable. Missing or changing evidence stays unavailable.
+3. Complete shared `open_work` and `prepare_resume` orchestration with the hc execution snapshot. Select and verify saved conversations and checkouts before effects. Preserve exact launch arguments, locators, directories and approved environment values. Register hc in the general frontend dispatch only when this execution path exists.
+4. Apply terminal creation and selected unplaced-terminal adoption through the existing placement labels. Preserve Requested and Known space evidence independently from execution. After placement, perform the designed additional publication read and at most one association write. Report accepted terminals even when publication, binding or desktop presentation fails.
+5. Complete frame identity, in-space Follow, naming, companion display and owner-side document/artifact terminal placement. Add full native request dispatch through the facade. Ordinary refresh and reattachment keep dismissed companions closed.
+6. Add the separate plain event subscription, retained sequence handling and invalidation-only dispatch. Missed or disconnected observation clears the movement baseline. A fresh snapshot may establish a new baseline. It supplies no evidence of a move across the gap.
+
+Verify exact fake-socket requests, complete and incomplete process observations, PID reuse, competing and stale claims, foreground shells with background Pi, stopped SDKs, lost replies and partial launch outcomes. Verify publication-before-binding, no mutation replay and unchanged Herdr/cmux behavior. New processes and tests must use the existing locked dependencies.
+
+### Align socket path handling
+
+The design's [platform contract](hc-herdr-app-design.md#native-platform-contract) resolves relative selectors against the captured operation directory. The checkpoint implementation rejects relative socket and home paths. Resolve this discrepancy before completing stage 3. Either implement captured-directory resolution as specified or revise the design with an explicit decision to require absolute paths. Tests must cover the selected contract without fallback to another core.
+
+## Connect Pi registration and save notices
+
+Implementation stage 4 connects the tested Session state to the native adapter. The [Pi binding contract](hc-herdr-app-design.md#pi-conversation-binding-in-hc) defines startup fields, source claims, request context and shutdown ordering.
+
+Register interactive context before enrollment or transcript persistence. Pass captured conversation context on admitted requests and retain only verified exact locators. Native registration failure must preserve accepted record-only catalog work. Existing Herdr startup-failure behavior remains unchanged.
+
+Retire a helper's own source on the native worker before cancelling its worker token. Use the bounded fresh shutdown deadline and preserve a replacement source. Drop performs no native I/O. Test normal EOF, cancellation, timeout, forced death and late results.
+
+Connect started, newly-bound, reattached, display-change and placement-change handling through the shared lifecycle policy. Only positive observed same-owner movement may change membership. Startup, refresh and gaps in observation preserve membership. Accepted saves survive native follow-on failures.
+
+Emit one best-effort scoped save notice after each completed save or confirmed import, outside catalog locks. Cover ordinary CLI producers, background membership completion and partial imports. Notice failure becomes a separate warning and cannot alter a save or publication result. Add no identity heartbeat.
+
+Verify ordinary new, fork, resume, startup resume selection and reload through the supported Pi path. Retain cases for cancelled or overlapping transitions, switching away and back, stale orphan publications and delayed old responses. Fixtures using the selected SDK establish runtime ordering only. They do not prove that a live native claim follows the active conversation.
+
+## Build desktop views and diagnostics
+
+Implementation stage 5 adds the [thin JavaScript mod](hc-herdr-app-design.md#thin-javascript-mod). Owner Rust performs catalog, process, terminal and association work. The desktop renders saved fields and applies checked fixed focus, naming and browser actions.
+
+Implement the sidebar, attached strip and progress popup while retaining native controls, Files and Changes, and the single 30 px header. Use one subscribed coordinator per scope and endpoint. Refresh on relevant notices, manual Refresh and one hourly safety timer. Include retained hidden views. Reject obsolete generations and routes, and replay no cached action.
+
+Include configured-remote owners in the initial delivery. Retain the exact execution route and qualify resources with its configured alias. Validate scope, permanent core, generation, readiness and target existence before desktop effects. Owner paths, file contents, commands, environments and raw errors stay off desktop RPC.
+
+Implement the specified bounded diagnostics. Owner JSONL keeps 10 MiB and one previous file. The app retains the newest 100 entries within 256 KiB. Logging is best effort and cannot change saved or native outcomes.
+
+Keep host-only imports in the entry and frame modules. Test codecs, cache behavior, route changes, hidden subscriptions, viewer dispatch and diagnostic limits with injected platform calls and the shared version-1 fixtures. Add the hermetic native-mod test task to the aggregate gate.
+
+## Document and accept the complete integration
+
+Implementation stage 6 adds user-facing setup, maintenance and rollback instructions. Preserve existing frontend setup and the explicit deferral of new Claude/Codex hc implementations.
+
+Run focused tests after each implementation sequence and the complete configured regression gates before accepting a checkpoint. Preserve the Git-sync ten-second deadline and publication assertions. Obtain an independent code review of the completed implementation.
+
+Live acceptance requires separate authorization and disposable catalogs and native setup. Exercise local and configured-remote ownership, app-closed launch followed by adoption, Pi transitions, moves and observation loss, empty Streams, controls, pinned/Follow navigation, hide/show behavior, notices and hourly/manual refresh. Measure process starts, RPCs, directory inventories and record bytes. Record any unavailable environment as missing acceptance.
+
+Full delivery requires passing regression gates, code review and supported live behavior, with setup documentation matching the tested installation. Commit and test evidence alone establishes no installation or remote acceptance.
+
+## Open questions and potential issues
+
+### Active conversation through Pi transitions
+
+Does the published claim continue to identify the active conversation through ordinary new, fork, resume, reload and overlapping transitions? The selected SDK fixtures establish callback ordering and process-owned state handling. A surviving helper can still publish an obsolete conversation if the live transition path leaves it behind. Verify publication through those paths before allowing identity-dependent native effects. Preserve Pi's normal commands and keep uncertain identity unavailable.
+
+### Process completeness and launch profiles
+
+Can supported owner hosts provide the required process, ancestry, start-time and foreground evidence within the stated bounds? macOS and Linux need different observation implementations. Permissions, process changes, launcher variants and unsupported Node options can leave an interactive Pi unresolved. Measure how often that blocks otherwise-absent replacements under normal workloads. Keep positive Running results usable and preserve the rule that unknown evidence cannot authorize a replacement launch.
+
+### App closure and remote placement
+
+Will terminals with the chosen placement labels appear in the intended space after the app reopens, both locally and through a configured remote route? Source inspection supports the mechanism; the complete interaction still needs disposable-environment testing. Verify late publication and association conflicts while preserving every acknowledged terminal. Desktop focus, naming or browser failure must leave the owner result intact.
+
+### Event gaps and source retirement
+
+Can EOF retirement finish before cancellation, remove only its own source and preserve a replacement during shutdown races? Test cancelled work, lost replies, helper death and the five-second grace limit. Also verify subscription framing and gaps on the target hc version. A missed event clears the movement baseline; a later snapshot cannot establish a move across that gap.
+
+### UI lifecycle and host limits
+
+Do the native views preserve controls, the single header and Files and Changes across empty spaces, hidden copies and reloads? Verify timer and subscriber ownership, stale route rejection, supported invocation sizes and diagnostic limits on local and remote hosts. Cached data must never replay focus, browser or launch actions.
+
+### Design and implementation alignment
+
+The [socket path discrepancy](#align-socket-path-handling) needs an explicit resolution. Other stage boundaries also need comparison with the current code as native dispatch, lifecycle responses and saved-start result mapping are connected. Keep unavailable behavior explicit until its owner operation exists. Preserve the existing Herdr/cmux output shapes throughout those changes.
+
+### Evidence available to future readers
+
+The checked-in design is a byte-for-byte copy of the original draft. Some relative evidence links refer to local untracked extracts and investigations, which are absent from a clean checkout. Preserve any evidence needed for future decisions in separate repository files after checking it for private configuration or paths. Keep the baseline text unchanged.
+
+The baseline SHA-256 is `7af4638e11611d2793f558485b11decb5565b322b543f250be6101e9fadff086`. This companion plan holds implementation status and remaining questions separately from that baseline.
