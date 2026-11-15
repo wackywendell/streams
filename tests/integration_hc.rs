@@ -46,7 +46,7 @@ impl FakeCore {
                 .set_read_timeout(Some(std::time::Duration::from_secs(5)))
                 .unwrap();
             let mut reader = BufReader::new(stream);
-            let steps=std::iter::once(Step("hello",json!({"generation":1,"framed":false}),Reply::Value(json!({"generation":1,"framed":false,"core":{"id":"core"},"methods":["hello","doc.get","doc.set","terminal.get","terminal.label"]})))).chain(steps);
+            let steps=std::iter::once(Step("hello",json!({"generation":1,"framed":false}),Reply::Value(json!({"generation":1,"framed":false,"core":{"id":"core"},"methods":["hello","doc.get","doc.set","terminal.get","terminal.label","terminal.list"]})))).chain(steps);
             for (index, Step(method, params, reply)) in steps.enumerate() {
                 let mut line = String::new();
                 assert_ne!(reader.read_line(&mut line).unwrap(), 0, "missing {method}");
@@ -805,6 +805,155 @@ fn source_registration_and_retirement_touch_only_the_helper_key() {
     ));
     drop(client);
     assert_eq!(core.finish().len(), 3);
+}
+
+#[test]
+fn execution_inspects_only_registered_sources_on_the_selected_core() {
+    use std::{cell::Cell, io};
+    use streams::{
+        frontend::hc::processes::{ProcessKey, ProcessObservation, ProcessObserver},
+        integration::{ConversationId, Presence},
+        runtime::hc::{PiSourceClaim, RegisteredSources, labels::source_key},
+    };
+    struct Processes {
+        rows: BTreeMap<u32, ProcessObservation>,
+        calls: Cell<usize>,
+    }
+    impl ProcessObserver for Processes {
+        fn observe(&self, pid: u32) -> io::Result<ProcessObservation> {
+            self.calls.set(self.calls.get() + 1);
+            self.rows
+                .get(&pid)
+                .cloned()
+                .ok_or_else(|| io::Error::other("observation unavailable"))
+        }
+        fn exited(&self, key: &ProcessKey) -> io::Result<bool> {
+            if key.pid == 41 {
+                return Ok(true);
+            }
+            Ok(self.observe(key.pid)?.key != *key)
+        }
+    }
+    let key = |pid| ProcessKey {
+        boot: "08f95cf6-6657-40c4-b5b9-6ee493d934ab".into(),
+        pid,
+        started: format!("linux:{pid}"),
+    };
+    let processes = Processes {
+        rows: [(10, 1), (30, 10), (40, 30)]
+            .into_iter()
+            .map(|(pid, parent_pid)| {
+                (
+                    pid,
+                    ProcessObservation {
+                        key: key(pid),
+                        parent_pid,
+                        process_group: 10,
+                        stopped: pid == 30,
+                    },
+                )
+            })
+            .collect(),
+        calls: Cell::new(0),
+    };
+    let conversation = ConversationId {
+        harness: "pi".into(),
+        native_id: "saved".into(),
+    };
+    let endpoint = EndpointId("core".into());
+    let claim = PiSourceClaim {
+        version: 1,
+        endpoint: endpoint.clone(),
+        conversation: conversation.clone(),
+        terminal_root: key(10),
+        sdk: key(30),
+        helper: key(40),
+    };
+    let stale = PiSourceClaim {
+        helper: key(41),
+        ..claim.clone()
+    };
+    let labels = json!({source_key(&claim.helper).unwrap():serde_json::to_string(&claim).unwrap(), source_key(&stale.helper).unwrap():serde_json::to_string(&stale).unwrap()});
+    let unregistered = json!({"address":"t2","state":"live","pid":99,"labels":{}});
+    let remote = json!({"address":"other/t7","state":"live","pid":99,"labels":{"streams.pi.invalid":"broken"}});
+    let local = json!({"address":"t1","state":"live","pid":10,"labels":labels});
+    let result = json!({"terminals":[unregistered.clone(),remote.clone(),local.clone()]});
+    let core = FakeCore::new(vec![Step("terminal.list", json!({}), Reply::Value(result))]);
+    let mut operation = core.operation();
+    let execution = operation.registered_sources(&processes).unwrap();
+    assert!(matches!(
+        execution.presence(&conversation),
+        Presence::Running { .. }
+    ));
+    assert_eq!(
+        execution.verified_terminals(&conversation),
+        vec![reference("t1")]
+    );
+    assert_eq!(
+        execution.presence(&ConversationId {
+            harness: "pi".into(),
+            native_id: "other".into()
+        }),
+        Presence::Absent
+    );
+    assert!(matches!(
+        execution.presence(&ConversationId {
+            harness: "claude".into(),
+            native_id: "saved".into()
+        }),
+        Presence::Unknown { .. }
+    ));
+    drop(operation);
+    assert_eq!(core.finish().len(), 2);
+    let before = processes.calls.get();
+    let empty = RegisteredSources::decode(
+        &endpoint,
+        json!({"terminals":[unregistered,remote]}),
+        &processes,
+    )
+    .unwrap();
+    assert_eq!(empty.presence(&conversation), Presence::Absent);
+    assert_eq!(
+        processes.calls.get(),
+        before,
+        "unregistered and remote terminals need no process reads"
+    );
+    assert!(
+        RegisteredSources::decode(
+            &endpoint,
+            json!({"terminals":[local.clone(),local]}),
+            &processes
+        )
+        .is_err()
+    );
+    let competing = PiSourceClaim {
+        helper: key(42),
+        ..claim.clone()
+    };
+    let mut rows = processes.rows.clone();
+    rows.insert(
+        42,
+        ProcessObservation {
+            key: key(42),
+            parent_pid: 30,
+            process_group: 10,
+            stopped: false,
+        },
+    );
+    let same_sdk = json!({source_key(&claim.helper).unwrap():serde_json::to_string(&claim).unwrap(), source_key(&competing.helper).unwrap():serde_json::to_string(&competing).unwrap()});
+    assert!(
+        RegisteredSources::decode(
+            &endpoint,
+            json!({"terminals":[{"address":"t1","state":"live","pid":10,"labels":same_sdk}]}),
+            &Processes {
+                rows,
+                calls: Cell::new(0)
+            }
+        )
+        .is_err()
+    );
+    assert!(RegisteredSources::decode(&endpoint, json!({"terminals":[{"address":"t3","state":"live","pid":10,"labels":{"streams.pi.bad":"broken"}}]}), &processes).is_err());
+    assert!(RegisteredSources::decode(&endpoint, json!({"terminals":[{"address":"t3","state":"live","pid":10,"labels":{source_key(&claim.helper).unwrap():serde_json::to_string(&claim).unwrap()}}]}), &Processes { rows:BTreeMap::new(), calls:Cell::new(0) }).is_err());
 }
 
 #[test]

@@ -187,6 +187,104 @@ pub fn registered_foreground(
     }
 }
 
+/// A complete point-validated view of registered sources on one core. It does not
+/// discover unregistered Pi processes or supply Stream placement evidence.
+pub struct RegisteredSources {
+    running: BTreeMap<crate::integration::ConversationId, Vec<NativeRef>>,
+}
+impl RegisteredSources {
+    pub fn decode(
+        endpoint: &EndpointId,
+        value: Value,
+        observer: &dyn crate::frontend::hc::processes::ProcessObserver,
+    ) -> Result<Self, FrontendError> {
+        let unavailable = || invalid("registered Pi sources are unavailable");
+        let terminals = value
+            .get("terminals")
+            .and_then(Value::as_array)
+            .ok_or_else(unavailable)?;
+        let mut seen_terminals = BTreeSet::new();
+        let mut seen_sdks = BTreeSet::new();
+        let mut running: BTreeMap<_, Vec<NativeRef>> = BTreeMap::new();
+        for value in terminals {
+            let address = value
+                .get("address")
+                .and_then(Value::as_str)
+                .filter(|address| !address.is_empty())
+                .ok_or_else(unavailable)?;
+            // hc's list also includes configured machines. They are not this owner core.
+            if address.contains('/') {
+                continue;
+            }
+            #[derive(Deserialize)]
+            struct Terminal {
+                state: String,
+                pid: Option<u32>,
+                labels: BTreeMap<String, String>,
+            }
+            let terminal: Terminal =
+                serde_json::from_value(value.clone()).map_err(|_| unavailable())?;
+            if terminal.state != "live" || !seen_terminals.insert(address.to_owned()) {
+                return Err(unavailable());
+            }
+            for (key, label) in terminal
+                .labels
+                .iter()
+                .filter(|(key, _)| key.starts_with("streams.pi."))
+            {
+                let root = terminal
+                    .pid
+                    .filter(|pid| *pid != 0)
+                    .ok_or_else(unavailable)?;
+                let candidate = decode_claim(key, label, endpoint, root)?;
+                if observer
+                    .exited(&candidate.helper)
+                    .map_err(|_| unavailable())?
+                {
+                    continue;
+                }
+                let claim = verify_claim_route(key, label, endpoint, root, observer)?;
+                if !seen_sdks.insert(claim.sdk) {
+                    return Err(unavailable());
+                }
+                running
+                    .entry(claim.conversation)
+                    .or_default()
+                    .push(NativeRef {
+                        adapter: FrontendId::hc(),
+                        endpoint: endpoint.clone(),
+                        key: address.into(),
+                    });
+            }
+        }
+        Ok(Self { running })
+    }
+    pub fn presence(
+        &self,
+        conversation: &crate::integration::ConversationId,
+    ) -> crate::integration::Presence {
+        use crate::integration::{NonEmpty, Presence};
+        if conversation.harness != "pi" {
+            return Presence::Unknown {
+                reason: "hc supports registered Pi sources only".into(),
+            };
+        }
+        match self.running.get(conversation) {
+            Some(locations) => Presence::Running {
+                locations: NonEmpty::try_from(locations.clone())
+                    .expect("running locations are nonempty"),
+            },
+            None => Presence::Absent,
+        }
+    }
+    pub fn verified_terminals(
+        &self,
+        conversation: &crate::integration::ConversationId,
+    ) -> Vec<NativeRef> {
+        self.running.get(conversation).cloned().unwrap_or_default()
+    }
+}
+
 const ASSOCIATION_BYTES: usize = 1024 * 1024;
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -510,6 +608,32 @@ impl HcOperation {
                 unavailable()
             }
         }
+    }
+    pub fn registered_sources(
+        &mut self,
+        observer: &dyn crate::frontend::hc::processes::ProcessObserver,
+    ) -> Result<RegisteredSources, FrontendError> {
+        let params = json!({});
+        let (frame, result) = self.client.exchange("terminal.list", &params, false);
+        let value = match result {
+            Ok(value) => {
+                self.commands.push(CommandEvidence {
+                    request: NativeRequest::Socket {
+                        method: "terminal.list".into(),
+                        params,
+                        response: frame,
+                    },
+                    outcome: CommandOutcome::ReadOnly,
+                });
+                value
+            }
+            Err(failure) => {
+                self.commands.extend(failure.error.commands);
+                return Err(self.error("registered Pi sources are unavailable"));
+            }
+        };
+        RegisteredSources::decode(self.endpoint(), value, observer)
+            .map_err(|_| self.error("registered Pi sources are unavailable"))
     }
     fn error(&self, message: impl Into<String>) -> FrontendError {
         FrontendError {
