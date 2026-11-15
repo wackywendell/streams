@@ -46,7 +46,7 @@ Verify exact fake-socket requests, complete and incomplete point observations, P
 
 Implementation stage 4 connects the tested Session state to the native adapter. The [Pi binding contract](hc-herdr-app-design.md#pi-conversation-binding-in-hc) defines startup fields, source claims, request context and shutdown ordering.
 
-The helper registers interactive context before enrollment or transcript persistence and receives captured conversation context on admitted requests. Registration failure leaves record-only catalog work available. Existing Herdr startup-failure behavior remains unchanged. Verify exact supplied locators before retaining them; the current helper does not yet use the supplied file.
+The helper registers interactive context before enrollment or transcript persistence and receives captured conversation context on admitted requests. Before publishing, it rejects a competing live claim for the same SDK, malformed claims and unavailable observations; positively exited claims are left in place. This snapshot check is not a concurrency guarantee. Registration failure leaves record-only catalog work available. Existing Herdr startup-failure behavior remains unchanged. Verify exact supplied locators before retaining them; the current helper does not yet use the supplied file.
 
 EOF queues retirement of the helper's own source on the native worker before cancelling its worker token. The bounded shutdown deadline and helper-specific key preserve replacement sources; Drop performs no hc I/O. Fake-core tests cover EOF, cancellation, timeout and forced death. Test late results and the live transition path.
 

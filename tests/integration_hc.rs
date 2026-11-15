@@ -665,6 +665,12 @@ fn source_registration_and_retirement_touch_only_the_helper_key() {
                 .cloned()
                 .ok_or_else(|| std::io::Error::other("unavailable"))
         }
+        fn exited(&self, key: &ProcessKey) -> std::io::Result<bool> {
+            if key.pid == 42 {
+                return Ok(true);
+            }
+            Ok(self.observe(key.pid)?.key != *key)
+        }
     }
     let key = |pid| ProcessKey {
         boot: "08f95cf6-6657-40c4-b5b9-6ee493d934ab".into(),
@@ -672,7 +678,7 @@ fn source_registration_and_retirement_touch_only_the_helper_key() {
         started: format!("linux:{pid}"),
     };
     let processes = Processes(
-        [(10, 1), (30, 10), (40, 30)]
+        [(10, 1), (30, 10), (40, 30), (41, 30)]
             .into_iter()
             .map(|(pid, parent_pid)| {
                 (
@@ -744,6 +750,59 @@ fn source_registration_and_retirement_touch_only_the_helper_key() {
     assert!(matches!(source.retire(&mut client), Effect::Applied { .. }));
     drop(client);
     assert_eq!(core.finish().len(), 4);
+
+    for (pid, malformed, accepted) in [
+        (41, false, false),
+        (42, false, true),
+        (43, false, false),
+        (42, true, false),
+    ] {
+        let previous = PiSourceClaim {
+            helper: key(pid),
+            ..claim.clone()
+        };
+        let previous_key = source_key(&previous.helper).unwrap();
+        let previous_value = if malformed {
+            "invalid".into()
+        } else {
+            serde_json::to_string(&previous).unwrap()
+        };
+        let mut steps = vec![Step(
+            "terminal.get",
+            json!({"terminal":"hint"}),
+            Reply::Value(terminal(
+                json!({previous_key.clone():previous_value.clone()}),
+            )),
+        )];
+        if accepted {
+            steps.push(Step(
+                "terminal.label",
+                json!({"terminal":"t1","labels":{label.clone():value.clone()}}),
+                Reply::Value(terminal(
+                    json!({previous_key:previous_value,label.clone():value.clone()}),
+                )),
+            ));
+        }
+        let core = FakeCore::new(steps);
+        let socket = HcEndpoint::resolve(
+            &BTreeMap::from([("HC_SOCKET".into(), core.socket.display().to_string())]),
+            core.socket.parent().unwrap(),
+        )
+        .unwrap();
+        let mut client = HcClient::connect(socket, None, 5.0, None).unwrap();
+        let result = SourceRegistration::register(
+            &mut client,
+            "hint",
+            conversation.clone(),
+            30,
+            40,
+            &processes,
+            &std::sync::atomic::AtomicBool::new(false),
+        );
+        assert_eq!(matches!(result, Effect::Applied { .. }), accepted);
+        drop(client);
+        assert_eq!(core.finish().len(), if accepted { 3 } else { 2 });
+    }
 
     let mut wrong = processes.clone();
     wrong.0.get_mut(&40).unwrap().parent_pid = 10;

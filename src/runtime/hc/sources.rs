@@ -1,5 +1,5 @@
 //! One helper-owned source label. No discovery, retries or I/O in Drop.
-use super::{PiSourceClaim, labels, verify_claim_route};
+use super::{PiSourceClaim, decode_claim, labels, verify_claim_route};
 use crate::{
     frontend::{
         EndpointId,
@@ -91,8 +91,38 @@ impl SourceRegistration {
         };
         if found.labels.contains_key(&key)
             || verify_claim_route(&key, &value, client.endpoint(), root_pid, observer).is_err()
-            || cancelled.load(Ordering::Acquire)
         {
+            return unavailable();
+        }
+        for (existing_key, existing_value) in found
+            .labels
+            .iter()
+            .filter(|(key, _)| key.starts_with("streams.pi."))
+        {
+            let Ok(existing) =
+                decode_claim(existing_key, existing_value, client.endpoint(), root_pid)
+            else {
+                return unavailable();
+            };
+            match observer.exited(&existing.helper) {
+                Ok(true) => continue,
+                Ok(false) => {}
+                Err(_) => return unavailable(),
+            }
+            if existing.sdk == claim.sdk
+                || verify_claim_route(
+                    existing_key,
+                    existing_value,
+                    client.endpoint(),
+                    root_pid,
+                    observer,
+                )
+                .is_err()
+            {
+                return unavailable();
+            }
+        }
+        if cancelled.load(Ordering::Acquire) {
             return unavailable();
         }
         let registration = Self {
