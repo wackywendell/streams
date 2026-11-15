@@ -734,6 +734,15 @@ pub struct HcOperation {
     pub commands: Vec<CommandEvidence>,
 }
 impl HcOperation {
+    pub fn opening_support() -> crate::integration::OpeningSupport {
+        use crate::integration::{LaunchLimit, NonEmpty, OpeningMode, OpeningSupport, Placement};
+        OpeningSupport {
+            harnesses: NonEmpty::new("pi".into(), []),
+            mode: OpeningMode::ReuseObserved,
+            launch_limit: LaunchLimit::Many,
+            placement: Placement::Independent,
+        }
+    }
     pub fn new(client: HcClient) -> Self {
         Self {
             client,

@@ -976,8 +976,7 @@ fn execution_inspects_only_registered_sources_on_the_selected_core() {
     use streams::{
         frontend::hc::processes::{ProcessKey, ProcessObservation, ProcessObserver},
         integration::{
-            Access, ConversationId, ExecutionSnapshot, LaunchLimit, NonEmpty, OpeningMode,
-            OpeningSupport, Placement, Presence, SessionOpenResult, classify_open,
+            Access, ConversationId, ExecutionSnapshot, Presence, SessionOpenResult, classify_open,
         },
         runtime::hc::{PiSourceClaim, RegisteredSources, labels::source_key},
     };
@@ -1069,12 +1068,7 @@ fn execution_inspects_only_registered_sources_on_the_selected_core() {
         }),
         Presence::Unknown { .. }
     ));
-    let support = OpeningSupport {
-        harnesses: NonEmpty::new("pi".into(), []),
-        mode: OpeningMode::ReuseObserved,
-        launch_limit: LaunchLimit::Many,
-        placement: Placement::Independent,
-    };
+    let support = HcOperation::opening_support();
     let wanted = vec![
         ("running".into(), conversation.clone()),
         (
@@ -1106,6 +1100,23 @@ fn execution_inspects_only_registered_sources_on_the_selected_core() {
     .unwrap();
     assert!(launches.is_empty());
     assert_eq!(results.len(), 2);
+    let unsupported = vec![(
+        "deferred".into(),
+        ConversationId {
+            harness: "claude".into(),
+            native_id: "saved".into(),
+        },
+    )];
+    let (launches, results) = classify_open(
+        &support,
+        &unsupported,
+        Access::Available { value: &execution },
+    )
+    .unwrap();
+    assert!(launches.is_empty());
+    assert!(
+        matches!(&results["deferred"], SessionOpenResult::Skipped {reason} if reason.contains("unsupported"))
+    );
     let presentation = |layout: Value, view_scope: WorkScope| {
         streams::runtime::hc::HcPresentation::new(
             view_scope,
