@@ -190,10 +190,9 @@ pub(super) fn sync(opened: &OpenedRecords) -> Result<Output> {
     let transport = RecordSync::open(opened.root(), opened.host().as_str())
         .map_err(application::ApplicationError::from)?;
     let result = transport.sync();
-    Ok(Output::receipt(
-        result_data(&result)?,
-        !result.needs_attention(),
-    ))
+    let mut output = Output::receipt(result_data(&result)?, !result.needs_attention());
+    output.accepted_save = true;
+    Ok(output)
 }
 
 /// Explicit human validation/discovery, never a prerequisite for a local save.

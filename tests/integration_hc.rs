@@ -578,39 +578,22 @@ fn source_route_requires_stable_exact_process_keys_and_terminal_ancestry() {
         endpoint: endpoint.clone(),
         key: "t1".into(),
     };
-    let native = |labels: Value, foreground: Value| json!({"address":"t1","state":"live","pid":10,"labels":labels,"foreground":foreground});
+    let native = |labels: Value| json!({"address":"t1","state":"live","pid":10,"labels":labels});
     let labels = json!({label.clone():value});
     let foreground = |rows: BTreeMap<_, _>, native: Value| {
         registered_foreground(&terminal, native, &fake(rows, None))
     };
-    let mut running = rows.clone();
-    running.get_mut(&30).unwrap().stopped = false;
     assert_eq!(
-        foreground(running.clone(), native(labels.clone(), json!({"pid":10}))),
+        foreground(rows.clone(), native(labels.clone())),
         ForegroundConversation::Current(claim.conversation.clone())
     );
     assert_eq!(
-        foreground(running.clone(), native(labels.clone(), json!({"pid":99}))),
-        ForegroundConversation::NotApplicable
-    );
-    assert_eq!(
-        foreground(rows.clone(), native(labels.clone(), json!({"pid":10}))),
+        foreground(rows.clone(), native(json!({}))),
         ForegroundConversation::NotApplicable
     );
     assert!(matches!(
-        foreground(rows.clone(), native(labels.clone(), Value::Null)),
+        foreground(rows.clone(), native(json!({"streams.pi.bad":"not-json"}))),
         ForegroundConversation::Unknown { .. }
-    ));
-    assert!(matches!(
-        foreground(
-            rows.clone(),
-            native(json!({"streams.pi.bad":"not-json"}), json!({"pid":10}))
-        ),
-        ForegroundConversation::Unknown { .. }
-    ));
-    assert!(matches!(
-        foreground(rows, native(labels, json!({"pid":10}))),
-        ForegroundConversation::NotApplicable
     ));
 }
 

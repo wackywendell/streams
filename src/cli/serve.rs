@@ -62,38 +62,114 @@ enum HcSource {
 impl HcSource {
     fn request(
         &mut self,
+        server: &Server,
         app: &App,
-        session_id: &str,
-        sdk_pid: Option<u32>,
         request: &Request,
         stopping: &streams::cancellation::Cancellation,
         cancelled: &AtomicBool,
+        plugin_root: &std::path::Path,
     ) -> Result<Output> {
         if matches!(request, Request::OpenCard {} | Request::CloseCard {}) {
-            return Err(CliError::message("hc native display is not available yet"));
+            return Err(CliError::message(
+                "hc native strip is managed by herdr-app layout",
+            ));
         }
         if matches!(self, Self::Unattempted) {
             *self = Self::Failed;
-            let pid = sdk_pid
+            let pid = server
+                .sdk_pid
                 .filter(|pid| *pid != 0)
                 .ok_or_else(|| CliError::message("Pi SDK process is unavailable"))?;
             *self = Self::Registered(hc::Source::register(
                 app,
-                session_id,
+                &server.session_id,
                 pid,
                 stopping.clone(),
                 cancelled,
             )?);
         }
-        if matches!(self, Self::Failed) {
+        let Self::Registered(source) = self else {
             return Err(CliError::message(
                 "hc Pi source is unavailable; reload required",
             ));
+        };
+        let resolved = hc::resolve_session(app, &server.session_id, plugin_root, true)?;
+        send(
+            &server.output,
+            &ServerFrame::View {
+                view: child_protocol::UiFacts {
+                    desired_pi_name: resolved.desired_pi_name.clone(),
+                },
+            },
+        )?;
+        let Some(session) = resolved.session else {
+            return Ok(Output::value(serde_json::json!({
+                "backend": "hc",
+                "report": {
+                    "native": { "kind": "inactive", "reason": "not_enrolled" },
+                    "projection": {
+                        "companion": null,
+                        "desired_pi_name": null,
+                        "warnings": []
+                    }
+                }
+            })));
+        };
+        let mut warnings = Vec::new();
+        if let Err(error) =
+            source.bind_session(&resolved.scope, &session.stream_id, stopping.clone())
+        {
+            warnings.push(error.to_string());
         }
-        Ok(Output::value(serde_json::json!({"backend":"hc","report":{
-            "native":{"kind":"inactive","reason":"unavailable"},
-            "projection":{"companion":null,"desired_pi_name":null,"warnings":["hc native display and lifecycle are not yet available"]}
-        }})))
+        Ok(Output::value(serde_json::json!({
+            "backend": "hc",
+            "report": {
+                "native": { "kind": "active" },
+                "projection": {
+                    "companion": "existing",
+                    "desired_pi_name": resolved.desired_pi_name,
+                    "warnings": warnings
+                }
+            }
+        })))
+    }
+    fn after_save(
+        &self,
+        server: &Server,
+        app: &App,
+        bind_space: bool,
+        stopping: &streams::cancellation::Cancellation,
+        plugin_root: &std::path::Path,
+    ) -> Result<()> {
+        let resolved = hc::resolve_session(app, &server.session_id, plugin_root, bind_space)?;
+        send(
+            &server.output,
+            &ServerFrame::View {
+                view: child_protocol::UiFacts {
+                    desired_pi_name: resolved.desired_pi_name,
+                },
+            },
+        )?;
+        let Self::Registered(source) = self else {
+            return app.notify_hc_save();
+        };
+        let mut first_error = None;
+        if bind_space
+            && let Some(session) = &resolved.session
+            && let Err(error) =
+                source.bind_session(&resolved.scope, &session.stream_id, stopping.clone())
+        {
+            first_error = Some(error);
+        }
+        if let Err(error) = source.notify_saved(&resolved.scope, stopping.clone())
+            && first_error.is_none()
+        {
+            first_error = Some(error);
+        }
+        match first_error {
+            Some(error) => Err(error),
+            None => Ok(()),
+        }
     }
     fn retire(&mut self, deadline: Instant) -> Result<()> {
         match std::mem::replace(self, Self::Failed) {
@@ -223,24 +299,25 @@ impl Server {
                 return Err(CliError::message("request cancelled before dispatch"));
             }
             let app = self.app()?;
+            let hc_selected = app.hc_selected(&app.config.load()?.frontend, None)?;
             if matches!(
                 request,
                 Request::SessionStarted {}
                     | Request::Attach {}
                     | Request::OpenCard {}
                     | Request::CloseCard {}
-            ) && app.hc_selected(&app.config.load()?.frontend, None)?
+            ) && hc_selected
             {
                 if pi_context.is_none() {
                     return Err(CliError::message("hc Pi request context is unavailable"));
                 }
                 return controllers.hc.request(
+                    self,
                     &app,
-                    &self.session_id,
-                    self.sdk_pid,
                     &request,
                     stopping,
                     &cancelled,
+                    plugin_root,
                 );
             }
             let controller = &mut controllers.herdr;
@@ -263,24 +340,44 @@ impl Server {
                 }
                 Request::Enroll { request } => {
                     let value = serde_json::Value::Object(request);
-                    match controller {
+                    let output = match controller {
                         Some(controller) => controller.enroll(&app, &value, cancelled.clone()),
                         None => app.enroll_request(&value.to_string()),
+                    }?;
+                    if hc_selected
+                        && output.accepted_save
+                        && let Err(error) =
+                            controllers
+                                .hc
+                                .after_save(self, &app, true, stopping, plugin_root)
+                    {
+                        self.warning(&error)?;
                     }
+                    Ok(output)
                 }
                 request => {
                     let saved = matches!(request, Request::Apply { .. });
-                    let app = controller
-                        .as_ref()
-                        .map(|controller| &controller.app)
-                        .unwrap_or(&app);
-                    let mut output = dispatch::execute(app, &self.session_id, request)?;
+                    let mut output = {
+                        let current_app = controller
+                            .as_ref()
+                            .map(|controller| &controller.app)
+                            .unwrap_or(&app);
+                        dispatch::execute(current_app, &self.session_id, request)?
+                    };
                     if saved && (output.code == 0 || output.accepted_save) {
                         output.accepted_save = true;
                         if let Some(controller) = controller
                             && let Err(error) = controller.saved(cancelled.clone())
                         {
                             output.notices.push(error.to_string());
+                        }
+                        if hc_selected
+                            && let Err(error) =
+                                controllers
+                                    .hc
+                                    .after_save(self, &app, true, stopping, plugin_root)
+                        {
+                            self.warning(&error)?;
                         }
                     }
                     Ok(output)
@@ -420,6 +517,12 @@ fn read_input(server: Arc<Server>) {
                                 std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
                                     let flag = worker.cancelled(id)?;
                                     let result = worker.catalog(request, &flag);
+                                    if result.as_ref().is_ok_and(|output| output.accepted_save)
+                                        && let Ok(app) = worker.app()
+                                        && let Err(error) = app.notify_hc_save()
+                                    {
+                                        worker.warning(&error)?;
+                                    }
                                     worker.respond(id, result)
                                 }));
                             let wake = match completed {

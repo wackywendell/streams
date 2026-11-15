@@ -922,7 +922,11 @@ fn saved_cli_refuses_wrong_scope_and_disabled_native_requests_without_effects() 
                     .iter()
                     .all(|value| matches!(value, WireResult::Error(_)))
             ),
-            _ => panic!("no native action is enabled"),
+            WireResult::Ok(ModResult::ReferenceOpened { value }) => assert!(matches!(
+                value.result,
+                ReferenceOpenResult::NotApplied { .. }
+            )),
+            _ => panic!("no native action succeeded without an endpoint"),
         }
         assert!(reply.verified_endpoint.is_none());
         assert!(reply.viewer_projection.is_empty());
@@ -1552,8 +1556,9 @@ fn link_actions_revalidate_saved_kind_and_url_without_native_or_owner_path_discl
             global,
         );
         assert_eq!(
-            result["kind"], "not_applied",
-            "unverified frames cannot turn into explicit activations"
+            result,
+            json!({"kind":"needs_viewer","value":[{"kind":"open_url","url":"https://example.test/shared"}]}),
+            "saved links open directly without foreground process-group re-verification"
         );
     }
     application::save_user_edit(
@@ -1769,9 +1774,9 @@ fn native_sidebar_reads_use_one_context_snapshot_and_keep_saved_data_when_follow
         for index in [8, 10] {
             assert_eq!(values[index]["ok"]["value"]["kind"], "unavailable");
         }
-        assert!(
-            values[11].get("error").is_some(),
-            "frame execution remains explicitly unavailable"
+        assert_eq!(
+            values[11]["ok"]["context"]["kind"], "unavailable",
+            "frame execution reports unavailable when terminal.get fails"
         );
         assert_eq!(
             core.finish().len(),
@@ -2350,4 +2355,316 @@ fn request_and_reply_byte_limits_fail_without_partial_output() {
     let mut reply = ModReply::decode(&fixtures()["replies"][0].to_string()).unwrap();
     reply.warnings.push("x".repeat(MOD_REPLY_BYTES));
     assert!(reply.encode().is_err());
+}
+
+#[test]
+fn frame_reads_and_reference_opening_resolve_enrolled_sessions_and_viewer_terminals() {
+    use crate::integration_hc::{FakeCore, Reply, Step};
+    use streams::{
+        frontend::{
+            EndpointId, FrontendId,
+            hc::processes::{OwnerProcesses, ProcessObserver},
+        },
+        runtime::hc::{PiSourceClaim, labels::source_key},
+    };
+    struct Child(std::process::Child);
+    impl Drop for Child {
+        fn drop(&mut self) {
+            let _ = self.0.kill();
+            let _ = self.0.wait();
+        }
+    }
+    let fixture = SavedFixture::new();
+    let child = Child(
+        std::process::Command::new("/bin/sleep")
+            .arg("30")
+            .spawn()
+            .unwrap(),
+    );
+    let observer = OwnerProcesses::new().unwrap();
+    let sdk = observer.observe(std::process::id()).unwrap();
+    let helper = observer.observe(child.0.id()).unwrap();
+    let endpoint = EndpointId("core".into());
+    let scope = streams::application::integration::Streams::new(&fixture.records)
+        .scope()
+        .clone();
+    let resource = |key: &str| NativeRef {
+        adapter: FrontendId::hc(),
+        endpoint: endpoint.clone(),
+        key: key.into(),
+    };
+    let enrolled_claim = PiSourceClaim {
+        version: 1,
+        endpoint: endpoint.clone(),
+        conversation: ConversationId {
+            harness: "pi".into(),
+            native_id: fixture.sessions[0].harness_session_id.clone(),
+        },
+        terminal_root: sdk.key.clone(),
+        sdk: sdk.key.clone(),
+        helper: helper.key.clone(),
+    };
+    let unenrolled_claim = PiSourceClaim {
+        conversation: ConversationId {
+            harness: "pi".into(),
+            native_id: "unenrolled-native".into(),
+        },
+        ..enrolled_claim.clone()
+    };
+    let label = source_key(&enrolled_claim.helper).unwrap();
+    let core = FakeCore::new(vec![
+        Step(
+            "terminal.get",
+            json!({"terminal":"t1"}),
+            Reply::Value(json!({
+                "address":"t1",
+                "state":"live",
+                "pid":sdk.key.pid,
+                "labels":{label.clone():serde_json::to_string(&enrolled_claim).unwrap()}
+            })),
+        ),
+        Step(
+            "terminal.get",
+            json!({"terminal":"t2"}),
+            Reply::Value(json!({
+                "address":"t2",
+                "state":"live",
+                "pid":sdk.key.pid,
+                "labels":{label:serde_json::to_string(&unenrolled_claim).unwrap()}
+            })),
+        ),
+        Step(
+            "terminal.get",
+            json!({"terminal":"t3"}),
+            Reply::Value(json!({
+                "address":"t3",
+                "state":"live",
+                "pid":sdk.key.pid,
+                "labels":{}
+            })),
+        ),
+    ]);
+    let mut request = fixture.envelope(json!({
+        "kind":"read",
+        "selections":[
+            {"kind":"frame","terminal":resource("t1")},
+            {"kind":"frame","terminal":resource("t2")},
+            {"kind":"frame","terminal":resource("t3")}
+        ]
+    }));
+    request["endpoint"] = json!("core");
+    let output = fixture
+        .command()
+        .env("HC_SOCKET", &core.socket)
+        .args([
+            "integration",
+            "request",
+            "--request-json",
+            &request.to_string(),
+        ])
+        .output()
+        .unwrap();
+    assert!(
+        output.status.success(),
+        "{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let reply = ModReply::decode(std::str::from_utf8(&output.stdout).unwrap()).unwrap();
+    let WireResult::Ok(ModResult::Read { values, .. }) = reply.result else {
+        panic!("read reply")
+    };
+    assert!(matches!(
+        &values[0],
+        WireResult::Ok(ModReadValue::Frame {
+            context: FrameContext::Enrolled {
+                session,
+                companion: CompanionVisibility::Shown,
+            }
+        }) if session.id == fixture.sessions[0].id
+    ));
+    assert_eq!(
+        serde_json::to_value(&values[1]).unwrap(),
+        json!({"ok":{"kind":"frame","context":{"kind":"unenrolled"}}})
+    );
+    assert_eq!(
+        serde_json::to_value(&values[2]).unwrap(),
+        json!({"ok":{"kind":"frame","context":{"kind":"not_applicable"}}})
+    );
+    assert_eq!(core.finish().len(), 4);
+
+    // Corrupting the enrolled Session YAML yields FrameContext::Unavailable (never Unenrolled).
+    let session_file = fixture
+        .records
+        .root()
+        .join("hosts")
+        .join(streams::yaml_store::encode_component(&scope.host))
+        .join("conversations")
+        .join(format!(
+            "{}.yaml",
+            streams::yaml_store::encode_component(&fixture.sessions[0].id)
+        ));
+    let saved_yaml = std::fs::read(&session_file).unwrap();
+    std::fs::write(&session_file, b":::corrupt yaml:::").unwrap();
+    let corrupt_core = FakeCore::new(vec![Step(
+        "terminal.get",
+        json!({"terminal":"t1"}),
+        Reply::Value(json!({
+            "address":"t1",
+            "state":"live",
+            "pid":sdk.key.pid,
+            "labels":{(source_key(&helper.key).unwrap()):serde_json::to_string(&enrolled_claim).unwrap()}
+        })),
+    )]);
+    let mut corrupt_req = fixture.envelope(json!({
+        "kind":"read",
+        "selections":[{"kind":"frame","terminal":resource("t1")}]
+    }));
+    corrupt_req["endpoint"] = json!("core");
+    let corrupt_out = fixture
+        .command()
+        .env("HC_SOCKET", &corrupt_core.socket)
+        .args([
+            "integration",
+            "request",
+            "--request-json",
+            &corrupt_req.to_string(),
+        ])
+        .output()
+        .unwrap();
+    std::fs::write(&session_file, &saved_yaml).unwrap();
+    assert!(corrupt_out.status.success());
+    let corrupt_reply =
+        ModReply::decode(std::str::from_utf8(&corrupt_out.stdout).unwrap()).unwrap();
+    let WireResult::Ok(ModResult::Read {
+        values: corrupt_values,
+        ..
+    }) = corrupt_reply.result
+    else {
+        panic!("corrupt read reply")
+    };
+    assert!(matches!(
+        &corrupt_values[0],
+        WireResult::Ok(ModReadValue::Frame {
+            context: FrameContext::Unavailable { .. }
+        })
+    ));
+    assert_eq!(corrupt_core.finish().len(), 2);
+
+    let association = streams::runtime::hc::SpaceAssociation {
+        scope: scope.clone(),
+        stream: "work".into(),
+        space: resource("space-work"),
+    };
+    let artifact_request = {
+        let mut req = fixture.envelope(json!({
+            "kind":"act",
+            "action":{
+                "kind":"open_reference",
+                "reference":{
+                    "kind":"artifact",
+                    "key":{
+                        "host":scope.host,
+                        "stream":"work",
+                        "session":fixture.sessions[0].id,
+                        "name":"result.md"
+                    }
+                },
+                "context":{"kind":"explicit"},
+                "at":null
+            }
+        }));
+        req["endpoint"] = json!("core");
+        req
+    };
+    let socket_dir = tempfile::Builder::new()
+        .prefix("hc-ref-")
+        .tempdir_in("/tmp")
+        .unwrap();
+    let path = socket_dir.path().join("s");
+    let listener = std::os::unix::net::UnixListener::bind(&path).unwrap();
+    let server = std::thread::spawn(move || {
+        use std::io::{BufRead, BufReader, Read, Write};
+        let mut reader = BufReader::new(listener.accept().unwrap().0);
+        reader
+            .get_ref()
+            .set_read_timeout(Some(std::time::Duration::from_secs(5)))
+            .unwrap();
+        let read = |reader: &mut BufReader<std::os::unix::net::UnixStream>| {
+            let mut line = String::new();
+            assert!(reader.read_line(&mut line).unwrap() > 0);
+            serde_json::from_str::<Value>(&line).unwrap()
+        };
+        let hello = read(&mut reader);
+        writeln!(reader.get_mut(),"{}",json!({"jsonrpc":"2.0","id":hello["id"],"result":{"generation":1,"framed":false,"core":{"id":"core"},"methods":["hello","doc.get","terminal.run"]}})).unwrap();
+        let streams_doc = read(&mut reader);
+        writeln!(reader.get_mut(),"{}",json!({"jsonrpc":"2.0","id":streams_doc["id"],"result":{"version":1,"value":{"version":1,"spaces":{"space-work":association}}}})).unwrap();
+        let app_doc = read(&mut reader);
+        writeln!(reader.get_mut(),"{}",json!({"jsonrpc":"2.0","id":app_doc["id"],"result":{"version":2,"value":{"spaces":[{"id":"space-work"}]}}})).unwrap();
+        let run = read(&mut reader);
+        assert_eq!(run["method"], "terminal.run");
+        let params = &run["params"];
+        assert_eq!(params["no_parent"], true);
+        assert_eq!(params["rm"], true);
+        assert_eq!(params["labels"]["herdr.space"], "space-work");
+        writeln!(reader.get_mut(),"{}",json!({"jsonrpc":"2.0","id":run["id"],"result":{"address":"t-viewer","state":"live","pid":777,"argv":params["argv"],"cwd":params["cwd"],"parent":null,"labels":params["labels"]}})).unwrap();
+        let mut rest = Vec::new();
+        reader.read_to_end(&mut rest).unwrap();
+        assert!(rest.is_empty());
+    });
+    let output = fixture
+        .command()
+        .env("HC_SOCKET", &path)
+        .args([
+            "integration",
+            "request",
+            "--request-json",
+            &artifact_request.to_string(),
+        ])
+        .output()
+        .unwrap();
+    assert!(
+        output.status.success(),
+        "{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let reply = ModReply::decode(std::str::from_utf8(&output.stdout).unwrap()).unwrap();
+    assert_eq!(reply.verified_endpoint, Some(EndpointId("core".into())));
+    let WireResult::Ok(ModResult::ReferenceOpened { value }) = reply.result else {
+        panic!("reference opened")
+    };
+    assert_eq!(value.known, vec![resource("t-viewer")]);
+    assert!(matches!(
+        value.result,
+        ReferenceOpenResult::NeedsViewer { .. }
+    ));
+    server.join().unwrap();
+
+    // Missing executable in STREAMS_BIN_PATH fails before connecting or calling terminal.run.
+    let missing_exe_out = fixture
+        .command()
+        .env(
+            "HC_SOCKET",
+            path.parent().unwrap().join("never-connected.sock"),
+        )
+        .env("STREAMS_BIN_PATH", "/nonexistent/streams-binary")
+        .args([
+            "integration",
+            "request",
+            "--request-json",
+            &artifact_request.to_string(),
+        ])
+        .output()
+        .unwrap();
+    assert!(missing_exe_out.status.success());
+    let missing_exe_reply =
+        ModReply::decode(std::str::from_utf8(&missing_exe_out.stdout).unwrap()).unwrap();
+    let WireResult::Ok(ModResult::ReferenceOpened { value: missing_val }) =
+        missing_exe_reply.result
+    else {
+        panic!("missing exe reply")
+    };
+    assert!(matches!(
+        missing_val.result,
+        ReferenceOpenResult::NotApplied { .. }
+    ));
 }

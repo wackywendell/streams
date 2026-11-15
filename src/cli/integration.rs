@@ -123,15 +123,19 @@ impl App {
                     use streams::integration::{
                         PresentationSnapshot, ViewSelection, ViewingChoice,
                     };
+                    let needs_sidebar = selections
+                        .as_slice()
+                        .iter()
+                        .any(|selection| matches!(selection, ViewSelection::Sidebar { .. }));
+                    let needs_frame = selections
+                        .as_slice()
+                        .iter()
+                        .any(|selection| matches!(selection, ViewSelection::Frame { .. }));
                     let mut presentation = None;
                     let mut execution = None;
-                    if selections.as_slice().iter().any(|selection| {
-                        matches!(
-                            selection,
-                            streams::integration::ViewSelection::Sidebar { .. }
-                        )
-                    }) && let Ok(socket) =
-                        frontend::hc::HcEndpoint::resolve(&self.environment, &self.cwd)
+                    if (needs_sidebar || needs_frame)
+                        && let Ok(socket) =
+                            frontend::hc::HcEndpoint::resolve(&self.environment, &self.cwd)
                         && let Ok(client) = frontend::hc::HcClient::connect(
                             socket,
                             Some(&request.endpoint),
@@ -141,8 +145,15 @@ impl App {
                     {
                         verified_endpoint = Some(client.endpoint().clone());
                         let mut operation = streams::runtime::hc::HcOperation::new(client);
-                        if let Ok(native) = operation.presentation(facade.scope(), None) {
-                            let mut candidates = std::collections::BTreeMap::new();
+                        let mut candidates = std::collections::BTreeMap::new();
+                        for selection in selections.as_slice() {
+                            if let ViewSelection::Frame { terminal } = selection {
+                                candidates.insert(terminal.key.clone(), terminal);
+                            }
+                        }
+                        if needs_sidebar
+                            && let Ok(native) = operation.presentation(facade.scope(), None)
+                        {
                             for selection in selections.as_slice() {
                                 if let ViewSelection::Sidebar {
                                     space,
@@ -157,33 +168,39 @@ impl App {
                                     candidates.insert(terminal.key.clone(), terminal);
                                 }
                             }
-                            if !candidates.is_empty()
-                                && let Ok(observer) = frontend::hc::processes::OwnerProcesses::new()
-                            {
-                                let mut snapshot = streams::runtime::hc::HcForeground::new(
-                                    operation.endpoint().clone(),
-                                );
-                                for terminal in candidates.into_values() {
-                                    let value = operation.foreground(terminal, &observer);
-                                    snapshot.insert(terminal, value);
-                                }
-                                execution = Some(snapshot);
-                            }
                             presentation = Some(native);
                         }
+                        if !candidates.is_empty()
+                            && let Ok(observer) = frontend::hc::processes::OwnerProcesses::new()
+                        {
+                            let mut snapshot = streams::runtime::hc::HcForeground::new(
+                                operation.endpoint().clone(),
+                            );
+                            for terminal in candidates.into_values() {
+                                let value = operation.foreground(terminal, &observer);
+                                snapshot.insert(terminal, value);
+                            }
+                            execution = Some(snapshot);
+                        }
                     }
-                    let values = match presentation.as_ref() {
-                        Some(value) => facade.read_views(
+                    let values = if presentation.is_some() || execution.is_some() {
+                        facade.read_views(
                             selections.as_slice(),
-                            streams::integration::Access::Available { value },
+                            match presentation.as_ref() {
+                                Some(value) => streams::integration::Access::Available { value },
+                                None => streams::integration::Access::Unavailable {
+                                    reason: "native presentation is unavailable".into(),
+                                },
+                            },
                             match execution.as_ref() {
                                 Some(value) => streams::integration::Access::Available { value },
                                 None => streams::integration::Access::Unavailable {
                                     reason: "foreground context is unavailable".into(),
                                 },
                             },
-                        ),
-                        None => facade.read_saved_views(selections.as_slice()),
+                        )
+                    } else {
+                        facade.read_saved_views(selections.as_slice())
                     }
                     .map_err(|_| WireError::unavailable("saved views are unavailable"))?;
                     Ok(ModResult::Read {
@@ -211,7 +228,17 @@ impl App {
                     } => Ok(ModResult::ReferenceOpened {
                         value: facade.open_link(stream, link, context),
                     }),
-                    _ => Err(WireError::unavailable("native integration is not enabled")),
+                    streams::integration::ModAction::OpenReference { reference, at, .. } => {
+                        let value = self.integration_open_reference(
+                            &records,
+                            &facade,
+                            &request.endpoint,
+                            reference,
+                            at.as_ref(),
+                            &mut verified_endpoint,
+                        )?;
+                        Ok(ModResult::ReferenceOpened { value })
+                    }
                 },
             }
         })();
@@ -228,6 +255,160 @@ impl App {
             warnings: vec![],
         };
         Ok(Output::plain(Value::Null, reply.encode()?))
+    }
+
+    fn integration_open_reference(
+        &self,
+        records: &application::OpenedRecords,
+        facade: &application::integration::Streams<'_>,
+        endpoint: &frontend::EndpointId,
+        reference: &streams::integration::Reference,
+        at: Option<&streams::integration::NativeRef>,
+        verified_endpoint: &mut Option<frontend::EndpointId>,
+    ) -> std::result::Result<streams::integration::ReferenceOpenReport, WireError> {
+        use streams::{
+            integration::{
+                Effect, NonEmpty, PresentationSnapshot, ReferenceOpenReport, ReferenceOpenResult,
+                ResolvedTarget, ViewerAction,
+            },
+            runtime::hc::{HcOperation, launch::PreparedTerminal},
+        };
+        let not_applied = |reason: &str| ReferenceOpenReport {
+            known: vec![],
+            result: ReferenceOpenResult::NotApplied {
+                reason: reason.into(),
+            },
+        };
+        let host = &facade.scope().host;
+        let registry = self
+            .registry(host)
+            .map_err(|_| WireError::unavailable("owner checkouts are unavailable"))?;
+        let locations = self
+            .locations(records.root(), host)
+            .map_err(|_| WireError::unavailable("owner locations are unavailable"))?;
+        let resolved = match facade.resolve_saved_reference(reference, &registry, &locations) {
+            Ok(value) => value,
+            Err(_) => return Ok(not_applied("saved reference is unavailable")),
+        };
+        let resolve_owner_exe = || -> std::result::Result<String, WireError> {
+            let candidate = self
+                .environment
+                .get("STREAMS_BIN_PATH")
+                .cloned()
+                .or_else(|| {
+                    std::env::current_exe()
+                        .ok()
+                        .and_then(|path| path.to_str().map(str::to_owned))
+                })
+                .ok_or_else(|| WireError::unavailable("owner executable is unavailable"))?;
+            let resolved = streams::runtime::launch::resolve_executable(
+                &candidate,
+                &self.environment,
+                &self.cwd,
+            )
+            .map_err(|_| WireError::unavailable("owner executable is unavailable"))?;
+            resolved
+                .to_str()
+                .map(str::to_owned)
+                .ok_or_else(|| WireError::unavailable("owner executable is unavailable"))
+        };
+        let (stream, cwd, argv) = match resolved {
+            ResolvedTarget::Document {
+                stream,
+                checkout_root,
+                ..
+            } => {
+                let exe = match resolve_owner_exe() {
+                    Ok(exe) => exe,
+                    Err(_) => return Ok(not_applied("owner executable is unavailable")),
+                };
+                let scope_json = serde_json::to_string(facade.scope())
+                    .map_err(|_| WireError::unavailable("scope encoding is unavailable"))?;
+                let ref_json = serde_json::to_string(reference)
+                    .map_err(|_| WireError::unavailable("reference encoding is unavailable"))?;
+                (
+                    stream,
+                    checkout_root,
+                    vec![
+                        exe,
+                        "integration".into(),
+                        "view-document".into(),
+                        "--scope-json".into(),
+                        scope_json,
+                        "--reference-json".into(),
+                        ref_json,
+                    ],
+                )
+            }
+            ResolvedTarget::Artifact { key } => {
+                let exe = match resolve_owner_exe() {
+                    Ok(exe) => exe,
+                    Err(_) => return Ok(not_applied("owner executable is unavailable")),
+                };
+                (
+                    key.stream.clone(),
+                    records.root().to_path_buf(),
+                    vec![exe, "artifact".into(), "view".into(), key.reference()],
+                )
+            }
+            ResolvedTarget::Link { .. } => unreachable!("link handled before native connection"),
+        };
+        let socket = frontend::hc::HcEndpoint::resolve(&self.environment, &self.cwd)
+            .map_err(|_| WireError::unavailable("hc connection is unavailable"))?;
+        let client = frontend::hc::HcClient::connect(socket.clone(), Some(endpoint), 30.0, None)
+            .map_err(|_| WireError::unavailable("hc connection is unavailable"))?;
+        *verified_endpoint = Some(client.endpoint().clone());
+        let mut operation = HcOperation::new(client);
+        let presentation = match operation.presentation(facade.scope(), None) {
+            Ok(value) => value,
+            Err(_) => return Ok(not_applied("hc presentation is unavailable")),
+        };
+        let space = match at {
+            Some(space) => {
+                if !presentation.contains_space(space) {
+                    return Ok(not_applied("target space is unavailable on this endpoint"));
+                }
+                space.clone()
+            }
+            None => {
+                let spaces = presentation.associated_spaces(&stream);
+                let [space] = spaces.as_slice() else {
+                    return Ok(not_applied(
+                        "reference opening requires one associated space",
+                    ));
+                };
+                space.clone()
+            }
+        };
+        let mut env = runtime::workspace::native_environment(&stream, &self.environment)
+            .map_err(|_| WireError::unavailable("viewer environment is unavailable"))?;
+        env.insert(
+            "STREAMS_ARTIFACT_CATALOG_SOURCE".into(),
+            facade.scope().catalog.clone(),
+        );
+        let prepared = match PreparedTerminal::prepare_viewer(argv, &cwd, env, &space, &socket) {
+            Ok(value) => value,
+            Err(_) => return Ok(not_applied("viewer terminal could not be prepared")),
+        };
+        match operation.start_terminal(prepared) {
+            Effect::Applied { value } => Ok(ReferenceOpenReport {
+                known: vec![value.clone()],
+                result: ReferenceOpenResult::NeedsViewer {
+                    value: NonEmpty::new(
+                        ViewerAction::SelectSpace { space },
+                        [ViewerAction::FocusTerminal { terminal: value }],
+                    ),
+                },
+            }),
+            Effect::NotApplied { reason } => Ok(ReferenceOpenReport {
+                known: vec![],
+                result: ReferenceOpenResult::NotApplied { reason },
+            }),
+            Effect::Uncertain { reason } => Ok(ReferenceOpenReport {
+                known: vec![],
+                result: ReferenceOpenResult::Uncertain { reason },
+            }),
+        }
     }
 
     fn integration_open_work(

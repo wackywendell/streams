@@ -216,7 +216,13 @@ fn execute(command: Command, input: Input, json: bool) -> Result<Output> {
         command => {
             let mut app = App::new()?;
             app.input = input;
-            app.execute(command)
+            let output = app.execute(command)?;
+            if output.accepted_save
+                && let Err(error) = app.notify_hc_save()
+            {
+                eprintln!("streams: {error}");
+            }
+            Ok(output)
         }
     }
 }
@@ -529,6 +535,65 @@ impl App {
                 "calling workspace has no Stream selector; pass an explicit reference",
             )
         })
+    }
+    fn hc_caller_stream_id(&self, host: &str, catalog_source: &str) -> Result<Option<String>> {
+        use streams::integration::{PresentationSnapshot, WorkScope};
+        let configured = self.config.load()?.frontend;
+        if !self.hc_selected(&configured, None)? {
+            return Ok(None);
+        }
+        let Some(caller) = self
+            .environment
+            .get("HC_TERMINAL_ID")
+            .map(String::as_str)
+            .filter(|value| !value.is_empty() && !value.contains('/'))
+        else {
+            return Ok(None);
+        };
+        let scope = WorkScope {
+            catalog: catalog_source.into(),
+            host: host.into(),
+        };
+        let socket = frontend::hc::HcEndpoint::resolve(&self.environment, &self.cwd)
+            .map_err(|error| CliError::message(error.message))?;
+        let client = frontend::hc::HcClient::connect(socket, None, 5.0, None)
+            .map_err(|error| CliError::message(error.message))?;
+        let mut operation = runtime::hc::HcOperation::new(client);
+        let presentation = operation
+            .presentation_for_caller(&scope, Some(caller))
+            .map_err(|error| CliError::message(error.message))?;
+        Ok(presentation
+            .caller_space()
+            .and_then(|space| presentation.stream_for_space(&space)))
+    }
+    pub(super) fn notify_hc_save(&self) -> Result<()> {
+        let Some(terminal) = self
+            .environment
+            .get("HC_TERMINAL_ID")
+            .map(String::as_str)
+            .filter(|value| !value.is_empty() && !value.contains('/'))
+        else {
+            return Ok(());
+        };
+        let configured = self.config.load()?.frontend;
+        if !self.hc_selected(&configured, None)? {
+            return Ok(());
+        }
+        let opened = application::open_records(&self.config)?;
+        let scope = streams::integration::WorkScope {
+            catalog: opened.source_id().into(),
+            host: opened.host().as_str().into(),
+        };
+        let socket = frontend::hc::HcEndpoint::resolve(&self.environment, &self.cwd)
+            .map_err(|error| CliError::message(error.message))?;
+        let client = frontend::hc::HcClient::connect(socket, None, 5.0, None)
+            .map_err(|error| CliError::message(error.message))?;
+        let mut operation = runtime::hc::HcOperation::new(client);
+        match operation.notify_saved(&scope, terminal) {
+            streams::integration::Effect::Applied { value: () } => Ok(()),
+            streams::integration::Effect::NotApplied { reason }
+            | streams::integration::Effect::Uncertain { reason } => Err(CliError::message(reason)),
+        }
     }
     fn record_target(
         &self,
@@ -944,6 +1009,17 @@ impl App {
                 "catalog root setting changed during observation",
             ));
         }
+        let workspace_stream = if let Some(stream) = self
+            .herdr
+            .as_ref()
+            .and_then(|read| read.workspace_stream.clone())
+        {
+            Some(stream)
+        } else {
+            self.hc_caller_stream_id(opened.host().as_str(), opened.source_id())
+                .ok()
+                .flatten()
+        };
         let context = self.context_from_records(
             &opened,
             ContextRequest {
@@ -954,10 +1030,7 @@ impl App {
                     .environment
                     .get("STREAMS_STREAM_ID")
                     .map(String::as_str),
-                workspace_stream_id: self
-                    .herdr
-                    .as_ref()
-                    .and_then(|read| read.workspace_stream.as_deref()),
+                workspace_stream_id: workspace_stream.as_deref(),
             },
             settings.naming,
         )?;

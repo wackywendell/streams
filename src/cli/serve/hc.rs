@@ -126,6 +126,50 @@ impl Source {
             registration,
         })
     }
+
+    pub fn bind_session(
+        &self,
+        scope: &streams::integration::WorkScope,
+        stream_id: &str,
+        stopping: Cancellation,
+    ) -> Result<()> {
+        let client = HcClient::connect(
+            self.socket.clone(),
+            Some(&self.endpoint),
+            5.0,
+            Some(stopping),
+        )
+        .map_err(|_| CliError::message("hc connection is unavailable"))?;
+        let mut operation = streams::runtime::hc::HcOperation::new(client);
+        match operation.bind_caller_terminal(scope, self.registration.terminal(), stream_id) {
+            Effect::Applied { value: () } => Ok(()),
+            Effect::NotApplied { reason } | Effect::Uncertain { reason } => {
+                Err(CliError::message(reason))
+            }
+        }
+    }
+
+    pub fn notify_saved(
+        &self,
+        scope: &streams::integration::WorkScope,
+        stopping: Cancellation,
+    ) -> Result<()> {
+        let client = HcClient::connect(
+            self.socket.clone(),
+            Some(&self.endpoint),
+            5.0,
+            Some(stopping),
+        )
+        .map_err(|_| CliError::message("hc save notice connection is unavailable"))?;
+        let mut operation = streams::runtime::hc::HcOperation::new(client);
+        match operation.notify_saved(scope, self.registration.terminal()) {
+            Effect::Applied { value: () } => Ok(()),
+            Effect::NotApplied { reason } | Effect::Uncertain { reason } => {
+                Err(CliError::message(reason))
+            }
+        }
+    }
+
     pub fn retire(self, deadline: Instant) -> Result<()> {
         let remaining = deadline
             .saturating_duration_since(Instant::now())
@@ -151,4 +195,79 @@ impl Source {
             )),
         }
     }
+}
+
+pub(super) struct SessionResolution {
+    pub scope: streams::integration::WorkScope,
+    pub session: Option<Session>,
+    pub desired_pi_name: Option<String>,
+}
+
+pub(super) fn resolve_session(
+    app: &App,
+    session_id: &str,
+    plugin_root: &std::path::Path,
+    remember_directory: bool,
+) -> Result<SessionResolution> {
+    let opened = super::super::application::open_records(&app.config)?;
+    let host = opened.host().as_str();
+    let scope = streams::integration::WorkScope {
+        catalog: opened.source_id().into(),
+        host: host.into(),
+    };
+    let id = Session::id_for(host, "pi", session_id);
+    let address = RecordAddress::new(host, RecordKind::Session, &id)
+        .map_err(|_| CliError::message("Pi Session is unavailable"))?;
+    let found = opened
+        .records()
+        .with_reader(|reader| reader.read(&address))
+        .map_err(|_| CliError::message("Pi Session is unavailable"))?;
+    let Some(found) = found else {
+        return Ok(SessionResolution {
+            scope,
+            session: None,
+            desired_pi_name: None,
+        });
+    };
+    let Record::Session(session) = found.record else {
+        return Err(CliError::message("Pi Session is unavailable"));
+    };
+    if session.host_id != host
+        || session.harness != "pi"
+        || session.harness_session_id != session_id
+    {
+        return Err(CliError::message("Pi Session identity does not match"));
+    }
+    if remember_directory
+        && let Ok(directory) = streams::runtime::checkouts::canonical_directory(&app.cwd)
+        && let Ok(locations) = app.locations(opened.root(), host)
+    {
+        let _ = locations.remember(&session.stream_id, &directory, None, true, None, None);
+        if let Ok(binding) = locations.remember(
+            &session.stream_id,
+            &directory,
+            Some(&session.id),
+            true,
+            None,
+            None,
+        ) && let Some(checkout) = binding.checkout
+            && let Ok(registry) = app.registry(host)
+        {
+            let _ = registry
+                .bind_inferred_repositories(&checkout.id, &streams::process::NativeProcessRunner);
+        }
+    }
+    let session_naming = streams::runtime::native_cards::NativeCardsConfig::load(
+        &app.environment,
+        &app.cwd,
+        plugin_root,
+    )
+    .map(|config| config.session_naming())
+    .unwrap_or(true);
+    let desired_pi_name = session_naming.then(|| session.title.clone());
+    Ok(SessionResolution {
+        scope,
+        session: Some(session),
+        desired_pi_name,
+    })
 }

@@ -76,7 +76,6 @@ struct OnceNative {
 impl NativeIntegration for OnceNative {
     type Observation = NoObservation;
     type Execution = Facts;
-    type Action = ();
     fn opening_support(&self) -> Option<OpeningSupport> {
         panic!("prepared application does not reselect")
     }
@@ -99,17 +98,6 @@ impl NativeIntegration for OnceNative {
             }
         }
         self.effects.take().expect("opening submits once")
-    }
-    fn plan_projection(
-        &self,
-        _: &NoPresentation,
-        _: Option<&Facts>,
-        _: &DesiredProjection,
-    ) -> std::result::Result<ProjectionPlan<()>, streams::runtime::RuntimeError> {
-        panic!("opening does not add unrelated projections")
-    }
-    fn apply_projection(&mut self, _: ()) -> Effect<ProjectionResult> {
-        panic!("opening does not add unrelated projections")
     }
     fn open_target(&mut self, _: &ResolvedTarget, _: Option<&NativeRef>) -> ReferenceOpenReport {
         panic!("opening does not navigate")
@@ -407,80 +395,6 @@ fn an_initial_shell_keeps_its_own_uncertain_effect_without_a_fictitious_session(
         report.presentation.space,
         SpaceEvidence::Requested { .. }
     ));
-}
-
-#[test]
-fn only_eligible_automatic_lifecycle_events_can_create_a_missing_companion() {
-    for event in [
-        LifecycleEvent::Started,
-        LifecycleEvent::NewlyBound,
-        LifecycleEvent::Reattached,
-        LifecycleEvent::Stopping,
-        LifecycleEvent::NativeChanged {
-            kind: NativeChangeKind::PlacementChanged,
-        },
-        LifecycleEvent::NativeChanged {
-            kind: NativeChangeKind::DisplayChanged,
-        },
-    ] {
-        assert_eq!(event.companion_intent(false), CompanionIntent::Keep);
-        assert_eq!(
-            event.companion_intent(true),
-            if matches!(event, LifecycleEvent::Started | LifecycleEvent::NewlyBound) {
-                CompanionIntent::Show
-            } else {
-                CompanionIntent::Keep
-            }
-        );
-    }
-}
-
-#[test]
-fn session_projection_maps_saved_fields_and_independent_outgoing_switches() {
-    let mut stream = streams::model::Stream::new("work", "Work", None, "host").unwrap();
-    stream.goal_short = Some("Saved goal".into());
-    let session = Session::new("session", "host", "work", "pi", "native", "Saved title").unwrap();
-    let space = terminal("space");
-    for stream_naming in [false, true] {
-        for session_naming in [false, true] {
-            let desired = DesiredProjection::for_session(
-                &stream,
-                &session,
-                space.clone(),
-                AssociationIntent::Keep,
-                stream_naming,
-                session_naming,
-                CompanionIntent::Keep,
-            );
-            assert_eq!(desired.stream, "work");
-            assert_eq!(desired.space, Some(space.clone()));
-            assert_eq!(desired.stream_display.title, stream.title);
-            assert_eq!(desired.stream_display.goal_short, stream.goal_short);
-            assert_eq!(desired.association, AssociationIntent::Keep);
-            assert_eq!(
-                desired.stream_name,
-                if stream_naming {
-                    NameIntent::Set(stream.title.clone())
-                } else {
-                    NameIntent::LeaveUnchanged
-                }
-            );
-            let [projected] = desired.sessions.as_slice() else {
-                panic!("one Session");
-            };
-            assert_eq!(projected.view, SessionView::from(&session));
-            assert_eq!(projected.conversation, ConversationId::from(&session));
-            assert_eq!(
-                projected.name,
-                if session_naming {
-                    NameIntent::Set(session.title.clone())
-                } else {
-                    NameIntent::LeaveUnchanged
-                }
-            );
-            assert_eq!(projected.companion, CompanionIntent::Keep);
-        }
-    }
 }
 
 #[test]

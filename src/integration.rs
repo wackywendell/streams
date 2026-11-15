@@ -608,12 +608,6 @@ impl DesiredProjection {
     }
 }
 
-pub struct ProjectionPlan<A> {
-    pub owner_actions: Vec<A>,
-    pub viewer_actions: Vec<ViewerAction>,
-    pub warnings: Vec<String>,
-}
-
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, strum::EnumString, strum::VariantNames)]
 #[serde(rename_all = "snake_case")]
 #[strum(serialize_all = "snake_case")]
@@ -662,12 +656,6 @@ pub struct LifecycleReport {
     pub native: NativeStatus,
     pub projection: ProjectionResult,
 }
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(deny_unknown_fields)]
-pub struct DisplayReport {
-    pub preference: Effect<()>,
-    pub presentation: Effect<ProjectionResult>,
-}
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum NativeChangeKind {
     PlacementChanged,
@@ -690,12 +678,6 @@ impl LifecycleEvent {
             CompanionIntent::Keep
         }
     }
-}
-
-pub struct ConversationBinding<S> {
-    pub conversation: ConversationId,
-    pub session_file: Option<PathBuf>,
-    pub source: S,
 }
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(tag = "kind", rename_all = "snake_case", deny_unknown_fields)]
@@ -982,11 +964,10 @@ pub fn resolve_artifact_summary(
         .ok_or_else(|| crate::runtime::invalid("saved artifact reference is unavailable"))
 }
 
-/// Each operation retains its adapter observation. Accessors and projection planning do no I/O.
+/// Each operation retains its adapter observation. Accessors do no I/O.
 pub trait NativeIntegration {
     type Observation: NativeObservation;
     type Execution: ExecutionSnapshot;
-    type Action;
     fn opening_support(&self) -> Option<OpeningSupport>;
     fn observe(&mut self) -> Result<Self::Observation>;
     fn inspect_execution(
@@ -995,13 +976,6 @@ pub trait NativeIntegration {
         query: &ExecutionQuery,
     ) -> Access<Self::Execution>;
     fn execute_open(&mut self, plan: &PreparedOpen) -> OpenEffects;
-    fn plan_projection(
-        &self,
-        observed: &<Self::Observation as NativeObservation>::Presentation,
-        execution: Option<&Self::Execution>,
-        desired: &DesiredProjection,
-    ) -> Result<ProjectionPlan<Self::Action>>;
-    fn apply_projection(&mut self, action: Self::Action) -> Effect<ProjectionResult>;
     fn open_target(
         &mut self,
         target: &ResolvedTarget,

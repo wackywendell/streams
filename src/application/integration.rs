@@ -232,63 +232,128 @@ impl<'a> Streams<'a> {
         presentation: crate::integration::Access<&dyn crate::integration::PresentationSnapshot>,
         execution: crate::integration::Access<&dyn crate::integration::ExecutionSnapshot>,
     ) -> Result<Vec<crate::integration::WireResult<crate::integration::ModReadValue>>> {
-        use crate::integration::{Access, ModReadValue, SidebarContext, ViewSelection, WireResult};
+        use crate::integration::{
+            Access, CompanionVisibility, ForegroundConversation, FrameContext, ModReadValue,
+            SidebarContext, ViewSelection, WireResult,
+        };
         let mut expanded = selections.to_vec();
         let mut contexts = std::collections::BTreeMap::new();
+        let mut frames = std::collections::BTreeMap::new();
         for (index, selection) in selections.iter().enumerate() {
-            let ViewSelection::Sidebar { space, .. } = selection else {
-                continue;
-            };
-            let native = match &presentation {
-                Access::Available { value } => value,
-                _ => {
-                    contexts.insert(
-                        index,
-                        SidebarContext::Unavailable {
-                            reason: "native presentation is unavailable".into(),
-                        },
-                    );
-                    continue;
+            match selection {
+                ViewSelection::Sidebar { space, .. } => {
+                    let native = match &presentation {
+                        Access::Available { value } => value,
+                        _ => {
+                            contexts.insert(
+                                index,
+                                SidebarContext::Unavailable {
+                                    reason: "native presentation is unavailable".into(),
+                                },
+                            );
+                            continue;
+                        }
+                    };
+                    if !native.contains_space(space) {
+                        contexts.insert(
+                            index,
+                            SidebarContext::Unavailable {
+                                reason: "space is unavailable on this endpoint".into(),
+                            },
+                        );
+                        continue;
+                    }
+                    match native.stream_for_space(space) {
+                        Some(stream) => expanded[index] = ViewSelection::SavedStream { stream },
+                        None => {
+                            contexts.insert(index, SidebarContext::Unassociated);
+                        }
+                    }
                 }
-            };
-            if !native.contains_space(space) {
-                contexts.insert(
-                    index,
-                    SidebarContext::Unavailable {
-                        reason: "space is unavailable on this endpoint".into(),
-                    },
-                );
-                continue;
-            }
-            match native.stream_for_space(space) {
-                Some(stream) => expanded[index] = ViewSelection::SavedStream { stream },
-                None => {
-                    contexts.insert(index, SidebarContext::Unassociated);
+                ViewSelection::Frame { terminal } => {
+                    let foreground = match &execution {
+                        Access::Available { value } => value.foreground_conversation(terminal),
+                        _ => {
+                            frames.insert(
+                                index,
+                                FrameContext::Unavailable {
+                                    reason: "frame context is unavailable".into(),
+                                },
+                            );
+                            continue;
+                        }
+                    };
+                    match foreground {
+                        ForegroundConversation::Current(conversation) => {
+                            let session = Session::id_for(
+                                &self.scope.host,
+                                &conversation.harness,
+                                &conversation.native_id,
+                            );
+                            let context = self
+                                .records
+                                .records()
+                                .with_reader(|reader| self.session(reader, &session))
+                                .map(|found| match found {
+                                    Some(value) => FrameContext::Enrolled {
+                                        session: Box::new(SessionView::from(&value)),
+                                        companion: CompanionVisibility::Shown,
+                                    },
+                                    None => FrameContext::Unenrolled,
+                                })
+                                .unwrap_or_else(|_| FrameContext::Unavailable {
+                                    reason: "saved Session view is unavailable".into(),
+                                });
+                            frames.insert(index, context);
+                        }
+                        ForegroundConversation::NotApplicable => {
+                            frames.insert(index, FrameContext::NotApplicable);
+                        }
+                        ForegroundConversation::Unknown { reason } => {
+                            frames.insert(index, FrameContext::Unavailable { reason });
+                        }
+                    }
                 }
+                _ => {}
             }
         }
         Ok(self
             .read_saved_views(&expanded)?
             .into_iter()
             .enumerate()
-            .map(|(index, read)| {
-                let ViewSelection::Sidebar { space, viewing } = &selections[index] else {
-                    return read;
-                };
-                let context = contexts.remove(&index).unwrap_or_else(|| match read {
-                    WireResult::Ok(ModReadValue::Stream { value }) => {
-                        let viewing_session =
-                            self.sidebar_viewing(&value, space, viewing, &presentation, &execution);
-                        SidebarContext::Associated {
-                            stream: Box::new(value),
-                            viewing_session,
+            .map(|(index, read)| match &selections[index] {
+                ViewSelection::Sidebar { space, viewing } => {
+                    let context = contexts.remove(&index).unwrap_or_else(|| match read {
+                        WireResult::Ok(ModReadValue::Stream { value }) => {
+                            let viewing_session = self.sidebar_viewing(
+                                &value,
+                                space,
+                                viewing,
+                                &presentation,
+                                &execution,
+                            );
+                            SidebarContext::Associated {
+                                stream: Box::new(value),
+                                viewing_session,
+                            }
                         }
-                    }
-                    _ => SidebarContext::Unavailable {
-                        reason: "associated Stream view is unavailable".into(),
-                    },
-                });
-                WireResult::Ok(ModReadValue::Sidebar { value: context })
+                        _ => SidebarContext::Unavailable {
+                            reason: "associated Stream view is unavailable".into(),
+                        },
+                    });
+                    WireResult::Ok(ModReadValue::Sidebar { value: context })
+                }
+                ViewSelection::Frame { .. } => {
+                    let context = frames.remove(&index).unwrap_or(match read {
+                        WireResult::Ok(ModReadValue::Session { value }) => FrameContext::Enrolled {
+                            session: Box::new(value),
+                            companion: CompanionVisibility::Shown,
+                        },
+                        _ => FrameContext::Unenrolled,
+                    });
+                    WireResult::Ok(ModReadValue::Frame { context })
+                }
+                _ => read,
             })
             .collect())
     }
@@ -469,29 +534,23 @@ impl<'a> Streams<'a> {
         })
     }
 
-    /// Resolve saved keys only. Native placement and FollowFrame admission are separate.
+    /// Resolve saved keys directly without foreground process-group re-verification.
     pub fn open_link(
         &self,
         stream: &str,
         link: &crate::integration::LinkKey,
-        context: &crate::integration::ActivationContext,
+        _context: &crate::integration::ActivationContext,
     ) -> crate::integration::ReferenceOpenReport {
         use crate::integration::{
-            ActivationContext, NonEmpty, ReferenceOpenReport, ReferenceOpenResult, ViewerAction,
+            NonEmpty, ReferenceOpenReport, ReferenceOpenResult, ViewerAction,
         };
-        let result = if !matches!(context, ActivationContext::Explicit) {
-            ReferenceOpenResult::NotApplied {
-                reason: "frame context is unavailable".into(),
-            }
-        } else {
-            match self.saved_link(stream, link) {
-                Ok(url) => ReferenceOpenResult::NeedsViewer {
-                    value: NonEmpty::new(ViewerAction::OpenUrl { url }, []),
-                },
-                Err(_) => ReferenceOpenResult::NotApplied {
-                    reason: "saved link reference is unavailable".into(),
-                },
-            }
+        let result = match self.saved_link(stream, link) {
+            Ok(url) => ReferenceOpenResult::NeedsViewer {
+                value: NonEmpty::new(ViewerAction::OpenUrl { url }, []),
+            },
+            Err(_) => ReferenceOpenResult::NotApplied {
+                reason: "saved link reference is unavailable".into(),
+            },
         };
         ReferenceOpenReport {
             known: vec![],

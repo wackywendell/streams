@@ -30,6 +30,10 @@ pub struct SourceRegistration {
 }
 
 impl SourceRegistration {
+    pub fn terminal(&self) -> &str {
+        &self.terminal
+    }
+
     /// Read the hinted terminal and verify the published SDK-to-helper route before writing.
     pub fn register(
         client: &mut HcClient,

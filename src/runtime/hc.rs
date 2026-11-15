@@ -99,7 +99,8 @@ pub fn verify_claim_route(
         pid = parent;
     }
     for (pid, expected) in observed {
-        if observer.observe(pid).map_err(|_| unavailable())? != expected {
+        let current = observer.observe(pid).map_err(|_| unavailable())?;
+        if current.key != expected.key || current.parent_pid != expected.parent_pid {
             return Err(unavailable());
         }
     }
@@ -123,12 +124,6 @@ pub fn registered_foreground(
         #[serde(deserialize_with = "crate::codec::required_nullable")]
         pid: Option<u32>,
         labels: BTreeMap<String, String>,
-        #[serde(deserialize_with = "crate::codec::required_nullable")]
-        foreground: Option<Foreground>,
-    }
-    #[derive(Deserialize)]
-    struct Foreground {
-        pid: u32,
     }
     let Ok(native) = serde_json::from_value::<Terminal>(value) else {
         return unknown();
@@ -147,12 +142,9 @@ pub fn registered_foreground(
     if claims.is_empty() {
         return ForegroundConversation::NotApplicable;
     }
-    let (Some(root), Some(foreground)) = (native.pid, native.foreground) else {
+    let Some(root) = native.pid.filter(|pid| *pid != 0) else {
         return unknown();
     };
-    if root == 0 || foreground.pid == 0 {
-        return unknown();
-    }
     let mut sdk_keys = BTreeSet::new();
     let mut current = None;
     for (key, value) in claims {
@@ -170,16 +162,7 @@ pub fn registered_foreground(
         if !sdk_keys.insert(claim.sdk.clone()) {
             return unknown();
         }
-        let Ok(sdk) = observer.observe(claim.sdk.pid) else {
-            return unknown();
-        };
-        if sdk.key != claim.sdk {
-            return unknown();
-        }
-        if !sdk.stopped
-            && sdk.process_group == foreground.pid
-            && current.replace(claim.conversation).is_some()
-        {
+        if current.replace(claim.conversation).is_some() {
             return unknown();
         }
     }
@@ -1236,6 +1219,131 @@ impl HcOperation {
             presentation.caller = presentation.space_for_terminal(&terminal);
         }
         Ok(presentation)
+    }
+
+    /// Bind an unassociated published caller space to `stream` and write `streams.work` on `caller_terminal`.
+    pub fn bind_caller_terminal(
+        &mut self,
+        scope: &WorkScope,
+        caller_terminal: &str,
+        stream: &str,
+    ) -> Effect<()> {
+        let not_applied = |reason: String| Effect::NotApplied { reason };
+        if caller_terminal.is_empty()
+            || caller_terminal.contains('/')
+            || crate::model::check_text(caller_terminal, "terminal", false).is_err()
+        {
+            return not_applied("invalid hc terminal reference".into());
+        }
+        let Ok(work) = labels::work_value(scope, stream) else {
+            return not_applied("invalid work routing label".into());
+        };
+        let Ok(presentation) = self.presentation_for_caller(scope, Some(caller_terminal)) else {
+            return not_applied("hc presentation is unavailable".into());
+        };
+        use crate::integration::PresentationSnapshot;
+        if let Some(space) = presentation.caller_space()
+            && !presentation.before.rows.contains_key(&space.key)
+            && presentation.associated_spaces(stream).is_empty()
+        {
+            let wanted = SpaceAssociation {
+                space,
+                scope: scope.clone(),
+                stream: stream.into(),
+            };
+            match self.finish_associations(
+                &presentation.before,
+                &presentation.published,
+                Some(&wanted),
+            ) {
+                Effect::Applied { value: () } => {}
+                other => return other,
+            }
+        }
+        self.set_terminal_label(caller_terminal, "streams.work", &work)
+    }
+
+    /// Emit a scoped save notice on `caller_terminal` so reactive views refresh.
+    pub fn notify_saved(&mut self, scope: &WorkScope, caller_terminal: &str) -> Effect<()> {
+        let Ok(key) = labels::scope_key(scope) else {
+            return Effect::NotApplied {
+                reason: "invalid save notification scope".into(),
+            };
+        };
+        let token = uuid::Uuid::new_v4().to_string();
+        self.set_terminal_label(caller_terminal, &key, &token)
+    }
+
+    fn set_terminal_label(&mut self, terminal: &str, key: &str, value: &str) -> Effect<()> {
+        if terminal.is_empty()
+            || terminal.contains('/')
+            || crate::model::check_text(terminal, "terminal", false).is_err()
+            || key.is_empty()
+            || value.is_empty()
+        {
+            return Effect::NotApplied {
+                reason: "invalid hc terminal label inputs".into(),
+            };
+        }
+        let params = json!({
+            "terminal": terminal,
+            "labels": {
+                key: value,
+            },
+        });
+        let (frame, result) = self.client.exchange("terminal.label", &params, true);
+        match result {
+            Ok(reply) => {
+                let confirmed = reply.get("address").and_then(Value::as_str) == Some(terminal)
+                    && reply.get("state").and_then(Value::as_str) == Some("live")
+                    && reply
+                        .get("labels")
+                        .and_then(Value::as_object)
+                        .and_then(|labels| labels.get(key))
+                        .and_then(Value::as_str)
+                        == Some(value);
+                self.commands.push(CommandEvidence {
+                    request: NativeRequest::Socket {
+                        method: "terminal.label".into(),
+                        params,
+                        response: frame,
+                    },
+                    outcome: if confirmed {
+                        CommandOutcome::Acknowledged
+                    } else {
+                        CommandOutcome::Uncertain
+                    },
+                });
+                if confirmed {
+                    Effect::Applied { value: () }
+                } else {
+                    Effect::Uncertain {
+                        reason: "hc terminal label was not confirmed".into(),
+                    }
+                }
+            }
+            Err(failure) => {
+                let submitted = !failure.error.commands.is_empty();
+                let rejected = matches!(
+                    failure.rejection.as_deref(),
+                    Some("invalid_params" | "invalid_request" | "method_not_found")
+                );
+                self.commands.extend(failure.error.commands);
+                if !submitted {
+                    Effect::NotApplied {
+                        reason: "hc terminal label did not start".into(),
+                    }
+                } else if rejected {
+                    Effect::NotApplied {
+                        reason: "hc terminal label was rejected".into(),
+                    }
+                } else {
+                    Effect::Uncertain {
+                        reason: "hc terminal label was not confirmed".into(),
+                    }
+                }
+            }
+        }
     }
 }
 
