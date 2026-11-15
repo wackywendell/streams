@@ -1058,6 +1058,193 @@ fn execution_inspects_only_registered_sources_on_the_selected_core() {
 }
 
 #[test]
+fn prepared_hc_terminal_start_keeps_exact_inputs_and_never_replays() {
+    use std::{fs, os::unix::fs::PermissionsExt};
+    use streams::{
+        integration::{LaunchItem, VerifiedLaunch},
+        model::Session,
+        runtime::{
+            conversations::ConversationRoots,
+            hc::launch::{PreparedTerminal, StartContext},
+        },
+    };
+    let directory = tempfile::tempdir().unwrap();
+    let cwd = directory.path().canonicalize().unwrap();
+    let bin = cwd.join("bin");
+    fs::create_dir(&bin).unwrap();
+    let program = bin.join("pi");
+    fs::write(&program, "#!/bin/sh\nexit 0\n").unwrap();
+    fs::set_permissions(&program, fs::Permissions::from_mode(0o755)).unwrap();
+    let transcript = cwd.join("actual.jsonl");
+    fs::write(&transcript, "{\"type\":\"session\",\"id\":\"saved\"}\n").unwrap();
+    let session = Session::new("session", "host", "work", "pi", "saved", "Saved").unwrap();
+    let approved = BTreeMap::from([
+        ("HOME".into(), cwd.display().to_string()),
+        ("PATH".into(), bin.display().to_string()),
+        ("STREAMS_STREAM_ID".into(), "work".into()),
+    ]);
+    let item = LaunchItem::Conversation(
+        VerifiedLaunch::prepare(
+            &session,
+            &transcript,
+            &ConversationRoots::default(),
+            &cwd,
+            approved.clone(),
+        )
+        .unwrap(),
+    );
+    let caller = BTreeMap::from([
+        ("HC_SESSION".into(), "chosen".into()),
+        ("HC_TERMINAL_ID".into(), "caller".into()),
+        ("XDG_RUNTIME_DIR".into(), cwd.display().to_string()),
+        ("TOKEN".into(), "never-forward".into()),
+    ]);
+    for mode in ["confirmed", "finished", "pending", "malformed", "lost"] {
+        let native = tempfile::Builder::new()
+            .prefix("hc-start-")
+            .tempdir_in("/tmp")
+            .unwrap();
+        let path = native.path().join("s");
+        let listener = UnixListener::bind(&path).unwrap();
+        let endpoint = HcEndpoint::resolve(
+            &BTreeMap::from([("HC_SOCKET".into(), path.display().to_string())]),
+            &cwd,
+        )
+        .unwrap();
+        let placement = reference("new-space");
+        let prepared = PreparedTerminal::prepare(
+            &item,
+            StartContext {
+                scope: &scope(),
+                stream: "work",
+                space: &placement,
+                socket: &endpoint,
+                environment: &caller,
+            },
+        )
+        .unwrap();
+        let tab = prepared.tab().to_owned();
+        assert!(uuid::Uuid::parse_str(&tab).is_ok());
+        let mut environment = approved.clone();
+        environment.insert("HC_SOCKET".into(), path.display().to_string());
+        environment.insert("HC_SESSION".into(), "chosen".into());
+        environment.insert("XDG_RUNTIME_DIR".into(), cwd.display().to_string());
+        let labels = json!({"streams.work":serde_json::to_string(&json!({"version":1,"scope":scope(),"stream":"work"})).unwrap(), "herdr.space":"new-space", "herdr.tab":tab});
+        let expected = json!({"argv":[program.display().to_string(),"--session",transcript.display().to_string()],"cwd":cwd,"env":environment,"labels":labels,"no_parent":true,"wait":false});
+        let server = thread::spawn(move || {
+            let mut reader = BufReader::new(listener.accept().unwrap().0);
+            reader
+                .get_ref()
+                .set_read_timeout(Some(std::time::Duration::from_secs(5)))
+                .unwrap();
+            let mut line = String::new();
+            reader.read_line(&mut line).unwrap();
+            let hello: Value = serde_json::from_str(&line).unwrap();
+            writeln!(reader.get_mut(),"{}",json!({"jsonrpc":"2.0","id":hello["id"],"result":{"generation":1,"framed":false,"core":{"id":"core"},"methods":["hello","terminal.run"]}})).unwrap();
+            line.clear();
+            reader.read_line(&mut line).unwrap();
+            let request: Value = serde_json::from_str(&line).unwrap();
+            assert_eq!(request["method"], "terminal.run");
+            assert_eq!(request["params"], expected);
+            if mode == "lost" {
+                return;
+            }
+            let reply = match mode {
+                "confirmed" => json!({"address":"t7","state":"live","pid":123,"labels":labels}),
+                "finished" => {
+                    json!({"address":"t7","state":"finished","reason":"exited","exit_code":0,"labels":labels})
+                }
+                "pending" => {
+                    json!({"address":"t7","state":"live","pid":null,"reason":"spawn_pending","labels":labels})
+                }
+                _ => json!({"address":"t7","state":"live","pid":123,"labels":{}}),
+            };
+            writeln!(
+                reader.get_mut(),
+                "{}",
+                json!({"jsonrpc":"2.0","id":request["id"],"result":reply})
+            )
+            .unwrap();
+            let mut remaining = Vec::new();
+            reader.read_to_end(&mut remaining).unwrap();
+            assert!(remaining.is_empty(), "no retry or additional native action");
+        });
+        let client =
+            HcClient::connect(endpoint, Some(&EndpointId("core".into())), 5.0, None).unwrap();
+        let mut operation = HcOperation::new(client);
+        let result = operation.start_terminal(prepared);
+        if mode == "confirmed" || mode == "finished" {
+            assert_eq!(
+                result,
+                Effect::Applied {
+                    value: reference("t7")
+                }
+            );
+            assert_eq!(operation.commands[0].outcome, CommandOutcome::Acknowledged);
+        } else {
+            assert!(matches!(result, Effect::Uncertain { .. }));
+            assert_eq!(operation.commands[0].outcome, CommandOutcome::Uncertain);
+        }
+        drop(operation);
+        server.join().unwrap();
+    }
+    let core = FakeCore::new(vec![]);
+    let different = HcEndpoint::resolve(
+        &BTreeMap::from([(
+            "HC_SOCKET".into(),
+            cwd.join("different.sock").display().to_string(),
+        )]),
+        &cwd,
+    )
+    .unwrap();
+    let placement = reference("space");
+    let prepared = PreparedTerminal::prepare(
+        &item,
+        StartContext {
+            scope: &scope(),
+            stream: "work",
+            space: &placement,
+            socket: &different,
+            environment: &caller,
+        },
+    )
+    .unwrap();
+    let mut operation = core.operation();
+    assert!(matches!(
+        operation.start_terminal(prepared),
+        Effect::NotApplied { .. }
+    ));
+    assert!(operation.commands.is_empty());
+    drop(operation);
+    assert_eq!(core.finish().len(), 1);
+    let core = FakeCore::new(vec![]);
+    let endpoint = HcEndpoint::resolve(
+        &BTreeMap::from([("HC_SOCKET".into(), core.socket.display().to_string())]),
+        &cwd,
+    )
+    .unwrap();
+    let prepared = PreparedTerminal::prepare(
+        &item,
+        StartContext {
+            scope: &scope(),
+            stream: "work",
+            space: &placement,
+            socket: &endpoint,
+            environment: &caller,
+        },
+    )
+    .unwrap();
+    let mut operation = core.operation();
+    assert!(matches!(
+        operation.start_terminal(prepared),
+        Effect::NotApplied { .. }
+    ));
+    assert!(operation.commands.is_empty());
+    drop(operation);
+    assert_eq!(core.finish().len(), 1);
+}
+
+#[test]
 fn registered_foreground_reads_only_the_requested_terminal() {
     use streams::{
         frontend::hc::processes::{ProcessObservation, ProcessObserver},
