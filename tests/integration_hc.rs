@@ -1243,14 +1243,16 @@ fn execution_inspects_only_registered_sources_on_the_selected_core() {
         before,
         "unregistered and remote terminals need no process reads"
     );
-    assert!(
-        RegisteredSources::decode(
-            &endpoint,
-            json!({"terminals":[local.clone(),local]}),
-            &processes
-        )
-        .is_err()
-    );
+    let duplicated = RegisteredSources::decode(
+        &endpoint,
+        json!({"terminals":[local.clone(),local.clone()]}),
+        &processes,
+    )
+    .unwrap();
+    assert!(matches!(
+        duplicated.presence(&conversation),
+        Presence::Unknown { .. }
+    ));
     let competing = PiSourceClaim {
         helper: key(42),
         ..claim.clone()
@@ -1266,19 +1268,83 @@ fn execution_inspects_only_registered_sources_on_the_selected_core() {
         },
     );
     let same_sdk = json!({source_key(&claim.helper).unwrap():serde_json::to_string(&claim).unwrap(), source_key(&competing.helper).unwrap():serde_json::to_string(&competing).unwrap()});
-    assert!(
-        RegisteredSources::decode(
-            &endpoint,
-            json!({"terminals":[{"address":"t1","state":"live","pid":10,"labels":same_sdk}]}),
-            &Processes {
-                rows,
-                calls: Cell::new(0)
-            }
-        )
-        .is_err()
-    );
-    assert!(RegisteredSources::decode(&endpoint, json!({"terminals":[{"address":"t3","state":"live","pid":10,"labels":{"streams.pi.bad":"broken"}}]}), &processes).is_err());
-    assert!(RegisteredSources::decode(&endpoint, json!({"terminals":[{"address":"t3","state":"live","pid":10,"labels":{source_key(&claim.helper).unwrap():serde_json::to_string(&claim).unwrap()}}]}), &Processes { rows:BTreeMap::new(), calls:Cell::new(0) }).is_err());
+    let mut other_terminal = local.clone();
+    other_terminal["address"] = json!("t4");
+    let duplicate_route = RegisteredSources::decode(
+        &endpoint,
+        json!({"terminals":[local.clone(),other_terminal]}),
+        &processes,
+    )
+    .unwrap();
+    assert!(matches!(
+        duplicate_route.presence(&conversation),
+        Presence::Unknown { .. }
+    ));
+    let competing = RegisteredSources::decode(
+        &endpoint,
+        json!({"terminals":[{"address":"t1","state":"live","pid":10,"labels":same_sdk}]}),
+        &Processes {
+            rows,
+            calls: Cell::new(0),
+        },
+    )
+    .unwrap();
+    assert!(matches!(
+        competing.presence(&conversation),
+        Presence::Unknown { .. }
+    ));
+    let broken =
+        json!({"address":"t3","state":"live","pid":10,"labels":{"streams.pi.bad":"broken"}});
+    let partial = RegisteredSources::decode(
+        &endpoint,
+        json!({"terminals":[local.clone(),broken]}),
+        &processes,
+    )
+    .unwrap();
+    assert!(matches!(
+        partial.presence(&conversation),
+        Presence::Running { .. }
+    ));
+    let missing = ConversationId {
+        harness: "pi".into(),
+        native_id: "missing".into(),
+    };
+    assert!(matches!(
+        partial.presence(&missing),
+        Presence::Unknown { .. }
+    ));
+    let (launches, outcomes) = classify_open(
+        &support,
+        &[
+            ("known".into(), conversation.clone()),
+            ("unknown".into(), missing),
+        ],
+        Access::Available { value: &partial },
+    )
+    .unwrap();
+    assert!(launches.is_empty());
+    assert!(matches!(
+        outcomes["known"],
+        SessionOpenResult::AlreadyRunning { .. }
+    ));
+    assert!(matches!(
+        outcomes["unknown"],
+        SessionOpenResult::Skipped { .. }
+    ));
+    let mut mixed = local.clone();
+    mixed["labels"]["streams.pi.bad"] = json!("broken");
+    let mixed =
+        RegisteredSources::decode(&endpoint, json!({"terminals":[mixed]}), &processes).unwrap();
+    assert!(matches!(
+        mixed.presence(&conversation),
+        Presence::Unknown { .. }
+    ));
+    assert!(mixed.verified_terminals(&conversation).is_empty());
+    let unobserved=RegisteredSources::decode(&endpoint,json!({"terminals":[{"address":"t3","state":"live","pid":10,"labels":{source_key(&claim.helper).unwrap():serde_json::to_string(&claim).unwrap()}}]}),&Processes {rows:BTreeMap::new(),calls:Cell::new(0)}).unwrap();
+    assert!(matches!(
+        unobserved.presence(&conversation),
+        Presence::Unknown { .. }
+    ));
 }
 
 #[test]

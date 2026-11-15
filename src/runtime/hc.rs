@@ -188,11 +188,12 @@ pub fn registered_foreground(
     }
 }
 
-/// A complete point-validated view of registered sources on one core. It does not
-/// discover unregistered Pi processes or supply Stream placement evidence.
+/// Point-validated registered sources on one core, with completeness tracked separately.
+/// It does not discover unregistered Pi processes or supply Stream placement evidence.
 pub struct RegisteredSources {
     endpoint: EndpointId,
     running: BTreeMap<crate::integration::ConversationId, Vec<NativeRef>>,
+    complete: bool,
     routing: crate::integration::Access<Vec<WorkRoute>>,
     placement_hints: BTreeSet<String>,
 }
@@ -228,19 +229,30 @@ impl RegisteredSources {
             .and_then(Value::as_array)
             .ok_or_else(unavailable)?;
         let mut seen_terminals = BTreeSet::new();
-        let mut seen_sdks = BTreeSet::new();
-        let mut running: BTreeMap<_, Vec<NativeRef>> = BTreeMap::new();
+        let mut seen_sdks = BTreeMap::new();
+        let mut blocked_terminals = BTreeSet::new();
+        let mut claims = Vec::new();
+        let mut complete = true;
         let mut routes = Vec::new();
         let mut routing_available = true;
         let mut placement_hints = BTreeSet::new();
         for value in terminals {
-            let address = value
+            let Some(address) = value
                 .get("address")
                 .and_then(Value::as_str)
                 .filter(|address| !address.is_empty())
-                .ok_or_else(unavailable)?;
+            else {
+                complete = false;
+                routing_available = false;
+                continue;
+            };
             // hc's list also includes configured machines. They are not this owner core.
             if address.contains('/') {
+                continue;
+            }
+            if crate::model::check_text(address, "terminal", false).is_err() {
+                complete = false;
+                routing_available = false;
                 continue;
             }
             #[derive(Deserialize)]
@@ -249,10 +261,21 @@ impl RegisteredSources {
                 pid: Option<u32>,
                 labels: BTreeMap<String, String>,
             }
-            let terminal: Terminal =
-                serde_json::from_value(value.clone()).map_err(|_| unavailable())?;
-            if terminal.state != "live" || !seen_terminals.insert(address.to_owned()) {
-                return Err(unavailable());
+            if !seen_terminals.insert(address.to_owned()) {
+                blocked_terminals.insert(address.to_owned());
+                complete = false;
+                routing_available = false;
+                continue;
+            }
+            let Ok(terminal) = serde_json::from_value::<Terminal>(value.clone()) else {
+                complete = false;
+                routing_available = false;
+                continue;
+            };
+            if terminal.state != "live" {
+                complete = false;
+                routing_available = false;
+                continue;
             }
             if terminal.labels.contains_key("herdr.space")
                 || terminal.labels.contains_key("herdr.tab")
@@ -286,29 +309,54 @@ impl RegisteredSources {
                 .iter()
                 .filter(|(key, _)| key.starts_with("streams.pi."))
             {
-                let root = terminal
-                    .pid
-                    .filter(|pid| *pid != 0)
-                    .ok_or_else(unavailable)?;
-                let candidate = decode_claim(key, label, endpoint, root)?;
-                if observer
-                    .exited(&candidate.helper)
-                    .map_err(|_| unavailable())?
-                {
-                    continue;
+                let claim = (|| -> Result<Option<PiSourceClaim>, FrontendError> {
+                    let root = terminal
+                        .pid
+                        .filter(|pid| *pid != 0)
+                        .ok_or_else(unavailable)?;
+                    let candidate = decode_claim(key, label, endpoint, root)?;
+                    if observer
+                        .exited(&candidate.helper)
+                        .map_err(|_| unavailable())?
+                    {
+                        return Ok(None);
+                    }
+                    Ok(Some(verify_claim_route(
+                        key, label, endpoint, root, observer,
+                    )?))
+                })();
+                match claim {
+                    Ok(None) => {}
+                    Ok(Some(claim)) => {
+                        if let Some(previous) =
+                            seen_sdks.insert(claim.sdk.clone(), address.to_owned())
+                        {
+                            blocked_terminals.insert(previous);
+                            blocked_terminals.insert(address.to_owned());
+                            complete = false;
+                        }
+                        claims.push((address.to_owned(), claim.conversation));
+                    }
+                    Err(_) => {
+                        blocked_terminals.insert(address.to_owned());
+                        complete = false;
+                    }
                 }
-                let claim = verify_claim_route(key, label, endpoint, root, observer)?;
-                if !seen_sdks.insert(claim.sdk) {
-                    return Err(unavailable());
-                }
-                running
-                    .entry(claim.conversation)
-                    .or_default()
-                    .push(NativeRef {
-                        adapter: FrontendId::hc(),
-                        endpoint: endpoint.clone(),
-                        key: address.into(),
-                    });
+            }
+        }
+        let mut running: BTreeMap<_, Vec<NativeRef>> = BTreeMap::new();
+        for (address, conversation) in claims {
+            if blocked_terminals.contains(&address) {
+                continue;
+            }
+            let terminal = NativeRef {
+                adapter: FrontendId::hc(),
+                endpoint: endpoint.clone(),
+                key: address,
+            };
+            let locations = running.entry(conversation).or_default();
+            if !locations.contains(&terminal) {
+                locations.push(terminal);
             }
         }
         let routing = if routing_available {
@@ -321,6 +369,7 @@ impl RegisteredSources {
         Ok(Self {
             endpoint: endpoint.clone(),
             running,
+            complete,
             routing,
             placement_hints,
         })
@@ -349,7 +398,10 @@ impl RegisteredSources {
                 locations: NonEmpty::try_from(locations.clone())
                     .expect("running locations are nonempty"),
             },
-            None => Presence::Absent,
+            None if self.complete => Presence::Absent,
+            None => Presence::Unknown {
+                reason: "registered Pi presence is unavailable".into(),
+            },
         }
     }
     pub fn verified_terminals(
