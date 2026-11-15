@@ -14,7 +14,7 @@ const {defaults}=await jiti.import('../extensions/stream-checkpoint/settings.ts'
 const turn=()=>new Promise(resolve=>setImmediate(resolve));
 async function until(check) {for(let i=0;i<100&&!check();i++)await turn();assert.ok(check());}
 function environment(t,changes={}) {
- const values={HERDR_ENV:'1',HERDR_PANE_ID:'pane',HERDR_TAB_ID:'tab',HERDR_WORKSPACE_ID:'workspace',HERDR_SOCKET_PATH:'/not-live.sock',...changes};
+ const values={HERDR_ENV:'1',HERDR_PANE_ID:'pane',HERDR_TAB_ID:'tab',HERDR_WORKSPACE_ID:'workspace',HERDR_SOCKET_PATH:'/not-live.sock',HC_TERMINAL_ID:undefined,HC_SOCKET:undefined,HC_SESSION:undefined,CMUX_WORKSPACE_ID:undefined,...changes};
  const previous=Object.fromEntries(Object.keys(values).map(key=>[key,process.env[key]]));
  for(const [key,value] of Object.entries(values)) {if(value===undefined)delete process.env[key];else process.env[key]=value;}
  t.after(()=>{for(const [key,value] of Object.entries(previous)) {if(value===undefined)delete process.env[key];else process.env[key]=value;}});
@@ -46,6 +46,17 @@ test('empty Pi metadata does not start native work; the first persisted message 
  manager.appendMessage({role:'user',content:'Build work cards',timestamp:0});
  assert.equal(existsSync(manager.getSessionFile()),true);
  await f.controller.ready();await f.controller.start();assert.deepEqual(f.requests,[{kind:'session_started'}]);
+});
+test('hc starts an empty interactive conversation and accepts a typed lifecycle report',async t=>{
+ environment(t,{HERDR_ENV:undefined,HERDR_PANE_ID:undefined,HC_TERMINAL_ID:'t1'});
+ const f=fixture(t,{empty:true,run:async()=>({status:'success',result:{backend:'hc',report:{native:{kind:'inactive',reason:'unavailable'},projection:{companion:null,desired_pi_name:null,warnings:['Display unavailable']}}}})});
+ await f.controller.start();assert.deepEqual(f.requests,[{kind:'session_started'}]);assert.deepEqual(f.notices,['Display unavailable']);
+});
+test('hc startup failure leaves catalog preparation available without retrying native startup',async t=>{
+ environment(t,{HERDR_ENV:undefined,HERDR_PANE_ID:undefined,HC_TERMINAL_ID:'t1'});
+ const f=fixture(t,{run:async()=>({status:'error',error:{kind:'runtime',message:'Registration unavailable'}})});
+ await assert.rejects(f.controller.start(),/Registration unavailable/);await f.controller.prepareCatalog();await f.controller.prepareCatalog();
+ assert.deepEqual(f.requests,[{kind:'session_started'}]);await assert.rejects(f.controller.open(),/Registration unavailable/);
 });
 for(const role of ['compactionSummary','branchSummary'])test(`resumed ${role} history starts native work`,async t=>{
  environment(t);const f=fixture(t,{empty:true});f.messages.push({role,summary:'Earlier work',timestamp:0});

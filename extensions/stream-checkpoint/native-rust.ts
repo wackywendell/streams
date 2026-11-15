@@ -1,7 +1,7 @@
 import { projectSessionName } from "../../integrations/herdr-work-cards/src/pi/session-naming.ts";
 import { StreamsChild } from "./child.ts";
 import { StreamsCliError } from "./streams.ts";
-import type { ChildRequest, DomainObject } from "./child-protocol.ts";
+import { hcLifecycle, type ChildRequest, type DomainObject } from "./child-protocol.ts";
 import type { NativeFactory } from "./native.ts";
 
 /** UI facts never select native work or become authority in a later request. */
@@ -22,6 +22,8 @@ export const loadRustNative: NativeFactory = async ({pi, ctx, sessionId, cwd, en
  return {
   start: async signal => {
    const result = await call({kind:"session_started"}, signal);
+   const hc = hcLifecycle(result);
+   if (hc) {for (const message of hc.warnings) warning(message);return;}
    if (!(result.native === "active" && ["opened", "existing", "suppressed"].includes(result.display as string)
     || result.native === "inactive" && ["outside_herdr", "not_enrolled"].includes(result.reason as string))) throw Error("Invalid Rust lifecycle acknowledgement");
   },

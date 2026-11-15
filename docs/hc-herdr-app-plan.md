@@ -16,11 +16,11 @@ This decision replaces the host-wide Pi census, launch-profile classification an
 
 | Area | Implemented behavior | Remaining boundary |
 | --- | --- | --- |
-| Pi Session ownership | Process-scoped identity and generation checks, obsolete-result rejection, same-ID draft retention and helper close-before-replacement | Native claims and their accuracy through live Pi transitions |
+| Pi Session ownership | Process-scoped identity and generation checks, obsolete-result rejection, same-ID draft retention, helper close-before-replacement and hc source publication before enrollment | Exact locator verification and claim accuracy through live Pi transitions |
 | Shared Rust workflows | Scoped types, saved views, prepared launch/effect results, shared document and artifact validation, lifecycle/projection policy and Herdr/cmux cutovers | Complete facade-level hc opening, resumption and lifecycle orchestration |
 | Owner CLI protocol | Strict version-1 requests and replies, 16 KiB requests, 4 MiB replies and saved-read batching | Native frame reads and launch/navigation effects |
 | hc connection | Owner-local socket resolution against the captured operation directory, permanent-core verification, one retained operation connection and typed failure evidence | Process admission, subscriptions and general frontend activation |
-| Pi source route | Owner point observation, strict claim-key and ancestry checks, positive helper-exit handling, and a tested one-write source-label adapter | Connect publication and retirement to the Pi helper, work opening and complete claim handling |
+| Pi source route | Owner point observation, strict claim-key and ancestry checks, positive helper-exit handling, one-write publication and bounded EOF retirement | Work opening, complete claim handling and live transition acceptance |
 | Space associations | Checked publication and association snapshots, manual `bind-space`, one retained-version conditional write and explicit uncertainty | Association completion as part of launch, adoption, enrollment and moves |
 | Sidebar reads | Saved Stream data, current same-host pinned membership and point inspection of registered in-space Follow candidates | Live Pi registration and transition acceptance |
 | Navigation | Secure owner `view-document` pager, shared artifact pager and fresh saved-link validation with a typed browser handoff | Native placement of pagers and desktop browser dispatch |
@@ -34,7 +34,7 @@ The checkpoint passed the complete serial test task, including 195 library tests
 This is the remainder of implementation stage 3. Its exact file boundaries and test groups remain in the design's [staged delivery plan](hc-herdr-app-design.md#staged-delivery-and-file-boundaries).
 
 1. Connect owner point observations and exact claim-route checks to work opening. Sidebar Follow already inspects only its supplied in-space terminal. Space-only reads inspect no processes. Inspect only processes named by registered claims.
-2. Complete helper-owned source registration and retirement, claim uniqueness and lifecycle publication. The integration's publication supplies the conversation identity; process observations verify its route and liveness. Report malformed, competing or unverifiable registered sources explicitly. Unregistered Pi processes do not block replacement launches.
+2. Complete claim uniqueness and lifecycle publication around helper-owned source registration and retirement. The integration's publication supplies the conversation identity; process observations verify its route and liveness. Report malformed, competing or unverifiable registered sources explicitly. Unregistered Pi processes do not block replacement launches.
 3. Complete shared `open_work` and `prepare_resume` orchestration with the hc execution snapshot. Select and verify saved conversations and checkouts before effects. Preserve exact launch arguments, locators, directories and approved environment values. Register hc in the general frontend dispatch only when this execution path exists.
 4. Apply terminal creation and selected unplaced-terminal adoption through the existing placement labels. Preserve Requested and Known space evidence independently from execution. After placement, perform the designed additional publication read and at most one association write. Report accepted terminals even when publication, binding or desktop presentation fails.
 5. Complete frame identity, in-space Follow, naming, companion display and owner-side document/artifact terminal placement. Add full native request dispatch through the facade. Ordinary refresh and reattachment keep dismissed companions closed.
@@ -46,9 +46,9 @@ Verify exact fake-socket requests, complete and incomplete point observations, P
 
 Implementation stage 4 connects the tested Session state to the native adapter. The [Pi binding contract](hc-herdr-app-design.md#pi-conversation-binding-in-hc) defines startup fields, source claims, request context and shutdown ordering.
 
-Register interactive context before enrollment or transcript persistence. Pass captured conversation context on admitted requests and retain only verified exact locators. Native registration failure must preserve accepted record-only catalog work. Existing Herdr startup-failure behavior remains unchanged.
+The helper registers interactive context before enrollment or transcript persistence and receives captured conversation context on admitted requests. Registration failure leaves record-only catalog work available. Existing Herdr startup-failure behavior remains unchanged. Verify exact supplied locators before retaining them; the current helper does not yet use the supplied file.
 
-Retire a helper's own source on the native worker before cancelling its worker token. Use the bounded fresh shutdown deadline and preserve a replacement source. Drop performs no native I/O. Test normal EOF, cancellation, timeout, forced death and late results.
+EOF queues retirement of the helper's own source on the native worker before cancelling its worker token. The bounded shutdown deadline and helper-specific key preserve replacement sources; Drop performs no hc I/O. Fake-core tests cover EOF, cancellation, timeout and forced death. Test late results and the live transition path.
 
 Connect started, newly-bound, reattached, display-change and placement-change handling through the shared lifecycle policy. Only positive observed same-owner movement may change membership. Startup, refresh and gaps in observation preserve membership. Accepted saves survive native follow-on failures.
 

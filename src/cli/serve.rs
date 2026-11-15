@@ -2,6 +2,7 @@
 mod control;
 mod dispatch;
 mod files;
+mod hc;
 mod native;
 
 use super::{App, CliError, Output, PathBuf, Result};
@@ -18,8 +19,8 @@ use std::{
 };
 use streams::{
     child_protocol::{
-        self, ClientFrame, Outcome, Request, RequestError, RequestId, ServerFrame, Version2,
-        Warnings,
+        self, ClientFrame, Outcome, PiRequestContext, Request, RequestError, RequestId,
+        ServerFrame, Version2, Warnings,
     },
     frontend::herdr::events::SubscriptionUpdate,
 };
@@ -27,7 +28,7 @@ use streams::{
 type SharedOutput = Arc<Mutex<Option<std::io::Stdout>>>;
 
 enum Wake {
-    Request(RequestId, Request),
+    Request(RequestId, Request, Option<Box<PiRequestContext>>),
     Finished,
     InputFinished,
     Failed(String),
@@ -37,13 +38,96 @@ enum Wake {
 }
 
 enum NativeWork {
-    Request(RequestId, Request),
+    Request(RequestId, Request, Option<Box<PiRequestContext>>),
+    Retire(Instant, mpsc::SyncSender<Result<()>>),
     Control(RequestId, Request, std::os::unix::net::UnixStream),
     Files(u8, notify::Result<notify::Event>),
     Native(std::result::Result<SubscriptionUpdate, String>),
 }
 
 const SHUTDOWN_GRACE: Duration = Duration::from_secs(5);
+
+struct NativeControllers {
+    herdr: Option<native::Controller>,
+    hc: HcSource,
+}
+
+enum HcSource {
+    Unattempted,
+    Registered(hc::Source),
+    Failed,
+}
+impl HcSource {
+    fn request(
+        &mut self,
+        app: &App,
+        session_id: &str,
+        sdk_pid: Option<u32>,
+        request: &Request,
+        stopping: &streams::cancellation::Cancellation,
+        cancelled: &AtomicBool,
+    ) -> Result<Output> {
+        if matches!(request, Request::OpenCard {} | Request::CloseCard {}) {
+            return Err(CliError::message("hc native display is not available yet"));
+        }
+        if matches!(self, Self::Unattempted) {
+            *self = Self::Failed;
+            let pid = sdk_pid
+                .filter(|pid| *pid != 0)
+                .ok_or_else(|| CliError::message("Pi SDK process is unavailable"))?;
+            *self = Self::Registered(hc::Source::register(
+                app,
+                session_id,
+                pid,
+                stopping.clone(),
+                cancelled,
+            )?);
+        }
+        if matches!(self, Self::Failed) {
+            return Err(CliError::message(
+                "hc Pi source is unavailable; reload required",
+            ));
+        }
+        Ok(Output::value(serde_json::json!({"backend":"hc","report":{
+            "native":{"kind":"inactive","reason":"unavailable"},
+            "projection":{"companion":null,"desired_pi_name":null,"warnings":["hc native display and lifecycle are not yet available"]}
+        }})))
+    }
+    fn retire(&mut self, deadline: Instant) -> Result<()> {
+        match std::mem::replace(self, Self::Failed) {
+            Self::Registered(source) => source.retire(deadline),
+            _ => Ok(()),
+        }
+    }
+}
+
+fn hc_selected(app: &App) -> Result<bool> {
+    use streams::frontend::{FrontendId, FrontendMode};
+    let context = |name: &str| {
+        app.environment
+            .get(name)
+            .is_some_and(|value| !value.is_empty())
+    };
+    Ok(match app.config.load()?.frontend {
+        FrontendMode::None => false,
+        FrontendMode::Explicit(id) => id == FrontendId::hc(),
+        FrontendMode::Auto if context("HC_TERMINAL_ID") => {
+            if context("CMUX_WORKSPACE_ID")
+                || app
+                    .environment
+                    .get("HERDR_ENV")
+                    .is_some_and(|value| value == "1")
+                || context("HERDR_PANE_ID")
+            {
+                return Err(CliError::message(
+                    "conflicting native caller contexts; choose an explicit frontend",
+                ));
+            }
+            true
+        }
+        FrontendMode::Auto => false,
+    })
+}
 
 struct Server {
     session_id: String,
@@ -152,9 +236,10 @@ impl Server {
 
     fn native_request(
         &self,
-        controller: &mut Option<native::Controller>,
+        controllers: &mut NativeControllers,
         id: RequestId,
         request: Request,
+        pi_context: Option<&PiRequestContext>,
         stopping: &streams::cancellation::Cancellation,
         plugin_root: &std::path::Path,
     ) -> Result<()> {
@@ -164,6 +249,27 @@ impl Server {
                 return Err(CliError::message("request cancelled before dispatch"));
             }
             let app = self.app()?;
+            if matches!(
+                request,
+                Request::SessionStarted {}
+                    | Request::Attach {}
+                    | Request::OpenCard {}
+                    | Request::CloseCard {}
+            ) && hc_selected(&app)?
+            {
+                if pi_context.is_none() {
+                    return Err(CliError::message("hc Pi request context is unavailable"));
+                }
+                return controllers.hc.request(
+                    &app,
+                    &self.session_id,
+                    self.sdk_pid,
+                    &request,
+                    stopping,
+                    &cancelled,
+                );
+            }
+            let controller = &mut controllers.herdr;
             match request {
                 Request::SessionStarted {}
                 | Request::Attach {}
@@ -207,7 +313,7 @@ impl Server {
                 }
             }
         })();
-        self.remember_app(controller.as_ref().map(|controller| &controller.app))?;
+        self.remember_app(controllers.herdr.as_ref().map(|controller| &controller.app))?;
         self.respond(id, outcome)
     }
 
@@ -301,7 +407,7 @@ fn read_input(server: Arc<Server>) {
                     if native_queue(&request) {
                         server
                             .sender
-                            .send(Wake::Request(id, request))
+                            .send(Wake::Request(id, request, pi_context))
                             .map_err(|error| CliError::message(error.to_string()))?;
                     } else {
                         let worker = Arc::clone(&server);
@@ -338,15 +444,28 @@ fn native_worker(
     stopping: streams::cancellation::Cancellation,
     plugin_root: PathBuf,
 ) -> Result<()> {
-    let mut controller: Option<native::Controller> = None;
+    let mut controllers = NativeControllers {
+        herdr: None,
+        hc: HcSource::Unattempted,
+    };
     let flag = stopping.flag();
     for work in &receiver {
         if flag.load(Ordering::Acquire) {
             break;
         }
         match work {
-            NativeWork::Request(id, request) => {
-                server.native_request(&mut controller, id, request, &stopping, &plugin_root)?
+            NativeWork::Request(id, request, pi_context) => server.native_request(
+                &mut controllers,
+                id,
+                request,
+                pi_context.as_deref(),
+                &stopping,
+                &plugin_root,
+            )?,
+            NativeWork::Retire(deadline, acknowledgement) => {
+                let result = controllers.hc.retire(deadline);
+                let _ = acknowledgement.send(result);
+                break;
             }
             NativeWork::Control(id, request, mut stream) => {
                 let result = server
@@ -361,7 +480,7 @@ fn native_worker(
                 );
             }
             NativeWork::Native(update) => {
-                if let Some(controller) = &mut controller {
+                if let Some(controller) = &mut controllers.herdr {
                     if let Err(error) = controller.update(update, flag.clone()) {
                         server.warning(&error)?;
                     }
@@ -369,7 +488,7 @@ fn native_worker(
                 }
             }
             NativeWork::Files(generation, event) => {
-                if let Some(controller) = &mut controller {
+                if let Some(controller) = &mut controllers.herdr {
                     if let Err(error) = controller.file_event(generation, event, flag.clone()) {
                         server.warning(&error)?;
                     }
@@ -438,7 +557,9 @@ pub(super) fn run(session_id: String, sdk_pid: Option<u32>, plugin_root: PathBuf
                     .map_err(|error| CliError::message(error.to_string()))?,
             };
             let work = match wake {
-                Wake::Request(id, request) => Some(NativeWork::Request(id, request)),
+                Wake::Request(id, request, pi_context) => {
+                    Some(NativeWork::Request(id, request, pi_context))
+                }
                 Wake::Native(update) => Some(NativeWork::Native(update)),
                 Wake::Files(generation, event) => Some(NativeWork::Files(generation, event)),
                 Wake::Control(id, request, stream) => {
@@ -460,18 +581,27 @@ pub(super) fn run(session_id: String, sdk_pid: Option<u32>, plugin_root: PathBuf
         Ok(())
     })();
     server.cancel_all();
+    let deadline = deadline.unwrap_or_else(|| Instant::now() + SHUTDOWN_GRACE);
+    let (acknowledge, retired) = mpsc::sync_channel(1);
+    let retirement = match native_sender.send(NativeWork::Retire(deadline, acknowledge)) {
+        Ok(()) => retired
+            .recv_timeout(deadline.saturating_duration_since(Instant::now()))
+            .unwrap_or_else(|_| Err(CliError::message("hc Pi source retirement timed out"))),
+        Err(_) => Err(CliError::message(
+            "native worker stopped before source retirement",
+        )),
+    };
     stopping.cancel()?;
     if let Ok(mut output) = server.output.lock() {
         *output = None;
     }
     drop(native_sender);
     drop(receiver);
-    let deadline = deadline.unwrap_or_else(|| Instant::now() + SHUTDOWN_GRACE);
     let joined = completed.recv_timeout(deadline.saturating_duration_since(Instant::now()));
     match joined {
         Ok(native_result) => {
             let _ = native.join();
-            result.and(native_result)
+            result.and(retirement).and(native_result)
         }
         Err(_) => result.and(Err(CliError::message(
             "native worker did not stop promptly",

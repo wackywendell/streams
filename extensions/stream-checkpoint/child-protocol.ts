@@ -34,6 +34,18 @@ export type Runner = (request: ChildRequest, options?: {timeout: number; signal?
 const object = (value: unknown): value is DomainObject => !!value && typeof value === "object" && !Array.isArray(value);
 const fields = (value: unknown, keys: string[]): value is DomainObject => object(value) && Object.keys(value).length === keys.length && keys.every(key => Object.hasOwn(value, key));
 
+export function hcLifecycle(value: DomainObject): {warnings: string[]} | undefined {
+ if (value.backend !== "hc" || !fields(value, ["backend", "report"]) || !fields(value.report, ["native", "projection"])) return;
+ const {native, projection} = value.report;
+ if (!object(native) || !(fields(native, ["kind"]) && native.kind === "active"
+  || fields(native, ["kind", "reason"]) && native.kind === "inactive" && ["outside_frontend", "not_enrolled", "unavailable", "stopped"].includes(native.reason as string))) return;
+ if (!fields(projection, ["companion", "desired_pi_name", "warnings"])
+  || !(projection.companion === null || ["opened", "existing", "suppressed", "deferred"].includes(projection.companion as string))
+  || !(projection.desired_pi_name === null || typeof projection.desired_pi_name === "string")
+  || !Array.isArray(projection.warnings) || !projection.warnings.every(item => typeof item === "string")) return;
+ return {warnings: projection.warnings as string[]};
+}
+
 /** JSON.parse admits duplicate keys; reject them, including escaped and nested keys. */
 function parse(line: string): unknown {
  const value: unknown = JSON.parse(line);

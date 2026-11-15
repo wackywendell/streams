@@ -1,7 +1,7 @@
 import { spawn } from "node:child_process";
 import { fileURLToPath } from "node:url";
 import { resolveStreamsBin } from "../../integrations/herdr-work-cards/src/streams-bin.ts";
-import { decodeServerFrame, type ChildOutcome, type ChildView, type PiRequestContext, type Runner } from "./child-protocol.ts";
+import { decodeServerFrame, hcLifecycle, type ChildOutcome, type ChildView, type PiRequestContext, type Runner } from "./child-protocol.ts";
 
 type Pending = {resolve: (value: ChildOutcome) => void; reject: (error: Error) => void};
 const pluginRoot = fileURLToPath(new URL("../../integrations/herdr-work-cards", import.meta.url));
@@ -73,8 +73,9 @@ export class StreamsChild {
      this.pending.set(id, {reject:() => {clearTimeout(deadline);}, resolve:outcome => {
       clearTimeout(deadline);
       if (outcome.status === "error") {warn(`Streams native attach: ${outcome.error.message}`);return;}
-      const native = outcome.result;
-      if (!(native.native === "active" && !Object.hasOwn(native, "display") || native.native === "inactive" && ["outside_herdr", "not_enrolled"].includes(native.reason as string))) warn("Invalid Streams child attach acknowledgement");
+      const native = outcome.result, hc = hcLifecycle(native);
+      if (hc) for (const message of hc.warnings) warn(message);
+      else if (!(native.native === "active" && !Object.hasOwn(native, "display") || native.native === "inactive" && ["outside_herdr", "not_enrolled"].includes(native.reason as string))) warn("Invalid Streams child attach acknowledgement");
       if (outcome.status === "saved_with_warnings") for (const warning of outcome.warnings) warn(warning);
      }});
      const pi_context = this.options.piContext?.();
@@ -109,6 +110,7 @@ export class StreamsChild {
    if (this.process !== child) return;
    clearTimeout(timer);this.process = undefined;this.closed = undefined;
    const error = failure ?? Error(this.stopped ? "Streams child shut down" : `Streams child exited (${signal ?? code})`);
+   if (this.stopped && (signal || code !== 0)) this.options.warning("Streams child shutdown failed; native source cleanup may be incomplete.");
    reject(error);
    for (const request of this.pending.values()) request.reject(error);
    this.pending.clear();

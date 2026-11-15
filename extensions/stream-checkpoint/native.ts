@@ -12,7 +12,7 @@ export type NativeFactory = (input: {pi: ExtensionAPI; ctx: ExtensionContext; se
 export const loadNative: NativeFactory = async input => {
  const {loadRustNative} = await import("./native-rust.ts");return loadRustNative(input);
 };
-const environmentKeys = ["HERDR_ENV", "HERDR_PANE_ID", "HERDR_TAB_ID", "HERDR_WORKSPACE_ID", "HERDR_SOCKET_PATH", "HERDR_BIN_PATH", "STREAMS_STREAM_ID", "XDG_CONFIG_HOME", "XDG_DATA_HOME", "XDG_STATE_HOME", "PI_CODING_AGENT_DIR", "HOME", "STREAMS_BIN_PATH", "CARGO_TARGET_DIR", "WORK_CARDS_CONFIG_PATH", "PATH", "EDITOR", "HERDR_SESSION", "CODEX_HOME", "CLAUDE_CONFIG_DIR", "PI_OFFLINE"];
+const environmentKeys = ["HC_TERMINAL_ID", "HC_SOCKET", "HC_SESSION", "XDG_RUNTIME_DIR", "CMUX_WORKSPACE_ID", "HERDR_ENV", "HERDR_PANE_ID", "HERDR_TAB_ID", "HERDR_WORKSPACE_ID", "HERDR_SOCKET_PATH", "HERDR_BIN_PATH", "STREAMS_STREAM_ID", "XDG_CONFIG_HOME", "XDG_DATA_HOME", "XDG_STATE_HOME", "PI_CODING_AGENT_DIR", "HOME", "STREAMS_BIN_PATH", "CARGO_TARGET_DIR", "WORK_CARDS_CONFIG_PATH", "PATH", "EDITOR", "HERDR_SESSION", "CODEX_HOME", "CLAUDE_CONFIG_DIR", "PI_OFFLINE"];
 
 /** Pi fences its own UI lifetime; the Rust child is the only native controller. */
 export class NativeController {
@@ -27,7 +27,8 @@ export class NativeController {
   this.sessionId = options.ctx.sessionManager.getSessionId();this.cwd = options.ctx.cwd;
  }
  private eligible(): boolean {
-  return this.options.ctx.hasUI && this.options.ctx.mode === "tui" && this.env.HERDR_ENV === "1" && !!this.env.HERDR_PANE_ID
+  return this.options.ctx.hasUI && this.options.ctx.mode === "tui"
+   && (this.env.HERDR_ENV === "1" && !!this.env.HERDR_PANE_ID || !!this.env.HC_TERMINAL_ID)
    && /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(this.sessionId);
  }
  private assertCurrent = (): void => {
@@ -39,7 +40,7 @@ export class NativeController {
  start(): Promise<void> | undefined {
   if (!this.eligible()) return;
   const ctx = this.options.current?.() ?? this.options.ctx;
-  if (!this.startup && !hasConversation(ctx.sessionManager)) return;
+  if (!this.startup && this.env.HERDR_ENV === "1" && !hasConversation(ctx.sessionManager)) return;
   return this.startup ??= (async () => {
    this.assertCurrent();
    this.adapter = (this.options.factory ?? loadNative)({pi:this.options.pi, ctx, sessionId:this.sessionId, cwd:this.cwd, env:{...this.env}, child:this.options.child, assertCurrent:this.assertCurrent, warning:this.options.warning});
@@ -47,8 +48,12 @@ export class NativeController {
    await adapter.start(this.controller.signal);this.assertCurrent();
   })();
  }
+ prepareCatalog(): Promise<void> | undefined {
+  const starting = this.start();
+  return this.env.HC_TERMINAL_ID && this.env.HERDR_ENV !== "1" ? starting?.catch(() => {}) : starting;
+ }
  async ready(): Promise<void> {
-  if (!this.eligible()) throw Error("Native work cards require session startup in an interactive Pi Herdr pane.");
+  if (!this.eligible()) throw Error("Native work cards require session startup in an interactive Pi terminal.");
   const starting = this.start();
   if (!starting) throw Error("Start a conversation before using a native work card.");
   await starting;this.assertCurrent();

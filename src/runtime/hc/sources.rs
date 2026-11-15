@@ -9,7 +9,10 @@ use crate::{
 };
 use serde::Deserialize;
 use serde_json::json;
-use std::collections::BTreeMap;
+use std::{
+    collections::BTreeMap,
+    sync::atomic::{AtomicBool, Ordering},
+};
 
 #[derive(Deserialize)]
 struct Terminal {
@@ -35,11 +38,13 @@ impl SourceRegistration {
         sdk_pid: u32,
         helper_pid: u32,
         observer: &dyn ProcessObserver,
+        cancelled: &AtomicBool,
     ) -> Effect<Self> {
         let unavailable = || Effect::NotApplied {
             reason: "Pi source registration is unavailable".into(),
         };
-        if terminal.is_empty()
+        if cancelled.load(Ordering::Acquire)
+            || terminal.is_empty()
             || terminal.contains('/')
             || conversation.harness != "pi"
             || sdk_pid == 0
@@ -86,6 +91,7 @@ impl SourceRegistration {
         };
         if found.labels.contains_key(&key)
             || verify_claim_route(&key, &value, client.endpoint(), root_pid, observer).is_err()
+            || cancelled.load(Ordering::Acquire)
         {
             return unavailable();
         }

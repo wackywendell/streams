@@ -61,7 +61,7 @@ export default function registerWorkCard(pi: ExtensionAPI, options: Options = {}
  const current = (state: PiContextState, ctx: ExtensionContext) => holder.current === state && !state.retired && ctx.sessionManager.getSessionId() === state.conversation.native_id;
  const sessionChild = (ctx: ExtensionContext, state: PiContextState) => state.helper ??= options.child?.(ctx) ?? new StreamsChild({sessionId:state.conversation.native_id, cwd:ctx.cwd, env:{...process.env},
   piContext: ctx.hasUI && ctx.mode === "tui" && process.env.HC_TERMINAL_ID ? () => ({conversation:state.conversation, session_file:state.session_file}) : undefined,
-  warning:message => {if (current(state, ctx)) warning(message);}});
+  warning:message => {if (current(state, ctx) || state.retired && holder.current === state && ctx.sessionManager.getSessionId() === state.conversation.native_id) warning(message);}});
  function useContext(ctx: ExtensionContext, restart = false): PiContextState {
   const id = ctx.sessionManager.getSessionId(), file = ctx.sessionManager.getSessionFile?.() ?? null;
   if (owned && (holder.current && holder.current !== owned || !restart && owned.retired && id === owned.conversation.native_id)) throw Error("Streams extension retired; Session changed");
@@ -103,7 +103,7 @@ export default function registerWorkCard(pi: ExtensionAPI, options: Options = {}
    if (!current(state, ctx)) throw Error("Session changed before Streams request");
    if (request.kind === "context" || request.kind === "enroll") {
     if (!fence.current()) throw Error("Session changed before catalog context");
-    await native?.start();
+    await native?.prepareCatalog();
     if (!fence.current()) throw Error("Session changed before catalog context");
    }
    const outcome = await sessionChild(ctx, state).run(request, options);
@@ -126,7 +126,7 @@ export default function registerWorkCard(pi: ExtensionAPI, options: Options = {}
   statusTimer.unref?.();
  };
  const reporter = new Reporter({
-  scope, cli, settings, logging, prepare: () => native?.start(), infer: options.infer, notice: warning, receipt,
+  scope, cli, settings, logging, prepare: () => native?.prepareCatalog(), infer: options.infer, notice: warning, receipt,
   activity: (text, completed) => {
    clearStatusTimer();
    if (text) scope.context?.ui.setStatus("stream-reporting", `Streams · ${text}`);

@@ -44,6 +44,10 @@ test('every shared typed request is sent unchanged, without argv or serialized s
  }
  assert.equal(f.launches.length,1);
 });
+test('failed shutdown warns that native source cleanup may be incomplete',async t=>{
+ const f=fixture(t),child=await f.ready(),stopped=f.manager.stop();child.emit('close',2);await stopped;
+ assert.deepEqual(f.warnings,['Streams child shutdown failed; native source cleanup may be incomplete.']);assert.equal(f.children.length,1);
+});
 test('one launch, exact envelope, ready gating and out-of-order typed outcomes',async t=>{
  const f=fixture(t),first=f.manager.run({kind:'context'}),child=f.children[0];
  await tick();assert.deepEqual(child.messages,[]);

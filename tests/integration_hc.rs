@@ -737,6 +737,7 @@ fn source_registration_and_retirement_touch_only_the_helper_key() {
         30,
         40,
         &processes,
+        &std::sync::atomic::AtomicBool::new(false),
     ) else {
         panic!("registration failed")
     };
@@ -758,7 +759,15 @@ fn source_registration_and_retirement_touch_only_the_helper_key() {
     .unwrap();
     let mut client = HcClient::connect(socket, None, 5.0, None).unwrap();
     assert!(matches!(
-        SourceRegistration::register(&mut client, "hint", conversation.clone(), 30, 40, &wrong),
+        SourceRegistration::register(
+            &mut client,
+            "hint",
+            conversation.clone(),
+            30,
+            40,
+            &wrong,
+            &std::sync::atomic::AtomicBool::new(false)
+        ),
         Effect::NotApplied { .. }
     ));
     drop(client);
@@ -783,7 +792,15 @@ fn source_registration_and_retirement_touch_only_the_helper_key() {
     .unwrap();
     let mut client = HcClient::connect(socket, None, 5.0, None).unwrap();
     assert!(matches!(
-        SourceRegistration::register(&mut client, "hint", conversation, 30, 40, &processes),
+        SourceRegistration::register(
+            &mut client,
+            "hint",
+            conversation,
+            30,
+            40,
+            &processes,
+            &std::sync::atomic::AtomicBool::new(false)
+        ),
         Effect::Uncertain { .. }
     ));
     drop(client);
