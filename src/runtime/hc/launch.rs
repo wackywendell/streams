@@ -1,8 +1,8 @@
 //! Prepared hc terminal creation. Applying it never selects work or retries a start.
-use super::HcOperation;
+use super::{HcOperation, HcPresentation, HcWorkExecution};
 use crate::{
     frontend::{CommandEvidence, CommandOutcome, FrontendId, NativeRequest, hc::HcEndpoint},
-    integration::{Effect, LaunchItem, NativeRef, WorkScope},
+    integration::{AdoptionEffect, ConversationId, Effect, LaunchItem, NativeRef, WorkScope},
     runtime::{Result, launch::resolve_executable, workspace::native_environment},
 };
 use serde_json::{Value, json};
@@ -134,7 +134,120 @@ impl PreparedTerminal {
     }
 }
 
+/// One selected, verified and unplaced terminal with fixed placement labels.
+pub struct PreparedAdoption {
+    terminal: NativeRef,
+    socket: std::path::PathBuf,
+    tab: String,
+    params: Value,
+}
+impl PreparedAdoption {
+    pub fn tab(&self) -> &str {
+        &self.tab
+    }
+    pub fn terminal(&self) -> &NativeRef {
+        &self.terminal
+    }
+}
+impl HcWorkExecution {
+    pub fn prepare_adoptions(
+        &self,
+        conversations: &[ConversationId],
+        presentation: &HcPresentation,
+        space: &NativeRef,
+        socket: &HcEndpoint,
+    ) -> std::result::Result<Vec<PreparedAdoption>, crate::frontend::FrontendError> {
+        space
+            .validate()
+            .map_err(|_| super::invalid("hc placement is unavailable"))?;
+        if space.adapter != FrontendId::hc()
+            || space.endpoint != self.sources.endpoint
+            || space.key.contains('/')
+        {
+            return Err(super::invalid("hc placement belongs to another core"));
+        }
+        Ok(self.unplaced_selected(conversations, presentation)?.into_iter().map(|terminal| {
+            let tab = uuid::Uuid::new_v4().to_string();
+            let params = json!({"terminal":terminal.key,"labels":{"herdr.space":space.key,"herdr.tab":tab}});
+            PreparedAdoption { terminal, socket:socket.socket().to_path_buf(), tab, params }
+        }).collect())
+    }
+}
+
 impl HcOperation {
+    /// Submit one prepared adoption once; never replay an unconfirmed label write.
+    pub fn adopt_terminal(&mut self, prepared: PreparedAdoption) -> AdoptionEffect {
+        let terminal = prepared.terminal;
+        if self.endpoint() != &terminal.endpoint || self.client.socket().socket() != prepared.socket
+        {
+            return AdoptionEffect {
+                terminal,
+                result: Effect::NotApplied {
+                    reason: "hc placement or socket does not match this operation".into(),
+                },
+            };
+        }
+        let params = prepared.params;
+        let (frame, result) = self.client.exchange("terminal.label", &params, true);
+        let result = match result {
+            Ok(value) => {
+                let labels = value.get("labels").and_then(Value::as_object);
+                let expected = params["labels"].as_object().expect("prepared labels");
+                let confirmed = value.get("address").and_then(Value::as_str)
+                    == Some(terminal.key.as_str())
+                    && value.get("state").and_then(Value::as_str) == Some("live")
+                    && labels.is_some_and(|labels| {
+                        expected
+                            .iter()
+                            .all(|(key, value)| labels.get(key) == Some(value))
+                    });
+                self.commands.push(CommandEvidence {
+                    request: NativeRequest::Socket {
+                        method: "terminal.label".into(),
+                        params,
+                        response: frame,
+                    },
+                    outcome: if confirmed {
+                        CommandOutcome::Acknowledged
+                    } else {
+                        CommandOutcome::Uncertain
+                    },
+                });
+                if confirmed {
+                    Effect::Applied {
+                        value: terminal.clone(),
+                    }
+                } else {
+                    Effect::Uncertain {
+                        reason: "hc placement was not confirmed".into(),
+                    }
+                }
+            }
+            Err(failure) => {
+                let submitted = !failure.error.commands.is_empty();
+                let rejected = matches!(
+                    failure.rejection.as_deref(),
+                    Some("invalid_params" | "invalid_request" | "method_not_found")
+                );
+                self.commands.extend(failure.error.commands);
+                if !submitted {
+                    Effect::NotApplied {
+                        reason: "hc placement did not begin".into(),
+                    }
+                } else if rejected {
+                    Effect::NotApplied {
+                        reason: "hc placement was rejected".into(),
+                    }
+                } else {
+                    Effect::Uncertain {
+                        reason: "hc placement was not confirmed".into(),
+                    }
+                }
+            }
+        };
+        AdoptionEffect { terminal, result }
+    }
+
     /// Submit one prepared start once; an unconfirmed result is never replayed.
     pub fn start_terminal(&mut self, prepared: PreparedTerminal) -> Effect<NativeRef> {
         if self.endpoint() != &prepared.endpoint || self.client.socket().socket() != prepared.socket
@@ -213,14 +326,22 @@ impl HcOperation {
             }
             Err(failure) => {
                 let submitted = !failure.error.commands.is_empty();
+                let rejected = matches!(
+                    failure.rejection.as_deref(),
+                    Some("invalid_params" | "invalid_request" | "method_not_found")
+                );
                 self.commands.extend(failure.error.commands);
-                if submitted {
-                    Effect::Uncertain {
-                        reason: "hc terminal start was not confirmed".into(),
-                    }
-                } else {
+                if !submitted {
                     Effect::NotApplied {
                         reason: "hc terminal start did not begin".into(),
+                    }
+                } else if rejected {
+                    Effect::NotApplied {
+                        reason: "hc terminal start was rejected".into(),
+                    }
+                } else {
+                    Effect::Uncertain {
+                        reason: "hc terminal start was not confirmed".into(),
                     }
                 }
             }

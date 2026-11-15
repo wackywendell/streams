@@ -1208,6 +1208,155 @@ fn work_routing_is_scoped_and_separately_unavailable_from_presence() {
 }
 
 #[test]
+fn hc_adoption_writes_only_placement_labels_once() {
+    use streams::{
+        frontend::hc::processes::{ProcessKey, ProcessObservation, ProcessObserver},
+        integration::ConversationId,
+        runtime::hc::{HcPresentation, PiSourceClaim, RegisteredSources, labels::source_key},
+    };
+    struct Processes(BTreeMap<u32, ProcessObservation>);
+    impl ProcessObserver for Processes {
+        fn observe(&self, pid: u32) -> std::io::Result<ProcessObservation> {
+            self.0
+                .get(&pid)
+                .cloned()
+                .ok_or_else(|| std::io::Error::other("unavailable"))
+        }
+        fn exited(&self, key: &ProcessKey) -> std::io::Result<bool> {
+            Ok(self.observe(key.pid)?.key != *key)
+        }
+    }
+    let key = |pid| ProcessKey {
+        boot: "08f95cf6-6657-40c4-b5b9-6ee493d934ab".into(),
+        pid,
+        started: format!("linux:{pid}"),
+    };
+    let processes = Processes(
+        [(10, 1), (30, 10), (40, 30)]
+            .into_iter()
+            .map(|(pid, parent_pid)| {
+                (
+                    pid,
+                    ProcessObservation {
+                        key: key(pid),
+                        parent_pid,
+                        process_group: 10,
+                        stopped: false,
+                    },
+                )
+            })
+            .collect(),
+    );
+    let conversation = ConversationId {
+        harness: "pi".into(),
+        native_id: "saved".into(),
+    };
+    let endpoint_id = EndpointId("core".into());
+    let claim = PiSourceClaim {
+        version: 1,
+        endpoint: endpoint_id.clone(),
+        conversation: conversation.clone(),
+        terminal_root: key(10),
+        sdk: key(30),
+        helper: key(40),
+    };
+    let labels = json!({source_key(&claim.helper).unwrap():serde_json::to_string(&claim).unwrap()});
+    let work = RegisteredSources::decode(
+        &endpoint_id,
+        json!({"terminals":[{"address":"t1","state":"live","pid":10,"labels":labels}]}),
+        &processes,
+    )
+    .unwrap()
+    .for_scope(scope())
+    .unwrap();
+    let presentation = HcPresentation::new(
+        scope(),
+        AssociationSnapshot::decode(endpoint_id.clone(), 0, Value::Null).unwrap(),
+        PublishedLayout::decode(endpoint_id.clone(), json!({"spaces":[]})).unwrap(),
+        None,
+    )
+    .unwrap();
+    for mode in ["confirmed", "rejected", "malformed", "lost"] {
+        let native = tempfile::Builder::new()
+            .prefix("hc-adopt-")
+            .tempdir_in("/tmp")
+            .unwrap();
+        let path = native.path().join("s");
+        let listener = UnixListener::bind(&path).unwrap();
+        let socket = HcEndpoint::resolve(
+            &BTreeMap::from([("HC_SOCKET".into(), path.display().to_string())]),
+            native.path(),
+        )
+        .unwrap();
+        let mut prepared = work
+            .prepare_adoptions(
+                std::slice::from_ref(&conversation),
+                &presentation,
+                &reference("space"),
+                &socket,
+            )
+            .unwrap();
+        assert_eq!(prepared.len(), 1);
+        let prepared = prepared.pop().unwrap();
+        assert_eq!(prepared.terminal(), &reference("t1"));
+        assert!(uuid::Uuid::parse_str(prepared.tab()).is_ok());
+        let labels = json!({"herdr.space":"space","herdr.tab":prepared.tab()});
+        let expected = json!({"terminal":"t1","labels":labels});
+        let server = thread::spawn(move || {
+            let mut reader = BufReader::new(listener.accept().unwrap().0);
+            reader
+                .get_ref()
+                .set_read_timeout(Some(std::time::Duration::from_secs(5)))
+                .unwrap();
+            let mut line = String::new();
+            reader.read_line(&mut line).unwrap();
+            let hello: Value = serde_json::from_str(&line).unwrap();
+            writeln!(reader.get_mut(),"{}",json!({"jsonrpc":"2.0","id":hello["id"],"result":{"generation":1,"framed":false,"core":{"id":"core"},"methods":["hello","terminal.label"]}})).unwrap();
+            line.clear();
+            reader.read_line(&mut line).unwrap();
+            let request: Value = serde_json::from_str(&line).unwrap();
+            assert_eq!(request["method"], "terminal.label");
+            assert_eq!(request["params"], expected);
+            if mode == "lost" {
+                return;
+            }
+            let reply = if mode == "confirmed" {
+                json!({"address":"t1","state":"live","labels":labels})
+            } else {
+                json!({"address":"t1","state":"live","labels":{}})
+            };
+            let envelope = if mode == "rejected" {
+                json!({"jsonrpc":"2.0","id":request["id"],"error":{"code":-32602,"message":"private details","data":{"kind":"invalid_params"}}})
+            } else {
+                json!({"jsonrpc":"2.0","id":request["id"],"result":reply})
+            };
+            writeln!(reader.get_mut(), "{}", envelope).unwrap();
+            let mut rest = Vec::new();
+            reader.read_to_end(&mut rest).unwrap();
+            assert!(rest.is_empty());
+        });
+        let client = HcClient::connect(socket, Some(&endpoint_id), 5.0, None).unwrap();
+        let mut operation = HcOperation::new(client);
+        let effect = operation.adopt_terminal(prepared);
+        assert_eq!(effect.terminal, reference("t1"));
+        if mode == "confirmed" {
+            assert_eq!(
+                effect.result,
+                Effect::Applied {
+                    value: reference("t1")
+                }
+            );
+        } else if mode == "rejected" {
+            assert!(matches!(effect.result, Effect::NotApplied { .. }));
+        } else {
+            assert!(matches!(effect.result, Effect::Uncertain { .. }));
+        }
+        drop(operation);
+        server.join().unwrap();
+    }
+}
+
+#[test]
 fn prepared_hc_terminal_start_keeps_exact_inputs_and_never_replays() {
     use std::{fs, os::unix::fs::PermissionsExt};
     use streams::{
@@ -1249,7 +1398,14 @@ fn prepared_hc_terminal_start_keeps_exact_inputs_and_never_replays() {
         ("XDG_RUNTIME_DIR".into(), cwd.display().to_string()),
         ("TOKEN".into(), "never-forward".into()),
     ]);
-    for mode in ["confirmed", "finished", "pending", "malformed", "lost"] {
+    for mode in [
+        "confirmed",
+        "finished",
+        "rejected",
+        "pending",
+        "malformed",
+        "lost",
+    ] {
         let native = tempfile::Builder::new()
             .prefix("hc-start-")
             .tempdir_in("/tmp")
@@ -1309,12 +1465,12 @@ fn prepared_hc_terminal_start_keeps_exact_inputs_and_never_replays() {
                 }
                 _ => json!({"address":"t7","state":"live","pid":123,"labels":{}}),
             };
-            writeln!(
-                reader.get_mut(),
-                "{}",
+            let envelope = if mode == "rejected" {
+                json!({"jsonrpc":"2.0","id":request["id"],"error":{"code":-32602,"message":"private details","data":{"kind":"invalid_params"}}})
+            } else {
                 json!({"jsonrpc":"2.0","id":request["id"],"result":reply})
-            )
-            .unwrap();
+            };
+            writeln!(reader.get_mut(), "{}", envelope).unwrap();
             let mut remaining = Vec::new();
             reader.read_to_end(&mut remaining).unwrap();
             assert!(remaining.is_empty(), "no retry or additional native action");
@@ -1331,6 +1487,8 @@ fn prepared_hc_terminal_start_keeps_exact_inputs_and_never_replays() {
                 }
             );
             assert_eq!(operation.commands[0].outcome, CommandOutcome::Acknowledged);
+        } else if mode == "rejected" {
+            assert!(matches!(result, Effect::NotApplied { .. }));
         } else {
             assert!(matches!(result, Effect::Uncertain { .. }));
             assert_eq!(operation.commands[0].outcome, CommandOutcome::Uncertain);
