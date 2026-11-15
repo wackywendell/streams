@@ -1168,6 +1168,54 @@ fn execution_inspects_only_registered_sources_on_the_selected_core() {
             )
             .is_err()
     );
+    let second = PiSourceClaim {
+        conversation: ConversationId {
+            harness: "pi".into(),
+            native_id: "unselected".into(),
+        },
+        sdk: key(31),
+        helper: key(43),
+        ..claim.clone()
+    };
+    let mut rows = processes.rows.clone();
+    for (pid, parent_pid) in [(31, 10), (43, 31)] {
+        rows.insert(
+            pid,
+            ProcessObservation {
+                key: key(pid),
+                parent_pid,
+                process_group: 10,
+                stopped: false,
+            },
+        );
+    }
+    let mixed = json!({"address":"t1","state":"live","pid":10,"labels":{source_key(&claim.helper).unwrap():serde_json::to_string(&claim).unwrap(),source_key(&second.helper).unwrap():serde_json::to_string(&second).unwrap()}});
+    let shared = RegisteredSources::decode(
+        &endpoint,
+        json!({"terminals":[mixed]}),
+        &Processes {
+            rows,
+            calls: Cell::new(0),
+        },
+    )
+    .unwrap()
+    .for_scope(scope())
+    .unwrap();
+    assert!(
+        shared
+            .unplaced_selected(std::slice::from_ref(&conversation), &empty_layout)
+            .unwrap()
+            .is_empty()
+    );
+    assert_eq!(
+        shared
+            .unplaced_selected(
+                &[conversation.clone(), second.conversation.clone()],
+                &empty_layout
+            )
+            .unwrap(),
+        vec![reference("t1")]
+    );
     let mut pending = local.clone();
     pending["labels"]["herdr.space"] = json!("pending-space");
     let pending = RegisteredSources::decode(&endpoint, json!({"terminals":[pending]}), &processes)

@@ -401,12 +401,21 @@ impl HcWorkExecution {
         {
             return Err(invalid("work and presentation observations do not match"));
         }
+        let requested: BTreeSet<_> = conversations.iter().collect();
+        let shared: BTreeSet<_> = self
+            .sources
+            .running
+            .iter()
+            .filter(|(conversation, _)| !requested.contains(conversation))
+            .flat_map(|(_, terminals)| terminals.iter().map(|terminal| terminal.key.as_str()))
+            .collect();
         let mut seen = BTreeSet::new();
         let mut selected = Vec::new();
         for conversation in conversations {
             if let Presence::Running { locations } = self.sources.presence(conversation) {
                 for terminal in locations.into_vec() {
                     if !self.sources.placement_hints.contains(&terminal.key)
+                        && !shared.contains(terminal.key.as_str())
                         && presentation.space_for_terminal(&terminal).is_none()
                         && seen.insert(terminal.key.clone())
                     {
