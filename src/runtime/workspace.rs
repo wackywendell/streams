@@ -1,5 +1,6 @@
 //! Named workspace operations. Native effects never resume a loaded receipt.
 
+mod hc_open;
 mod open;
 mod resume;
 #[cfg(test)]

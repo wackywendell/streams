@@ -385,6 +385,10 @@ impl crate::integration::ExecutionSnapshot for RegisteredSources {
 }
 
 impl HcWorkExecution {
+    pub fn scope(&self) -> &WorkScope {
+        &self.scope
+    }
+
     /// Select only verified requested conversations with neither published nor pending placement.
     pub fn unplaced_selected(
         &self,
@@ -1063,6 +1067,10 @@ pub struct HcPresentation {
     caller: Option<NativeRef>,
 }
 impl HcPresentation {
+    pub fn scope(&self) -> &WorkScope {
+        &self.scope
+    }
+
     pub fn new(
         scope: WorkScope,
         before: AssociationSnapshot,

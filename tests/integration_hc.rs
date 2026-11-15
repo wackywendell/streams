@@ -1321,6 +1321,282 @@ fn work_routing_is_scoped_and_separately_unavailable_from_presence() {
 }
 
 #[test]
+fn hc_open_plan_uses_only_selected_work_and_positive_observations() {
+    use std::{fs, sync::atomic::AtomicBool};
+    use streams::{
+        frontend::hc::processes::{ProcessKey, ProcessObservation, ProcessObserver},
+        integration::{Access, ExecutionSnapshot, LaunchItem, SessionOpenResult, SpaceDecision},
+        model::{Session, Stream},
+        runtime::{
+            CheckoutRegistry, DirectoryBindings,
+            conversations::ConversationRoots,
+            hc::{HcPresentation, PiSourceClaim, RegisteredSources, labels::source_key},
+            workspace::{SelectedConversation, WorkspaceRuntime},
+        },
+    };
+    struct Processes(BTreeMap<u32, ProcessObservation>);
+    impl ProcessObserver for Processes {
+        fn observe(&self, pid: u32) -> std::io::Result<ProcessObservation> {
+            self.0
+                .get(&pid)
+                .cloned()
+                .ok_or_else(|| std::io::Error::other("unavailable"))
+        }
+        fn exited(&self, key: &ProcessKey) -> std::io::Result<bool> {
+            Ok(self.observe(key.pid)?.key != *key)
+        }
+    }
+    let dir = tempfile::tempdir().unwrap();
+    let cwd = dir.path().canonicalize().unwrap();
+    let registry = CheckoutRegistry::new(cwd.join("checkouts"), "host").unwrap();
+    let locations = DirectoryBindings::new(cwd.join("bindings"), registry);
+    let stream = Stream::new("work", "Work", None, "host").unwrap();
+    let session = |native| {
+        Session::new(
+            Session::id_for("host", "pi", native),
+            "host",
+            "work",
+            "pi",
+            native,
+            native,
+        )
+        .unwrap()
+    };
+    let running = session("running");
+    let absent = session("absent");
+    locations
+        .remember("work", &cwd, None, true, None, None)
+        .unwrap();
+    let transcript = cwd.join("saved.jsonl");
+    fs::write(&transcript, "{\"type\":\"session\",\"id\":\"absent\"}\n").unwrap();
+    let roots = ConversationRoots::default();
+    let environment = BTreeMap::from([
+        ("HOME".into(), cwd.display().to_string()),
+        ("PATH".into(), "/bin:/usr/bin".into()),
+    ]);
+    let runtime = WorkspaceRuntime::new("host", &locations, None, "catalog", &roots, &environment);
+    let key = |pid| ProcessKey {
+        boot: "08f95cf6-6657-40c4-b5b9-6ee493d934ab".into(),
+        pid,
+        started: format!("linux:{pid}"),
+    };
+    let processes = Processes(
+        [(10, 1), (30, 10), (40, 30)]
+            .into_iter()
+            .map(|(pid, parent_pid)| {
+                (
+                    pid,
+                    ProcessObservation {
+                        key: key(pid),
+                        parent_pid,
+                        process_group: 10,
+                        stopped: false,
+                    },
+                )
+            })
+            .collect(),
+    );
+    let endpoint = EndpointId("core".into());
+    let claim = PiSourceClaim {
+        version: 1,
+        endpoint: endpoint.clone(),
+        conversation: (&running).into(),
+        terminal_root: key(10),
+        sdk: key(30),
+        helper: key(40),
+    };
+    let labels = json!({source_key(&claim.helper).unwrap():serde_json::to_string(&claim).unwrap()});
+    let source = json!({"address":"t1","state":"live","pid":10,"labels":labels});
+    let work =
+        RegisteredSources::decode(&endpoint, json!({"terminals":[source.clone()]}), &processes)
+            .unwrap()
+            .for_scope(scope())
+            .unwrap();
+    let present = HcPresentation::new(
+        scope(),
+        AssociationSnapshot::decode(endpoint.clone(), 0, Value::Null).unwrap(),
+        PublishedLayout::decode(endpoint.clone(), json!({"spaces":[]})).unwrap(),
+        None,
+    )
+    .unwrap();
+    let foreign_scope = WorkScope {
+        host: "other".into(),
+        ..scope()
+    };
+    let foreign = HcPresentation::new(
+        foreign_scope,
+        AssociationSnapshot::decode(endpoint.clone(), 0, Value::Null).unwrap(),
+        PublishedLayout::decode(endpoint.clone(), json!({"spaces":[]})).unwrap(),
+        None,
+    )
+    .unwrap();
+    assert!(
+        runtime
+            .prepare_hc_open(
+                &AtomicBool::new(false),
+                &stream,
+                &[],
+                None,
+                Access::Available { value: &work },
+                Access::Available { value: &foreign }
+            )
+            .is_err()
+    );
+    let selected = [
+        SelectedConversation {
+            session: &running,
+            locator: None,
+        },
+        SelectedConversation {
+            session: &absent,
+            locator: Some(&transcript),
+        },
+    ];
+    let (plan, outcomes) = runtime
+        .prepare_hc_open(
+            &AtomicBool::new(false),
+            &stream,
+            &selected,
+            None,
+            Access::Available { value: &work },
+            Access::Available { value: &present },
+        )
+        .unwrap();
+    assert!(matches!(plan.space, SpaceDecision::Create { .. }));
+    assert_eq!(plan.adopt, vec![reference("t1")]);
+    assert!(
+        matches!(&plan.launches[..],[LaunchItem::Conversation(launch)] if launch.session()==absent.id && launch.command().locator()==transcript)
+    );
+    assert!(matches!(
+        outcomes[&running.id],
+        SessionOpenResult::AlreadyRunning { .. }
+    ));
+    assert!(matches!(
+        work.presence(&(&absent).into()),
+        streams::integration::Presence::Absent
+    ));
+    let (plan, outcomes) = runtime
+        .prepare_hc_open(
+            &AtomicBool::new(false),
+            &stream,
+            &selected,
+            None,
+            Access::Unavailable {
+                reason: "unknown".into(),
+            },
+            Access::Available { value: &present },
+        )
+        .unwrap();
+    assert!(plan.launches.is_empty() && plan.adopt.is_empty());
+    assert_eq!(outcomes.len(), 2);
+    let (plan, _) = runtime
+        .prepare_hc_open(
+            &AtomicBool::new(false),
+            &stream,
+            &selected,
+            None,
+            Access::Available { value: &work },
+            Access::Unavailable {
+                reason: "closed".into(),
+            },
+        )
+        .unwrap();
+    assert!(matches!(plan.space, SpaceDecision::Unavailable { .. }));
+    assert_eq!(plan.launches.len(), 1);
+    assert!(plan.adopt.is_empty());
+    let empty = RegisteredSources::decode(&endpoint, json!({"terminals":[]}), &processes)
+        .unwrap()
+        .for_scope(scope())
+        .unwrap();
+    let (plan, _) = runtime
+        .prepare_hc_open(
+            &AtomicBool::new(false),
+            &stream,
+            &[],
+            None,
+            Access::Available { value: &empty },
+            Access::Available { value: &present },
+        )
+        .unwrap();
+    assert!(matches!(&plan.launches[..], [LaunchItem::Shell { .. }]));
+    let (plan, _) = runtime
+        .prepare_hc_open(
+            &AtomicBool::new(false),
+            &stream,
+            &[],
+            None,
+            Access::Available { value: &empty },
+            Access::Unavailable {
+                reason: "closed".into(),
+            },
+        )
+        .unwrap();
+    assert!(plan.launches.is_empty());
+    let malformed=RegisteredSources::decode(&endpoint,json!({"terminals":[{"address":"t2","state":"live","pid":22,"labels":{"streams.work":"bad"}}]}),&processes).unwrap().for_scope(scope()).unwrap();
+    let (plan, _) = runtime
+        .prepare_hc_open(
+            &AtomicBool::new(false),
+            &stream,
+            &[],
+            None,
+            Access::Available { value: &malformed },
+            Access::Available { value: &present },
+        )
+        .unwrap();
+    assert!(plan.launches.is_empty());
+    let routed=RegisteredSources::decode(&endpoint,json!({"terminals":[{"address":"t2","state":"live","pid":22,"labels":{"streams.work":serde_json::to_string(&json!({"version":1,"scope":scope(),"stream":"work"})).unwrap()}}]}),&processes).unwrap().for_scope(scope()).unwrap();
+    let (plan, _) = runtime
+        .prepare_hc_open(
+            &AtomicBool::new(false),
+            &stream,
+            &[],
+            None,
+            Access::Available { value: &routed },
+            Access::Available { value: &present },
+        )
+        .unwrap();
+    assert!(plan.launches.is_empty());
+    assert!(matches!(plan.space, SpaceDecision::None));
+    let no_locator = [SelectedConversation {
+        session: &absent,
+        locator: None,
+    }];
+    let (plan, outcomes) = runtime
+        .prepare_hc_open(
+            &AtomicBool::new(false),
+            &stream,
+            &no_locator,
+            None,
+            Access::Available { value: &empty },
+            Access::Available { value: &present },
+        )
+        .unwrap();
+    assert!(plan.launches.is_empty());
+    assert!(matches!(
+        outcomes[&absent.id],
+        SessionOpenResult::Skipped { .. }
+    ));
+    let missing = cwd.join("private-missing.jsonl");
+    let invalid = [SelectedConversation {
+        session: &absent,
+        locator: Some(&missing),
+    }];
+    let (_, outcomes) = runtime
+        .prepare_hc_open(
+            &AtomicBool::new(false),
+            &stream,
+            &invalid,
+            None,
+            Access::Available { value: &empty },
+            Access::Available { value: &present },
+        )
+        .unwrap();
+    assert!(
+        matches!(&outcomes[&absent.id],SessionOpenResult::Skipped {reason} if !reason.contains("private-missing"))
+    );
+}
+
+#[test]
 fn hc_adoption_writes_only_placement_labels_once() {
     use streams::{
         frontend::hc::processes::{ProcessKey, ProcessObservation, ProcessObserver},
