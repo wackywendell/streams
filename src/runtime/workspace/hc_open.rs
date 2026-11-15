@@ -56,8 +56,8 @@ impl WorkspaceRuntime<'_> {
                 value: *value as &dyn ExecutionSnapshot,
             },
             Access::Unsupported => Access::Unsupported,
-            Access::Unavailable { reason } => Access::Unavailable {
-                reason: reason.clone(),
+            Access::Unavailable { .. } => Access::Unavailable {
+                reason: "hc Pi presence is unavailable".into(),
             },
         };
         let (candidates, mut outcomes) =
@@ -146,9 +146,9 @@ impl WorkspaceRuntime<'_> {
         }
         let space = if let Some(space) = existing {
             SpaceDecision::Reuse { space }
-        } else if let Access::Unavailable { reason } = &presentation {
+        } else if matches!(presentation, Access::Unavailable { .. }) {
             SpaceDecision::Unavailable {
-                reason: reason.clone(),
+                reason: "hc presentation is unavailable".into(),
             }
         } else if matches!(presentation, Access::Unsupported) {
             SpaceDecision::Unavailable {

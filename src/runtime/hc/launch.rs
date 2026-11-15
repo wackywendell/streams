@@ -291,10 +291,20 @@ impl HcOperation {
                     },
                     _ => false,
                 };
-                let exact = value.get("cwd") == params.get("cwd")
-                    && params
+                let argv_matches = match params.get("argv") {
+                    Some(argv) => value.get("argv") == Some(argv),
+                    None => value
                         .get("argv")
-                        .is_none_or(|argv| value.get("argv") == Some(argv))
+                        .and_then(Value::as_array)
+                        .is_some_and(|argv| {
+                            argv.first()
+                                .and_then(Value::as_str)
+                                .is_some_and(|program| !program.is_empty())
+                                && argv.iter().all(Value::is_string)
+                        }),
+                };
+                let exact = value.get("cwd") == params.get("cwd")
+                    && argv_matches
                     && value.get("parent").is_none_or(Value::is_null);
                 let confirmed = started
                     && exact

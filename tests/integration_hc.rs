@@ -1439,7 +1439,9 @@ fn hc_open_plan_uses_only_selected_work_and_positive_observations() {
     use std::{fs, sync::atomic::AtomicBool};
     use streams::{
         frontend::hc::processes::{ProcessKey, ProcessObservation, ProcessObserver},
-        integration::{Access, ExecutionSnapshot, LaunchItem, SessionOpenResult, SpaceDecision},
+        integration::{
+            Access, ConversationId, ExecutionSnapshot, LaunchItem, SessionOpenResult, SpaceDecision,
+        },
         model::{Session, Stream},
         runtime::{
             CheckoutRegistry, DirectoryBindings,
@@ -1596,13 +1598,14 @@ fn hc_open_plan_uses_only_selected_work_and_positive_observations() {
             &selected,
             None,
             Access::Unavailable {
-                reason: "unknown".into(),
+                reason: "/owner/private".into(),
             },
             Access::Available { value: &present },
         )
         .unwrap();
     assert!(plan.launches.is_empty() && plan.adopt.is_empty());
     assert_eq!(outcomes.len(), 2);
+    assert!(!format!("{outcomes:?}").contains("/owner/private"));
     let (plan, _) = runtime
         .prepare_hc_open(
             &AtomicBool::new(false),
@@ -1611,11 +1614,13 @@ fn hc_open_plan_uses_only_selected_work_and_positive_observations() {
             None,
             Access::Available { value: &work },
             Access::Unavailable {
-                reason: "closed".into(),
+                reason: "/owner/private".into(),
             },
         )
         .unwrap();
-    assert!(matches!(plan.space, SpaceDecision::Unavailable { .. }));
+    assert!(
+        matches!(&plan.space, SpaceDecision::Unavailable {reason} if !reason.contains("/owner/private"))
+    );
     assert_eq!(plan.launches.len(), 1);
     assert!(plan.adopt.is_empty());
     let empty = RegisteredSources::decode(&endpoint, json!({"terminals":[]}), &processes)
@@ -1708,6 +1713,421 @@ fn hc_open_plan_uses_only_selected_work_and_positive_observations() {
     assert!(
         matches!(&outcomes[&absent.id],SessionOpenResult::Skipped {reason} if !reason.contains("private-missing"))
     );
+    use streams::runtime::hc::open::OpenContext;
+    let selected = [SelectedConversation {
+        session: &running,
+        locator: None,
+    }];
+    let (plan, _) = runtime
+        .prepare_hc_open(
+            &AtomicBool::new(false),
+            &stream,
+            &selected,
+            None,
+            Access::Available { value: &work },
+            Access::Available { value: &present },
+        )
+        .unwrap();
+    let core = FakeCore::new(vec![]);
+    let socket = HcEndpoint::resolve(
+        &BTreeMap::from([("HC_SOCKET".into(), core.socket.display().to_string())]),
+        &cwd,
+    )
+    .unwrap();
+    let mut operation = core.operation();
+    let effects = operation.execute_prepared_open(
+        &plan,
+        OpenContext {
+            scope: &scope(),
+            socket: &socket,
+            environment: &environment,
+            selected: &[],
+            execution: Some(&work),
+            presentation: Some(&present),
+        },
+    );
+    assert!(matches!(
+        effects.adoptions[0].result,
+        Effect::NotApplied { .. }
+    ));
+    assert!(operation.commands.is_empty());
+    drop(operation);
+    assert_eq!(core.finish().len(), 1);
+    let native = tempfile::Builder::new()
+        .prefix("hc-adopt-open-")
+        .tempdir_in("/tmp")
+        .unwrap();
+    let path = native.path().join("s");
+    let listener = UnixListener::bind(&path).unwrap();
+    let socket = HcEndpoint::resolve(
+        &BTreeMap::from([("HC_SOCKET".into(), path.display().to_string())]),
+        &cwd,
+    )
+    .unwrap();
+    let server = thread::spawn(move || {
+        let mut reader = BufReader::new(listener.accept().unwrap().0);
+        reader
+            .get_ref()
+            .set_read_timeout(Some(std::time::Duration::from_secs(5)))
+            .unwrap();
+        let mut line = String::new();
+        reader.read_line(&mut line).unwrap();
+        let hello: Value = serde_json::from_str(&line).unwrap();
+        writeln!(reader.get_mut(),"{}",json!({"jsonrpc":"2.0","id":hello["id"],"result":{"generation":1,"framed":false,"core":{"id":"core"},"methods":["hello","terminal.label","doc.get"]}})).unwrap();
+        line.clear();
+        reader.read_line(&mut line).unwrap();
+        let label: Value = serde_json::from_str(&line).unwrap();
+        assert_eq!(label["method"], "terminal.label");
+        assert_eq!(label["params"]["terminal"], "t1");
+        assert_eq!(label["params"]["labels"].as_object().unwrap().len(), 2);
+        writeln!(reader.get_mut(),"{}",json!({"jsonrpc":"2.0","id":label["id"],"result":{"address":"t1","state":"live","labels":label["params"]["labels"]}})).unwrap();
+        line.clear();
+        reader.read_line(&mut line).unwrap();
+        let get: Value = serde_json::from_str(&line).unwrap();
+        assert_eq!(get["method"], "doc.get");
+        writeln!(
+            reader.get_mut(),
+            "{}",
+            json!({"jsonrpc":"2.0","id":get["id"],"result":{"version":0,"value":{"spaces":[]}}})
+        )
+        .unwrap();
+        let mut rest = Vec::new();
+        reader.read_to_end(&mut rest).unwrap();
+        assert!(rest.is_empty());
+    });
+    let mut operation =
+        HcOperation::new(HcClient::connect(socket.clone(), Some(&endpoint), 5.0, None).unwrap());
+    let requested = [ConversationId::from(&running)];
+    let effects = operation.execute_prepared_open(
+        &plan,
+        OpenContext {
+            scope: &scope(),
+            socket: &socket,
+            environment: &environment,
+            selected: &requested,
+            execution: Some(&work),
+            presentation: Some(&present),
+        },
+    );
+    assert!(matches!(
+        effects.adoptions[0].result,
+        Effect::Applied { .. }
+    ));
+    assert!(matches!(
+        effects.presentation.space,
+        streams::integration::SpaceEvidence::Requested { .. }
+    ));
+    assert!(matches!(
+        effects.presentation.state,
+        streams::integration::PresentationState::Incomplete { .. }
+    ));
+    drop(operation);
+    server.join().unwrap();
+}
+
+#[test]
+fn hc_open_effects_keep_execution_and_placement_outcomes_independent() {
+    use std::{fs, os::unix::fs::PermissionsExt};
+    use streams::{
+        integration::{
+            LaunchItem, PreparedOpen, PresentationState, SpaceDecision, SpaceEvidence,
+            VerifiedLaunch, ViewerAction,
+        },
+        model::Session,
+        runtime::{
+            conversations::ConversationRoots,
+            hc::{HcPresentation, open::OpenContext},
+            workspace::native_environment,
+        },
+    };
+    let directory = tempfile::tempdir().unwrap();
+    let cwd = directory.path().canonicalize().unwrap();
+    let program = cwd.join("pi");
+    fs::write(&program, "#!/bin/sh\nexit 0\n").unwrap();
+    fs::set_permissions(&program, fs::Permissions::from_mode(0o755)).unwrap();
+    let caller = BTreeMap::from([
+        ("HOME".into(), cwd.display().to_string()),
+        ("PATH".into(), cwd.display().to_string()),
+    ]);
+    let env = native_environment("work", &caller).unwrap();
+    let mut launches = Vec::new();
+    for id in ["one", "two", "three"] {
+        let session = Session::new(
+            Session::id_for("host", "pi", id),
+            "host",
+            "work",
+            "pi",
+            id,
+            id,
+        )
+        .unwrap();
+        let path = cwd.join(format!("{id}.jsonl"));
+        fs::write(&path, format!("{{\"type\":\"session\",\"id\":\"{id}\"}}\n")).unwrap();
+        launches.push(LaunchItem::Conversation(
+            VerifiedLaunch::prepare(
+                &session,
+                &path,
+                &ConversationRoots::default(),
+                &cwd,
+                env.clone(),
+            )
+            .unwrap(),
+        ));
+    }
+    for case in [
+        "published",
+        "unpublished",
+        "lost",
+        "rejected",
+        "reuse-lost",
+        "no-presentation",
+        "shell",
+        "shell-invalid",
+    ] {
+        let native = tempfile::Builder::new()
+            .prefix("hc-open-")
+            .tempdir_in("/tmp")
+            .unwrap();
+        let path = native.path().join("s");
+        let listener = UnixListener::bind(&path).unwrap();
+        let socket = HcEndpoint::resolve(
+            &BTreeMap::from([("HC_SOCKET".into(), path.display().to_string())]),
+            &cwd,
+        )
+        .unwrap();
+        let reuse = case == "reuse-lost";
+        let initial = if reuse {
+            document(vec![row("target")])
+        } else {
+            Value::Null
+        };
+        let layout = if reuse {
+            json!({"spaces":[{"id":"target"}]})
+        } else {
+            json!({"spaces":[]})
+        };
+        let presentation = HcPresentation::new(
+            scope(),
+            AssociationSnapshot::decode(EndpointId("core".into()), 3, initial).unwrap(),
+            PublishedLayout::decode(EndpointId("core".into()), layout).unwrap(),
+            None,
+        )
+        .unwrap();
+        let plan = PreparedOpen {
+            stream: "work".into(),
+            space: if reuse {
+                SpaceDecision::Reuse {
+                    space: reference("target"),
+                }
+            } else if case == "no-presentation" {
+                SpaceDecision::Unavailable {
+                    reason: "closed".into(),
+                }
+            } else {
+                SpaceDecision::Create {
+                    title: "Work".into(),
+                    cwd: cwd.clone(),
+                }
+            },
+            launches: if case.starts_with("shell") {
+                vec![LaunchItem::Shell { cwd: cwd.clone() }]
+            } else {
+                launches.clone()
+            },
+            adopt: vec![],
+            focus: true,
+        };
+        let server = thread::spawn(move || {
+            let mut reader = BufReader::new(listener.accept().unwrap().0);
+            reader
+                .get_ref()
+                .set_read_timeout(Some(std::time::Duration::from_secs(5)))
+                .unwrap();
+            let mut line = String::new();
+            reader.read_line(&mut line).unwrap();
+            let hello: Value = serde_json::from_str(&line).unwrap();
+            writeln!(reader.get_mut(),"{}",json!({"jsonrpc":"2.0","id":hello["id"],"result":{"generation":1,"framed":false,"core":{"id":"core"},"methods":["hello","terminal.run","doc.get","doc.set"]}})).unwrap();
+            let count = if case.starts_with("shell") {
+                1
+            } else if matches!(case, "lost" | "rejected" | "reuse-lost") {
+                2
+            } else {
+                3
+            };
+            let mut space = String::new();
+            let mut tabs = BTreeSet::new();
+            for i in 0..count {
+                line.clear();
+                reader.read_line(&mut line).unwrap();
+                let request: Value = serde_json::from_str(&line).unwrap();
+                assert_eq!(request["method"], "terminal.run");
+                let params = &request["params"];
+                assert_eq!(params["no_parent"], true);
+                assert_eq!(params["wait"], false);
+                let current = params["labels"]["herdr.space"].as_str().unwrap();
+                if i == 0 {
+                    space = current.into();
+                } else {
+                    assert_eq!(current, space);
+                }
+                assert!(tabs.insert(params["labels"]["herdr.tab"].as_str().unwrap().to_owned()));
+                if i == 1 && matches!(case, "lost" | "reuse-lost") {
+                    return;
+                }
+                let argv = match case {
+                    "shell" => json!(["/bin/sh"]),
+                    "shell-invalid" => Value::Null,
+                    _ => params["argv"].clone(),
+                };
+                if case.starts_with("shell") {
+                    assert!(params.get("argv").is_none());
+                }
+                let response = if i == 1 && case == "rejected" {
+                    json!({"jsonrpc":"2.0","id":request["id"],"error":{"code":-32602,"message":"private","data":{"kind":"invalid_params"}}})
+                } else {
+                    json!({"jsonrpc":"2.0","id":request["id"],"result":{"address":format!("t{}",i+1),"state":"live","pid":100+i,"argv":argv,"cwd":params["cwd"],"parent":null,"labels":params["labels"]}})
+                };
+                writeln!(reader.get_mut(), "{}", response).unwrap();
+            }
+            if matches!(case, "published" | "unpublished" | "shell") {
+                line.clear();
+                reader.read_line(&mut line).unwrap();
+                let get: Value = serde_json::from_str(&line).unwrap();
+                assert_eq!(get["method"], "doc.get");
+                assert_eq!(get["params"], json!({"name":"herdr-app"}));
+                let layout = if matches!(case, "published" | "shell") {
+                    json!({"spaces":[{"id":space}]})
+                } else {
+                    json!({"spaces":[]})
+                };
+                writeln!(
+                    reader.get_mut(),
+                    "{}",
+                    json!({"jsonrpc":"2.0","id":get["id"],"result":{"version":5,"value":layout}})
+                )
+                .unwrap();
+                if matches!(case, "published" | "shell") {
+                    line.clear();
+                    reader.read_line(&mut line).unwrap();
+                    let set: Value = serde_json::from_str(&line).unwrap();
+                    assert_eq!(set["method"], "doc.set");
+                    assert_eq!(set["params"]["version"], 3);
+                    assert_eq!(set["params"]["value"]["spaces"][&space]["stream"], "work");
+                    writeln!(
+                        reader.get_mut(),
+                        "{}",
+                        json!({"jsonrpc":"2.0","id":set["id"],"result":{"version":4}})
+                    )
+                    .unwrap();
+                }
+            }
+            let mut rest = Vec::new();
+            reader.read_to_end(&mut rest).unwrap();
+            assert!(rest.is_empty(), "no retry or unexpected effect");
+        });
+        let client =
+            HcClient::connect(socket.clone(), Some(&EndpointId("core".into())), 5.0, None).unwrap();
+        let mut operation = HcOperation::new(client);
+        let effects = operation.execute_prepared_open(
+            &plan,
+            OpenContext {
+                scope: &scope(),
+                socket: &socket,
+                environment: &caller,
+                selected: &[],
+                execution: None,
+                presentation: (case != "no-presentation").then_some(&presentation),
+            },
+        );
+        if case == "shell-invalid" {
+            assert!(matches!(effects.launches[0], Effect::Uncertain { .. }));
+        } else {
+            assert!(matches!(effects.launches[0], Effect::Applied { .. }));
+        }
+        if matches!(case, "lost" | "reuse-lost") {
+            assert!(matches!(effects.launches[1], Effect::Uncertain { .. }));
+            assert!(matches!(effects.launches[2], Effect::NotApplied { .. }));
+        } else if case == "rejected" {
+            assert!(matches!(effects.launches[1], Effect::NotApplied { .. }));
+            assert!(matches!(effects.launches[2], Effect::NotApplied { .. }));
+        } else if case != "shell-invalid" {
+            assert!(
+                effects
+                    .launches
+                    .iter()
+                    .all(|effect| matches!(effect, Effect::Applied { .. }))
+            );
+        }
+        match case {
+            "published" | "shell" => {
+                assert!(matches!(
+                    effects.presentation.space,
+                    SpaceEvidence::Known { .. }
+                ));
+                assert_eq!(effects.presentation.state, PresentationState::Complete);
+                assert!(matches!(
+                    &effects.viewer_actions[..],
+                    [ViewerAction::SelectSpace { .. }]
+                ));
+            }
+            "unpublished" => {
+                assert!(matches!(
+                    effects.presentation.space,
+                    SpaceEvidence::Requested { .. }
+                ));
+                assert!(matches!(
+                    effects.presentation.state,
+                    PresentationState::Incomplete { .. }
+                ));
+                assert!(effects.viewer_actions.is_empty());
+            }
+            "lost" | "shell-invalid" => {
+                assert!(matches!(
+                    effects.presentation.space,
+                    SpaceEvidence::Requested { .. }
+                ));
+                assert!(matches!(
+                    effects.presentation.state,
+                    PresentationState::Uncertain { .. }
+                ));
+            }
+            "rejected" => {
+                assert!(matches!(
+                    effects.presentation.space,
+                    SpaceEvidence::Requested { .. }
+                ));
+                assert!(matches!(
+                    effects.presentation.state,
+                    PresentationState::Incomplete { .. }
+                ));
+            }
+            "reuse-lost" => {
+                assert_eq!(
+                    effects.presentation.space,
+                    SpaceEvidence::Known {
+                        value: reference("target")
+                    }
+                );
+                assert_eq!(effects.presentation.state, PresentationState::Complete);
+                assert!(matches!(
+                    &effects.viewer_actions[..],
+                    [ViewerAction::SelectSpace { .. }]
+                ));
+            }
+            _ => {
+                assert!(matches!(
+                    effects.presentation.space,
+                    SpaceEvidence::Requested { .. }
+                ));
+                assert!(matches!(
+                    effects.presentation.state,
+                    PresentationState::Unavailable { .. }
+                ));
+            }
+        }
+        drop(operation);
+        server.join().unwrap();
+    }
 }
 
 #[test]

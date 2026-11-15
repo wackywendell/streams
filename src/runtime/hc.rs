@@ -1,6 +1,7 @@
 //! Core-owned association snapshots and one-write changes; the app owns layout.
 pub mod labels;
 pub mod launch;
+pub mod open;
 pub mod sources;
 use crate::{
     frontend::{
