@@ -76,6 +76,97 @@ fn start(f: &Fixture, socket: &std::path::Path) -> Transport {
 }
 
 #[test]
+fn sdk_locator_is_verified_after_enrollment_and_on_a_later_read() {
+    use streams::{
+        config::Config,
+        runtime::{CheckoutRegistry, DirectoryBindings, state::RuntimeState},
+    };
+    let f = Fixture::new();
+    let (saved, _) = f.capture();
+    let stream = saved["stream"]["id"].as_str().unwrap();
+    let enrollment = json!({"version":2,"operation_id":"locator-enroll","catalog_source":saved["catalog_source"],"harness":"pi","harness_session_id":"pi-session","actor":"user","cwd":f.directory.path(),"stream_id":stream,"session":{"title":"Session"}});
+    let file = f.directory.path().join("session.jsonl");
+    let mut pi = context();
+    pi["session_file"] = json!(file);
+    let mut child = Transport::start_with_sdk(f.command(), "pi-session", Some(std::process::id()));
+    assert_eq!(child.next(), json!({"type":"ready","protocol":2}));
+    child.send(json!({"type":"request","id":1,"request":{"kind":"enroll","request":enrollment},"pi_context":pi}));
+    let first = child.response(1);
+    assert_eq!(first["outcome"]["status"], "success", "{first}");
+    let session = &first["outcome"]["result"]["session"];
+    let host = session["host_id"].as_str().unwrap();
+    let session_id = session["id"].as_str().unwrap();
+    let home = f.directory.path();
+    let environment = BTreeMap::from([
+        ("HOME".into(), home.display().to_string()),
+        (
+            "XDG_CONFIG_HOME".into(),
+            home.join("config").display().to_string(),
+        ),
+        (
+            "XDG_DATA_HOME".into(),
+            home.join("data").display().to_string(),
+        ),
+        (
+            "XDG_STATE_HOME".into(),
+            home.join("state").display().to_string(),
+        ),
+    ]);
+    let config = Config::new(&environment, home).unwrap();
+    let state = RuntimeState::new(config.runtime_state_dir_for(&f.root()).unwrap(), host).unwrap();
+    let bindings = DirectoryBindings::new(
+        state.root(),
+        CheckoutRegistry::new(config.checkout_state_dir(), host).unwrap(),
+    );
+    assert_eq!(bindings.transcript_file(stream, session_id).unwrap(), None);
+    fs::write(&file, "{\"type\":\"session\",\"id\":\"wrong\"}\n").unwrap();
+    child.send(json!({"type":"request","id":2,"request":{"kind":"enroll","request":enrollment},"pi_context":pi}));
+    let wrong = child.response(2);
+    assert_eq!(wrong["outcome"]["status"], "saved_with_warnings", "{wrong}");
+    assert_eq!(wrong["outcome"]["result"]["session"]["id"], session_id);
+    assert_eq!(
+        wrong["outcome"]["warnings"],
+        json!(["Pi session file could not be verified"])
+    );
+    assert_eq!(bindings.transcript_file(stream, session_id).unwrap(), None);
+    fs::write(&file, "{\"type\":\"session\",\"id\":\"pi-session\"}\n").unwrap();
+    child.send(json!({"type":"request","id":3,"request":{"kind":"list_streams"},"pi_context":pi}));
+    assert_eq!(child.response(3)["outcome"]["status"], "success");
+    child.send(json!({"type":"request","id":4,"request":{"kind":"enroll","request":enrollment},"pi_context":context()}));
+    assert_eq!(child.response(4)["outcome"]["status"], "success");
+    assert_eq!(
+        bindings.transcript_file(stream, session_id).unwrap(),
+        Some(file.canonicalize().unwrap())
+    );
+    let replacement = home.join("replacement.jsonl");
+    fs::write(&replacement, "{\"type\":\"session\",\"id\":\"wrong\"}\n").unwrap();
+    pi["session_file"] = json!(replacement);
+    child.send(json!({"type":"request","id":5,"request":{"kind":"enroll","request":enrollment},"pi_context":pi}));
+    assert_eq!(
+        child.response(5)["outcome"]["status"],
+        "saved_with_warnings"
+    );
+    assert_eq!(
+        bindings.transcript_file(stream, session_id).unwrap(),
+        Some(file.canonicalize().unwrap())
+    );
+    fs::write(
+        &replacement,
+        "{\"type\":\"session\",\"id\":\"pi-session\"}\n",
+    )
+    .unwrap();
+    child.send(json!({"type":"request","id":6,"request":{"kind":"list_streams"},"pi_context":pi}));
+    assert_eq!(child.response(6)["outcome"]["status"], "success");
+    child.send(json!({"type":"request","id":7,"request":{"kind":"enroll","request":enrollment},"pi_context":context()}));
+    assert_eq!(child.response(7)["outcome"]["status"], "success");
+    assert_eq!(
+        bindings.transcript_file(stream, session_id).unwrap(),
+        Some(replacement.canonicalize().unwrap())
+    );
+    assert_eq!(child.finish(), (0, String::new()));
+}
+
+#[test]
 fn helper_registers_before_enrollment_and_retires_only_its_own_source_on_eof() {
     let f = Fixture::new();
     let directory = tempfile::Builder::new()
@@ -223,10 +314,12 @@ fn cancelled_registration_never_writes_a_source_label() {
     child.send(json!({"type":"request","id":1,"request":{"kind":"session_started"},"pi_context":context()}));
     waiting.recv_timeout(Duration::from_secs(5)).unwrap();
     child.send(json!({"type":"cancel","id":1}));
-    // This read-only response proves the input thread admitted cancellation before releasing hc.
-    child.send(
-        json!({"type":"request","id":2,"request":{"kind":"list_streams"},"pi_context":context()}),
-    );
+    // This read-only response remains independent even when its locator work waits behind hc.
+    let file = f.directory.path().join("session.jsonl");
+    fs::write(&file, "{\"type\":\"session\",\"id\":\"pi-session\"}\n").unwrap();
+    let mut pi = context();
+    pi["session_file"] = json!(file);
+    child.send(json!({"type":"request","id":2,"request":{"kind":"list_streams"},"pi_context":pi}));
     assert_eq!(child.response(2)["outcome"]["status"], "success");
     release.send(()).unwrap();
     assert_eq!(child.response(1)["outcome"]["status"], "error");

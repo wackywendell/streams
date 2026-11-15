@@ -8,8 +8,68 @@ use streams::{
         hc::{HcClient, HcEndpoint, processes::OwnerProcesses},
     },
     integration::{ConversationId, Effect},
-    runtime::hc::sources::SourceRegistration,
+    model::{Record, RecordKind, Session},
+    runtime::{
+        RuntimeError,
+        conversations::{ConversationRoots, Harness, conversation_file},
+        hc::sources::SourceRegistration,
+    },
+    storage::records::{RecordAddress, RecordStore},
 };
+
+/// Retain only the exact SDK-supplied file for an already enrolled Session.
+/// Missing files before Pi persists them are not failures and never trigger discovery.
+pub(super) fn remember_locator(
+    app: &App,
+    context: &streams::child_protocol::PiRequestContext,
+) -> Result<()> {
+    let Some(file) = context.session_file.as_deref() else {
+        return Ok(());
+    };
+    let locator = match conversation_file(
+        Harness::Pi,
+        &context.conversation.native_id,
+        Some(file),
+        &ConversationRoots::default(),
+    ) {
+        Ok(path) => path,
+        Err(RuntimeError::Io(error)) if error.kind() == std::io::ErrorKind::NotFound => {
+            return Ok(());
+        }
+        Err(_) => return Err(CliError::message("Pi session file could not be verified")),
+    };
+    let opened = super::super::application::open_records(&app.config)?;
+    let host = opened.host().as_str();
+    let id = Session::id_for(host, "pi", &context.conversation.native_id);
+    let address = RecordAddress::new(host, RecordKind::Session, &id)
+        .map_err(|_| CliError::message("Pi Session is unavailable"))?;
+    let found = opened
+        .records()
+        .with_reader(|reader| reader.read(&address))
+        .map_err(|_| CliError::message("Pi Session is unavailable"))?;
+    let Some(found) = found else {
+        return Ok(());
+    };
+    let Record::Session(session) = found.record else {
+        return Err(CliError::message("Pi Session is unavailable"));
+    };
+    if session.host_id != host
+        || session.harness != "pi"
+        || session.harness_session_id != context.conversation.native_id
+    {
+        return Err(CliError::message("Pi Session identity does not match"));
+    }
+    app.locations(opened.root(), host)?
+        .remember_transcript(&session.stream_id, &session.id, &locator)
+        .map_err(|error| {
+            if error.is_uncertain() {
+                CliError::message("Pi session file retention is uncertain; inspect before retrying")
+            } else {
+                CliError::message("Pi session file could not be retained")
+            }
+        })?;
+    Ok(())
+}
 
 pub(super) struct Source {
     socket: HcEndpoint,

@@ -29,6 +29,7 @@ type SharedOutput = Arc<Mutex<Option<std::io::Stdout>>>;
 
 enum Wake {
     Request(RequestId, Request, Option<Box<PiRequestContext>>),
+    Locator(Box<PiRequestContext>, Arc<AtomicBool>),
     Finished,
     InputFinished,
     Failed(String),
@@ -39,6 +40,7 @@ enum Wake {
 
 enum NativeWork {
     Request(RequestId, Request, Option<Box<PiRequestContext>>),
+    Locator(Box<PiRequestContext>, Arc<AtomicBool>),
     Retire(Instant, mpsc::SyncSender<Result<()>>),
     Control(RequestId, Request, std::os::unix::net::UnixStream),
     Files(u8, notify::Result<notify::Event>),
@@ -216,7 +218,7 @@ impl Server {
         plugin_root: &std::path::Path,
     ) -> Result<()> {
         let cancelled = self.cancelled(id)?;
-        let outcome = (|| {
+        let mut outcome = (|| {
             if cancelled.load(Ordering::Acquire) {
                 return Err(CliError::message("request cancelled before dispatch"));
             }
@@ -257,12 +259,12 @@ impl Server {
                             stopping.clone(),
                         )
                     });
-                    controller.request(&request, cancelled)
+                    controller.request(&request, cancelled.clone())
                 }
                 Request::Enroll { request } => {
                     let value = serde_json::Value::Object(request);
                     match controller {
-                        Some(controller) => controller.enroll(&app, &value, cancelled),
+                        Some(controller) => controller.enroll(&app, &value, cancelled.clone()),
                         None => app.enroll_request(&value.to_string()),
                     }
                 }
@@ -276,7 +278,7 @@ impl Server {
                     if saved && (output.code == 0 || output.accepted_save) {
                         output.accepted_save = true;
                         if let Some(controller) = controller
-                            && let Err(error) = controller.saved(cancelled)
+                            && let Err(error) = controller.saved(cancelled.clone())
                         {
                             output.notices.push(error.to_string());
                         }
@@ -286,6 +288,27 @@ impl Server {
             }
         })();
         self.remember_app(controllers.herdr.as_ref().map(|controller| &controller.app))?;
+        if let Some(context) = pi_context
+            && context.session_file.is_some()
+        {
+            if cancelled.load(Ordering::Acquire) {
+                if let Ok(output) = &mut outcome
+                    && output.accepted_save
+                {
+                    output.notices.push(
+                        "Pi session file was not retained because the request was cancelled".into(),
+                    );
+                }
+            } else if let Err(error) = self
+                .app()
+                .and_then(|app| hc::remember_locator(&app, context))
+            {
+                match &mut outcome {
+                    Ok(output) if output.accepted_save => output.notices.push(error.to_string()),
+                    _ => self.warning(&error)?,
+                }
+            }
+        }
         self.respond(id, outcome)
     }
 
@@ -382,6 +405,15 @@ fn read_input(server: Arc<Server>) {
                             .send(Wake::Request(id, request, pi_context))
                             .map_err(|error| CliError::message(error.to_string()))?;
                     } else {
+                        if !matches!(request, Request::Preview { .. })
+                            && let Some(context) =
+                                pi_context.filter(|context| context.session_file.is_some())
+                        {
+                            server
+                                .sender
+                                .send(Wake::Locator(context, server.cancelled(id)?))
+                                .map_err(|error| CliError::message(error.to_string()))?;
+                        }
                         let worker = Arc::clone(&server);
                         thread::spawn(move || {
                             let completed =
@@ -434,6 +466,15 @@ fn native_worker(
                 &stopping,
                 &plugin_root,
             )?,
+            NativeWork::Locator(context, cancelled) => {
+                if !cancelled.load(Ordering::Acquire)
+                    && let Err(error) = server
+                        .app()
+                        .and_then(|app| hc::remember_locator(&app, &context))
+                {
+                    server.warning(&error)?;
+                }
+            }
             NativeWork::Retire(deadline, acknowledgement) => {
                 let result = controllers.hc.retire(deadline);
                 let _ = acknowledgement.send(result);
@@ -532,6 +573,7 @@ pub(super) fn run(session_id: String, sdk_pid: Option<u32>, plugin_root: PathBuf
                 Wake::Request(id, request, pi_context) => {
                     Some(NativeWork::Request(id, request, pi_context))
                 }
+                Wake::Locator(context, cancelled) => Some(NativeWork::Locator(context, cancelled)),
                 Wake::Native(update) => Some(NativeWork::Native(update)),
                 Wake::Files(generation, event) => Some(NativeWork::Files(generation, event)),
                 Wake::Control(id, request, stream) => {
