@@ -192,6 +192,27 @@ pub fn registered_foreground(
 /// discover unregistered Pi processes or supply Stream placement evidence.
 pub struct RegisteredSources {
     running: BTreeMap<crate::integration::ConversationId, Vec<NativeRef>>,
+    routing: crate::integration::Access<Vec<WorkRoute>>,
+}
+
+struct WorkRoute {
+    scope: WorkScope,
+    stream: String,
+    terminal: NativeRef,
+}
+
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct WorkLabel {
+    version: u32,
+    scope: WorkScope,
+    stream: String,
+}
+
+/// The same retained source observation scoped to one admitted catalog and host.
+pub struct HcWorkExecution {
+    sources: RegisteredSources,
+    scope: WorkScope,
 }
 impl RegisteredSources {
     pub fn decode(
@@ -207,6 +228,8 @@ impl RegisteredSources {
         let mut seen_terminals = BTreeSet::new();
         let mut seen_sdks = BTreeSet::new();
         let mut running: BTreeMap<_, Vec<NativeRef>> = BTreeMap::new();
+        let mut routes = Vec::new();
+        let mut routing_available = true;
         for value in terminals {
             let address = value
                 .get("address")
@@ -227,6 +250,28 @@ impl RegisteredSources {
                 serde_json::from_value(value.clone()).map_err(|_| unavailable())?;
             if terminal.state != "live" || !seen_terminals.insert(address.to_owned()) {
                 return Err(unavailable());
+            }
+            if let Some(label) = terminal.labels.get("streams.work") {
+                let route = crate::codec::load_json(label)
+                    .ok()
+                    .and_then(|value| serde_json::from_value::<WorkLabel>(value).ok())
+                    .filter(|route| {
+                        route.version == 1
+                            && route.scope.validate().is_ok()
+                            && crate::model::check_text(&route.stream, "stream", false).is_ok()
+                    });
+                match route {
+                    Some(route) => routes.push(WorkRoute {
+                        scope: route.scope,
+                        stream: route.stream,
+                        terminal: NativeRef {
+                            adapter: FrontendId::hc(),
+                            endpoint: endpoint.clone(),
+                            key: address.into(),
+                        },
+                    }),
+                    None => routing_available = false,
+                }
             }
             for (key, label) in terminal
                 .labels
@@ -258,7 +303,23 @@ impl RegisteredSources {
                     });
             }
         }
-        Ok(Self { running })
+        let routing = if routing_available {
+            crate::integration::Access::Available { value: routes }
+        } else {
+            crate::integration::Access::Unavailable {
+                reason: "Stream routing is unavailable".into(),
+            }
+        };
+        Ok(Self { running, routing })
+    }
+    pub fn for_scope(self, scope: WorkScope) -> Result<HcWorkExecution, FrontendError> {
+        scope
+            .validate()
+            .map_err(|_| invalid("work scope is unavailable"))?;
+        Ok(HcWorkExecution {
+            sources: self,
+            scope,
+        })
     }
     pub fn presence(
         &self,
@@ -301,6 +362,42 @@ impl crate::integration::ExecutionSnapshot for RegisteredSources {
     fn stream_terminals(&self, _: &str) -> crate::integration::Access<Vec<NativeRef>> {
         crate::integration::Access::Unavailable {
             reason: "Stream routing was not inspected".into(),
+        }
+    }
+    fn foreground_conversation(&self, _: &NativeRef) -> crate::integration::ForegroundConversation {
+        crate::integration::ForegroundConversation::Unknown {
+            reason: "foreground context was not inspected".into(),
+        }
+    }
+}
+
+impl crate::integration::ExecutionSnapshot for HcWorkExecution {
+    fn presence(
+        &self,
+        conversation: &crate::integration::ConversationId,
+    ) -> crate::integration::Presence {
+        self.sources.presence(conversation)
+    }
+    fn verified_terminals(
+        &self,
+        conversation: &crate::integration::ConversationId,
+    ) -> Vec<NativeRef> {
+        self.sources.verified_terminals(conversation)
+    }
+    fn stream_terminals(&self, stream: &str) -> crate::integration::Access<Vec<NativeRef>> {
+        use crate::integration::Access;
+        match &self.sources.routing {
+            Access::Available { value } => Access::Available {
+                value: value
+                    .iter()
+                    .filter(|route| route.scope == self.scope && route.stream == stream)
+                    .map(|route| route.terminal.clone())
+                    .collect(),
+            },
+            Access::Unavailable { reason } => Access::Unavailable {
+                reason: reason.clone(),
+            },
+            Access::Unsupported => Access::Unsupported,
         }
     }
     fn foreground_conversation(&self, _: &NativeRef) -> crate::integration::ForegroundConversation {

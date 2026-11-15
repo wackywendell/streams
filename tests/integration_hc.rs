@@ -1058,6 +1058,93 @@ fn execution_inspects_only_registered_sources_on_the_selected_core() {
 }
 
 #[test]
+fn work_routing_is_scoped_and_separately_unavailable_from_presence() {
+    use streams::{
+        frontend::hc::processes::{ProcessObservation, ProcessObserver},
+        integration::{Access, ConversationId, ExecutionSnapshot, Presence},
+        runtime::hc::RegisteredSources,
+    };
+    struct NoProcesses;
+    impl ProcessObserver for NoProcesses {
+        fn observe(&self, _: u32) -> std::io::Result<ProcessObservation> {
+            panic!("work labels are routing hints, not process identities")
+        }
+    }
+    let label = |scope: WorkScope, stream: &str| {
+        serde_json::to_string(&json!({"version":1,"scope":scope,"stream":stream})).unwrap()
+    };
+    let terminal =
+        |address, labels| json!({"address":address,"state":"live","pid":null,"labels":labels});
+    let mut other = scope();
+    other.host = "other-host".into();
+    let terminals = vec![
+        terminal("t1", json!({"streams.work":label(scope(),"work")})),
+        terminal("t2", json!({"streams.work":label(other,"work")})),
+        terminal("t3", json!({"streams.work":label(scope(),"another")})),
+        terminal("t4", json!({})),
+        terminal("remote/t5", json!({"streams.work":"invalid"})),
+        terminal("t6", json!({"streams.work":label(scope(),"work")})),
+    ];
+    let endpoint = EndpointId("core".into());
+    let sources =
+        RegisteredSources::decode(&endpoint, json!({"terminals":terminals}), &NoProcesses).unwrap();
+    let work = sources.for_scope(scope()).unwrap();
+    assert_eq!(
+        work.stream_terminals("work"),
+        Access::Available {
+            value: vec![reference("t1"), reference("t6")]
+        }
+    );
+    assert_eq!(
+        work.stream_terminals("another"),
+        Access::Available {
+            value: vec![reference("t3")]
+        }
+    );
+    assert_eq!(
+        work.stream_terminals("empty"),
+        Access::Available { value: vec![] }
+    );
+    let conversation = ConversationId {
+        harness: "pi".into(),
+        native_id: "not-registered".into(),
+    };
+    assert_eq!(work.presence(&conversation), Presence::Absent);
+    let bad = RegisteredSources::decode(
+        &endpoint,
+        json!({"terminals":[terminal("t1",json!({"streams.work":"broken"}))]}),
+        &NoProcesses,
+    )
+    .unwrap()
+    .for_scope(scope())
+    .unwrap();
+    assert!(matches!(
+        bad.stream_terminals("work"),
+        Access::Unavailable { .. }
+    ));
+    assert_eq!(bad.presence(&conversation), Presence::Absent);
+    for invalid in [
+        json!({"version":2,"scope":scope(),"stream":"work"}),
+        json!({"version":1,"scope":scope(),"stream":"work","extra":true}),
+        json!({"version":1,"scope":scope(),"stream":""}),
+    ] {
+        let value = serde_json::to_string(&invalid).unwrap();
+        let bad = RegisteredSources::decode(
+            &endpoint,
+            json!({"terminals":[terminal("t1",json!({"streams.work":value}))]}),
+            &NoProcesses,
+        )
+        .unwrap()
+        .for_scope(scope())
+        .unwrap();
+        assert!(matches!(
+            bad.stream_terminals("work"),
+            Access::Unavailable { .. }
+        ));
+    }
+}
+
+#[test]
 fn prepared_hc_terminal_start_keeps_exact_inputs_and_never_replays() {
     use std::{fs, os::unix::fs::PermissionsExt};
     use streams::{
