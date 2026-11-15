@@ -464,7 +464,11 @@ fn describe_verifies_the_configured_core_without_caller_context_or_writes() {
             assert!(extra.is_empty(), "describe performs no native writes");
         });
         let mut command = fixture.command();
-        command.env("HC_SOCKET", &socket);
+        if global {
+            command.current_dir(directory.path()).env("HC_SOCKET", "s");
+        } else {
+            command.env("HC_SOCKET", &socket);
+        }
         if global {
             command.arg("--json");
         }
@@ -942,6 +946,11 @@ fn native_sidebar_reads_use_one_context_snapshot_and_keep_saved_data_when_follow
                 json!({"name":"herdr-app"}),
                 Reply::Value(json!({"version":90,"value":layout})),
             ),
+            Step(
+                "terminal.get",
+                json!({"terminal":"t1"}),
+                Reply::Reject("unavailable"),
+            ),
         ]);
         let mut command = fixture.command();
         command.env("HC_SOCKET", &core.socket);
@@ -1004,10 +1013,123 @@ fn native_sidebar_reads_use_one_context_snapshot_and_keep_saved_data_when_follow
         );
         assert_eq!(
             core.finish().len(),
-            3,
-            "no terminal, process, label, mutation or presentation calls"
+            4,
+            "only the in-space Follow candidate is read"
         );
     }
+}
+
+#[test]
+fn native_sidebar_follows_a_registered_foreground_conversation_without_a_process_census() {
+    use crate::integration_hc::{FakeCore, Reply, Step};
+    use streams::{
+        frontend::{
+            EndpointId, FrontendId,
+            hc::processes::{OwnerProcesses, ProcessObserver},
+        },
+        runtime::hc::{PiSourceClaim, labels::source_key},
+    };
+    struct Child(std::process::Child);
+    impl Drop for Child {
+        fn drop(&mut self) {
+            let _ = self.0.kill();
+            let _ = self.0.wait();
+        }
+    }
+    let fixture = SavedFixture::new();
+    let child = Child(
+        std::process::Command::new("/bin/sleep")
+            .arg("30")
+            .spawn()
+            .unwrap(),
+    );
+    let observer = OwnerProcesses::new().unwrap();
+    let sdk = observer.observe(std::process::id()).unwrap();
+    let helper = observer.observe(child.0.id()).unwrap();
+    let endpoint = EndpointId("core".into());
+    let scope = streams::application::integration::Streams::new(&fixture.records)
+        .scope()
+        .clone();
+    let resource = |key: &str| NativeRef {
+        adapter: FrontendId::hc(),
+        endpoint: endpoint.clone(),
+        key: key.into(),
+    };
+    let claim = PiSourceClaim {
+        version: 1,
+        endpoint: endpoint.clone(),
+        conversation: ConversationId {
+            harness: "pi".into(),
+            native_id: fixture.sessions[0].harness_session_id.clone(),
+        },
+        terminal_root: sdk.key.clone(),
+        sdk: sdk.key.clone(),
+        helper: helper.key,
+    };
+    let label = source_key(&claim.helper).unwrap();
+    let association = streams::runtime::hc::SpaceAssociation {
+        scope: scope.clone(),
+        stream: "work".into(),
+        space: resource("target"),
+    };
+    let core = FakeCore::new(vec![
+        Step(
+            "doc.get",
+            json!({"name":"streams"}),
+            Reply::Value(
+                json!({"version":1,"value":{"version":1,"spaces":{"target":association}}}),
+            ),
+        ),
+        Step(
+            "doc.get",
+            json!({"name":"herdr-app"}),
+            Reply::Value(
+                json!({"version":2,"value":{"spaces":[{"id":"target","tabs":[{"id":"tab","root":{"type":"block","content":{"terminal":"t1"}}}]}]}}),
+            ),
+        ),
+        Step(
+            "terminal.get",
+            json!({"terminal":"t1"}),
+            Reply::Value(
+                json!({"address":"t1","state":"live","pid":sdk.key.pid,"labels":{label:serde_json::to_string(&claim).unwrap()},"foreground":{"pid":sdk.process_group}}),
+            ),
+        ),
+    ]);
+    let selection = json!({"kind":"sidebar","space":resource("target"),"viewing":{"kind":"follow","last_agent":resource("t1")}});
+    let mut request =
+        fixture.envelope(json!({"kind":"read","selections":[selection.clone(),selection]}));
+    request["endpoint"] = json!("core");
+    let output = fixture
+        .command()
+        .env("HC_SOCKET", &core.socket)
+        .args([
+            "integration",
+            "request",
+            "--request-json",
+            &request.to_string(),
+        ])
+        .output()
+        .unwrap();
+    assert!(
+        output.status.success(),
+        "{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let reply = ModReply::decode(std::str::from_utf8(&output.stdout).unwrap()).unwrap();
+    let WireResult::Ok(ModResult::Read { values, .. }) = reply.result else {
+        panic!("read reply")
+    };
+    for value in serde_json::to_value(values).unwrap().as_array().unwrap() {
+        assert_eq!(
+            value["ok"]["value"]["viewing_session"],
+            json!({"kind":"selected","session":fixture.sessions[0].id})
+        );
+    }
+    assert_eq!(
+        core.finish().len(),
+        4,
+        "one point read for the repeated candidate"
+    );
 }
 
 #[test]

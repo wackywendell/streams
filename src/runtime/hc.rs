@@ -1,4 +1,5 @@
 //! Core-owned association snapshots and one-write changes; the app owns layout.
+pub mod labels;
 use crate::{
     frontend::{
         CommandEvidence, CommandOutcome, EndpointId, FrontendError, FrontendId, NativeRequest,
@@ -9,6 +10,160 @@ use crate::{
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 use std::collections::{BTreeMap, BTreeSet};
+
+/// The SDK's published selection. Process facts validate its route, not its contents.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct PiSourceClaim {
+    pub version: u32,
+    pub endpoint: EndpointId,
+    pub conversation: crate::integration::ConversationId,
+    pub terminal_root: crate::frontend::hc::processes::ProcessKey,
+    pub sdk: crate::frontend::hc::processes::ProcessKey,
+    pub helper: crate::frontend::hc::processes::ProcessKey,
+}
+
+/// Validate a single claim against the retained terminal root and fresh owner facts.
+/// This does not classify the SDK launcher, establish claim uniqueness or prove absence.
+pub fn verify_claim_route(
+    label_key: &str,
+    label_value: &str,
+    endpoint: &EndpointId,
+    terminal_root_pid: u32,
+    observer: &dyn crate::frontend::hc::processes::ProcessObserver,
+) -> Result<PiSourceClaim, FrontendError> {
+    let unavailable = || invalid("Pi source route is unavailable");
+    let value = crate::codec::load_json(label_value).map_err(|_| unavailable())?;
+    let claim: PiSourceClaim = serde_json::from_value(value).map_err(|_| unavailable())?;
+    if claim.version != 1
+        || claim.endpoint != *endpoint
+        || claim.conversation.harness != "pi"
+        || crate::model::check_text(&claim.conversation.native_id, "conversation", false).is_err()
+        || claim.terminal_root.pid != terminal_root_pid
+        || labels::source_key(&claim.helper).map_err(|_| unavailable())? != label_key
+    {
+        return Err(unavailable());
+    }
+    for key in [&claim.terminal_root, &claim.sdk, &claim.helper] {
+        key.validate().map_err(|_| unavailable())?;
+        if key.boot != claim.terminal_root.boot {
+            return Err(unavailable());
+        }
+    }
+    let mut observed = BTreeMap::new();
+    let helper = observer
+        .observe(claim.helper.pid)
+        .map_err(|_| unavailable())?;
+    if helper.key != claim.helper || helper.parent_pid != claim.sdk.pid {
+        return Err(unavailable());
+    }
+    observed.insert(helper.key.pid, helper);
+    let mut pid = claim.sdk.pid;
+    loop {
+        if observed.len() >= 65_536 || observed.contains_key(&pid) {
+            return Err(unavailable());
+        }
+        let process = observer.observe(pid).map_err(|_| unavailable())?;
+        if process.key.pid != pid
+            || process.key.validate().is_err()
+            || process.key.boot != claim.terminal_root.boot
+            || (pid == claim.sdk.pid && process.key != claim.sdk)
+            || (pid == terminal_root_pid && process.key != claim.terminal_root)
+        {
+            return Err(unavailable());
+        }
+        let parent = process.parent_pid;
+        observed.insert(pid, process);
+        if pid == terminal_root_pid {
+            break;
+        }
+        if parent == 0 {
+            return Err(unavailable());
+        }
+        pid = parent;
+    }
+    for (pid, expected) in observed {
+        if observer.observe(pid).map_err(|_| unavailable())? != expected {
+            return Err(unavailable());
+        }
+    }
+    Ok(claim)
+}
+
+/// Resolve only identities published on this terminal. Unregistered processes are outside this check.
+pub fn registered_foreground(
+    terminal: &NativeRef,
+    value: Value,
+    observer: &dyn crate::frontend::hc::processes::ProcessObserver,
+) -> crate::integration::ForegroundConversation {
+    use crate::integration::ForegroundConversation;
+    let unknown = || ForegroundConversation::Unknown {
+        reason: "registered foreground context is unavailable".into(),
+    };
+    #[derive(Deserialize)]
+    struct Terminal {
+        address: String,
+        state: String,
+        #[serde(deserialize_with = "crate::codec::required_nullable")]
+        pid: Option<u32>,
+        labels: BTreeMap<String, String>,
+        #[serde(deserialize_with = "crate::codec::required_nullable")]
+        foreground: Option<Foreground>,
+    }
+    #[derive(Deserialize)]
+    struct Foreground {
+        pid: u32,
+    }
+    let Ok(native) = serde_json::from_value::<Terminal>(value) else {
+        return unknown();
+    };
+    if terminal.adapter != FrontendId::hc()
+        || native.address != terminal.key
+        || native.state != "live"
+    {
+        return unknown();
+    }
+    let claims: Vec<_> = native
+        .labels
+        .iter()
+        .filter(|(key, _)| key.starts_with("streams.pi."))
+        .collect();
+    if claims.is_empty() {
+        return ForegroundConversation::NotApplicable;
+    }
+    let (Some(root), Some(foreground)) = (native.pid, native.foreground) else {
+        return unknown();
+    };
+    if root == 0 || foreground.pid == 0 {
+        return unknown();
+    }
+    let mut sdk_keys = BTreeSet::new();
+    let mut current = None;
+    for (key, value) in claims {
+        let Ok(claim) = verify_claim_route(key, value, &terminal.endpoint, root, observer) else {
+            return unknown();
+        };
+        if !sdk_keys.insert(claim.sdk.clone()) {
+            return unknown();
+        }
+        let Ok(sdk) = observer.observe(claim.sdk.pid) else {
+            return unknown();
+        };
+        if sdk.key != claim.sdk {
+            return unknown();
+        }
+        if !sdk.stopped
+            && sdk.process_group == foreground.pid
+            && current.replace(claim.conversation).is_some()
+        {
+            return unknown();
+        }
+    }
+    match current {
+        Some(conversation) => ForegroundConversation::Current(conversation),
+        None => ForegroundConversation::NotApplicable,
+    }
+}
 
 const ASSOCIATION_BYTES: usize = 1024 * 1024;
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -302,6 +457,38 @@ impl HcOperation {
     pub fn endpoint(&self) -> &EndpointId {
         self.client.endpoint()
     }
+    pub fn foreground(
+        &mut self,
+        terminal: &NativeRef,
+        observer: &dyn crate::frontend::hc::processes::ProcessObserver,
+    ) -> crate::integration::ForegroundConversation {
+        use crate::integration::ForegroundConversation;
+        let unavailable = || ForegroundConversation::Unknown {
+            reason: "registered foreground context is unavailable".into(),
+        };
+        if terminal.adapter != FrontendId::hc() || terminal.endpoint != *self.endpoint() {
+            return unavailable();
+        }
+        let params = json!({"terminal": terminal.key});
+        let (frame, result) = self.client.exchange("terminal.get", &params, false);
+        match result {
+            Ok(value) => {
+                self.commands.push(CommandEvidence {
+                    request: NativeRequest::Socket {
+                        method: "terminal.get".into(),
+                        params,
+                        response: frame,
+                    },
+                    outcome: CommandOutcome::ReadOnly,
+                });
+                registered_foreground(terminal, value, observer)
+            }
+            Err(failure) => {
+                self.commands.extend(failure.error.commands);
+                unavailable()
+            }
+        }
+    }
     fn error(&self, message: impl Into<String>) -> FrontendError {
         FrontendError {
             message: message.into(),
@@ -430,6 +617,55 @@ fn bounded_associations(value: &Value) -> Result<(), FrontendError> {
     }
     Ok(())
 }
+pub struct HcForeground {
+    endpoint: EndpointId,
+    values: BTreeMap<String, crate::integration::ForegroundConversation>,
+}
+impl HcForeground {
+    pub fn new(endpoint: EndpointId) -> Self {
+        Self {
+            endpoint,
+            values: BTreeMap::new(),
+        }
+    }
+    pub fn insert(
+        &mut self,
+        terminal: &NativeRef,
+        value: crate::integration::ForegroundConversation,
+    ) {
+        if terminal.adapter == FrontendId::hc() && terminal.endpoint == self.endpoint {
+            self.values.insert(terminal.key.clone(), value);
+        }
+    }
+}
+impl crate::integration::ExecutionSnapshot for HcForeground {
+    fn presence(&self, _: &crate::integration::ConversationId) -> crate::integration::Presence {
+        crate::integration::Presence::Unknown {
+            reason: "work presence was not inspected".into(),
+        }
+    }
+    fn verified_terminals(&self, _: &crate::integration::ConversationId) -> Vec<NativeRef> {
+        vec![]
+    }
+    fn stream_terminals(&self, _: &str) -> Vec<NativeRef> {
+        vec![]
+    }
+    fn foreground_conversation(
+        &self,
+        terminal: &NativeRef,
+    ) -> crate::integration::ForegroundConversation {
+        if terminal.adapter == FrontendId::hc()
+            && terminal.endpoint == self.endpoint
+            && let Some(value) = self.values.get(&terminal.key)
+        {
+            return value.clone();
+        }
+        crate::integration::ForegroundConversation::Unknown {
+            reason: "foreground context was not inspected".into(),
+        }
+    }
+}
+
 pub struct HcPresentation {
     scope: WorkScope,
     before: AssociationSnapshot,

@@ -1,4 +1,5 @@
 //! One owner-local hc connection per operation, pinned by a generation-1 hello.
+pub mod processes;
 use super::{CommandEvidence, CommandOutcome, EndpointId, FrontendError, NativeRequest, socket_io};
 use crate::cancellation::Cancellation;
 use serde::Deserialize;
@@ -6,6 +7,7 @@ use serde_json::{Value, json};
 use std::{
     collections::{BTreeMap, BTreeSet},
     io::{self, BufReader, Write},
+    os::unix::ffi::OsStrExt,
     os::unix::net::UnixStream,
     path::{Path, PathBuf},
     time::Instant,
@@ -18,7 +20,22 @@ pub struct HcEndpoint {
     socket: PathBuf,
 }
 impl HcEndpoint {
-    pub fn resolve(environment: &BTreeMap<String, String>) -> Result<Self, FrontendError> {
+    pub fn resolve(
+        environment: &BTreeMap<String, String>,
+        cwd: &Path,
+    ) -> Result<Self, FrontendError> {
+        if !cwd.is_absolute() {
+            return Err(FrontendError::invalid(
+                "hc operation directory must be absolute",
+            ));
+        }
+        let absolute = |path: PathBuf| {
+            if path.is_absolute() {
+                path
+            } else {
+                cwd.join(path)
+            }
+        };
         let value = |key: &str| environment.get(key).filter(|value| !value.is_empty());
         let session = value("HC_SESSION")
             .map(|value| value.trim())
@@ -30,14 +47,14 @@ impl HcEndpoint {
         };
         if session == "."
             || session == ".."
-            || !session
-                .bytes()
-                .all(|byte| byte.is_ascii_alphanumeric() || b"._-".contains(&byte))
+            || session
+                .chars()
+                .any(|character| character.is_control() || "/\\:*?\"<>|".contains(character))
         {
             return Err(FrontendError::invalid("invalid hc session name"));
         }
         if let Some(socket) = value("HC_SOCKET") {
-            return Self::checked(socket.into());
+            return Self::checked(absolute(socket.into()));
         }
         let home = |key: &str, suffix: &str| -> Result<PathBuf, FrontendError> {
             let path = match value(key) {
@@ -48,10 +65,7 @@ impl HcEndpoint {
                 )
                 .join(suffix),
             };
-            if !path.is_absolute() {
-                return Err(FrontendError::invalid("hc home must be absolute"));
-            }
-            Ok(path)
+            Ok(absolute(path))
         };
         let config = home("XDG_CONFIG_HOME", ".config")?.join("herdr-core/config.toml");
         #[derive(Deserialize)]
@@ -63,7 +77,7 @@ impl HcEndpoint {
                 let settings: Settings = toml::from_str(&text)
                     .map_err(|_| FrontendError::invalid("hc socket configuration is invalid"))?;
                 if let Some(socket) = settings.socket.filter(|socket| !socket.is_empty()) {
-                    return Self::checked(socket.into());
+                    return Self::checked(absolute(socket.into()));
                 }
             }
             Err(error) if error.kind() == io::ErrorKind::NotFound => {}
@@ -73,10 +87,12 @@ impl HcEndpoint {
                 ));
             }
         }
-        let runtime = value("XDG_RUNTIME_DIR").map(PathBuf::from).or_else(|| {
-            let path = PathBuf::from(format!("/run/user/{}", unsafe { libc::getuid() }));
-            path.is_dir().then_some(path)
-        });
+        let runtime = value("XDG_RUNTIME_DIR")
+            .map(|path| absolute(path.into()))
+            .or_else(|| {
+                let path = PathBuf::from(format!("/run/user/{}", unsafe { libc::getuid() }));
+                path.is_dir().then_some(path)
+            });
         let directory = match runtime {
             Some(runtime) => runtime.join("herdr-core"),
             None => home("XDG_STATE_HOME", ".local/state")?
@@ -86,8 +102,17 @@ impl HcEndpoint {
         Self::checked(directory.join(format!("{session}.sock")))
     }
     fn checked(socket: PathBuf) -> Result<Self, FrontendError> {
-        if !socket.is_absolute() {
-            return Err(FrontendError::invalid("hc socket path must be absolute"));
+        let bytes = socket.as_os_str().as_bytes();
+        let holder = socket.with_extension("holder.sock");
+        let max = unsafe { std::mem::zeroed::<libc::sockaddr_un>() }
+            .sun_path
+            .len()
+            - 1;
+        if !socket.is_absolute()
+            || bytes.contains(&0)
+            || bytes.len().max(holder.as_os_str().as_bytes().len() + 9) > max
+        {
+            return Err(FrontendError::invalid("invalid or overlong hc socket path"));
         }
         Ok(Self { socket })
     }
@@ -334,7 +359,7 @@ mod tests {
             ("HC_SESSION".into(), " suite ".into()),
         ]);
         assert_eq!(
-            HcEndpoint::resolve(&environment).unwrap().socket(),
+            HcEndpoint::resolve(&environment, root).unwrap().socket(),
             root.join("run/herdr-core/suite.sock")
         );
         let config = root.join(".config/herdr-core/config.toml");
@@ -348,23 +373,66 @@ mod tests {
         )
         .unwrap();
         assert_eq!(
-            HcEndpoint::resolve(&environment).unwrap().socket(),
+            HcEndpoint::resolve(&environment, root).unwrap().socket(),
             root.join("configured.sock")
         );
         std::fs::write(&config, "socket = 42").unwrap();
-        assert!(HcEndpoint::resolve(&environment).is_err());
+        assert!(HcEndpoint::resolve(&environment, root).is_err());
         environment.insert(
             "HC_SOCKET".into(),
             root.join("explicit.sock").display().to_string(),
         );
         assert_eq!(
-            HcEndpoint::resolve(&environment).unwrap().socket(),
+            HcEndpoint::resolve(&environment, root).unwrap().socket(),
             root.join("explicit.sock")
         );
         environment.insert("HC_SOCKET".into(), "relative.sock".into());
-        assert!(HcEndpoint::resolve(&environment).is_err());
+        assert_eq!(
+            HcEndpoint::resolve(&environment, root).unwrap().socket(),
+            root.join("relative.sock")
+        );
         environment.insert("HC_SESSION".into(), "../other".into());
-        assert!(HcEndpoint::resolve(&environment).is_err());
+        assert!(HcEndpoint::resolve(&environment, root).is_err());
+    }
+    #[test]
+    fn relative_hc_selectors_use_only_the_captured_directory_and_check_holder_length() {
+        let directory = tempfile::Builder::new()
+            .prefix("hc-")
+            .tempdir_in("/tmp")
+            .unwrap();
+        let root = directory.path();
+        let config = root.join("config/herdr-core/config.toml");
+        std::fs::create_dir_all(config.parent().unwrap()).unwrap();
+        let mut environment = BTreeMap::from([
+            ("HOME".into(), "home".into()),
+            ("XDG_CONFIG_HOME".into(), "config".into()),
+            ("XDG_RUNTIME_DIR".into(), "runtime".into()),
+            ("HC_SESSION".into(), " café core ".into()),
+        ]);
+        std::fs::write(&config, "socket = 'configured.sock'").unwrap();
+        assert_eq!(
+            HcEndpoint::resolve(&environment, root).unwrap().socket(),
+            root.join("configured.sock")
+        );
+        std::fs::remove_file(&config).unwrap();
+        assert_eq!(
+            HcEndpoint::resolve(&environment, root).unwrap().socket(),
+            root.join("runtime/herdr-core/café core.sock")
+        );
+        environment.insert("HC_SOCKET".into(), "./explicit.sock".into());
+        assert_eq!(
+            HcEndpoint::resolve(&environment, root).unwrap().socket(),
+            root.join("./explicit.sock")
+        );
+        assert!(HcEndpoint::resolve(&environment, Path::new("relative")).is_err());
+        environment.insert("HC_SOCKET".into(), format!("/{}", "x".repeat(100)));
+        assert!(HcEndpoint::resolve(&environment, root).is_err());
+        environment.insert("HC_SOCKET".into(), "bad\0socket".into());
+        assert!(HcEndpoint::resolve(&environment, root).is_err());
+        for session in [".", "..", "bad/name", "bad:name", "bad\tsession"] {
+            environment.insert("HC_SESSION".into(), session.into());
+            assert!(HcEndpoint::resolve(&environment, root).is_err());
+        }
     }
     #[test]
     fn hello_pins_one_connection_and_preserves_request_parameters() {

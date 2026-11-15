@@ -332,6 +332,7 @@ pub enum ExecutionQuery {
         foreground: Option<NativeRef>,
     },
 }
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub enum ForegroundConversation {
     Current(ConversationId),
     NotApplicable,

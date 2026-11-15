@@ -46,7 +46,7 @@ impl FakeCore {
                 .set_read_timeout(Some(std::time::Duration::from_secs(5)))
                 .unwrap();
             let mut reader = BufReader::new(stream);
-            let steps=std::iter::once(Step("hello",json!({"generation":1,"framed":false}),Reply::Value(json!({"generation":1,"framed":false,"core":{"id":"core"},"methods":["hello","doc.get","doc.set"]})))).chain(steps);
+            let steps=std::iter::once(Step("hello",json!({"generation":1,"framed":false}),Reply::Value(json!({"generation":1,"framed":false,"core":{"id":"core"},"methods":["hello","doc.get","doc.set","terminal.get"]})))).chain(steps);
             for (index, Step(method, params, reply)) in steps.enumerate() {
                 let mut line = String::new();
                 assert_ne!(reader.read_line(&mut line).unwrap(), 0, "missing {method}");
@@ -82,10 +82,10 @@ impl FakeCore {
         }
     }
     fn operation(&self) -> HcOperation {
-        let socket = HcEndpoint::resolve(&BTreeMap::from([(
-            "HC_SOCKET".into(),
-            self.socket.display().to_string(),
-        )]))
+        let socket = HcEndpoint::resolve(
+            &BTreeMap::from([("HC_SOCKET".into(), self.socket.display().to_string())]),
+            self.socket.parent().unwrap(),
+        )
         .unwrap();
         HcOperation::new(
             HcClient::connect(socket, Some(&EndpointId("core".into())), 5.0, None).unwrap(),
@@ -355,4 +355,192 @@ fn malformed_or_conflicting_layouts_are_unavailable_and_wrong_endpoint_cannot_bi
     )
     .unwrap();
     assert!(prepare_associations(&before, &published, Some(&row("target"))).is_err());
+}
+
+#[test]
+fn source_route_requires_stable_exact_process_keys_and_terminal_ancestry() {
+    use std::{cell::RefCell, io};
+    use streams::{
+        frontend::hc::processes::{ProcessKey, ProcessObservation, ProcessObserver},
+        integration::{ConversationId, ForegroundConversation},
+        runtime::hc::{
+            PiSourceClaim, labels::source_key, registered_foreground, verify_claim_route,
+        },
+    };
+    struct FakeProcesses {
+        rows: BTreeMap<u32, ProcessObservation>,
+        counts: RefCell<BTreeMap<u32, usize>>,
+        changed: Option<u32>,
+    }
+    impl ProcessObserver for FakeProcesses {
+        fn observe(&self, pid: u32) -> io::Result<ProcessObservation> {
+            let mut row = self
+                .rows
+                .get(&pid)
+                .cloned()
+                .ok_or_else(|| io::Error::other("missing"))?;
+            let mut counts = self.counts.borrow_mut();
+            let count = counts.entry(pid).or_default();
+            *count += 1;
+            if self.changed == Some(pid) && *count > 1 {
+                row.key.started = "linux:999".into();
+            }
+            Ok(row)
+        }
+    }
+    let key = |pid| ProcessKey {
+        boot: "08f95cf6-6657-40c4-b5b9-6ee493d934ab".into(),
+        pid,
+        started: format!("linux:{pid}"),
+    };
+    let endpoint = EndpointId("core".into());
+    let claim = PiSourceClaim {
+        version: 1,
+        endpoint: endpoint.clone(),
+        conversation: ConversationId {
+            harness: "pi".into(),
+            native_id: "selected".into(),
+        },
+        terminal_root: key(10),
+        sdk: key(30),
+        helper: key(40),
+    };
+    let mut rows = BTreeMap::new();
+    for (pid, parent) in [(10, 1), (20, 10), (30, 20), (40, 30)] {
+        rows.insert(
+            pid,
+            ProcessObservation {
+                key: key(pid),
+                parent_pid: parent,
+                process_group: 10,
+                stopped: pid == 30,
+            },
+        );
+    }
+    let fake = |rows: BTreeMap<_, _>, changed| FakeProcesses {
+        rows,
+        counts: RefCell::new(BTreeMap::new()),
+        changed,
+    };
+    let label = source_key(&claim.helper).unwrap();
+    let value = serde_json::to_string(&claim).unwrap();
+    let verify =
+        |observer: &FakeProcesses| verify_claim_route(&label, &value, &endpoint, 10, observer);
+    assert_eq!(verify(&fake(rows.clone(), None)).unwrap(), claim);
+    for pid in [10, 20, 30, 40] {
+        assert!(
+            verify(&fake(rows.clone(), Some(pid))).is_err(),
+            "changing pid {pid}"
+        );
+        let mut missing = rows.clone();
+        missing.remove(&pid);
+        assert!(verify(&fake(missing, None)).is_err(), "missing pid {pid}");
+    }
+    let mut reused = rows.clone();
+    reused.get_mut(&30).unwrap().key.started = "linux:999".into();
+    assert!(verify(&fake(reused, None)).is_err());
+    let mut wrong_parent = rows.clone();
+    wrong_parent.get_mut(&40).unwrap().parent_pid = 20;
+    assert!(verify(&fake(wrong_parent, None)).is_err());
+    let mut cycle = rows.clone();
+    cycle.get_mut(&20).unwrap().parent_pid = 30;
+    assert!(verify(&fake(cycle, None)).is_err());
+    assert!(
+        verify_claim_route(
+            "streams.pi.wrong",
+            &value,
+            &endpoint,
+            10,
+            &fake(rows.clone(), None)
+        )
+        .is_err()
+    );
+    assert!(
+        verify_claim_route(
+            &label,
+            &value,
+            &EndpointId("other".into()),
+            10,
+            &fake(rows.clone(), None)
+        )
+        .is_err()
+    );
+    assert!(verify_claim_route(&label, &value, &endpoint, 20, &fake(rows.clone(), None)).is_err());
+    let duplicate = value.replacen("{", "{\"version\":1,", 1);
+    assert!(
+        verify_claim_route(&label, &duplicate, &endpoint, 10, &fake(rows.clone(), None)).is_err()
+    );
+
+    let terminal = NativeRef {
+        adapter: FrontendId::hc(),
+        endpoint: endpoint.clone(),
+        key: "t1".into(),
+    };
+    let native = |labels: Value, foreground: Value| json!({"address":"t1","state":"live","pid":10,"labels":labels,"foreground":foreground});
+    let labels = json!({label.clone():value});
+    let foreground = |rows: BTreeMap<_, _>, native: Value| {
+        registered_foreground(&terminal, native, &fake(rows, None))
+    };
+    let mut running = rows.clone();
+    running.get_mut(&30).unwrap().stopped = false;
+    assert_eq!(
+        foreground(running.clone(), native(labels.clone(), json!({"pid":10}))),
+        ForegroundConversation::Current(claim.conversation.clone())
+    );
+    assert_eq!(
+        foreground(running.clone(), native(labels.clone(), json!({"pid":99}))),
+        ForegroundConversation::NotApplicable
+    );
+    assert_eq!(
+        foreground(rows.clone(), native(labels.clone(), json!({"pid":10}))),
+        ForegroundConversation::NotApplicable
+    );
+    assert!(matches!(
+        foreground(rows.clone(), native(labels.clone(), Value::Null)),
+        ForegroundConversation::Unknown { .. }
+    ));
+    assert!(matches!(
+        foreground(
+            rows.clone(),
+            native(json!({"streams.pi.bad":"not-json"}), json!({"pid":10}))
+        ),
+        ForegroundConversation::Unknown { .. }
+    ));
+    assert!(matches!(
+        foreground(rows, native(labels, json!({"pid":10}))),
+        ForegroundConversation::NotApplicable
+    ));
+}
+
+#[test]
+fn registered_foreground_reads_only_the_requested_terminal() {
+    use streams::{
+        frontend::hc::processes::{ProcessObservation, ProcessObserver},
+        integration::ForegroundConversation,
+    };
+    struct NoProcesses;
+    impl ProcessObserver for NoProcesses {
+        fn observe(&self, _: u32) -> std::io::Result<ProcessObservation> {
+            panic!("an unregistered terminal needs no process inspection")
+        }
+    }
+    let core = FakeCore::new(vec![Step(
+        "terminal.get",
+        json!({"terminal":"t1"}),
+        Reply::Value(
+            json!({"address":"t1","state":"live","pid":null,"labels":{},"foreground":null}),
+        ),
+    )]);
+    let terminal = NativeRef {
+        adapter: FrontendId::hc(),
+        endpoint: EndpointId("core".into()),
+        key: "t1".into(),
+    };
+    let mut operation = core.operation();
+    assert_eq!(
+        operation.foreground(&terminal, &NoProcesses),
+        ForegroundConversation::NotApplicable
+    );
+    drop(operation);
+    assert_eq!(core.finish().len(), 2);
 }

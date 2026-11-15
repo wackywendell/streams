@@ -29,7 +29,7 @@ impl App {
         let records = application::open_records(&self.config)?;
         let facade = application::integration::Streams::admit(&records, &scope)?;
         facade.require_stream(stream)?;
-        let socket = frontend::hc::HcEndpoint::resolve(&self.environment)
+        let socket = frontend::hc::HcEndpoint::resolve(&self.environment, &self.cwd)
             .map_err(|error| CliError::message(error.message))?;
         let client = frontend::hc::HcClient::connect(socket, Some(&space.endpoint), 30.0, None)
             .map_err(|error| CliError::message(error.message))?;
@@ -99,7 +99,7 @@ impl App {
             .map_err(|_| CliError::message("configured catalog is unavailable"))?;
         let facade = application::integration::Streams::new(&records);
         facade.scope().validate()?;
-        let socket = frontend::hc::HcEndpoint::resolve(&self.environment)
+        let socket = frontend::hc::HcEndpoint::resolve(&self.environment, &self.cwd)
             .map_err(|error| CliError::message(error.message))?;
         let client = frontend::hc::HcClient::connect(socket, None, 30.0, None)
             .map_err(|error| CliError::message(error.message))?;
@@ -120,13 +120,18 @@ impl App {
                 })?;
             match &request.body {
                 ModBody::Read { selections } => {
+                    use streams::integration::{
+                        PresentationSnapshot, ViewSelection, ViewingChoice,
+                    };
                     let mut presentation = None;
+                    let mut execution = None;
                     if selections.as_slice().iter().any(|selection| {
                         matches!(
                             selection,
                             streams::integration::ViewSelection::Sidebar { .. }
                         )
-                    }) && let Ok(socket) = frontend::hc::HcEndpoint::resolve(&self.environment)
+                    }) && let Ok(socket) =
+                        frontend::hc::HcEndpoint::resolve(&self.environment, &self.cwd)
                         && let Ok(client) = frontend::hc::HcClient::connect(
                             socket,
                             Some(&request.endpoint),
@@ -135,16 +140,47 @@ impl App {
                         )
                     {
                         verified_endpoint = Some(client.endpoint().clone());
-                        presentation = streams::runtime::hc::HcOperation::new(client)
-                            .presentation(facade.scope(), None)
-                            .ok();
+                        let mut operation = streams::runtime::hc::HcOperation::new(client);
+                        if let Ok(native) = operation.presentation(facade.scope(), None) {
+                            let mut candidates = std::collections::BTreeMap::new();
+                            for selection in selections.as_slice() {
+                                if let ViewSelection::Sidebar {
+                                    space,
+                                    viewing:
+                                        ViewingChoice::Follow {
+                                            last_agent: Some(terminal),
+                                        },
+                                } = selection
+                                    && native.stream_for_space(space).is_some()
+                                    && native.space_for_terminal(terminal).as_ref() == Some(space)
+                                {
+                                    candidates.insert(terminal.key.clone(), terminal);
+                                }
+                            }
+                            if !candidates.is_empty()
+                                && let Ok(observer) = frontend::hc::processes::OwnerProcesses::new()
+                            {
+                                let mut snapshot = streams::runtime::hc::HcForeground::new(
+                                    operation.endpoint().clone(),
+                                );
+                                for terminal in candidates.into_values() {
+                                    let value = operation.foreground(terminal, &observer);
+                                    snapshot.insert(terminal, value);
+                                }
+                                execution = Some(snapshot);
+                            }
+                            presentation = Some(native);
+                        }
                     }
                     let values = match presentation.as_ref() {
                         Some(value) => facade.read_views(
                             selections.as_slice(),
                             streams::integration::Access::Available { value },
-                            streams::integration::Access::Unavailable {
-                                reason: "foreground context is not enabled".into(),
+                            match execution.as_ref() {
+                                Some(value) => streams::integration::Access::Available { value },
+                                None => streams::integration::Access::Unavailable {
+                                    reason: "foreground context is unavailable".into(),
+                                },
                             },
                         ),
                         None => facade.read_saved_views(selections.as_slice()),
