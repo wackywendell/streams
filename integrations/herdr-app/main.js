@@ -83,21 +83,71 @@ function collectSnapshot() {
   };
 }
 
+function snapshotSignature(snap) {
+  return JSON.stringify({
+    space: snap.activeSpace?.id ?? null,
+    machine: snap.activeSpace?.machine ?? null,
+    terminals: snap.visibleTerminals,
+    focused: snap.focusedTerminal,
+    labels: snap.terminalList
+      .filter((t) => t.machine === null)
+      .map((t) => [t.id, t.labels]),
+  });
+}
+
 export default class StreamsMod extends View {
-  init() {
+  init(_props, cx) {
     this.hovered = false;
     this.scroll = ScrollHandle.new();
-    this._notify = null;
+    this._subscribed = false;
+    this._lastSig = null;
+    this.ensureSubscribed(cx);
+    this.scheduleObserve(cx, collectSnapshot());
+    cx?.timer?.every?.(2000, (timerCx) => {
+      this.scheduleObserve(timerCx, collectSnapshot());
+    });
   }
 
   ensureSubscribed(cx) {
-    if (!this._notify) {
-      this._notify = () => cx.notify();
-      subscribers.add(this._notify);
+    if (!this._subscribed && cx) {
+      this._subscribed = true;
+      subscribers.add(() => {
+        try {
+          cx.notify();
+        } catch {
+          // Detached
+        }
+      });
     }
     const configuredBin = props()?.streams_bin;
     if (configuredBin && coordinator.streamsBin !== configuredBin) {
       coordinator.streamsBin = configuredBin;
+    }
+  }
+
+  scheduleObserve(cx, snap, force = false) {
+    const configuredBin = props()?.streams_bin;
+    if (configuredBin && coordinator.streamsBin !== configuredBin) {
+      coordinator.streamsBin = configuredBin;
+    }
+    const sig = snapshotSignature(snap);
+    if (!force && sig === this._lastSig && (coordinator.sidebar || coordinator.describeError || coordinator.lastError)) {
+      return;
+    }
+    this._lastSig = sig;
+    if (cx?.spawn) {
+      cx.spawn(async (asyncCx) => {
+        try {
+          await coordinator.observe({
+            ...snap,
+            force,
+          });
+        } finally {
+          asyncCx.notify();
+        }
+      });
+    } else {
+      coordinator.observe({ ...snap, force });
     }
   }
 
@@ -122,7 +172,7 @@ export default class StreamsMod extends View {
     if (!p) return div();
 
     const snap = collectSnapshot();
-    coordinator.observe(snap);
+    this.scheduleObserve(cx, snap);
 
     const frameCtx = p.terminal ? coordinator.frames.get(p.terminal) : null;
     const enrolled = frameCtx?.kind === "enrolled" ? frameCtx.session : null;
@@ -339,10 +389,10 @@ export default class StreamsMod extends View {
       );
   }
 
-  renderSidebar() {
+  renderSidebar(cx) {
     const t = theme();
     const snap = collectSnapshot();
-    coordinator.observe(snap);
+    this.scheduleObserve(cx, snap);
 
     const activeSpace = snap.activeSpace;
     const sb = coordinator.sidebar;
@@ -364,8 +414,8 @@ export default class StreamsMod extends View {
           .text_size(11.5)
           .text_color(t.muted)
           .hover((s) => s.bg(t.hover).text_color(t.foreground))
-          .on_click(() => {
-            coordinator.observe({ ...collectSnapshot(), force: true });
+          .on_click((_e, clickCx) => {
+            this.scheduleObserve(clickCx, collectSnapshot(), true);
           })
           .child("Refresh")
       );
@@ -376,6 +426,20 @@ export default class StreamsMod extends View {
         .bg(t.chrome)
         .child(header)
         .child(div().p(12).text_size(12).text_color(t.dim).child(coordinator.describeError));
+    }
+
+    if (coordinator.lastError && !sb) {
+      return v_flex()
+        .size_full()
+        .bg(t.chrome)
+        .child(header)
+        .child(
+          div()
+            .p(12)
+            .text_size(12)
+            .text_color(t.dim)
+            .child(`Unavailable: ${coordinator.lastError}`)
+        );
     }
 
     if (!sb) {

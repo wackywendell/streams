@@ -236,21 +236,18 @@ export class StreamsCoordinator {
       return null;
     }
     if (!this.binding) {
-      if (!this.describePromise && (!this.describeError || force)) {
-        return this.ensureDescribed().then((binding) => {
-          if (binding) {
-            return this.observe({
-              activeSpace,
-              visibleTerminals,
-              terminalList,
-              focusedTerminal,
-              force: true,
-            });
-          }
-          return null;
-        });
-      }
-      return null;
+      return this.ensureDescribed().then((binding) => {
+        if (binding) {
+          return this.observe({
+            activeSpace,
+            visibleTerminals,
+            terminalList,
+            focusedTerminal,
+            force: true,
+          });
+        }
+        return null;
+      });
     }
 
     const viewingChoice = activeSpace
@@ -265,7 +262,7 @@ export class StreamsCoordinator {
     });
 
     if (!force && (key === this.lastCompletedKey || key === this.inFlightKey)) {
-      return null;
+      return this.inFlightPromise ?? null;
     }
     return this.refresh({ activeSpace, visibleTerminals, viewingChoice, key });
   }
@@ -298,65 +295,70 @@ export class StreamsCoordinator {
       selections,
     });
 
-    try {
-      const out = await this.exec(this.streamsBin, [
-        "integration",
-        "request",
-        "--request-json",
-        JSON.stringify(envelope),
-      ]);
-      if (gen !== this.readGeneration) return null; // Stale response discarded
-      if (out.code !== 0) {
-        this.lastError = out.stderr?.trim() || "streams integration request failed";
-        this.lastCompletedKey = key ?? null;
-        return null;
-      }
-      const reply = JSON.parse(out.stdout);
-      if (reply?.result?.error) {
-        this.lastError = reply.result.error.message || "integration read error";
-        this.lastCompletedKey = key ?? null;
-        return reply;
-      }
-      const readRes = reply?.result?.ok;
-      if (readRes?.kind === "read" && Array.isArray(readRes.values)) {
-        if (typeof readRes.notification_key === "string") {
-          binding.notification_key = readRes.notification_key;
+    const promise = (async () => {
+      try {
+        const out = await this.exec(this.streamsBin, [
+          "integration",
+          "request",
+          "--request-json",
+          JSON.stringify(envelope),
+        ]);
+        if (gen !== this.readGeneration) return null; // Stale response discarded
+        if (out.code !== 0) {
+          this.lastError = out.stderr?.trim() || "streams integration request failed";
+          this.lastCompletedKey = key ?? null;
+          return null;
         }
-        selections.forEach((sel, idx) => {
-          const item = readRes.values[idx];
-          if (sel.kind === "sidebar") {
-            if (item?.ok?.kind === "sidebar") {
-              this.sidebar = item.ok.value;
-            } else if (item?.error) {
-              this.sidebar = { kind: "unavailable", reason: item.error.message };
-            }
-          } else if (sel.kind === "frame") {
-            if (item?.ok?.kind === "frame") {
-              this.frames.set(sel.terminal.key, item.ok.context);
-            } else if (item?.error) {
-              this.frames.set(sel.terminal.key, {
-                kind: "unavailable",
-                reason: item.error.message,
-              });
-            }
+        const reply = JSON.parse(out.stdout);
+        if (reply?.result?.error) {
+          this.lastError = reply.result.error.message || "integration read error";
+          this.lastCompletedKey = key ?? null;
+          return reply;
+        }
+        const readRes = reply?.result?.ok;
+        if (readRes?.kind === "read" && Array.isArray(readRes.values)) {
+          if (typeof readRes.notification_key === "string") {
+            binding.notification_key = readRes.notification_key;
           }
-        });
-        this.lastError = null;
-        this.lastCompletedKey = key ?? null;
+          selections.forEach((sel, idx) => {
+            const item = readRes.values[idx];
+            if (sel.kind === "sidebar") {
+              if (item?.ok?.kind === "sidebar") {
+                this.sidebar = item.ok.value;
+              } else if (item?.error) {
+                this.sidebar = { kind: "unavailable", reason: item.error.message };
+              }
+            } else if (sel.kind === "frame") {
+              if (item?.ok?.kind === "frame") {
+                this.frames.set(sel.terminal.key, item.ok.context);
+              } else if (item?.error) {
+                this.frames.set(sel.terminal.key, {
+                  kind: "unavailable",
+                  reason: item.error.message,
+                });
+              }
+            }
+          });
+          this.lastError = null;
+          this.lastCompletedKey = key ?? null;
+        }
+        return reply;
+      } catch (err) {
+        if (gen === this.readGeneration) {
+          this.lastError = err instanceof Error ? err.message : String(err);
+          this.lastCompletedKey = key ?? null;
+        }
+        return null;
+      } finally {
+        if (gen === this.readGeneration) {
+          this.inFlightKey = null;
+          this.inFlightPromise = null;
+          this.notifyViews();
+        }
       }
-      return reply;
-    } catch (err) {
-      if (gen === this.readGeneration) {
-        this.lastError = err instanceof Error ? err.message : String(err);
-        this.lastCompletedKey = key ?? null;
-      }
-      return null;
-    } finally {
-      if (gen === this.readGeneration) {
-        this.inFlightKey = null;
-        this.notifyViews();
-      }
-    }
+    })();
+    this.inFlightPromise = promise;
+    return promise;
   }
 
   /**
