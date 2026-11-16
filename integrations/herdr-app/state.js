@@ -391,6 +391,7 @@ export class StreamsCoordinator {
     this.frames = new Map(); // terminalKey -> FrameContext
     this.streamIdByTerminal = new Map(); // terminalKey -> streamId
     this.lastError = null;
+    this._retriedScope = false;
   }
 
   streamTitle(streamId) {
@@ -556,10 +557,25 @@ export class StreamsCoordinator {
         }
         const reply = JSON.parse(out.stdout);
         if (reply?.result?.error) {
-          this.lastError = reply.result.error.message || "integration read error";
+          const msg = reply.result.error.message || "integration read error";
+          if (
+            msg === "configured catalog and host do not match the requested scope" &&
+            !this._retriedScope
+          ) {
+            this._retriedScope = true;
+            this.binding = null;
+            this.frames.clear();
+            this.streams.clear();
+            this.streamIdByTerminal.clear();
+            this.lastCompletedKey = null;
+            this.lastError = msg;
+            return reply;
+          }
+          this.lastError = msg;
           this.lastCompletedKey = key ?? null;
           return reply;
         }
+        this._retriedScope = false;
         const readRes = reply?.result?.ok;
         if (readRes?.kind === "read" && Array.isArray(readRes.values)) {
           if (typeof readRes.notification_key === "string") {

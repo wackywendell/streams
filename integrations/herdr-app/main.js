@@ -704,7 +704,11 @@ export default class StreamsMod extends View {
             .p(12)
             .text_size(12)
             .text_color(t.dim)
-            .child("This tab is not enrolled in a Stream.")
+            .child(
+              coordinator.lastError
+                ? `Unavailable: ${coordinator.lastError}`
+                : "This tab is not enrolled in a Stream."
+            )
         );
     }
 

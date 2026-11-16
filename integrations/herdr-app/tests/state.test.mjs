@@ -662,3 +662,94 @@ test("dispatchReferencePresentation handles launch_command and show_content acro
     { ok: false, error: "No active pane to split for reference viewer." }
   );
 });
+
+test("StreamsCoordinator clears stale binding once on scope mismatch and recovers on re-describe", async () => {
+  let describeCalls = 0;
+  let readCalls = 0;
+  const coordinator = new StreamsCoordinator({
+    exec: async (_cmd, args) => {
+      if (args[1] === "describe") {
+        describeCalls += 1;
+        return {
+          code: 0,
+          stdout: JSON.stringify({
+            version: 1,
+            scope: { catalog: `cat-${describeCalls}`, host: "host-1" },
+            endpoint: "core-1",
+            notification_key: "streams.saved.k",
+          }),
+          stderr: "",
+        };
+      }
+      if (args[1] === "request") {
+        readCalls += 1;
+        const req = JSON.parse(args[3]);
+        if (req.scope.catalog === "cat-1") {
+          return {
+            code: 0,
+            stdout: JSON.stringify({
+              version: 1,
+              scope: req.scope,
+              endpoint: "core-1",
+              verified_endpoint: null,
+              result: {
+                error: {
+                  kind: "unavailable",
+                  message: "configured catalog and host do not match the requested scope",
+                },
+              },
+              viewer_projection: [],
+              warnings: [],
+            }),
+            stderr: "",
+          };
+        }
+        return {
+          code: 0,
+          stdout: JSON.stringify({
+            version: 1,
+            scope: req.scope,
+            endpoint: "core-1",
+            verified_endpoint: "core-1",
+            result: {
+              ok: {
+                kind: "read",
+                notification_key: "streams.saved.k",
+                herdr_config: { tab_naming: true, viewer_mode: "editor", viewer_placement: "pane-right" },
+                values: [{ ok: { kind: "frame", context: { kind: "unenrolled" } } }],
+              },
+            },
+            viewer_projection: [],
+            warnings: [],
+          }),
+          stderr: "",
+        };
+      }
+      throw new Error(`unexpected ${args.join(" ")}`);
+    },
+  });
+
+  await coordinator.observe({
+    activeSpace: { id: "sp-1", machine: null },
+    activeTabId: "tab-1",
+    visibleTerminals: ["t1"],
+    terminalList: [],
+    focusedTerminal: "t1",
+  });
+  assert.equal(describeCalls, 1);
+  assert.equal(readCalls, 1);
+  assert.equal(coordinator.binding, null);
+  assert.equal(coordinator.lastError, "configured catalog and host do not match the requested scope");
+
+  await coordinator.observe({
+    activeSpace: { id: "sp-1", machine: null },
+    activeTabId: "tab-1",
+    visibleTerminals: ["t1"],
+    terminalList: [],
+    focusedTerminal: "t1",
+  });
+  assert.equal(describeCalls, 2);
+  assert.equal(readCalls, 2);
+  assert.equal(coordinator.binding?.scope?.catalog, "cat-2");
+  assert.equal(coordinator.lastError, null);
+});
