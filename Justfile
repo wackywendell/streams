@@ -90,8 +90,9 @@ install-herdr-app-mod:
     #!/usr/bin/env sh
     set -eu
     home="${HERDR_APP_HOME:-$HOME/.config/herdr-app}"
-    mkdir -p "$home/mods/streams"
+    mkdir -p "$home/mods/streams/icons"
     cp integrations/herdr-app/mod.json integrations/herdr-app/main.js integrations/herdr-app/state.js "$home/mods/streams/"
+    cp integrations/herdr-app/icons/*.svg "$home/mods/streams/icons/"
     if command -v herdr-app >/dev/null 2>&1; then
       herdr-app check "$home/mods/streams"
     fi

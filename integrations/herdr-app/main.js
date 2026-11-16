@@ -115,30 +115,21 @@ function statusBadge(status, t) {
 function referenceStyle(kind, t) {
   switch (kind) {
     case "pr":
-      return { label: "PR", color: t.ansi2 };
+      return { icon: "mods/streams/icons/git-pull-request.svg", color: t.ansi2 };
     case "issue":
-      return { label: "Issue", color: t.ansi3 };
+      return { icon: "mods/streams/icons/circle-dot.svg", color: t.ansi3 };
     case "document":
-      return { label: "File", color: t.ansi6 };
+      return { icon: "mods/streams/icons/file-code.svg", color: t.ansi6 };
     case "artifact":
-      return { label: "Artifact", color: t.ansi5 };
+      return { icon: "mods/streams/icons/scroll-text.svg", color: t.ansi5 };
     default:
-      return { label: "Link", color: t.ansi4 };
+      return { icon: "mods/streams/icons/link-2.svg", color: t.ansi4 };
   }
 }
 
-function referenceBadge(kind, t) {
+function referenceIcon(kind, t) {
   const r = referenceStyle(kind, t);
-  return div()
-    .flex_none()
-    .px(5)
-    .py(1)
-    .rounded(4)
-    .bg(r.color + "22")
-    .text_size(10.5)
-    .font_semibold()
-    .text_color(r.color)
-    .child(r.label);
+  return svg(r.icon).size(14).flex_none().text_color(r.color);
 }
 
 function collectSnapshot() {
@@ -851,12 +842,8 @@ export default class StreamsMod extends View {
                     v_flex()
                       .flex_1()
                       .min_w(0)
-                      .p(9)
-                      .gap(4)
-                      .rounded(6)
-                      .bg(t.raised)
-                      .border(1)
-                      .border_color(t.border)
+                      .py(2)
+                      .gap(3)
                       .child(
                         h_flex()
                           .gap(6)
@@ -948,9 +935,9 @@ export default class StreamsMod extends View {
                           )
                           .child(
                             h_flex()
-                              .gap(6)
+                              .gap(7)
                               .items_center()
-                              .child(referenceBadge(item.kind, t))
+                              .child(referenceIcon(item.kind, t))
                               .child(
                                 div()
                                   .flex_1()
