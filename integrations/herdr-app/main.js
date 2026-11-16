@@ -1,8 +1,8 @@
 // Streams mod for herdr-app (roles: sidebar, frame, popup, viewer).
 // Preserves the single 30 px pane header, explicit pane controls, and Files/Changes panels.
 
-import { View, div, svg, image, TextView } from "gpui-kit";
-import { h_flex, v_flex, ScrollHandle, Editor, EditorState } from "gpui-base";
+import { View, div, svg, image } from "gpui-kit";
+import { h_flex, v_flex, ScrollHandle, Editor, EditorState, TextView } from "gpui-base";
 import {
   spaces,
   panes,
