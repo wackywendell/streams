@@ -17,7 +17,9 @@ export function resolveRole(rawProps) {
   ) {
     return rawProps.role;
   }
-  if (rawProps?.kind === "session-popup") return "popup";
+  if (rawProps?.kind === "session-popup" || rawProps?.kind === "stream-menu") {
+    return "popup";
+  }
   if (rawProps?.pane || rawProps?.terminal) return "frame";
   return "sidebar";
 }
@@ -35,21 +37,20 @@ export function buildRequestEnvelope(scope, endpoint, body) {
 }
 
 /**
- * Build the batched `ViewSelection` list for the active local space and visible terminal panes.
+ * Build the batched `ViewSelection` list for visible terminals in the active tab
+ * and optionally the tab's known enrolled Stream.
  */
 export function buildViewSelections({
   endpoint,
-  activeSpace,
   visibleTerminals = [],
-  viewingChoice = { kind: "follow", last_agent: null },
+  knownStreamId = null,
 }) {
   if (!endpoint) return [];
   const selections = [];
-  if (activeSpace && activeSpace.machine === null) {
+  if (typeof knownStreamId === "string" && knownStreamId.length > 0) {
     selections.push({
-      kind: "sidebar",
-      space: { adapter: "hc", endpoint, key: activeSpace.id },
-      viewing: viewingChoice,
+      kind: "saved_stream",
+      stream: knownStreamId,
     });
   }
   const seen = new Set();
@@ -67,15 +68,19 @@ export function buildViewSelections({
 
 /**
  * Extract the combined save-notice token across all local terminals for a given notification key.
+ * `herdr-app`'s `terminals()` uses `hc ls --json` shape (`address`, no `machine` or `id`);
+ * accept both `address` and `id` while excluding remote `<machine>/<id>` entries.
  */
 export function observeNoticeToken(terminalList, notificationKey) {
   if (!notificationKey || !Array.isArray(terminalList)) return "";
   const pairs = [];
   for (const term of terminalList) {
-    if (!term || term.machine !== null) continue;
+    if (!term || (term.machine !== undefined && term.machine !== null)) continue;
+    const addr = term.address ?? term.id;
+    if (typeof addr !== "string" || addr.length === 0 || addr.includes("/")) continue;
     const token = term.labels?.[notificationKey];
     if (typeof token === "string" && token.length > 0) {
-      pairs.push(`${term.id}:${token}`);
+      pairs.push(`${addr}:${token}`);
     }
   }
   pairs.sort();
@@ -87,18 +92,178 @@ export function observeNoticeToken(terminalList, notificationKey) {
  */
 export function computeObservationKey({
   activeSpace,
+  activeTabId = null,
   visibleTerminals,
-  viewingChoice,
+  knownStreamId = null,
   noticeToken,
 }) {
   if (!activeSpace) return "none";
   if (activeSpace.machine !== null) return `remote:${activeSpace.id}`;
   return JSON.stringify({
     space: activeSpace.id,
+    tab: activeTabId,
     terminals: [...(visibleTerminals ?? [])].sort(),
-    viewing: viewingChoice ?? { kind: "follow", last_agent: null },
+    stream: knownStreamId ?? null,
     notice: noticeToken ?? "",
   });
+}
+
+/**
+ * Resolve the primary enrolled session for the active tab (preferring the focused terminal).
+ */
+export function activeTabSession({
+  visibleTerminals = [],
+  focusedTerminal = null,
+  frames,
+}) {
+  if (!frames) return null;
+  if (focusedTerminal && visibleTerminals.includes(focusedTerminal)) {
+    const focusedFrame = frames.get(focusedTerminal);
+    if (focusedFrame?.kind === "enrolled" && focusedFrame.session) {
+      return { terminal: focusedTerminal, session: focusedFrame.session };
+    }
+  }
+  for (const terminalKey of visibleTerminals) {
+    const frame = frames.get(terminalKey);
+    if (frame?.kind === "enrolled" && frame.session) {
+      return { terminal: terminalKey, session: frame.session };
+    }
+  }
+  return null;
+}
+
+/**
+ * Determine whether the active `herdr-app` tab should be renamed to match its enrolled Session title.
+ */
+export function resolveTabRenameTarget({
+  activeTab,
+  visibleTerminals = [],
+  frames,
+  tabNaming = true,
+}) {
+  if (!tabNaming || !activeTab?.id) return null;
+  for (const termKey of visibleTerminals) {
+    const frame = frames?.get?.(termKey);
+    if (frame?.kind === "enrolled" && frame.session?.title) {
+      const desired = frame.session.title.trim();
+      if (desired && activeTab.name !== desired) {
+        return {
+          tabId: activeTab.id,
+          currentName: activeTab.name ?? "",
+          desiredName: desired,
+        };
+      }
+      return null;
+    }
+  }
+  return null;
+}
+
+function formatHostPath(url) {
+  try {
+    const parsed = new URL(url);
+    const path = parsed.pathname === "/" ? "" : parsed.pathname;
+    return `${parsed.host}${path}`;
+  } catch {
+    return url;
+  }
+}
+
+function formatLinkTitle(link) {
+  const kind = link?.key?.kind;
+  const url = link?.key?.url ?? "";
+  const name = typeof link?.name === "string" ? link.name.trim() : "";
+
+  if (kind === "pr") {
+    const prMatch = url.match(/\/(?:pull|pulls|merge_requests)\/(\d+)/i);
+    if (prMatch) {
+      const tag = `PR #${prMatch[1]}`;
+      if (!name || name === url) return tag;
+      return name.includes(prMatch[1]) ? name : `${tag} · ${name}`;
+    }
+    return name || url;
+  }
+
+  if (kind === "issue") {
+    const ghMatch = url.match(/\/issues\/(\d+)/i);
+    if (ghMatch) {
+      const tag = `Issue #${ghMatch[1]}`;
+      if (!name || name === url) return tag;
+      return name.includes(ghMatch[1]) ? name : `${tag} · ${name}`;
+    }
+    const keyMatch = url.match(/\/browse\/([A-Z][A-Z0-9]+-\d+)/);
+    if (keyMatch) {
+      const tag = keyMatch[1];
+      if (!name || name === url) return tag;
+      return name.includes(tag) ? name : `${tag} · ${name}`;
+    }
+    return name || url;
+  }
+
+  return name || formatHostPath(url);
+}
+
+/**
+ * Combine Stream documents, links/PRs/issues, and artifacts into one unified References list.
+ */
+export function buildReferenceItems(stream, { viewingSessionId = null } = {}) {
+  if (!stream) return [];
+  const items = [];
+
+  for (const [idx, link] of (stream.links ?? []).entries()) {
+    items.push({
+      id: `link-${idx}-${link.key?.url ?? ""}`,
+      kind: link.key?.kind ?? "link",
+      title: formatLinkTitle(link),
+      subtitle: link.description || link.key?.url || "",
+      reference: {
+        kind: "link",
+        stream: stream.id,
+        link: link.key,
+      },
+      disabled: false,
+    });
+  }
+
+  for (const [idx, doc] of (stream.documents ?? []).entries()) {
+    const path = doc.key?.path ?? "";
+    const name = typeof doc.name === "string" ? doc.name.trim() : "";
+    const title = path || name;
+    const subtitle = doc.description || (name && path && name !== path ? name : "");
+    items.push({
+      id: `doc-${idx}-${doc.key?.repository ?? ""}-${path}`,
+      kind: "document",
+      title,
+      subtitle,
+      reference: viewingSessionId
+        ? {
+            kind: "document",
+            stream: stream.id,
+            viewing_session: viewingSessionId,
+            document: doc.key,
+          }
+        : null,
+      disabled: !viewingSessionId,
+    });
+  }
+
+  for (const group of stream.artifacts ?? []) {
+    for (const entry of group.entries ?? []) {
+      items.push({
+        id: `art-${entry.key?.session ?? ""}-${entry.key?.name ?? ""}`,
+        kind: "artifact",
+        title: entry.key?.name ?? "",
+        subtitle: entry.description ?? "",
+        reference: {
+          kind: "artifact",
+          key: entry.key,
+        },
+        disabled: false,
+      });
+    }
+  }
+
+  return items;
 }
 
 /**
@@ -136,62 +301,40 @@ export class StreamsCoordinator {
     this.binding = null; // { scope, endpoint, notification_key }
     this.describePromise = null;
     this.describeError = null;
+    this.tabNaming = true;
 
     this.readGeneration = 0;
     this.inFlightKey = null;
+    this.inFlightPromise = null;
     this.lastCompletedKey = null;
 
-    this.sidebar = null; // SidebarContext or null
     this.streams = new Map(); // streamId -> StreamView
     this.frames = new Map(); // terminalKey -> FrameContext
+    this.streamIdByTerminal = new Map(); // terminalKey -> streamId
     this.lastError = null;
-    this.viewingBySpace = new Map(); // spaceId -> ViewingChoice
-    this.lastAgentBySpace = new Map(); // spaceId -> terminalKey
   }
 
   streamTitle(streamId) {
     if (!streamId) return "";
     const cached = this.streams.get(streamId);
     if (cached?.title) return cached.title;
-    if (this.sidebar?.kind === "associated" && this.sidebar.stream?.id === streamId) {
-      return this.sidebar.stream.title || streamId;
-    }
     return streamId;
+  }
+
+  knownStreamForTab({ visibleTerminals = [], focusedTerminal = null } = {}) {
+    if (focusedTerminal && visibleTerminals.includes(focusedTerminal)) {
+      const focusedStream = this.streamIdByTerminal.get(focusedTerminal);
+      if (focusedStream) return focusedStream;
+    }
+    for (const termKey of visibleTerminals) {
+      const streamId = this.streamIdByTerminal.get(termKey);
+      if (streamId) return streamId;
+    }
+    return null;
   }
 
   notifyViews() {
     this.notify?.();
-  }
-
-  viewingForSpace(spaceId, endpoint) {
-    const pinned = this.viewingBySpace.get(spaceId);
-    if (pinned && pinned.kind === "pinned") return pinned;
-    const lastAgent = this.lastAgentBySpace.get(spaceId) ?? null;
-    return {
-      kind: "follow",
-      last_agent:
-        lastAgent && endpoint
-          ? { adapter: "hc", endpoint, key: lastAgent }
-          : null,
-    };
-  }
-
-  pinSession(spaceId, sessionId) {
-    if (!spaceId) return;
-    if (!sessionId) {
-      this.viewingBySpace.delete(spaceId);
-    } else {
-      this.viewingBySpace.set(spaceId, { kind: "pinned", session: sessionId });
-    }
-    this.lastCompletedKey = null;
-    this.notifyViews();
-  }
-
-  recordFocusedTerminal(spaceId, terminalId) {
-    if (!spaceId || !terminalId || terminalId.includes("/")) return false;
-    if (this.lastAgentBySpace.get(spaceId) === terminalId) return false;
-    this.lastAgentBySpace.set(spaceId, terminalId);
-    return true;
   }
 
   async ensureDescribed() {
@@ -241,16 +384,13 @@ export class StreamsCoordinator {
    */
   observe({
     activeSpace,
+    activeTabId = null,
     visibleTerminals = [],
     terminalList = [],
     focusedTerminal = null,
     force = false,
   }) {
-    if (activeSpace && activeSpace.machine === null && focusedTerminal) {
-      this.recordFocusedTerminal(activeSpace.id, focusedTerminal);
-    }
     if (activeSpace && activeSpace.machine !== null) {
-      this.sidebar = { kind: "not_applicable", reason: "remote space" };
       return null;
     }
     if (!this.binding) {
@@ -258,49 +398,57 @@ export class StreamsCoordinator {
         if (binding) {
           return this.observe({
             activeSpace,
+            activeTabId,
             visibleTerminals,
             terminalList,
             focusedTerminal,
-            force: true,
+            force: false,
           });
         }
         return null;
       });
     }
 
-    const viewingChoice = activeSpace
-      ? this.viewingForSpace(activeSpace.id, this.binding.endpoint)
-      : { kind: "follow", last_agent: null };
+    const knownStreamId = this.knownStreamForTab({ visibleTerminals, focusedTerminal });
     const noticeToken = observeNoticeToken(terminalList, this.binding.notification_key);
     const key = computeObservationKey({
       activeSpace,
+      activeTabId,
       visibleTerminals,
-      viewingChoice,
+      knownStreamId,
       noticeToken,
     });
 
-    if (!force && (key === this.lastCompletedKey || key === this.inFlightKey)) {
+    if (!force && (key === this.lastCompletedKey || (key === this.inFlightKey && this.inFlightPromise))) {
       return this.inFlightPromise ?? null;
     }
-    return this.refresh({ activeSpace, visibleTerminals, viewingChoice, key });
+    return this.refresh({
+      activeSpace,
+      activeTabId,
+      visibleTerminals,
+      focusedTerminal,
+      knownStreamId,
+      key,
+    });
   }
 
-  async refresh({ activeSpace, visibleTerminals = [], viewingChoice, key }) {
+  async refresh({
+    activeSpace,
+    activeTabId = null,
+    visibleTerminals = [],
+    focusedTerminal = null,
+    knownStreamId = null,
+    key,
+  }) {
     const binding = await this.ensureDescribed();
     if (!binding) return null;
 
     const selections = buildViewSelections({
       endpoint: binding.endpoint,
-      activeSpace,
       visibleTerminals,
-      viewingChoice:
-        viewingChoice ??
-        (activeSpace
-          ? this.viewingForSpace(activeSpace.id, binding.endpoint)
-          : { kind: "follow", last_agent: null }),
+      knownStreamId,
     });
     if (selections.length === 0) {
-      this.sidebar = null;
       this.lastCompletedKey = key ?? null;
       this.notifyViews();
       return null;
@@ -338,20 +486,28 @@ export class StreamsCoordinator {
           if (typeof readRes.notification_key === "string") {
             binding.notification_key = readRes.notification_key;
           }
+          if (typeof readRes.tab_naming === "boolean") {
+            this.tabNaming = readRes.tab_naming;
+          }
+          const fetchedStreams = new Set();
           selections.forEach((sel, idx) => {
             const item = readRes.values[idx];
-            if (sel.kind === "sidebar") {
-              if (item?.ok?.kind === "sidebar") {
-                this.sidebar = item.ok.value;
-                if (item.ok.value?.kind === "associated" && item.ok.value.stream?.id) {
-                  this.streams.set(item.ok.value.stream.id, item.ok.value.stream);
-                }
-              } else if (item?.error) {
-                this.sidebar = { kind: "unavailable", reason: item.error.message };
+            if (sel.kind === "saved_stream") {
+              if (item?.ok?.kind === "stream") {
+                this.streams.set(item.ok.value.id, item.ok.value);
+                fetchedStreams.add(item.ok.value.id);
               }
             } else if (sel.kind === "frame") {
               if (item?.ok?.kind === "frame") {
                 this.frames.set(sel.terminal.key, item.ok.context);
+                if (item.ok.context?.kind === "enrolled" && item.ok.context.session?.stream) {
+                  this.streamIdByTerminal.set(
+                    sel.terminal.key,
+                    item.ok.context.session.stream
+                  );
+                } else {
+                  this.streamIdByTerminal.delete(sel.terminal.key);
+                }
               } else if (item?.error) {
                 this.frames.set(sel.terminal.key, {
                   kind: "unavailable",
@@ -360,8 +516,48 @@ export class StreamsCoordinator {
               }
             }
           });
+
+          const tabSession = activeTabSession({
+            visibleTerminals,
+            focusedTerminal,
+            frames: this.frames,
+          });
+          if (tabSession?.session?.stream && !fetchedStreams.has(tabSession.session.stream)) {
+            if (key !== undefined) {
+              this.inFlightKey = JSON.stringify({
+                ...JSON.parse(key),
+                stream: tabSession.session.stream,
+              });
+            }
+            const streamEnvelope = buildRequestEnvelope(binding.scope, binding.endpoint, {
+              kind: "read",
+              selections: [{ kind: "saved_stream", stream: tabSession.session.stream }],
+            });
+            const streamOut = await this.exec(this.streamsBin, [
+              "integration",
+              "request",
+              "--request-json",
+              JSON.stringify(streamEnvelope),
+            ]);
+            if (gen !== this.readGeneration) return null;
+            if (streamOut.code === 0) {
+              const streamReply = JSON.parse(streamOut.stdout);
+              const streamRead = streamReply?.result?.ok;
+              const streamItem = streamRead?.values?.[0];
+              if (streamItem?.ok?.kind === "stream") {
+                this.streams.set(streamItem.ok.value.id, streamItem.ok.value);
+              }
+            }
+          }
+
           this.lastError = null;
-          this.lastCompletedKey = key ?? null;
+          this.lastCompletedKey =
+            key !== undefined
+              ? JSON.stringify({
+                  ...JSON.parse(key),
+                  stream: this.knownStreamForTab({ visibleTerminals, focusedTerminal }),
+                })
+              : null;
         }
         return reply;
       } catch (err) {

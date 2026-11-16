@@ -491,16 +491,27 @@ impl<'a> Streams<'a> {
                             repository,
                             path: document.path.clone(),
                         },
+                        name: reference.name.clone(),
                         description: reference.purpose.clone(),
                     });
                 }
-                crate::model::ReferenceTarget::Issue { url }
-                | crate::model::ReferenceTarget::Link { url } => {
+                crate::model::ReferenceTarget::Issue { url } => {
                     links.push(LinkReference {
                         key: crate::integration::LinkKey {
                             kind: LinkKind::Issue,
                             url: url.clone(),
                         },
+                        name: reference.name.clone(),
+                        description: reference.purpose.clone(),
+                    });
+                }
+                crate::model::ReferenceTarget::Link { url } => {
+                    links.push(LinkReference {
+                        key: crate::integration::LinkKey {
+                            kind: LinkKind::Link,
+                            url: url.clone(),
+                        },
+                        name: reference.name.clone(),
                         description: reference.purpose.clone(),
                     });
                 }
@@ -510,6 +521,7 @@ impl<'a> Streams<'a> {
                             kind: LinkKind::Pr,
                             url: url.clone(),
                         },
+                        name: reference.name.clone(),
                         description: reference.purpose.clone(),
                     });
                 }
@@ -589,12 +601,11 @@ impl<'a> Streams<'a> {
         let exists = stream.references.iter().any(|reference| {
             reference.state != crate::model::ReferenceState::Dropped
                 && match (link.kind, &reference.target) {
-                    (
-                        LinkKind::Issue,
-                        crate::model::ReferenceTarget::Issue { url }
-                        | crate::model::ReferenceTarget::Link { url },
-                    )
-                    | (LinkKind::Pr, crate::model::ReferenceTarget::Pr { url }) => url == &link.url,
+                    (LinkKind::Issue, crate::model::ReferenceTarget::Issue { url })
+                    | (LinkKind::Pr, crate::model::ReferenceTarget::Pr { url })
+                    | (LinkKind::Link, crate::model::ReferenceTarget::Link { url }) => {
+                        url == &link.url
+                    }
                     _ => false,
                 }
         });

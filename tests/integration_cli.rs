@@ -903,10 +903,12 @@ fn saved_cli_owns_stdout_and_needs_no_native_endpoint_with_or_without_global_jso
         let WireResult::Ok(ModResult::Read {
             values,
             notification_key,
+            tab_naming,
         }) = reply.result
         else {
             panic!("read reply");
         };
+        assert!(tab_naming);
         assert_eq!(notification_key, reply.scope.notification_key());
         assert!(
             matches!(&values[0],WireResult::Ok(ModReadValue::Stream {value}) if value.sessions.len()==2)

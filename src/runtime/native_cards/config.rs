@@ -122,6 +122,9 @@ impl NativeCardsConfig {
     pub fn session_naming(&self) -> bool {
         self.session_naming
     }
+    pub fn tab_naming(&self) -> bool {
+        self.tab_naming
+    }
     pub fn timeout_seconds(&self) -> f64 {
         self.timeout_seconds
     }

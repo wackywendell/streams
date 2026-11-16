@@ -17,7 +17,14 @@ import {
   layout,
   exec,
 } from "herdr";
-import { resolveRole, StreamsCoordinator } from "./state.js";
+import {
+  resolveRole,
+  observeNoticeToken,
+  activeTabSession,
+  resolveTabRenameTarget,
+  buildReferenceItems,
+  StreamsCoordinator,
+} from "./state.js";
 
 const subscribers = new Set();
 const coordinator = new StreamsCoordinator({
@@ -32,6 +39,8 @@ const coordinator = new StreamsCoordinator({
     }
   },
 });
+
+let lastTabRenameAttempt = null;
 
 function findNode(node, id) {
   if (node?.id === id) return node;
@@ -70,6 +79,38 @@ function folder(cwd) {
   return cwd === h ? "~" : cwd.startsWith(h + "/") ? "~" + cwd.slice(h.length) : cwd;
 }
 
+function statusStyle(status, t) {
+  switch (status) {
+    case "active":
+      return { color: t.ansi2, symbol: "●", label: "active" };
+    case "working":
+      return { color: t.working, symbol: "●", label: "working" };
+    case "waiting":
+      return { color: t.working, symbol: "●", label: "waiting" };
+    case "blocked":
+      return { color: t.blocked, symbol: "●", label: "blocked" };
+    case "done":
+      return { color: t.done, symbol: "✓", label: "done" };
+    case "parked":
+      return { color: t.dim, symbol: "○", label: "parked" };
+    default:
+      return { color: t.dim, symbol: "○", label: status || "unknown" };
+  }
+}
+
+function statusBadge(status, t) {
+  const s = statusStyle(status, t);
+  return h_flex()
+    .flex_none()
+    .gap(4)
+    .items_center()
+    .text_size(11)
+    .font_medium()
+    .text_color(s.color)
+    .child(div().text_size(9).child(s.symbol))
+    .child(s.label);
+}
+
 function collectSnapshot() {
   const allSpaces = spaces();
   const activeSpace = allSpaces.find((s) => s.active) ?? null;
@@ -83,24 +124,48 @@ function collectSnapshot() {
   const focus = focused();
   const focusedPane = focus?.pane ? allPanes.find((p) => p.pane === focus.pane) : null;
   const focusedTerminal =
-    focusedPane?.program?.agent && focusedPane?.terminal ? focusedPane.terminal : null;
+    focusedPane?.program?.agent && focusedPane?.terminal
+      ? focusedPane.terminal
+      : focus?.agent ?? null;
   return {
     activeSpace,
+    activeTab,
+    activeTabId: activeTab?.id ?? null,
     visibleTerminals,
     terminalList: terminals(),
     focusedTerminal,
   };
 }
 
+function syncActiveTabName(snap) {
+  const target = resolveTabRenameTarget({
+    activeTab: snap.activeTab,
+    visibleTerminals: snap.visibleTerminals,
+    frames: coordinator.frames,
+    tabNaming: coordinator.tabNaming,
+  });
+  if (!target) {
+    lastTabRenameAttempt = null;
+    return;
+  }
+  const key = `${target.tabId}\0${target.currentName}\0${target.desiredName}`;
+  if (lastTabRenameAttempt === key) return;
+  lastTabRenameAttempt = key;
+  run("tab.rename", { id: target.tabId, name: target.desiredName });
+}
+
 function snapshotSignature(snap) {
   return JSON.stringify({
     space: snap.activeSpace?.id ?? null,
     machine: snap.activeSpace?.machine ?? null,
+    tab: snap.activeTabId,
+    tabName: snap.activeTab?.name ?? null,
     terminals: snap.visibleTerminals,
     focused: snap.focusedTerminal,
-    labels: snap.terminalList
-      .filter((t) => t.machine === null)
-      .map((t) => [t.id, t.labels]),
+    notice: observeNoticeToken(
+      snap.terminalList,
+      coordinator.binding?.notification_key ?? null
+    ),
   });
 }
 
@@ -110,9 +175,11 @@ export default class StreamsMod extends View {
     this.scroll = ScrollHandle.new();
     this._subscribed = false;
     this._lastSig = null;
+    this._observeTask = null;
+    this._timerTask = null;
     this.ensureSubscribed(cx);
     this.scheduleObserve(cx, collectSnapshot());
-    cx?.timer?.every?.(2000, (timerCx) => {
+    this._timerTask = cx?.timer?.every?.(2000, (timerCx) => {
       this.scheduleObserve(timerCx, collectSnapshot());
     });
   }
@@ -139,11 +206,12 @@ export default class StreamsMod extends View {
     if (configuredBin && coordinator.streamsBin !== configuredBin) {
       coordinator.streamsBin = configuredBin;
     }
+    syncActiveTabName(snap);
     const sig = snapshotSignature(snap);
     if (
       !force &&
       sig === this._lastSig &&
-      (coordinator.sidebar ||
+      (coordinator.frames.size > 0 ||
         coordinator.describeError ||
         coordinator.lastError ||
         coordinator.lastCompletedKey !== null ||
@@ -154,18 +222,22 @@ export default class StreamsMod extends View {
     }
     this._lastSig = sig;
     if (cx?.spawn) {
-      cx.spawn(async (asyncCx) => {
+      this._observeTask = cx.spawn(async (asyncCx) => {
         try {
           await coordinator.observe({
             ...snap,
             force,
           });
+          syncActiveTabName(collectSnapshot());
         } finally {
           asyncCx.notify();
         }
       });
     } else {
-      coordinator.observe({ ...snap, force });
+      Promise.resolve(coordinator.observe({ ...snap, force })).then(() => {
+        syncActiveTabName(collectSnapshot());
+        cx?.notify?.();
+      });
     }
   }
 
@@ -346,9 +418,41 @@ export default class StreamsMod extends View {
   renderPopup() {
     const t = theme();
     const rawProps = props() ?? {};
+    if (rawProps.kind === "stream-menu") {
+      const streamId = rawProps.stream_id;
+      return v_flex()
+        .w_full()
+        .p(5)
+        .bg(t.popover)
+        .text_size(12.5)
+        .text_color(t.foreground)
+        .child(
+          div()
+            .id("stream-menu-open-all")
+            .h(30)
+            .px(10)
+            .flex()
+            .items_center()
+            .rounded(6)
+            .hover((s) => s.bg(t.hover))
+            .on_click((_e, clickCx) => {
+              if (rawProps.overlay) closeOverlay(rawProps.overlay);
+              if (streamId) {
+                coordinator.openWork(
+                  { stream: streamId },
+                  {
+                    run,
+                    openUrl: (u) => clickCx.open_url(u),
+                  }
+                );
+              }
+            })
+            .child("Open all Stream sessions")
+        );
+    }
+
     const session = rawProps.session;
     const streamTitle = rawProps.stream_title ?? null;
-    const spaceId = rawProps.space_id ?? null;
     if (!session) return div().p(12).text_color(t.dim).child("No Session selected.");
 
     return v_flex()
@@ -381,9 +485,13 @@ export default class StreamsMod extends View {
         el.child(div().text_color(t.dim).child(`≋ ${streamTitle}`))
       )
       .child(
-        div()
-          .text_color(t.muted)
-          .child(`Status: ${session.status}${session.state ? ` · ${session.state}` : ""}`)
+        h_flex()
+          .gap(8)
+          .items_center()
+          .child(statusBadge(session.status, t))
+          .when(Boolean(session.state), (el) =>
+            el.child(div().text_color(t.muted).truncate().child(session.state))
+          )
       )
       .when(Boolean(session.recap), (el) =>
         el.child(div().text_color(t.foreground).child(session.recap))
@@ -417,7 +525,6 @@ export default class StreamsMod extends View {
                     cwd: null,
                   },
                   {
-                    activeSpaceId: spaceId,
                     run,
                     openUrl: (u) => clickCx.open_url(u),
                   }
@@ -434,8 +541,6 @@ export default class StreamsMod extends View {
     this.scheduleObserve(cx, snap);
 
     const activeSpace = snap.activeSpace;
-    const sb = coordinator.sidebar;
-
     const header = h_flex()
       .h(34)
       .px(12)
@@ -467,7 +572,7 @@ export default class StreamsMod extends View {
         .child(div().p(12).text_size(12).text_color(t.dim).child(coordinator.describeError));
     }
 
-    if (coordinator.lastError && !sb) {
+    if (coordinator.lastError && coordinator.frames.size === 0) {
       return v_flex()
         .size_full()
         .bg(t.chrome)
@@ -481,7 +586,7 @@ export default class StreamsMod extends View {
         );
     }
 
-    if (!activeSpace) {
+    if (!activeSpace || !snap.activeTabId) {
       return v_flex()
         .size_full()
         .bg(t.chrome)
@@ -491,11 +596,25 @@ export default class StreamsMod extends View {
             .p(12)
             .text_size(12)
             .text_color(t.dim)
-            .child("No active space.")
+            .child("No active tab.")
         );
     }
 
-    if (!sb) {
+    if (activeSpace.machine !== null) {
+      return v_flex()
+        .size_full()
+        .bg(t.chrome)
+        .child(header)
+        .child(
+          div()
+            .p(12)
+            .text_size(12)
+            .text_color(t.dim)
+            .child("Streams sidebar is available on local tabs.")
+        );
+    }
+
+    if (coordinator.lastCompletedKey === null && coordinator.inFlightKey !== null) {
       return v_flex()
         .size_full()
         .bg(t.chrome)
@@ -503,7 +622,12 @@ export default class StreamsMod extends View {
         .child(div().p(12).text_size(12).text_color(t.dim).child("Loading Streams…"));
     }
 
-    if (sb.kind === "not_applicable") {
+    const tabSession = activeTabSession({
+      visibleTerminals: snap.visibleTerminals,
+      focusedTerminal: snap.focusedTerminal,
+      frames: coordinator.frames,
+    });
+    if (!tabSession) {
       return v_flex()
         .size_full()
         .bg(t.chrome)
@@ -513,43 +637,23 @@ export default class StreamsMod extends View {
             .p(12)
             .text_size(12)
             .text_color(t.dim)
-            .child("Streams sidebar is available on local spaces.")
+            .child("This tab is not enrolled in a Stream.")
         );
     }
 
-    if (sb.kind === "unassociated") {
+    const enrolled = tabSession.session;
+    const stream = coordinator.streams.get(enrolled.stream) ?? null;
+    if (!stream) {
       return v_flex()
         .size_full()
         .bg(t.chrome)
         .child(header)
-        .child(
-          div()
-            .p(12)
-            .text_size(12)
-            .text_color(t.dim)
-            .child("This space is not associated with a Stream.")
-        );
+        .child(div().p(12).text_size(12).text_color(t.dim).child("Loading Stream…"));
     }
 
-    if (sb.kind === "unavailable") {
-      return v_flex()
-        .size_full()
-        .bg(t.chrome)
-        .child(header)
-        .child(
-          div()
-            .p(12)
-            .text_size(12)
-            .text_color(t.dim)
-            .child(`Unavailable: ${sb.reason}`)
-        );
-    }
-
-    const stream = sb.stream;
-    const viewing = sb.viewing_session;
-    const selectedSessionId = viewing?.kind === "selected" ? viewing.session : null;
-    const selectedSession =
-      stream.sessions.find((s) => s.id === selectedSessionId) ?? null;
+    const references = buildReferenceItems(stream, {
+      viewingSessionId: enrolled.id,
+    });
 
     return v_flex()
       .size_full()
@@ -562,191 +666,159 @@ export default class StreamsMod extends View {
           .id("streams-sidebar-body")
           .flex_1()
           .p(12)
-          .gap(10)
+          .gap(12)
           .overflow_y_scrollbar()
           .track_scroll(this.scroll)
+          .when(Boolean(coordinator.lastError), (el) =>
+            el.child(
+              div()
+                .p(8)
+                .rounded(5)
+                .bg(t.raised)
+                .text_size(11.5)
+                .text_color(t.blocked)
+                .child(coordinator.lastError)
+            )
+          )
           .child(
             v_flex()
-              .gap(4)
-              .child(div().font_semibold().text_size(13).child(stream.title))
-              .child(div().text_color(t.muted).child(stream.status))
-              .when(Boolean(stream.goal), (el) =>
-                el.child(div().text_color(t.foreground).child(stream.goal))
-              )
+              .gap(6)
               .child(
                 h_flex()
-                  .pt(4)
-                  .gap(6)
+                  .gap(8)
+                  .items_center()
                   .child(
                     div()
-                      .id("streams-open-work")
-                      .px(8)
-                      .py(3)
-                      .rounded(5)
-                      .bg(t.selected)
-                      .hover((s) => s.bg(t.hover))
+                      .flex_1()
+                      .min_w(0)
+                      .truncate()
+                      .font_semibold()
+                      .text_size(13.5)
+                      .child(stream.title)
+                  )
+                  .child(statusBadge(stream.status, t))
+                  .child(
+                    div()
+                      .id("streams-menu-btn")
+                      .px(5)
+                      .py(2)
+                      .rounded(4)
+                      .text_color(t.muted)
+                      .hover((s) => s.bg(t.hover).text_color(t.foreground))
                       .on_click((_e, clickCx) => {
-                        coordinator.openWork(
-                          { stream: stream.id },
-                          {
-                            activeSpaceId: activeSpace?.id ?? null,
-                            run,
-                            openUrl: (u) => clickCx.open_url(u),
-                          }
-                        );
+                        clickCx.stop_propagation();
+                        openOverlay({
+                          mod: "streams",
+                          kind: "popup",
+                          at: "pointer",
+                          width: 210,
+                          height: 44,
+                          props: {
+                            kind: "stream-menu",
+                            stream_id: stream.id,
+                          },
+                        });
                       })
-                      .child("Open Stream")
+                      .child("⋮")
                   )
-                  .child(
-                    div()
-                      .id("streams-follow-mode")
-                      .px(8)
-                      .py(3)
-                      .rounded(5)
-                      .bg(t.raised)
-                      .hover((s) => s.bg(t.hover))
-                      .on_click(() => {
-                        if (activeSpace) coordinator.pinSession(activeSpace.id, null);
-                      })
-                      .child("Follow")
-                  )
+              )
+              .when(Boolean(stream.goal), (el) =>
+                el.child(div().text_color(t.muted).child(stream.goal))
               )
           )
           .child(
             v_flex()
-              .gap(4)
-              .child(div().font_medium().text_color(t.muted).child("Sessions"))
-              .children(
-                stream.sessions.map((sess) =>
-                  h_flex()
-                    .id(`sess-${sess.id}`)
-                    .px(8)
-                    .py(4)
-                    .rounded(5)
-                    .justify_between()
-                    .items_center()
-                    .bg(sess.id === selectedSessionId ? t.selected : t.raised)
-                    .hover((s) => s.bg(t.hover))
-                    .on_click(() => {
-                      if (activeSpace) coordinator.pinSession(activeSpace.id, sess.id);
-                    })
-                    .child(div().truncate().child(sess.title))
-                    .child(div().text_color(t.dim).child(sess.status))
-                )
-              )
-          )
-          .when(Boolean(selectedSession), (el) =>
-            el.child(
-              v_flex()
-                .p(8)
-                .gap(4)
-                .rounded(6)
-                .bg(t.raised)
-                .child(div().font_medium().child(selectedSession.title))
-                .when(Boolean(selectedSession.state_short), (s) =>
-                  s.child(div().text_color(t.muted).child(selectedSession.state_short))
-                )
-            )
-          )
-          .when(Boolean(stream.documents?.length), (el) =>
-            el.child(
-              v_flex()
-                .gap(4)
-                .child(div().font_medium().text_color(t.muted).child("Documents"))
-                .children(
-                  stream.documents.map((doc, idx) =>
-                    div()
-                      .id(`doc-${idx}`)
-                      .px(8)
-                      .py(4)
-                      .rounded(5)
-                      .bg(t.raised)
-                      .hover((s) => s.bg(t.hover))
-                      .on_click((_e, clickCx) => {
-                        if (!selectedSessionId) return;
-                        coordinator.openReference(
-                          {
-                            kind: "document",
-                            stream: stream.id,
-                            viewing_session: selectedSessionId,
-                            document: doc.key,
-                          },
-                          {
-                            activeSpaceId: activeSpace?.id ?? null,
-                            run,
-                            openUrl: (u) => clickCx.open_url(u),
-                          }
-                        );
-                      })
-                      .child(doc.description || doc.key.path)
+              .gap(5)
+              .child(div().font_medium().text_size(11.5).text_color(t.muted).child("Sessions"))
+              .child(
+                v_flex()
+                  .p(9)
+                  .gap(4)
+                  .rounded(6)
+                  .bg(t.raised)
+                  .border(1)
+                  .border_color(t.border)
+                  .child(
+                    h_flex()
+                      .gap(8)
+                      .items_center()
+                      .child(
+                        div()
+                          .flex_1()
+                          .min_w(0)
+                          .truncate()
+                          .font_medium()
+                          .child(enrolled.title)
+                      )
+                      .child(statusBadge(enrolled.status, t))
                   )
-                )
-            )
-          )
-          .when(Boolean(stream.artifacts?.length), (el) =>
-            el.child(
-              v_flex()
-                .gap(4)
-                .child(div().font_medium().text_color(t.muted).child("Artifacts"))
-                .children(
-                  stream.artifacts.flatMap((group) =>
-                    group.entries.map((entry) =>
+                  .when(Boolean(enrolled.recap || enrolled.state), (el) =>
+                    el.child(
                       div()
-                        .id(`art-${entry.key.session}-${entry.key.name}`)
-                        .px(8)
-                        .py(4)
-                        .rounded(5)
-                        .bg(t.raised)
-                        .hover((s) => s.bg(t.hover))
-                        .on_click((_e, clickCx) => {
-                          coordinator.openReference(
-                            {
-                              kind: "artifact",
-                              key: entry.key,
-                            },
-                            {
-                              activeSpaceId: activeSpace?.id ?? null,
-                              run,
-                              openUrl: (u) => clickCx.open_url(u),
-                            }
-                          );
-                        })
-                        .child(`${entry.key.name} — ${entry.description}`)
+                        .text_size(11.5)
+                        .text_color(t.muted)
+                        .child(enrolled.recap || enrolled.state)
                     )
                   )
-                )
-            )
+              )
           )
-          .when(Boolean(stream.links?.length), (el) =>
+          .when(references.length > 0, (el) =>
             el.child(
               v_flex()
-                .gap(4)
-                .child(div().font_medium().text_color(t.muted).child("Links"))
-                .children(
-                  stream.links.map((link, idx) =>
-                    div()
-                      .id(`link-${idx}`)
-                      .px(8)
-                      .py(4)
-                      .rounded(5)
-                      .bg(t.raised)
-                      .hover((s) => s.bg(t.hover))
-                      .on_click((_e, clickCx) => {
-                        coordinator.openReference(
-                          {
-                            kind: "link",
-                            stream: stream.id,
-                            link: link.key,
-                          },
-                          {
-                            activeSpaceId: activeSpace?.id ?? null,
-                            run,
-                            openUrl: (u) => clickCx.open_url(u),
-                          }
-                        );
-                      })
-                      .child(link.description || link.key.url)
-                  )
+                .gap(5)
+                .child(
+                  div()
+                    .font_medium()
+                    .text_size(11.5)
+                    .text_color(t.muted)
+                    .child("References")
+                )
+                .child(
+                  v_flex()
+                    .rounded(6)
+                    .bg(t.raised)
+                    .border(1)
+                    .border_color(t.border)
+                    .children(
+                      references.map((item, idx) =>
+                        v_flex()
+                          .id(item.id)
+                          .px(9)
+                          .py(7)
+                          .gap(2)
+                          .when(idx > 0, (row) =>
+                            row.border_t(1).border_color(t.border)
+                          )
+                          .when(!item.disabled, (row) =>
+                            row
+                              .hover((s) => s.bg(t.hover))
+                              .on_click((_e, clickCx) => {
+                                coordinator.openReference(item.reference, {
+                                  activeSpaceId: activeSpace?.id ?? null,
+                                  run,
+                                  openUrl: (u) => clickCx.open_url(u),
+                                });
+                              })
+                          )
+                          .child(
+                            div()
+                              .font_medium()
+                              .text_size(12)
+                              .truncate()
+                              .text_color(t.foreground)
+                              .child(item.title)
+                          )
+                          .when(Boolean(item.subtitle), (row) =>
+                            row.child(
+                              div()
+                                .text_size(11)
+                                .text_color(t.muted)
+                                .truncate()
+                                .child(item.subtitle)
+                            )
+                          )
+                      )
+                    )
                 )
             )
           )

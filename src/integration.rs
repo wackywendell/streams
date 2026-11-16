@@ -131,6 +131,7 @@ pub struct DocumentKey {
 pub enum LinkKind {
     Issue,
     Pr,
+    Link,
 }
 crate::codec::deserialize_string_enum!(LinkKind);
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -143,12 +144,14 @@ pub struct LinkKey {
 #[serde(deny_unknown_fields)]
 pub struct DocumentReference {
     pub key: DocumentKey,
+    pub name: String,
     pub description: String,
 }
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct LinkReference {
     pub key: LinkKey,
+    pub name: String,
     pub description: String,
 }
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -832,6 +835,7 @@ pub enum ModResult {
     Read {
         values: Vec<WireResult<ModReadValue>>,
         notification_key: String,
+        tab_naming: bool,
     },
     ReferenceOpened {
         value: ReferenceOpenReport,
