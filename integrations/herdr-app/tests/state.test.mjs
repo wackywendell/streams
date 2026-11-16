@@ -155,13 +155,55 @@ test("buildReferenceItems formats PRs, issues, links, documents, and artifacts i
   );
 
   assert.deepEqual(
-    items.map((item) => ({ kind: item.kind, title: item.title, subtitle: item.subtitle })),
+    items.map((item) => ({
+      kind: item.kind,
+      title: item.title,
+      location: item.location,
+      description: item.description,
+      monoTitle: item.monoTitle,
+      external: item.external,
+    })),
     [
-      { kind: "pr", title: "PR #42", subtitle: "Add integration support" },
-      { kind: "issue", title: "Issue #17 · Fix tab refresh", subtitle: "Tracking bug" },
-      { kind: "link", title: "Slack announcement", subtitle: "Rollout notes" },
-      { kind: "document", title: "docs/hc-herdr-app-plan.md", subtitle: "Implementation plan" },
-      { kind: "artifact", title: "report.md", subtitle: "Audit report" },
+      {
+        kind: "pr",
+        title: "github.com/org/repo/pull/42",
+        location: null,
+        description: "Add integration support",
+        monoTitle: true,
+        external: true,
+      },
+      {
+        kind: "issue",
+        title: "Fix tab refresh",
+        location: "github.com/org/repo/issues/17",
+        description: "Tracking bug",
+        monoTitle: false,
+        external: true,
+      },
+      {
+        kind: "link",
+        title: "Slack announcement",
+        location: "dd.slack.com/archives/C123/p456",
+        description: "Rollout notes",
+        monoTitle: false,
+        external: true,
+      },
+      {
+        kind: "document",
+        title: "hc-herdr-app-plan.md",
+        location: "docs/hc-herdr-app-plan.md",
+        description: "Implementation plan",
+        monoTitle: false,
+        external: false,
+      },
+      {
+        kind: "artifact",
+        title: "report.md",
+        location: null,
+        description: "Audit report",
+        monoTitle: true,
+        external: false,
+      },
     ]
   );
 });

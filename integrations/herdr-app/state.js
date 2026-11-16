@@ -167,59 +167,34 @@ function formatHostPath(url) {
   try {
     const parsed = new URL(url);
     const path = parsed.pathname === "/" ? "" : parsed.pathname;
-    return `${parsed.host}${path}`;
+    return `${parsed.host}${path}${parsed.search ?? ""}`;
   } catch {
     return url;
   }
 }
 
-function formatLinkTitle(link) {
-  const kind = link?.key?.kind;
-  const url = link?.key?.url ?? "";
-  const name = typeof link?.name === "string" ? link.name.trim() : "";
-
-  if (kind === "pr") {
-    const prMatch = url.match(/\/(?:pull|pulls|merge_requests)\/(\d+)/i);
-    if (prMatch) {
-      const tag = `PR #${prMatch[1]}`;
-      if (!name || name === url) return tag;
-      return name.includes(prMatch[1]) ? name : `${tag} · ${name}`;
-    }
-    return name || url;
-  }
-
-  if (kind === "issue") {
-    const ghMatch = url.match(/\/issues\/(\d+)/i);
-    if (ghMatch) {
-      const tag = `Issue #${ghMatch[1]}`;
-      if (!name || name === url) return tag;
-      return name.includes(ghMatch[1]) ? name : `${tag} · ${name}`;
-    }
-    const keyMatch = url.match(/\/browse\/([A-Z][A-Z0-9]+-\d+)/);
-    if (keyMatch) {
-      const tag = keyMatch[1];
-      if (!name || name === url) return tag;
-      return name.includes(tag) ? name : `${tag} · ${name}`;
-    }
-    return name || url;
-  }
-
-  return name || formatHostPath(url);
-}
-
 /**
- * Combine Stream documents, links/PRs/issues, and artifacts into one unified References list.
+ * Combine Stream documents, links/PRs/issues, and artifacts into one unified References list
+ * directly from structured fields without parsing or rewriting titles.
  */
 export function buildReferenceItems(stream, { viewingSessionId = null } = {}) {
   if (!stream) return [];
   const items = [];
 
   for (const [idx, link] of (stream.links ?? []).entries()) {
+    const url = link.key?.url ?? "";
+    const hostPath = url ? formatHostPath(url) : "";
+    const name = typeof link.name === "string" ? link.name.trim() : "";
+    const title = name || hostPath || url;
+    const location = hostPath && hostPath !== title ? hostPath : null;
     items.push({
-      id: `link-${idx}-${link.key?.url ?? ""}`,
+      id: `link-${idx}-${url}`,
       kind: link.key?.kind ?? "link",
-      title: formatLinkTitle(link),
-      subtitle: link.description || link.key?.url || "",
+      title,
+      location,
+      description: typeof link.description === "string" ? link.description.trim() : "",
+      monoTitle: !name,
+      external: true,
       reference: {
         kind: "link",
         stream: stream.id,
@@ -232,13 +207,16 @@ export function buildReferenceItems(stream, { viewingSessionId = null } = {}) {
   for (const [idx, doc] of (stream.documents ?? []).entries()) {
     const path = doc.key?.path ?? "";
     const name = typeof doc.name === "string" ? doc.name.trim() : "";
-    const title = path || name;
-    const subtitle = doc.description || (name && path && name !== path ? name : "");
+    const title = name || path;
+    const location = path && path !== title ? path : null;
     items.push({
       id: `doc-${idx}-${doc.key?.repository ?? ""}-${path}`,
       kind: "document",
       title,
-      subtitle,
+      location,
+      description: typeof doc.description === "string" ? doc.description.trim() : "",
+      monoTitle: !name,
+      external: false,
       reference: viewingSessionId
         ? {
             kind: "document",
@@ -257,7 +235,10 @@ export function buildReferenceItems(stream, { viewingSessionId = null } = {}) {
         id: `art-${entry.key?.session ?? ""}-${entry.key?.name ?? ""}`,
         kind: "artifact",
         title: entry.key?.name ?? "",
-        subtitle: entry.description ?? "",
+        location: null,
+        description: typeof entry.description === "string" ? entry.description.trim() : "",
+        monoTitle: true,
+        external: false,
         reference: {
           kind: "artifact",
           key: entry.key,
